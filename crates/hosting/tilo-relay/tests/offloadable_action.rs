@@ -3,8 +3,9 @@
 //! picks it there: the host answers with its own standing and the inputs it
 //! already keeps, the invocation runs there as a compute job over that
 //! content, and the answer is exactly what the action's own handler answered
-//! on the invoking device. A host that does not take the work, or takes it and
-//! cannot run it, leaves the action where it was asked and says why.
+//! on the invoking device. A host that does not hold the inputs is no quicker
+//! than the run here, and work it cannot stage is refused, never run over
+//! content that is not there.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -13,12 +14,12 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iroh::protocol::Router;
 use launcher::capture::{CapturedRunOutput, CapturedTermination};
 use runtime_fs::blobs::BlobScope;
-use thumbnail::batch::{ENTRYPOINT, PACKAGE, thumbnail_batch};
+use thumbnail::batch::{ENTRYPOINT, PACKAGE};
 use tilo_actions::offload::{OffloadRequest, Offloaded, content_inputs};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
 use tilo_actions::{ActionAddress, InvocationId};
@@ -134,14 +135,14 @@ struct Media(Mutex<BTreeMap<[u8; 32], Vec<u8>>>);
 
 impl Media {
     /// Keep `bytes` and answer their digest.
-    fn put(&self, bytes: &[u8]) -> [u8; 32] {
+    fn store(&self, bytes: &[u8]) -> [u8; 32] {
         let digest = *blake3::hash(bytes).as_bytes();
         self.0.lock().unwrap().insert(digest, bytes.to_vec());
         digest
     }
 
     /// The bytes of `digest`, when they are here.
-    fn get(&self, digest: [u8; 32]) -> Option<Vec<u8>> {
+    fn bytes_of(&self, digest: [u8; 32]) -> Option<Vec<u8>> {
         self.0.lock().unwrap().get(&digest).cloned()
     }
 }
@@ -153,7 +154,7 @@ impl RoomMedia for Media {
         digest: [u8; 32],
     ) -> MediaFuture<'a, Result<u64, BindError>> {
         Box::pin(async move {
-            self.get(digest)
+            self.bytes_of(digest)
                 .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
                 .ok_or(BindError::NotLocal)
         })
@@ -164,7 +165,7 @@ impl RoomMedia for Media {
         _scope: &'a BlobScope,
         digest: [u8; 32],
     ) -> MediaFuture<'a, Result<Vec<u8>, BindError>> {
-        Box::pin(async move { self.get(digest).ok_or(BindError::NotLocal) })
+        Box::pin(async move { self.bytes_of(digest).ok_or(BindError::NotLocal) })
     }
 
     fn keep<'a>(
@@ -172,7 +173,7 @@ impl RoomMedia for Media {
         _scope: &'a BlobScope,
         bytes: Vec<u8>,
     ) -> MediaFuture<'a, Result<[u8; 32], String>> {
-        Box::pin(async move { Ok(self.put(&bytes)) })
+        Box::pin(async move { Ok(self.store(&bytes)) })
     }
 }
 
@@ -184,13 +185,13 @@ impl OutputContent for Media {
         digest: [u8; 32],
         _within: Duration,
     ) -> MediaFuture<'a, Option<Vec<u8>>> {
-        Box::pin(async move { self.get(digest) })
+        Box::pin(async move { self.bytes_of(digest) })
     }
 }
 
 impl ComputeContentStore for Media {
     fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
-        Ok(Media::get(self, digest))
+        Ok(self.bytes_of(digest))
     }
 
     fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
@@ -215,7 +216,7 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
 /// embedder routes it.
 struct Hosted {
     host: RoomHost,
-    router: Router,
+    _router: Router,
     _state: tempfile::TempDir,
 }
 
@@ -241,7 +242,7 @@ async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
     }
     Hosted {
         host,
-        router: router.spawn(),
+        _router: router.spawn(),
         _state: state,
     }
 }
@@ -325,22 +326,27 @@ fn asking_plane(laptop: &TestDevice, host: &TestDevice, workspace: &str) -> Acti
     plane
 }
 
+/// The resource Photos publishes `make-thumbnails` on.
+const LIBRARY: &str = "photos.library";
+
+/// The arguments of a `make-thumbnails` invocation over `hashes`.
+fn photos_argument(hashes: &[String]) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::Map::from_iter([("photos".to_owned(), serde_json::json!(hashes))])
+}
+
 /// Photos' published `make-thumbnails` in `workspace` and a request for it
 /// over `hashes`, as the door builds one from an admitted invocation's
 /// arguments.
 fn make_thumbnails_request(workspace: &str, hashes: &[String]) -> OffloadRequest {
     use tilo_resource::Effect as _;
-    let spec = photos::actions::PhotosEffect::specs()
-        .into_iter()
-        .find(|spec| spec.id == "make-thumbnails")
+    let spec = photos::actions::PhotosEffect::spec("make-thumbnails")
         .expect("Photos publishes make-thumbnails");
-    let arguments = serde_json::json!({ "photos": hashes });
     OffloadRequest {
         workspace: workspace.into(),
         app_id: PHOTOS.into(),
-        address: ActionAddress::new("photos.library:main", "make-thumbnails"),
+        address: ActionAddress::new(LIBRARY, "make-thumbnails"),
         offload: spec.contract.offload.clone().expect("declared offloadable"),
-        inputs: content_inputs(spec.params(), arguments.as_object().unwrap()).unwrap(),
+        inputs: content_inputs(spec.params(), &photos_argument(hashes)).unwrap(),
     }
 }
 
@@ -348,13 +354,8 @@ fn make_thumbnails_request(workspace: &str, hashes: &[String]) -> OffloadRequest
 fn invocation(workspace: &str, hashes: &[String]) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: application_action_target(
-            workspace,
-            PHOTOS,
-            "photos.library:main",
-            "make-thumbnails",
-        ),
-        argument: InvokeArgument::Json(serde_json::json!({ "photos": hashes })),
+        target: application_action_target(workspace, PHOTOS, LIBRARY, "make-thumbnails"),
+        argument: InvokeArgument::Json(photos_argument(hashes)),
         context: None,
         confirmation: None,
         revision: None,
@@ -373,15 +374,15 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     let mut env = tilo_test_env::ScopedEnv::new();
     env.remove("TILO_ACTION_OFFLOAD");
     let owner = TestUser::fresh("offload owner");
-    let relay = owner.enrol("relay", DeviceCapabilities::host());
-    let relay_key = relay.device_pubkey();
-    let laptop = owner.enrol("laptop", DeviceCapabilities::primary());
+    let desk = owner.enrol("desk", DeviceCapabilities::primary());
+    let desk_key = desk.device_pubkey();
+    let laptop = owner.enrol("laptop", DeviceCapabilities::member());
     let root = tempfile::tempdir().unwrap();
 
     // The host governs the workspace and keeps its content: the photographs
     // are the workspace's, so the device that asks reads them exactly where
     // the host does.
-    let hosted = host_on(&owner, &relay).await;
+    let hosted = host_on(&owner, &desk).await;
     let room = hosted.host.rooms().create("Photos").await.unwrap();
     let workspace = room.room.clone();
     let content = Arc::new(Media::default());
@@ -390,7 +391,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
         .collect();
     let mut hashes = Vec::new();
     for bytes in &photographs {
-        hashes.push(hex::encode(content.put(bytes)));
+        hashes.push(hex::encode(content.store(bytes)));
     }
     let (package, _) = installed_package(&root.path().join("host"), PACKAGE, ENTRYPOINT);
     let jobs = |content: Arc<Media>, dir: &str| {
@@ -398,7 +399,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
             content as Arc<dyn ComputeContentStore>,
             Arc::new(FixtureCatalogue(package.clone())),
             Arc::new(ThumbnailSandbox),
-            relay_key,
+            desk_key,
             root.path().join(format!("{dir}-data")),
             root.path().join(format!("{dir}-state")),
         ))
@@ -412,7 +413,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // device does, so the host answers it.
     let laptop_endpoint = device_endpoint(&laptop).await;
     invited(&hosted, &workspace, &owner, &laptop, &laptop_endpoint).await;
-    let plane = asking_plane(&laptop, &relay, &workspace);
+    let plane = asking_plane(&laptop, &desk, &workspace);
     let host_addr = hosted.host.node_addr();
     let peers = PlanePeers::new(
         plane,
@@ -448,9 +449,11 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     for bytes in &photographs {
         app_content.put(bytes).unwrap();
     }
+    let started = Instant::now();
     let here = photos::actions::make_thumbnails(&named, &app_content).unwrap();
+    let took = started.elapsed();
     assert_eq!(here.resources.len(), IMAGES, "one thumbnail per photograph");
-    route.ran_here(&request, Duration::from_millis(400));
+    route.ran_here(&request, took);
 
     // The host holds every input, so moving them costs nothing: it wins the
     // round, runs the transform as a compute job over the content it keeps,
@@ -463,34 +466,78 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     let Offloaded::Ran { output, device, .. } = second else {
         panic!("the host is better placed: {second:?}");
     };
-    assert_eq!(device, hex::encode(relay_key));
+    assert_eq!(device, hex::encode(desk_key));
     assert_eq!(output, here, "the same output, wherever it ran");
     for resource in &output.resources {
         let hash = tilo_actions::content_hash(resource).unwrap();
         let mut digest = [0; 32];
         hex::decode_to_slice(hash, &mut digest).unwrap();
         assert_eq!(
-            content.get(digest),
+            content.bytes_of(digest),
             app_content.read(hash),
             "byte for byte the local thumbnail, kept where the workspace reads it"
         );
     }
 
-    // A host that takes the work and then finds it holds none of its inputs
-    // cannot run it: the action still runs here, and the answer says what
-    // the host did.
+    // A host that holds none of the inputs is weighed as receiving all of
+    // them, which takes longer than the run here took, so it is not picked
+    // and the action stays here.
     hosted
         .host
         .rooms()
         .run_jobs(jobs(Arc::new(Media::default()), "empty"));
-    route.ran_here(&request, Duration::from_secs(30));
     let third = tilo_test_env::within(
-        "the round the host cannot run",
+        "the round the host no longer wins",
         route.offload_invocation(request.clone(), invocation(&workspace, &named)),
     )
     .await;
     let Offloaded::RunHere { reason } = third else {
-        panic!("a host that cannot run it leaves the action here: {third:?}");
+        panic!("a host that holds nothing is no quicker: {third:?}");
     };
-    assert!(reason.contains("did not run it"), "{reason}");
+    assert!(reason.contains("no faster than the run here"), "{reason}");
+}
+
+/// A host that takes work in still refuses the job when the inputs it was
+/// offered are not in its store: the device that asked is told the job did not
+/// run, and runs the action itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_refuses_a_job_it_does_not_hold_the_inputs_for() {
+    use tilo_room_host::rooms::HostJobs as _;
+    let desk = TestUser::fresh("job host").enrol("desk", DeviceCapabilities::primary());
+    let root = tempfile::tempdir().unwrap();
+    let (package, _) = installed_package(&root.path().join("host"), PACKAGE, ENTRYPOINT);
+    let jobs = ComputeJobs::new(
+        Arc::new(Media::default()) as Arc<dyn ComputeContentStore>,
+        Arc::new(FixtureCatalogue(package)),
+        Arc::new(ThumbnailSandbox),
+        desk.device_pubkey(),
+        root.path().join("data"),
+        root.path().join("state"),
+    );
+    let workspace = "11111111-1111-4111-8111-111111111111";
+    let named = vec!["ab".repeat(32)];
+    let declared = make_thumbnails_request(workspace, &named);
+    let mut digest = [0; 32];
+    hex::decode_to_slice(&named[0], &mut digest).unwrap();
+    let work = neighbour_wire::offer::Work {
+        inputs: vec![(digest, 1_024)],
+        input_bytes: 1_024,
+        local_wall_ms: None,
+        offload: Some(declared.offload),
+    };
+
+    assert!(jobs.runs(workspace, &work), "the package is installed here");
+    assert!(
+        jobs.holds(workspace, &work).is_empty(),
+        "and the input it names is not"
+    );
+
+    let ran = jobs
+        .run(workspace, &work, [9; 32], invocation(workspace, &named))
+        .await
+        .expect("the host answers the job it was sent");
+    let Err(tilo_actions::remote::ActionHostError::Refused { reason }) = ran else {
+        panic!("a job over content the host does not have is refused: {ran:?}");
+    };
+    assert!(reason.contains("the job did not run"), "{reason}");
 }

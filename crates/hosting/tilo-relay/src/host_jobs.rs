@@ -286,7 +286,7 @@ impl ComputeJobs {
         .await;
         let result = match executed {
             Ok(result) => {
-                result.map_err(|error| failed(format!("the job was not admitted: {error}")))?
+                result.map_err(|error| failed(format!("the job did not run: {error}")))?
             }
             Err(error) => return Err(failed(format!("the job did not finish: {error}"))),
         };
