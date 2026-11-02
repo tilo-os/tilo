@@ -15,8 +15,9 @@
 ///   action's own declaration names (`group:`), in the app's order. It is never a generated
 ///   list of everything the app can do;
 /// - the **top bar** is one row, edge to edge: the system menu and the focused window's
-///   commands leading, the tasks, the time, the person and the notifications flush at its
-///   trailing edge, as every desktop since 1986 has. The shell's own settings are never there:
+///   commands leading, the tasks, the time, who is here, the status, the notifications and the
+///   person's own face flush at its trailing edge, as every desktop since 1986 has. The
+///   shell's own settings are never there:
 ///   they are in Settings and the system menu.
 ///
 /// Views name theme roles only: no colour, radius, font or size of their own.
@@ -271,10 +272,11 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
 }
 
 /// The desktop's top bar, one row edge to edge: the system menu and the focused window's commands
-/// leading, and the tasks running, the time, the person and the notifications flush at the trailing
-/// edge, as a macOS or GNOME bar has them. As the output narrows the window's commands shed into
-/// their menus, the tasks give way, and on a phone the person's avatar does too (the time and the
-/// notifications stay), so the row never wraps and its parts never press into each other.
+/// leading, and the tasks running, the time, who is here, the status, the notifications and the
+/// person's own face flush at the trailing edge, as a macOS or GNOME bar has them. As the output
+/// narrows the window's commands shed into their menus, the tasks and who is here give way, and
+/// on a phone the sound does too (the time, the connection, the charge, the notifications and the
+/// person's face stay), so the row never wraps and its parts never press into each other.
 view traditional_bar(d: Desk) {
     let room = if space.width_class == .wide { BarRoom.roomy } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {
@@ -293,10 +295,13 @@ view traditional_bar(d: Desk) {
             }
         }
         clock(d)
-        if d.person != "" and room != .one {
-            ui.Avatar(name: .some(d.person))
+        if room != .one {
+            people_button(d)
         }
         status_icons()
         bell(d)
+        if d.person != "" {
+            ui.Avatar(name: .some(d.person))
+        }
     }
 }

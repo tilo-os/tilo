@@ -4,8 +4,11 @@
 /// one is up is the session's (`d.here`), so the shell re-runs when it changes and nothing else
 /// moves while the desk is at rest.
 ///
-/// The bar and the dock are `ui.Chrome` bodies over the theme's bar material: edge to edge and
-/// square at the `full` fit, an inset rounded body at the floating one. Every surface is drawn
+/// The bar and the dock are `ui.Chrome` bodies made of the theme's material for the style the
+/// person picked (`bar_finish`, `dock_finish`): the theme's glass, let through and blurred over
+/// the desk, or that same glass made calm, opaque with every light off — so a theme's material
+/// and not the view decides what either is made of. Edge to edge and square at the `full` fit,
+/// an inset rounded body at the floating one. Every surface is drawn
 /// over them, so the bar stays reachable and a press outside a surface closes it, as the
 /// session's chrome decides. Nothing here draws a window: the desk's windows are the
 /// compositor's, behind this view.
@@ -51,7 +54,7 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
             }
             if docked {
                 row(align: .center, distribute: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
                         dock(s, d)
                     }
                 }
@@ -60,25 +63,25 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
         if dock_shows(s, d) and not docked {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, distribute: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
                         dock(s, d)
                     }
                 }
             } else if s.dock_edge == .top {
                 row(at: .top, fill, align: .center, distribute: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .top, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .top, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
                         dock(s, d)
                     }
                 }
             } else if s.dock_edge == .left {
                 stack(at: .leading, fill, align: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .leading) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .leading, material: if s.dock_finish == .translucent { .glass } else { .calm }) {
                         dock(s, d)
                     }
                 }
             } else {
                 stack(at: .trailing, fill, align: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .trailing) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .trailing, material: if s.dock_finish == .translucent { .glass } else { .calm }) {
                         dock(s, d)
                     }
                 }
@@ -120,31 +123,31 @@ view shown_preset(a: Arrangement, lists: Bool) {
 
 /// The top bar on the edge it rides: the whole width with its parts spread along it at the `full`
 /// fit, or an inset run centred on the edge at the floating one, where it covers less of what is
-/// under it. Its ground is the theme's bar material either way; how much of the output it spans is
-/// what its fit says.
+/// under it. Its ground is the theme's material for the bar's style either way; how much of the
+/// output it spans is what its fit says.
 view bar_on_edge(s: Shell, d: Desk) {
     let on_top = s.bar_edge == .top
     if s.bar_fit == .full and on_top {
         row(at: .top, fill, align: .center) {
-            ui.Chrome(name: "Top bar", shape: .square, edge: .top, fill) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
                 top_bar(d)
             }
         }
     } else if s.bar_fit == .full {
         row(at: .bottom, fill, align: .center) {
-            ui.Chrome(name: "Top bar", shape: .square, edge: .bottom, fill) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
                 top_bar(d)
             }
         }
     } else if on_top {
         row(at: .top, align: .center, padding: .related) {
-            ui.Chrome(name: "Top bar", shape: .rounded, edge: .top) {
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
                 top_bar(d)
             }
         }
     } else {
         row(at: .bottom, align: .center, padding: .related) {
-            ui.Chrome(name: "Top bar", shape: .rounded, edge: .bottom) {
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
                 top_bar(d)
             }
         }
