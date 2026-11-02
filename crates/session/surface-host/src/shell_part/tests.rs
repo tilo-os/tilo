@@ -55,12 +55,13 @@ fn click(part: &mut ShellPart, name: &str) {
 #[test]
 fn the_shell_ships_every_file_of_its_package() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
-    // The files the package's compiler reads, in the order it reads them.
+    // The files the package's compiler reads, in the order it reads them, but its fixtures.
     let on_disk: Vec<String> = tilolang_tilo::tilolang::source::source_paths(&dir)
         .expect("the shell's package")
         .iter()
         .filter_map(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name != "scenarios.tl")
         .collect();
     let shipped: Vec<String> = SHELL_FILES
         .iter()
@@ -664,15 +665,14 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     // The strips show each strip's own controls; the framed canvas shows none of them, and its
     // entry (what typed text finds is placed on the canvas) instead.
     assert!(
-        labels.iter().any(|label| label == "Bring forward"),
+        labels.iter().any(|label| label == "Width"),
         "the strips show their controls: {labels:?}"
     );
     // The preset switch shows the same place on the framed canvas, its well there.
     click(&mut part, "Frames");
     let labels = crate::Published::accessible_labels(&mut part);
     assert!(
-        !labels.iter().any(|label| label == "Bring forward")
-            && labels.iter().any(|label| label == "Typed"),
+        !labels.iter().any(|label| label == "Width") && labels.iter().any(|label| label == "Typed"),
         "the canvas shows: {labels:?}; refused {:?}",
         part.refusals()
     );
