@@ -478,6 +478,7 @@ impl DesktopSearch {
             return;
         };
         let groups = self.arranged(query, stream.groups());
+        let pending = stream.pending();
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
         let capacity = self.palette.entry_row_capacity();
@@ -559,9 +560,11 @@ impl DesktopSearch {
             self.palette.selected_id().map(str::to_owned)
         };
         // A large index answers typed text only once the engine's code is
-        // in: while it is on its way, an empty list says it is still
-        // searching.
-        self.palette.set_searching(!ui::search::engine_ready());
+        // in, and the slower sources answer in later frames: while either
+        // is still coming, an empty list says it is searching rather than
+        // that nothing matched.
+        self.palette
+            .set_searching(!ui::search::engine_ready() || (rows.is_empty() && pending));
         self.rows = rows;
         self.shown_query = Some(query.to_owned());
         self.shown_generation = generation;
