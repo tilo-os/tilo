@@ -607,6 +607,21 @@ fn asked_of_desk(
                 Err(error) => refusal("unknown_target", &error),
             }
         }
+        "search_rows" => {
+            let (query, rows) = desk.handle.search_rows();
+            let rows: Vec<Json> = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "title": row.title,
+                        "subtitle": row.subtitle,
+                        "kind": row.kind,
+                        "facts": row.facts,
+                    })
+                })
+                .collect();
+            json!({"answer": {"query": query, "rows": rows}})
+        }
         "state_dump" => desk.handle.read(|tree| state_dump(tree, desk)),
         "windows" => desk
             .handle

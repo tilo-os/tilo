@@ -188,6 +188,10 @@ pub struct SearchRow {
     pub subtitle: Option<String>,
     /// The group it stands in ("Apps", "Settings").
     pub kind: String,
+    /// What the row says about the thing beyond its name: where it lives,
+    /// when it was last edited and by whom, where the person was there, in
+    /// the source's own words.
+    pub facts: Vec<String>,
 }
 
 /// What a caller of the desktop's published search asked of it.
@@ -930,6 +934,7 @@ impl DesktopSurface {
                     title: hit.title.clone(),
                     subtitle: hit.subtitle.clone(),
                     kind: hit.kind.label().to_owned(),
+                    facts: hit.facts.clone(),
                 })
                 .collect()
         } else {

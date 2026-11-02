@@ -306,6 +306,7 @@ impl SessionSearch {
     #[must_use]
     pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
         let needle = needle.trim();
+        let now = ui::time::unix_now();
         if needle.is_empty() {
             return Vec::new();
         }
@@ -320,6 +321,7 @@ impl SessionSearch {
                 &self.places.borrow(),
                 "",
                 self.open_tabs.borrow().clone(),
+                now,
                 app_name,
             )),
         ];
@@ -346,7 +348,17 @@ impl SessionSearch {
         // The search over everything but the answers a query that is not a
         // name gets (a sum, a web search): text typed on the canvas names a
         // resource to place, never a sentence to search the web for.
-        let groups = tilo_desktop_search::search(needle, &refs, 0);
+        // The one ranking, with what the person chose before: a tool that
+        // places text on the canvas and the palette lead with the same
+        // documents, apps and actions in the same order.
+        let now = ui::time::unix_now();
+        let usage = self.usage.borrow();
+        let groups = match usage.as_ref() {
+            Some(usage) => tilo_desktop_search::search_with(needle, &refs, 0, &|hit| {
+                usage.strength(needle, hit, now)
+            }),
+            None => tilo_desktop_search::search(needle, &refs, 0),
+        };
         groups.into_iter().flat_map(|group| group.results).collect()
     }
 
@@ -604,6 +616,7 @@ impl SessionSearch {
 
 impl SearchHost for SessionSearch {
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
+        let now = ui::time::unix_now();
         let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
         // Every workspace's places name their workspace when the search is
@@ -614,12 +627,14 @@ impl SearchHost for SessionSearch {
                 workspace,
                 self.open_tabs.borrow().clone(),
                 self.workspaces.borrow().clone(),
+                now,
                 app_name,
             ),
             _ => Continue::new(
                 &self.places.borrow(),
                 workspace,
                 self.open_tabs.borrow().clone(),
+                now,
                 app_name,
             ),
         };
@@ -669,9 +684,7 @@ impl SearchHost for SessionSearch {
             published,
             sources,
             preferences: self.preferences.borrow().clone(),
-            now: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs()),
+            now,
             usage: self.usage.borrow().clone(),
         }
     }

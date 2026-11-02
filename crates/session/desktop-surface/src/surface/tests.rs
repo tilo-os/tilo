@@ -557,6 +557,8 @@ impl tilo_desktop_search::Source for Plenty {
     fn query(&self, _: &str) -> Vec<tilo_desktop_search::Hit> {
         (0..40)
             .map(|i| tilo_desktop_search::Hit {
+                row: None,
+                preview: None,
                 faces: Vec::new(),
                 outcome: None,
                 kind: tilo_desktop_search::ResourceKind::Note,
@@ -614,6 +616,8 @@ impl tilo_desktop_search::Source for Elsewhere {
             return Vec::new();
         }
         vec![tilo_desktop_search::Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: tilo_desktop_search::ResourceKind::Note,

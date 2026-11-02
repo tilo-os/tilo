@@ -7,7 +7,7 @@
 use tilo_actions::{FlatAction, ResourceSpec};
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Hit, Source, Target, search, search_with};
+use crate::model::{Hit, Source, SourceCosts, Target, frame_deadline};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
@@ -61,6 +61,7 @@ pub struct SearchData {
 
 /// A row the person moved to, as it is found again once the rows are
 /// rebuilt: rows are numbered by position, which a late answer changes.
+#[derive(Clone)]
 enum ChosenRow {
     /// A hit, by its `(provider, id)`.
     Hit(String, String),
@@ -167,6 +168,22 @@ pub struct DesktopSearch {
     /// then no row offers to list them all again.
     catalogue: bool,
     choice: Option<Target>,
+    /// The search filling in, a source at a time: the rows shown are what
+    /// came in so far.
+    stream: Option<crate::model::SearchStream>,
+    /// How long each source took last time: what decides which is asked in
+    /// this frame and which waits for a later one.
+    costs: SourceCosts,
+    /// The sources this search asks, in the order it asks them, and where
+    /// each stands in the empty palette.
+    order: Vec<(String, (u8, usize))>,
+    /// The row capacity the rows were cut to: when the card grew or shrank
+    /// since, the groups are cut again.
+    shown_capacity: usize,
+    /// The row the person moved to in this search, kept while the rows fill
+    /// in: a frame that has no room for it yet does not take their choice
+    /// away.
+    kept_choice: Option<ChosenRow>,
 }
 
 impl Default for DesktopSearch {
@@ -200,6 +217,11 @@ impl DesktopSearch {
             shown_generation: 0,
             catalogue: false,
             choice: None,
+            stream: None,
+            costs: SourceCosts::default(),
+            order: Vec::new(),
+            shown_capacity: 0,
+            kept_choice: None,
         }
     }
 
@@ -211,6 +233,10 @@ impl DesktopSearch {
     /// host keeps calling [`Self::refresh`] until it arrives.
     pub fn waiting(&self) -> bool {
         self.sources.as_ref().is_some_and(Sources::waiting)
+            || self
+                .stream
+                .as_ref()
+                .is_some_and(crate::model::SearchStream::pending)
     }
 
     /// Open over `data` with an empty query.
@@ -235,6 +261,7 @@ impl DesktopSearch {
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
+        self.stream = None;
         self.expanded.clear();
         self.palette.open();
         self.refresh();
@@ -300,7 +327,8 @@ impl DesktopSearch {
 
     /// Run the query again when the palette's text changed since the rows
     /// were built, the index's code arrived since, or an application's
-    /// answer that was still coming arrived. Returns whether the rows
+    /// answer that was still coming arrived; and ask the sources that are
+    /// still answering, a frame at a time. Returns whether the rows
     /// changed.
     pub fn refresh(&mut self) -> bool {
         let Some(sources) = &self.sources else {
@@ -309,108 +337,159 @@ impl DesktopSearch {
         let answered = sources.poll();
         let query = self.palette.query().to_owned();
         let generation = ui::search::engine_generation();
-        if !answered
-            && self.shown_query.as_deref() == Some(query.as_str())
-            && self.shown_generation == generation
+        if answered
+            || self.shown_query.as_deref() != Some(query.as_str())
+            || self.shown_generation != generation
         {
-            return false;
+            if self.shown_query.is_some() && self.shown_query.as_deref() != Some(query.as_str()) {
+                // "Show all" belongs to the search it was asked in.
+                self.expanded.clear();
+            }
+            self.restart(&query, generation);
+            return true;
         }
-        if self.shown_query.is_some() && self.shown_query.as_deref() != Some(query.as_str()) {
-            // "Show all" belongs to the search it was asked in.
-            self.expanded.clear();
+        // The sources that still owe an answer: the rest of this search's
+        // rows, as far as this frame's share of time reaches.
+        if self.resume() {
+            self.render(&query, generation);
+            return true;
         }
-        self.rebuild_rows(query, generation);
-        true
+        // The card grew or shrank: the groups share what it shows now.
+        if self.palette.entry_row_capacity() != self.shown_capacity {
+            self.render(&query, generation);
+            return true;
+        }
+        false
     }
 
-    /// What every source finds for `query`: the desktop's own, the ones the
-    /// host adds, and the rows that switch each of them off and on again.
-    fn everywhere(
-        &self,
-        sources: &Sources,
-        query: &str,
-    ) -> Vec<ui::search::system::KindGroup<Hit>> {
-        let mut all: Vec<&dyn Source> = vec![
-            &self.recents,
-            &sources.applications,
-            &sources.windows,
-            &sources.content,
-            &sources.actions,
-            &sources.published,
-            &sources.commands,
-        ];
-        if let Some((answers, web)) = &sources.answers {
-            all.extend([answers as &dyn Source, web]);
-        }
-        all.extend(sources.host.iter().map(|source| &**source));
-        let switches = switches(sources, &all);
-        all.retain(|source| sources.preferences.enabled(source.id()));
+    /// Ask the sources of a new search, as far as this frame's share of
+    /// time reaches, and show what came in.
+    fn restart(&mut self, query: &str, generation: u64) {
+        let Some(stream) = self.begin(query) else {
+            return;
+        };
+        self.stream = Some(stream);
+        self.render(query, generation);
+    }
+
+    /// Open a stream for `query` and let it ask the sources that fit this
+    /// frame.
+    fn begin(&mut self, query: &str) -> Option<crate::model::SearchStream> {
+        let sources = self.sources.as_ref()?;
+        let windowed = sources.window.is_some();
+        let (mut all, switches): (Vec<&dyn Source>, Option<Switches>) = match &sources.window {
+            Some(window) => (vec![window as &dyn Source], None),
+            None => everywhere(sources, &self.recents),
+        };
         if let Some(switches) = &switches {
             all.push(switches);
         }
-        let usage = &self.usage;
-        let now = sources.now;
-        let mut groups = search_with(query, &all, 0, &|hit| usage.strength(query, hit, now));
-        if query.trim().is_empty() {
-            // Nothing typed: the groups stand in the order their sources ask
-            // for a browse ([`Source::browse_rank`]), so what is happening
-            // now leads, what the person reached for last follows, and the
-            // ways into everything else come after.
-            let place: std::collections::HashMap<&str, (u8, usize)> = all
-                .iter()
+        let order: Vec<(String, (u8, usize))> = if windowed {
+            Vec::new()
+        } else {
+            all.iter()
                 .enumerate()
-                .map(|(at, source)| (source.id(), (source.browse_rank(), at)))
-                .collect();
-            groups.sort_by_key(|group| {
-                group
-                    .results
-                    .first()
-                    .and_then(|hit| place.get(hit.provider.as_str()).copied())
-                    .unwrap_or((crate::model::BROWSE_RANK_LATER, usize::MAX))
-            });
-        }
-        groups
+                .map(|(at, source)| (source.id().to_owned(), (source.browse_rank(), at)))
+                .collect()
+        };
+        let deadline = frame_deadline(crate::model::FRAME_BUDGET);
+        let now = sources.now;
+        let usage = &self.usage;
+        let costs = &mut self.costs;
+        let stream = crate::model::search_stream(query, &all, 0, costs, deadline, &|hit: &Hit| {
+            usage.strength(query, hit, now)
+        });
+        drop(all);
+        drop(switches);
+        self.order = order;
+        Some(stream)
     }
 
-    fn rebuild_rows(&mut self, query: String, generation: u64) {
-        let Some(sources) = &self.sources else {
+    /// Ask the sources that are still answering what the frame's time
+    /// reaches. Returns whether any answered.
+    fn resume(&mut self) -> bool {
+        let Some(mut stream) = self.stream.take() else {
+            return false;
+        };
+        let Some(sources) = self.sources.as_ref() else {
+            return false;
+        };
+        let (mut all, switches): (Vec<&dyn Source>, Option<Switches>) = match &sources.window {
+            Some(window) => (vec![window as &dyn Source], None),
+            None => everywhere(sources, &self.recents),
+        };
+        if let Some(switches) = &switches {
+            all.push(switches);
+        }
+        let query = self.palette.query().to_owned();
+        let now = sources.now;
+        let deadline = frame_deadline(crate::model::FRAME_BUDGET);
+        let usage = &self.usage;
+        let costs = &mut self.costs;
+        let asked = stream.resume(&all, costs, deadline, &|hit: &Hit| {
+            usage.strength(&query, hit, now)
+        });
+        drop(all);
+        drop(switches);
+        self.stream = Some(stream);
+        asked
+    }
+
+    fn render(&mut self, query: &str, generation: u64) {
+        let Some(stream) = &self.stream else {
             return;
         };
+        let mut groups = stream.groups();
         // A window's search is about what the window holds: its resources
         // lead, and what can be done follows them, those acting on the
         // selection first.
-        let groups = if let Some(window) = &sources.window {
-            let (mut actions, mut held): (Vec<_>, Vec<_>) =
-                search(&query, &[window as &dyn Source], 0)
-                    .into_iter()
-                    .partition(|group| group.kind == ResourceKind::Action);
+        if self
+            .sources
+            .as_ref()
+            .is_some_and(|sources| sources.window.is_some())
+        {
+            let (mut actions, mut held): (Vec<_>, Vec<_>) = groups
+                .into_iter()
+                .partition(|group| group.kind == ResourceKind::Action);
             for group in &mut actions {
                 crate::window::selection_first(&mut group.results);
             }
             held.extend(actions);
-            held
-        } else {
-            self.everywhere(sources, &query)
-        };
+            groups = held;
+        } else if query.trim().is_empty() {
+            // Nothing typed: the groups stand in the order their sources ask
+            // for a browse ([`Source::browse_rank`]), so what is happening
+            // now leads, what the person reached for last follows, and the
+            // ways into everything else come after.
+            groups.sort_by_key(|group| {
+                group
+                    .results
+                    .first()
+                    .and_then(|hit| self.order.iter().find(|(id, _)| *id == hit.provider))
+                    .map_or(
+                        (crate::model::BROWSE_RANK_LATER, usize::MAX),
+                        |(_, place)| *place,
+                    )
+            });
+        }
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
-        let groups = ui::search::system::trim_groups(
-            groups,
-            self.palette.entry_row_capacity(),
-            &self.expanded,
-        );
-        // An app's answer arriving late, or the index's code, re-ranks the
-        // rows of the same query: the row the person moved to stays chosen,
-        // so Enter does not open whatever slid under the cursor. A
-        // selection they never moved follows the best result.
-        let chosen = (self.shown_query.as_deref() == Some(query.as_str())
-            && self.palette.selected_id() != self.auto_selected.as_deref())
-        .then(|| {
-            self.palette
+        let capacity = self.palette.entry_row_capacity();
+        let groups = ui::search::system::trim_groups(groups, capacity, &self.expanded);
+        // A source answering late re-ranks the rows of the same query: the
+        // row the person moved to stays chosen, so Enter does not open
+        // whatever slid under the cursor. A selection they never moved
+        // follows the best result. A frame that lists no room for their row
+        // yet keeps it for the frame that does.
+        if self.shown_query.as_deref() != Some(query) {
+            self.kept_choice = None;
+        } else if self.palette.selected_id() != self.auto_selected.as_deref() {
+            self.kept_choice = self
+                .palette
                 .selected_id()
-                .and_then(|id| self.chosen_row(id))
-        })
-        .flatten();
+                .and_then(|id| self.chosen_row(id));
+        }
+        let chosen = self.kept_choice.clone();
         let mut rows = Vec::new();
         let mut entries = Vec::new();
         self.more_rows.clear();
@@ -478,8 +557,9 @@ impl DesktopSearch {
         // searching.
         self.palette.set_searching(!ui::search::engine_ready());
         self.rows = rows;
-        self.shown_query = Some(query);
+        self.shown_query = Some(query.to_owned());
         self.shown_generation = generation;
+        self.shown_capacity = capacity;
     }
 
     /// List every row of the group behind "Show all" row `more`, keeping
@@ -493,7 +573,8 @@ impl DesktopSearch {
         }
         let cursor = self.palette.cursor();
         let query = self.palette.query().to_owned();
-        self.rebuild_rows(query, ui::search::engine_generation());
+        self.kept_choice = None;
+        self.render(&query, ui::search::engine_generation());
         self.palette.set_cursor(cursor);
         // Choosing a row closes a command palette; this one only grew.
         ui::widget::Widget::set_focus(&mut self.palette, true);
@@ -542,7 +623,7 @@ impl DesktopSearch {
             }
             self.choice = Some(hit.target);
             let query = self.palette.query().to_owned();
-            self.rebuild_rows(query, ui::search::engine_generation());
+            self.restart(&query, ui::search::engine_generation());
             return;
         }
         self.remember(&hit);
@@ -638,10 +719,13 @@ impl DesktopSearch {
 
     fn finish(&mut self) {
         self.sources = None;
+        self.stream = None;
+        self.order.clear();
         self.rows.clear();
         self.more_rows.clear();
         self.expanded.clear();
         self.auto_selected = None;
+        self.kept_choice = None;
         self.shown_query = None;
     }
 }
@@ -722,11 +806,15 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
             ui::search::system::icon_for_kind(&hit.kind),
         ),
     };
-    if let Some(subtitle) = &hit.subtitle {
-        entry.description = Some(subtitle.clone());
+    // What the row says under its title, never the title again: a source
+    // that names the row twice (a page whose subtitle is its own name, a
+    // window whose place is the tab's label) says nothing new.
+    let (subtitle, facts) = under_title(hit);
+    if let Some(subtitle) = subtitle {
+        entry.description = Some(subtitle);
     }
-    if !hit.facts.is_empty() {
-        entry = entry.facts(hit.facts.clone());
+    if !facts.is_empty() {
+        entry = entry.facts(facts);
     }
     if !hit.faces.is_empty() {
         entry = entry.faces(hit.faces.clone());
@@ -741,6 +829,66 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
         entry = entry.previewed(preview.clone());
     }
     entry.icon(icon)
+}
+
+/// The sources a search over everything asks, in the order it asks them:
+/// the desktop's own, the ones the host adds, and the row that switches
+/// each of them off and on again.
+fn everywhere<'a>(
+    sources: &'a Sources,
+    recents: &'a Recents,
+) -> (Vec<&'a dyn Source>, Option<Switches>) {
+    let mut all: Vec<&dyn Source> = vec![
+        recents,
+        &sources.applications,
+        &sources.windows,
+        &sources.content,
+        &sources.actions,
+        &sources.published,
+        &sources.commands,
+    ];
+    if let Some((answers, web)) = &sources.answers {
+        all.extend([answers as &dyn Source, web]);
+    }
+    all.extend(sources.host.iter().map(|source| &**source));
+    let switches = switches(sources, &all);
+    all.retain(|source| sources.preferences.enabled(source.id()));
+    (all, switches)
+}
+
+/// What a row says under its title: its subtitle and its facts, each
+/// dropped when it repeats the title or says what another already said.
+fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
+    let title = ui::search::fold_search_text(hit.title.trim());
+    let mut said: Vec<String> = vec![title];
+    let subtitle = hit
+        .subtitle
+        .as_ref()
+        .map(|subtitle| subtitle.trim())
+        .filter(|subtitle| !subtitle.is_empty())
+        .filter(|subtitle| {
+            let folded = ui::search::fold_search_text(subtitle);
+            if said.contains(&folded) {
+                return false;
+            }
+            said.push(folded);
+            true
+        })
+        .map(str::to_owned);
+    let mut facts = Vec::new();
+    for fact in &hit.facts {
+        let fact = fact.trim();
+        if fact.is_empty() {
+            continue;
+        }
+        let folded = ui::search::fold_search_text(fact);
+        if said.contains(&folded) {
+            continue;
+        }
+        said.push(folded);
+        facts.push(fact.to_owned());
+    }
+    (subtitle, facts)
 }
 
 #[cfg(test)]
@@ -784,6 +932,7 @@ mod tests {
     fn the_empty_card_names_its_groups() {
         let mut search = DesktopSearch::new();
         search.open(data());
+        settled(&mut search);
         assert_eq!(search.query(), "", "nothing typed yet");
         let groups: Vec<&str> = search
             .palette()
@@ -836,6 +985,7 @@ mod tests {
             .push(Box::new(Happening::new(false, vec![here])));
         let mut search = DesktopSearch::new();
         search.open(data);
+        settled(&mut search);
         let entries = search.palette().visible_entries();
         assert_eq!(
             entries[0].group.as_deref(),
@@ -906,6 +1056,7 @@ mod tests {
         )));
         let mut search = DesktopSearch::new();
         search.open(data);
+        settled(&mut search);
         // The row the person chose last stands in Recent.
         let sheets = search
             .results()
@@ -914,7 +1065,7 @@ mod tests {
             .cloned()
             .expect("the app is listed");
         search.recents.record(&sheets);
-        search.rebuild_rows(String::new(), ui::search::engine_generation());
+        search.restart("", ui::search::engine_generation());
 
         let entries = search.palette().visible_entries();
         let mut groups: Vec<&str> = Vec::new();
@@ -990,7 +1141,9 @@ mod tests {
             providers: vec![Box::new(Mail)],
             ..data()
         });
+        settled(&mut search);
         search.set_query("invoice");
+        settled(&mut search);
         let entries = search.palette().visible_entries();
         let at = entries
             .iter()
@@ -1028,6 +1181,7 @@ mod tests {
         let full = data();
         let mut search = DesktopSearch::new();
         search.open(full);
+        settled(&mut search);
         let entries = search.palette().visible_entries();
         let last = entries
             .iter()
@@ -1058,6 +1212,7 @@ mod tests {
         catalogue.sources.clear();
         let mut search = DesktopSearch::new();
         search.open(catalogue);
+        settled(&mut search);
         let entries = search.palette().visible_entries();
         assert!(
             entries.iter().any(|entry| entry.label == "Sheets"),
@@ -1076,7 +1231,9 @@ mod tests {
     fn escape_clears_what_was_typed_before_it_closes() {
         let mut search = DesktopSearch::new();
         search.open(data());
+        settled(&mut search);
         search.set_query("notes");
+        settled(&mut search);
         assert!(search.escape(), "the desk's search clears its query");
         assert!(search.is_open(), "the first Escape keeps search open");
         assert_eq!(search.query(), "", "…and clears the query");
@@ -1096,7 +1253,9 @@ mod tests {
     fn enter_on_a_typed_app_name_chooses_its_launch() {
         let mut search = DesktopSearch::new();
         search.open(data());
+        settled(&mut search);
         search.set_query("sheets");
+        settled(&mut search);
         assert_eq!(search.results()[0].title, "Sheets");
         search.palette_mut().activate_selected();
         assert!(search.observe(), "choosing a row closes search");
@@ -1147,7 +1306,9 @@ mod tests {
             published: published(),
             ..data()
         });
+        settled(&mut search);
         search.set_query("disturb");
+        settled(&mut search);
         let hit = &search.results()[0];
         assert_eq!(hit.title, "Do Not Disturb");
         let entries = search.palette().visible_entries();
@@ -1180,7 +1341,9 @@ mod tests {
             published: published(),
             ..data()
         });
+        settled(&mut search);
         search.set_query("stop proj");
+        settled(&mut search);
         assert!(
             search
                 .results()
@@ -1189,6 +1352,7 @@ mod tests {
             "it takes no row from one that would do something"
         );
         search.set_query("Stop projecting");
+        settled(&mut search);
         assert!(
             search
                 .results()
@@ -1246,7 +1410,9 @@ mod tests {
     fn switching_a_source_off_from_its_row_takes_its_rows_away_and_stays_open() {
         let mut search = DesktopSearch::new();
         search.open(with_notes(Scope::Workspace));
+        settled(&mut search);
         search.set_query("groceries tomatoes");
+        settled(&mut search);
         assert!(
             search.results().iter().any(|hit| hit.provider == "notes"),
             "{:?}",
@@ -1254,6 +1420,7 @@ mod tests {
         );
 
         search.set_query("disable notes");
+        settled(&mut search);
         let at = search
             .palette()
             .visible_entries()
@@ -1288,9 +1455,11 @@ mod tests {
                 .find(|hit| matches!(hit.target, Target::Prefer { .. }))
                 .map(|hit| hit.title.clone())
         };
+        settled(&mut search);
         assert_eq!(switched(&search).as_deref(), Some("Enable Notes search"));
         // ...and what it switched off is gone.
         search.set_query("groceries tomatoes");
+        settled(&mut search);
         assert!(
             search.results().iter().all(|hit| hit.provider != "notes"),
             "{:?}",
@@ -1298,6 +1467,7 @@ mod tests {
         );
         // The desktop's own rows stay, whatever was switched: the app.
         search.set_query("sheets");
+        settled(&mut search);
         assert!(search.results().iter().any(|hit| hit.title == "Sheets"));
     }
 
@@ -1305,7 +1475,9 @@ mod tests {
     fn the_actions_stay_whatever_is_switched_off() {
         let mut search = DesktopSearch::new();
         search.open(with_notes(Scope::Workspace));
+        settled(&mut search);
         search.set_query("disable");
+        settled(&mut search);
         assert!(
             !search.results().iter().any(|hit| matches!(
                 &hit.target,
@@ -1320,6 +1492,7 @@ mod tests {
     fn a_search_over_the_workspace_in_front_offers_to_widen_it() {
         let mut search = DesktopSearch::new();
         search.open(with_notes(Scope::Workspace));
+        settled(&mut search);
         assert_eq!(search.palette().scope_token(), Some("Workspace"));
         assert_eq!(
             search.palette().scope_token_action(),
@@ -1329,6 +1502,7 @@ mod tests {
         // Widened, the token is gone: there is nothing left to widen.
         search.close();
         search.open(with_notes(Scope::Everywhere));
+        settled(&mut search);
         assert_eq!(search.palette().scope_token(), None);
         assert_eq!(search.palette().scope_token_action(), None);
     }
@@ -1343,6 +1517,7 @@ mod tests {
             scope: Scope::WindowGroup(None),
             ..SearchData::default()
         });
+        settled(&mut search);
         assert_eq!(search.palette().scope_token(), None);
         assert_eq!(search.palette().scope_token_action(), None);
     }
@@ -1351,10 +1526,13 @@ mod tests {
     fn a_dismissed_palette_chooses_nothing_and_remembers_nothing() {
         let mut search = DesktopSearch::new();
         search.open(data());
+        settled(&mut search);
         search.set_query("sheets");
+        settled(&mut search);
         search.close();
         assert_eq!(search.take_choice(), None);
         search.open(data());
+        settled(&mut search);
         assert!(
             search.results().iter().all(|hit| hit.provider != "recent"),
             "nothing was chosen"
@@ -1365,10 +1543,13 @@ mod tests {
     fn a_chosen_row_leads_the_next_empty_palette() {
         let mut search = DesktopSearch::new();
         search.open(data());
+        settled(&mut search);
         search.set_query("sheets");
+        settled(&mut search);
         search.palette_mut().activate_selected();
         search.observe();
         search.open(data());
+        settled(&mut search);
         assert_eq!(search.results()[0].provider, "recent");
         assert_eq!(search.results()[0].title, "Sheets");
     }
@@ -1392,7 +1573,9 @@ mod tests {
             resources: vec![resource],
             ..data()
         });
+        settled(&mut search);
         search.set_query("duplicate");
+        settled(&mut search);
         assert_eq!(search.results()[0].title, "Duplicate note");
         search.palette_mut().activate_selected();
         assert!(search.observe());
@@ -1405,15 +1588,23 @@ mod tests {
         );
     }
 
+    /// Typing runs the query once: the frame that takes the new text holds
+    /// what the sources answered in it, the frames after it only fill in
+    /// the rest, and a settled search asks nothing again.
     #[test]
     fn typing_refreshes_the_rows_once_per_query() {
         let mut search = DesktopSearch::new();
         search.open(data());
+        settled(&mut search);
         assert!(!search.refresh(), "the empty query is already shown");
         search.palette_mut().set_query("not");
-        assert!(search.refresh());
+        assert!(search.refresh(), "the new text runs the query");
         assert!(search.results().iter().any(|hit| hit.title == "Notes"));
-        assert!(!search.refresh());
+        settled(&mut search);
+        assert!(
+            !search.refresh(),
+            "nothing is asked once every source answered"
+        );
     }
 
     /// An app whose rows for a query come after it is asked, as a framework
@@ -1481,6 +1672,7 @@ mod tests {
             })],
             ..base
         });
+        settled(&mut search);
         (search, arrived)
     }
 
@@ -1546,6 +1738,7 @@ mod tests {
             scope: Scope::InApp(AppScope::front()),
             ..SearchData::default()
         });
+        settled(&mut search);
         let rows: Vec<(&str, &ResourceKind)> = search
             .results()
             .iter()
@@ -1560,6 +1753,17 @@ mod tests {
         );
     }
 
+    /// Show what a host shows: keep asking for the rows of the sources that
+    /// have not answered yet, as a running palette does every frame.
+    fn settled(search: &mut DesktopSearch) {
+        for _ in 0..128 {
+            if !search.refresh() {
+                return;
+            }
+        }
+        panic!("the search never settled");
+    }
+
     fn selected(search: &DesktopSearch) -> Option<(String, String)> {
         let hit = search.hit(search.palette().selected_id()?)?;
         Some((hit.provider, hit.id))
@@ -1572,6 +1776,7 @@ mod tests {
     fn an_answer_that_arrives_late_keeps_the_row_the_person_moved_to() {
         let (mut search, arrived) = with_a_late_app(data());
         search.set_query("notes");
+        settled(&mut search);
         assert!(search.waiting(), "the app's answer is still coming");
         assert!(search.results().len() >= 2, "{:?}", search.results());
         assert!(arrow_down(&mut search));
@@ -1579,6 +1784,7 @@ mod tests {
 
         arrived.set(true);
         assert!(search.refresh(), "the answer re-ranks the rows");
+        settled(&mut search);
         assert!(
             search
                 .results()
@@ -1617,6 +1823,7 @@ mod tests {
             ..data()
         });
         search.set_query("meeting");
+        settled(&mut search);
         assert!(search.waiting(), "the app's answer is still coming");
         let mut moves = 0;
         while !search
@@ -1638,6 +1845,7 @@ mod tests {
 
         arrived.set(true);
         assert!(search.refresh(), "the answer rebuilds the rows");
+        settled(&mut search);
         assert!(!search.waiting(), "the app answered");
         assert!(
             search
@@ -1656,6 +1864,7 @@ mod tests {
     fn an_unmoved_selection_follows_the_best_result() {
         let (mut search, arrived) = with_a_late_app(data());
         search.set_query("notes");
+        settled(&mut search);
         arrived.set(true);
         assert!(search.refresh());
         let best = search.results().first().expect("rows");
@@ -1717,6 +1926,7 @@ mod tests {
         assert!(total > 20, "more apps than one screen: {total}");
         let mut search = DesktopSearch::new();
         search.open(data);
+        settled(&mut search);
         let header = search
             .palette()
             .visible_entries()
@@ -1757,6 +1967,7 @@ mod tests {
     fn a_show_all_row_is_offered_only_for_a_group_cut_short() {
         let mut search = DesktopSearch::new();
         search.open(crowded());
+        settled(&mut search);
         let entries = search.palette().visible_entries();
         let more: Vec<_> = entries
             .iter()
@@ -1778,6 +1989,7 @@ mod tests {
         }
         // Typing narrows the list; a few rows need no "Show all".
         search.set_query("calendar");
+        settled(&mut search);
         assert!(
             search
                 .palette()
@@ -1791,6 +2003,7 @@ mod tests {
     fn app_rows_wear_their_own_glyph_and_name_without_a_package_id() {
         let mut search = DesktopSearch::new();
         search.open(crowded());
+        settled(&mut search);
         let entries = search.palette().visible_entries();
         let apps: Vec<_> = entries
             .iter()

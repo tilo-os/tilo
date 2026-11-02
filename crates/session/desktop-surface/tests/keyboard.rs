@@ -418,6 +418,8 @@ impl tilo_desktop_search::Source for Plan {
             return Vec::new();
         }
         vec![tilo_desktop_search::Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: ui::search::system::ResourceKind::Note,

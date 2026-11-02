@@ -113,6 +113,8 @@ pub struct Continue {
     /// The name the desk gives each workspace, by workspace: what a place
     /// elsewhere says.
     names: Vec<(String, String)>,
+    /// Now, in Unix seconds: how long ago the person was somewhere.
+    now: u64,
     app_name: Box<dyn Fn(&str) -> String>,
 }
 
@@ -123,6 +125,7 @@ impl Continue {
         recent: &RecentPlaces,
         workspace: &str,
         open_tabs: Vec<u64>,
+        now: u64,
         app_name: impl Fn(&str) -> String + 'static,
     ) -> Self {
         Self {
@@ -135,6 +138,7 @@ impl Continue {
             open_tabs,
             home: workspace.to_owned(),
             names: Vec::new(),
+            now,
             app_name: Box::new(app_name),
         }
     }
@@ -147,6 +151,7 @@ impl Continue {
         home: &str,
         open_tabs: Vec<u64>,
         names: Vec<(String, String)>,
+        now: u64,
         app_name: impl Fn(&str) -> String + 'static,
     ) -> Self {
         Self {
@@ -154,8 +159,18 @@ impl Continue {
             open_tabs,
             home: home.to_owned(),
             names,
+            now,
             app_name: Box::new(app_name),
         }
+    }
+
+    /// Whether `place` names the place the person was in, rather than the
+    /// application that was showing it: an app that declares no location
+    /// puts its own name in the window bar, and listing that again would
+    /// list "Notes" instead of the notes.
+    fn names_a_place(&self, place: &Place) -> bool {
+        let label = ui::search::fold_search_text(place.label.trim());
+        !label.is_empty() && label != ui::search::fold_search_text(&(self.app_name)(&place.app))
     }
 
     fn hit(&self, place: &Place, score: i32) -> Hit {
@@ -171,7 +186,17 @@ impl Continue {
                 app: place.app.clone(),
             },
         };
-        let mut facts = vec![(self.app_name)(&place.app)];
+        let mut facts = Vec::new();
+        // When the person was there, as a person reads time, then what was
+        // showing it, where it lives when that is another workspace, and
+        // the device it was on when that is not this one.
+        if place.at > 0
+            && self.now > place.at
+            && let Ok(ago) = i64::try_from(self.now.saturating_sub(place.at))
+        {
+            facts.push(ui::format::relative(ago));
+        }
+        facts.push((self.app_name)(&place.app));
         if place.workspace != self.home {
             facts.push(
                 match self
@@ -206,7 +231,10 @@ impl Continue {
             subtitle: None,
             facts,
             score,
-            icon: None,
+            icon: Some(ui::icons::app_glyph(
+                &place.app,
+                crate::availability::category_for(&place.app),
+            )),
             target,
         }
     }
@@ -226,9 +254,13 @@ impl Source for Continue {
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
+        let places: Vec<&Place> = self
+            .places
+            .iter()
+            .filter(|place| self.names_a_place(place))
+            .collect();
         if needle.trim().is_empty() {
-            return self
-                .places
+            return places
                 .iter()
                 .take(LISTED)
                 .enumerate()
@@ -238,8 +270,8 @@ impl Source for Continue {
                 })
                 .collect();
         }
-        self.places
-            .iter()
+        places
+            .into_iter()
             .filter_map(|place| {
                 let app = (self.app_name)(&place.app);
                 let score = ui::search::system::rank_fields(
@@ -286,6 +318,24 @@ mod tests {
         assert_eq!(recent.places().len(), KEPT);
     }
 
+    /// Continue lists the documents and places the person was in, not the
+    /// app they were in: an app that declares no location puts its own name
+    /// in the window bar, and a row saying "Notes" is not where anybody was.
+    #[test]
+    fn a_window_that_only_names_its_app_is_no_place_to_continue() {
+        let mut recent = RecentPlaces::default();
+        recent.record(place("Notes", None, 3));
+        recent.record(place("Groceries", Some("n1"), 2));
+        let shown = Continue::new(&recent, "workspace", vec![4], 10, |_| "Notes".into());
+        let listed = shown.query("");
+        let titles: Vec<&str> = listed.iter().map(|hit| hit.title.as_str()).collect();
+        assert_eq!(titles, ["Groceries"]);
+        assert!(
+            shown.query("notes").iter().all(|hit| hit.title != "Notes"),
+            "and typing the app's name does not bring it back"
+        );
+    }
+
     #[test]
     fn a_place_reopens_at_its_anchor_else_its_window_else_its_app() {
         let mut recent = RecentPlaces::default();
@@ -295,7 +345,7 @@ mod tests {
         away.device = Some("Laptop".into());
         away.tab = 9;
         recent.record(away);
-        let shown = Continue::new(&recent, "workspace", vec![4], |_| "Notes".into());
+        let shown = Continue::new(&recent, "workspace", vec![4], 4, |_| "Notes".into());
         let hits = shown.query("");
         assert_eq!(hits.len(), 3);
         assert_eq!(
@@ -305,7 +355,11 @@ mod tests {
             },
             "another device's window is not here"
         );
-        assert_eq!(hits[0].facts.len(), 2);
+        assert_eq!(
+            hits[0].facts,
+            ["just now", "Notes", "On Laptop"],
+            "when, what showed it, and where it was"
+        );
         assert_eq!(
             hits[1].target,
             Target::Window {
@@ -319,7 +373,7 @@ mod tests {
         assert_eq!(open.address.resource, "n1");
         assert_eq!(shown.query("grocer").len(), 1);
         assert!(
-            Continue::new(&recent, "other", Vec::new(), |_| String::new())
+            Continue::new(&recent, "other", Vec::new(), 4, |_| String::new())
                 .query("")
                 .is_empty()
         );

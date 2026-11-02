@@ -675,6 +675,7 @@ impl Source for Content {
             return Vec::new();
         }
         let resources = index(&self.resources);
+        let places = parent_labels(&self.resources);
         let mut query = SearchQuery::new(needle);
         if let Some(scope) = &self.scope {
             query = query.within(scope.clone());
@@ -710,6 +711,29 @@ impl Source for Content {
                 let Some(mut target) = action_target(resource, &address.action) else {
                     continue;
                 };
+                // Where the item lives and what it is, as its app declared
+                // it: the notebook a page is in, the folder a file is in,
+                // what the app says about the item itself.
+                let mut facts = Vec::new();
+                if let Some(detail) = resource
+                    .presentation
+                    .as_ref()
+                    .and_then(|presentation| presentation.detail.clone())
+                {
+                    facts.push(detail);
+                }
+                let named = anchor.as_deref().unwrap_or(address.resource.as_str());
+                if let Some(place) = places.get(named) {
+                    facts.push(place.clone());
+                }
+                if let Some(name) = resource.app().and_then(crate::availability::name_for) {
+                    facts.push(name.to_owned());
+                }
+                let icon = result.icon.or_else(|| {
+                    resource.app().map(|app| {
+                        ui::icons::app_glyph(app, crate::availability::category_for(app))
+                    })
+                });
                 let mut id = key(&address);
                 if let Some(anchor) = anchor {
                     let Some(param) = target.spec.params().first() else {
@@ -731,9 +755,9 @@ impl Source for Content {
                     id,
                     title: result.title.clone(),
                     subtitle: result.subtitle.clone(),
-                    facts: Vec::new(),
+                    facts,
                     score,
-                    icon: result.icon,
+                    icon,
                     target: Target::Action(Box::new(target)),
                 });
             }
@@ -741,6 +765,26 @@ impl Source for Content {
         *self.pending.borrow_mut() = pending;
         hits
     }
+}
+
+/// What each item in the resource tree lives in, by the id of the item: the
+/// label of the resource that holds it (the notebook of a page, a
+/// workspace's app).
+fn parent_labels(resources: &[ResourceSpec]) -> BTreeMap<String, String> {
+    fn visit(resource: &ResourceSpec, holder: Option<&str>, out: &mut BTreeMap<String, String>) {
+        if let Some(holder) = holder {
+            out.entry(resource.id.as_str().to_owned())
+                .or_insert_with(|| holder.to_owned());
+        }
+        for child in &resource.children {
+            visit(child, Some(resource.label.as_str()), out);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for resource in resources {
+        visit(resource, None, &mut out);
+    }
+    out
 }
 
 fn key(address: &ActionAddress) -> String {
