@@ -254,8 +254,18 @@ impl State {
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(display, "seat0");
         // The US layout always compiles; a person's layout replaces it once
-        // settings reach the compositor.
-        if let Err(error) = seat.add_keyboard(XkbConfig::default(), 400, 30) {
+        // settings reach the compositor. Stated outright, because an empty
+        // name would type the machine's own layout (`XKB_DEFAULT_*`) until
+        // then — on a machine set up in German, the first keymap every
+        // client gets would be German.
+        let us = XkbConfig {
+            rules: "evdev",
+            model: "pc105",
+            layout: "us",
+            variant: "",
+            options: Some(String::new()),
+        };
+        if let Err(error) = seat.add_keyboard(us, 400, 30) {
             tracing::warn!(?error, "keyboard: default keymap did not compile");
         }
         seat.add_pointer();

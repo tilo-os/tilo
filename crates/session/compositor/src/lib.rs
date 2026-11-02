@@ -1466,11 +1466,14 @@ impl Compositor {
             return;
         };
         let xkb = smithay::input::keyboard::XkbConfig {
-            rules: "",
+            // Every name is stated: an empty one would take the machine's
+            // (`XKB_DEFAULT_*`), so a person's chosen layout would type with
+            // the host's rules and options mixed in.
+            rules: "evdev",
             model: &layout.model,
             layout: &layout.layout,
             variant: &layout.variant,
-            options: (!layout.options.is_empty()).then(|| layout.options.clone()),
+            options: Some(layout.options.clone()),
         };
         if let Err(error) = keyboard.set_xkb_config(state, xkb) {
             tracing::warn!(
