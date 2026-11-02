@@ -19,7 +19,7 @@ view framed_canvas(a: Arrangement) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
-                        ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: s.canvas_width) {
+                        ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: s.canvas_width, height: pin_height(s)) {
                             framed_place(a, p)
                         }
                     }
@@ -38,7 +38,7 @@ view spaces_canvas(a: Arrangement) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
-                        ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: s.canvas_width) {
+                        ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: s.canvas_width, height: pin_height(s)) {
                             space_content(a, p)
                         }
                     }
@@ -48,11 +48,18 @@ view spaces_canvas(a: Arrangement) {
     }
 }
 
-/// A place on the framed canvas: the shell's frame around it, and its resource's view composed
-/// inside, or the well its window shows in (shell.md §8). The toolbar stands outside it.
+/// A place on the framed canvas: the shell's frame around it (the window frame a desktop's
+/// windows stand in, its controls at the end of the bar), and its resource's view composed
+/// inside, filling it, or the well its window shows in (shell.md §8). The toolbar stands
+/// outside it.
 view framed_place(a: Arrangement, p: ArrangementPlace) {
-    ui.Card(title: if p.title == "" { p.shows } else { p.title }) {
-        place_content(a, p)
+    ui.WindowFrame(name: .some(place_title(p)), fill) {
+        controls: {
+            place_controls(a, p)
+        }
+        body: {
+            place_view(p, fill)
+        }
     }
 }
 
@@ -60,11 +67,18 @@ view framed_place(a: Arrangement, p: ArrangementPlace) {
 /// well), with a line naming what it is rather than a frame around it. The controls stand
 /// outside it.
 view space_content(a: Arrangement, p: ArrangementPlace) {
-    stack(gap: .related) {
+    stack(gap: .related, fill) {
         place_controls(a, p)
         ui.Text(if p.title == "" { p.shows } else { p.title }, role: .label, secondary: true)
-        place_view(p)
+        place_view(p, fill)
     }
+}
+
+/// How tall a strip's places stand on the canvas: the height the record keeps for it, so a view
+/// that fills its place (an editor, a mailbox) has the room it was placed with. A strip placed
+/// before it kept one stands as tall as a desktop frame does.
+fn pin_height(s: ArrangementStrip) -> Int {
+    if s.canvas_height > 0 { s.canvas_height } else { 480 }
 }
 
 /// What the person types on the canvas: a search that becomes a place. Typing a word or two and

@@ -85,10 +85,45 @@ pub fn action_match_score(
     )
 }
 
+/// [`action_match_score`] for every action of `actions` at once, row for row, each given as
+/// its label, its other words and the label of what it acts on: one index over the list, so
+/// a session's hundreds of published actions are ranked as one list, never one index each.
+pub fn action_match_scores<'a>(
+    needle: &str,
+    actions: impl IntoIterator<Item = (&'a str, &'a [String], &'a str)>,
+) -> Vec<Option<i32>> {
+    ui::search::system::rank_actions_fields(
+        needle,
+        actions
+            .into_iter()
+            .map(|(label, keywords, resource_label)| {
+                ui::search::system::action_search_fields(label, keywords, resource_label)
+            }),
+    )
+}
+
 /// The shared ranker over an action on one item of a record: the item's
 /// name finds it, and its actions come with it.
 pub fn item_action_match_score(needle: &str, item_label: &str) -> Option<i32> {
     rank_fields(needle, &[(item_label, FieldWeight::TITLE)])
+}
+
+/// [`item_action_match_score`] for every item of `labels` at once, row for row: one index
+/// over the list.
+pub fn item_action_match_scores<'a>(
+    needle: &str,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> Vec<Option<i32>> {
+    ui::search::ListIndex::default()
+        .ranks(
+            needle,
+            labels
+                .into_iter()
+                .map(|label| [(label, FieldWeight::TITLE)]),
+        )
+        .into_iter()
+        .map(|rank| rank.map(provider_score))
+        .collect()
 }
 
 #[cfg(test)]

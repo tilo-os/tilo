@@ -331,3 +331,54 @@ fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
         "the note the notes app reads has the body written in the place: {reading:#}"
     );
 }
+
+/// A note placed with no view named stands on the framed canvas of the whole screen as its
+/// type's default view, the notes app's editor, laid out in its frame with the note's own
+/// fields in its controls: drawn, not only built.
+#[test]
+fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
+    let _settled = ui::motion::testing::settled();
+    let (mut service, meta) = notebook();
+    let note = note(&mut service, &meta, "Groceries");
+    let (mut part, link) =
+        super::tests_support::part_as(ShellLayer::Screen, reading_with_windows(), None);
+    let mut arrangement = arrangement(&note);
+    arrangement.places[0].shown_as = String::new();
+    link.publish_arrangement(arrangement.clone());
+    assert!(link.follow_places(&arrangement, &service.resources(), |id| service.read(id)));
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    let (x, y, w, h) = part.control_bounds("Frames").expect("the preset switch");
+    part.pointer_motion(x + w / 2.0, y + h / 2.0);
+    part.prepare_frame();
+    part.pointer_button(0x110, true);
+    part.prepare_frame();
+    part.pointer_button(0x110, false);
+    for _ in 0..8 {
+        part.prepare_frame();
+    }
+    // The editor's title field, holding the note's title, with room on screen.
+    let title = part
+        .widgets
+        .host_mut()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Untitled"))
+        .map(|(_, node)| (node.value().map(str::to_owned), node.bounds()));
+    let Some((value, Some(bounds))) = title else {
+        panic!(
+            "the note's editor stands in its place: {:?}",
+            crate::Published::accessible_labels(&mut part)
+        );
+    };
+    assert_eq!(
+        value.as_deref(),
+        Some("Groceries"),
+        "the title field holds the note's title"
+    );
+    assert!(
+        bounds.width() > 0.0 && bounds.height() > 0.0,
+        "the editor is laid out with room: {bounds:?}"
+    );
+}

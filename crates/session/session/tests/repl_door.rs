@@ -568,3 +568,62 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         "the note is found by its title: {found}"
     );
 }
+
+/// What the seeded apps keep, placed through the door, is drawn on the canvas by its own app's
+/// view, its content and not its title alone: a note found by its title shows its text, and
+/// "my mails" finds the inbox, which shows its threads.
+#[test]
+fn a_placed_record_is_drawn_through_its_own_apps_view() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(apps)],
+            questions: Some(questions.clone()),
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(root.path().join("agent.sock")),
+            admit_repl: vec![program],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Frames").is_some()
+    });
+    press(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, "Typed").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    let (answer, failed) = repl.call(
+        &mut session,
+        "tilo",
+        json!({"program": format!(
+            "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some(80), y: .some(60))"
+        )}),
+    );
+    assert!(!failed, "the program ran: {answer}");
+    until(&mut session, "the note's text on the canvas", |session| {
+        session.shell_says("Oat milk, eggs, sourdough")
+    });
+
+    let (answer, failed) = repl.call(
+        &mut session,
+        "tilo",
+        json!({"program": "session.place_found(text: \"my mails\", view: .none, x: .some(640), y: .some(60))"}),
+    );
+    assert!(!failed, "the program ran: {answer}");
+    until(&mut session, "an inbox thread on the canvas", |session| {
+        session.shell_says("Launch plan for the autumn release")
+    });
+}
