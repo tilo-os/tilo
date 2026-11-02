@@ -134,6 +134,10 @@ pub struct State {
     data_device_state: DataDeviceState,
     _output_manager_state: OutputManagerState,
     pub(crate) seat: Seat<Self>,
+    /// The layout the seat types in, as the session set it: X11 clients get
+    /// it too, including a server started after the person chose it. `None`
+    /// until the session says, when the server's own default stands.
+    pub(crate) keyboard: Option<crate::config::KeyboardLayout>,
     /// The mapped windows, bottom first, in the logical layout.
     pub(crate) space: Space<Window>,
     /// Toplevels a client created that have not shown a buffer yet.
@@ -266,6 +270,7 @@ impl State {
             data_device_state,
             _output_manager_state: output_manager_state,
             seat,
+            keyboard: None,
             space: Space::default(),
             unmapped: Vec::new(),
             popups: PopupManager::default(),

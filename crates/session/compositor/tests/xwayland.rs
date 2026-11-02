@@ -15,7 +15,9 @@
 use std::time::{Duration, Instant};
 
 use tilo_compositor::selection::TEXT_MIME;
-use tilo_compositor::{Compositor, IconArtwork, OutputConfig, Selection, StackPolicy};
+use tilo_compositor::{
+    Compositor, IconArtwork, KeyboardLayout, OutputConfig, Selection, StackPolicy,
+};
 use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
@@ -39,10 +41,19 @@ struct Session {
 
 impl Session {
     fn start(scale: f64) -> Self {
+        Self::start_in_layout(scale, None)
+    }
+
+    /// A session whose person types in `layout` before any X11 app opens, as
+    /// at login; `None` leaves the layout the session starts with.
+    fn start_in_layout(scale: f64, layout: Option<KeyboardLayout>) -> Self {
         let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 1280, 720).with_scale(scale))
             .expect("output");
+        if let Some(layout) = layout {
+            compositor.set_keyboard_layout(&layout);
+        }
         let display = compositor.start_xwayland().expect("Xwayland");
         let (x11, root) = x11_client(&mut compositor, display);
         Self {
@@ -52,6 +63,47 @@ impl Session {
             events: Vec::new(),
             clipboard: None,
         }
+    }
+
+    /// The character `keycode` types for X clients, in the first group: what
+    /// the toolkit of an X11 app reads from the server's own keymap.
+    fn character(&self, keycode: u8) -> char {
+        let keysyms = self
+            .x11
+            .get_keyboard_mapping(keycode, 1)
+            .expect("keyboard mapping")
+            .reply()
+            .expect("keyboard mapping reply")
+            .keysyms;
+        match keysyms.first().copied() {
+            Some(keysym) => char::from_u32(keysym).unwrap_or('\0'),
+            None => '\0',
+        }
+    }
+
+    /// The fields of the root window's `_XKB_RULES_NAMES`, which layout
+    /// tools (`setxkbmap -query`) report: rules, model, layout, variant and
+    /// options.
+    fn rules_names(&self) -> Vec<String> {
+        let property = self
+            .x11
+            .get_property(
+                false,
+                self.root,
+                self.atom("_XKB_RULES_NAMES"),
+                AtomEnum::STRING,
+                0,
+                u32::MAX,
+            )
+            .expect("rules names")
+            .reply()
+            .expect("rules names reply")
+            .value;
+        String::from_utf8_lossy(&property)
+            .split('\0')
+            .take(5)
+            .map(str::to_owned)
+            .collect()
     }
 
     /// A window of `size` whose class is `class`, unmapped.
@@ -606,6 +658,60 @@ fn a_denser_output_tells_x_clients_a_new_scale() {
     let resources = session.resources();
     assert!(resources.contains("Xft.dpi:\t192"), "{resources}");
     assert!(resources.contains("Xcursor.size:\t48"), "{resources}");
+}
+
+/// The key that types `y` on a US keyboard and `z` on a German one.
+const KEY_Y: u8 = 29;
+
+#[test]
+fn x11_apps_type_in_the_layout_the_person_chose() {
+    // The session sets the person's layout at login; the first X11 app they
+    // open types in it.
+    let session = Session::start_in_layout(
+        1.0,
+        Some(KeyboardLayout {
+            layout: "de".into(),
+            ..KeyboardLayout::default()
+        }),
+    );
+    assert_eq!(
+        session.character(KEY_Y),
+        'z',
+        "an X11 app opened after login types in the person's German layout"
+    );
+    assert_eq!(
+        session.rules_names(),
+        ["evdev", "pc105", "de", "", ""],
+        "and what asks which layout is in force hears the German one"
+    );
+}
+
+#[test]
+fn a_layout_change_reaches_x11_apps() {
+    let mut session = Session::start(1.0);
+    assert_eq!(
+        session.character(KEY_Y),
+        'y',
+        "the X server types in its own layout before the person changes it"
+    );
+    assert_eq!(session.rules_names(), ["evdev", "pc105", "us", "", ""]);
+
+    session.compositor.set_keyboard_layout(&KeyboardLayout {
+        layout: "de".into(),
+        ..KeyboardLayout::default()
+    });
+    session.pump(|session| session.character(KEY_Y) == 'z');
+    assert_eq!(
+        session.rules_names(),
+        ["evdev", "pc105", "de", "", ""],
+        "the layout tools report what the keys type"
+    );
+
+    // A second change reaches the same server, windows and all.
+    session
+        .compositor
+        .set_keyboard_layout(&KeyboardLayout::default());
+    session.pump(|session| session.character(KEY_Y) == 'y');
 }
 
 #[test]
