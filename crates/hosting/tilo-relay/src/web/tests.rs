@@ -1774,14 +1774,18 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 /// A page's call turn reaches the bridge its host carries, and only a device
 /// the workspace admits is answered: the route the deployed page posts to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay carries the page's calls until it shuts down at the end"
+)]
 async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answered() {
+    const CALLER: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let signer = SigningKey::from_bytes(&[91; 32]);
     let outsider_root = SigningKey::from_bytes(&[92; 32]);
     let (host_key, host) = device(&signer, 93, DeviceCapabilities::host());
     let (member_key, member) = device(&signer, 94, DeviceCapabilities::member());
     let (outsider_key, outsider) = device(&outsider_root, 95, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    const CALLER: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let workspace = tilo_relay_protocol::room_workspace_id(CALLER).unwrap();
     let relay = Relay::start_with_relay_mode(
         RelayConfig {

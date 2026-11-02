@@ -358,12 +358,12 @@ impl Relay {
             context.clone(),
         ));
         let host_cert = context.relay.identity.cert;
-        let lane_device = host_cert.device_public_key;
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             grants: grants.clone(),
             legacy: legacy.clone(),
             live,
+            calls: Arc::new(call_lane::CallLane::new(host_cert.device_public_key)),
             host_info: HostInfo {
                 host_cert,
                 // Behind a TLS-terminating proxy the page only reaches the
@@ -385,7 +385,6 @@ impl Relay {
             here: Arc::new(here::Here::new(here::from_env())),
             country: config.country.and_then(country_header),
             fetch: fetch.proxy,
-            calls: Arc::new(call_lane::CallLane::new(lane_device)),
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
         tasks.extend(fetch.metrics);

@@ -16,15 +16,21 @@ use iroh::EndpointAddr;
 use tilo_call_lane::page::{Down, Up};
 use tilo_call_lane::{Bridge, Roster};
 use tilo_lock::MutexRecover as _;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 /// A call a page is bridged into, and the devices its lanes were opened to.
 struct Carried {
     bridge: Arc<Bridge>,
-    /// The devices a lane was opened to, or is being opened to: a turn opens
-    /// each once, and one whose lane never came up is tried again.
+    /// The devices whose lane is up: a turn opens each of them no more.
+    dialled: BTreeSet<[u8; 32]>,
+    /// The devices a lane is being opened to right now: a dial that fails
+    /// leaves the device out again, so a later turn tries it once more.
     dialling: BTreeSet<[u8; 32]>,
 }
+
+/// The calls this host carries, by workspace and call name: one bridge and
+/// its lanes per call, shared by the pages turning it.
+type CallTable = Mutex<BTreeMap<(String, String), Arc<AsyncMutex<Carried>>>>;
 
 /// Why a turn did not go through.
 #[derive(Debug, thiserror::Error)]
@@ -46,8 +52,8 @@ pub(crate) struct CallLane {
     device: [u8; 32],
     /// The endpoint the lanes run on, bound the first time a page asks for a
     /// call: a host that serves no call never pays for one.
-    endpoint: AsyncMutex<Option<iroh::Endpoint>>,
-    calls: Mutex<BTreeMap<(String, String), Arc<AsyncMutex<Carried>>>>,
+    endpoint: OnceCell<iroh::Endpoint>,
+    calls: CallTable,
 }
 
 impl std::fmt::Debug for CallLane {
@@ -65,19 +71,18 @@ impl CallLane {
     pub(crate) fn new(device: [u8; 32]) -> Self {
         Self {
             device,
-            endpoint: AsyncMutex::new(None),
+            endpoint: OnceCell::new(),
             calls: Mutex::new(BTreeMap::new()),
         }
     }
 
     /// The same, on an endpoint already bound: the lanes' connections come
     /// from its id, which must be `device`'s.
+    #[cfg(test)]
     pub(crate) fn at(endpoint: iroh::Endpoint) -> Self {
-        Self {
-            device: *endpoint.id().as_bytes(),
-            endpoint: AsyncMutex::new(Some(endpoint)),
-            calls: Mutex::new(BTreeMap::new()),
-        }
+        let carried = Self::new(*endpoint.id().as_bytes());
+        let _ = carried.endpoint.set(endpoint);
+        carried
     }
 
     /// One turn of a page's call: what the page sealed goes onto the call's
@@ -95,7 +100,7 @@ impl CallLane {
         let key = (up.workspace.clone(), up.call.clone());
         let carried = {
             let mut calls = self.calls.lock_recover();
-            Arc::clone(calls.entry(key).or_insert_with(|| {
+            Arc::clone(calls.entry(key.clone()).or_insert_with(|| {
                 Arc::new(AsyncMutex::new(Carried {
                     bridge: Bridge::new(
                         up.workspace.clone(),
@@ -104,20 +109,26 @@ impl CallLane {
                         self.device,
                         Roster::new(devices.clone()),
                     ),
+                    dialled: BTreeSet::new(),
                     dialling: BTreeSet::new(),
                 }))
             }))
         };
+        let handle = Arc::clone(&carried);
         let mut carried = carried.lock().await;
         carried
             .bridge
             .set_roster(Roster::new(devices.iter().copied()));
         for device in devices {
-            if device == self.device || !carried.dialling.insert(device) {
+            if device == self.device
+                || carried.dialled.contains(&device)
+                || !carried.dialling.insert(device)
+            {
                 continue;
             }
             let bridge = Arc::clone(&carried.bridge);
             let endpoint = endpoint.clone();
+            let opening = Arc::clone(&handle);
             // A device that is not in the call, or cannot be reached, refuses
             // or never answers: the page's turn does not wait on it, and the
             // lane is tried again on a later turn.
@@ -125,31 +136,52 @@ impl CallLane {
                 let Ok(remote) = iroh::EndpointId::from_bytes(&device) else {
                     return;
                 };
-                let _ = bridge.dial(&endpoint, EndpointAddr::new(remote)).await;
+                let dialled = bridge
+                    .dial(&endpoint, EndpointAddr::new(remote))
+                    .await
+                    .is_ok();
+                let mut carried = opening.lock().await;
+                carried.dialling.remove(&device);
+                if dialled {
+                    carried.dialled.insert(device);
+                }
             });
         }
-        carried
+        let outcome = carried
             .bridge
             .exchange(up)
             .await
-            .map_err(|error| Failed::Refused(error.to_string()))
+            .map_err(|error| Failed::Refused(error.to_string()));
+        drop(carried);
+        if outcome.is_err() {
+            // The call is over, or this bridge will not carry it: the page
+            // starts it afresh if it ever turns again.
+            let mut calls = self.calls.lock_recover();
+            if calls
+                .get(&key)
+                .is_some_and(|held| Arc::ptr_eq(held, &handle))
+            {
+                calls.remove(&key);
+            }
+        }
+        outcome
     }
 
     /// The lanes' endpoint, bound on first use with this host's device key: the
     /// id the workspaces it serves admit as a member.
     async fn endpoint(&self) -> Result<iroh::Endpoint, Failed> {
-        let mut bound = self.endpoint.lock().await;
-        if let Some(endpoint) = bound.as_ref() {
-            return Ok(endpoint.clone());
-        }
-        let key = iroh::SecretKey::from_bytes(&self.device);
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-            .secret_key(key)
-            .bind()
-            .await
-            .map_err(|error| Failed::NoLane(error.to_string()))?;
-        *bound = Some(endpoint.clone());
-        Ok(endpoint)
+        let endpoint = self
+            .endpoint
+            .get_or_try_init(|| async {
+                let key = iroh::SecretKey::from_bytes(&self.device);
+                iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                    .secret_key(key)
+                    .bind()
+                    .await
+                    .map_err(|error| Failed::NoLane(error.to_string()))
+            })
+            .await?;
+        Ok(endpoint.clone())
     }
 }
 
@@ -249,11 +281,9 @@ mod tests {
                     .turn(vec![host_device, phone_device], page_turn())
                     .await
                     .expect("the host carries the page's call");
-                if !heard_page {
-                    if let Ok(played) = carried.try_recv() {
-                        assert_eq!(played, vec![1, 2, 3]);
-                        heard_page = true;
-                    }
+                if !heard_page && let Ok(played) = carried.try_recv() {
+                    assert_eq!(played, vec![1, 2, 3]);
+                    heard_page = true;
                 }
                 heard_phone |= down
                     .audio
@@ -268,6 +298,6 @@ mod tests {
         .await
         .expect("the page and the call hear each other");
         assert!(heard_page && heard_phone);
-        answering.shutdown().await;
+        let _ = answering.shutdown().await;
     }
 }
