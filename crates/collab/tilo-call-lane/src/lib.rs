@@ -38,18 +38,37 @@
 //! per device, encoded once per layer a device in the call shows
 //! ([`video::Video`]), each tilo-video/1 object sealed under its stream's
 //! key and read back into the app's [`video::Inbox`].
+//!
+//! A page has no endpoint to open a lane on, so it reaches the call through
+//! its own device: [`page`] is the page's side, sealing its media as the
+//! device that bridges it and opening what the call sends, and [`bridge`] is
+//! that device's side, carrying the sealed frames on the lane without ever
+//! holding a key of the call. Both speak the frames' codes ([`wire`]) and
+//! neither needs the lane's transport; [`page`] builds in a page, and the
+//! lane ([`carrier`], [`video`]) is behind the `lanes` feature.
 
 pub mod audio;
+#[cfg(feature = "lanes")]
+pub mod bridge;
+#[cfg(feature = "lanes")]
 pub mod carrier;
 pub mod frame;
+pub mod page;
 pub mod roster;
+#[cfg(feature = "lanes")]
 pub mod video;
+pub mod wire;
 
 pub use audio::{Heard, Microphone, heard};
+#[cfg(feature = "lanes")]
+pub use bridge::Bridge;
+#[cfg(feature = "lanes")]
 pub use carrier::{ALPN, Calls, Failed, Hello, Peer};
 pub use frame::{Lane, OVERHEAD, Opener, Refusal, Sealer, Stream};
+pub use page::Page;
 pub use roster::Roster;
 pub use tilo_moq::video::{Layer, Source};
+#[cfg(feature = "lanes")]
 pub use video::{
     Asking, CAMERA_FPS, CAMERA_SIZE, Camera, Feed, Frame, Inbox, Picture, PicturePeer, SCREEN_FPS,
     Sending, Sink, Video, even_rgba, fitted,

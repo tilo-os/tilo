@@ -95,6 +95,7 @@ impl Calls {
         let mut people: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut cameras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut screens: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut bridges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for call in &live {
             let in_call = people.entry(call.channel.clone()).or_default();
             for caller in &call.people {
@@ -113,6 +114,15 @@ impl Calls {
                         .entry(call.channel.clone())
                         .or_default()
                         .insert(person.clone());
+                }
+                // The call says which software its people's frames pass
+                // through, lowercased as every service is named.
+                let carrying = bridges.entry(call.channel.clone()).or_default();
+                for service in &caller.services {
+                    let service = service.trim().to_lowercase();
+                    if !service.is_empty() {
+                        carrying.insert(service);
+                    }
                 }
             }
         }
@@ -144,6 +154,10 @@ impl Calls {
                 screens: screens
                     .remove(&channel_id)
                     .map(|set| set.into_iter().collect())
+                    .unwrap_or_default(),
+                bridges: bridges
+                    .remove(&channel_id)
+                    .map(|services| services.into_iter().collect())
                     .unwrap_or_default(),
                 channel_id,
                 people: people.into_iter().collect(),
@@ -1399,6 +1413,12 @@ mod tests {
     use super::*;
     use crate::sync::{Client, OwnPresence};
     use crate::{ActionPlane, Options, Session};
+    use iroh::endpoint::presets;
+    use iroh::protocol::Router;
+    use iroh::{Endpoint, RelayMode, SecretKey};
+    use tilo_action_broker::channel_encryption::ChannelAccess;
+    use tilo_browser_peer::{HttpClient, HttpFuture, LaneCall};
+    use tilo_call_lane::page::{Picture, Sealed, Up};
 
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     const CHANNEL: &str = "c_standup";
@@ -2192,5 +2212,302 @@ mod tests {
         assert_eq!(heard.people, [person(0xf0), person(0xbb), person(0xaa)]);
         assert_eq!(heard.cameras, [person(0xf0), person(0xaa)]);
         assert_eq!(heard.screens, [person(0xaa)]);
+    }
+
+    /// A page's turns with its host, over the HTTP a host's call lane route
+    /// answers: one `POST` of a sealed turn and its answer.
+    struct HttpTurns {
+        addr: std::net::SocketAddr,
+    }
+
+    impl HttpClient for HttpTurns {
+        fn post(&self, path: &str, _session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_> {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+            let addr = self.addr;
+            let path = path.to_owned();
+            Box::pin(async move {
+                let failed = |error: std::io::Error| error.to_string();
+                let mut stream = tokio::net::TcpStream::connect(addr).await.map_err(failed)?;
+                let head = format!(
+                    "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).await.map_err(failed)?;
+                stream.write_all(&body).await.map_err(failed)?;
+                let mut answer = Vec::new();
+                stream.read_to_end(&mut answer).await.map_err(failed)?;
+                let split = answer
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .ok_or_else(|| "the answer has no head".to_owned())?;
+                let head = String::from_utf8_lossy(&answer[..split]).into_owned();
+                let status = head
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|code| code.parse::<u16>().ok())
+                    .ok_or_else(|| "the answer has no status".to_owned())?;
+                let body = answer
+                    .get(split..)
+                    .and_then(|rest| rest.get(4..))
+                    .unwrap_or_default()
+                    .to_vec();
+                Ok((status, body))
+            })
+        }
+    }
+
+    /// The address a loopback endpoint answers on.
+    fn bound_addr(endpoint: &Endpoint) -> iroh::EndpointAddr {
+        use std::net::{Ipv4Addr, SocketAddr};
+        let port = endpoint
+            .bound_sockets()
+            .first()
+            .expect("a bound socket")
+            .port();
+        iroh::EndpointAddr::new(endpoint.id())
+            .with_ip_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+    }
+
+    /// The channel keys a device of `CHANNEL` holds, as a page's sealing needs
+    /// them.
+    fn channel_keys(keys: &ChannelKeyProvider) -> channel_crypto::ChannelContentKeys {
+        let access = keys
+            .get()
+            .expect("this device's channel keys")
+            .access(
+                workspace_id(),
+                collab_types::document_channel_id(APP, WORKSPACE, RECORD),
+            )
+            .0;
+        let ChannelAccess::Ready(content) = access else {
+            panic!("the channel's keys are ready");
+        };
+        content
+    }
+
+    /// A page and a native device in one call: the page seals its media as its
+    /// own device, a bridge carries those frames over the call's lane without
+    /// ever opening them, and the call shows the service its frames pass
+    /// through.
+    #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_page_in_a_call_is_heard_and_hears_through_the_bridge_the_call_shows() {
+        let owner = person_key();
+        let laptop = device(&owner, 0x11, "Laptop");
+        // The page's device: the key its frames name, and the device its host
+        // takes part as.
+        let page_device = *public(0x22).as_bytes();
+        let laptop_device = *public(0x11).as_bytes();
+        let roster = tilo_call_lane::Roster::new([laptop_device, page_device]);
+        let bridge = tilo_call_lane::Bridge::new(
+            WORKSPACE.to_owned(),
+            collab_types::document_channel_id(APP, WORKSPACE, RECORD),
+            CHANNEL.to_owned(),
+            page_device,
+            roster.clone(),
+        );
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .secret_key(SecretKey::from_bytes(&[0x22; 32]))
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("a loopback endpoint binds")
+            .bind()
+            .await
+            .expect("a loopback endpoint binds");
+        let answering = Router::builder(endpoint.clone())
+            .accept(tilo_call_lane::ALPN, bridge.handler())
+            .spawn();
+
+        // The host's route: what the page posts, the bridge takes in, and its
+        // answer posted back.
+        let exchange_with = Arc::clone(&bridge);
+        let turning_handle = tokio::runtime::Handle::current();
+        let responder = test_http::Responder::handle(move |request| {
+            let up: Up = postcard::from_bytes(&request.body).ok()?;
+            let down = turning_handle.block_on(exchange_with.exchange(up)).ok()?;
+            let body = postcard::to_stdvec(&down).ok()?;
+            Some(test_http::Reply::status(200).body(body))
+        });
+        let page_addr: std::net::SocketAddr = responder
+            .url()
+            .trim_start_matches("http://")
+            .parse()
+            .expect("the responder's address");
+
+        // The workspace says the page's device is in the call, carried by the
+        // web, and the two devices know where each other is.
+        laptop.connect(bound_addr(&endpoint));
+        laptop.follow_desktop(&desk_tree());
+        laptop.hear(hello(0x22, "Page"));
+        laptop.hear(presence(0x22, collab_types::PeerPresencePayload::Arrived));
+        laptop.hear(availability(0x22, Some(call_presence())));
+        laptop.hear(presence(
+            0x22,
+            collab_types::PeerPresencePayload::Bridge {
+                channel: CHANNEL.to_owned(),
+                services: vec!["web".to_owned()],
+            },
+        ));
+        bound(&laptop).await;
+        let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
+        let left = carrier(&laptop, &keys);
+
+        // The call shows the service the page's frames pass through.
+        let rosters = left.calls.rosters();
+        let standup = rosters
+            .iter()
+            .find(|roster| roster.channel_id == CHANNEL)
+            .expect("the roster of the channel the call is in");
+        assert_eq!(
+            standup.bridges,
+            ["web"],
+            "the call says which service carries a page into it"
+        );
+        assert_eq!(
+            standup.people,
+            vec![person(0x22)],
+            "the page's person is in it"
+        );
+
+        let mut here = left
+            .factory
+            .prepare(target())
+            .await
+            .expect("a call the workspace's keys and transport carry");
+        assert_eq!(here.tick(Instant::now()), Ok(State::Live));
+        // Of a pair, the smaller device dials; here that is the page's,
+        // carried by the bridge.
+        if page_device < laptop_device {
+            bridge
+                .dial(&endpoint, laptop.endpoint_addr())
+                .await
+                .expect("the bridge opens the call's lanes to the device");
+        }
+        // The page shows the laptop's camera, so the laptop's camera goes to
+        // it, and the laptop shows the page's: every layer of the page's
+        // pictures is the one the call draws.
+        here.show(vec![Shown {
+            person: person(0x22),
+            source: PictureSource::Camera,
+            layer: PictureLayer::Low,
+        }]);
+
+        // The page: the tone its microphone makes, sealed as its device, and
+        // what came back played out.
+        let page_probe = Arc::new(Mutex::new(Vec::new()));
+        let played = Arc::clone(&page_probe);
+        let page = tilo_call_lane::Page::new(
+            WORKSPACE.to_owned(),
+            CHANNEL.to_owned(),
+            page_device,
+            &channel_keys(&keys),
+            roster,
+        )
+        .expect("a page sealed as its device");
+        let lane = LaneCall::new(page, Arc::new(HttpTurns { addr: page_addr }), None);
+        let turning = tokio::spawn(async move {
+            let mut voice = tokio::task::spawn_blocking(|| Voice::open(Audio::Software))
+                .await
+                .expect("the page's audio")
+                .expect("the test's audio");
+            let sources = voice.sources();
+            voice
+                .start(&sources[0], Arc::new(|| true))
+                .expect("the test's tone");
+            let mut lane = lane;
+            let mut sequence = 0_u64;
+            let mut beat = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                beat.tick().await;
+                let now = Instant::now();
+                let mut up = lane.page().up();
+                if let Ok(frames) = voice.pump(now) {
+                    for frame in frames {
+                        if let Ok(Some(sealed)) =
+                            lane.page_mut().audio(frame.timestamp_48k, &frame.payload)
+                        {
+                            up.audio.push(sealed);
+                        }
+                    }
+                }
+                // One picture of the page's camera the first turn, a keyframe,
+                // and the ones behind it.
+                if sequence < 8 {
+                    let picture = Picture {
+                        source: tilo_call_lane::Source::Camera,
+                        layer: tilo_call_lane::Layer::Low,
+                        sequence,
+                        keyframe: sequence == 0,
+                        timestamp_us: sequence * 33_000,
+                        width: 64,
+                        height: 64,
+                        payload: vec![0_u8; 16],
+                    };
+                    if let Ok(sealed) = lane.page_mut().picture(picture) {
+                        up.pictures.push(Sealed {
+                            source: 0,
+                            layer: 0,
+                            keyframe: sequence == 0,
+                            sealed,
+                        });
+                    }
+                    sequence += 1;
+                }
+                let Ok(down) = lane.turn(up).await else {
+                    continue;
+                };
+                let opened = lane.opened(&down);
+                for (from, frame) in opened.audio {
+                    let _ =
+                        voice.receive(from, frame.sequence, frame.timestamp_48k, frame.opus, now);
+                }
+                let _ = voice.playout(now);
+                if let Ok(mut played) = played.lock() {
+                    played.extend(voice.played());
+                    let len = played.len();
+                    if len > 48_000 {
+                        played.drain(..len - 48_000);
+                    }
+                }
+            }
+        });
+        here.start_capture("tone").expect("the test's tone");
+
+        // The native device hears the page's tone, and the call draws its
+        // picture.
+        wait_heard("the device hears the page's tone", &left.probe, true).await;
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let (pictures, _) = here.pictures(0);
+            if !pictures.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the call draws the page's picture"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // The page hears the device's tone with it.
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let playing = level(&page_probe, Duration::from_millis(200)).await > HEARD;
+            if playing {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the page hears the device's tone"
+            );
+        }
+
+        turning.abort();
+        here.close();
+        answering
+            .shutdown()
+            .await
+            .expect("the bridge's endpoint closes");
     }
 }

@@ -118,6 +118,18 @@ pub enum PeerPresencePayload {
     Composing {
         composing: bool,
     },
+    /// Which services carry the sender's media into the voice channel
+    /// `channel` of this workspace: a page has no call lane of its own, so the
+    /// device whose key its frames name carries them, and everyone in the call
+    /// is told which software its frames pass through. Empty when nothing
+    /// bridges the sender's call.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only what they cannot say of a bridge.
+    Bridge {
+        channel: String,
+        services: Vec<String>,
+    },
 }
 
 #[cfg(test)]
@@ -167,6 +179,14 @@ mod tests {
             },
             PeerPresencePayload::Composing { composing: true },
             PeerPresencePayload::Composing { composing: false },
+            PeerPresencePayload::Bridge {
+                channel: "c_standup".into(),
+                services: vec!["web".into()],
+            },
+            PeerPresencePayload::Bridge {
+                channel: "c_standup".into(),
+                services: Vec::new(),
+            },
         ]
     }
 

@@ -17818,6 +17818,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-call-lane",
  "tilo-clock",
  "tilo-contact-directory",
  "tilo-desktop-model",
