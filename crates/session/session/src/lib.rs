@@ -42,6 +42,7 @@ mod capture_send;
 mod capture_studio;
 mod channels;
 mod chrome;
+mod clock_wait;
 mod config;
 mod content;
 pub mod controller_nav;
@@ -141,6 +142,7 @@ use ui::shortcut_table::ShortcutAction;
 pub use automation::FinishedShortcutRun;
 pub use bars::BarShown;
 pub use channels::ChannelLink;
+pub use clock_wait::ClockWait;
 pub use config::SessionConfig;
 pub use controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
@@ -161,6 +163,7 @@ pub use records::Records;
 pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
+pub use setup::BeforeDesk;
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
@@ -2038,6 +2041,14 @@ impl Session {
         self.display_sheet.seat()
     }
 
+    /// What stands before the desk runs its own pass: the wait for the clock
+    /// finishes itself and gives the layer to what a verified identity opens.
+    fn follow_setup(&self) {
+        if let Some(setup) = &self.setup {
+            setup.borrow_mut().step();
+        }
+    }
+
     /// Whether setup is up: it withholds the desktop until it is done.
     #[must_use]
     pub fn setup_up(&self) -> bool {
@@ -2493,6 +2504,7 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         self.follow_overlays();
+        self.follow_setup();
         {
             self.shared.feed_agent_runs();
             let mut services = self.shared.services.borrow_mut();

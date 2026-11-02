@@ -11,15 +11,16 @@
 )]
 
 use std::path::PathBuf;
-use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::Duration;
 
+use tilo_compositor::OutputConfig;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_onboarding_host::identity::IdentityProblem;
 use tilo_onboarding_host::identity_provisioning::IDENTITY_RECOVERY_ENV;
 use tilo_session::mount::firstboot::{OneShot, one_shot};
 use tilo_session::startup::{self, Identity};
-use tilo_user_identity::{IdentityPaths, persist};
+use tilo_session::{BeforeDesk, Options, Session};
+use tilo_user_identity::{DeviceCertError, IdentityPaths, persist};
 
 /// The unit the image ships for the machine's own first-boot setup.
 const UNIT: &str = include_str!("../../../../os/usr/lib/systemd/system/shell-firstboot.service");
@@ -123,22 +124,35 @@ fn machine() -> Machine {
     }
 }
 
+/// The resource publishing `action`, while the session publishes it at all.
+fn publisher(session: &Session, action: &str) -> Option<String> {
+    fn find(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.actions.iter().any(|offered| offered.id == action) {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, action)
+            }
+        })
+    }
+    find(&session.resources(), action)
+}
+
 #[test]
 fn a_verified_identity_opens_the_desk() {
     let _machine = machine();
     assert_eq!(startup::identity(), Identity::Desk);
 }
 
-#[test]
-fn a_certificate_the_clock_reads_as_not_yet_valid_keeps_the_desk_off_until_it_passes() {
-    let machine = machine();
-    // Dated far enough ahead that writing it cannot make it valid already.
-    let issued_at_ns = tilo_clock::unix_now_ns() + 400_000_000;
+/// Date this device's certificate `ahead` from now, signed by the person's
+/// own root as the identity's issuer dates one: the machine's clock is the
+/// only thing that is off. Returns the instant the certificate becomes valid.
+fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
+    let issued_at_ns = tilo_clock::unix_now_ns()
+        .saturating_add(u64::try_from(ahead.as_nanos()).expect("a wait in nanoseconds"));
     let mut cert =
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
     cert.issued_at_ns = issued_at_ns;
-    // The person's own key dates the certificate, as the identity's root does
-    // when it issues one: this machine's clock is the only thing that is off.
     let person = runtime_identity::load_from_path(record()).expect("the person's root key");
     cert.signature = person
         .sign(
@@ -147,30 +161,93 @@ fn a_certificate_the_clock_reads_as_not_yet_valid_keeps_the_desk_off_until_it_pa
         )
         .expect("the person's signature");
     persist::write_device_cert(&machine.paths.device_cert, &cert).expect("the certificate");
+    issued_at_ns
+}
+
+/// A certificate the clock reads as not yet valid leaves the identity intact:
+/// startup answers at once and hands the session the wait for the clock, which
+/// opens in front of the desk instead of the desk.
+#[test]
+fn a_certificate_the_clock_reads_as_not_yet_valid_waits_for_the_clock() {
+    let machine = machine();
+    let issued_at_ns = certificate_dated_ahead(&machine, Duration::from_secs(3));
     assert!(tilo_clock::unix_now_ns() < issued_at_ns);
 
-    let (report, answers) = channel();
-    std::thread::spawn(move || report.send(startup::identity()).expect("the answer"));
+    let identity = startup::identity();
+    let Identity::WaitForClock { refusal, .. } = &identity else {
+        panic!("startup does not wait for the clock: {identity:?}");
+    };
+    assert_eq!(refusal.reason, DeviceCertError::NotYetValid);
+    assert_eq!(refusal.valid_at_ns(), Some(issued_at_ns));
+}
+
+/// The waiting screen stands in front of the desk while the clock is behind
+/// the certificate, says so, and goes away by itself once the clock passes.
+#[test]
+fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
+    let machine = machine();
+    // Far enough ahead that the session is up and drawn before it passes.
+    let issued_at_ns = certificate_dated_ahead(&machine, Duration::from_secs(3));
+    let identity = startup::identity();
+    assert!(matches!(identity, Identity::WaitForClock { .. }));
+    let before =
+        persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
+
+    let setup = startup::before_desk(&identity, false).expect("the wait stands before the desk");
+    assert!(matches!(setup, BeforeDesk::WaitForClock(_)));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            setup: Some(setup),
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).expect("a frame");
     assert!(
-        matches!(
-            answers.recv_timeout(Duration::from_millis(100)),
-            Err(RecvTimeoutError::Timeout)
-        ),
-        "the desk stays off while the certificate is not valid yet"
+        session.setup_up(),
+        "the desk stays off until the clock passes"
     );
-    assert_eq!(
-        answers
-            .recv_timeout(Duration::from_secs(30))
-            .expect("the desk opens once the clock passes"),
-        Identity::Desk
+    let waiting = session.accessible_labels();
+    assert!(
+        waiting
+            .iter()
+            .any(|label| label.contains("Waiting for the clock")),
+        "the wait says what it waits for: {waiting:?}"
     );
+    assert!(
+        publisher(&session, "overview").is_none(),
+        "the wait withholds the desk's actions"
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while session.setup_up() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the desk never opened once the clock passed"
+        );
+        session.step(Duration::from_millis(100)).expect("a frame");
+    }
     assert!(
         tilo_clock::unix_now_ns() >= issued_at_ns,
         "the desk opened before the clock reached the certificate"
     );
+    let opened = session.accessible_labels();
+    assert!(
+        !opened
+            .iter()
+            .any(|label| label.contains("Waiting for the clock")),
+        "the wait left the desk: {opened:?}"
+    );
+    assert!(
+        publisher(&session, "overview").is_some(),
+        "the desk's actions are back"
+    );
     assert_eq!(
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate"),
-        cert,
+        before,
         "waiting for the clock replaced the certificate instead"
     );
 }

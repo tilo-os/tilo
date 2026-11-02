@@ -145,3 +145,11 @@ status-wifi = Wi-Fi
 status-wifi-named = Wi-Fi: { $name }
 status-wired = Wired
 status-wired-named = Wired: { $name }
+
+## The desk waits while this device's certificate is outside its validity at
+## the clock's reading: the identity on disk is intact, and the screen says
+## what the clock must reach before the desk opens by itself.
+identity-clock-wait-title = Waiting for the clock
+identity-clock-wait-body = Your Tilo identity is safe. The desktop opens once this computer's date and time are right.
+identity-clock-wait-not-yet-valid = Your Tilo identity is safe. Its certificate starts at { $valid }, and this computer's clock reads { $now }. The desktop opens by itself once the clock passes that, or you set the date and time.
+identity-clock-wait-expired = Your Tilo identity is safe. Its certificate ran until { $until }, and this computer's clock reads { $now }. The desktop opens by itself once the date and time are set right.

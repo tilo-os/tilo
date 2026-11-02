@@ -1781,7 +1781,9 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            setup: Some(tilo_session::OnboardingView::new_tour()),
+            setup: Some(tilo_session::BeforeDesk::Ceremony(Box::new(
+                tilo_session::OnboardingView::new_tour(),
+            ))),
             collab: false,
             ..Options::default()
         },

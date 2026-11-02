@@ -89,8 +89,10 @@ fn main() -> std::process::ExitCode {
         Ok(Some(command)) => return tilo_session::startup::run(command, host_desktop),
         Ok(None) => {}
     }
-    match tilo_session::startup::identity() {
-        tilo_session::startup::Identity::Desk => {}
+    let identity = tilo_session::startup::identity();
+    match &identity {
+        tilo_session::startup::Identity::Desk
+        | tilo_session::startup::Identity::WaitForClock { .. } => {}
         tilo_session::startup::Identity::Recovery(problem) => {
             eprintln!(
                 "tilo-session: this device's Tilo identity needs its owner: {}",
@@ -105,7 +107,7 @@ fn main() -> std::process::ExitCode {
     let Some(line) = command_line(ours) else {
         return ExitCode::FAILURE;
     };
-    start(ours, command, line, host_desktop)
+    start(ours, command, line, host_desktop, &identity)
 }
 
 /// The session's own arguments and the command it starts, split at `--`.
@@ -249,6 +251,7 @@ fn start(
     command: &[String],
     line: CommandLine,
     host_desktop: bool,
+    identity: &tilo_session::startup::Identity,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
@@ -321,7 +324,7 @@ fn start(
     let mut options = Options {
         services,
         wake,
-        setup: setup(host_desktop),
+        setup: tilo_session::startup::before_desk(identity, host_desktop),
         captures: Some(captures),
         questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
@@ -827,37 +830,6 @@ fn search_options() -> tilo_session::SearchOptions {
         // followed as the apps of those workspaces name more.
         records: Some(tilo_session::Records::of_device()),
     }
-}
-
-/// The setup this device needs before its desktop is used: the first use
-/// when it has no identity yet, setup it started and did not finish, the
-/// recovery of its identity when startup found it unusable; `None` when
-/// there is nothing left to set up.
-#[cfg(target_os = "linux")]
-fn setup(host_desktop: bool) -> Option<tilo_session::OnboardingView> {
-    use tilo_onboarding_host::identity_provisioning::{
-        DiskIdentityStore, IDENTITY_RECOVERY_ENV, needs_first_run_flow,
-    };
-    use tilo_session::OnboardingView;
-    use tilo_session::mount::firstboot::setup_due;
-    let store = match DiskIdentityStore::from_env() {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("tilo-session: no identity store: {error}");
-            return None;
-        }
-    };
-    let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
-    let identity_dir = store.path().parent()?.to_path_buf();
-    if !setup_due(needs_first_run_flow(&store), recovery, &identity_dir) {
-        return None;
-    }
-    Some(match (host_desktop, recovery) {
-        (false, false) => OnboardingView::new(identity_dir),
-        (false, true) => OnboardingView::new_for_recovery(identity_dir),
-        (true, false) => OnboardingView::new_for_host_desktop(identity_dir),
-        (true, true) => OnboardingView::new_for_host_desktop_recovery(identity_dir),
-    })
 }
 
 #[cfg(not(target_os = "linux"))]

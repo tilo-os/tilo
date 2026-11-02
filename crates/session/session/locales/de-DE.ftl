@@ -148,3 +148,12 @@ status-wifi = WLAN
 status-wifi-named = WLAN: { $name }
 status-wired = Kabelgebunden
 status-wired-named = Kabelgebunden: { $name }
+
+## Der Schreibtisch wartet, während das Zertifikat dieses Geräts nach der Uhr
+## außerhalb seiner Gültigkeit liegt: Die Identität auf der Platte ist intakt,
+## und der Bildschirm sagt, bis wann die Uhr laufen muss, bevor der
+## Schreibtisch von selbst aufgeht.
+identity-clock-wait-title = Warten auf die Uhr
+identity-clock-wait-body = Ihre Tilo-Identität ist sicher. Der Schreibtisch öffnet, sobald Datum und Uhrzeit dieses Computers stimmen.
+identity-clock-wait-not-yet-valid = Ihre Tilo-Identität ist sicher. Ihr Zertifikat beginnt am { $valid }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald die Uhr diesen Zeitpunkt erreicht oder Sie Datum und Uhrzeit einstellen.
+identity-clock-wait-expired = Ihre Tilo-Identität ist sicher. Ihr Zertifikat galt bis { $until }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald Datum und Uhrzeit richtig eingestellt sind.

@@ -1,9 +1,10 @@
-//! Setup over everything: the first-use ceremony
-//! ([`tilo_onboarding_host::view::OnboardingView`]) on a layer covering the
-//! outputs, above the desktop and every window, taking the keyboard until
-//! the person finished it. Its actions are the setup app's, through its
-//! door; what setup needs of the session it reads through
-//! [`tilo_onboarding_host::host::SessionHost`].
+//! What stands over everything before the desk is used: the first-use
+//! ceremony ([`tilo_onboarding_host::view::OnboardingView`]) on a layer
+//! covering the outputs, above the desktop and every window, taking the
+//! keyboard until the person finished it, or the wait for the clock to admit
+//! this device's certificate, which goes away by itself. Its actions are the
+//! setup app's, through its door; what setup needs of the session it reads
+//! through [`tilo_onboarding_host::host::SessionHost`].
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -17,6 +18,8 @@ use tilo_surface_host::{Placement, WidgetHost};
 use tilo_surface_host::{Published, through_door};
 use ui::device_local_door::SharedDoor;
 use ui::host_operation::ResourceOperationStart;
+
+use crate::clock_wait::{ClockWait, ClockWaitStep};
 
 /// What this session lends setup. One per process, as setup reads it
 /// through a process-wide hook; each session started points it at itself.
@@ -74,50 +77,160 @@ pub(crate) fn browser_continuity() -> Option<PathBuf> {
         .clone()
 }
 
+/// What this session shows before its desk is used.
+pub enum BeforeDesk {
+    /// Setup the person goes through once: the first use of this device, or
+    /// the recovery of its identity.
+    Ceremony(Box<OnboardingView>),
+    /// The wait for the clock to admit this device's certificate. It goes
+    /// away by itself, and what a verified identity opens takes its place.
+    WaitForClock(ClockWait),
+}
+
+/// What the layer shows, while it shows anything.
+enum Surface {
+    /// The setup app's own view: its door publishes its actions, and its own
+    /// signal says when the person finished it.
+    Ceremony {
+        widgets: WidgetHost,
+        door: SharedDoor,
+        finished: Rc<dyn Fn() -> bool>,
+    },
+    /// The wait for the clock, which has no actions of its own.
+    WaitForClock {
+        widgets: WidgetHost,
+        wait: ClockWait,
+    },
+}
+
 /// The setup view on its layer, while the person has not finished it.
 pub(crate) struct Setup {
-    widgets: WidgetHost,
-    door: SharedDoor,
-    finished: Rc<dyn Fn() -> bool>,
+    surface: Surface,
+    /// The outputs this layer covers, as the compositor last told a view:
+    /// replayed to a view that replaces another, which is only told when the
+    /// outputs themselves change.
+    outputs: Vec<(i32, i32, i32, i32)>,
 }
 
 impl Setup {
-    pub(crate) fn new(view: OnboardingView, scale: f64) -> Self {
-        let door = view.device_local_door();
-        let finished = view.finished_signal();
+    /// Show `surface` over the outputs, waking `waiter` when the wait for the
+    /// clock has something new to answer.
+    pub(crate) fn new(surface: BeforeDesk, scale: f64, waiter: Waker) -> Self {
         let placement = Placement {
             origin: (0, 0),
             size: (1, 1),
             scale,
         };
-        let widgets = WidgetHost::new(Box::new(view), placement, false)
-            .covering_outputs()
-            .with_keyboard(Rc::new(|| true));
+        let surface = match surface {
+            BeforeDesk::Ceremony(view) => ceremony(*view, placement),
+            BeforeDesk::WaitForClock(wait) => {
+                let wait = wait.listening(waiter);
+                let screen = wait.screen();
+                Surface::WaitForClock {
+                    widgets: covering(Box::new(screen), placement),
+                    wait,
+                }
+            }
+        };
         Self {
-            widgets,
-            door,
-            finished,
+            surface,
+            outputs: Vec::new(),
         }
     }
 
-    /// Whether setup is still up.
+    /// Whether the layer is still over the desk.
     pub(crate) fn up(&self) -> bool {
-        !(self.finished)()
+        match &self.surface {
+            Surface::Ceremony { finished, .. } => !(finished)(),
+            Surface::WaitForClock { wait, .. } => !wait.done(),
+        }
+    }
+
+    /// Advance what the layer shows: the wait for the clock finishes itself
+    /// once the identity verifies, and gives the layer to the setup the
+    /// device still needs, or back to the desk.
+    pub(crate) fn step(&mut self) {
+        let Surface::WaitForClock { wait, .. } = &mut self.surface else {
+            return;
+        };
+        match wait.pump() {
+            ClockWaitStep::Waiting => {}
+            ClockWaitStep::Verified(None) => wait.finish(),
+            ClockWaitStep::Verified(Some(view)) | ClockWaitStep::Recovery(view) => {
+                self.hand_over(view);
+            }
+        }
+    }
+
+    /// Show `view` in place of what the layer shows now, on the same
+    /// rectangle and over the same outputs.
+    fn hand_over(&mut self, view: OnboardingView) {
+        let placement = self.widgets().placement();
+        let mut replacement = ceremony(view, placement);
+        if !self.outputs.is_empty()
+            && let Surface::Ceremony { widgets, .. } = &mut replacement
+        {
+            widgets.outputs_changed(&self.outputs);
+        }
+        self.surface = replacement;
+    }
+
+    /// The widget tree on the layer now.
+    fn widgets(&self) -> &WidgetHost {
+        match &self.surface {
+            Surface::Ceremony { widgets, .. } | Surface::WaitForClock { widgets, .. } => widgets,
+        }
+    }
+
+    fn widgets_mut(&mut self) -> &mut WidgetHost {
+        match &mut self.surface {
+            Surface::Ceremony { widgets, .. } | Surface::WaitForClock { widgets, .. } => widgets,
+        }
     }
 
     /// Run what its door holds now, and publish what setup offers: the
-    /// view does both on each pass of its own.
+    /// view does both on each pass of its own. The wait for the clock has no
+    /// door and nothing of its own to publish.
     fn serve(&mut self) {
-        if self.up() && (self.door.has_queued() || self.door.revision() == 0) {
-            self.widgets.relayout();
+        if let Surface::Ceremony {
+            widgets,
+            door,
+            finished,
+        } = &mut self.surface
+            && !(finished)()
+            && (door.has_queued() || door.revision() == 0)
+        {
+            widgets.relayout();
         }
     }
+}
+
+/// The setup app's view on the layer over every output, taking the keyboard.
+fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
+    let door = view.device_local_door();
+    let finished = view.finished_signal();
+    Surface::Ceremony {
+        widgets: covering(Box::new(view), placement),
+        door,
+        finished,
+    }
+}
+
+/// A tree covering every output and taking the keyboard: what stands in front
+/// of the desk withholds it.
+fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetHost {
+    WidgetHost::new(root, placement, false)
+        .covering_outputs()
+        .with_keyboard(Rc::new(|| true))
 }
 
 impl Published for Setup {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.serve();
-        self.door.resources()
+        match &self.surface {
+            Surface::Ceremony { door, .. } => door.resources(),
+            Surface::WaitForClock { .. } => Vec::new(),
+        }
     }
 
     fn invoke(
@@ -125,12 +238,15 @@ impl Published for Setup {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        let door = self.door.clone();
+        let Surface::Ceremony { door, .. } = &self.surface else {
+            return Err(DoorError::Unknown(address.clone()));
+        };
+        let door = door.clone();
         through_door(&door, address, arguments, || self.serve())
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        self.widgets
+        self.widgets_mut()
             .host_mut()
             .a11y_nodes()
             .into_iter()
@@ -150,17 +266,18 @@ impl Published for Setup {
 impl SurfaceHost for Setup {
     fn layers(&self) -> Vec<HostLayer> {
         if self.up() {
-            self.widgets.layers()
+            self.widgets().layers()
         } else {
             Vec::new()
         }
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        // Setup withholds the desktop: the pointer reaches nothing under it.
+        // What stands before the desk withholds it: the pointer reaches
+        // nothing under the layer.
         self.up() && {
-            let (ox, oy) = self.widgets.placement().origin;
-            let (w, h) = self.widgets.placement().size;
+            let (ox, oy) = self.widgets().placement().origin;
+            let (w, h) = self.widgets().placement().size;
             x >= f64::from(ox)
                 && y >= f64::from(oy)
                 && x < f64::from(ox) + f64::from(w)
@@ -169,19 +286,19 @@ impl SurfaceHost for Setup {
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
-        self.widgets.pointer_motion(x, y);
+        self.widgets_mut().pointer_motion(x, y);
     }
 
     fn pointer_leave(&mut self) {
-        self.widgets.pointer_leave();
+        self.widgets_mut().pointer_leave();
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
-        self.widgets.pointer_button(button, pressed);
+        self.widgets_mut().pointer_button(button, pressed);
     }
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.widgets.pointer_axis(horizontal, vertical);
+        self.widgets_mut().pointer_axis(horizontal, vertical);
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -189,31 +306,32 @@ impl SurfaceHost for Setup {
     }
 
     fn key(&mut self, key: &HostKey) {
-        self.widgets.key(key);
+        self.widgets_mut().key(key);
     }
 
     fn prepare_frame(&mut self) -> bool {
-        self.up() && self.widgets.prepare_frame()
+        self.up() && self.widgets_mut().prepare_frame()
     }
 
-    /// Setup that is not up asks for no frames.
+    /// A layer that is not over the desk asks for no frames.
     fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.up().then(|| self.widgets.next_deadline()).flatten()
+        self.up().then(|| self.widgets().next_deadline()).flatten()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
-        self.widgets.cursor()
+        self.widgets().cursor()
     }
 
     fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
-        self.widgets.backdrops()
+        self.widgets().backdrops()
     }
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
-        self.widgets.set_backdrops(images);
+        self.widgets_mut().set_backdrops(images);
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
-        self.widgets.outputs_changed(outputs);
+        self.outputs = outputs.to_vec();
+        self.widgets_mut().outputs_changed(outputs);
     }
 }
