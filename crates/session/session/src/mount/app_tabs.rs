@@ -35,11 +35,9 @@ use std::io::{BufReader, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
-use std::time::Duration;
 
 use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
@@ -170,9 +168,9 @@ pub struct AppTabs {
     /// The open connections, by the app each vouches for and what it was
     /// last told of its window's appearance.
     links: BTreeMap<u64, Link>,
-    /// The listener and its thread, stopped and its socket removed when the
-    /// session ends.
-    _socket: Socket,
+    /// The listener the apps connect to, taken off on the session's own pass,
+    /// and the socket's path, which goes when the session ends.
+    socket: Socket,
 }
 
 /// An open shell-ui connection: the app it vouches for, whether its launch
@@ -247,7 +245,7 @@ impl AppTabs {
             requests: answers,
             withheld: BTreeMap::new(),
             links: BTreeMap::new(),
-            _socket: socket,
+            socket,
         })
     }
 
@@ -259,6 +257,10 @@ impl AppTabs {
         apps: Option<&Apps>,
         compositor: &mut Compositor,
     ) {
+        // The windows that connected since the last pass join here, so an ask
+        // they write is answered on this pass and no thread of the session's
+        // waits on a client.
+        self.socket.take();
         for request in self.requests.try_iter() {
             answer(
                 desktop,
@@ -480,11 +482,26 @@ fn target_open(app: &str, target: &str) -> Option<Open> {
         .then(|| Open::Uri(target.to_owned()))
 }
 
-/// The listener serving the socket, and the thread taking connections off it.
+/// The listener the apps connect to, its path, and what a connection taken
+/// off it is served with.
+///
+/// The connections are taken on the session's own pass ([`Socket::take`]): a
+/// thread waiting in `accept` could only be joined once a client woke it, and
+/// a session another one took the path from, or one that outlives its clients,
+/// would never be woken at all.
 struct Socket {
-    stop: Arc<AtomicBool>,
-    acceptor: Option<JoinHandle<()>>,
+    listener: UnixListener,
     path: PathBuf,
+    /// The socket standing at `path` when it was bound: a session that takes
+    /// the path later binds one of its own, which this one leaves standing.
+    standing: Option<(u64, u64)>,
+    /// The connection number the next connection taken is given.
+    next: AtomicU64,
+    /// The launches a connection is checked against, the channel its asks
+    /// arrive on, and the wake that brings the session to answer them.
+    launches: Arc<Launches>,
+    requests: mpsc::Sender<Request>,
+    wake: tilo_service::Wake,
 }
 
 impl Socket {
@@ -495,63 +512,64 @@ impl Socket {
         requests: mpsc::Sender<Request>,
         wake: tilo_service::Wake,
     ) -> Result<Self, String> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let acceptor = std::thread::Builder::new()
-            .name("tilo-shell-ui-accept".into())
-            .spawn(move || {
-                let next = AtomicU64::new(1);
-                loop {
-                    match listener.accept() {
-                        Ok(_) if thread_stop.load(Ordering::Acquire) => break,
-                        Ok((stream, _)) => {
-                            let connection = next.fetch_add(1, Ordering::Relaxed);
-                            let (launches, requests, wake) =
-                                (Arc::clone(&launches), requests.clone(), wake.clone());
-                            let stop = Arc::clone(&thread_stop);
-                            let _ = std::thread::Builder::new()
-                                .name(format!("tilo-shell-ui-{connection}"))
-                                .spawn(move || {
-                                    serve_connection(
-                                        connection, stream, &launches, &requests, &wake, &stop,
-                                    );
-                                });
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(error) => {
-                            if thread_stop.load(Ordering::Acquire) {
-                                break;
-                            }
-                            tracing::warn!(%error, "the shell-ui service could not accept");
-                            std::thread::sleep(Duration::from_millis(100));
-                        }
-                    }
-                }
-            })
-            .map_err(|error| {
-                let _ = std::fs::remove_file(&path);
-                format!("spawn the shell-ui service: {error}")
-            })?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("serve the shell-ui socket: {error}"))?;
         Ok(Self {
-            stop,
-            acceptor: Some(acceptor),
+            standing: standing(&path),
+            listener,
             path,
+            next: AtomicU64::new(1),
+            launches,
+            requests,
+            wake,
         })
+    }
+
+    /// Take every connection waiting, each served on a thread of its own: what
+    /// it asks arrives on the session's channel, for the session to answer on
+    /// this pass.
+    fn take(&self) {
+        loop {
+            let stream = match self.listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    tracing::warn!(%error, "the shell-ui service could not accept");
+                    return;
+                }
+            };
+            let connection = self.next.fetch_add(1, Ordering::Relaxed);
+            let (launches, requests, wake) = (
+                Arc::clone(&self.launches),
+                self.requests.clone(),
+                Arc::clone(&self.wake),
+            );
+            let _ = std::thread::Builder::new()
+                .name(format!("tilo-shell-ui-{connection}"))
+                .spawn(move || serve_connection(connection, stream, &launches, &requests, &wake));
+        }
     }
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        // The acceptor waits in `accept`; one connection wakes it to see the
-        // flag. If nothing can connect it is not waited for.
-        if let Some(acceptor) = self.acceptor.take()
-            && tilo_files::native::socket::connect(&self.path).is_ok()
-        {
-            let _ = acceptor.join();
+        // A session started while this one ran takes the path for its own: the
+        // socket standing there is that session's, and stays.
+        if standing(&self.path) == self.standing {
+            let _ = std::fs::remove_file(&self.path);
         }
-        let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// The socket standing at `path`, as the file system names it: the device and
+/// inode of the node there. A bound socket's own file descriptor names an
+/// inode of the socket layer, not this one.
+fn standing(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    Some((meta.dev(), meta.ino()))
 }
 
 /// The launcher's word for a connection, written before the sandbox starts:
@@ -586,10 +604,10 @@ fn hello_version(frame: &[u8]) -> Option<u16> {
 }
 
 // The channel handles are deliberately owned by the per-connection worker,
-// which outlives the accept loop's stack frame.
+// which outlives the pass that took the connection off the socket.
 #[allow(
     clippy::needless_pass_by_value,
-    reason = "the per-connection worker owns its handles and outlives the accept loop"
+    reason = "the per-connection worker owns its handles and outlives the session's pass"
 )]
 fn serve_connection(
     connection: u64,
@@ -597,7 +615,6 @@ fn serve_connection(
     launches: &Launches,
     requests: &mpsc::Sender<Request>,
     wake: &tilo_service::Wake,
-    stop: &AtomicBool,
 ) {
     // The process at the other end, as the socket says it: a window the app
     // opened, or the session's own connection for one it opened in the app.
@@ -654,7 +671,7 @@ fn serve_connection(
         return;
     }
     wake();
-    while !stop.load(Ordering::Acquire) {
+    loop {
         let frame = match wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
@@ -791,6 +808,81 @@ mod tests {
         .unwrap();
         frame.push(b'\n');
         frame
+    }
+
+    /// A socket on a path of the test's own, with the channel its asks land
+    /// on and a wake that does nothing.
+    fn socket_at(path: &std::path::Path) -> (Socket, mpsc::Receiver<Request>) {
+        let (requests, answers) = mpsc::channel();
+        let socket = Socket::serve(
+            tilo_files::native::socket::bind(path).unwrap(),
+            path.to_path_buf(),
+            Arc::new(Launches::default()),
+            requests,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        (socket, answers)
+    }
+
+    /// A session started while another ran takes the shell-ui path for itself.
+    /// The one that lost it ends without a client waking a thread for it, and
+    /// leaves the socket standing there alone.
+    #[test]
+    fn a_session_ending_leaves_the_socket_another_one_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shell-ui.sock");
+        let (first, _first_answers) = socket_at(&path);
+        std::fs::remove_file(&path).unwrap();
+        let (second, _second_answers) = socket_at(&path);
+        // Nothing connects to the socket the first one bound: ending it
+        // returns all the same.
+        let (ended, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(first);
+            let _ = ended.send(());
+        });
+        done.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the session ends without a connection to wake it");
+        assert!(path.exists(), "the second session's socket stands");
+        drop(second);
+        assert!(
+            !path.exists(),
+            "the socket goes with the session that bound it"
+        );
+    }
+
+    /// A window that connected before the pass is taken off the socket by it,
+    /// and is served from there on.
+    #[test]
+    fn a_connection_waiting_is_taken_on_the_sessions_pass() {
+        use std::io::{Read as _, Write as _};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shell-ui.sock");
+        let (socket, answers) = socket_at(&path);
+        let mut client = tilo_files::native::socket::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        socket.take();
+        let mut frames = handshake("so.tilo.notes");
+        let mut hello = serde_json::to_vec(&FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        })
+        .unwrap();
+        hello.push(b'\n');
+        frames.extend_from_slice(&hello);
+        client.write_all(&frames).unwrap();
+        // An app this session started nothing of is told nothing, and the
+        // connection closes.
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).unwrap();
+        assert!(rest.is_empty(), "nothing is written to that connection");
+        assert!(
+            answers.try_recv().is_err(),
+            "no ask of an app this session never started"
+        );
     }
 
     #[test]
