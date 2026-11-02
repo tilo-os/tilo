@@ -226,36 +226,6 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         capture(&mut session, "notification");
     }
 
-    // The readouts the hardware keys raise, at the levels and states the old
-    // shell's `media_key_osd` scenes show: a pill at the bottom centre with
-    // the key's own glyph, its level track where it has one, and the value
-    // alone beside it.
-    for (name, kind, level, on) in [
-        ("osd-volume", "volume", 0.65, true),
-        ("osd-volume-low", "volume", 0.10, true),
-        ("osd-muted", "volume", 0.65, false),
-        ("osd-brightness", "brightness", 0.40, true),
-        ("osd-mic-muted", "microphone", 0.0, false),
-        ("osd-next-track", "next-track", 0.0, true),
-        ("osd-keyboard-backlight", "keyboard-backlight", 0.5, true),
-        ("osd-no-backlight", "no-backlight", 0.0, true),
-    ] {
-        let mut session = session();
-        settle(&mut session, 2);
-        let mut readout = serde_json::json!({"kind": kind, "level": level});
-        if !on {
-            readout["on"] = serde_json::json!(false);
-        }
-        invoke_with(
-            &mut session,
-            tilo_desktop::osd::OSD_RESOURCE,
-            "show",
-            &readout,
-        );
-        settle(&mut session, 2);
-        capture(&mut session, name);
-    }
-
     // A dialog over a window: the portal asking to share a screen.
     {
         use tilo_sheets::Seat as _;
@@ -316,56 +286,173 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
     }
 }
 
-/// The readout a hardware key raises rests where the old shell's did: a
-/// content-fit pill at the bottom centre of the output, its value alone
-/// beside the glyph, and nothing where it used to be a wide slab.
+/// One readout scene in both styles: the state the old shell's `media_key_osd`
+/// frames show, drawn by the readout that answers it now.
+fn capture_readout(name: &str, readout: serde_json::Value) {
+    for (style, mut session) in [("", session()), ("-light", light_session())] {
+        settle(&mut session, 2);
+        invoke_with(
+            &mut session,
+            tilo_desktop::osd::OSD_RESOURCE,
+            "show",
+            &readout,
+        );
+        settle(&mut session, 2);
+        capture(&mut session, &format!("{name}{style}"));
+    }
+}
+
+/// The desk alone in both styles: what a readout capture is drawn over, so the
+/// pill it adds can be measured against it.
+fn capture_readout_desk() {
+    for (style, mut session) in [("", session()), ("-light", light_session())] {
+        settle(&mut session, 2);
+        capture(&mut session, &format!("osd-desk{style}"));
+    }
+}
+
 #[test]
-fn the_readout_rests_bottom_centred_and_reads_its_value() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one harness lists the readout states in a fixed order"
+)]
+fn pixel_parity_readout_frames_match_the_old_shells_scenes() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let mut session = session();
-    settle(&mut session, 4);
-    let before = session
+    std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
+    // The desk the readouts float over, in both styles: the frame a readout's
+    // capture differs from, so its pill can be measured against it.
+    capture_readout_desk();
+    // A content-sized pill that names the device the key changed, its level
+    // drawn as the bar under the name, and a mode change said in words. The
+    // old shell's `media_key_osd` scenes are the same states, so the two sit
+    // side by side.
+    for (name, readout) in [
+        (
+            "osd-volume",
+            serde_json::json!({
+                "kind": "volume",
+                "level": 0.65,
+                "device": "Studio headphones",
+                "device-glyph": "headphones",
+            }),
+        ),
+        (
+            "osd-volume-low",
+            serde_json::json!({
+                "kind": "volume",
+                "level": 0.10,
+                "device": "Studio headphones",
+                "device-glyph": "headphones",
+            }),
+        ),
+        (
+            "osd-muted",
+            serde_json::json!({
+                "kind": "volume",
+                "level": 0.65,
+                "on": false,
+                "device": "Studio headphones",
+                "device-glyph": "headphones",
+            }),
+        ),
+        (
+            "osd-brightness",
+            serde_json::json!({
+                "kind": "brightness",
+                "level": 0.40,
+                "device": "Built-in display",
+                "device-glyph": "display",
+            }),
+        ),
+        (
+            "osd-keyboard-backlight",
+            serde_json::json!({
+                "kind": "keyboard-backlight",
+                "level": 0.5,
+                "device": "Keyboard",
+                "device-glyph": "keyboard",
+            }),
+        ),
+        (
+            "osd-mic-muted",
+            serde_json::json!({"kind": "microphone", "on": false}),
+        ),
+        (
+            "osd-next-track",
+            serde_json::json!({"kind": "next-track", "on": true}),
+        ),
+        (
+            "osd-night-light",
+            serde_json::json!({"kind": "night-light", "on": true}),
+        ),
+        (
+            "osd-do-not-disturb",
+            serde_json::json!({"kind": "do-not-disturb", "on": true}),
+        ),
+        (
+            "osd-no-backlight",
+            serde_json::json!({"kind": "no-backlight", "on": true}),
+        ),
+    ] {
+        capture_readout(name, readout);
+    }
+}
+
+/// The readout names the device it changed, and the level is the bar: a pill
+/// as wide as what it reads, two rows (the device and the value above the bar)
+/// for a level, one for a mode change.
+#[test]
+fn the_readout_names_its_device_and_the_level_is_the_bar() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
+    let mut played = session();
+    settle(&mut played, 4);
+    let before = played
         .compositor()
         .screenshot("HEADLESS-1")
         .expect("screenshot");
 
     invoke_with(
-        &mut session,
+        &mut played,
         tilo_desktop::osd::OSD_RESOURCE,
         "show",
-        &serde_json::json!({"kind": "volume", "level": 0.65}),
+        &serde_json::json!({
+            "kind": "volume",
+            "level": 0.65,
+            "device": "Studio headphones",
+            "device-glyph": "headphones",
+        }),
     );
-    settle(&mut session, 2);
-    let after = session
+    settle(&mut played, 2);
+    let after = played
         .compositor()
         .screenshot("HEADLESS-1")
         .expect("screenshot");
     assert!(
-        session
+        played
             .accessible_labels()
             .iter()
-            .any(|label| label.contains("Volume 65%")),
-        "the readout says its value to a screen reader: {:?}",
-        session.accessible_labels()
+            .any(|label| label.contains("Studio headphones, 65%")),
+        "the readout says whose level it is to a screen reader: {:?}",
+        played.accessible_labels()
     );
 
-    // The old shell's pill on a 1280 by 800 output: centred, its bottom edge
-    // two spacing steps of sixteen above the screen's, as high as its glyph
-    // plus a step of twelve above and below, and exactly as wide as its
-    // glyph, its level track and its widest reading need. Nothing else on
-    // the desk lights up: the readout takes no more room than that.
+    // On a 1280 by 800 output the pill rests one step of sixty-four above the
+    // screen's foot (the line the old shell's pill sat on), centred, two rows
+    // of a device name and value above the bar: nothing of the desk lights up
+    // outside it, so it takes no more room than what it reads.
     let (left, top, right, bottom) =
         lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
             .expect("the readout paints something");
     let (width, centre) = (right - left, usize::midpoint(left, right));
-    assert!((685..=691).contains(&top), "the pill's top is at {top}");
+    assert!((668..=676).contains(&top), "the pill's top is at {top}");
     assert!(
         (733..=739).contains(&bottom),
         "the pill's bottom is at {bottom}"
     );
     assert!(
-        (3..=51).contains(&(bottom - top)),
+        (60..=68).contains(&(bottom - top)),
         "the pill is {} high",
         bottom - top
     );
@@ -374,8 +461,47 @@ fn the_readout_rests_bottom_centred_and_reads_its_value() {
         "the pill is centred at {centre}"
     );
     assert!(
-        (200..=300).contains(&width),
-        "the pill is {width} wide: as wide as it needs, not the old slab's 320"
+        (150..=320).contains(&width),
+        "the pill is {width} wide: as wide as what it reads"
+    );
+
+    // A mode change is one row of words, so its pill is shorter than a
+    // level's and rests on the same line.
+    let mut changed = session();
+    settle(&mut changed, 4);
+    let before = changed
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    invoke_with(
+        &mut changed,
+        tilo_desktop::osd::OSD_RESOURCE,
+        "show",
+        &serde_json::json!({"kind": "night-light", "on": true}),
+    );
+    settle(&mut changed, 2);
+    let after = changed
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    assert!(
+        changed
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Night light on"),
+        "a mode change is said in words: {:?}",
+        changed.accessible_labels()
+    );
+    let (_, top, _, bottom) = lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
+        .expect("the hint paints something");
+    assert!(
+        (44..=52).contains(&(bottom - top)),
+        "the hint pill is {} high: one row",
+        bottom - top
+    );
+    assert!(
+        (733..=739).contains(&bottom),
+        "the hint's bottom is at {bottom}"
     );
 }
 

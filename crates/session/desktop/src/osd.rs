@@ -462,7 +462,7 @@ impl Hint {
             OsdKind::DoNotDisturb => (Icon::Bell, GlyphTone::Off),
             OsdKind::Magnifier if self.on => (Icon::ZoomIn, GlyphTone::On),
             OsdKind::Magnifier => (Icon::ZoomIn, GlyphTone::Off),
-            OsdKind::PointerReleased => (Icon::Mouse, GlyphTone::On),
+            OsdKind::PointerReleased => (Icon::Hand, GlyphTone::On),
             OsdKind::Microphone if self.on => (Icon::Mic, GlyphTone::On),
             OsdKind::Microphone => (Icon::MicOff, GlyphTone::Warn),
             OsdKind::AirplaneMode if self.on => (Icon::WifiOff, GlyphTone::On),

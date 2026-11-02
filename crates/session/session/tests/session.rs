@@ -912,7 +912,7 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
         session
             .accessible_labels()
             .iter()
-            .any(|label| label == "Muted"),
+            .any(|label| label.contains("Muted")),
         "the readout shows the sound as the service reads it, here muted: {:?}",
         session.accessible_labels()
     );
@@ -925,27 +925,6 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
         .filter(|call| *call == "volume-up")
         .count();
     assert_eq!(after, louder, "the release stops the repeat");
-}
-
-#[test]
-fn a_brightness_key_on_a_machine_that_dims_nothing_says_so() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    tap(&mut session, keys::BRIGHTNESS_DOWN);
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "No adjustable display")
-    });
 }
 
 #[test]
@@ -2295,6 +2274,9 @@ fn settle(session: &mut Session, frames: u32) {
 
 #[path = "session/desk.rs"]
 mod desk;
+
+#[path = "session/readout.rs"]
+mod readout;
 
 /// The id of the tab the desk holds for `app`.
 fn tab_of(session: &Session, app: &str) -> u64 {

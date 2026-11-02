@@ -8,6 +8,7 @@
 //! screen shows and what it says is read from the session's published resource,
 //! which is what any app of the session reads.
 
+use super::readout::readout_saying;
 use super::*;
 
 use std::cell::Cell;
@@ -1110,4 +1111,95 @@ pub(super) fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
         }
     }
     cells
+}
+
+/// A level key pressed on the lock screen is answered there: the readout shows
+/// over the lock, on the display the person is at, and the lock keeps every
+/// key and pointer press it always did.
+#[test]
+fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let held = std::sync::Arc::new(Held::new());
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::clone(&held)
+                as std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
+            collab: false,
+            action_plane: ActionPlane::At(home.path().join("collab.sock")),
+            surfaces: vec![lock_screen()],
+            services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
+            ..Options::default()
+        },
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let desk = pictures(&mut session, &[DISPLAY]);
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().locked()
+    });
+    let locked = until_drawn(&mut session, &[DISPLAY], &desk);
+    let before = session
+        .compositor()
+        .screenshot(DISPLAY)
+        .expect("screenshot");
+
+    // The sound key works here: it changes a level and reveals nothing behind
+    // the lock. Its readout answers on the screen the key was pressed at.
+    tap(&mut session, keys::VOLUME_UP);
+    assert_eq!(
+        readout_saying(&mut session, "Speakers"),
+        "Speakers, Muted",
+        "the locked session answers the device key, naming the output"
+    );
+    // The frame the answer is drawn in, over the lock's own.
+    for _ in 0..3 {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    let after = session
+        .compositor()
+        .screenshot(DISPLAY)
+        .expect("screenshot");
+    assert!(
+        !asked.borrow().is_empty(),
+        "the key reached the sound service while locked"
+    );
+    // The lock's own frame stays: what changed is the readout drawn over it,
+    // across the middle of the display's foot.
+    let (width, height) = (after.width as usize, after.height as usize);
+    let mut changed: Option<(usize, usize, usize, usize)> = None;
+    for y in 0..height {
+        for x in 0..width {
+            let at = (y * width + x) * 4;
+            if before.rgba[at..at + 4] == after.rgba[at..at + 4] {
+                continue;
+            }
+            changed = Some(match changed {
+                None => (x, y, x + 1, y + 1),
+                Some((left, top, right, bottom)) => {
+                    (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1))
+                }
+            });
+        }
+    }
+    let (left, top, right, bottom) = changed.expect("the readout paints over the lock");
+    assert!(
+        (500..=780).contains(&left) && (500..=780).contains(&right),
+        "the readout is across the middle of the screen: {left}..{right}"
+    );
+    assert!(
+        (640..=760).contains(&top) && (640..=800).contains(&bottom),
+        "the readout is on the screen's foot, over the lock: {top}..{bottom}"
+    );
+    assert_eq!(
+        pictures(&mut session, &[DISPLAY])[0].len(),
+        locked[0].len(),
+        "the locked screen is still the one drawn under it"
+    );
 }

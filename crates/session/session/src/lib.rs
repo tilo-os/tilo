@@ -1711,7 +1711,7 @@ impl Session {
 
     /// Keep the readout's facts current: where the displays stand, where the
     /// person types, and a mode change waiting for the readout to confirm it.
-    fn follow_readout(&mut self) {
+    fn follow_readout(&self) {
         let caret = self.compositor.text_caret().map(|caret| {
             ui::kurbo::Rect::new(
                 caret.x,
@@ -2439,6 +2439,16 @@ impl Session {
         true
     }
 
+    /// Show a mode change in the readout, said in words: a switch flipped by
+    /// a key or a switch has nothing to read as a level.
+    fn hint(&self, kind: OsdKind, on: bool) {
+        self.shared.show_readout(Osd::from(Hint {
+            kind,
+            on,
+            chord: None,
+        }));
+    }
+
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
             SessionCommand::Lock => self.lock_by_person(),
@@ -2470,11 +2480,10 @@ impl Session {
                 let (zoom, remembered) = self.magnifier;
                 self.magnifier = settings_store::magnifier::step(zoom, remembered, step.into());
                 self.compositor.set_zoom(f64::from(self.magnifier.0));
-                self.shared.show_readout(Osd::from(Hint {
-                    kind: OsdKind::Magnifier,
-                    on: self.magnifier.0 > settings_store::magnifier::OFF,
-                    chord: None,
-                }));
+                self.hint(
+                    OsdKind::Magnifier,
+                    self.magnifier.0 > settings_store::magnifier::OFF,
+                );
                 Ok(())
             }
             SessionCommand::LogOut => {
@@ -2508,11 +2517,7 @@ impl Session {
                 if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
                     tracing::warn!(%error, "the night light setting was not kept");
                 }
-                self.shared.show_readout(Osd::from(Hint {
-                    kind: OsdKind::NightLight,
-                    on,
-                    chord: None,
-                }));
+                self.hint(OsdKind::NightLight, on);
                 Ok(())
             }
             SessionCommand::PasteFiles { destination } => {
@@ -2548,11 +2553,7 @@ impl Session {
                 let enabled = on.unwrap_or(!self.input.touchpad_enabled);
                 self.input.touchpad_enabled = enabled;
                 self.compositor.set_input_config(self.input.clone());
-                self.shared.show_readout(Osd::from(Hint {
-                    kind: OsdKind::Touchpad,
-                    on: enabled,
-                    chord: None,
-                }));
+                self.hint(OsdKind::Touchpad, enabled);
                 Ok(())
             }
         }

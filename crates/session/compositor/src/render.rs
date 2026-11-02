@@ -490,10 +490,11 @@ where
         }
     };
     if locked {
-        // The lock client's surfaces, and then the session's own readout,
-        // which answers a key pressed on the lock screen and shows there.
-        elements.extend(state.lock_elements(renderer, output));
+        // The session's own readout answers a key pressed on the lock screen
+        // and shows over the lock: the elements are front first, so it comes
+        // before the lock client's surfaces.
         hosted(renderer, &mut elements, false);
+        elements.extend(state.lock_elements(renderer, output));
         return elements;
     }
     elements.extend(state.drag_icon_elements(renderer, output));
