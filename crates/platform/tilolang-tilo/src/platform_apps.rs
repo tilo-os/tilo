@@ -115,9 +115,18 @@ pub fn device_surfaces() -> Result<Vec<Surface>, String> {
 /// The packages of the device and Settings, each read from the surface it publishes, its
 /// resources named where the session publishes them.
 ///
+/// The surfaces are this build's own, so they are read once: every build of a package reads
+/// them, a development loop included.
+///
 /// # Errors
 /// A surface does not read, or does not have a type a view names.
 pub fn platform_packages() -> Result<Vec<PackageMeta>, String> {
+    static PACKAGES: std::sync::OnceLock<Result<Vec<PackageMeta>, String>> =
+        std::sync::OnceLock::new();
+    PACKAGES.get_or_init(read_packages).clone()
+}
+
+fn read_packages() -> Result<Vec<PackageMeta>, String> {
     let named = |mut meta: PackageMeta, roots: &[(&str, &str, &str)]| {
         for (name, ty, published) in roots {
             let Some(id) = meta
