@@ -27,7 +27,7 @@ pub trait DesktopSearchApi {
     fn choose(&mut self, index: usize, argument: Option<String>) -> bool;
     fn usage(&self) -> &Usage;
     fn set_usage(&mut self, usage: Usage);
-    fn set_max_width(&mut self, width: Option<f64>);
+    fn set_room(&mut self, width: f64, list_height: f64);
     fn desired_size(&self) -> (f64, f64);
     fn palette(&self) -> &dyn Widget;
     fn palette_mut(&mut self) -> &mut dyn Widget;
@@ -81,8 +81,8 @@ impl DesktopSearchApi for DesktopSearch {
     fn set_usage(&mut self, usage: Usage) {
         Self::set_usage(self, usage);
     }
-    fn set_max_width(&mut self, width: Option<f64>) {
-        self.palette_mut().set_max_width(width);
+    fn set_room(&mut self, width: f64, list_height: f64) {
+        Self::set_room(self, width, list_height);
     }
     fn desired_size(&self) -> (f64, f64) {
         self.palette().desired_size()
@@ -267,9 +267,11 @@ impl LazyDesktopSearch {
         }
     }
 
-    pub fn set_max_width(&mut self, width: Option<f64>) {
+    /// The card's room: how wide it is, and the tallest its list may grow,
+    /// once the code is in.
+    pub fn set_room(&mut self, width: f64, list_height: f64) {
         if let Some(search) = &mut self.search {
-            search.set_max_width(width);
+            search.set_room(width, list_height);
         }
     }
 

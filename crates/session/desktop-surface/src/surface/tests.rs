@@ -383,6 +383,109 @@ fn a_windows_search_stands_over_that_window() {
     assert!(palette.y0 > window.y0, "below the window's top");
 }
 
+/// Search over everything stands where the native shell's card stood: three
+/// fifths of the display's width, a little below its top, as many rows tall
+/// as the display gives it — not a small card centred on the screen.
+#[test]
+fn the_search_card_follows_the_display() {
+    let mut heights = Vec::new();
+    for (width, height) in [(1000, 700), (1280, 800), (2000, 1200)] {
+        let (surface, handle) = desk_with(1, Box::new(Installed));
+        handle.set_search_host(std::rc::Rc::new(Many));
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            surface,
+            (width, height),
+            Theme::dark(),
+        );
+        for _ in 0..3 {
+            frame.relayout();
+        }
+        handle.open_search(None);
+        for _ in 0..3 {
+            frame.relayout();
+        }
+        let card = frame.root::<DesktopSurface>().search_palette_rect();
+        let (width, height) = (f64::from(width), f64::from(height));
+        let expected = (width * 0.6).clamp(360.0, 640.0);
+        assert!(
+            (card.width() - expected).abs() < 0.5,
+            "a {width}x{height} display gives the card {card:?}, not {expected} wide"
+        );
+        assert!(
+            (card.center().x - width / 2.0).abs() < 0.5,
+            "the card {card:?} is centred across the display"
+        );
+        assert!(
+            (card.y0 - (height * 0.12).max(24.0)).abs() < 0.5,
+            "the card {card:?} stands a little below the display's top"
+        );
+        assert!(
+            card.y1 <= height,
+            "the card {card:?} stays on a {height} tall display"
+        );
+        heights.push(card.height());
+    }
+    // A taller display gives the card a longer list: the card takes the
+    // room it has rather than a fixed number of rows.
+    assert!(
+        heights[2] > heights[0],
+        "the card grows with the display: {heights:?}"
+    );
+    assert!(
+        heights[2] > 500.0,
+        "a 1200 tall display shows a long list: {heights:?}"
+    );
+}
+
+/// A host whose search answers with more rows than any card holds, so the
+/// card's own room decides how many it shows.
+struct Many;
+
+/// The rows [`Many`] answers with: more than fit on any display.
+struct Plenty;
+
+impl tilo_desktop_search::Source for Plenty {
+    fn id(&self) -> &'static str {
+        "plenty"
+    }
+
+    fn name(&self) -> String {
+        "Plenty".into()
+    }
+
+    fn query(&self, _: &str) -> Vec<tilo_desktop_search::Hit> {
+        (0..40)
+            .map(|i| tilo_desktop_search::Hit {
+                faces: Vec::new(),
+                outcome: None,
+                kind: tilo_desktop_search::ResourceKind::Note,
+                provider: "plenty".into(),
+                id: format!("note-{i}"),
+                title: format!("Note {i}"),
+                subtitle: None,
+                facts: Vec::new(),
+                score: ui::search::system::MAX_PROVIDER_SCORE,
+                icon: None,
+                target: tilo_desktop_search::Target::Window { tab: 0, app: None },
+            })
+            .collect()
+    }
+}
+
+impl SearchHost for Many {
+    fn feed(&self, _: &str, _: ui::search::system::SearchScope) -> SearchHostFeed {
+        SearchHostFeed {
+            sources: vec![Box::new(Plenty)],
+            ..SearchHostFeed::default()
+        }
+    }
+
+    fn performs(&self, _: &tilo_desktop_search::Target) -> bool {
+        false
+    }
+}
+
 /// A host whose search has a place of its own in every workspace: one in
 /// the workspace in front, and one another workspace names.
 #[derive(Default)]

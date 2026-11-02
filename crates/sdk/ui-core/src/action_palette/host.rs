@@ -27,7 +27,7 @@ use super::{ActionPalette, FIELD_SIZE, HostStep};
 const DEFAULT_LIST_ROWS: f64 = 10.0;
 /// Room the composed zero-state needs: glyph, headline, hint.
 const EMPTY_STATE_HEIGHT: f64 = 104.0;
-/// The card's width on its own: what a host that sets none gets.
+/// The card's own width, for a host that gives it none.
 const CARD_WIDTH: f64 = 480.0;
 const INPUT_HEIGHT: f64 = 40.0;
 const PADDING: f64 = 8.0;
@@ -236,8 +236,10 @@ impl ActionPalette {
         self.sync_list();
     }
 
-    /// The widest the card may be, in logical pixels: the host sets it from
-    /// the room it shows the palette in. `None` keeps its own width.
+    /// The width the card takes, in logical pixels: the host sets it from
+    /// the room it shows the palette in, so the card follows the window or
+    /// the display rather than its own size. `None` leaves it its own
+    /// width.
     pub fn set_max_width(&mut self, width: Option<f64>) {
         self.max_width = width.map(|width| width.max(0.0));
         self.structure_dirty = true;
@@ -466,9 +468,10 @@ impl ActionPalette {
         self.text_scale * self.ui_scale
     }
 
+    /// The card's width: the host's room for it, else its own.
     fn card_width(&self) -> f64 {
-        let width = CARD_WIDTH * self.layout_scale();
-        self.max_width.map_or(width, |max| width.min(max))
+        self.max_width
+            .unwrap_or_else(|| CARD_WIDTH * self.layout_scale())
     }
 
     /// The list's cap: what the host allows, else ten rows.

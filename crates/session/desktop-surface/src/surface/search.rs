@@ -1176,11 +1176,13 @@ impl DesktopSurface {
             .filter(|rect| rect.area() > 0.0)
     }
 
-    /// Place the palette's layout node: over the window a search of one
-    /// window was opened from, as an app's own palette stands over its
-    /// window, else centred near the top of the surface. It keeps its own
-    /// width where the surface has room for it, narrows to fit where it
-    /// has not (a phone), and stays on the surface.
+    /// Place the palette's layout node where the card stands: over the
+    /// window a search of one window was opened from, as an app's own
+    /// palette stands over its window, else the display's own card, a
+    /// little below its top. Both follow the room they have
+    /// ([`ui::action_palette::placement`] and [`ui::action_palette::list_cap`]),
+    /// so the card is three fifths of the room's width and as many rows as
+    /// the room is tall, and it stays on the surface.
     pub(super) fn search_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1195,8 +1197,14 @@ impl DesktopSurface {
             return None;
         }
         let surface = self.rect;
-        self.search
-            .set_max_width((surface.width() > 0.0).then(|| surface.width() - 2.0 * PALETTE_EDGE));
+        // What the search covers is what it stands over: the window in
+        // front, or the whole display when it reaches past it.
+        let area = self.searched_window_rect().unwrap_or(surface);
+        let (origin, width) = ui::action_palette::placement(area, theme);
+        if surface.width() > 0.0 {
+            self.search
+                .set_room(width, ui::action_palette::list_cap(area, theme));
+        }
         let node = self
             .search
             .palette_mut()?
@@ -1204,40 +1212,21 @@ impl DesktopSurface {
         let (width, _) = self.search.desired_size();
         let mut style = taffy.style(node).cloned().unwrap_or_default();
         style.position = ui::taffy::Position::Absolute;
-        if let Some(window) = self.searched_window_rect() {
-            let (origin, _) = ui::action_palette::placement(window, theme);
-            let x0 = (window.center().x - width / 2.0)
-                .min(surface.x1 - width - PALETTE_EDGE)
-                .max(surface.x0 + PALETTE_EDGE);
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "a place on the surface is a few thousand logical pixels"
-            )]
-            let at = |v: f64| ui::taffy::LengthPercentageAuto::length(v as f32);
-            style.inset = ui::taffy::Rect {
-                left: at(x0 - surface.x0),
-                right: ui::taffy::LengthPercentageAuto::auto(),
-                top: at(origin.y - surface.y0),
-                bottom: ui::taffy::LengthPercentageAuto::auto(),
-            };
-            style.margin.left = ui::taffy::LengthPercentageAuto::length(0.0);
-            let _ = taffy.set_style(node, style);
-            return Some(node);
-        }
-        // Centred, and within the surface's edges even where it is barely
-        // wider than the card.
-        let x0 = (surface.center().x - width / 2.0)
-            .min(surface.x1 - width - PALETTE_EDGE)
-            .max(surface.x0 + PALETTE_EDGE);
+        // Inside the surface's edges, even where it is barely wider than
+        // the card.
+        let x0 = origin.x.clamp(
+            surface.x0 + PALETTE_EDGE,
+            (surface.x1 - width - PALETTE_EDGE).max(surface.x0 + PALETTE_EDGE),
+        );
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a place on the surface is a few thousand logical pixels"
         )]
-        let left = (x0 - surface.x0) as f32;
+        let at = |v: f64| ui::taffy::LengthPercentageAuto::length(v as f32);
         style.inset = ui::taffy::Rect {
-            left: ui::taffy::LengthPercentageAuto::length(left),
+            left: at(x0 - surface.x0),
             right: ui::taffy::LengthPercentageAuto::auto(),
-            top: ui::taffy::LengthPercentageAuto::percent(0.1),
+            top: at(origin.y - surface.y0),
             bottom: ui::taffy::LengthPercentageAuto::auto(),
         };
         style.margin.left = ui::taffy::LengthPercentageAuto::length(0.0);
