@@ -42,7 +42,7 @@ impl Session {
     /// What this pass's runs and services did: an agent's run fed, the door
     /// that reads its conversation lent, and the services polled, so the
     /// surfaces below show what they published.
-    pub(super) fn serve_runs_and_services(&mut self) {
+    pub(super) fn serve_runs_and_services(&self) {
         self.shared.feed_agent_runs();
         // The door that decides what a person's line in a run's conversation
         // reads and changes, once this pass's runs know where they are

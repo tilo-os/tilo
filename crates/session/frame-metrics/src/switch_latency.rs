@@ -260,7 +260,7 @@ mod tests {
         {
             let chord = Instant::now();
             let rest = chord + ms(400);
-            let mut tracker = SwitchLatency::default();
+            let tracker = SwitchLatency::default();
             tracker.chord(chord);
             let mut at = chord + ms(5);
             let sample = loop {
@@ -289,7 +289,7 @@ mod tests {
 
         {
             let chord = Instant::now();
-            let mut tracker = SwitchLatency::default();
+            let tracker = SwitchLatency::default();
             tracker.chord(chord);
             tracker.chord(chord + ms(2));
             let sample = tracker
@@ -311,7 +311,7 @@ mod tests {
         // Frames shown 0, 1, 3 and 6 intervals in: 0 + 1 + 2 intervals were empty.
         {
             let chord = Instant::now();
-            let mut tracker = SwitchLatency::default();
+            let tracker = SwitchLatency::default();
             tracker.chord(chord);
             let frames = [
                 (us(3_000), true),
@@ -336,7 +336,7 @@ mod tests {
         // sample waits for the resting frame's retirement.
         {
             let chord = Instant::now();
-            let mut tracker = SwitchLatency::default();
+            let tracker = SwitchLatency::default();
             tracker.chord(chord);
             assert_eq!(
                 tracker.frame_queued(Some(10), chord + ms(4), HZ60, true),
@@ -375,7 +375,7 @@ mod tests {
 
         {
             let chord = Instant::now();
-            let mut tracker = SwitchLatency::default();
+            let tracker = SwitchLatency::default();
             tracker.chord(chord);
             let _ = tracker.frame_queued(Some(1), chord + ms(5), HZ60, true);
             let later = chord + STALE_AFTER + ms(1);
