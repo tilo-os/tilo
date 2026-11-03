@@ -208,9 +208,7 @@ action prioritize(t: Task, priority: Priority) (icon: .flag) {
 internal action add_subtask(tasks: Tasks, t: Task, title: Text) {
     if title != "" {
         tasks.items.insert(Task(title: title, parent: .some(t), project: t.project, section: t.section))
-        if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) {
-            check(t, false)
-        }
+        if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
     }
 }
 
@@ -227,9 +225,7 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
         moved.parent = parent
         if let last = tasks.items.filter(x -> x.parent == parent and x != moved).last() { tasks.items.move(moved, after: last) } else if let p = parent { tasks.items.move(moved, after: p) }
     }
-    if not moved.done and tasks.items.ancestors(moved, .parent).any(a -> a.done) {
-        check(moved, false)
-    }
+    if not moved.done and tasks.items.ancestors(moved, .parent).any(a -> a.done) { check(moved, false) }
 }
 
 /// Moves a task under the task just over it, as Tab does in an outline.
@@ -325,9 +321,7 @@ action rename(p: Project, name: Text) {
 fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
     if let p = place {
         p == top or items.ancestors(p, .parent).any(a -> a == top)
-    } else {
-        false
-    }
+    } else { false }
 }
 
 /// The tasks of a project, in order.

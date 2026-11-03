@@ -422,7 +422,7 @@ fn undo_opens_a_checked_task_and_every_task_under_it_at_once() {
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks.clone(), Value::text("Write the launch post")],
     ));
     ada.commit();

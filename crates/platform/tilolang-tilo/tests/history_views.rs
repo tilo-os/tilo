@@ -738,7 +738,7 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks.clone(), Value::text("Write the launch post")],
     );
     call(
