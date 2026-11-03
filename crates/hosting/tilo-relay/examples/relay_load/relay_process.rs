@@ -33,7 +33,7 @@ pub struct Setup {
     pub relay_secret_key: [u8; 32],
     pub relay_cert: DeviceCert,
     /// Each room's workspace id and the device keys of its members.
-    pub rooms: Vec<(u64, Vec<[u8; 32]>)>,
+    pub workspaces: Vec<(u64, Vec<[u8; 32]>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -253,7 +253,7 @@ async fn serve_relay() -> anyhow::Result<()> {
         iroh::RelayMode::Disabled,
     )
     .await?;
-    for (id, members) in setup.rooms {
+    for (id, members) in setup.workspaces {
         // The rooms are the relay owner's; their governor admits exactly
         // the load's devices.
         relay

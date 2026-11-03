@@ -5,21 +5,21 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
-use tilo_relay_protocol::room_operator::{OperatorCommand, RoomEvent, VERSION};
-use tilo_relay_protocol::rooms::RoomRole;
+use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
+use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-struct Room {
+struct Workspace {
     child: Child,
     stdin: ChildStdin,
-    events: mpsc::Receiver<RoomEvent>,
+    events: mpsc::Receiver<OperatorEvent>,
 }
 
 fn start(
     state: &std::path::Path,
     root_file: &std::path::Path,
     secrets: &std::path::Path,
-) -> std::io::Result<Room> {
+) -> std::io::Result<Workspace> {
     start_with(state, root_file, secrets, &[])
 }
 
@@ -28,7 +28,7 @@ fn start_with(
     root_file: &std::path::Path,
     secrets: &std::path::Path,
     extra: &[&str],
-) -> std::io::Result<Room> {
+) -> std::io::Result<Workspace> {
     let mut child = Command::new(tilo_test_env::package_binary!("tilo-relay"))
         .env("TILO_SECRETS_DIR", secrets)
         .env("TILO_RELAY_LOG", "warn")
@@ -58,22 +58,22 @@ fn start_with(
     let (sender, events) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Ok(event) = RoomEvent::from_line(&line)
+            if let Ok(event) = OperatorEvent::from_line(&line)
                 && sender.send(event).is_err()
             {
                 break;
             }
         }
     });
-    Ok(Room {
+    Ok(Workspace {
         child,
         stdin,
         events,
     })
 }
 
-impl Room {
-    fn next(&self, what: impl Fn(&RoomEvent) -> bool) -> RoomEvent {
+impl Workspace {
+    fn next(&self, what: impl Fn(&OperatorEvent) -> bool) -> OperatorEvent {
         loop {
             let event = self
                 .events
@@ -111,12 +111,12 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
 
     let mut room = start(&state, &root_file, &secrets).unwrap();
-    let RoomEvent::Started {
-        room: Some(id),
+    let OperatorEvent::Started {
+        workspace: Some(id),
         version,
         user_public_key,
         ..
-    } = room.next(|e| matches!(e, RoomEvent::Started { .. }))
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
     else {
         panic!("no governed room announced")
     };
@@ -125,15 +125,15 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
         user_public_key: "22".repeat(32),
         token_sha256: "33".repeat(32),
         label: "Brave Otter".into(),
-        role: RoomRole::Editor,
+        role: WorkspaceRole::Editor,
     });
     let event = room.next(|e| {
         matches!(
             e,
-            RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
+            OperatorEvent::PreAdmitted { .. } | OperatorEvent::PreAdmitRefused { .. }
         )
     });
-    let RoomEvent::PreAdmitted {
+    let OperatorEvent::PreAdmitted {
         token_sha256,
         invitation,
     } = event
@@ -146,11 +146,11 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
         user_public_key: "not-hex".into(),
         token_sha256: "44".repeat(32),
         label: "x".into(),
-        role: RoomRole::Editor,
+        role: WorkspaceRole::Editor,
     });
     assert!(matches!(
-        room.next(|e| matches!(e, RoomEvent::PreAdmitRefused { .. })),
-        RoomEvent::PreAdmitRefused { .. }
+        room.next(|e| matches!(e, OperatorEvent::PreAdmitRefused { .. })),
+        OperatorEvent::PreAdmitRefused { .. }
     ));
 
     // A watching page's device becomes the spectator person: not the owner,
@@ -161,10 +161,10 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     let event = room.next(|e| {
         matches!(
             e,
-            RoomEvent::SpectatorCertified { .. } | RoomEvent::SpectateRefused { .. }
+            OperatorEvent::SpectatorCertified { .. } | OperatorEvent::SpectateRefused { .. }
         )
     });
-    let RoomEvent::SpectatorCertified { certificate, .. } = event else {
+    let OperatorEvent::SpectatorCertified { certificate, .. } = event else {
         panic!("the spectator was refused: {event:?}");
     };
     assert_eq!(certificate.device_public_key, [0x66; 32]);
@@ -175,9 +175,10 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
 
     // Restarted: the same room, and the same spectator person.
     let mut room = start(&state, &root_file, &secrets).unwrap();
-    let RoomEvent::Started {
-        room: Some(again), ..
-    } = room.next(|e| matches!(e, RoomEvent::Started { .. }))
+    let OperatorEvent::Started {
+        workspace: Some(again),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
     else {
         panic!("no governed room announced")
     };
@@ -185,13 +186,13 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     room.tell(&OperatorCommand::Spectate {
         device_public_key: "77".repeat(32),
     });
-    let RoomEvent::SpectatorCertified {
+    let OperatorEvent::SpectatorCertified {
         certificate: second,
         ..
     } = room.next(|e| {
         matches!(
             e,
-            RoomEvent::SpectatorCertified { .. } | RoomEvent::SpectateRefused { .. }
+            OperatorEvent::SpectatorCertified { .. } | OperatorEvent::SpectateRefused { .. }
         )
     })
     else {
@@ -214,7 +215,7 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
 
 /// Asks the room to pre-admit `visitors` all at once and waits for every
 /// answer: how long the last one took.
-fn pre_admit_all(room: &mut Room, visitors: std::ops::Range<usize>) -> Duration {
+fn pre_admit_all(room: &mut Workspace, visitors: std::ops::Range<usize>) -> Duration {
     let asked = std::time::Instant::now();
     let count = visitors.len();
     for visitor in visitors {
@@ -223,18 +224,18 @@ fn pre_admit_all(room: &mut Room, visitors: std::ops::Range<usize>) -> Duration 
             user_public_key: hex::encode(blake3::hash(&seed).as_bytes()),
             token_sha256: hex::encode(blake3::hash(&[&seed[..], b"token"].concat()).as_bytes()),
             label: format!("Guest {visitor}"),
-            role: RoomRole::Editor,
+            role: WorkspaceRole::Editor,
         });
     }
     for _ in 0..count {
         let event = room.next(|e| {
             matches!(
                 e,
-                RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
+                OperatorEvent::PreAdmitted { .. } | OperatorEvent::PreAdmitRefused { .. }
             )
         });
         assert!(
-            matches!(event, RoomEvent::PreAdmitted { .. }),
+            matches!(event, OperatorEvent::PreAdmitted { .. }),
             "refused: {event:?}"
         );
     }
@@ -269,7 +270,7 @@ fn bursts_of_pre_admissions_share_the_rooms_writes() {
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
     let mut room = start(&state, &root_file, &secrets).unwrap();
-    room.next(|e| matches!(e, RoomEvent::Started { .. }));
+    room.next(|e| matches!(e, OperatorEvent::Started { .. }));
     let mut lone_visitor = 1_000_000;
     let mut measured = Vec::new();
     for burst in 0..BURSTS {
@@ -312,8 +313,10 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
     };
     let started = |extra: &[&str]| {
         let room = start_with(&state, &root_file, &secrets, extra).unwrap();
-        let RoomEvent::Started { room: Some(id), .. } =
-            room.next(|e| matches!(e, RoomEvent::Started { .. }))
+        let OperatorEvent::Started {
+            workspace: Some(id),
+            ..
+        } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
         else {
             panic!("no governed room announced")
         };
@@ -429,7 +432,7 @@ fn page(
 
 /// Ask the room to certify a fresh page device as its spectator person, as
 /// the room service's `/spectate` does for the homepage embed.
-fn spectate(room: &mut Room) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+fn spectate(room: &mut Workspace) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
     let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
         getrandom::SysRng,
     ));
@@ -439,10 +442,10 @@ fn spectate(room: &mut Room) -> (ed25519_dalek::SigningKey, tilo_user_identity::
     match room.next(|e| {
         matches!(
             e,
-            RoomEvent::SpectatorCertified { .. } | RoomEvent::SpectateRefused { .. }
+            OperatorEvent::SpectatorCertified { .. } | OperatorEvent::SpectateRefused { .. }
         )
     }) {
-        RoomEvent::SpectatorCertified { certificate, .. } => (key, certificate),
+        OperatorEvent::SpectatorCertified { certificate, .. } => (key, certificate),
         other => panic!("the spectator was refused: {other:?}"),
     }
 }
@@ -560,8 +563,10 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
         &["--chat-channel", "general", "--web-plain", &web_plain],
     )
     .unwrap();
-    let RoomEvent::Started { room: Some(id), .. } =
-        room.next(|e| matches!(e, RoomEvent::Started { .. }))
+    let OperatorEvent::Started {
+        workspace: Some(id),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
     else {
         panic!("no governed room announced")
     };
@@ -673,8 +678,12 @@ fn a_persistent_room_reopens_after_hard_stops() {
         "--web-plain",
         web_plain.as_str(),
     ];
-    let started = |room: &Room| match room.next(|e| matches!(e, RoomEvent::Started { .. })) {
-        RoomEvent::Started { room: Some(id), .. } => id,
+    let started = |room: &Workspace| match room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    {
+        OperatorEvent::Started {
+            workspace: Some(id),
+            ..
+        } => id,
         other => panic!("no governed room announced: {other:?}"),
     };
 
@@ -684,14 +693,14 @@ fn a_persistent_room_reopens_after_hard_stops() {
         user_public_key: "22".repeat(32),
         token_sha256: "33".repeat(32),
         label: "Brave Otter".into(),
-        role: RoomRole::Editor,
+        role: WorkspaceRole::Editor,
     });
     assert!(matches!(
         room.next(|e| matches!(
             e,
-            RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
+            OperatorEvent::PreAdmitted { .. } | OperatorEvent::PreAdmitRefused { .. }
         )),
-        RoomEvent::PreAdmitted { .. }
+        OperatorEvent::PreAdmitted { .. }
     ));
     let _ = spectate(&mut room);
     room.kill();

@@ -100,11 +100,11 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
     let room = create_and_enter(&relay, &laptop, "Lounge").await;
-    let mut bob_peer = join(&relay, &laptop, &room.room, &bob, &phone, [7; 32])
+    let mut bob_peer = join(&relay, &laptop, &room.workspace, &bob, &phone, [7; 32])
         .await
         .unwrap();
     let mut alice_peer = StatePeer::new(
-        &room.room,
+        &room.workspace,
         host.cert.clone(),
         vec![host.cert.clone()],
         RevocationList::new(),
@@ -143,10 +143,10 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     .await;
 
     // Bob's write leaves his device sealed; the governor takes it in.
-    let rooms = relay.rooms().unwrap();
-    let mut followed = rooms.record_writes();
+    let workspaces = relay.workspaces().unwrap();
+    let mut followed = workspaces.record_writes();
     let group = ChannelGroup::create(
-        collab_types::document_channel_id(APP, &room.room, ""),
+        collab_types::document_channel_id(APP, &room.workspace, ""),
         MemberKey::generate("bob").unwrap(),
     )
     .unwrap();
@@ -188,7 +188,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // The next person is let in, by a governance change published after it.
     let carol = TestUser::fresh("Carol");
     let tablet = carol.enrol("carol-tablet", DeviceCapabilities::member());
-    join(&relay, &laptop, &room.room, &carol, &tablet, [8; 32])
+    join(&relay, &laptop, &room.workspace, &carol, &tablet, [8; 32])
         .await
         .expect("a sealed record write keeps nobody out");
     let seated = |members: &[tilo_peer_state::GovernedMember], person: [u8; 32]| {
@@ -197,7 +197,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
             .any(|member| member.user_public_key == person && !member.removed)
     };
     assert!(seated(
-        &rooms.summary(&room.room).await.unwrap().members,
+        &workspaces.summary(&room.workspace).await.unwrap().members,
         carol.user_pk
     ));
 
@@ -208,14 +208,14 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let relay = start(state.path(), &alice, &host).await;
     let dan = TestUser::fresh("Dan");
     let watch = dan.enrol("dan-watch", DeviceCapabilities::member());
-    join(&relay, &laptop, &room.room, &dan, &watch, [9; 32])
+    join(&relay, &laptop, &room.workspace, &dan, &watch, [9; 32])
         .await
         .expect("a reopened room with a sealed record keeps nobody out");
     assert!(seated(
         &relay
-            .rooms()
+            .workspaces()
             .unwrap()
-            .summary(&room.room)
+            .summary(&room.workspace)
             .await
             .unwrap()
             .members,

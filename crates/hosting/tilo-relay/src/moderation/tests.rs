@@ -58,7 +58,7 @@ fn texts_by(messages: &chat::messages::Messages, author: &str) -> Vec<String> {
         .collect()
 }
 
-/// The room's chat after Mallory flooded `#general` and Ada reported her,
+/// The workspace's chat after Mallory flooded `#general` and Ada reported her,
 /// her posts in the parts of its messages the page holds beside it.
 fn flooded_room() -> Replica {
     let catalogue = AppCatalogue::native();
@@ -130,7 +130,7 @@ fn flooded_room() -> Replica {
     )
     .unwrap();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    // What the page did is the room's now.
+    // What the page did is the workspace's now.
     let _ = page.take_mutation();
     let _ = page.take_record_mutations();
     page
@@ -160,8 +160,8 @@ fn messages(replica: &Replica) -> chat::messages::Messages {
 }
 
 /// The moderation bot's replica of `page`'s record and the parts beside
-/// it: the room owner's installation, granted reading and undoable changes
-/// in the room.
+/// it: the workspace owner's installation, granted reading and undoable changes
+/// in the workspace.
 fn bot_replica(page: &Replica) -> Replica {
     let bot = Subject::bot(BOT);
     let grant = Grant::new(
@@ -209,7 +209,7 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
     }
     let now = tilo_clock::unix_now_ms_i64();
     let cx = Context::at(u64::try_from(now).unwrap());
-    // The host enforces governance as the room's root, held to its policy.
+    // The host enforces governance as the workspace's root, held to its policy.
     let mut govern = |change: Change| {
         let snapshot = policy.clone();
         let owner = Authority::person(snapshot.party(OWNER));
@@ -240,7 +240,7 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
     let enforced = ModerationAgent::<FakeJudge>::enforce(&mut door, look, verdict, model);
     assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
 
-    // What the bot did reaches the room like anyone's change.
+    // What the bot did reaches the workspace like anyone's change.
     page.apply(&bot.take_mutation().unwrap()).unwrap();
     for (record, mutation) in bot.take_record_mutations() {
         page.apply_record(&record, &mutation).unwrap();
@@ -275,7 +275,7 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
         policy
             .restricted_until(MALLORY, &cx)
             .is_some_and(|until| until > cx.now_unix_ms),
-        "Mallory is restricted by the room's own expiring Deny"
+        "Mallory is restricted by the workspace's own expiring Deny"
     );
 }
 

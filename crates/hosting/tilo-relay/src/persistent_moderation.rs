@@ -1,12 +1,12 @@
-//! The persistent room's moderation agent, when the operator mounts a model
+//! The persistent workspace's moderation agent, when the operator mounts a model
 //! key (`--moderation-key-file`).
 //!
 //! The key is kept in this host's secret store like every provider key, and
-//! the agent's verdicts are enforced through the room's own governance, as
-//! the room's root: a restriction is the room's expiring `restrict:<person>`
-//! Deny, a ban the room's ban. Reports, history, decisions and undos go
+//! the agent's verdicts are enforced through the workspace's own governance, as
+//! the workspace's root: a restriction is the workspace's expiring `restrict:<person>`
+//! Deny, a ban the workspace's ban. Reports, history, decisions and undos go
 //! through the bot's replica of the chat record; the host runs it as the
-//! room's moderation bot ([`tilo_relay::room_bots::ModerationBot`]).
+//! workspace's moderation bot ([`tilo_relay::room_bots::ModerationBot`]).
 
 use std::path::Path;
 
@@ -17,7 +17,7 @@ use tilo_moderation::anthropic::{AnthropicJudge, import_mounted_key};
 /// The moderation agent, its model's key imported from `key_file`.
 ///
 /// # Errors
-/// The key file is unreadable or empty, or the store refused it; the room
+/// The key file is unreadable or empty, or the store refused it; the workspace
 /// refuses to start rather than run unmoderated by mistake.
 pub(crate) fn load(
     store: &tilo_secrets::SecretStore,
@@ -36,17 +36,17 @@ pub(crate) const PUBLIC_MODERATION_KEY_ENV: &str = "TILO_RELAY_MODERATION_KEY_FI
 /// Names the model that moderates them, when not [`tilo_moderation::DEFAULT_MODEL`].
 pub(crate) const PUBLIC_MODERATION_MODEL_ENV: &str = "TILO_RELAY_MODERATION_MODEL";
 
-/// Run the moderation agent in every room this relay lists as a public
+/// Run the moderation agent in every workspace this relay lists as a public
 /// workspace, for as long as it is listed, when the operator mounted a
-/// model key ([`PUBLIC_MODERATION_KEY_ENV`]): a public room takes in
+/// model key ([`PUBLIC_MODERATION_KEY_ENV`]): a public workspace takes in
 /// strangers, so its reports are answered even while its moderators are
-/// away. Each room's agent is the persistent room's
+/// away. Each workspace's agent is the persistent workspace's
 /// ([`tilo_relay::room_bots::ModerationBot`]), its verdicts enforced
-/// through that room's governance.
+/// through that workspace's governance.
 ///
 /// # Errors
 /// The key is named but unusable; the relay refuses to start rather than
-/// run its public rooms unmoderated by mistake.
+/// run its public workspaces unmoderated by mistake.
 pub(crate) fn follow_published(
     relay: &tilo_relay::daemon::Relay,
 ) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
@@ -55,42 +55,42 @@ pub(crate) fn follow_published(
         return Ok(None);
     };
     let model = std::env::var(PUBLIC_MODERATION_MODEL_ENV).ok();
-    let Some(rooms) = relay.rooms().cloned() else {
+    let Some(workspaces) = relay.workspaces().cloned() else {
         return Ok(None);
     };
     let store = tilo_secrets::SecretStore::for_app(crate::persistent_room_cli::SECRET_APP);
     let agent = load(&store, &key_file, model.as_deref())?;
     tracing::info!(model = agent.model(), "public workspaces are moderated");
     Ok(Some(tokio::spawn(async move {
-        let mut changes = rooms.listing_changes();
+        let mut changes = workspaces.listing_changes();
         let mut running: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
             std::collections::HashMap::new();
         loop {
             let published: std::collections::BTreeSet<String> =
-                rooms.published_rooms().into_iter().collect();
-            running.retain(|room, bot| {
-                let listed = published.contains(room);
+                workspaces.published_rooms().into_iter().collect();
+            running.retain(|workspace, bot| {
+                let listed = published.contains(workspace);
                 if !listed {
                     bot.abort();
                 }
                 listed
             });
-            for room in published {
-                if running.contains_key(&room) {
+            for workspace in published {
+                if running.contains_key(&workspace) {
                     continue;
                 }
                 match load(&store, &key_file, model.as_deref()) {
                     Ok(agent) => {
                         let bot = tilo_relay::room_bots::ModerationBot::new(
-                            rooms.clone(),
-                            room.clone(),
-                            rooms.governor().clone(),
+                            workspaces.clone(),
+                            workspace.clone(),
+                            workspaces.governor().clone(),
                             agent,
                         );
-                        running.insert(room, tokio::spawn(bot.run()));
+                        running.insert(workspace, tokio::spawn(bot.run()));
                     }
                     Err(error) => {
-                        tracing::warn!(%room, error = %format!("{error:#}"), "a public workspace runs without its moderation agent");
+                        tracing::warn!(%workspace, error = %format!("{error:#}"), "a public workspace runs without its moderation agent");
                     }
                 }
             }
@@ -105,19 +105,19 @@ pub(crate) fn follow_published(
     })))
 }
 
-/// How often one person may have the room's model look over a review, and
+/// How often one person may have the workspace's model look over a review, and
 /// how often everyone together may: each review is one model call the
 /// operator pays for, and a report is reviewed once per change to its words.
 const REVIEWS_PER_PERSON: usize = 12;
-const REVIEWS_PER_ROOM: usize = 240;
+const REVIEWS_PER_WORKSPACE: usize = 240;
 const REVIEW_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// The room's moderation model, lent to the room's reporters to look over
+/// The workspace's moderation model, lent to the workspace's reporters to look over
 /// their reports before they send them: the reporter's page never holds the
-/// key, and it asks through its feedback admission, so only people the room
+/// key, and it asks through its feedback admission, so only people the workspace
 /// admits to report may ask, and only the review contract is asked
 /// (`tilo_agent_participant::FeedbackReviewer`).
-pub(crate) struct RoomReviewer {
+pub(crate) struct WorkspaceReviewer {
     judge: std::sync::Arc<AnthropicJudge>,
     runtime: tokio::runtime::Handle,
     asked: std::sync::Mutex<Asked>,
@@ -125,7 +125,9 @@ pub(crate) struct RoomReviewer {
 
 #[derive(Default)]
 struct Asked {
-    room: std::collections::VecDeque<std::time::Instant>,
+    /// Every ask, whoever made it, within the window.
+    all: std::collections::VecDeque<std::time::Instant>,
+    /// Each person's asks, within the window.
     people: std::collections::HashMap<[u8; 32], std::collections::VecDeque<std::time::Instant>>,
 }
 
@@ -140,22 +142,22 @@ impl Asked {
                 times.pop_front();
             }
         };
-        recent(&mut self.room);
+        recent(&mut self.all);
         self.people.retain(|_, times| {
             recent(times);
             !times.is_empty()
         });
         let theirs = self.people.entry(person).or_default();
-        if self.room.len() >= REVIEWS_PER_ROOM || theirs.len() >= REVIEWS_PER_PERSON {
+        if self.all.len() >= REVIEWS_PER_WORKSPACE || theirs.len() >= REVIEWS_PER_PERSON {
             return false;
         }
         theirs.push_back(now);
-        self.room.push_back(now);
+        self.all.push_back(now);
         true
     }
 }
 
-impl RoomReviewer {
+impl WorkspaceReviewer {
     /// The reviewer asking the model whose key [`load`] kept in `store`.
     ///
     /// # Errors
@@ -168,7 +170,7 @@ impl RoomReviewer {
             tilo_moderation::anthropic::profile(tilo_moderation::anthropic::HOST_PROFILE, model);
         let judge = AnthropicJudge::from_profile(&profile, store)
             .map_err(|error| anyhow::anyhow!("{error}"))
-            .context("load the room's review model")?;
+            .context("load the workspace's review model")?;
         Ok(Self {
             judge: std::sync::Arc::new(judge),
             runtime: tokio::runtime::Handle::current(),
@@ -177,7 +179,7 @@ impl RoomReviewer {
     }
 }
 
-impl tilo_agent_participant::FeedbackReviewer for RoomReviewer {
+impl tilo_agent_participant::FeedbackReviewer for WorkspaceReviewer {
     fn name(&self) -> String {
         format!(
             "Anthropic {}",
@@ -207,7 +209,7 @@ impl tilo_agent_participant::FeedbackReviewer for RoomReviewer {
         self.runtime.spawn(async move {
             let answer = judge.complete(&prompt, &schema).await;
             if let Err(error) = &answer {
-                tracing::warn!(%error, "the room's model did not review a report");
+                tracing::warn!(%error, "the workspace's model did not review a report");
             }
             done(answer.map_err(|error| error.to_string()));
         });
@@ -218,7 +220,7 @@ impl tilo_agent_participant::FeedbackReviewer for RoomReviewer {
 mod tests {
     use super::*;
 
-    /// One person cannot spend the room's model on reviews faster than a
+    /// One person cannot spend the workspace's model on reviews faster than a
     /// person writes reports, and a window later they may again.
     #[test]
     fn a_person_may_ask_only_so_often() {

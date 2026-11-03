@@ -18,7 +18,7 @@
 //! `POST /peer/v1/envelope` keeps one: `{envelope, issued_at_ms, signature}`
 //! where `envelope` is the envelope's JSON text and `signature` (hex) the
 //! root's Ed25519 signature over [`LABEL`], `issued_at_ms` (u64 little
-//! endian) and that text. Only a root admitted to a room here may keep one,
+//! endian) and that text. Only a root admitted to a workspace here may keep one,
 //! and only a newer statement replaces the kept one, so an old envelope
 //! (with a passkey since dropped) cannot be replayed over it.
 //! `POST /peer/v1/envelope/fetch` with the root public key (hex) as its body
@@ -81,7 +81,7 @@ struct Profile {
     /// when it is not one they uploaded.
     #[serde(default)]
     photo_from: Option<String>,
-    /// Their accounts elsewhere that a room here linked to them.
+    /// Their accounts elsewhere that a workspace here linked to them.
     #[serde(default)]
     linked: Vec<LinkedHandle>,
 }

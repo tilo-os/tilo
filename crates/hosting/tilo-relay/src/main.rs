@@ -9,7 +9,7 @@
 //! - `dev` (feature `web`) — a throwaway local host for browser development:
 //!   its own user root, the browser listener, and an approver that
 //!   certifies every browser that asks.
-//! - `room` (feature `web`) — a short-lived shared room: like `dev`, but it
+//! - `workspace` (feature `web`) — a short-lived shared workspace: like `dev`, but it
 //!   certifies only the browsers whose pairing codes its operator admits
 //!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
@@ -77,14 +77,14 @@ enum Cmd {
     /// it certifies every browser device that asks).
     #[cfg(feature = "web")]
     Dev(web_cli::DevArgs),
-    /// A short-lived shared room: its own user root and browser listener,
+    /// A short-lived shared workspace: its own user root and browser listener,
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
-    Room(Box<web_cli::RoomArgs>),
+    Room(Box<web_cli::WorkspaceArgs>),
 }
 
-/// Logs go to stderr: a persistent room's stdout is the line protocol its
-/// room service reads, which dropped every log line, so a hosted relay's
+/// Logs go to stderr: a persistent workspace's stdout is the line protocol its
+/// workspace service reads, which dropped every log line, so a hosted relay's
 /// refusals and errors were never seen anywhere.
 fn install_logging() {
     let filter = EnvFilter::try_from_env("TILO_RELAY_LOG")
@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
-    // So do the confined workers agents and room actions run apps in.
+    // So do the confined workers agents and workspace actions run apps in.
     #[cfg(feature = "agents")]
     if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
@@ -133,7 +133,7 @@ fn run() -> anyhow::Result<()> {
         }
         #[cfg(feature = "web")]
         Cmd::Room(args) => {
-            tilo_rt::daemon("tilo-relay").run(web_cli::room(*args, wait_for_shutdown()))?
+            tilo_rt::daemon("tilo-relay").run(web_cli::workspace(*args, wait_for_shutdown()))?
         }
     }
 }
@@ -245,7 +245,7 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Rooms the binary's own tests govern keep their documents in workers this
+// Workspaces the binary's own tests govern keep their documents in workers this
 // test executable serves, as `main` does through `dispatch_early`.
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();

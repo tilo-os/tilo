@@ -186,7 +186,7 @@ impl Fleet {
             user_public_key: self.user_public_key,
             relay_secret_key: self.relay.sk.to_bytes(),
             relay_cert: self.relay.cert.clone(),
-            rooms: self
+            workspaces: self
                 .rooms
                 .iter()
                 .map(|room| {
