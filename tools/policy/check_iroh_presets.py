@@ -49,7 +49,7 @@ EXEMPT = {
     "crates/hosting/tilo-relay/src/files_probe.rs": "relay diagnostic probe",
     "crates/hosting/tilo-relay/src/admin.rs": "relay admin client",
     # `tilo app push`: one command dialing the workspace host its link names.
-    "crates/hosting/tilo-relay-session/src/rooms/govern.rs": "workspace governance client of one command",
+    "crates/hosting/tilo-relay-session/src/workspaces/govern.rs": "workspace governance client of one command",
     # A client of the device administrator, which chooses its own relays.
     "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
     # The initrd's sibling unlock: it asks the siblings named in a token that
