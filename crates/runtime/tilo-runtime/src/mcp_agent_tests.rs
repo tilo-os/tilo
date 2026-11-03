@@ -430,9 +430,6 @@ impl Notes {
         let long = self.long.lock().unwrap().is_some();
         let notes = self.notes();
         let mut rows = vec![self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true)];
-        for (_, body, label) in &notes {
-            rows.push(self.row("", body, "tilo.rich-text", label, None, false));
-        }
         rows.extend([
             self.row(
                 NOTEBOOK,
@@ -462,6 +459,12 @@ impl Notes {
         ]);
         for (page, _, label) in &notes {
             rows.push(self.row(NOTEBOOK, page, "notes.page", label, None, true));
+        }
+        // A note's body is published under its note, as the live Notes
+        // publishes it: a field's row names its note as its parent, and the
+        // search names a row about the body by the note's title.
+        for (page, body, label) in &notes {
+            rows.push(self.row(page, body, "tilo.rich-text", label, None, false));
         }
         for (page, _, label) in &notes {
             rows.push(self.row(
@@ -723,6 +726,78 @@ impl Notes {
     }
 }
 
+impl tilo_actions::remote::ResourceSearch for Notes {
+    /// A stand-in for the desktop's one search: the rows the app publishes
+    /// whose names hold the query's words, best first, each as the resource
+    /// it is.
+    fn find(
+        &self,
+        _caller: &Caller,
+        needle: &str,
+    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionHostError>> {
+        let unreachable = self.unreachable.lock().unwrap().clone();
+        if let Some(reason) = unreachable {
+            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+        }
+        let words = page::needle_words(needle);
+        if words.is_empty() {
+            return Pending::ready(Ok(Vec::new()));
+        }
+        let mut found = Vec::new();
+        let rows = self.rows("1");
+        // A row about what another resource holds is about that resource:
+        // the live index lists the notebook's rows, and never both a note
+        // and the body inside it.
+        // A row about what another resource holds (a body published beside
+        // its note) is about that resource: the live index lists the
+        // notebook's rows, and never both a note and the body inside it. An
+        // action is about the resource it acts on, which is the note itself.
+        let owned = |row: &CatalogueRow| {
+            row.action.is_none()
+                && row.resource.kind == "tilo.rich-text"
+                && rows.iter().any(|other| {
+                    other.action.is_some()
+                        && other.resource.id == row.resource.id
+                        && other.resource.kind == row.resource.kind
+                })
+                && rows.iter().any(|owner| {
+                    owner.has_children
+                        && owner.resource.id != row.resource.id
+                        && row
+                            .resource
+                            .id
+                            .contains(owner.resource.id.rsplit(':').next().unwrap_or_default())
+                })
+        };
+        for row in rows.iter().filter(|row| !owned(row)) {
+            // Every word, as the one search reads a query: not the rows
+            // matching the most of it.
+            let score = page::word_score(row, &words);
+            if score < words.len() {
+                continue;
+            }
+            found.push((
+                score,
+                tilo_actions::remote::Found {
+                    resource: row.resource.id.clone(),
+                    kind: row.resource.kind.clone(),
+                    label: row.resource.label.clone(),
+                    open: Some(
+                        row.action.as_ref().map_or_else(
+                            || "open".to_owned(),
+                            |action| action.address.action.clone(),
+                        ),
+                    ),
+                    arguments: serde_json::Map::new(),
+                    app: Some(APP.to_owned()),
+                },
+            ));
+        }
+        found.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        Pending::ready(Ok(found.into_iter().map(|(_, found)| found).collect()))
+    }
+}
+
 impl ActionHost for Notes {
     fn query(
         &self,
@@ -733,6 +808,10 @@ impl ActionHost for Notes {
             Some(refused) => Pending::ready(Err(refused)),
             None => self.answer(&query),
         }
+    }
+
+    fn resource_search(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        Some(std::sync::Arc::new(self.clone()))
     }
 
     fn invoke(
@@ -884,7 +963,11 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 
 /// What a tool call answered, as the agent reads it: the text, and whether
 /// the call is an error.
-async fn tool(server: &McpServer<Notes>, name: &str, arguments: Value) -> (String, bool) {
+async fn tool<H: ActionHost + Send + Sync + 'static>(
+    server: &McpServer<H>,
+    name: &str,
+    arguments: Value,
+) -> (String, bool) {
     let reply = server
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
         .await
@@ -900,7 +983,10 @@ async fn tool(server: &McpServer<Notes>, name: &str, arguments: Value) -> (Strin
     )
 }
 
-fn agent(host: &Notes) -> McpServer<Notes> {
+fn agent<H>(host: &H) -> McpServer<H>
+where
+    H: ActionHost + Clone + Send + Sync + 'static,
+{
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
 }
 
@@ -1639,78 +1725,75 @@ fn an_installed_app_is_started_by_its_path_and_then_listed() {
     });
 }
 
+/// `find` answers by the one search the desktop runs, and a host without one
+/// says so: it never answers by a ranking of its own, which is what the
+/// palette and text typed on the canvas would not agree with.
 #[test]
-fn a_search_ranks_apps_then_resources_then_actions_and_lists_ready_paths() {
+fn find_answers_by_the_desktops_one_search_or_says_there_is_none() {
     let host = Notes::new(true);
     run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "notes"})).await;
+        let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "Groceries"})).await;
         assert!(!failed, "{text}");
-        assert_eq!(text.lines().next(), Some("notes  Notes  running"), "{text}");
-
-        let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "groceries"})).await;
-        assert!(!failed, "{text}");
-        let lines: Vec<&str> = text.lines().collect();
-        // The resources come before the actions on them.
-        let first_action = lines.iter().position(|line| line.contains('#')).unwrap();
-        assert!(
-            lines[..first_action].iter().all(|line| !line.contains('#')),
+        // The note leads: a row about the note's body is about the note, too,
+        // and every row names the app's path down to what it is about.
+        assert_eq!(
+            text.lines().next(),
+            Some("notes/Notebook/Groceries  notes.page"),
             "{text}"
         );
-        assert!(
-            lines[..first_action]
-                .iter()
-                .any(|line| line.contains("notes.page")),
-            "{text}"
-        );
-
+        // A host with no search of its own is told so, never given a second
+        // ranking's answers.
+        let no_search = NoSearch::new(&host);
         let (text, failed) = tool(
-            &agent(&host),
+            &agent(&no_search),
             "tilo_find",
-            json!({"query": "append paragraph"}),
+            json!({"query": "Groceries"}),
         )
         .await;
-        assert!(!failed, "{text}");
-        assert!(
-            text.lines()
-                .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
-            "a body is found under the note that owns it: {text}"
-        );
-        let path = text
-            .lines()
-            .next()
-            .unwrap()
-            .split('(')
-            .next()
-            .unwrap()
-            .to_owned();
-        let (done, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": path, "args": {"text": "y"}}),
-        )
-        .await;
-        assert!(!failed, "{path}: {done}");
-
-        let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "zzzz"})).await;
-        assert!(
-            !failed && text.starts_with("nothing matches zzzz"),
-            "{text}"
-        );
-        let (text, _) = tool(
-            &agent(&host),
-            "tilo_find",
-            json!({"query": "paragraph", "limit": 1}),
-        )
-        .await;
-        assert!(text.contains("more; narrow the query"), "{text}");
-        let (text, _) = tool(
-            &agent(&host),
-            "tilo_find",
-            json!({"query": "paragraph", "app": "sheets"}),
-        )
-        .await;
-        assert!(text.starts_with("nothing matches"), "{text}");
+        assert!(failed, "{text}");
+        assert!(text.contains("runs no desktop search"), "{text}");
     });
+}
+
+/// [`Notes`] publishing everything it does, and no search of its own: a
+/// standalone runtime, which speaks for no desk.
+#[derive(Clone)]
+struct NoSearch(Notes);
+
+impl NoSearch {
+    fn new(notes: &Notes) -> Self {
+        Self(notes.clone())
+    }
+}
+
+impl ActionHost for NoSearch {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.0.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.0.invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.0.observe(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionHostError>> {
+        self.0.cancel(caller, id)
+    }
 }
 
 /// A search narrows to an app by the name `tilo_ls` lists or by its whole
@@ -1726,7 +1809,7 @@ fn a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is() {
         assert!(
             by_name
                 .lines()
-                .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
+                .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
             "{by_name}"
         );
         for app in [APP, "SO.TILO.NOTES", " Notes "] {
@@ -1759,7 +1842,7 @@ fn a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read() 
         assert!(!failed, "{text}");
         assert!(
             text.lines()
-                .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
+                .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
             "{text}"
         );
         let (text, failed) = tool(&agent(&running), "tilo_find", query("sheets")).await;
@@ -1770,60 +1853,6 @@ fn a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read() 
             "{text}"
         );
     });
-}
-
-/// A name searched whole is found even where its longest word fills more
-/// pages than a search reads: "paragraph" names both bodies' append and
-/// insert, and the second page is gone by the time it is asked for.
-#[test]
-fn a_search_finds_a_name_whose_longest_word_many_rows_share() {
-    let host = Notes::new(true);
-    *host.search_page.lock().unwrap() = Some(2);
-    run(async {
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_find",
-            json!({"query": "insert paragraph"}),
-        )
-        .await;
-        assert!(!failed, "{text}");
-        for page in ["Todo", "Groceries"] {
-            assert!(
-                text.lines()
-                    .any(|line| line.starts_with(&format!("notes/{page}/body#insert-block"))),
-                "{page}'s insert is missing: {text}"
-            );
-        }
-    });
-}
-
-/// A search whose word fills more than one page reads every page at one
-/// revision: when a busy app's directory moves on between them, the search
-/// starts again at the new revision rather than ending at the first page
-/// with what it held.
-#[test]
-fn a_search_across_a_moving_directory_starts_again_and_finds_every_page() {
-    let host = Notes::new(true);
-    *host.search_page.lock().unwrap() = Some(2);
-    *host.search_moves.lock().unwrap() = 1;
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "paragraph"})).await;
-        assert!(!failed, "{text}");
-        for page in ["Todo", "Groceries"] {
-            for action in ["append-paragraph", "insert-block"] {
-                assert!(
-                    text.lines()
-                        .any(|line| line.starts_with(&format!("notes/{page}/body#{action}"))),
-                    "{page}'s {action} is missing: {text}"
-                );
-            }
-        }
-    });
-    assert_eq!(
-        *host.search_moves.lock().unwrap(),
-        0,
-        "the move was read past"
-    );
 }
 
 #[test]
@@ -2079,60 +2108,6 @@ fn a_call_asks_for_each_directory_level_and_the_running_apps_once() {
     });
 }
 
-/// An app whose directory does not answer leaves a search with what the
-/// others hold, and says it was not searched: one silent app does not fail
-/// every search.
-#[test]
-fn a_search_answers_from_the_apps_that_answer_and_names_the_one_that_did_not() {
-    let host = Notes::new(true);
-    *host.silent.lock().unwrap() = Some(Vec::new());
-    let answered = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap()
-        .block_on(tool(
-            &agent(&host),
-            "tilo_find",
-            json!({"query": "append paragraph"}),
-        ));
-    let (text, failed) = answered;
-    assert!(!failed, "{text}");
-    assert!(
-        text.lines()
-            .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
-        "{text}"
-    );
-    assert!(
-        text.ends_with("\nnot searched, the app did not answer: sheets"),
-        "{text}"
-    );
-}
-
-/// A search no app answered found nothing because it looked nowhere: it
-/// fails and says so, rather than answering that nothing matches.
-#[test]
-fn a_search_no_app_answered_fails_rather_than_finding_nothing() {
-    let host = Notes::new(true);
-    *host.silent.lock().unwrap() = Some(Vec::new());
-    let (text, failed) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap()
-        .block_on(tool(
-            &agent(&host),
-            "tilo_find",
-            json!({"query": "append paragraph", "app": "sheets"}),
-        ));
-    assert!(failed, "{text}");
-    assert!(!text.contains("nothing matches"), "{text}");
-    assert_eq!(
-        text, "not searched, the app did not answer: sheets; try again",
-        "{text}"
-    );
-}
-
 /// What one call made the app's directory do: the queries it was asked and
 /// the rows it answered.
 fn work_of(host: &Notes, name: &str, arguments: &Value) -> (usize, usize, String) {
@@ -2185,6 +2160,56 @@ fn an_action_on_the_notebook_or_a_note_costs_the_same_in_a_notebook_of_any_size(
     }
 }
 
+/// Every row `find` answers is named by the path `ls` lists that resource
+/// at, and `ls` there answers the row's own kind: one path model, read back
+/// through the same door.
+#[test]
+fn every_row_find_answers_is_one_ls_lists() {
+    let host = Notes::new(true);
+    run(async {
+        for query in ["Todo", "Groceries", "append paragraph", "new note"] {
+            let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": query})).await;
+            assert!(!failed, "{query}: {text}");
+            for line in text.lines() {
+                let (path, rest) = line
+                    .split_once("  ")
+                    .unwrap_or_else(|| panic!("{query}: {line} names no kind"));
+                let resource = path.split('#').next().unwrap_or(path);
+                let (listed, failed) =
+                    tool(&agent(&host), "tilo_ls", json!({"path": resource})).await;
+                assert!(
+                    !failed,
+                    "{query}: find says {line}, ls reads no {resource}: {listed}"
+                );
+                let header = listed.lines().next().unwrap_or_default();
+                assert!(
+                    header.starts_with(&format!("{resource}  (")),
+                    "{query}: find says {line}, and ls reads {listed}"
+                );
+                // A resource row names the resource itself: `ls` there
+                // answers it as the kind find wrote. An action row names the
+                // resource it runs the action on, with the action after `#`:
+                // `ls` there lists that action.
+                if let Some((_, action)) = path.split_once('#') {
+                    let action = action.split('(').next().unwrap_or(action);
+                    assert!(
+                        listed.lines().skip(1).any(|held| {
+                            held.strip_prefix('#')
+                                .is_some_and(|held| held.split(['(', ' ']).next() == Some(action))
+                        }),
+                        "{query}: find says {line}, and ls there lists no #{action}: {listed}"
+                    );
+                } else {
+                    assert!(
+                        header.ends_with(&format!("({rest})")),
+                        "{query}: find says {line}, and ls reads {listed}"
+                    );
+                }
+            }
+        }
+    });
+}
+
 /// Finding a note by its title, or the action that makes one, costs the
 /// rows that name it however many notes the notebook holds.
 #[test]
@@ -2208,8 +2233,8 @@ fn a_find_costs_what_it_finds_in_a_notebook_of_any_size() {
     ));
     assert!(
         text.lines()
-            .any(|line| line.starts_with("notes/Notebook/Todo#read")),
-        "a note found by its title is named under its notebook: {text}"
+            .any(|line| line == "notes/Notebook/Todo  notes.notebook.pages"),
+        "the note is named by the path its listing names it: {text}"
     );
 }
 

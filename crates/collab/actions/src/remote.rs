@@ -87,7 +87,7 @@ pub use record_read::{
     RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE, RecordAddress, RecordChange, RecordChanges,
     RecordCopy, RecordReads,
 };
-pub use search::stem_word;
+pub use search::{Found, ResourceSearch, stem_word};
 #[cfg(any(test, feature = "test-support"))]
 pub use test_host::TestHost;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
@@ -1121,6 +1121,14 @@ pub trait ActionHost {
 
     /// Where an agent task's changes go to their records' origin ([`RecordChanges`]).
     fn record_changes(&self) -> Option<std::sync::Arc<dyn RecordChanges>> {
+        None
+    }
+
+    /// The one search the desktop runs ([`ResourceSearch`]), which an
+    /// agent's `find` asks: `None` for a host without a desktop's search
+    /// (a standalone runtime speaks for no desk), which answers by its
+    /// apps' own directories instead.
+    fn resource_search(&self) -> Option<std::sync::Arc<dyn ResourceSearch>> {
         None
     }
 }
