@@ -42,3 +42,32 @@ pub fn lay_out_as_root_with_text<W: ui::widget::Widget + ?Sized>(
     widget.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
     LaidOut { taffy, node, nodes }
 }
+
+/// `widget` laid out and drawn until it stops asking for frames, as a host draws it, and
+/// reported as drawn after every frame: the last frame's tree, or the `limit`-th when it never
+/// rests.
+pub fn draw_until_rest<W: ui::widget::Widget + ?Sized>(
+    widget: &mut W,
+    width: f32,
+    height: f32,
+    theme: &ui::theme::Theme,
+    text: &mut ui::text_render::TextRenderer,
+    limit: usize,
+) -> LaidOut {
+    let mut laid = lay_out_as_root_with_text(widget, width, height, theme, text);
+    for _ in 1..limit {
+        widget.draw(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            text,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+        ui::motion::frame_drawn(ui::motion::frame_now());
+        if !widget.needs_animation_frame() {
+            break;
+        }
+        laid = lay_out_as_root_with_text(widget, width, height, theme, text);
+    }
+    laid
+}

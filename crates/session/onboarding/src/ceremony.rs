@@ -172,7 +172,13 @@ impl Ceremony {
             } else {
                 1.0
             };
-            self.transition = step_arriving(self.motion);
+            // Under reduced motion a step is simply there: no drill, no fade, and no motion
+            // asked for.
+            self.transition = if self.reduce_motion {
+                ui::motion::Presence::opened()
+            } else {
+                step_arriving(self.motion)
+            };
             self.focus_reset = true;
         }
         if page.connect_path != self.page.connect_path
@@ -480,9 +486,11 @@ impl Widget for Ceremony {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.follow_seat();
+        // The frame's theme decides how a page it arrives on moves, so it is read before the
+        // seat is followed: a page moved to under reduced motion is simply there.
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.motion();
+        self.follow_seat();
         if self.chooser.is_some() {
             // The chooser places itself over the whole surface.
             let style = taffy::Style {
