@@ -44,9 +44,9 @@ use tilo_desktop_model::{
     WorkspaceSlot, shared_record,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::rooms::{PreAdmitRequest, RemoveMemberRequest};
+use tilo_relay::workspaces::{PreAdmitRequest, RemoveMemberRequest};
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
-use tilo_relay_protocol::rooms::{PreAdmission, RoomRole};
+use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceRole};
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
@@ -176,10 +176,10 @@ fn face(name: &str, key: &str) -> Face {
 
 fn community_entry(members: u32, now_ms: u64) -> DirectoryEntry {
     DirectoryEntry {
-        room: COMMUNITY_WORKSPACE.to_owned(),
+        workspace: COMMUNITY_WORKSPACE.to_owned(),
         name: "Tilers".to_owned(),
         description: "Anyone who lays tiles".to_owned(),
-        default_role: RoomRole::Editor,
+        default_role: WorkspaceRole::Editor,
         door: door_path(COMMUNITY_WORKSPACE),
         here: vec![face("Ada", "a1b2"), face("Bo", "c3d4")],
         here_count: 2,
@@ -194,10 +194,10 @@ fn club_entry(now_ms: u64) -> DirectoryEntry {
     const THREE_DAYS_MS: u64 = 259_200_000;
     let week = THREE_DAYS_MS;
     DirectoryEntry {
-        room: CLUB_WORKSPACE.to_owned(),
+        workspace: CLUB_WORKSPACE.to_owned(),
         name: "Book club".to_owned(),
         description: String::new(),
-        default_role: RoomRole::Viewer,
+        default_role: WorkspaceRole::Viewer,
         door: door_path(CLUB_WORKSPACE),
         here: Vec::new(),
         here_count: 0,
@@ -410,10 +410,10 @@ fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
 fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> String {
     let mut entries = vec![community_entry(34, now_ms()), club_entry(now_ms())];
     entries.push(DirectoryEntry {
-        room: held_room.to_owned(),
+        workspace: held_room.to_owned(),
         name: held_name.to_owned(),
         description: "The one on this desk".to_owned(),
-        default_role: RoomRole::Commenter,
+        default_role: WorkspaceRole::Commenter,
         door: door_path(held_room),
         here: Vec::new(),
         here_count: 0,
@@ -757,8 +757,8 @@ const TOKEN: &[u8] = b"the lounge's one-time token";
 /// owner `root` as its door signs one.
 fn grant_for(owner_key: &ed25519_dalek::SigningKey, workspace: &str, label: &str) -> PreAdmission {
     let mut grant = PreAdmission {
-        room: workspace.to_owned(),
-        role: RoomRole::Editor,
+        workspace: workspace.to_owned(),
+        role: WorkspaceRole::Editor,
         token_sha256: sha2::Sha256::digest(TOKEN).into(),
         label: label.to_owned(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
@@ -824,7 +824,7 @@ struct Lounge {
     relay: Option<tilo_relay::daemon::Relay>,
     _door: Responder,
     runtime: tokio::runtime::Runtime,
-    rooms: tilo_relay::rooms::Rooms,
+    workspaces: tilo_relay::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
     /// The certificate of the site's page, the device that recorded in the
     /// workspace before anyone joined.
@@ -867,7 +867,7 @@ impl Lounge {
             relay: Some(host.relay),
             _door: door,
             runtime,
-            rooms: host.rooms,
+            workspaces: host.workspaces,
             host_cert: host.host_cert,
             page_device: host.page_device,
             page_desktop: std::cell::RefCell::new(automerge::AutoCommit::new()),
@@ -884,7 +884,7 @@ impl Lounge {
 /// keeps what its page writes sealed.
 struct LoungeHost {
     relay: tilo_relay::daemon::Relay,
-    rooms: tilo_relay::rooms::Rooms,
+    workspaces: tilo_relay::workspaces::Workspaces,
     /// The key the host's certificates are signed under.
     owner_key: ed25519_dalek::SigningKey,
     host_cert: tilo_user_identity::DeviceCert,
@@ -929,12 +929,15 @@ impl LoungeHost {
             )
             .await
             .expect("the lounge's host");
-            let workspaces = relay.rooms().expect("the host governs workspaces").clone();
+            let workspaces = relay
+                .workspaces()
+                .expect("the host governs workspaces")
+                .clone();
             let workspace = workspaces
                 .create("Lounge")
                 .await
                 .expect("the lounge's workspace")
-                .room;
+                .workspace;
             // The site's page is in its workspace.
             workspaces
                 .enter(&workspace, &page_device)
@@ -944,7 +947,7 @@ impl LoungeHost {
         });
         Self {
             relay,
-            rooms: workspaces,
+            workspaces: workspaces,
             owner_key,
             host_cert,
             page_key,
@@ -1016,7 +1019,7 @@ impl LoungeHost {
                 }
             }
             let held = runtime
-                .block_on(self.rooms.record_routes(&self.workspace))
+                .block_on(self.workspaces.record_routes(&self.workspace))
                 .expect("the lounge's records");
             if held
                 .iter()
@@ -1041,10 +1044,10 @@ impl LoungeHost {
         let origin = Arc::new(Mutex::new(String::new()));
         let served_origin = Arc::clone(&origin);
         let page_of_the_site = page_of(vec![DirectoryEntry {
-            room: self.workspace.clone(),
+            workspace: self.workspace.clone(),
             name: "Lounge".to_owned(),
             description: "Where the site's people talk".to_owned(),
-            default_role: RoomRole::Editor,
+            default_role: WorkspaceRole::Editor,
             door: door_path(&self.workspace),
             here: Vec::new(),
             here_count: 0,
@@ -1057,7 +1060,7 @@ impl LoungeHost {
         let answer = runtime.handle().clone();
         let admittances = Arc::new(AtomicU32::new(1));
         let next = Arc::clone(&admittances);
-        let workspaces = self.rooms.clone();
+        let workspaces = self.workspaces.clone();
         let host_cert = self.host_cert.clone();
         let owner_key = self.owner_key.clone();
         let door = Responder::handle(move |request| {
@@ -1262,10 +1265,11 @@ impl Lounge {
         loop {
             let held = self
                 .runtime
-                .block_on(
-                    self.rooms
-                        .record_document(&self.workspace, DESKTOP_APP, DESKTOP_RECORD),
-                )
+                .block_on(self.workspaces.record_document(
+                    &self.workspace,
+                    DESKTOP_APP,
+                    DESKTOP_RECORD,
+                ))
                 .expect("the lounge's desktop record");
             let recorded = held
                 .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
@@ -1287,7 +1291,7 @@ impl Lounge {
     fn invitation_link(&self) -> String {
         let issued = self
             .runtime
-            .block_on(self.rooms.issue(
+            .block_on(self.workspaces.issue(
                 &self.workspace,
                 &self.host_cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
@@ -1886,7 +1890,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     // The lounge's owner removes this person, and every device of theirs.
     lounge
         .runtime
-        .block_on(lounge.rooms.remove_member(
+        .block_on(lounge.workspaces.remove_member(
             &lounge.workspace,
             &lounge.host_cert,
             RemoveMemberRequest {
@@ -1900,7 +1904,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     // roster are gone.
     let (_generation, members) = lounge
         .runtime
-        .block_on(lounge.rooms.membership(&lounge.workspace))
+        .block_on(lounge.workspaces.membership(&lounge.workspace))
         .expect("the lounge's members");
     let mark = members
         .get(&hex::encode(person))
@@ -1936,7 +1940,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
             .runtime
             .block_on(
                 lounge
-                    .rooms
+                    .workspaces
                     .record_document(&lounge.workspace, CHAT, CHAT_RECORD),
             )
             .expect("the lounge's chat")

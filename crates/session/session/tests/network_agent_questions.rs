@@ -120,7 +120,7 @@ fn question() -> PendingConfirmation {
         action_label: "Clear the history".into(),
         resource_label: "Calculator".into(),
         risk: "destructive".into(),
-        room: "The desk".into(),
+        workspace: "The desk".into(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
     }
 }

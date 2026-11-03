@@ -184,7 +184,7 @@ pub enum Level {
 
 /// Room a filesystem has left, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Room {
+pub struct Workspace {
     pub capacity: u64,
     pub available: u64,
 }
@@ -193,7 +193,7 @@ pub struct Room {
 /// half as much room again as falling takes, so a filesystem hovering at a
 /// limit does not announce itself over and over.
 #[must_use]
-pub fn level(room: Room, before: Level) -> Level {
+pub fn level(room: Workspace, before: Level) -> Level {
     let low_limit = (room.capacity / 20).clamp(2 * GIB, 10 * GIB);
     let full_limit = 512 * MIB;
     let (low, full) = match before {
@@ -222,7 +222,12 @@ pub enum Volume {
 /// The notice for a move from `before` to `after`, if it is worth one: only
 /// getting worse is announced.
 #[must_use]
-pub fn storage_notice(volume: Volume, before: Level, after: Level, room: Room) -> Option<Notice> {
+pub fn storage_notice(
+    volume: Volume,
+    before: Level,
+    after: Level,
+    room: Workspace,
+) -> Option<Notice> {
     if after <= before {
         return None;
     }
@@ -419,9 +424,9 @@ pub(crate) fn paste_notice(outcome: &crate::mount::clipboard_files::Outcome) -> 
 }
 
 /// Room `path`'s filesystem has left, when the path exists.
-fn room(path: &Path) -> Option<Room> {
+fn room(path: &Path) -> Option<Workspace> {
     let stat = rustix::fs::statvfs(path).ok()?;
-    Some(Room {
+    Some(Workspace {
         capacity: stat.f_blocks.saturating_mul(stat.f_frsize),
         available: stat.f_bavail.saturating_mul(stat.f_frsize),
     })
@@ -453,7 +458,7 @@ fn volumes() -> Vec<(Volume, PathBuf)> {
 /// what it is now; `tell` gets the notices that are due. Returns whether any
 /// filesystem is low or full, which decides how soon to look again.
 pub fn sweep_rooms(
-    watched: &[(Volume, Option<Room>)],
+    watched: &[(Volume, Option<Workspace>)],
     levels: &mut [Level],
     mut tell: impl FnMut(Notice),
 ) -> bool {
@@ -804,7 +809,7 @@ fn watch_storage(notifications: &Notifications) {
     let watched = volumes();
     let mut levels = vec![Level::Plenty; watched.len()];
     loop {
-        let rooms: Vec<(Volume, Option<Room>)> = watched
+        let rooms: Vec<(Volume, Option<Workspace>)> = watched
             .iter()
             .map(|(volume, path)| (*volume, room(path)))
             .collect();
@@ -824,8 +829,8 @@ mod tests {
     use tilo_compositor::LoopTurns as _;
     use tilo_service::Service;
 
-    fn room(capacity_gib: u64, available_mib: u64) -> Room {
-        Room {
+    fn room(capacity_gib: u64, available_mib: u64) -> Workspace {
+        Workspace {
             capacity: capacity_gib.saturating_mul(GIB),
             available: available_mib.saturating_mul(MIB),
         }
