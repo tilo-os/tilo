@@ -983,6 +983,8 @@ mod tests {
     use super::*;
     use std::io::{Read as _, Write as _};
 
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
     /// The mount, when this machine can mount FUSE; a missing `/dev/fuse`
     /// skips, unless `TILO_REQUIRE_FUSE=1` says this lane has it.
     fn mounted(documents: &Documents) -> Option<(tempfile::TempDir, Mounted)> {
@@ -1195,7 +1197,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0)
-            .spawn()
+            .spawn_locked()
             .unwrap();
         tilo_test_env::wait_until("the child mounts the documents", || ready.exists());
         assert!(mounted_at(&at), "the child serves a mount");
