@@ -1495,7 +1495,10 @@ mod windows {
     /// shares that height, as the chrome's groups do. A card is a few hundred pixels tall with
     /// a sliver of its app under it.
     fn windows_fill_their_strips(frames: &[&dyn Widget]) {
-        let height = frames[0].get_rect().height();
+        let height = frames
+            .iter()
+            .map(|f| f.get_rect().height())
+            .fold(0.0, f64::max);
         assert!(
             height > 500.0,
             "a window fills the desk's height: {height} at 1280x800"
