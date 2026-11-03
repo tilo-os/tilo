@@ -177,7 +177,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     .await;
     let board = host
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create_room("Board", Some(WORKSPACE))
         .await
@@ -197,7 +197,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
             &host,
             &alice,
             &host_device,
-            &board.room,
+            &board.workspace,
             bob.verifying_key().to_bytes(),
         )
         .await,

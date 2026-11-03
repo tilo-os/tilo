@@ -51,8 +51,9 @@ use tilo_relay::RelayConfig;
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::install::{InstallListener, SessionDevice};
 use tilo_relay::web::{TlsSource, WebConfig};
-use tilo_relay_protocol::rooms::{
-    JoinReply, JoinStep, PreAdmission, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
+use tilo_relay_protocol::workspaces::{
+    JoinReply, JoinStep, PreAdmission, WorkspaceNotice, WorkspaceRole, WorkspacesReply,
+    WorkspacesRequest,
 };
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
@@ -107,7 +108,7 @@ fn dev_tls(state: &Path) -> TlsSource {
     }
 }
 
-async fn workspaces(peer: &PeerHandle, request: RoomsRequest) -> RoomsReply {
+async fn workspaces(peer: &PeerHandle, request: WorkspacesRequest) -> WorkspacesReply {
     let (reply, answer) = tokio::sync::oneshot::channel();
     peer.rooms_then(
         request,
@@ -301,9 +302,9 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     ready(&[&ada]).await;
 
     // The company workspace, governed by the node, with Ada as its owner.
-    let RoomsReply::Room(acme) = workspaces(
+    let WorkspacesReply::Workspace(acme) = workspaces(
         &ada,
-        RoomsRequest::Create {
+        WorkspacesRequest::Create {
             name: "Acme".into(),
         },
     )
@@ -313,12 +314,15 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     };
     let entered = workspaces(
         &ada,
-        RoomsRequest::Enter {
-            room: acme.room.clone(),
+        WorkspacesRequest::Enter {
+            workspace: acme.workspace.clone(),
         },
     )
     .await;
-    assert!(matches!(entered, RoomsReply::Room(_)), "{entered:?}");
+    assert!(
+        matches!(entered, WorkspacesReply::Workspace(_)),
+        "{entered:?}"
+    );
     ada.join(acme.workspace_id).unwrap();
     ready(&[&ada]).await;
 
@@ -326,7 +330,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     // its channel, so the page gets keys and the writes go out.
     let route = DocumentRoute {
         app_id: "so.tilo.notes".into(),
-        cluster_id: acme.room.clone(),
+        cluster_id: acme.workspace.clone(),
         record: "plan".into(),
     };
     let (snapshot, change) = plan();
@@ -346,7 +350,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 
     // The node holds the document only as ciphertext.
     let writes: Vec<_> = relay
-        .room_records()
+        .workspace_records()
         .retained(acme.workspace_id)
         .await
         .unwrap()
@@ -373,14 +377,14 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     );
 
     // Bo is invited; the invitation names who sent it.
-    let RoomsReply::Invitation {
+    let WorkspacesReply::Invitation {
         signed_invitation, ..
     } = workspaces(
         &ada,
-        RoomsRequest::Invite {
-            room: acme.room.clone(),
+        WorkspacesRequest::Invite {
+            workspace: acme.workspace.clone(),
             request_id: [1; 32],
-            role: RoomRole::Editor,
+            role: WorkspaceRole::Editor,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: Some("Ada".into()),
             wait_list_entry: None,
@@ -431,10 +435,10 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     .await
     .unwrap();
     assert_eq!(asked, JoinReply::Waiting);
-    let RoomsReply::Requests(waiting) = workspaces(
+    let WorkspacesReply::Requests(waiting) = workspaces(
         &ada,
-        RoomsRequest::Requests {
-            room: acme.room.clone(),
+        WorkspacesRequest::Requests {
+            workspace: acme.workspace.clone(),
         },
     )
     .await
@@ -447,13 +451,16 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     assert_eq!(bo_request.name, "Bo");
     let admitted = workspaces(
         &ada,
-        RoomsRequest::Admit {
-            room: acme.room.clone(),
+        WorkspacesRequest::Admit {
+            workspace: acme.workspace.clone(),
             request_id: bo_request.request_id,
         },
     )
     .await;
-    assert!(matches!(admitted, RoomsReply::Room(_)), "{admitted:?}");
+    assert!(
+        matches!(admitted, WorkspacesReply::Workspace(_)),
+        "{admitted:?}"
+    );
     let status = join(
         &*https,
         &JoinStep::Status {
@@ -491,8 +498,8 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     // her again.
     let token = b"one-time token for cy@acme.example";
     let mut grant = PreAdmission {
-        room: acme.room.clone(),
-        role: RoomRole::Editor,
+        workspace: acme.workspace.clone(),
+        role: WorkspaceRole::Editor,
         token_sha256: Sha256::digest(token).into(),
         label: "cy@acme.example".into(),
         expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
@@ -500,11 +507,11 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         signature: [0; 64],
     };
     grant.signature = root.sign(grant.digest().unwrap().to_vec()).await.unwrap();
-    let RoomsReply::Invitation {
+    let WorkspacesReply::Invitation {
         signed_invitation, ..
     } = workspaces(
         &ada,
-        RoomsRequest::PreAdmit {
+        WorkspacesRequest::PreAdmit {
             request_id: [3; 32],
             grant,
             inviter_name: Some("Ada".into()),
@@ -548,13 +555,13 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     .await
     .unwrap();
     assert!(
-        matches!(&admitted, JoinReply::Admitted { name, role: RoomRole::Editor, .. } if name == "Acme"),
+        matches!(&admitted, JoinReply::Admitted { name, role: WorkspaceRole::Editor, .. } if name == "Acme"),
         "{admitted:?}"
     );
-    let RoomsReply::Notices(notices) = workspaces(
+    let WorkspacesReply::Notices(notices) = workspaces(
         &ada,
-        RoomsRequest::Notices {
-            room: acme.room.clone(),
+        WorkspacesRequest::Notices {
+            workspace: acme.workspace.clone(),
         },
     )
     .await
@@ -562,7 +569,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         panic!("no notices");
     };
     assert!(
-        matches!(notices.as_slice(), [RoomNotice::PreAdmitted { user_public_key, name, label, .. }]
+        matches!(notices.as_slice(), [WorkspaceNotice::PreAdmitted { user_public_key, name, label, .. }]
             if *user_public_key == cy_cert.user_public_key && name == "Cy" && label == "cy@acme.example"),
         "{notices:?}"
     );
@@ -583,14 +590,17 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     );
     let removed = workspaces(
         &ada,
-        RoomsRequest::Remove {
-            room: acme.room.clone(),
+        WorkspacesRequest::Remove {
+            workspace: acme.workspace.clone(),
             request_id: [6; 32],
             user_public_key: cy_root.verifying_key().to_bytes(),
         },
     )
     .await;
-    assert!(matches!(removed, RoomsReply::Room(_)), "{removed:?}");
+    assert!(
+        matches!(removed, WorkspacesReply::Workspace(_)),
+        "{removed:?}"
+    );
     wait_for("the node to end Cy's subscription", || async {
         (!relay.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
     })

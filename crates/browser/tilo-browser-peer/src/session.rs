@@ -279,7 +279,7 @@ pub struct PeerStatus {
     /// Last envelope from the host (ms since the epoch).
     pub last_contact_at_ms: Option<u64>,
     /// Joined workspaces and whether the host answered `Ready`.
-    pub rooms: BTreeMap<u64, bool>,
+    pub workspaces: BTreeMap<u64, bool>,
     /// Per-route status.
     pub routes: BTreeMap<DocumentRoute, RouteStatus>,
     /// Current failures, newest last.
@@ -552,10 +552,13 @@ enum Command {
     CallLaneAnswer(Page, Result<Down, LinkError>, LaneCompletion),
     /// The page left the call of the workspace named.
     CallLaneEnd(String),
-    Administer(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
+    Administer(
+        tilo_relay_protocol::workspaces::WorkspacesRequest,
+        RoomsCompletion,
+    ),
     Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
     Private(
-        tilo_relay_protocol::rooms::private::PrivateCall,
+        tilo_relay_protocol::workspaces::private::PrivateCall,
         PrivateCompletion,
     ),
     Node(NodeCompletion),
@@ -607,13 +610,13 @@ pub type HereCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
 /// Called once with the governor's answer, see [`PeerHandle::private_then`].
 pub type PrivateCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::private::PrivateReply, String>) + Send>;
+    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::private::PrivateReply, String>) + Send>;
 /// Called once with what a turn of the page's call brought, see
 /// [`PeerHandle::call_lane_then`].
 pub type LaneCompletion = Box<dyn FnOnce(Result<LaneAnswer, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
+    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
 
 type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
 
@@ -698,7 +701,7 @@ enum Admission {
 /// Where the joined workspaces' admission stands `now_ms`, for a subscription
 /// sent at `since_ms`.
 fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> Admission {
-    if status.rooms.values().all(|ready| *ready) {
+    if status.workspaces.values().all(|ready| *ready) {
         return Admission::Admitted;
     }
     match since_ms {
@@ -723,7 +726,7 @@ impl PeerHandle {
                 attempt: 0,
                 next_attempt_at_ms: None,
                 last_contact_at_ms: None,
-                rooms: BTreeMap::new(),
+                workspaces: BTreeMap::new(),
                 routes: BTreeMap::new(),
                 failures: Vec::new(),
                 outgoing_pending: 0,
@@ -837,7 +840,7 @@ impl PeerHandle {
 
     /// Join `workspace` (its UUID), a workspace of this device's person, named
     /// `name`: the host is first asked to govern it
-    /// ([`tilo_relay_protocol::rooms::RoomsRequest::Place`]), creating it
+    /// ([`tilo_relay_protocol::workspaces::WorkspacesRequest::Place`]), creating it
     /// unless it does, so the workspace has governance like every other; then it
     /// is subscribed. Where the host places nothing for this device (a workspace
     /// of another person's, a host reached without its administration route),
@@ -1026,7 +1029,7 @@ impl PeerHandle {
     /// `done` receives its answer.
     pub fn private_then(
         &self,
-        request: tilo_relay_protocol::rooms::private::PrivateCall,
+        request: tilo_relay_protocol::workspaces::private::PrivateCall,
         done: PrivateCompletion,
     ) -> Result<(), String> {
         self.send(Command::Private(request, done))
@@ -1036,7 +1039,7 @@ impl PeerHandle {
     /// HTTPS session; `done` receives the answer.
     pub fn rooms_then(
         &self,
-        request: tilo_relay_protocol::rooms::RoomsRequest,
+        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
         done: RoomsCompletion,
     ) -> Result<(), String> {
         self.send(Command::Administer(request, done))
@@ -1495,7 +1498,7 @@ impl Task {
                 .is_ok();
         }
         self.update(|status| {
-            for ready in status.rooms.values_mut() {
+            for ready in status.workspaces.values_mut() {
                 *ready = false;
             }
         });
@@ -1728,7 +1731,7 @@ impl Task {
             status.failures.retain(|failure| {
                 !failure.code.starts_with("transport") && !failure.code.starts_with("certificate")
             });
-            for ready in status.rooms.values_mut() {
+            for ready in status.workspaces.values_mut() {
                 *ready = false;
             }
         });
@@ -2046,7 +2049,7 @@ impl Task {
     fn join(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
         self.workspaces.insert(workspace_id);
         self.update(|status| {
-            status.rooms.entry(workspace_id).or_insert(false);
+            status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.received.clear();
         client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
@@ -2061,7 +2064,7 @@ impl Task {
             return true;
         }
         self.update(|status| {
-            status.rooms.entry(workspace_id).or_insert(false);
+            status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.placing.insert(workspace_id, (workspace, name));
         match client {
@@ -2087,8 +2090,8 @@ impl Task {
                 let http = link.client().clone();
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
-                    let request = tilo_relay_protocol::rooms::RoomsRequest::Place {
-                        room: workspace,
+                    let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Place {
+                        workspace,
                         name,
                     };
                     // Refused (not this person's host, a workspace governed
@@ -2231,7 +2234,7 @@ impl Task {
         let Some(Link::Https(link)) = client else {
             return;
         };
-        let seated = lock(&self.shared).status.rooms.clone();
+        let seated = lock(&self.shared).status.workspaces.clone();
         let due = self.watched.due(tilo_clock::unix_now_ms(), |route| {
             route
                 .workspace_id()
@@ -2244,7 +2247,7 @@ impl Task {
             n0_future::task::spawn(async move {
                 let request = tilo_relay_protocol::web::ChannelKeysRequest {
                     app_id: route.app_id.clone(),
-                    room: route.cluster_id.clone(),
+                    workspace: route.cluster_id.clone(),
                     record: route.record.clone(),
                 };
                 let keys =
@@ -2287,7 +2290,7 @@ impl Task {
 
     /// Always `true`: the session takes it whatever the answer.
     fn request_private(
-        request: tilo_relay_protocol::rooms::private::PrivateCall,
+        request: tilo_relay_protocol::workspaces::private::PrivateCall,
         done: PrivateCompletion,
         client: Option<&Link>,
     ) -> bool {
@@ -2311,7 +2314,7 @@ impl Task {
     }
 
     fn administer(
-        request: tilo_relay_protocol::rooms::RoomsRequest,
+        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
         done: RoomsCompletion,
         client: Option<&Link>,
     ) {
@@ -2680,7 +2683,7 @@ impl Task {
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
                 self.update(|status| {
-                    status.rooms.insert(workspace_id, true);
+                    status.workspaces.insert(workspace_id, true);
                 });
                 // The replay's documents reach the page before its `Ready`,
                 // as they arrived.
@@ -2690,7 +2693,7 @@ impl Task {
             Envelope::NotAuthorised { reason, .. } => {
                 self.fail("permission-required", reason);
             }
-            Envelope::RoomBootstrap {
+            Envelope::WorkspaceBootstrap {
                 workspace_id,
                 bootstrap,
             } => {
@@ -2832,7 +2835,7 @@ impl Task {
         self.absorb(changes);
         // Writes held for a certificate or governance the workspace now has; the
         // workspace's `Ready` decides those of its replay.
-        if lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true) {
+        if lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true) {
             self.decide_held(workspace_id);
         }
     }
@@ -2847,7 +2850,8 @@ impl Task {
                 message @ (neighbour_wire::NeighbourMsg::IdentityHello { .. }
                 | neighbour_wire::NeighbourMsg::SyncResp { .. }),
             ) => {
-                let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
+                let retained =
+                    lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
                 // Governance the replica refuses is not the workspace's.
                 let admitted = self.replicas.admit(
                     workspace_id,
@@ -2918,7 +2922,8 @@ impl Task {
                 };
                 // The workspace's governance decides the write before any app
                 // sees it, and holds it while it cannot yet.
-                let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
+                let retained =
+                    lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
                 match self.replicas.decide_document(
                     workspace_id,
                     author,
@@ -2986,7 +2991,7 @@ impl Task {
     /// what the workspace decided.
     fn governance_known(&self, route: &DocumentRoute) -> bool {
         route.workspace_id().is_ok_and(|workspace_id| {
-            lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true)
+            lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
         })
     }
 
@@ -3241,7 +3246,7 @@ impl Task {
                     continue;
                 };
                 let crate::channels::Outgoing::Request { workspace_id, .. } = &outgoing;
-                if lock(&self.shared).status.rooms.get(workspace_id) != Some(&true) {
+                if lock(&self.shared).status.workspaces.get(workspace_id) != Some(&true) {
                     // The host takes a workspace's governance only from a session
                     // it admitted to the workspace: this is asked again the
                     // moment it does (`admitted`).
@@ -3724,7 +3729,7 @@ mod tests {
             attempt: 0,
             next_attempt_at_ms: None,
             last_contact_at_ms: None,
-            rooms: workspaces.iter().copied().collect(),
+            workspaces: workspaces.iter().copied().collect(),
             routes: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,

@@ -22,10 +22,10 @@ use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::rooms::PreAdmitRequest;
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
+use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::Approver;
-use tilo_relay_protocol::rooms::{JoinReply, PreAdmission, RoomRole};
+use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
@@ -78,7 +78,7 @@ pub fn workspace() -> u64 {
 /// before it joins ([`PeerHandle::join_placed`]), done here for a peer
 /// that reaches the host without the route that administers them.
 pub async fn place(relay: &Relay, device: &DeviceCert) {
-    let workspaces = relay.rooms().unwrap();
+    let workspaces = relay.workspaces().unwrap();
     if workspaces.summary(WORKSPACE).await.is_err()
         && let Err(error) = workspaces.create_room("Workspace", Some(WORKSPACE)).await
     {
@@ -563,8 +563,8 @@ pub async fn door(
     let token = random_bytes();
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
-        room: workspace.to_owned(),
-        role: RoomRole::Editor,
+        workspace: workspace.to_owned(),
+        role: WorkspaceRole::Editor,
         token_sha256,
         label: "Guest".into(),
         expires_at_ns: tilo_clock::unix_now_ns()
@@ -576,7 +576,7 @@ pub async fn door(
     grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
     let issued = host
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .pre_admit(
             &owner_host.cert,
@@ -615,7 +615,7 @@ pub async fn redeem(
         matches!(
             &admitted,
             JoinReply::Admitted {
-                role: RoomRole::Editor,
+                role: WorkspaceRole::Editor,
                 ..
             }
         ),
@@ -647,7 +647,7 @@ pub async fn enter(
 pub async fn in_workspace(peer: &PeerHandle, workspace_id: u64) {
     ready(&[peer]).await;
     wait_for("the governed workspace to let the page in", || async {
-        (peer.status().rooms.get(&workspace_id) == Some(&true)).then_some(())
+        (peer.status().workspaces.get(&workspace_id) == Some(&true)).then_some(())
     })
     .await;
 }
