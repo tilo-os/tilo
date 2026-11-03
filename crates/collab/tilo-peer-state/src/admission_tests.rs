@@ -405,13 +405,27 @@ pub(crate) fn add_editor(
     authority: &SigningKey,
     now: SystemTime,
 ) -> (DeviceCert, [u8; 32]) {
+    let (_, cert, person) = add_member_with(peer, authority, now, 5, 6);
+    (cert, person)
+}
+
+/// Invite the person rooted at `root_seed`, with one device from
+/// `device_seed`, into `peer` as an Editor, as the governor `authority`: their
+/// device key, certificate and person root.
+pub(crate) fn add_member_with(
+    peer: &mut StatePeer,
+    authority: &SigningKey,
+    now: SystemTime,
+    root_seed: u8,
+    device_seed: u8,
+) -> (SigningKey, DeviceCert, [u8; 32]) {
     use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
-    let root = SigningKey::from_bytes(&[5; 32]);
-    let device = SigningKey::from_bytes(&[6; 32]);
+    let root = SigningKey::from_bytes(&[root_seed; 32]);
+    let device = SigningKey::from_bytes(&[device_seed; 32]);
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Editor".into(),
+        device_label: format!("Editor {root_seed}"),
         capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
@@ -435,9 +449,9 @@ pub(crate) fn add_editor(
             room: peer.workspace_id().into(),
             issuer: owner,
             role: MemberRole::Editor,
-            nonce: [53; 16],
+            nonce: [device_seed.wrapping_add(1); 16],
             recipient_user_public_key: Some(cert.user_public_key),
-            invitee_name: Some("Editor".into()),
+            invitee_name: Some(format!("Editor {root_seed}")),
             expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
             transport: vec![],
         },
@@ -454,8 +468,8 @@ pub(crate) fn add_editor(
     let challenge = JoinChallenge::new(
         &join,
         &cert,
-        [54; 32],
-        [55; 32],
+        [device_seed.wrapping_add(2); 32],
+        [device_seed.wrapping_add(3); 32],
         now_ns.checked_add(1_000_000_000).unwrap(),
         now_ns,
     )
@@ -469,7 +483,7 @@ pub(crate) fn add_editor(
             .admit_invited_member(&redemption, authority, now)
             .unwrap()
     );
-    (cert, root.verifying_key().to_bytes())
+    (device, cert, root.verifying_key().to_bytes())
 }
 
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
