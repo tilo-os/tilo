@@ -1475,8 +1475,8 @@ mod windows {
         let mut tabbed = 0;
         for frame in &frames {
             let window = frame.get_rect();
-            let strips = named(frame, "TabStrip");
-            let shells = named(frame, "NavShell");
+            let strips = named(*frame, "TabStrip");
+            let shells = named(*frame, "NavShell");
             if let [tabs] = strips[..] {
                 tabbed += 1;
                 let bar = tabs.get_rect();

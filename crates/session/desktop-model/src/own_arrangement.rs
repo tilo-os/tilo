@@ -471,20 +471,6 @@ impl Strips {
         }
     }
 
-    /// Maximize the strip `id` (`maximized`), so it fills the desk alone, or
-    /// restore it. `false` when this shell holds no such strip, or it is as
-    /// asked already.
-    pub fn maximize(&mut self, id: GroupId, maximized: bool) -> bool {
-        match self.strips.iter_mut().find(|strip| strip.id == id) {
-            Some(strip) => {
-                let changed = strip.maximized != maximized;
-                strip.maximized = maximized;
-                changed
-            }
-            None => false,
-        }
-    }
-
     /// Take the place `id` out of the arrangement, as closing its window
     /// does.
     pub fn close_place(&mut self, id: TabId) -> bool {
