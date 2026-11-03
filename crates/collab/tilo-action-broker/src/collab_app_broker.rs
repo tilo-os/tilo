@@ -3276,6 +3276,11 @@ struct ContextSub {
 struct NativeContext {
     admitted: AdmittedJoinIdentity,
     roster: Vec<ui::collaboration::Collaborator>,
+    /// The pairs this person is in, by their record ids, as the workspace's
+    /// owner proved them when this receiver last asked
+    /// ([`PersonChatServices::pairs`](crate::services::person_chat::PersonChatServices::pairs)):
+    /// the records their direct conversations live in.
+    pairs: Vec<String>,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -7765,6 +7770,9 @@ impl AppBrokerState {
                 collaborators: native.roster.clone(),
                 permissions: Vec::new(),
             });
+            if !native.pairs.is_empty() {
+                let _ = tx.send(ContextUpdate::PersonPairs(native.pairs.clone()));
+            }
         }
         // Who the app's history names for changes an agent's own key signed.
         let history_agents = self.history_agents_of(channel_id);
@@ -8054,10 +8062,28 @@ impl AppBrokerState {
             .revalidate_admission(route, admitted)
             .map_err(|error| error.to_string())?;
         let roster = self.native_membership_roster(route, &current)?;
+        let pairs = self.native_pairs(route, &current).unwrap_or_default();
         Ok(Some(NativeContext {
             admitted: current,
             roster,
+            pairs,
         }))
+    }
+
+    /// The pairs `admitted`'s person is in, in this route's workspace: what
+    /// the person door keeps for them, and nothing of anyone else's. `None`
+    /// where the door cannot say now; the last list then stays.
+    fn native_pairs(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Option<Vec<String>> {
+        let caller = admitted.certificate.as_ref()?;
+        self.services
+            .person_chat
+            .as_ref()?
+            .pairs(&route.cluster_id, caller)
+            .ok()
     }
 
     fn publish_certified_people(&self, workspace: &str) {
@@ -8180,6 +8206,7 @@ impl AppBrokerState {
                 continue;
             };
             let roster = self.native_membership_roster(&route, &current)?;
+            let pairs = self.native_pairs(&route, &current);
             let mut channels = self
                 .channels
                 .lock()
@@ -8192,6 +8219,21 @@ impl AppBrokerState {
                     };
                     if subscriber.peer_id != peer_id || native.admitted != admitted {
                         return true;
+                    }
+                    // A pair the governance admitted or cut: the person's
+                    // windows read and follow its record from now on, or
+                    // stop.
+                    if let Some(pairs) = &pairs
+                        && native.pairs != *pairs
+                        && subscriber
+                            .tx
+                            .send(ContextUpdate::PersonPairs(pairs.clone()))
+                            .is_err()
+                    {
+                        return false;
+                    }
+                    if let Some(pairs) = &pairs {
+                        native.pairs.clone_from(pairs);
                     }
                     if same_roster(&native.roster, &roster) {
                         return true;

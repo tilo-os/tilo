@@ -2314,6 +2314,7 @@ impl ContextStream {
                 );
             }
             ContextUpdate::RecordsArrived(records) => context.records_arrived = records,
+            ContextUpdate::PersonPairs(pairs) => context.person_pairs = Some(pairs),
         }
         Ok(context)
     }

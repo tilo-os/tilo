@@ -45,6 +45,23 @@ impl PersonChat {
         Self { engine }
     }
 
+    /// The pairs this person is in, in `workspace`: the pair's record id
+    /// and the two people it proves, as the owner holds the proof.
+    fn pairs_of(
+        &self,
+        workspace: WorkspaceId,
+        caller: &DeviceCert,
+    ) -> Result<Vec<(String, [String; 2])>, String> {
+        let me = hex::encode(caller.user_public_key);
+        Ok(self
+            .engine
+            .owner()
+            .direct_pairs(workspace, SystemTime::now())?
+            .into_iter()
+            .filter(|(_, people)| people.contains(&me))
+            .collect())
+    }
+
     /// The owner every call is decided by, and the workspace as the owner
     /// names it.
     fn owner(&self, workspace: &str) -> Result<(WorkspaceId, &NativeWorkspaceOwner), String> {
@@ -54,6 +71,14 @@ impl PersonChat {
 }
 
 impl PersonChatServices for PersonChat {
+    fn pairs(&self, workspace: &str, caller: &DeviceCert) -> Result<Vec<String>, String> {
+        Ok(self
+            .pairs_of(self.owner(workspace)?.0, caller)?
+            .into_iter()
+            .map(|(pair, _)| pair)
+            .collect())
+    }
+
     fn subscribe(
         &self,
         workspace: &str,
@@ -102,20 +127,15 @@ impl PersonChatServices for PersonChat {
             // The records this person's conversations live in, so a device
             // that never opened one still syncs it. Only their own pairs:
             // who else talks with whom is not this door's.
-            PersonChatCommand::Pairs => {
-                let me = hex::encode(caller.user_public_key);
-                serde_json::json!(
-                    owner
-                        .direct_pairs(workspace, now)?
-                        .into_iter()
-                        .filter(|(_, people)| people.contains(&me))
-                        .map(|(pair, people)| serde_json::json!({
-                            "pair": pair,
-                            "people": people,
-                        }))
-                        .collect::<Vec<_>>()
-                )
-            }
+            PersonChatCommand::Pairs => serde_json::json!(
+                self.pairs_of(workspace, caller)?
+                    .into_iter()
+                    .map(|(pair, people)| serde_json::json!({
+                        "pair": pair,
+                        "people": people,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
             PersonChatCommand::Open { public_key } => {
                 owner.open_direct_conversation(workspace, &public_key, &authority, now)?;
                 conversation(whole(owner, workspace, &public_key, &authority, now)?)

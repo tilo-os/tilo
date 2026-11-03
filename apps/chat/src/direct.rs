@@ -9,12 +9,20 @@
 //! message another device sends wakes the window like any other change of
 //! its own record.
 //!
+//! The record itself is small: who the pair is, how far each of them read
+//! ([`DirectConversation::marks`]), and the messages the pair wrote before
+//! they moved into parts ([`DirectConversation::messages`]). The messages
+//! are the pair's own chain of parts beside that record
+//! ([`crate::direct_parts`], [`DirectPart`]): 2000 messages or 1 MiB of text
+//! each, as many as the conversation needs.
+//!
 //! The views keep calling [`ui::person_chat`], which this window answers
-//! from the record ([`Records`] as its [`ui::person_chat::Native`]): the
+//! from the records ([`Records`] as its [`ui::person_chat::Native`]): the
 //! same functions, the same contact and message shapes, a different source.
 //! What only the session's owner can do stays on its door: announcing the
-//! pair, and reading the old private store so the conversations kept there
-//! are imported once ([`Records::import_old_store`]).
+//! pair, reading which pairs this person is in, and reading the old private
+//! store so the conversations kept there are imported once
+//! ([`Records::import_old_store`]).
 //!
 //! A person is kept in the conversation under the key the private store has
 //! always used for them ([`ui::person_chat::person_key`], the hash of their
@@ -25,107 +33,58 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
-use ui::time::{Duration, Instant};
 
-use ui::framework::WorkspaceRecord;
-use ui::tilo_resource::{self, ActionCx, Collection, Id, JsonSchema, Model, Refusal};
+use ui::framework::{Chain, WorkspaceRecord};
+use ui::tilo_resource::{self, ActionCx, Collection, Model, Refusal};
+
+use crate::direct_parts::{
+    self, DirectMessage, DirectPart, DirectReadMark, PART_MESSAGES, PART_TEXT_BYTES, StoredMessage,
+};
 
 /// The app whose store keeps the conversations in a workspace.
 pub const OWNER: &str = "so.tilo.chat";
 /// The longest message text, in bytes: the door's own bound.
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
-/// The most messages a conversation keeps: what the door hands over whole.
-pub const MAX_MESSAGES: usize = 2000;
 /// How many people one window imports from the old store per sync: the
 /// import is a migration, not a reason to stall a frame.
 const IMPORTS_PER_SYNC: usize = 4;
-/// How often a window asks which pairs it is in again: a pair the other
-/// person opened while this device was away is learnt here, without asking
-/// the workspace every frame.
-const PAIRS_AGAIN: Duration = Duration::from_secs(5);
-
-/// A message of a direct conversation.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct DirectMessage {
-    /// The person who wrote it, in the key a conversation keeps people
-    /// under.
-    #[model(label, readonly)]
-    pub author: String,
-    /// What it says.
-    #[model(readonly)]
-    pub text: String,
-    /// When its writer's device sent it, in milliseconds since the epoch.
-    #[model(readonly)]
-    pub at: i64,
-}
-
-/// A message as the old private store keeps it, for the import.
-#[derive(
-    Model, Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema,
-)]
-pub struct StoredMessage {
-    pub id: String,
-    pub author: String,
-    pub text: String,
-    #[serde(default)]
-    pub at: i64,
-}
 
 /// What the two people of a pair have said to each other, and how far each
 /// of them has read.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DirectConversation {
-    /// What they said, oldest first, each under the id it was sent with.
+    /// What they said before the conversation moved to parts
+    /// ([`crate::direct_parts`]): kept readable, never written again, each
+    /// under the id it was sent with.
     #[model(readonly)]
     pub messages: Collection<DirectMessage>,
-    /// How far each person has read: the time of the last message they read,
-    /// in milliseconds since the epoch, written by them alone.
+    /// How far each person had read under the one-record conversation: the
+    /// time of the last message they read, in milliseconds since the epoch,
+    /// written by them alone. Read beside [`Self::marks`] so what a person
+    /// read before the parts came is not unread again.
     pub read: BTreeMap<String, i64>,
+    /// How far each person has read ([`DirectReadMark`]), written by them
+    /// alone and only ever further.
+    pub marks: BTreeMap<String, DirectReadMark>,
 }
 
 impl DirectConversation {
-    /// The conversation as a view shows it, with `peer` as the other
-    /// person (in the key a conversation keeps people under).
+    /// How many messages of `peer`'s the person `me` has not read: those of
+    /// the messages kept in the record itself after their time mark, and,
+    /// through `conversation`, those of the parts after their chain mark.
     #[must_use]
-    pub fn conversation(&self, peer: &str) -> ui::person_chat::Conversation {
-        let mut messages: Vec<_> = self
-            .messages
-            .iter()
-            .map(|(id, message)| (id.clone(), message))
-            .collect();
-        messages.sort_by_key(|(_, message)| message.at);
-        ui::person_chat::Conversation {
-            peer: peer.to_owned(),
-            messages: messages
-                .into_iter()
-                .map(|(id, message)| ui::person_chat::Message {
-                    id: id.as_str().to_owned(),
-                    author: message.author.clone(),
-                    text: message.text.clone(),
-                })
-                .collect(),
-        }
-    }
-
-    /// How many messages `me` has not read: the other person's messages
-    /// newer than their read mark.
-    #[must_use]
-    pub fn unread(&self, me: &str) -> u32 {
+    pub fn unread(&self, conversation: &direct_parts::Conversation, me: &str, peer: &str) -> u32 {
         let read = self.read.get(me).copied().unwrap_or(i64::MIN);
-        let count = self
+        let kept = self
             .messages
             .values()
             .filter(|message| message.author != me && message.at > read)
             .count();
-        u32::try_from(count).unwrap_or(u32::MAX)
+        let parts = conversation.unread(peer, self.marks.get(me).copied().unwrap_or_default());
+        u32::try_from(kept)
+            .unwrap_or(u32::MAX)
+            .saturating_add(parts)
     }
-}
-
-/// The message id an invocation sends: the same invocation is the same
-/// message, so a retry stores nothing twice.
-#[must_use]
-pub fn message_id(invocation: uuid::Uuid) -> String {
-    format!("dm_{invocation}")
 }
 
 fn person(cx: &ActionCx) -> Result<String, Refusal> {
@@ -135,67 +94,12 @@ fn person(cx: &ActionCx) -> Result<String, Refusal> {
         .ok_or_else(|| Refusal::new("a message is always someone's"))
 }
 
-fn stored_key(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn valid_message_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-}
-
-fn valid_text(text: &str) -> bool {
-    !text.trim().is_empty() && text.len() <= MAX_TEXT_BYTES
-}
-
 #[ui::tilo_resource::resource(
     kind = "chat.direct",
     label = "Direct conversation",
     params = conversation,
 )]
 impl DirectConversation {
-    /// Say something.
-    ///
-    /// Stores the message under `id` once: the same id is the same message,
-    /// so a send that is asked for twice says it once.
-    #[action]
-    pub fn send(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The message's id")] id: String,
-        #[param("What it says")] text: String,
-    ) -> Result<(), Refusal> {
-        if !valid_message_id(&id) {
-            return Err(Refusal::new("the message's id is not a message id"));
-        }
-        if !valid_text(&text) {
-            return Err(Refusal::new("the message is empty or too long"));
-        }
-        let author = person(cx)?;
-        let id = Id::from_raw(id);
-        if self.messages.contains(&id) {
-            return Ok(());
-        }
-        if self.messages.len() >= MAX_MESSAGES {
-            return Err(Refusal::new("the conversation holds too many messages"));
-        }
-        self.messages.push(
-            id,
-            DirectMessage {
-                author,
-                text,
-                at: cx.now_ms(),
-            },
-        );
-        Ok(())
-    }
-
     /// Mark how far you have read.
     ///
     /// Only ever moves forward, and only for the person reading.
@@ -203,51 +107,31 @@ impl DirectConversation {
     pub fn mark_read(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The time of the last message read")] seen: i64,
+        #[param("The part they read into")] part: i64,
+        #[param("Messages of the other person they saw there")] seen: i64,
     ) -> Result<(), Refusal> {
-        let me = person(cx)?;
-        let mark = self.read.entry(me).or_insert(i64::MIN);
-        if seen > *mark {
-            *mark = seen;
+        if part < 0 || seen < 0 {
+            return Err(Refusal::new("a read mark is a place in the conversation"));
         }
-        Ok(())
-    }
-
-    /// Take in a conversation kept in the old private store.
-    ///
-    /// Stores each message under the id it was kept with: importing the same
-    /// conversation again adds nothing.
-    #[action(housekeeping)]
-    pub fn import(
-        &mut self,
-        _cx: &mut ActionCx,
-        #[param("The stored messages")] messages: Vec<StoredMessage>,
-    ) -> Result<(), Refusal> {
-        for message in messages {
-            if !valid_message_id(&message.id) {
-                return Err(Refusal::new("a stored message has no valid id"));
+        let me = person(cx)?;
+        let mark = DirectReadMark { part, seen };
+        let held = self.marks.entry(me.clone()).or_default();
+        if mark > *held {
+            *held = mark;
+        }
+        // Reading into the parts reads what the record itself kept before
+        // them: it is older than anything a part holds.
+        let newest = self
+            .messages
+            .values()
+            .filter(|message| message.author != me)
+            .map(|message| message.at)
+            .max();
+        if let Some(newest) = newest {
+            let read = self.read.entry(me).or_insert(i64::MIN);
+            if newest > *read {
+                *read = newest;
             }
-            if !stored_key(&message.author) {
-                return Err(Refusal::new("a stored message has no author"));
-            }
-            if !valid_text(&message.text) {
-                return Err(Refusal::new("a stored message is empty or too long"));
-            }
-            let id = Id::from_raw(message.id);
-            if self.messages.contains(&id) {
-                continue;
-            }
-            if self.messages.len() >= MAX_MESSAGES {
-                return Err(Refusal::new("the conversation holds too many messages"));
-            }
-            self.messages.push(
-                id,
-                DirectMessage {
-                    author: message.author,
-                    text: message.text,
-                    at: message.at,
-                },
-            );
         }
         Ok(())
     }
@@ -266,6 +150,14 @@ pub(crate) struct Person {
     pub name: String,
 }
 
+/// One conversation held here: the pair's record and the chain of parts its
+/// messages are in.
+#[derive(Clone)]
+struct Open {
+    record: WorkspaceRecord<DirectConversation>,
+    chain: Chain<DirectPart>,
+}
+
 /// What a window's direct conversations read and write: the records the
 /// pair's two people share, in the window's workspace.
 pub(crate) struct Records {
@@ -277,17 +169,20 @@ pub(crate) struct Records {
     /// The people of the workspace, as the window last read them.
     people: RefCell<Vec<Person>>,
     /// The conversations open here, by pair, so a send opens none twice.
-    open: RefCell<BTreeMap<String, WorkspaceRecord<DirectConversation>>>,
+    open: RefCell<BTreeMap<String, Open>>,
     /// The people whose old private conversation is still to be imported.
     imports: RefCell<VecDeque<String>>,
     /// The people whose old conversation was taken in already.
     imported: RefCell<BTreeSet<String>>,
-    /// When the workspace last answered which pairs this person is in.
-    asked_pairs: Cell<Option<Instant>>,
+    /// The workspace's answer on which pairs this person is in, and the
+    /// time it answered for: `None` until the first answer.
+    pairs: RefCell<Option<Vec<ui::person_chat::Pair>>>,
+    /// The pair list's generation that answer was asked at
+    /// ([`ui::person_chat::pairs_generation`]): the workspace announces a
+    /// governance change, and the list is asked again only then.
+    pairs_generation: Cell<Option<u64>>,
     /// The pairs this window announced, so a send asks the workspace once.
     announced: RefCell<BTreeSet<String>>,
-    /// The pairs this person is in, as the workspace last proved them.
-    pairs: RefCell<Option<Vec<ui::person_chat::Pair>>>,
 }
 
 impl Records {
@@ -304,9 +199,9 @@ impl Records {
             open: RefCell::default(),
             imports: RefCell::default(),
             imported: RefCell::default(),
-            asked_pairs: Cell::default(),
-            announced: RefCell::default(),
             pairs: RefCell::new(None),
+            pairs_generation: Cell::default(),
+            announced: RefCell::default(),
         })
     }
 
@@ -324,23 +219,20 @@ impl Records {
         *self.people.borrow_mut() = people;
     }
 
-    /// The pairs this person is in, asked of the workspace again: a device
+    /// The pairs this person is in, asked of the workspace again when its
+    /// governance changed ([`ui::person_chat::pairs_generation`]): a device
     /// that never opened one learns it here, and opens it so it syncs. A
     /// pair the workspace proved exists: opening its record creates nothing
     /// nobody asked for.
     fn refresh_pairs(&self) {
-        if self.pairs.borrow().is_some()
-            && self
-                .asked_pairs
-                .get()
-                .is_some_and(|asked| asked.elapsed() < PAIRS_AGAIN)
-        {
+        let generation = ui::person_chat::pairs_generation();
+        if self.pairs.borrow().is_some() && self.pairs_generation.get() == Some(generation) {
             return;
         }
         let Some(Ok(pairs)) = ui::person_chat::pairs().take() else {
             return;
         };
-        self.asked_pairs.set(Some(ui::time::now()));
+        self.pairs_generation.set(Some(generation));
         let me = self.root();
         let mut pairs: Vec<_> = pairs
             .into_iter()
@@ -349,9 +241,9 @@ impl Records {
         pairs.sort_by_key(|pair| pair.pair.clone());
         for pair in &pairs {
             if !self.open.borrow().contains_key(&pair.pair)
-                && let Some(record) = self.handle.direct::<DirectConversation>(OWNER, &pair.pair)
+                && let Some(open) = self.opened(&pair.pair)
             {
-                self.open.borrow_mut().insert(pair.pair.clone(), record);
+                self.open.borrow_mut().insert(pair.pair.clone(), open);
             }
         }
         *self.pairs.borrow_mut() = Some(pairs);
@@ -359,8 +251,11 @@ impl Records {
 
     /// How many messages of `peer`'s conversation this person has not read.
     pub(crate) fn unread(&self, peer: &str) -> u32 {
-        self.held(peer)
-            .map_or(0, |record| record.get().unread(&self.me))
+        self.held(peer).map_or(0, |open| {
+            open.record
+                .get()
+                .unread(&self.conversation(&open), &self.me, peer)
+        })
     }
 
     /// This person's root public key.
@@ -387,38 +282,105 @@ impl Records {
             .cloned()
     }
 
-    /// The conversation with `peer`, opened (its record created where the
+    /// `pair`'s record and its parts, opened (the record created where the
     /// workspace holds none) and followed change by change.
-    fn record(&self, peer: &str) -> Result<WorkspaceRecord<DirectConversation>, String> {
+    fn opened(&self, pair: &str) -> Option<Open> {
+        let record = self.handle.direct::<DirectConversation>(OWNER, pair)?;
+        let chain = self.handle.chain_beside::<DirectPart>(OWNER, &record)?;
+        Some(Open { record, chain })
+    }
+
+    /// The conversation with `peer`, opened.
+    fn record(&self, peer: &str) -> Result<Open, String> {
         let person = self
             .person(peer)
             .ok_or_else(|| "no direct conversation with them here".to_owned())?;
         let pair = self.pair(&person.root)?;
-        if let Some(record) = self.open.borrow().get(&pair) {
-            return Ok(record.clone());
+        if let Some(open) = self.open.borrow().get(&pair) {
+            return Ok(open.clone());
         }
-        let record = self
-            .handle
-            .direct::<DirectConversation>(OWNER, &pair)
+        let open = self
+            .opened(&pair)
             .ok_or_else(|| "the conversation's record is unavailable".to_owned())?;
-        self.open.borrow_mut().insert(pair, record.clone());
-        Ok(record)
+        self.open.borrow_mut().insert(pair, open.clone());
+        Ok(open)
     }
 
     /// The conversation with `peer` as it stands, without opening one that
     /// is not open here.
-    fn held(&self, peer: &str) -> Option<WorkspaceRecord<DirectConversation>> {
+    fn held(&self, peer: &str) -> Option<Open> {
         let person = self.person(peer)?;
         let pair = self.pair(&person.root).ok()?;
-        if let Some(record) = self.open.borrow().get(&pair) {
-            return Some(record.clone());
+        if let Some(open) = self.open.borrow().get(&pair) {
+            return Some(open.clone());
         }
         if !self.handle.holds_direct::<DirectConversation>(OWNER, &pair) {
             return None;
         }
-        let record = self.handle.direct::<DirectConversation>(OWNER, &pair)?;
-        self.open.borrow_mut().insert(pair, record.clone());
-        Some(record)
+        let open = self.opened(&pair)?;
+        self.open.borrow_mut().insert(pair, open.clone());
+        Some(open)
+    }
+
+    /// The conversation with `peer` as a view shows it: the messages the
+    /// record kept before the parts, and every message of the parts held
+    /// here, oldest first.
+    fn conversation(&self, open: &Open) -> direct_parts::Conversation {
+        direct_parts::Conversation::new(open.chain.parts())
+    }
+
+    /// The conversation with `peer` as a view shows it.
+    fn shown(&self, open: &Open, peer: &str) -> ui::person_chat::Conversation {
+        let state = open.record.get();
+        let parts = self.conversation(open);
+        let mut messages: BTreeMap<String, (i64, ui::person_chat::Message)> = state
+            .messages
+            .iter()
+            .map(|(id, message)| {
+                (
+                    id.as_str().to_owned(),
+                    (
+                        message.at,
+                        ui::person_chat::Message {
+                            id: id.as_str().to_owned(),
+                            author: message.author.clone(),
+                            text: message.text.clone(),
+                        },
+                    ),
+                )
+            })
+            .collect();
+        // A part's message is the message: the same id imported again is
+        // not shown twice.
+        for (id, message) in parts.messages() {
+            messages.insert(
+                id.as_str().to_owned(),
+                (
+                    message.at,
+                    ui::person_chat::Message {
+                        id: id.as_str().to_owned(),
+                        author: message.author.clone(),
+                        text: message.text.clone(),
+                    },
+                ),
+            );
+        }
+        let mut messages: Vec<(i64, ui::person_chat::Message)> = messages.into_values().collect();
+        messages.sort_by_key(|(at, _)| *at);
+        ui::person_chat::Conversation {
+            peer: peer.to_owned(),
+            messages: messages.into_iter().map(|(_, message)| message).collect(),
+        }
+    }
+
+    /// Whether the conversation with `peer` says anything yet.
+    fn speaks(open: &Open) -> bool {
+        !open.record.get().messages.is_empty()
+            || open
+                .chain
+                .parts()
+                .iter()
+                .any(|(_, part)| !part.messages.is_empty())
     }
 
     /// Announce the pair with `peer` to the workspace, so that its record is
@@ -446,29 +408,31 @@ impl Records {
     /// conversation, marking them read when not: what an open conversation
     /// does as it shows what came in.
     pub(crate) fn mark_read(&self, peer: &str) {
-        let Some(record) = self.held(peer) else {
+        let Some(open) = self.held(peer) else {
             return;
         };
-        let state = record.get();
-        let read = state.read.get(&self.me).copied().unwrap_or(i64::MIN);
-        let newest = state
-            .messages
-            .values()
-            .filter(|message| message.author != self.me)
-            .map(|message| message.at)
-            .max();
-        if let Some(newest) = newest
-            && newest > read
-        {
-            let _ = record.invoke(
-                &DirectConversation::MARK_READ.with(conversation::MarkRead { seen: newest }),
-            );
+        let mark = self.conversation(&open).read_to_end(peer);
+        let held = open
+            .record
+            .get()
+            .marks
+            .get(&self.me)
+            .copied()
+            .unwrap_or_default();
+        if mark <= held {
+            return;
         }
+        let _ = open
+            .record
+            .invoke(&DirectConversation::MARK_READ.with(conversation::MarkRead {
+                part: mark.part,
+                seen: mark.seen,
+            }));
     }
 
     /// Import the conversation with `peer` from the old private store, page
-    /// by page, into its record. Answers whether it had nothing more to take
-    /// in.
+    /// by page, into the parts of its record. Answers whether it had nothing
+    /// more to take in.
     fn import(&self, peer: &str) -> bool {
         let mut after = 0;
         let mut imported = Vec::new();
@@ -495,16 +459,38 @@ impl Records {
             self.imported.borrow_mut().insert(peer.to_owned());
             return true;
         }
-        let Ok(record) = self.announce(peer).and_then(|()| self.record(peer)) else {
+        let Ok(open) = self.announce(peer).and_then(|()| self.record(peer)) else {
             return false;
         };
-        let taken = record
-            .invoke(&DirectConversation::IMPORT.with(conversation::Import { messages: imported }))
-            .is_ok();
-        if taken {
-            self.imported.borrow_mut().insert(peer.to_owned());
+        // A part holds 2000 messages or 1 MiB of them, so a long
+        // conversation crosses into as many parts as it fills, and the
+        // part after it is started the same way a message that finds the
+        // head full does.
+        let mut rest = imported;
+        while !rest.is_empty() {
+            let conversation = self.conversation(&open);
+            let (room, text_room) = match conversation.parts().last() {
+                Some((head, part)) if conversation.post_part() == *head => (
+                    PART_MESSAGES.saturating_sub(part.messages.len()).max(1),
+                    PART_TEXT_BYTES.saturating_sub(part.text_bytes()).max(1),
+                ),
+                _ => (PART_MESSAGES, PART_TEXT_BYTES),
+            };
+            let tail = imported_room(&mut rest, room, text_room);
+            let chunk = std::mem::take(&mut rest);
+            rest = tail;
+            let taken = open
+                .chain
+                .invoke(
+                    &DirectPart::IMPORT.with(direct_parts::direct_part::Import { messages: chunk }),
+                )
+                .is_ok();
+            if !taken {
+                return false;
+            }
         }
-        taken
+        self.imported.borrow_mut().insert(peer.to_owned());
+        true
     }
 
     /// Import a few conversations the old private store still holds, so a
@@ -522,6 +508,26 @@ impl Records {
     }
 }
 
+/// Split off as many of `rest` as fit in a part with `room` messages and
+/// `text_room` bytes left: at least one message, whatever it says.
+fn imported_room(
+    rest: &mut Vec<StoredMessage>,
+    room: usize,
+    text_room: usize,
+) -> Vec<StoredMessage> {
+    let mut take = 0;
+    let mut bytes: usize = 0;
+    while take < rest.len() && take < room {
+        let len = rest[take].text.len();
+        if take > 0 && bytes.saturating_add(len) > text_room {
+            break;
+        }
+        bytes = bytes.saturating_add(len);
+        take += 1;
+    }
+    rest.split_off(take)
+}
+
 impl ui::person_chat::Native for Records {
     fn contacts(&self) -> Vec<ui::person_chat::Contact> {
         self.refresh_pairs();
@@ -529,7 +535,7 @@ impl ui::person_chat::Native for Records {
             .open
             .borrow()
             .iter()
-            .filter(|(_, record)| !record.get().messages.is_empty())
+            .filter(|(_, open)| Records::speaks(open))
             .map(|(pair, _)| pair.clone())
             .collect();
         let me = self.me.clone();
@@ -555,13 +561,18 @@ impl ui::person_chat::Native for Records {
         // write only the session's owner can sign. Before the record is
         // opened here, so this window writes nothing an unproved pair owns.
         self.announce(peer)?;
-        let record = self.record(peer)?;
-        Ok(record.get().conversation(peer))
+        let open = self.record(peer)?;
+        // The whole conversation is what a view opens: every earlier part is
+        // asked for, and arrives change by change as the workspace sends it.
+        for (index, _) in open.chain.parts() {
+            let _ = open.chain.hold(index);
+        }
+        Ok(self.shown(&open, peer))
     }
 
     fn read(&self, peer: &str) -> Result<ui::person_chat::Conversation, String> {
         match self.held(peer) {
-            Some(record) => Ok(record.get().conversation(peer)),
+            Some(open) => Ok(self.shown(&open, peer)),
             // No conversation here yet is an empty one, not a refusal.
             None if self.person(peer).is_some() => Ok(ui::person_chat::Conversation {
                 peer: peer.to_owned(),
@@ -577,14 +588,14 @@ impl ui::person_chat::Native for Records {
         text: &str,
         invocation: uuid::Uuid,
     ) -> Result<ui::person_chat::Conversation, String> {
-        let record = self.announce(peer).and_then(|()| self.record(peer))?;
-        record
-            .invoke(&DirectConversation::SEND.with(conversation::Send {
-                id: message_id(invocation),
+        let open = self.announce(peer).and_then(|()| self.record(peer))?;
+        open.chain
+            .invoke(&DirectPart::SEND.with(direct_parts::direct_part::Send {
+                id: direct_parts::message_id(invocation),
                 text: text.to_owned(),
             }))
             .map_err(|error| error.to_string())?;
-        Ok(record.get().conversation(peer))
+        Ok(self.shown(&open, peer))
     }
 }
 
@@ -620,148 +631,55 @@ mod tests {
         replica
     }
 
-    fn send(device: &mut Replica<DirectConversation>, id: &str, text: &str) -> Result<(), String> {
+    fn mark(device: &mut Replica<DirectConversation>, part: i64, seen: i64) -> Result<(), String> {
         device
-            .apply(DirectConversation::SEND.with(conversation::Send {
-                id: id.to_owned(),
-                text: text.to_owned(),
-            }))
+            .apply(DirectConversation::MARK_READ.with(conversation::MarkRead { part, seen }))
             .map(drop)
             .map_err(|error| error.to_string())
     }
 
     #[test]
-    fn a_sent_message_names_its_writer_and_comes_once() {
+    fn two_devices_keep_their_own_read_marks_forward_only() {
         let mut ada = device(ADA, 1_000);
-        send(&mut ada, "dm_1", "hi").unwrap();
-        send(&mut ada, "dm_1", "hi").unwrap();
-        let state = ada.state().unwrap();
-        assert_eq!(state.messages.len(), 1);
-        let (id, message) = state.messages.iter().next().unwrap();
-        assert_eq!(id.as_str(), "dm_1");
-        assert_eq!(message.author, ui::person_chat::person_key(ADA));
-        assert_eq!(message.text, "hi");
-        assert_eq!(message.at, 1_000);
-    }
-
-    #[test]
-    fn an_empty_or_oversized_message_is_refused() {
-        let mut ada = device(ADA, 1_000);
-        assert!(send(&mut ada, "dm_1", "  ").is_err());
-        assert!(send(&mut ada, "dm_2", &"x".repeat(MAX_TEXT_BYTES + 1)).is_err());
-        assert!(send(&mut ada, "no spaces", "hi").is_err());
-        assert!(ada.state().unwrap().messages.is_empty());
-    }
-
-    #[test]
-    fn two_devices_keep_one_conversation_and_their_own_read_marks() {
-        let mut ada = device(ADA, 1_000);
-        // Both devices hold the record the pair's genesis made, as they do
-        // when each opened it from what the workspace keeps.
-        let mut bob = second_device(&ada, BOB, 2_000);
-        send(&mut ada, "dm_1", "one").unwrap();
-        send(&mut bob, "dm_2", "two").unwrap();
+        let bob = second_device(&ada, BOB, 2_000);
         ada.doc_mut()
             .merge_incoming(&mut bob.doc().clone())
             .unwrap();
-        let (ada_key, bob_key) = (
-            ui::person_chat::person_key(ADA),
-            ui::person_chat::person_key(BOB),
-        );
+        mark(&mut ada, 0, 3).unwrap();
+        mark(&mut ada, 0, 2).unwrap();
         let state = ada.state().unwrap();
-        assert_eq!(state.conversation(&bob_key).messages.len(), 2);
-        // Each has said one thing, and read neither.
-        assert_eq!(state.unread(&ada_key), 1);
-        assert_eq!(state.unread(&bob_key), 1);
-        // Each person's own mark, written where they are.
-        ada.set_now_ms(3_000);
-        ada.apply(DirectConversation::MARK_READ.with(conversation::MarkRead { seen: 2_000 }))
-            .unwrap();
-        bob.set_now_ms(3_000);
-        bob.apply(DirectConversation::MARK_READ.with(conversation::MarkRead { seen: 2_000 }))
-            .unwrap();
-        bob.doc_mut()
-            .merge_incoming(&mut ada.doc_mut().clone())
-            .unwrap();
-        let state = bob.state().unwrap();
-        assert_eq!(state.unread(&ada_key), 0);
-        assert_eq!(state.unread(&bob_key), 0);
-        assert_eq!(state.read.len(), 2);
-    }
-
-    #[test]
-    fn a_read_mark_never_moves_back() {
-        let mut ada = device(ADA, 1_000);
-        let seen = DirectConversation::MARK_READ.with(conversation::MarkRead { seen: 2_000 });
-        ada.apply(seen.clone()).unwrap();
-        ada.apply(DirectConversation::MARK_READ.with(conversation::MarkRead { seen: 1_000 }))
-            .unwrap();
         assert_eq!(
-            ada.state().unwrap().read[&ui::person_chat::person_key(ADA)],
-            2_000
+            state.marks[&ui::person_chat::person_key(ADA)],
+            DirectReadMark { part: 0, seen: 3 }
         );
-        assert_eq!(seen.id, DirectConversation::MARK_READ.id);
+        assert!(!state.marks.contains_key(&ui::person_chat::person_key(BOB)));
     }
 
     #[test]
-    fn an_imported_message_is_the_same_message_imported_once() {
+    fn a_read_mark_before_the_conversation_is_refused() {
         let mut ada = device(ADA, 1_000);
-        let stored = StoredMessage {
-            id: "dm_old".into(),
-            author: ui::person_chat::person_key(BOB),
-            text: "before".into(),
-            at: 1,
-        };
-        let import = |ada: &mut Replica<DirectConversation>| {
-            ada.apply(DirectConversation::IMPORT.with(conversation::Import {
-                messages: vec![stored.clone()],
-            }))
-            .map(drop)
-            .map_err(|error| error.to_string())
-        };
-        import(&mut ada).unwrap();
-        import(&mut ada).unwrap();
+        assert!(mark(&mut ada, -1, 0).is_err());
+        assert!(mark(&mut ada, 0, -1).is_err());
+        assert!(ada.state().unwrap().marks.is_empty());
+    }
+
+    #[test]
+    fn a_kept_message_is_unread_until_the_person_reads_into_the_parts() {
+        // A record written before the conversation moved to parts: an empty
+        // chain here, and one message of the other person kept in the
+        // record.
+        let mut ada = device(ADA, 1_000);
+        let me = ui::person_chat::person_key(ADA);
+        let peer = ui::person_chat::person_key(BOB);
+        let empty = direct_parts::Conversation::new(Vec::new());
+        assert_eq!(ada.state().unwrap().unread(&empty, &me, &peer), 0);
+        // The same record with a kept message is what a device that ran the
+        // one-record conversation holds; marking its read moves the time
+        // mark with the chain mark, so what was read there stays read.
+        mark(&mut ada, 0, 0).unwrap();
         let state = ada.state().unwrap();
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(
-            state.messages.get(&Id::from_raw("dm_old")).unwrap().text,
-            "before"
-        );
-    }
-
-    #[test]
-    fn a_stored_message_nobody_holds_in_the_store_is_not_imported() {
-        let mut ada = device(ADA, 1_000);
-        let bad = StoredMessage {
-            id: "dm_old".into(),
-            author: "not a person".into(),
-            text: "before".into(),
-            at: 1,
-        };
-        assert!(
-            ada.apply(DirectConversation::IMPORT.with(conversation::Import {
-                messages: vec![bad],
-            }))
-            .is_err()
-        );
-        assert!(ada.state().unwrap().messages.is_empty());
-    }
-
-    #[test]
-    fn a_conversation_reads_oldest_first() {
-        let mut ada = device(ADA, 1_000);
-        send(&mut ada, "dm_2", "second").unwrap();
-        ada.set_now_ms(500);
-        send(&mut ada, "dm_1", "first").unwrap();
-        let shown = ada.state().unwrap().conversation("peer");
-        assert_eq!(shown.peer, "peer");
-        assert_eq!(
-            shown
-                .messages
-                .iter()
-                .map(|message| message.text.as_str())
-                .collect::<Vec<_>>(),
-            ["first", "second"]
-        );
+        assert_eq!(state.unread(&empty, &me, &peer), 0);
+        assert_eq!(state.marks[&me], DirectReadMark { part: 0, seen: 0 });
+        assert_eq!(state.read, BTreeMap::new());
     }
 }

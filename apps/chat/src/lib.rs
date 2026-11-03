@@ -58,6 +58,7 @@ pub mod continuity;
 #[cfg(feature = "samples")]
 pub mod demo;
 pub mod direct;
+mod direct_parts;
 pub mod drafts;
 pub mod effects;
 pub mod events;

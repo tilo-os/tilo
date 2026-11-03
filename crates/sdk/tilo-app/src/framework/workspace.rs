@@ -24,6 +24,8 @@ use ui_core::wake::WakeHandle;
 
 use super::live::Live;
 
+use super::chain::{Chain, Chained};
+
 /// A record every app of the window's workspace opens, held for the window
 /// ([`RecordEnv::workspace`](super::RecordEnv::workspace)).
 pub struct WorkspaceRecord<P: Resource> {
@@ -421,6 +423,18 @@ impl WorkspaceHandle {
         self.state.holds_direct(owner, pair, P::KIND)
     }
 
+    /// The chain of `P` kept beside one of the workspace's records
+    /// ([`Chained::chain_beside`]): the messages of one direct conversation,
+    /// in parts of the record the two people share, opened in the store that
+    /// keeps that record. `None` where it cannot be opened.
+    pub fn chain_beside<P: Chained>(
+        &self,
+        owner: &'static str,
+        base: &WorkspaceRecord<P::Base>,
+    ) -> Option<Chain<P>> {
+        self.state.chain_beside::<P>(owner, base)
+    }
+
     /// What wakes the window: for an answer that arrives later.
     #[must_use]
     pub fn wake(&self) -> Option<&WakeHandle> {
@@ -442,6 +456,9 @@ pub(crate) struct WorkspaceState {
     /// Wakes the window when another replica's change arrives.
     wake: Option<WakeHandle>,
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
+    /// The chains kept beside the opened records (a pair's conversation
+    /// messages, [`WorkspaceHandle::chain_beside`]).
+    chains: super::chain::Chains,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
 }
@@ -461,6 +478,7 @@ impl WorkspaceState {
             permissions,
             wake,
             opened: RefCell::default(),
+            chains: super::chain::Chains::default(),
             owners: RefCell::default(),
             refreshers: RefCell::default(),
         }
@@ -551,6 +569,32 @@ impl WorkspaceState {
         self.held(key, opened)
     }
 
+    /// The chain of `P` kept beside one of the workspace's records
+    /// ([`Chained::chain_beside`]), opened on first use in the store that keeps
+    /// that record: a pair's conversation messages, whose parts are theirs
+    /// alone, so the workspace's grants decide nothing there. `None` where it
+    /// cannot be opened.
+    pub(crate) fn chain_beside<P: Chained>(
+        &self,
+        owner: &'static str,
+        base: &WorkspaceRecord<P::Base>,
+    ) -> Option<Chain<P>> {
+        super::controls::opened_in_workspace::<P>();
+        let workspace = super::chain::WorkspaceRecords {
+            store: self.records.store_of(owner).ok()?,
+            me: self.records.author().0.clone(),
+            permissions: None,
+            app_id: self.app_id,
+            app_title: self.app_title,
+        };
+        let live = base.live();
+        let chain = P::chain_beside(base.id());
+        let state = self
+            .chains
+            .open_at::<P>(&workspace, chain, move || live.get())?;
+        Some(Chain::applying(state, self.app_id, base.me()))
+    }
+
     /// Keep an opened record for the window: its route reported to the
     /// runtime, its changes followed, and the record held for the views that
     /// ask for it again.
@@ -573,10 +617,17 @@ impl WorkspaceState {
 
     /// Read every open record that moved. Whether one did.
     pub(crate) fn refresh(&self) -> bool {
-        self.refreshers
+        let moved = self
+            .refreshers
             .borrow()
             .iter()
-            .fold(false, |moved, refresh| refresh() | moved)
+            .fold(false, |moved, refresh| refresh() | moved);
+        // A part another device wrote into a chain kept beside a record is
+        // read here, so the app's views show it.
+        for chain in self.chains.doors() {
+            let _ = chain.revision();
+        }
+        moved
     }
 
     /// The routes of the open records, which the runtime syncs.

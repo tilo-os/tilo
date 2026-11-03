@@ -13,6 +13,18 @@ pub trait PersonChatServices: Send + Sync {
         Err("private conversation subscriptions unavailable".into())
     }
 
+    /// The pairs `caller`'s person is in, in `workspace`
+    /// ([`collab_types::direct_pair_id`]): the records their devices read and
+    /// change, whether or not one of them is open here. What the app is told
+    /// when the workspace's governance changes.
+    fn pairs(
+        &self,
+        _workspace: &str,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<String>, String> {
+        Err("private pair list unavailable".into())
+    }
+
     /// Execute a closed person-chat command with transport-certified authority.
     fn command(
         &self,

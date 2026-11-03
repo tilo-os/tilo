@@ -150,6 +150,15 @@ impl WorkspaceRecords {
         }
     }
 
+    /// The store `owner` keeps its records of this workspace in: where a chain
+    /// kept beside one of them ([`RecordId::part`]) has its parts.
+    ///
+    /// # Errors
+    /// Rejects a package or workspace that names no store.
+    pub fn store_of(&self, owner: &str) -> Result<RecordStore, RecordOpenError> {
+        (self.open)(owner)
+    }
+
     /// Open `id` in the store `owner` keeps, and in this app's, so that every
     /// replica of the app publishes it.
     fn open_at(

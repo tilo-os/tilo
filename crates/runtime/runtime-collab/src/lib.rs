@@ -1043,6 +1043,10 @@ pub struct ChannelContext {
     /// wrote and no window here holds (`recordsArrived`); empty otherwise.
     /// Not a roster update either.
     pub records_arrived: Vec<String>,
+    /// `Some` only on a session-local frame naming the pairs this person is
+    /// in (possibly none): the records their direct conversations live in.
+    /// Not a roster update either.
+    pub person_pairs: Option<Vec<String>>,
 }
 
 /// One delegated agent the session verified for a workspace: its person's root

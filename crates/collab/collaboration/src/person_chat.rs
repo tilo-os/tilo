@@ -391,6 +391,26 @@ fn wake_all() {
     }
     crate::WakeHandle::new().wake();
 }
+/// Counts the times the workspace told this process that the pairs its
+/// people are in may have changed: a governance change that admits a pair's
+/// record. A window asks for the pairs again when it changes, and never on a
+/// clock: nothing about them moves without the workspace saying so.
+static PAIRS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`PAIRS_GENERATION`]: what a window compares to know whether the pairs it
+/// read are still the workspace's.
+#[must_use]
+pub fn pairs_generation() -> u64 {
+    PAIRS_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The workspace's word that the pairs may have changed: every window
+/// reading them is woken, and asks for them again.
+pub(crate) fn pairs_changed() {
+    PAIRS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    wake_all();
+}
+
 /// Drop the cached contacts and conversations: the host calls this when
 /// the identity or connection changes.
 pub(crate) fn invalidate() {
