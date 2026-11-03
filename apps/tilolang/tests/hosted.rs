@@ -1974,13 +1974,13 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Clear done",
             "Task summary",
             "Complete",
-            "Assign to me",
             "Snooze until…",
-            "Unassign",
             "Move to inbox",
             "Set due date",
             "Prioritize",
             "Indent",
+            "Outdent",
+            "Undo",
         ],
         "the open task's palette"
     );
