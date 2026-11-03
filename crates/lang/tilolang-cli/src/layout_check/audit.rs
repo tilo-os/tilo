@@ -304,13 +304,15 @@ pub fn inspect(
         viewport,
         viewport,
         Scrolls::default(),
+        false,
     );
     out
 }
 
 impl Walk<'_> {
     /// `parent`: the nearest box above with geometry. `clip`: what of the window the node can show in. `scroller`:
-    /// which ways the box above lets content go on past it.
+    /// which ways the box above lets content go on past it. `content`: the box is a scroll view's, holding
+    /// what the view scrolls through rather than being a container of its own.
     fn node(
         &mut self,
         node: &InspectionNode,
@@ -318,9 +320,10 @@ impl Walk<'_> {
         parent: Rect,
         clip: Rect,
         scroller: Scrolls,
+        content: bool,
     ) {
         let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
-        self.visit(node, keys, parent, clip, scroller);
+        self.visit(node, keys, parent, clip, scroller, content);
         if pushed {
             keys.pop();
         }
@@ -333,9 +336,16 @@ impl Walk<'_> {
         parent: Rect,
         clip: Rect,
         scroller: Scrolls,
+        content: bool,
     ) {
         let own = rect(node.rect);
         let geometric = has_area(own);
+        let scrolls = scrolls(node);
+        let scrolling = scrolls.down || scrolls.across;
+        // The box a scroll view holds its content in is that view, not a container of its own:
+        // what it holds goes on past the view as the view allows, and what that content holds in
+        // turn is checked against the content, not the view.
+        let content = content && geometric && !scrolling;
         // What of the window is not shown at all needs no checking: a column pushed aside, a
         // row scrolled out of view.
         if geometric && !has_area(own.intersect(clip)) {
@@ -354,8 +364,6 @@ impl Walk<'_> {
                 self.target(node, keys, own, min);
             }
         }
-        let scrolls = scrolls(node);
-        let scrolling = scrolls.down || scrolls.across;
         // The box children are measured against, and which ways it scrolls them.
         // A manual region in a view that pans both ways is the canvas's content placed by code
         // (its places, put where its camera puts them): what it places pans as the canvas does.
@@ -366,6 +374,8 @@ impl Walk<'_> {
             && scroller.across;
         let (inner_parent, inner_scroller) = if geometric && placed_content {
             (own, scroller)
+        } else if content {
+            (parent, scroller)
         } else if geometric {
             (own, scrolls)
         } else {
@@ -396,7 +406,16 @@ impl Walk<'_> {
             if floats(&child.widget) {
                 continue;
             }
-            self.node(child, keys, inner_parent, inner_clip, inner_scroller);
+            // A scroll view holds its content in a box of its own, which is the view's own
+            // content rather than a frame around it.
+            self.node(
+                child,
+                keys,
+                inner_parent,
+                inner_clip,
+                inner_scroller,
+                scrolling,
+            );
         }
         self.beyond = was_beyond;
         self.across = was_across;
@@ -868,6 +887,52 @@ mod tests {
         assert!(
             lost(&lane(600.0)).is_empty(),
             "given the room of a pane, the same cards are there to scroll through"
+        );
+    }
+
+    /// A scroll view's content stands in a box the view holds it in, which is the view's own
+    /// content and no container of its own: what the view scrolls through may go on past the
+    /// view. A box inside that content still holds what it holds, and is caught.
+    #[test]
+    fn a_scroll_views_content_box_passes_its_scrolling_on() {
+        let scrolled = |content: InspectionNode| {
+            let mut page = stack_node("page", [0.0, 0.0, 400.0, 300.0], vec![content]);
+            page.layout = Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                direction: ui::widget::ScrollDirection::Vertical,
+            }));
+            stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![page])
+        };
+        let overflowing = |root: &InspectionNode| {
+            inspect(root, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::Overflow)
+                .map(|problem| problem.keys)
+                .collect::<Vec<_>>()
+        };
+        let page = scrolled(stack_node(
+            "content",
+            [0.0, 0.0, 380.0, 300.0],
+            vec![stack_node(
+                "long",
+                [0.0, 0.0, 380.0, 900.0],
+                vec![stack_node(
+                    "card",
+                    [0.0, 0.0, 380.0, 100.0],
+                    vec![stack_node("over", [0.0, 0.0, 380.0, 240.0], vec![])],
+                )],
+            )],
+        ));
+        assert_eq!(
+            overflowing(&page),
+            vec![vec![
+                "over".to_owned(),
+                "card".to_owned(),
+                "long".to_owned(),
+                "content".to_owned(),
+                "page".to_owned(),
+                "window".to_owned()
+            ]],
+            "the content the view scrolls through may be taller than the view; the card in it may not"
         );
     }
 
