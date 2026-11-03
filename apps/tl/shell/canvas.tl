@@ -21,7 +21,7 @@ view framed_canvas(a: Arrangement) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
-                        ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: s.canvas_width, height: pin_height(s)) {
+                        ui.MapPin(name: .some(p.key), x: pin_x(a, s, p), y: s.canvas_y, width: pin_width(s), height: pin_height(s)) {
                             framed_place(a, p)
                         }
                     }
@@ -40,7 +40,7 @@ view spaces_canvas(a: Arrangement) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
-                        ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: s.canvas_width, height: pin_height(s)) {
+                        ui.MapPin(name: .some(p.key), x: pin_x(a, s, p), y: s.canvas_y, width: pin_width(s), height: pin_height(s)) {
                             space_content(a, p)
                         }
                     }
@@ -48,6 +48,27 @@ view spaces_canvas(a: Arrangement) {
             }
         }
     }
+}
+
+/// How wide a strip's places stand on the canvas: the width the record keeps for it, so a window
+/// that was dropped wide stays wide, and 720 when it kept none.
+fn pin_width(s: ArrangementStrip) -> Int {
+    if s.canvas_width > 0 { s.canvas_width } else { 720 }
+}
+
+/// Where the place `p` stands on the canvas: its strip's corner, then the places before it in the
+/// strip laid end to end. The record keeps one canvas point on a strip, and the places of the strip
+/// stand in a row from it (canvas.md §6), so a strip of several places is a run of work and none
+/// stands over another.
+fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
+    let place = 0
+    for q in places_of(a, s.key) {
+        if q.key == p.key {
+            return s.canvas_x + place * (pin_width(s) + pin_width(s) / 10)
+        }
+        place += 1
+    }
+    s.canvas_x
 }
 
 /// A place on the framed canvas: the shell's frame around it (the window frame a desktop's
@@ -83,15 +104,16 @@ fn pin_height(s: ArrangementStrip) -> Int {
     if s.canvas_height > 0 { s.canvas_height } else { 480 }
 }
 
-/// What the person types on the canvas: a search that becomes a place. Typing a word or two and
-/// pressing Enter runs the one `find` the palette and an agent's `tilo` tool use, and the top
-/// result stands at the caret as its primary view (shell.md §8): one arranging action on the
-/// person's arrangement, attributed to them and undone as one step. `x` and `y` are where the
-/// caret was, in canvas pixels.
+/// What the person types on the canvas: a search that becomes a place, or a question to the
+/// agent whose conversation stands where they typed (shell.md §8 and §8.1). `session.converse`
+/// is one action: what the text finds stands at the caret as its primary view, one arranging
+/// step of the person's, attributed to them and undone as one step; text that finds nothing is
+/// a question, and the run it starts places its conversation there instead. `x` and `y` are
+/// where the caret was, in canvas pixels.
 view canvas_entry(a: Arrangement) {
     lens typed: Text = ""
-    ui.TextInput(value: typed, placeholder: "Find something and place it here") {
-        on submit: session.place_found(text: typed, x: here_x(a), y: here_y(a))
+    ui.TextInput(value: typed, placeholder: "Find something, or ask") {
+        on submit: session.conversation(line: typed, x: here_x(a), y: here_y(a))
     }
 }
 

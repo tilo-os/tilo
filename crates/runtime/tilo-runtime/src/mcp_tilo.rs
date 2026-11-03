@@ -554,6 +554,77 @@ fn shown_line(line: &str, programs: &mut Programs) -> String {
     out
 }
 
+/// A program the person's line ran, as the task's host answered it: its text, its host answer
+/// (`{state, output, detail, lets, steps, changed, apps}`), and the references it showed
+/// (`t3`), each with the resource literal it names. The door records it as the run's step
+/// (`tilo_reference::ProgramStep`), which lives in the runs and nowhere here.
+#[derive(Clone, Debug, Default)]
+pub struct PersonStep {
+    /// What the person reads: tilolang, each resource named by a short reference.
+    pub text: String,
+    pub failed: bool,
+    /// The host's answer, when the program ran.
+    pub answer: Value,
+}
+
+impl PersonStep {
+    /// What the task's host answered with, as a step of the person's: what the door read the
+    /// answer as (`text`, the step's account of what it changed included), its output's lines,
+    /// and whether it ran to its end.
+    #[must_use]
+    pub fn of(text: String, answer: Value) -> Self {
+        let failed = !matches!(
+            answer.get("state").and_then(Value::as_str),
+            Some("done" | "preview" | "suspended")
+        );
+        Self {
+            text,
+            failed,
+            answer,
+        }
+    }
+}
+
+/// Every resource literal (`@app.Type:id`) `text` names, in the order it names them.
+pub fn literals_in(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some((_, after)) = rest.split_once('@') {
+        let end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | ')' | ']' | ','))
+            .unwrap_or(after.len());
+        let (literal, tail) = after.split_at(end);
+        if literal.split_once(':').is_some_and(|(path, id)| {
+            !id.is_empty()
+                && path.rsplit_once('.').is_some_and(|(app, ty)| {
+                    !app.is_empty() && ty.chars().next().is_some_and(char::is_uppercase)
+                })
+        }) {
+            found.push(literal.to_owned());
+        }
+        rest = tail;
+    }
+    found
+}
+
+/// The references `text` shows: each short reference (`t3`) that `programs` named, with the
+/// resource literal it names, in the order the text shows them.
+fn shown_refs(text: &str, programs: &Programs) -> Vec<(String, String)> {
+    let mut refs: Vec<(String, String)> = Vec::new();
+    for piece in pieces(text) {
+        if let Piece::Word {
+            text,
+            member: false,
+        } = piece
+            && let Some(literal) = programs.by_ref.get(&text)
+            && !refs.iter().any(|(known, _)| *known == text)
+        {
+            refs.push((text, literal.clone()));
+        }
+    }
+    refs
+}
+
 /// What a previewed program would apply, and how to apply it.
 fn preview(answer: &Value) -> String {
     let steps = answer["steps"].as_array().cloned().unwrap_or_default();
@@ -811,6 +882,83 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Some(self.programs.lock_recover().name(ty, &literal))
     }
 
+    /// A program run in this task's session as the caller this connection acts as: the
+    /// person at this device, typing a line in the run's conversation (shell.md §8.1), which
+    /// shares the same host and `let` scope as the agent's own `tilo` calls. The program's
+    /// step is [`PersonStep`]: the `ProgramStep` the run records, and the references a later
+    /// program may take (`t3`).
+    ///
+    /// # Errors
+    /// The host could not be started, or the program could not be sent.
+    pub async fn person_line(&self, source: &str) -> Result<PersonStep, String> {
+        let (text, answer) = self.run_as_person(source, &self.program_author()).await?;
+        let failed = !matches!(
+            answer.get("state").and_then(Value::as_str),
+            Some("done" | "preview" | "suspended")
+        );
+        Ok(PersonStep {
+            text,
+            failed,
+            answer,
+        })
+    }
+
+    /// Run `source` as the caller this connection acts as, on the program connection `fd` into
+    /// the task host already going (shell.md §8.1: a person's line in a run's conversation): the
+    /// same host and `let` scope as the agent's own `tilo` calls, each on a connection of its
+    /// own. What the program reads and changes comes back on `fd` and is done here as that
+    /// caller, exactly as a `tilo` call's is.
+    ///
+    /// # Errors
+    /// The connection is unusable, or the host answered nothing.
+    pub async fn program_on(
+        &self,
+        fd: std::os::fd::OwnedFd,
+        source: &str,
+    ) -> Result<PersonStep, String> {
+        let mut task = TaskLink::new(fd).map_err(|error| error.to_string())?;
+        let author = self.program_author();
+        let source = {
+            let programs = self.programs.lock_recover();
+            resolve_refs(source, &programs)?
+        };
+        let answer = Box::pin(self.serve_run(&mut task, &source, false, &author)).await?;
+        let text = self.answered(&source, &answer).text;
+        Ok(PersonStep::of(text, answer))
+    }
+
+    /// Run `source` in the task's host as `author`, read back: its text, its host answer and
+    /// the references it showed. A host that went away takes the task's `let`s with it, and the
+    /// next program starts another.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the programs' guard is taken only to resolve a reference, and dropping it early \
+                  across an await would leave the future unsendable"
+    )]
+    async fn run_as_person(&self, source: &str, author: &Value) -> Result<(String, Value), String> {
+        let source = {
+            let programs = self.programs.lock_recover();
+            resolve_refs(source, &programs)?
+        };
+        let mut link = self.task.lock().await;
+        if link.is_none() {
+            *link = Some(self.start_task().await?);
+        }
+        let Some(task) = link.as_mut() else {
+            return Err("the task's host did not start".to_owned());
+        };
+        let ran = Box::pin(self.serve_run(task, &source, false, author)).await;
+        let answer = match ran {
+            Ok(answer) => answer,
+            Err(why) => {
+                *link = None;
+                return Err(why);
+            }
+        };
+        let text = self.answered(source.as_str(), &answer).text;
+        Ok((text, answer))
+    }
+
     /// Run `source` in the task's host, doing what it reads and invokes as the task, until it
     /// answers. The host is started on the task's first program.
     async fn run_in_task(&self, source: &str, confirm: bool) -> Result<Value, String> {
@@ -821,7 +969,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let Some(task) = link.as_mut() else {
             return Err("the task's host did not start".to_owned());
         };
-        let ran = Box::pin(self.serve_run(task, source, confirm)).await;
+        let author = self.program_author();
+        let ran = Box::pin(self.serve_run(task, source, confirm, &author)).await;
         if ran.is_err() {
             // A host that went away takes the task's `let`s with it; the next program starts
             // another.
@@ -835,15 +984,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         task: &mut TaskLink,
         source: &str,
         confirm: bool,
+        author: &Value,
     ) -> Result<Value, String> {
         // Who wrote this program: the caller of this call. The host's session runs each program
         // as its own author, so the agent's programs and the person's lines share one session's
         // `let`s and each is attributed to whoever wrote it.
-        task.send(&json!({"run": {
-            "source": source,
-            "confirm": confirm,
-            "author": self.program_author(),
-        }}))
+        task.send(&json!({
+            "run": {
+                "source": source,
+                "confirm": confirm,
+                "author": author,
+            },
+        }))
         .await?;
         // Which instance answers for each app, found once per program.
         let mut providers: Providers = BTreeMap::new();

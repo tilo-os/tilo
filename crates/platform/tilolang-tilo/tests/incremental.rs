@@ -192,6 +192,63 @@ fn published_anew(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) 
 }
 
 #[test]
+fn an_item_offers_the_direct_edits_its_type_offers() {
+    let (ada, _meta, root) = workspace();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let tree = &published.trees()[&root];
+    let edits = |resource: &ResourceSpec| -> Vec<String> {
+        resource
+            .actions
+            .iter()
+            .filter(|a| matches!(a.id.as_str(), "edit-text" | "edit-flag"))
+            .map(|a| a.id.clone())
+            .collect()
+    };
+    assert_eq!(edits(tree), ["edit-text", "edit-flag"], "a root's edits");
+    let (first, second) = (&tree.children[0], &tree.children[1]);
+    assert_eq!(
+        edits(first),
+        ["edit-text", "edit-flag"],
+        "an item offers the direct edits its type's fields support, as a root does"
+    );
+    // The specs are shared per type: items of one type bind the same edit types to their own
+    // ids, rather than each carrying specs of its own.
+    for id in ["edit-text", "edit-flag"] {
+        let held = |resource: &ResourceSpec| {
+            resource
+                .actions
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap()
+                .action_type()
+                .clone()
+        };
+        assert!(
+            Arc::ptr_eq(&held(first), &held(second)),
+            "{id} is one shared type, bound to each item, not rebuilt per item"
+        );
+    }
+    // Each item's edit is its own: the target is the item's path, as an action names it.
+    let target = |resource: &ResourceSpec| {
+        resource
+            .actions
+            .iter()
+            .find(|a| a.id == "edit-text")
+            .unwrap()
+            .target()
+            .get::<String>()
+            .cloned()
+    };
+    assert_eq!(
+        target(first).as_deref(),
+        Some(first.id.as_str().trim_start_matches("tl:so.tilo.todo:"))
+    );
+    assert_ne!(target(first), target(second), "each binds its own item");
+}
+
+#[test]
 fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
     let (mut ada, meta, root) = workspace();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);

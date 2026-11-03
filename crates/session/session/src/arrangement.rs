@@ -253,6 +253,12 @@ impl Catalog {
     pub fn get(&self, id: &str) -> Option<&Target> {
         self.by_id.get(id)
     }
+
+    /// Put `target` under `id`, as the resource is published: a place made from a resource the
+    /// session has just published but the door's tree does not hold yet.
+    pub fn remember(&mut self, id: &str, target: Target) {
+        self.by_id.insert(id.to_owned(), target);
+    }
 }
 
 /// Every resource of `resource` and its children, by id, with the views it
@@ -1213,6 +1219,8 @@ fn arrangement_resource() -> ResourceSpec {
         )
         .with_action(step_action("undo", "Undo the last arranging step"))
         .with_action(step_action("redo", "Redo the last undone arranging step"))
+        // The conversation's one input (shell.md §8.1): a program or a sentence.
+        .with_action(crate::conversation::action())
 }
 
 /// The record itself, whose actions step its history.
@@ -1530,6 +1538,11 @@ pub struct ArrangementDoor {
     /// The system's `find`, as the palette and an agent's `tilo` tool run it:
     /// what text typed on the canvas places (shell.md §8).
     find: Find,
+    /// The conversation's runs (shell.md §8.1), when this door has them: a
+    /// line typed in a run's conversation is a program it runs as the
+    /// person, or a sentence it takes in. `None` for a door that has none (a
+    /// session with no runs of its own).
+    conversation: Option<std::sync::Arc<crate::conversation::Conversation>>,
 }
 
 impl ArrangementDoor {
@@ -1546,7 +1559,18 @@ impl ArrangementDoor {
             busy,
             actor: RefCell::new(String::new()),
             find,
+            conversation: None,
         }
+    }
+
+    /// Answer the conversation's lines with `conversation` (shell.md §8.1).
+    #[must_use]
+    pub fn with_conversation(
+        mut self,
+        conversation: std::sync::Arc<crate::conversation::Conversation>,
+    ) -> Self {
+        self.conversation = Some(conversation);
+        self
     }
 
     /// Arrange as `actor` from now on: what the person's own input does, so
@@ -1577,6 +1601,12 @@ impl Published for ArrangementDoor {
             || (address.resource == RESOURCE && matches!(address.action.as_str(), "undo" | "redo"))
         {
             return self.step(address);
+        }
+        // The conversation's one input (shell.md §8.1): a line is a program, run as the person
+        // in the run's door session, or a sentence, taken in by the run. It reaches the runs
+        // and the search the same way, so it answers here and never as an arranging action.
+        if address.resource == RESOURCE && address.action == crate::conversation::ACTION {
+            return self.converse(arguments);
         }
         let published = self.arrangement.borrow().resources();
         let built = tilo_actions::door::spec_of(&published, &address.resource, &address.action)
@@ -1647,6 +1677,179 @@ impl Published for ArrangementDoor {
 }
 
 impl ArrangementDoor {
+    /// The conversation's one input (shell.md §8.1): a program, run as the person in the run's
+    /// door session, or a sentence to the agent. A sentence with no run starts one, and its
+    /// conversation stands where the person typed, as one more arranging step of theirs.
+    fn converse(
+        &self,
+        arguments: &serde_json::Map<String, Json>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        use tilo_actions::DoorError;
+        let Some(conversation) = self.conversation.clone() else {
+            return Err(DoorError::Unavailable {
+                code: "no-conversation".to_owned(),
+                reason: "this arrangement holds no agent's conversation".into(),
+            });
+        };
+        let param = |name: &'static str| {
+            arguments
+                .get(name)
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+        };
+        let number = |name: &'static str| {
+            arguments
+                .get(name)
+                .and_then(Json::as_i64)
+                .unwrap_or_default()
+        };
+        let line = param(crate::conversation::LINE)
+            .map(|line| line.trim().to_owned())
+            .unwrap_or_default();
+        let run = param(crate::conversation::RUN).unwrap_or_default();
+        let at = (
+            number(crate::conversation::X),
+            number(crate::conversation::Y),
+        );
+        if line.is_empty() {
+            return Err(DoorError::InvalidArguments(
+                "a line typed in the conversation says something".into(),
+            ));
+        }
+        let mut asked = self.actor.borrow().clone();
+        if asked.is_empty() {
+            asked = self.person();
+        }
+        if crate::conversation::is_program(&line, &run) {
+            conversation
+                .say(&asked, &run, &line)
+                .map_err(DoorError::Failed)?;
+            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
+        if !run.is_empty() {
+            conversation.tell(&run, &line).map_err(DoorError::Failed)?;
+            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
+        // No run yet: what the person typed is first a search, as the canvas's text always is
+        // (shell.md §8, "Finding what to place"): the top result stands at the caret when the
+        // search names something, and the text is a question to the agent when it does not.
+        if self.place_found_beside(&asked, &line, at).is_ok() {
+            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
+        // A question: it starts a run, and the run's conversation stands where the person
+        // typed. Both are theirs: the ask is recorded as theirs, and the place is one step of
+        // their arrangement, as any other place is.
+        let started = conversation.ask(&line).map_err(DoorError::Failed)?;
+        let place = self.place_run(&asked, &started, at);
+        if let Err(why) = place {
+            return Err(DoorError::Unavailable {
+                code: "not_placed".to_owned(),
+                reason: format!("the run started, but its conversation could not be placed: {why}"),
+            });
+        }
+        Ok(ui::host_operation::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+
+    /// Put run `resource` (`agent-run:<id>`) in what the arrangement resolves a place's app and
+    /// view from, as the runs service publishes it: the shell, through its conversation.
+    fn remember_run(&self, resource: &str) {
+        let Some(key) = resource.strip_prefix(tilo_agent_runs::wire::RUN_PREFIX) else {
+            return;
+        };
+        let title = key.to_owned();
+        self.arrangement.borrow().targets().borrow_mut().remember(
+            resource,
+            Target {
+                app: tilo_agent_runs::SHELL_APP.to_owned(),
+                views: vec![tilo_agent_runs::CONVERSATION_VIEW.to_owned()],
+                title,
+            },
+        );
+    }
+
+    /// Place what the text `line` finds at `(x, y)` on the canvas, as `asked`'s: the canvas's
+    /// one search (shell.md §8), the same `find` the palette runs.
+    ///
+    /// # Errors
+    /// Nothing the text finds is a resource the arrangement places.
+    fn place_found_beside(&self, asked: &str, line: &str, at: (i64, i64)) -> Result<(), String> {
+        let find = Rc::clone(&self.find);
+        let busy = if asked == self.person() {
+            Busy::default()
+        } else {
+            (self.busy)()
+        };
+        self.arrangement
+            .borrow_mut()
+            .place_found(asked, line, "", at, &*find, busy)
+            .map(drop)
+    }
+
+    /// Stand run `run`'s conversation at `(x, y)` on the canvas, as `asked`'s: one arranging
+    /// step, as any other place is (shell.md §3, §8.1).
+    ///
+    /// # Errors
+    /// The arrangement does not publish the run, or the place could not be made.
+    fn place_run(&self, asked: &str, run: &str, at: (i64, i64)) -> Result<(), String> {
+        let resource = crate::conversation::run_resource(run);
+        // The run was just asked for, and the session publishes it on its door's tree the next
+        // time the doors' offices are read. A place names the resource it shows as its app and
+        // its view, so the run is put in that tree now, as the runs service publishes it: the
+        // arrangement does not wait a pass to show a conversation the person just started.
+        self.remember_run(&resource);
+        let action = ArrangementAction::Place {
+            workspace: 0,
+            row: 0,
+            strip: 0,
+            place: 0,
+            resource,
+            view: String::new(),
+            x: at.0,
+            y: at.1,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+        };
+        let (workspace, row, strip, place) = {
+            let surface = self.arrangement.borrow().surface_at()?;
+            (surface.workspace, surface.row, surface.strip, surface.place)
+        };
+        let action = match action {
+            ArrangementAction::Place {
+                resource,
+                view,
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => ArrangementAction::Place {
+                workspace,
+                row,
+                strip,
+                place,
+                resource,
+                view,
+                x,
+                y,
+                width,
+                height,
+            },
+            other => other,
+        };
+        self.arrangement
+            .borrow_mut()
+            .ask(asked, action, Busy::default())
+            .map(drop)
+    }
+
     /// A `place` that names no workspace, row, strip or id of its own stands
     /// on the surface in front, in a strip of its own, under ids minted here:
     /// what a reference activated in a view asks for (shell.md §3), which

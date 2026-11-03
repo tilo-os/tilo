@@ -29,6 +29,9 @@ use tilo_actions::{ActionDescriptor, OperationKind};
 #[path = "mcp_tilo.rs"]
 mod tilo;
 use tilo::actions_note;
+/// A person's own line in a run's conversation, run in the task's host as they are
+/// (shell.md §8.1): what the door's `person_line` hands on.
+pub use tilo::{PersonStep, literals_in};
 pub(super) use tilo::{Programs, TaskLink};
 pub use tilo::{TaskHosts, TaskProgram};
 
