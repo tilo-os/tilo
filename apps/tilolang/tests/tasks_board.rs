@@ -372,18 +372,24 @@ fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
     out
 }
 
-/// Click the node whose accessible name begins with `label` (a sidebar item, its count after).
+/// Click the sidebar's item whose accessible name begins with `label` (its count after). A
+/// list's heading over a day is named the same way and folds its group rather than choosing
+/// the place, so the item clicked is the one the sidebar holds: the tree's.
 fn click_item(app: &mut TestApp<TlApp>, label: &str) {
     let all = accessible(app);
     let found = all.iter().find_map(|node| {
         node.name
             .as_deref()
             .filter(|name| name.starts_with(label))
+            .filter(|_| node.role == ui::a11y::Role::TreeItem)
             .and(node.bounds)
     });
     let Some(b) = found else {
-        let names: Vec<&str> = all.iter().filter_map(|node| node.name.as_deref()).collect();
-        panic!("nothing named `{label}`: {names:?}");
+        let named: Vec<(&str, &ui::a11y::Role)> = all
+            .iter()
+            .filter_map(|node| Some((node.name.as_deref()?, &node.role)))
+            .collect();
+        panic!("no sidebar item named `{label}`: {named:?}");
     };
     app.harness()
         .click_at(f64::midpoint(b.x0, b.x1), f64::midpoint(b.y0, b.y1));
