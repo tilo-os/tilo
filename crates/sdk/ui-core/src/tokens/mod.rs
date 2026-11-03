@@ -102,6 +102,11 @@ pub struct Tokens {
     /// How the shared components answer the pointer: hover and press
     /// ([`Response`]).
     pub response: Response,
+    /// How wide an icon's outline is drawn, in logical pixels: the theme's
+    /// `icons` role (`docs/architecture/theming.md`, "Icons"). 1.5 at
+    /// stock, Lucide's own weight; a look with pixels wants a whole-pixel
+    /// stroke it can land on.
+    pub icon_stroke_px: f32,
 }
 
 impl Tokens {
@@ -144,6 +149,7 @@ impl Tokens {
             border_color: None,
             depth: Depth::STOCK,
             response: Response::STOCK,
+            icon_stroke_px: crate::icons::LUCIDE_DEFAULT_STROKE_PX as f32,
         }
     }
 

@@ -680,7 +680,7 @@ impl SurfaceHost for WidgetHost {
                 (
                     region.rect,
                     region.blur_px,
-                    ui::backdrop::backdrop_texels(region.rect),
+                    ui::backdrop::backdrop_texels(region.rect, region.sampling, region.cell_px),
                 )
             })
             .collect();

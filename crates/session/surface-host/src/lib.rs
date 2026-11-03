@@ -546,7 +546,11 @@ impl SurfaceHost for AppHost {
                 (
                     surface.bounds,
                     surface.blur_px,
-                    ui::backdrop::backdrop_texels(surface.bounds),
+                    ui::backdrop::backdrop_texels(
+                        surface.bounds,
+                        surface.sampling,
+                        surface.cell_px,
+                    ),
                 )
             })
             .collect();

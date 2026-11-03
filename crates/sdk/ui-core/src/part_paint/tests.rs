@@ -580,3 +580,117 @@ fn the_part_cache_keys_on_every_liquid_parameter() {
         assert_eq!(draw(&tokens), before + 1, "and is kept under it");
     }
 }
+
+/// The parts Pixelated draws a pattern fill in: the cell grid's texels.
+fn pixelated_patterns(tokens: &PartTokens, part: Part) -> Vec<f32> {
+    let painted = builtin::pixelated_set()
+        .painter()
+        .paint(
+            part,
+            Size::new(200.0, 120.0),
+            PartState {
+                was: States::REST,
+                now: States::REST,
+            },
+            1.0,
+            &tokens,
+        )
+        .expect("pixelated draws the four surface parts");
+    painted
+        .scene
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Fill {
+                brush: Brush::Pattern { image, scale },
+                ..
+            } => {
+                assert_eq!((image.width, image.height), (4, 4), "a 4 by 4 tile");
+                Some(*scale)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Pixelated draws its cell grid as its own ops: a pattern fill of the
+/// body in the fill stepped towards the ink, one texel per cell. The look
+/// read as a flat box before, because a ground that varies nowhere left the
+/// cells nothing to quantise, so the finish showed only its corners and its
+/// border.
+#[test]
+fn the_pixelated_set_draws_its_cell_grid() {
+    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let color = Color::from_rgb8(0x18, 0x20, 0x2c);
+    let tokens = part_tokens(
+        &theme,
+        SurfaceRole::Floating,
+        (color, color, color),
+        crate::chrome::panel_ground(&theme),
+    );
+    let cell = tokens.param("cell", 8.0);
+    for part in [
+        Part::WindowGround,
+        Part::FloatingPanel,
+        Part::BarBody,
+        Part::ControlFace,
+    ] {
+        assert_eq!(
+            pixelated_patterns(&tokens, part),
+            vec![cell],
+            "{part:?} carries the grid, one pattern fill, one texel per cell"
+        );
+    }
+    // A grid of 0 draws none.
+    let plain = with_param(&tokens, "grid", 0.0);
+    assert!(
+        pixelated_patterns(&plain, Part::FloatingPanel).is_empty(),
+        "a grid of 0 draws no cells"
+    );
+}
+
+/// The grid's pattern paints cells on the frame: a 4 by 4 dither tile drawn
+/// at `cell` logical pixels per texel, so a row of the body steps in a
+/// Bayer order rather than shading evenly.
+#[test]
+fn the_cell_grid_paints_cells_on_the_frame() {
+    use crate::offscreen::OffscreenRenderer;
+    let (width, height) = (160, 120);
+    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let color = Color::from_rgb8(0x20, 0x28, 0x34);
+    // The ink the grid steps towards: what a surface measures its text on.
+    let ink = Color::from_rgb8(0xf0, 0xf2, 0xf6);
+    let tokens = part_tokens(
+        &theme,
+        SurfaceRole::Floating,
+        (color, ink, color),
+        crate::chrome::panel_ground(&theme),
+    );
+    let mut scene = Scene::new();
+    paint_part(
+        &mut scene,
+        Affine::IDENTITY,
+        Rect::new(20.0, 20.0, 140.0, 100.0),
+        (
+            builtin::pixelated_set(),
+            Part::FloatingPanel,
+            SurfaceRole::Floating,
+        ),
+        Moment::settled(States::REST),
+        &tokens,
+        &theme,
+    );
+    let mut renderer = OffscreenRenderer::new(width, height);
+    let rgba = renderer.render(&scene, Color::BLACK);
+    let row: Vec<(u8, u8, u8)> = (30..130)
+        .map(|x| {
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, width, x, 60);
+            (r, g, b)
+        })
+        .collect();
+    let changes = row.windows(2).filter(|pair| pair[0] != pair[1]).count();
+    assert!(
+        changes >= 4,
+        "the grid paints cells across the body: {changes} changes in {row:?}"
+    );
+}
