@@ -206,8 +206,12 @@ impl Gen<'_> {
         self.i(Instruction::LocalSet(fl.list_local));
         self.i(Instruction::I64Const(0));
         self.i(Instruction::LocalSet(fl.idx_local));
+        // A loop reads every item, so it takes the count, not the length the store knows
+        // without reading it: a collection that checks its items as it reads them knows only
+        // how many it can hold at most until it has read them, and a loop bounded by that
+        // reads past the end ([`Imp::CollCount`]).
         self.i(Instruction::LocalGet(fl.list_local));
-        self.ops.push(Op::Imp(Imp::ListLen));
+        self.ops.push(Op::Imp(Imp::CollCount));
         self.i(Instruction::LocalSet(fl.len_local));
         self.i(Instruction::Block(BlockType::Empty));
         self.labels.push(Label::ForBlock);
