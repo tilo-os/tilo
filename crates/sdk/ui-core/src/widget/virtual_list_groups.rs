@@ -72,9 +72,19 @@ pub(super) fn group_of<M: ListModel>(model: &M, index: usize, tail: Option<&str>
 }
 
 impl Groups {
-    /// The band height the theme asks, kept for laying the bands out.
-    pub(super) fn theme(&mut self, theme: &Theme) -> f64 {
-        self.height = band_height(theme);
+    /// The band height the theme asks, kept for laying the bands out. A heading is a target a
+    /// finger presses, so under a coarse pointer its band grows to the target a finger needs.
+    pub(super) fn theme(
+        &mut self,
+        theme: &Theme,
+        input: crate::interaction::InteractionEnvironment,
+    ) -> f64 {
+        let target = if input.supports_hover() {
+            0.0
+        } else {
+            f64::from(input.minimum_target())
+        };
+        self.height = band_height(theme).max(target);
         self.height
     }
 
@@ -400,10 +410,12 @@ impl<M: ListModel> VirtualList<M> {
             let has_keyboard = focused.as_deref() == Some(band.heading.as_str());
             if has_keyboard {
                 let rect = self.band_rect(band.top);
+                // Inside the band, where the ring's own 1 px reach cannot fall past the
+                // list's edge and be clipped away.
                 crate::widget::paint_focus_ring(
                     scene,
                     transform,
-                    rect.inset(2.0),
+                    rect.inflate(-2.0, -2.0),
                     (radius - 2.0).max(0.0),
                     theme,
                 );
@@ -489,10 +501,7 @@ impl<M: ListModel> VirtualList<M> {
     /// rows still say the heading heads that group.
     fn heading_focus(&mut self) -> Option<(String, usize)> {
         let (heading, index) = self.focused_group.clone()?;
-        if !self
-            .row_group(index)
-            .is_some_and(|group| group.0 == heading)
-        {
+        if self.row_group(index).is_none_or(|group| group.0 != heading) {
             // The rows moved under it: the heading is not there any more.
             self.focused_group = None;
             return None;
@@ -555,9 +564,7 @@ impl<M: ListModel> VirtualList<M> {
                 if self.row_open(start) {
                     return Some(Stop::Row(start));
                 }
-                let Some(group) = self.row_group(start) else {
-                    return None;
-                };
+                let group = self.row_group(start)?;
                 let mut below = start.saturating_add(1);
                 while below < count && self.row_group(below).is_some_and(|at| at.0 == group.0) {
                     below = below.saturating_add(1);

@@ -73,13 +73,13 @@ impl<M: ListModel> VirtualList<M> {
         for row in &self.mounted {
             while bands.peek().is_some_and(|band| band.index <= row.index) {
                 if let Some(band) = bands.next() {
-                    children.push(self.heading_node(band));
+                    children.push(self.heading_node(band, enabled));
                 }
             }
             children.push(self.row_node(row, enabled));
         }
         for band in bands {
-            children.push(self.heading_node(band));
+            children.push(self.heading_node(band, enabled));
         }
         children
     }
@@ -105,7 +105,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// The heading's node in the accessibility tree: a disclosure saying whether its group
     /// shows and how many rows it holds.
-    fn heading_node(&self, band: &Band) -> AccessNode {
+    fn heading_node(&self, band: &Band, enabled: bool) -> AccessNode {
         let focused = self
             .focused_group
             .as_ref()
@@ -119,6 +119,7 @@ impl<M: ListModel> VirtualList<M> {
                 AccessState::new()
                     .focusable(true)
                     .focused(self.is_focused && focused)
+                    .disabled(!enabled)
                     .expanded(!band.closed),
             )
     }

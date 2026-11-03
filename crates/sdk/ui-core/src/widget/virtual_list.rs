@@ -159,7 +159,8 @@ pub trait ListModel {
     }
 
     /// What the row `index` is grouped by, when the model groups its rows: the list draws the
-    /// heading over the first row of each group ([`RowGroup`]). `None` for a row in no group,
+    /// heading over the first row of each group ([`RowGroup`]), a disclosure the keyboard
+    /// reaches like a row and assistive technology reads as one. `None` for a row in no group,
     /// or a model that groups nothing.
     fn group_at(&self, _index: usize) -> Option<RowGroup> {
         None
@@ -2061,7 +2062,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         ) * 24.0
             + f64::from(theme.tokens.spacing.s4) * 6.0;
         self.motion = self.feel.over(theme.motion());
-        self.groups.theme(theme);
+        self.groups.theme(theme, self.interaction);
         if let Some(edges) = self.edges.as_mut() {
             edges.theme(theme);
         }
