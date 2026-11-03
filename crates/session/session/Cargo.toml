@@ -42,6 +42,9 @@ dev-overrides = []
 [target.'cfg(target_os = "linux")'.dependencies]
 # The surface apps' sockets are handed to their children as descriptors.
 libc.workspace = true
+# The certificate a device was approved with, kept where the identity helper
+# reads it once and taken away after.
+tempfile.workspace = true
 tilo-compositor = { path = "../compositor" }
 # The session's own profiler: what its frame went on, recorded on the owner's
 # request and read from the same door.
@@ -349,7 +352,6 @@ tilo-nm = { path = "../../system/tilo-nm" }
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true
-tempfile.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The threshold signature material a test identity key is made of, as the
 # identity host's key holds it.

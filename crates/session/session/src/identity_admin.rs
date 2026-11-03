@@ -437,7 +437,7 @@ pub(crate) fn authorize(
     let mut administers = false;
     desk.with_tree(&mut |tree| {
         for held in &tree.workspaces {
-            if held.room().to_string() == workspace {
+            if held.id().to_string() == workspace {
                 hosted = true;
                 administers =
                     held.may_govern_at(person, tilo_action_policy::roles::governance::GRANT, now);
@@ -1010,7 +1010,7 @@ mod tests {
         let mut workspace =
             tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk");
         workspace.set_owner("alice");
-        let hosted = workspace.room().to_string();
+        let hosted = workspace.id().to_string();
         let desk = desk_with(workspace);
 
         let refused = authorize(&desk, &hosted, "bob").expect_err("a member who does not govern");
