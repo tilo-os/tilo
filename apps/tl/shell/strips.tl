@@ -135,10 +135,10 @@ view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
 }
 
 /// One row of the desk: the band across it, named while the desk holds more than one so a person
-/// can tell them apart, with its strips side by side along it, each keeping the width its own
-/// width names — a narrow, a usual or a wide window — so a window is never cut to the number of
-/// them beside it and its bar and app keep their room. A row holding more windows than the desk
-/// shows scrolls along it, as the chrome's own row does. A phone's output is too narrow for two
+/// can tell them apart, with its strips side by side along it, each the share of the desk its
+/// width names, so two windows the desk holds stand side by side and its app keeps its room
+/// (`row_window`). A row holding more windows than the desk shows scrolls along it, as the
+/// chrome's own row does. A phone's output is too narrow for two
 /// windows side by side, so there it shows the strip in front alone, filling the desk, as the
 /// chrome's desk does.
 view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
@@ -152,7 +152,11 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
             if let s = front {
                 strip_window(a, v, s, lists, fill(1))
             } else {
-                ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                ui.EmptyState(
+                    "No window here yet",
+                    message: "Open something into this strip.",
+                    inline: true,
+                )
             }
         } else {
             scroll(axis: .horizontal, fill) {
@@ -161,7 +165,11 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
                         row_window(a, v, s, lists)
                     }
                     if strips.is_empty() {
-                        ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                        ui.EmptyState(
+                            "No window here yet",
+                            message: "Open something into this strip.",
+                            inline: true,
+                        )
                     }
                 }
             }
@@ -169,12 +177,13 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
     }
 }
 
-/// One strip's window as its row stands it: the room the strip's own width names — a narrow, a
-/// usual or a wide window — so a window is never cut to the number of them beside it, and a row
-/// of more windows than the desk holds scrolls along it, as the chrome's own row does.
+/// One strip's window as its row stands it: its share of the desk, the per-mille width the person
+/// gave it (a usual window where it names none), so two windows the desk holds stand half each
+/// and a lone window takes the room its neighbours left. Never narrower than 44rem — the room a
+/// window's bar, its tabs and an app's own layout need — so a row of more windows than the desk
+/// holds keeps their width and scrolls along it, as the chrome's own row does.
 view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
-    let kept = if s.width <= 0 { 52rem } else if s.width <= 500 { 26rem } else if s.width < 900 { 52rem } else { 76rem }
-    strip_window(a, v, s, lists, min: kept, max: kept)
+    strip_window(a, v, s, lists, fill: if s.width <= 0 { 667 } else { s.width }, min: 44rem)
 }
 
 /// One strip: the window its places make, filling the room it is given. Its bar runs across its
@@ -205,7 +214,11 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
             if let p = shown {
                 place_content(p)
             } else {
-                ui.EmptyState("Nothing here", message: "Open something into this strip.", inline: true)
+                ui.EmptyState(
+                    "Nothing here",
+                    message: "Open something into this strip.",
+                    inline: true,
+                )
             }
         }
     }
@@ -236,7 +249,13 @@ flow show_place(v: Viewing, strip: Text, place: session.Place) {
 /// nothing about the place but its close stands in the bar of its own. Each is one arranging
 /// action of the session's, so a press and an agent change the desk the same way, and none of
 /// them ever asks for a bar of its own.
-view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Option<ArrangementPlace>, in_front: Bool) {
+view window_controls(
+    a: Arrangement,
+    v: Viewing,
+    s: ArrangementStrip,
+    shown: Option<ArrangementPlace>,
+    in_front: Bool,
+) {
     row(gap: .tight, align: .center) {
         ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
             ui.MenuItem("Narrow", checked: .some(width_of(s.width) == .narrow)) {
@@ -267,7 +286,10 @@ view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Opt
                     for r in a.rows {
                         if r.key != strip_row(a, p.strip) {
                             ui.MenuItem("Move to {r.name}", icon: .navigation) {
-                                on choose: session.move(place: the_place(p.key), row: the_row(r.key))
+                                on choose: session.move(
+                                    place: the_place(p.key),
+                                    row: the_row(r.key),
+                                )
                             }
                         }
                     }
@@ -298,7 +320,13 @@ view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Opt
 view place_controls(a: Arrangement, p: ArrangementPlace) {
     row(gap: .tight, align: .center) {
         if p.pinned {
-            ui.Button("Pin place", icon: .pin, icon_only: true, toggled: .some(true), role: .plain) {
+            ui.Button(
+                "Pin place",
+                icon: .pin,
+                icon_only: true,
+                toggled: .some(true),
+                role: .plain,
+            ) {
                 on press: session.pin(place: the_place(p.key), pinned: false)
             }
         } else {
