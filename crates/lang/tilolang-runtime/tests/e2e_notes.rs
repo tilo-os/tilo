@@ -211,7 +211,7 @@ mod cases {
         let n = Notes::new();
         let note = n.new_note();
         let editor = n.rt.open_resource(&me(), &note, None).unwrap();
-        let body = of_kind(editor.tree(), "ui.RichInput")[0].key.clone();
+        let body = of_kind(editor.tree(), "ui.BlockEditor")[0].key.clone();
         editor
             .edit(&body, &Value::Rich(RichValue::from_text("Oat milk, eggs")))
             .unwrap();
@@ -293,11 +293,11 @@ mod cases {
             .unwrap()
         };
         let (view_a, view_b) = (editor(&rt_a), editor(&rt_b));
-        // The body is the editor's rich input; it hands over the whole text it holds.
+        // The body is the editor's document; it hands over the whole text it holds.
         let body = |v: &tilolang_runtime::ViewInstance| {
-            let inputs = of_kind(v.tree(), "ui.RichInput");
+            let inputs = of_kind(v.tree(), "ui.BlockEditor");
             let [input] = inputs.as_slice() else {
-                panic!("the editor draws one rich input, the body: {inputs:#?}");
+                panic!("the editor draws one document, the body: {inputs:#?}");
             };
             input.key.clone()
         };

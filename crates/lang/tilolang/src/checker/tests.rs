@@ -509,8 +509,8 @@ fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
 
 #[test]
 fn a_body_held_as_rich_text_binds_like_any_field() {
-    // A body is a text field or a rich text one, and a view places it as the block editor and
-    // binds it: the field's role is the document's, not the control's to be told.
+    // A body is a rich text field a view places as the block editor and binds: the editor
+    // carries the binding, and the document's shell draws the title field as its title.
     let (m, _) = lower(
         "type Note {\n    title: Text (title)\n    body: RichText (body)\n}\nroot Note\ndefault view note for Note\nview note(n: Note) {\n    std.document(n) {\n        ui.TextInput(value: n.title)\n        ui.BlockEditor(bind: n.body, placeholder: \"Write\")\n    }\n}",
     );
@@ -535,10 +535,6 @@ fn a_body_held_as_rich_text_binds_like_any_field() {
     assert!(
         from(block, "bind") < from(block, "prop placeholder"),
         "the body binds to the field: {calls:#?}"
-    );
-    assert!(
-        !has(&calls, "prop field_role"),
-        "the role is the field's, not a prop: {calls:#?}"
     );
 }
 

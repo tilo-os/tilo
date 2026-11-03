@@ -316,6 +316,16 @@ mod cases {
     }
 
     /// Choose the place `name` of a window's filter, in its sidebar.
+    /// The keys of the controls a letter's editor takes text in, in the order it draws them:
+    /// its one-line fields and the block editor its body is.
+    fn letter_fields(view: &ViewInstance) -> Vec<String> {
+        let tree = view.tree();
+        let fields = of_kind(tree, "ui.TextInput")
+            .into_iter()
+            .chain(of_kind(tree, "ui.BlockEditor"));
+        fields.map(|field| field.key.clone()).collect()
+    }
+
     fn choose(view: &ViewInstance, name: &str) {
         let place = node_with(view.tree(), "ui.NavItem", "key", name)
             .key
@@ -610,10 +620,7 @@ mod cases {
         let desk = w.create("Desk");
         let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let mut editor = w.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs: Vec<String> = of_kind(editor.tree(), "ui.TextInput")
-            .iter()
-            .map(|i| i.key.clone())
-            .collect();
+        let inputs = letter_fields(&editor);
         for (key, text) in inputs
             .iter()
             .zip(["bo@example.org", "Plans", "See you at nine."])
@@ -892,10 +899,7 @@ mod cases {
         let desk = wa.create("Desk");
         let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let editor = wa.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs: Vec<String> = of_kind(editor.tree(), "ui.TextInput")
-            .iter()
-            .map(|i| i.key.clone())
-            .collect();
+        let inputs = letter_fields(&editor);
         for (key, text) in inputs.iter().zip(["bo@example.org", "Plans", "Nine."]) {
             editor.edit(key, &Value::text(text)).unwrap();
         }
