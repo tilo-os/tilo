@@ -202,11 +202,8 @@ def launch_all(session: Session) -> dict:
         windows = {w.get("app_id"): w for w in session.windows()}
         return windows if all(app_id(n) in windows for n in APPS) else None
     windows = until("every app's window", admitted)
-    def presented():
-        frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
-        shown = {f["app_id"] for f in frames if f["presented"] and f["pixels_ready"]}
-        return all(app_id(n) in shown for n in APPS)
-    until("a presented frame of every app", presented, 30)
+    until("every app answering with its own actions",
+          lambda: all(session.answering(app_id(n)) for n in APPS), 30)
     return {
         app_id(n): {"group": windows[app_id(n)]["group"], "tab": windows[app_id(n)]["tab"]}
         for n in APPS
@@ -304,10 +301,7 @@ def check_native(session: Session, out: Path) -> dict:
     session.invoke("applications", NATIVE)
     windows = until(f"{NATIVE}'s window",
                     lambda: {w.get("app_id"): w for w in session.windows() if w.get("app_id") == NATIVE})
-    def presented():
-        frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
-        return any(f["app_id"] == NATIVE and f["presented"] and f["pixels_ready"] for f in frames)
-    until(f"a presented frame of {NATIVE}", presented, 30)
+    session.answering(NATIVE, 30)
     # Connected: its window publishes its actions.
     until(f"{NATIVE}'s actions", lambda: app_action(session, NATIVE, "Show this window"), 60)
     w = windows[NATIVE]
@@ -432,8 +426,8 @@ def log_lines(session: Session, pattern: str) -> list[dict]:
 
 
 def presented(session: Session, app: str) -> bool:
-    frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
-    return any(f["app_id"] == app and f["presented"] and f["pixels_ready"] for f in frames)
+    """Whether `app` is up and answering, its window painted."""
+    return session.answering(app, 30)
 
 
 def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:

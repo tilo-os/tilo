@@ -159,7 +159,8 @@ def open_apps(session: CanvasSession, apps: list[str]) -> dict:
             session.invoke("applications", app)
     windows = until("a window of every app", lambda: (lambda ws: ws if all(a in ws for a in apps) else None)(
         {w.get("app_id"): w for w in session.windows()}), 60)
-    until("a presented frame of every app", lambda: all(session.presented(a) for a in apps), 60)
+    until("every app answering with its own actions",
+          lambda: all(session.answering(a) for a in apps), 60)
     return {a: windows[a] for a in apps}
 
 
@@ -632,9 +633,10 @@ def check_windows_back(session: CanvasSession, before: dict) -> dict:
                             for a in before},
                 "workspaces": len(tree.get("workspaces", []))}
     try:
-        until("a presented frame of every restored app", lambda: all(session.presented(a) for a in before), 60)
+        until("every restored app answering with its own actions",
+              lambda: all(session.answering(a) for a in before), 60)
     except Failed:
-        missing = [a for a in before if not session.presented(a)]
+        missing = [a for a in before if not session.answering(a)]
         log = (session.state / "logs/session.log").read_text(errors="replace").splitlines()
         said = [line[-300:] for line in log
                 if any(f"[app {a} stderr] error" in line or f"[app {a} stderr] Error" in line for a in missing)]
