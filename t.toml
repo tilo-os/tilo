@@ -212,7 +212,6 @@ on = ["idle"]
 [[check]]
 name = "policy/{step}"
 run = "{step.run}"
-group = "policy"
 [check.matrix]
 step = { from_toml = "tools/policy/steps.toml", key = "step" }
 exclude = [{ step = "unit" }]
@@ -278,7 +277,6 @@ git = true
 [[check]]
 name = "policy/unit/{test}"
 run = "python3 tools/policy/run_unit_tests.py tools/tests/test_{test}.py"
-group = "policy-unit"
 [check.matrix]
 test = { from = "tools/tests/test_*.py" }
 
