@@ -41,7 +41,7 @@ pub(super) const HOST: Publisher = Publisher {
 };
 
 /// What the host's workspaces resource is called.
-const LABEL: &str = "Rooms";
+const LABEL: &str = "Workspaces";
 
 /// How long the invitation a device entering a workspace redeems stays
 /// redeemable when it does not say.
@@ -53,7 +53,7 @@ const HOST_VERBS: [(Verb, HostOperation); 7] = [
     (
         Verb {
             id: CREATE_ROOM,
-            label: "Create room",
+            label: "Create workspace",
             gate: CREATE_ROOM,
             kind: roles::GOVERNANCE_KIND,
             params: create_params,
@@ -63,7 +63,7 @@ const HOST_VERBS: [(Verb, HostOperation); 7] = [
     (
         Verb {
             id: LIST_ROOMS,
-            label: "List rooms",
+            label: "List workspaces",
             gate: LIST_ROOMS,
             kind: ActionKind::Read,
             params: Vec::new,
@@ -73,7 +73,7 @@ const HOST_VERBS: [(Verb, HostOperation); 7] = [
     (
         Verb {
             id: ENTER_ROOM,
-            label: "Enter room",
+            label: "Enter workspace",
             gate: ENTER_ROOM,
             kind: roles::GOVERNANCE_KIND,
             params: enter_params,
@@ -83,7 +83,7 @@ const HOST_VERBS: [(Verb, HostOperation); 7] = [
     (
         Verb {
             id: ATTACH_HOST,
-            label: "Have a host serve a room",
+            label: "Have a host serve a workspace",
             gate: ATTACH_HOST,
             kind: roles::GOVERNANCE_KIND,
             params: attach_params,
@@ -93,7 +93,7 @@ const HOST_VERBS: [(Verb, HostOperation); 7] = [
     (
         Verb {
             id: DETACH_HOST,
-            label: "Stop a host serving a room",
+            label: "Stop a host serving a workspace",
             gate: DETACH_HOST,
             kind: roles::GOVERNANCE_KIND,
             params: detach_params,
@@ -103,30 +103,30 @@ const HOST_VERBS: [(Verb, HostOperation); 7] = [
     (
         Verb {
             id: HOST_ROOM,
-            label: "Serve a room for its governor",
+            label: "Serve a workspace for its governor",
             gate: HOST_ROOM,
             kind: roles::GOVERNANCE_KIND,
-            params: host_room_params,
+            params: host_workspace_params,
         },
         HostOperation::HostWorkspace,
     ),
     (
         Verb {
             id: UNHOST_ROOM,
-            label: "Stop serving a room for its governor",
+            label: "Stop serving a workspace for its governor",
             gate: UNHOST_ROOM,
             kind: roles::GOVERNANCE_KIND,
-            params: room_params,
+            params: workspace_params,
         },
         HostOperation::UnhostWorkspace,
     ),
 ];
 
-fn room_params() -> Vec<ActionParam> {
+fn workspace_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
         "room",
         ParamType::Text,
-        "The room, as listing rooms names it.",
+        "The workspace, as listing workspaces names it.",
     )]
 }
 
@@ -140,7 +140,7 @@ fn host_param() -> ActionParam {
 
 fn attach_params() -> Vec<ActionParam> {
     vec![
-        room_params().remove(0),
+        workspace_params().remove(0),
         host_param(),
         ActionParam::required(
             "host_addr",
@@ -152,7 +152,7 @@ fn attach_params() -> Vec<ActionParam> {
 
 fn detach_params() -> Vec<ActionParam> {
     vec![
-        room_params().remove(0),
+        workspace_params().remove(0),
         host_param(),
         ActionParam::optional(
             "host_addr",
@@ -162,19 +162,23 @@ fn detach_params() -> Vec<ActionParam> {
     ]
 }
 
-fn host_room_params() -> Vec<ActionParam> {
+fn host_workspace_params() -> Vec<ActionParam> {
     vec![
-        room_params().remove(0),
-        ActionParam::required("workspace_id", ParamType::Integer, "The room's workspace."),
+        workspace_params().remove(0),
+        ActionParam::required(
+            "workspace_id",
+            ParamType::Integer,
+            "The workspace's transport shard.",
+        ),
         ActionParam::required(
             "governor_hint",
             ParamType::Text,
-            "The governor's signed address for the room, postcard in hex.",
+            "The governor's signed address for the workspace, postcard in hex.",
         ),
         ActionParam::required(
             "bootstrap",
             ParamType::Text,
-            "The room as a joining member gets it, this host's device admitted, postcard in hex.",
+            "The workspace as a joining member gets it, this host's device admitted, postcard in hex.",
         ),
     ]
 }
@@ -191,12 +195,12 @@ fn create_params() -> Vec<ActionParam> {
         ActionParam::required(
             "name",
             ParamType::Text,
-            "The room's name, 1 to 80 printable characters.",
+            "The workspace's name, 1 to 80 printable characters.",
         ),
         ActionParam::optional(
             "invite_role",
             ParamType::Text,
-            "Issue the room's first invitation, with this role.",
+            "Issue the workspace's first invitation, with this role.",
         )
         .with_choices(ROLES),
         ActionParam::optional(
@@ -222,7 +226,7 @@ fn create_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "room",
             ParamType::Text,
-            "The room it is, when a workspace moves here from the device that made it: its room (a UUID) stays its own. A new room when omitted.",
+            "The workspace it is, when one moves here from the device that made it: its identity (a UUID) stays its own. A new workspace when omitted.",
         ),
     ]
 }
@@ -232,12 +236,12 @@ fn enter_params() -> Vec<ActionParam> {
         ActionParam::required(
             "room",
             ParamType::Text,
-            "The room, as listing rooms names it.",
+            "The workspace, as listing workspaces names it.",
         ),
         ActionParam::optional(
             "expires_in_seconds",
             ParamType::Integer,
-            "How long the invitation this device redeems to hold the room stays redeemable: 600 seconds when omitted.",
+            "How long the invitation this device redeems to hold the workspace stays redeemable: 600 seconds when omitted.",
         ),
     ]
 }
@@ -325,7 +329,7 @@ impl Workspaces {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let summary = self
-                    .create_room(name, workspace)
+                    .create_workspace(name, workspace)
                     .await
                     .map_err(|error| refused(&error))?;
                 let invitation = match first {

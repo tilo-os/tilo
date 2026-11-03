@@ -514,7 +514,7 @@ pub struct WorkspaceHost {
 
 impl std::fmt::Debug for WorkspaceHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RoomHost")
+        f.debug_struct("WorkspaceHost")
             .field(
                 "device",
                 &hex::encode(self.sessions.identity.cert.device_public_key),

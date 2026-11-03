@@ -80,7 +80,9 @@ pub fn workspace() -> u64 {
 pub async fn place(relay: &Relay, device: &DeviceCert) {
     let workspaces = relay.workspaces().unwrap();
     if workspaces.summary(WORKSPACE).await.is_err()
-        && let Err(error) = workspaces.create_room("Workspace", Some(WORKSPACE)).await
+        && let Err(error) = workspaces
+            .create_workspace("Workspace", Some(WORKSPACE))
+            .await
     {
         // Another peer of the test may have placed it meanwhile.
         assert!(workspaces.summary(WORKSPACE).await.is_ok(), "{error}");

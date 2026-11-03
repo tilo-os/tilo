@@ -74,7 +74,7 @@ pub(crate) enum HostRequest {
     /// Have the workspace's host run an action of a workspace record for the person
     /// (`peer.actions`), and answer it with `desktop_record_action_answer`. The
     /// variant keeps its old name: it is the JSON key the page reads.
-    RoomAction(crate::desktop::RecordActionRequest),
+    WorkspaceAction(crate::desktop::RecordActionRequest),
     /// Open Chat's direct conversation with this person, through Chat's own
     /// action, as following a link to it does (`desktop_run_own_ask`).
     Message(people::OwnAsk),
@@ -1501,7 +1501,7 @@ impl BrowserShell {
         let changed = offered || !asked.is_empty() || !opens.is_empty();
         self.requests
             .borrow_mut()
-            .extend(asked.into_iter().map(HostRequest::RoomAction));
+            .extend(asked.into_iter().map(HostRequest::WorkspaceAction));
         self.requests
             .borrow_mut()
             .extend(opens.into_iter().map(HostRequest::Open));

@@ -845,7 +845,7 @@ impl Joined {
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
                     self.follow_layout(&mut woken);
                 }
-                PeerEvent::RoomLayout { .. } => self.follow_layout(&mut woken),
+                PeerEvent::WorkspaceLayout { .. } => self.follow_layout(&mut woken),
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {

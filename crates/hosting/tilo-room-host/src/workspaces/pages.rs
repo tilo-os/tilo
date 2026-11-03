@@ -679,7 +679,7 @@ impl Workspaces {
             now,
         )?;
         if !self.inner.workspaces.lock().await.contains_key(workspace)
-            && let Err(error) = self.create_room(name, Some(workspace)).await
+            && let Err(error) = self.create_workspace(name, Some(workspace)).await
             // Another device of the person placed it meanwhile.
             && !self.inner.workspaces.lock().await.contains_key(workspace)
         {

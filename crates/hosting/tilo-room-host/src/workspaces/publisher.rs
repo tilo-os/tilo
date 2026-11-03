@@ -15,7 +15,7 @@
 //!
 //! A change that cannot be admitted drops it and every change handed over
 //! after it, so none is admitted out of order, and leaves its position for
-//! the next settle ([`RoomPublisher::reconcile`]), which republishes from
+//! the next settle ([`WorkspacePublisher::reconcile`]), which republishes from
 //! there as a settle that failed did before.
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -124,7 +124,7 @@ impl Default for WorkspacePublisher {
 }
 
 /// The epoch a settle hands its changes over under, from
-/// [`RoomPublisher::reconcile`].
+/// [`WorkspacePublisher::reconcile`].
 #[derive(Clone, Copy)]
 pub(super) struct Epoch(u64);
 

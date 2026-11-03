@@ -179,7 +179,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         .relay
         .workspaces()
         .unwrap()
-        .create_room("Board", Some(WORKSPACE))
+        .create_workspace("Board", Some(WORKSPACE))
         .await
         .unwrap();
     assert_eq!(board.workspace_id, workspace());

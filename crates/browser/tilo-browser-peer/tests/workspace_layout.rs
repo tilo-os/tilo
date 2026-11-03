@@ -30,7 +30,7 @@ async fn heard(page: &PeerHandle, workspace: &str, personal: bool) {
         told |= page.drain().into_iter().any(|event| {
             matches!(
                 event,
-                PeerEvent::RoomLayout { workspace: r, personal: p } if r == workspace && p == personal
+                PeerEvent::WorkspaceLayout { workspace: r, personal: p } if r == workspace && p == personal
             )
         });
         let known = page.status().personal_rooms.contains(workspace) == personal;

@@ -2673,7 +2673,7 @@ async fn a_room_moved_here_keeps_its_identity() {
     let workspaces = relay.workspaces();
     let workspace = "6f1c2b9e-4d3a-4f5e-8a7b-1c2d3e4f5a6b";
     let moved = workspaces
-        .create_room("Mine", Some(workspace))
+        .create_workspace("Mine", Some(workspace))
         .await
         .unwrap();
     assert_eq!(moved.workspace, workspace, "the room keeps its identity");
@@ -2684,18 +2684,18 @@ async fn a_room_moved_here_keeps_its_identity() {
     );
     assert!(
         workspaces
-            .create_room("Again", Some(workspace))
+            .create_workspace("Again", Some(workspace))
             .await
             .is_err(),
         "a room the host holds is never made a second time"
     );
     assert!(
         workspaces
-            .create_room("Bad", Some("not a room"))
+            .create_workspace("Bad", Some("not a room"))
             .await
             .is_err()
     );
-    let fresh = workspaces.create_room("Fresh", None).await.unwrap();
+    let fresh = workspaces.create_workspace("Fresh", None).await.unwrap();
     assert_ne!(fresh.workspace, workspace);
     relay.shutdown().await;
 }

@@ -1079,7 +1079,7 @@ impl WorkspaceAuthority {
 
 impl std::fmt::Debug for Workspaces {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Rooms")
+        f.debug_struct("Workspaces")
             .field("dir", &self.inner.dir)
             .finish_non_exhaustive()
     }
@@ -1233,7 +1233,7 @@ impl Workspaces {
     ///
     /// Returns why the workspace could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<WorkspaceSummary, String> {
-        self.create_room(name, None).await
+        self.create_workspace(name, None).await
     }
 
     /// Create a governed workspace named `name`, under the identity `workspace` when
@@ -1244,7 +1244,7 @@ impl Workspaces {
     ///
     /// The name is not 1–80 characters, `workspace` is no UUID or held here
     /// already, or the workspace could not be written.
-    pub async fn create_room(
+    pub async fn create_workspace(
         &self,
         name: &str,
         workspace: Option<&str>,

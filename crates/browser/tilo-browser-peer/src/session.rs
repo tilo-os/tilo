@@ -452,7 +452,7 @@ pub enum PeerEvent {
     /// The workspace's governance changed whether it shares its members' layout
     /// ([`PeerStatus::personal_rooms`]): in a personal one the page keeps
     /// its strips and windows to itself and sends the workspace no desktop.
-    RoomLayout {
+    WorkspaceLayout {
         /// The workspace (its cluster id).
         workspace: String,
         /// Each member's layout is their own.
@@ -2821,7 +2821,7 @@ impl Task {
                         status.personal_rooms.remove(&workspace);
                     }
                 });
-                self.emit(&PeerEvent::RoomLayout {
+                self.emit(&PeerEvent::WorkspaceLayout {
                     workspace,
                     personal,
                 });
