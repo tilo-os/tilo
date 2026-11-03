@@ -271,6 +271,49 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     assert_eq!(count(&view, "Upcoming"), 0);
 }
 
+/// The count the tasks window shows over its list.
+fn overview_count(view: &ViewInstance) -> Option<i64> {
+    fn walk(node: &UiNode, out: &mut Option<i64>) {
+        if node.kind == "ui.NavShell"
+            && let Some(Value::Int(count)) = node.props.get("overview_count")
+        {
+            *out = Some(*count);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = None;
+    walk(view.tree(), &mut out);
+    out
+}
+
+/// The home list, sized before it reads its rows, counts the inbox just written: what the
+/// writes put in the run it is drawn from is in its count before the index holds it as well
+/// as after.
+#[test]
+fn the_home_list_counts_the_inbox_that_was_just_written() {
+    let (mut ada, root) = workspace();
+    let dated = call(
+        &ada,
+        "add",
+        vec![root.clone(), Value::text("Buy oat milk and eggs")],
+    );
+    call(
+        &ada,
+        "schedule",
+        vec![dated, Value::some(Value::text("2026-10-30"))],
+    );
+    call(&ada, "add", vec![root, Value::text("Book a haircut")]);
+    assert_eq!(
+        overview_count(&ada.view(APP)),
+        Some(2),
+        "both inbox tasks count before they are indexed"
+    );
+    ada.commit();
+    assert_eq!(overview_count(&ada.view(APP)), Some(2), "and after");
+}
+
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();

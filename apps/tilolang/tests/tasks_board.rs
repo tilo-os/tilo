@@ -390,6 +390,38 @@ fn click_item(app: &mut TestApp<TlApp>, label: &str) {
 }
 
 #[test]
+fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
+    let _settled = ui::motion::testing::settled();
+    support::installed("tasks");
+    let mut app =
+        TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
+    settle(&mut app);
+    let names: Vec<Option<String>> = accessible(&mut app)
+        .into_iter()
+        .map(|node| node.name)
+        .collect();
+    for title in [
+        "Buy oat milk and eggs",
+        "Call the landlord about the boiler",
+        "Book a haircut",
+        "Reply to Mia about Sunday lunch",
+    ] {
+        assert!(
+            shows(&mut app, title),
+            "the inbox lists `{title}`: {names:?}"
+        );
+    }
+    assert!(
+        !shows(&mut app, "No tasks here"),
+        "the inbox has tasks in it: {names:?}"
+    );
+    assert!(
+        !shows(&mut app, "Order boxes and tape"),
+        "a task filed in a project is not in the inbox: {names:?}"
+    );
+}
+
+#[test]
 fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
     use ui::time::testing::with_wall;
     let _settled = ui::motion::testing::settled();
