@@ -5036,6 +5036,14 @@ impl Widget for DataTableCore {
                     .scroll_to_index(index, ScrollAlignment::Nearest);
                 true
             }
+            // The menu a row announces opens on that row, as the row's own
+            // menu verb on its key path does.
+            Action::ShowContextMenu => {
+                let point = self
+                    .row_rect(index)
+                    .map_or(self.rect.center(), |r| r.center());
+                self.open_row_context(index, point)
+            }
             _ => false,
         };
         self.refresh_view_anchor();
