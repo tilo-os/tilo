@@ -654,7 +654,7 @@ impl WorkspaceRuntime {
             device_public_key: device,
             active,
         };
-        for member in self.live_members.iter() {
+        for member in &self.live_members {
             if *member == device {
                 continue;
             }
@@ -975,9 +975,8 @@ impl WorkspaceRuntime {
                 let payload = shared
                     .get_or_insert_with(|| Arc::from(payload.as_slice()))
                     .clone();
-                if mailbox.post(*workspace_id, payload, now) {
-                    delivered = delivered.saturating_add(1);
-                }
+                mailbox.post(*workspace_id, payload, now);
+                delivered = delivered.saturating_add(1);
                 continue;
             }
             match sub.tx.try_send(envelope.clone()) {

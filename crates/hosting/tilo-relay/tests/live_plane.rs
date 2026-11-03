@@ -158,18 +158,16 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
         } if device_public_key == b.device_pubkey()
     ));
     // c never joined, so it hears nothing of either.
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_millis(300), async {
-            loop {
-                if let Some(env) = c_client.recv().await {
-                    assert!(
-                        !matches!(env, Envelope::RetiredLiveMember { .. }),
-                        "a subscriber that never joined the plane hears no membership"
-                    );
-                }
+    let quiet = tokio::time::timeout(Duration::from_millis(300), async {
+        loop {
+            if let Some(env) = c_client.recv().await {
+                assert!(
+                    !matches!(env, Envelope::RetiredLiveMember { .. }),
+                    "a subscriber that never joined the plane hears no membership"
+                );
             }
-        })
-        .await,
-        Err(_)
-    ));
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "nothing was announced to c");
 }

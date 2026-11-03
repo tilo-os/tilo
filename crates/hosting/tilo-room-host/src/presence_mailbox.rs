@@ -13,8 +13,9 @@
 //! - **Presence rides along.** Presence that may go early goes with
 //!   whatever the connection writes next ([`PresenceMailbox::take`] with
 //!   `ride`), so a delta and the presence beside it share a packet.
-//! - **Bounded.** A connection that does not drain its presence refuses
-//!   more rather than falling behind, as a full queue drops presence.
+//! - **Bounded, newest kept.** A connection that does not drain its
+//!   presence loses the oldest pending state, not the one posted now, so a
+//!   pointer that is dragged fast still comes to rest where it stopped.
 //!
 //! Each payload is shared, not copied, between the connections it is posted
 //! to. Deltas never pass through here, so edit delivery never waits for
@@ -84,12 +85,12 @@ impl PresenceMailbox {
         self.state.lock_recover()
     }
 
-    /// Post `payload`, which its author sent to workspace `workspace_id`. Returns
-    /// whether it was taken: only a mailbox at its bound refuses.
-    pub fn post(&self, workspace_id: u64, payload: Arc<[u8]>, now: Instant) -> bool {
+    /// Post `payload`, which its author sent to workspace `workspace_id`. A full
+    /// mailbox drops its oldest pending presence to take this one.
+    pub fn post(&self, workspace_id: u64, payload: Arc<[u8]>, now: Instant) {
         let mut state = self.state();
         if state.events.len() >= MAX_PENDING {
-            return false;
+            state.events.pop_front();
         }
         state.events.push_back(Event {
             workspace_id,
@@ -103,7 +104,6 @@ impl PresenceMailbox {
         if wake {
             self.notify.notify_one();
         }
-        true
     }
 
     /// When the earliest pending presence falls due, if any is pending.
@@ -137,20 +137,26 @@ impl PresenceMailbox {
     /// everything pending because something is being written to the
     /// connection anyway.
     pub fn take(&self, now: Instant, ride: bool) -> Vec<DuePresence> {
+        let mut taken = Vec::new();
         let mut state = self.state();
         state.armed = None;
-        let mut due = Vec::new();
         while let Some(event) = state.events.front() {
             if !ride && State::due_of(event) > now {
                 break;
             }
-            let event = state.events.pop_front().expect("just peeked");
-            due.push(DuePresence {
+            let Some(event) = state.events.pop_front() else {
+                break;
+            };
+            taken.push(event);
+        }
+        drop(state);
+        taken
+            .into_iter()
+            .map(|event| DuePresence {
                 workspace_id: event.workspace_id,
                 payload: event.payload,
-            });
-        }
-        due
+            })
+            .collect()
     }
 }
 
@@ -174,8 +180,8 @@ mod tests {
     fn presence_goes_after_the_window_in_posting_order() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        assert!(mailbox.post(ROOM, bytes("pointer"), t0));
-        assert!(mailbox.post(ROOM, bytes("caret"), t0));
+        mailbox.post(ROOM, bytes("pointer"), t0);
+        mailbox.post(ROOM, bytes("caret"), t0);
         assert_eq!(mailbox.next_due(), Some(t0 + BATCH_WINDOW));
         assert!(
             mailbox.take(t0, false).is_empty(),
@@ -199,14 +205,21 @@ mod tests {
     }
 
     #[test]
-    fn a_full_mailbox_refuses_more_presence() {
+    fn a_full_mailbox_keeps_the_newest_presence() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        for _ in 0..MAX_PENDING {
-            assert!(mailbox.post(ROOM, bytes("x"), t0));
+        for step in 0..MAX_PENDING {
+            mailbox.post(ROOM, bytes(&step.to_string()), t0);
         }
-        assert!(!mailbox.post(ROOM, bytes("x"), t0));
-        assert_eq!(mailbox.take(t0 + BATCH_WINDOW, false).len(), MAX_PENDING);
+        mailbox.post(ROOM, bytes("last"), t0);
+        let due = mailbox.take(t0 + BATCH_WINDOW, false);
+        assert_eq!(due.len(), MAX_PENDING);
+        assert_eq!(texts(&due).last().map(String::as_str), Some("last"));
+        assert_eq!(
+            texts(&due).first().map(String::as_str),
+            Some("1"),
+            "the oldest pending state went, not the newest"
+        );
     }
 
     #[tokio::test(start_paused = true)]
