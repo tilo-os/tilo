@@ -660,6 +660,24 @@ fn clashes(held: &Held, into: &Path) -> bool {
     }
 }
 
+/// The path this session sees for the absolute path `named` of a window of
+/// `context`'s app.
+///
+/// An app reads its own private home where the launcher mounted it, at
+/// [`launcher::appdir::SANDBOX_APP_DIR`]; this session holds that same
+/// directory as the workspace's directory for the app. Every other mount an
+/// app browses keeps its place, so those paths are the same in both.
+fn session_path(context: &FileClipboardContext, named: &[u8]) -> PathBuf {
+    let named = PathBuf::from(OsString::from_vec(named.to_vec()));
+    let Ok(rest) = named.strip_prefix(launcher::appdir::SANDBOX_APP_DIR) else {
+        return named;
+    };
+    let Some(data_home) = launcher::appdir::host_data_home() else {
+        return named;
+    };
+    launcher::appdir::host_app_dir(&data_home, context.workspace(), context.app_id()).join(rest)
+}
+
 /// The object a selected descriptor names, once the object the window showed
 /// under it is what is actually there: the descriptor the app handed over and
 /// the object the path names are the same, or nothing is taken.
@@ -674,8 +692,13 @@ fn select(context: &FileClipboardContext, selected: &SelectedDescriptor) -> Resu
     if identity(&shown) != selected.expected {
         return Err("the selected object changed before it was taken".into());
     }
-    let path = PathBuf::from(OsString::from_vec(selected.path.clone()));
-    let metadata = std::fs::symlink_metadata(&path).map_err(|_| "the selected object was moved")?;
+    let path = session_path(context, &selected.path);
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+        format!(
+            "the selected object was moved: {} ({error})",
+            path.display()
+        )
+    })?;
     if identity(&metadata) != selected.expected {
         return Err("the selected object was replaced or moved".into());
     }
