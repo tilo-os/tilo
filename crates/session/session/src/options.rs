@@ -288,6 +288,7 @@ pub(crate) fn start_collaboration(
         sync::configured_hosts(),
         media,
         options.wake.handle(),
+        options.questions.clone(),
         beside,
     ) {
         Ok(sync) => Some(Rc::new(sync)),

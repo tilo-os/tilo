@@ -151,6 +151,9 @@ ed25519-dalek.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The workspace join exchange, over the endpoint the invitation's host names.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# A host's own questions to a member, asked on the collaboration endpoint:
+# what an agent asks before it acts on a workspace, answered by the person.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # The web grammar of a workspace link, which says what a pasted link joins.
 tilo-reference = { path = "../../collab/reference" }
 # This device's relays wait in the collaboration endpoint until a workspace
@@ -261,6 +264,12 @@ tilo-network-secret-agent = { path = "../network-secret-agent" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }
+# A sibling device's half of this device's disk key: the unlock exchange an
+# early-boot client speaks, and the sealed halves each device holds of the
+# other.
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+# The sealed envelope a sibling half is carried in.
+tilo-seal = { path = "../../system/tilo-seal" }
 # What a screenshot sent to another device is staged into: the same private
 # spool, and the same resumable transfer, Files uses.
 tilo-nearby-service = { path = "../nearby-service" }

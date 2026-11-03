@@ -57,10 +57,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"], optional = t
 workspace-hack = { version = "0.1" }
 zeroize.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# The ALPN of the tunnel between a person's devices.
-tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["tunnel"] }
-
 [dev-dependencies]
 fnv.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }

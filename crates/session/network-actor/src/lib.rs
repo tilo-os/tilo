@@ -411,8 +411,6 @@ pub enum NetCmd {
         ws: u64,
         msg: NeighbourMsg,
     },
-    NativeMedia(services::ServiceCommand),
-    NativeEnrollment(services::ServiceCommand),
     /// Invoke what a relay answers itself (a workspace's governance, or a
     /// member's own business in it) on a workspace's relay session, and answer
     /// the relay's receipt.
@@ -865,7 +863,6 @@ struct HeldSurfaceUnits {
 enum HostEvent {
     NativeInput(native_ingress::Input),
     Ready,
-    Voice(tilo_relay_session::coedit::VoiceEvent),
     Live {
         from: [u8; 32],
         frame: Vec<u8>,
@@ -944,20 +941,6 @@ struct DeviceUnlockProtocol;
 impl ProtocolHandler for DeviceUnlockProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         services::device_unlock(connection);
-        Ok(())
-    }
-}
-
-/// Another of the person's devices routing through this one; the exit
-/// decides whether it may ([`services::Services::device_vpn`]).
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-struct DeviceVpnProtocol;
-
-#[cfg(target_os = "linux")]
-impl ProtocolHandler for DeviceVpnProtocol {
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        services::device_vpn(connection);
         Ok(())
     }
 }
@@ -1155,8 +1138,6 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
         NetCmd::WorkspaceGovernance(_) => "talking to a workspace's host",
-        NetCmd::NativeEnrollment(_) => "enrolling a device",
-        NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
             "sending to one of the person's devices"
         }
@@ -1332,8 +1313,6 @@ struct ActorState {
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
     private_messages: crate::private_messages::Transport,
-    native_media: Box<dyn services::Calls>,
-    native_enrollment: Box<dyn services::Enrollments>,
     native_routes: native_ingress::Routes,
     /// Where the channel traffic of workspaces' host sessions goes while the
     /// collaboration broker's drain runs: straight to it.
@@ -1591,22 +1570,10 @@ impl ActorState {
             Some(NetCmd::WireTally(reply)) => {
                 let _ = reply.send(Arc::clone(&self.tally));
             }
-            Some(NetCmd::NativeMedia(command)) => {
-                let sessions = &self.host_sessions;
-                self.native_media
-                    .handle(command, self.host_identity.as_ref(), &|ws| {
-                        native_ingress::native_session(sessions, ws)
-                    });
-            }
             Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
-            Some(NetCmd::NativeEnrollment(command)) => self.native_enrollment.handle(
-                command,
-                self.endpoint.clone(),
-                self.host_identity.as_ref(),
-            ),
             Some(NetCmd::WorkspaceGovernance(request)) => self.send_workspace_governance(*request),
             Some(NetCmd::WatchHostSessions { ws, ended }) => {
                 let now = self.sessions_of(ws);
@@ -3173,14 +3140,6 @@ impl ActorState {
                 channel,
                 frames,
             }),
-            HostEvent::Voice(event) => {
-                let session = self
-                    .host_sessions
-                    .get(&(ws, peer))
-                    .map(|runtime| runtime.session.clone());
-                self.native_media.voice(ws, &event, session.as_deref());
-                None
-            }
             HostEvent::Message {
                 author,
                 replayed: true,
@@ -3431,8 +3390,6 @@ impl ActorState {
             || !self.held_surface_units.is_empty()
         {
             "a window streamed with a peer"
-        } else if self.native_enrollment.is_busy() {
-            "a device being enrolled"
         } else if self.private_messages.is_bound() {
             "a Messages account receives texts"
         } else {
@@ -3903,8 +3860,6 @@ async fn run(
     // What the session serves beside the actor's own protocols: its action
     // plane, say, on the one endpoint both reach this device at.
     protocols.extend(served);
-    #[cfg(target_os = "linux")]
-    let router = router.accept(device_vpn::tunnel::ALPN, DeviceVpnProtocol);
     let router = protocols
         .into_iter()
         .fold(router, |router, (alpn, handler)| {
@@ -3923,8 +3878,6 @@ async fn run(
         endpoint,
         lookup,
         host_identity,
-        native_media: services::calls(),
-        native_enrollment: services::enrollments(),
         native_routes: native_ingress::Routes::default(),
         channel_queue: None,
         local_host,
@@ -4300,7 +4253,6 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
         HostEvent::Live { .. } => "HostLive",
         HostEvent::Member { .. } => "HostMember",
         HostEvent::RecordOpened { .. } => "HostRecordOpened",
-        HostEvent::Voice(_) => "HostVoice",
         HostEvent::Kept { .. } => "HostKept",
         HostEvent::Refused { .. } => "HostRefused",
         HostEvent::Closed => "HostClosed",
@@ -4731,7 +4683,9 @@ fn host_event(
         }
         HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
         HostInbound::Member { device, active } => HostEvent::Member { device, active },
-        HostInbound::Voice(event) => HostEvent::Voice(event),
+        // A call's audio is the session's, carried by the relay session the
+        // call itself holds.
+        HostInbound::Voice(_) => return None,
         HostInbound::RecordOpened { channel, frames } => {
             HostEvent::RecordOpened { channel, frames }
         }

@@ -809,6 +809,7 @@ impl Client {
         hosts: Vec<EndpointAddr>,
         media: MediaContinuity,
         wake: Arc<dyn Fn() + Send + Sync>,
+        questions: Option<tilo_service::Questions>,
         beside: tilo_network_actor::local_host::Protocols,
     ) -> std::io::Result<Self> {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
@@ -819,6 +820,9 @@ impl Client {
             .as_ref()
             .map(|identity| identity.device_cert.user_public_key);
         let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), media);
+        // What the actor serves for the session is installed before it starts:
+        // every actor built from here on answers those doors.
+        crate::network::install(fabric.as_ref(), questions);
         // The channels this session runs, if it runs any: their side of the
         // plane is the engine's, opened before the plane starts. The thread
         // takes its own handle, and this one tells them where the plane is.

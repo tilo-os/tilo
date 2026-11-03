@@ -1524,6 +1524,7 @@ mod tests {
             Vec::new(),
             MediaContinuity::default(),
             Arc::new(|| {}),
+            None,
             Vec::new(),
         )
         .expect("a loopback endpoint binds")

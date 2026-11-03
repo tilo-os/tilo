@@ -97,6 +97,7 @@ mod lock_service;
 mod membership;
 pub mod messages;
 pub mod mount;
+mod network;
 pub mod night_light;
 pub mod notices;
 mod notifications;

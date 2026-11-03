@@ -350,6 +350,13 @@ impl FabricLink for SessionFabric {
     fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
         self.runtime.lock_recover().person_devices()
     }
+
+    fn share_unlock(&self, unlock: tilo_device_fabric::unlock::UnlockFabricState) {
+        let taken = self.runtime.lock_recover().set_unlock(unlock);
+        if let Err(error) = taken {
+            tracing::debug!(%error, "this device's disk unlock is not shared");
+        }
+    }
 }
 
 /// What this session does with the actions the person's other devices sent

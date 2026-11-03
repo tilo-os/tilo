@@ -508,3 +508,20 @@ agent-door-session-reads-only = Ein Agent liest hier die eigenen Ressourcen des 
 keyboard-shortcuts-resource = Tastenkürzel
 keyboard-shortcuts-list = Kürzel auflisten
 keyboard-shortcuts-list-description = Jedes Kürzel des Desktops mit seinen aktuellen und voreingestellten Tasten.
+
+## Die Fragen des Zusammenarbeitsnetzes: ein Agent auf dem Rechner eines
+## Arbeitsbereichs fragt seine Person um Erlaubnis für eine Aktion, und ein
+## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.
+network-agent-question-title = { $agent } { $action } lassen?
+network-agent-question-detail = Es bearbeitet { $resource } in „{ $workspace }“. Erlaube nur, was du von ihm erwartest.
+network-agent-question-risk = Dabei könnte es { $risk }.
+network-agent-question-allow = Einmal erlauben
+network-agent-risk-none = nichts Merkbares tun
+network-agent-risk-low = ändern, was du hier siehst
+network-agent-risk-destructive = etwas löschen oder überschreiben
+network-agent-risk-privileged = als Administrator handeln
+network-agent-risk-sensitive = etwas Privates offenlegen
+network-agent-risk-something = etwas Unwiderrufliches tun
+network-device-unlock-title = { $device } entsperren?
+network-device-unlock-detail = Es startet gerade und bittet dich um die Hälfte seines Datenträgerschlüssels, die dieses Gerät für es hält, für { $slot }. Vergleiche den Code oben mit dem auf seinem Startbildschirm.
+network-device-unlock-allow = Schlüssel freigeben
