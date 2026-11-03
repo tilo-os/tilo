@@ -7,9 +7,11 @@
 //! something it saw is no longer so: `messages.last()` depends on the last message, not on the
 //! 10,000 before it, and builds one reference, not 10,000.
 //!
-//! Wherever the items are needed as values (sorted, compared, stored, put into a list or a
-//! tuple) the collection is read whole into a [`Value::List`], and the view then depends on
-//! the whole collection, as before.
+//! Wherever the items are needed as values (compared, stored, put into a list or a tuple) the
+//! collection is read whole into a [`Value::List`], and the view then depends on the whole
+//! collection, as before. A sort keeps the collection: the store lists its items in the order
+//! asked for ([`Core::coll_ordered`]), so a list sorted by a field stays one list of the
+//! collection, read a page at a time.
 
 use std::rc::Rc;
 
@@ -308,44 +310,62 @@ impl Core {
     }
 
     /// `coll_ordered(list, order)`: the items of the collection `list` in the order written
-    /// `order` (`{"field": id, "descending": bool}`, the field a declared one or a version,
-    /// `$created` or `$updated`), as a collection the store lists (some), when `list` is a
-    /// collection read in a view and the store can order by the field; none otherwise, and the
-    /// caller sorts the items itself.
+    /// `order` (`{"field": id, "descending": bool, "absent_last": bool, "then": {...}}`, each
+    /// field a declared one or a version, `$created` or `$updated`), as a collection the store
+    /// lists (some), when `list` is a collection read in a view and the store can order by the
+    /// fields; none otherwise, and the caller sorts the items itself. A collection already in an
+    /// order keeps it where this one holds two items equal: the order the caller gave stands
+    /// among the items this one cannot tell apart.
     pub(crate) fn coll_ordered(&self, list: i32, order: i32) -> HResult<Value> {
         #[derive(serde::Deserialize)]
         struct Written {
             field: String,
             #[serde(default)]
             descending: bool,
+            #[serde(default)]
+            absent_last: bool,
+            #[serde(default)]
+            then: Option<Box<Written>>,
         }
         let Value::Coll(coll) = self.val(list)? else {
             return Ok(Value::none());
         };
-        if coll.order.is_some() {
-            return Ok(Value::none());
-        }
         let text = self.text(order)?;
         let Ok(written) = serde_json::from_str::<Written>(&text) else {
             return Ok(Value::none());
         };
-        let kind = if crate::store::Reflected::of(&written.field).is_some() {
-            FieldKind::Register
-        } else {
-            let Some((_, item)) = self.registry.borrow().type_info(&coll.item) else {
-                return Ok(Value::none());
+        let Some((_, item)) = self.registry.borrow().type_info(&coll.item) else {
+            return Ok(Value::none());
+        };
+        let mut levels = Vec::new();
+        let mut at = Some(&written);
+        while let Some(level) = at {
+            let kind = if crate::store::Reflected::of(&level.field).is_some() {
+                FieldKind::Register
+            } else {
+                match item.field(&level.field).map(|f| f.kind) {
+                    Some(kind @ (FieldKind::Register | FieldKind::Counter | FieldKind::Text)) => {
+                        kind
+                    }
+                    _ => return Ok(Value::none()),
+                }
             };
-            match item.field(&written.field).map(|f| f.kind) {
-                Some(kind @ (FieldKind::Register | FieldKind::Counter | FieldKind::Text)) => kind,
-                _ => return Ok(Value::none()),
-            }
+            levels.push(crate::query::Order {
+                field: level.field.clone(),
+                kind,
+                descending: level.descending,
+                absent_last: level.absent_last,
+                then: None,
+            });
+            at = level.then.as_deref();
+        }
+        // The order the collection is already in settles the items this one cannot separate.
+        levels.extend(coll.order.clone());
+        let Some(order) = crate::query::Order::chained(levels) else {
+            return Ok(Value::none());
         };
         let ordered = CollRef {
-            order: Some(crate::query::Order {
-                field: written.field,
-                kind,
-                descending: written.descending,
-            }),
+            order: Some(order),
             ..(*coll).clone()
         };
         Ok(Value::some(Value::Coll(Rc::new(ordered))))

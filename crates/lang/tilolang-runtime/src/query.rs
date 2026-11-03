@@ -173,6 +173,38 @@ pub struct Order {
     pub kind: crate::meta::FieldKind,
     /// The latest, largest or last in the alphabet first.
     pub descending: bool,
+    /// The items with no value of the field after those with one, in both directions.
+    #[serde(default)]
+    pub absent_last: bool,
+    /// The order that settles the items this one holds equal.
+    #[serde(default)]
+    pub then: Option<Box<Order>>,
+}
+
+impl Order {
+    /// The order as given, and the orders that settle what each holds equal, this one first.
+    #[must_use]
+    pub fn levels(&self) -> Vec<&Self> {
+        let mut out = vec![self];
+        let mut at = self;
+        while let Some(then) = &at.then {
+            out.push(then);
+            at = then;
+        }
+        out
+    }
+
+    /// The order `levels` are read in, the first before the next: each settles the items the
+    /// one before it holds equal. `None` for no level at all.
+    #[must_use]
+    pub fn chained(levels: Vec<Self>) -> Option<Self> {
+        let mut out: Option<Self> = None;
+        for mut level in levels.into_iter().rev() {
+            level.then = out.map(Box::new);
+            out = Some(level);
+        }
+        out
+    }
 }
 
 /// `pred` (over the fields of `ty`, by id; `app` the package declaring `ty`) as a store reads
@@ -738,6 +770,8 @@ fn order_of(sort: &str, ty: &TypeMeta) -> Result<Order, String> {
         field: field.id.clone(),
         kind,
         descending,
+        absent_last: false,
+        then: None,
     })
 }
 

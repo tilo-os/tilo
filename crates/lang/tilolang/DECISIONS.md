@@ -95,8 +95,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - `sort_by(x -> key)` compiles to a loop that collects the keys into a parallel list and one call of
   `list_sort_by_key(items, keys) -> list`: stable, ascending or `desc` (the same list reversed),
   keys Int, Float, Text or Bool (E020 otherwise), and a Date or Time, which sorts as its ISO text.
-  A key that may be absent sorts as no text at all, before every day, so a list grouped by a day
-  sorts by the same field. There is no `list_set`.
+  A key that may be absent sorts after every item that has one, whatever the direction, so the
+  items whose day is not known stand last and a list grouped by a day sorts by the same field.
+  A store that answers the sort from its index keeps that order and the list's own for the items
+  a key cannot tell apart. There is no `list_set`.
 - `try act(args)` (flows only, E044 elsewhere) invokes an action and gives a `Result<T, Text>`
   (`Result<(), Text>` for an action without a result): `.ok(result)`, or `.err(reason)` when the
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,

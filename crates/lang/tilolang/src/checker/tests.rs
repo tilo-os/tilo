@@ -341,6 +341,51 @@ fn asked(f: &Func) -> Vec<String> {
     out
 }
 
+/// The predicate of a filter handed to the store with the values the code holds.
+fn asked_with(f: &Func) -> Vec<String> {
+    let mut out = Vec::new();
+    visit(f, &mut |e| {
+        if let Ek::Host(Imp::CollWhereWith, args) = &e.kind
+            && let Some(pred) = args.get(1).and_then(text)
+        {
+            out.push(pred.to_owned());
+        }
+    });
+    out
+}
+
+#[test]
+fn an_option_compares_with_the_value_it_holds() {
+    let (m, ids) = lower(
+        "type Note {\n    title: Text\n    parent: Option<Note>\n    owner: Option<Text>\n}\n\
+type Book {\n    notes: Collection<Note>\n}\n\
+fn children(b: Book, p: Note) -> List<Note> {\n    return b.notes.filter(n -> n.parent == .some(p))\n}\n\
+fn owned(b: Book, who: Text) -> List<Note> {\n    return b.notes.filter(n -> n.owner == .some(who))\n}\n\
+fn unowned(b: Book) -> List<Note> {\n    return b.notes.filter(n -> n.owner == .none)\n}",
+    );
+    let field = |name: &str| ids.get(&format!("Note.{name}")).expect("id").to_string();
+    let parent = asked_with(func(&m, "children"));
+    assert_eq!(parent.len(), 1, "{parent:?}");
+    let pred: crate::pred::Pred<String> = serde_json::from_str(&parent[0]).expect("a predicate");
+    assert_eq!(pred.fields(), [&field("parent")]);
+    assert_eq!(
+        pred,
+        crate::pred::Pred::Cmp(
+            crate::pred::CmpOp::Eq,
+            crate::pred::Operand::Field(field("parent")),
+            crate::pred::Operand::Arg(0),
+        ),
+        "the value the option holds, bound when it is asked"
+    );
+    assert_eq!(asked_with(func(&m, "owned")).len(), 1);
+    let unowned = asked(func(&m, "unowned"));
+    assert_eq!(unowned.len(), 1, "{unowned:?}");
+    assert_eq!(
+        serde_json::from_str::<crate::pred::Pred<String>>(&unowned[0]).expect("a predicate"),
+        crate::pred::Pred::Not(Box::new(crate::pred::Pred::Present(field("owner"))))
+    );
+}
+
 #[test]
 fn a_filter_or_count_over_item_fields_asks_the_store_beside_its_loop() {
     let (m, ids) = lower(

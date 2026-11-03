@@ -5,7 +5,9 @@
 //! A store with an index keeps a column per such field and per version in each collection, so
 //! a list in that order opens by reading one page. The order is handed to the host beside the
 //! loop that sorts the items itself, which runs where the host cannot answer (a collection
-//! read whole in an action, a union's items).
+//! read whole in an action, a union's items). A field an item may have no value of orders with
+//! those items last, and an order over a list already in one keeps that order where this one
+//! holds two items equal.
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
@@ -19,8 +21,8 @@ pub(super) const UPDATED: &str = "$updated";
 
 /// What a `sort_by` key reads of an item.
 pub(super) enum SortKey {
-    /// A field, by id.
-    Field(String),
+    /// A field, by id, and whether an item may have no value of it.
+    Field { id: String, optional: bool },
     /// Its first (`created`) or last (`updated`) version.
     Version { last: bool },
 }
@@ -28,17 +30,24 @@ pub(super) enum SortKey {
 impl SortKey {
     fn field(&self) -> &str {
         match self {
-            Self::Field(id) => id,
+            Self::Field { id, .. } => id,
             Self::Version { last: true } => UPDATED,
             Self::Version { last: false } => CREATED,
         }
+    }
+
+    /// Whether the items without a value of the field stand after those with one, in both
+    /// directions: a task nobody gave a day is no day's work, not the first one's.
+    pub(super) fn absent_last(&self) -> bool {
+        matches!(self, Self::Field { optional: true, .. })
     }
 }
 
 impl Checker<'_> {
     /// What the key `param -> body` reads of an item of the type `elem`, when the store can
-    /// order by it: a field of the item that holds a value (a register or a counter), or
-    /// `created(param)` / `updated(param)`.
+    /// order by it: a field of the item that holds a value (a register or a counter, a day or a
+    /// time, though one it may not have), or `created(param)` / `updated(param)`. A key that
+    /// names a function a template was given (`x -> closed(x)`) reads what that function reads.
     pub(super) fn sort_key(&self, elem: &Ty, param: &str, body: &ast::Expr) -> Option<SortKey> {
         let is_param = |e: &ast::Expr| matches!(&e.kind, ExprKind::Ident(p) if p == param);
         match &body.kind {
@@ -46,29 +55,61 @@ impl Checker<'_> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return None;
                 };
-                let last = match name.as_str() {
-                    "updated" => true,
-                    "created" => false,
-                    _ => return None,
-                };
-                match args.as_slice() {
-                    [a] if a.name.is_none() && is_param(&a.value) => {
-                        Some(SortKey::Version { last })
+                if let [a] = args.as_slice()
+                    && a.name.is_none()
+                    && is_param(&a.value)
+                {
+                    if let "created" | "updated" = name.as_str() {
+                        return Some(SortKey::Version {
+                            last: name.as_str() == "updated",
+                        });
                     }
-                    _ => None,
+                    // The function the template was given for this name: its own parameter
+                    // stands where the item does, so its body is the key.
+                    let closure = self.lambda_named(name)?;
+                    let [(inner, _)] = closure.params.as_slice() else {
+                        return None;
+                    };
+                    return self.sort_key(elem, inner, &closure.body);
                 }
+                None
             }
             ExprKind::Field { base, name } if is_param(base) => {
                 let Ty::Record(key) = elem else {
                     return None;
                 };
                 let field = self.env.type_info(key)?.field(&name.name)?;
-                matches!(
-                    field.ty,
-                    Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Date | Ty::Time
-                )
-                .then(|| SortKey::Field(field.id.clone()))
+                match &field.ty {
+                    Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Date | Ty::Time => {
+                        Some(SortKey::Field {
+                            id: field.id.clone(),
+                            optional: false,
+                        })
+                    }
+                    // A day or a time an item may not have.
+                    Ty::Option(inner) if matches!(**inner, Ty::Date | Ty::Time) => {
+                        Some(SortKey::Field {
+                            id: field.id.clone(),
+                            optional: true,
+                        })
+                    }
+                    _ => None,
+                }
             }
+            _ => None,
+        }
+    }
+
+    /// The lambda the name `name` holds where the code being checked sees it: a parameter of
+    /// the template being expanded, given a function or nothing.
+    fn lambda_named(&self, name: &str) -> Option<std::rc::Rc<super::template::Closure>> {
+        use super::template::Macro;
+        match self.st.macros.get(name)? {
+            Macro::Lambda(closure) => Some(std::rc::Rc::clone(closure)),
+            Macro::Some(inner) => match inner.as_ref() {
+                Macro::Lambda(closure) => Some(std::rc::Rc::clone(closure)),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -118,8 +159,12 @@ impl Checker<'_> {
         descending: bool,
         looped: Ex,
     ) -> Ex {
-        let text =
-            serde_json::json!({ "field": key.field(), "descending": descending }).to_string();
+        let text = serde_json::json!({
+            "field": key.field(),
+            "descending": descending,
+            "absent_last": key.absent_last(),
+        })
+        .to_string();
         let ty = looped.ty.clone();
         let list_ty = held.ty.clone();
         let hold = Stmt::Set(list, held);

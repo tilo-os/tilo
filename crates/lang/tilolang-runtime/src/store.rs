@@ -118,6 +118,43 @@ pub fn order_cmp(a: &Lit, b: &Lit) -> std::cmp::Ordering {
     }
 }
 
+/// How two values of the field one level of `order` names compare: the direction that level
+/// asks for, and its items without a value after those with one.
+#[must_use]
+pub fn level_cmp(order: &crate::query::Order, a: &Lit, b: &Lit) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    if order.absent_last {
+        match (a, b) {
+            (Lit::Absent, Lit::Absent) => return Ordering::Equal,
+            (Lit::Absent, _) => return Ordering::Greater,
+            (_, Lit::Absent) => return Ordering::Less,
+            _ => {}
+        }
+    }
+    let cmp = order_cmp(a, b);
+    if order.descending { cmp.reverse() } else { cmp }
+}
+
+/// How the items whose keys are `a` and `b` compare in `order`, level after level, and equal
+/// when every level holds them equal: what settles them then is the order they came in, a sort
+/// being stable.
+#[must_use]
+pub fn ordered_cmp(order: &crate::query::Order, a: &[Lit], b: &[Lit]) -> std::cmp::Ordering {
+    let (mut level, mut at) = (Some(order), 0usize);
+    while let Some(order) = level {
+        let (Some(a), Some(b)) = (a.get(at), b.get(at)) else {
+            return std::cmp::Ordering::Equal;
+        };
+        let cmp = level_cmp(order, a, b);
+        if cmp.is_ne() {
+            return cmp;
+        }
+        level = order.then.as_deref();
+        at = at.saturating_add(1);
+    }
+    std::cmp::Ordering::Equal
+}
+
 impl FieldRead {
     /// The field read as a filter reads it, with what an unwritten one of type `ty` (declared
     /// default `default`) holds: `None` for a field no filter reads (a map).
@@ -1043,25 +1080,33 @@ pub trait Store {
         let Some(order) = order else {
             return Ok(base);
         };
-        let spec = FieldSpec {
-            id: order.field.clone(),
-            kind: order.kind,
-        };
+        let levels = order.levels();
         let mut keyed = Vec::with_capacity(base.len());
         for id in base.iter() {
             let target = at.item(&id, item.clone());
-            let value = match Reflected::of(&order.field) {
-                Some(end) => self
-                    .version_end(&target, end == Reflected::Updated)?
-                    .map_or(Lit::Absent, |v| Lit::Time(v.at)),
-                None => lit_of(&spec.id, self.read(&target, &spec)?, &Lit::Absent)?,
-            };
-            keyed.push((value, id));
+            let mut keys = Vec::with_capacity(levels.len());
+            for level in &levels {
+                let value = match Reflected::of(&level.field) {
+                    Some(end) => self
+                        .version_end(&target, end == Reflected::Updated)?
+                        .map_or(Lit::Absent, |v| Lit::Time(v.at)),
+                    None => lit_of(
+                        &level.field,
+                        self.read(
+                            &target,
+                            &FieldSpec {
+                                id: level.field.clone(),
+                                kind: level.kind,
+                            },
+                        )?,
+                        &Lit::Absent,
+                    )?,
+                };
+                keys.push(value);
+            }
+            keyed.push((keys, id));
         }
-        keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
-        if order.descending {
-            keyed.reverse();
-        }
+        keyed.sort_by(|(a, _), (b, _)| ordered_cmp(order, a, b));
         Ok(Rc::new(Listing::from_items(
             keyed.into_iter().map(|(_, id)| id).collect(),
         )))

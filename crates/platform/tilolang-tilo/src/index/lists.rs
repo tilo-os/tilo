@@ -435,6 +435,25 @@ impl<S: ListSource> Pages<S> {
             .flatten()
     }
 
+    /// How many of the list's first entries hold no value: the run of the empty key, which the
+    /// columns write for the items without one (a day, a time).
+    pub fn absent_run(&self) -> usize {
+        let mut n = 0usize;
+        for (index, page) in self.dir.pages.iter().enumerate() {
+            if !page.first.0.is_empty() {
+                // The run ends in this page, if it reaches it.
+                return n.saturating_add(
+                    self.with_page(index, |held| {
+                        held.keys.iter().take_while(|key| key.is_empty()).count()
+                    })
+                    .unwrap_or(0),
+                );
+            }
+            n = n.saturating_add(page.count as usize);
+        }
+        n
+    }
+
     /// The entry at `index`.
     pub fn entry(&self, index: usize) -> Option<(String, Rc<str>)> {
         let (page, at) = self.locate(index)?;

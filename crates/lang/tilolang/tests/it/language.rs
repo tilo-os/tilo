@@ -280,7 +280,7 @@ fn sort_by_takes_dates_and_times_and_a_descending_order() {
 
 #[test]
 fn sort_by_takes_a_key_path_that_may_be_absent() {
-    // A list grouped by a day sorts by its date too, and the items without one come first.
+    // A list grouped by a day sorts by its date too, and the items without one come last.
     ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(.due)\n}");
     ok("fn f(c: C) -> List<C> {\n    c.items.filter(.b).sort_by(.due, desc)\n}");
     ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(x -> x.at)\n}");

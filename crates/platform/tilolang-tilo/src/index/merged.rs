@@ -20,6 +20,12 @@ pub enum Base {
         end: usize,
         reversed: bool,
     },
+    /// A column's list with its first `absent` entries last: the items that have a value in
+    /// their order, and then those without one.
+    Presence {
+        pages: Pages<Snapshot>,
+        absent: usize,
+    },
     Held(Vec<(String, Rc<str>)>),
 }
 
@@ -30,7 +36,7 @@ impl Base {
 
     pub fn len(&self) -> usize {
         match self {
-            Self::Pages(pages) => pages.len(),
+            Self::Pages(pages) | Self::Presence { pages, .. } => pages.len(),
             Self::Slice { start, end, .. } => end.saturating_sub(*start),
             Self::Held(held) => held.len(),
         }
@@ -54,6 +60,14 @@ impl Base {
                     start.checked_add(index)?
                 };
                 pages.get(at)
+            }
+            Self::Presence { pages, absent } => {
+                let absent = (*absent).min(pages.len());
+                if index < pages.len().saturating_sub(absent) {
+                    pages.get(index.saturating_add(absent))
+                } else {
+                    pages.get(index.saturating_sub(pages.len().saturating_sub(absent)))
+                }
             }
             Self::Held(held) => held.get(index).map(|(_, id)| Rc::clone(id)),
         }
@@ -88,6 +102,17 @@ impl Base {
                         .saturating_sub(usize::from(found)),
                     found,
                 )
+            }
+            Self::Presence { pages, absent } => {
+                let (at, found) = pages.rank(key, id);
+                let values = pages.len().saturating_sub(*absent);
+                // The entries without a value stand first in the list and last here.
+                let at = if at >= *absent {
+                    at.saturating_sub(*absent)
+                } else {
+                    at.saturating_add(values)
+                };
+                (at, found)
             }
             Self::Held(held) => {
                 let at = held.partition_point(|(k, i)| (k.as_str(), &**i) < (key, id));
@@ -141,11 +166,9 @@ impl Merged {
         gone.dedup();
         added.sort();
         added.dedup();
-        if base.reversed() {
-            added.reverse();
-        }
-        let mut kept = Vec::with_capacity(added.len());
-        let mut added_at = Vec::with_capacity(added.len());
+        // Each entry that is not in the base goes where the base would hold it, and the entries
+        // put in before it stand before it.
+        let mut placed: Vec<(usize, (String, Rc<str>))> = Vec::with_capacity(added.len());
         for (key, id) in added {
             let (at, found) = base.rank(&key, &id);
             if found && gone.binary_search(&at).is_err() {
@@ -153,9 +176,14 @@ impl Merged {
                 continue;
             }
             let before_gone = gone.partition_point(|g| *g < at);
-            let position = at.saturating_sub(before_gone).saturating_add(kept.len());
-            added_at.push(position);
-            kept.push((key, Rc::<str>::from(id)));
+            placed.push((at.saturating_sub(before_gone), (key, Rc::<str>::from(id))));
+        }
+        placed.sort_by_key(|(at, _)| *at);
+        let mut kept = Vec::with_capacity(placed.len());
+        let mut added_at = Vec::with_capacity(placed.len());
+        for (n, (at, entry)) in placed.into_iter().enumerate() {
+            added_at.push(at.saturating_add(n));
+            kept.push(entry);
         }
         Self {
             base,
@@ -336,6 +364,16 @@ impl Filtered {
         self
     }
 
+    /// The listing at most `most` items: the count of another run of the index, one that names
+    /// no more than this run does, for the items it answers for.
+    #[must_use]
+    pub fn bounded(mut self, most: Option<usize>) -> Self {
+        if let Some(most) = most {
+            self.most = self.most.min(most);
+        }
+        self
+    }
+
     /// Check the run's entries from where the last check stopped up to the place `upto`
     /// (exclusive), keeping those `keep` holds of.
     fn scan_to(&self, upto: usize) {
@@ -354,6 +392,18 @@ impl Filtered {
             scanned.push(Scanned { id, kept });
             self.at.set(at.saturating_add(1));
         }
+    }
+
+    /// Whether every entry of the run is checked, so [`PagedItems::len`] is the count of the
+    /// items kept.
+    fn exact(&self) -> bool {
+        self.at.get() >= self.base.len()
+    }
+
+    /// How many entries it keeps, checking the rest of the run.
+    fn kept_all(&self) -> usize {
+        self.scan_to(self.base.len());
+        self.kept.get()
     }
 
     /// The kept entry at `index`, reading on until it is found or the run ends.
@@ -435,6 +485,73 @@ impl PagedItems for Filtered {
 impl std::fmt::Debug for Base {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Base").field("len", &self.len()).finish()
+    }
+}
+
+/// One run of items read page by page, one after another: what a key stands two items under
+/// (the items done with, then the rest) read in the order of the key that tells them apart.
+///
+/// Each part checks its own run as it fills its pages ([`Filtered`]), so the first rows a view
+/// shows cost the entries read to fill them. Where a part ends is learned by reading it to its
+/// end: a row past the first part, or the length of them all, reads every part before it whole.
+pub struct Partition {
+    parts: Vec<Filtered>,
+    /// The most the parts can hold together: the run they are each drawn from.
+    most: usize,
+}
+
+impl Partition {
+    /// The parts, read in the order given, each of the run `most` entries long.
+    pub fn new(parts: Vec<Filtered>, most: usize) -> Self {
+        Self { parts, most }
+    }
+}
+
+impl std::fmt::Debug for Partition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Partition")
+            .field("len", &self.len())
+            .field("parts", &self.parts.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PagedItems for Partition {
+    fn len(&self) -> usize {
+        // Every part checked: the entries kept. Until then the run they are drawn from is the
+        // most they can hold, each entry standing in one part.
+        if self.parts.iter().all(Filtered::exact) {
+            return self.parts.iter().map(Filtered::kept_all).sum();
+        }
+        self.most
+    }
+
+    fn len_is_exact(&self) -> bool {
+        self.parts.iter().all(Filtered::exact)
+    }
+
+    fn get(&self, index: usize) -> Option<Rc<str>> {
+        let mut at = index;
+        for part in &self.parts {
+            if let Some(id) = part.kept_at(at) {
+                return Some(id);
+            }
+            // This part ends before it: what it holds comes off the count.
+            at = at.saturating_sub(part.kept_all());
+        }
+        None
+    }
+
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        let mut before = 0usize;
+        for part in &self.parts {
+            match part.position_of(id) {
+                Some(Some(at)) => return Some(Some(before.saturating_add(at))),
+                Some(None) => before = before.saturating_add(part.kept_all()),
+                None => return None,
+            }
+        }
+        Some(None)
     }
 }
 

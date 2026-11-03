@@ -1126,8 +1126,9 @@ mod cases {
             }
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // It starts on the inbox: what is in no project, done or not.
-        assert_eq!(row_titles(v.tree()), ["milk", "eggs"]);
+        // It starts on the inbox: what is in no project, done or not, and the task done with
+        // stands last of the two, under the heading the list folds away.
+        assert_eq!(row_titles(v.tree()), ["eggs", "milk"]);
         let before = w.rt.history(&list.doc).unwrap().len();
         choose(&v, "is:done");
         v.poll_patches().unwrap();
