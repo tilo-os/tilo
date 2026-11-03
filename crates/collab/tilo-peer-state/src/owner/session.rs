@@ -51,7 +51,7 @@ impl NativeWorkspaceOwner {
                 &hint,
             )
             .ok()?;
-        Some((hint.host.device_public_key, payload.endpoint_addr.clone()))
+        Some((hint.host.device_public_key, payload.endpoint_addr))
     }
 }
 
