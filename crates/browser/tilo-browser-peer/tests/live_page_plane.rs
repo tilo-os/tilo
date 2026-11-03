@@ -268,6 +268,10 @@ impl Native {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host's relay and web listener serve the page until the test ends"
+)]
 async fn a_page_joins_its_workspaces_plane_and_hears_a_device_through_the_relay() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
@@ -332,7 +336,6 @@ async fn a_page_joins_its_workspaces_plane_and_hears_a_device_through_the_relay(
         certificate: certificate(&relay),
         token,
     };
-    drop(host);
     let page = start_peer(
         Host::Https(Arc::new(live)),
         browser_cert.clone(),
