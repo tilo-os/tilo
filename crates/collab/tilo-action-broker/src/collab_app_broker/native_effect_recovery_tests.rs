@@ -18,7 +18,8 @@ struct NativeEffects {
 impl OwnerCommitService for NativeEffects {
     fn health(&self) -> Result<(), String> {
         let workspace =
-            tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
+            tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                .unwrap();
         self.owner.with_current(workspace, |_| Ok(()))
     }
     fn requires_workspace(&self, workspace: &str) -> bool {
@@ -48,8 +49,8 @@ impl crate::certificate_authority::CertificateAuthority for NativeAuthority {
         workspace: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        let workspace =
-            tilo_desktop_model::RoomId::parse(&workspace.to_string()).ok_or("invalid workspace")?;
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace.to_string())
+            .ok_or("invalid workspace")?;
         self.0.with_current(workspace, |view| {
             if !view.peer().certificates().contains(certificate) {
                 return Err("native certificate no longer admitted".into());
@@ -235,7 +236,7 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
     );
     let key = terminal.key.clone();
     assert_eq!(restart_journal(&f, &key), terminal);
-    let workspace = tilo_desktop_model::RoomId::parse(&key.workspace).unwrap();
+    let workspace = tilo_desktop_model::WorkspaceId::parse(&key.workspace).unwrap();
     f.owner
         .with_current(workspace, |view| {
             let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(

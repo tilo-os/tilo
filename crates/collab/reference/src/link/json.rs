@@ -84,9 +84,9 @@ impl From<&LinkTarget> for TargetJson {
         Self {
             scope: match &target.scope {
                 Scope::Own => ScopeJson::Own,
-                Scope::Room { host, room, slug } => ScopeJson::Workspace {
+                Scope::Room { host, id, slug } => ScopeJson::Workspace {
                     host: host.as_str().to_owned(),
-                    workspace: room.hyphenated().to_string(),
+                    workspace: id.hyphenated().to_string(),
                     slug: slug.as_ref().map(|slug| slug.as_str().to_owned()),
                 },
             },
@@ -134,7 +134,7 @@ impl TryFrom<TargetJson> for LinkTarget {
                 }
                 Scope::Room {
                     host: HostOrigin::new(&host)?,
-                    room: parsed,
+                    id: parsed,
                     slug: slug.as_deref().map(Slug::parse).transpose()?,
                 }
             }

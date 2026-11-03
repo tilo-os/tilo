@@ -150,7 +150,7 @@ fn parse_scope<'a, I: Iterator<Item = &'a str>>(
     let (slug, workspace) = parse_workspace(segments.next().ok_or(LinkError::BadWorkspace)?)?;
     Ok(Scope::Room {
         host,
-        room: workspace,
+        id: workspace,
         slug,
     })
 }

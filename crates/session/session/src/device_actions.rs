@@ -24,7 +24,7 @@ use tilo_actions::remote::{
     Pending, own_device, pending,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{
@@ -412,7 +412,7 @@ impl Workspaces for HeldWorkspaces {
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&StatePeer) + Send),
     ) -> ReadFuture<'a> {
-        let (Some(engine), Some(workspace_id)) = (&self.0, RoomId::parse(workspace)) else {
+        let (Some(engine), Some(workspace_id)) = (&self.0, WorkspaceId::parse(workspace)) else {
             return Box::pin(std::future::ready(false));
         };
         // This session's workspace is its own store: the read takes the
@@ -579,7 +579,7 @@ mod tests {
             // What the workspace's admission of the other device changed
             // reaches this device's own copy of the workspace, as it would
             // over the person's devices.
-            let workspace_id = RoomId::parse(WORKSPACE).expect("a workspace");
+            let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
             let now = std::time::SystemTime::now();
             for (bytes, _) in governor.outgoing() {
                 engine

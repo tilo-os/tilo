@@ -21,6 +21,7 @@ search-web-subtitle = Web
 search-unlock-app = { $app } entsperren, um nach „{ $query }“ zu suchen
 search-unlock-app-detail = { $app } ist gesperrt
 search-kind-settings = Einstellungen
+search-kind-store = Store
 search-kind-people = Personen
 search-kind-happening = Gerade los
 search-launcher-all-apps = Alle Apps

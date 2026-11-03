@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_model::projection::{WorkspaceLayout, workspace_layout, workspace_members};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{
@@ -57,11 +57,11 @@ impl Store for PageWorkspaces {
         self.healthy.load(Ordering::Acquire)
     }
 
-    fn uncertain(&self, _room: RoomId) -> bool {
+    fn uncertain(&self, _room: WorkspaceId) -> bool {
         !self.healthy()
     }
 
-    fn slot_workspace(&self, _slot: tilo_desktop_model::WorkspaceSlot) -> Option<RoomId> {
+    fn slot_workspace(&self, _slot: tilo_desktop_model::WorkspaceSlot) -> Option<WorkspaceId> {
         None
     }
 
@@ -86,7 +86,7 @@ pub(crate) struct Replicas {
     /// This device.
     device: DeviceCert,
     owner: NativeWorkspaceOwner,
-    workspaces: BTreeMap<u64, RoomId>,
+    workspaces: BTreeMap<u64, WorkspaceId>,
 }
 
 impl Replicas {

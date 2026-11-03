@@ -9,7 +9,7 @@ use tilo_desktop_model::apps::canonical_app_id;
 use tilo_desktop_model::commands::{
     BoundCommand, CommandSource, DesktopCommand, TabLocation, TabPlacement,
 };
-use tilo_desktop_model::{DesktopTree, GroupId, RoomId, Strip, TileContent, WindowGroup};
+use tilo_desktop_model::{DesktopTree, GroupId, Strip, TileContent, WindowGroup, WorkspaceId};
 
 /// Where a desktop's requests go. Each host implements it once: the native
 /// sink commits through its device owner at once, the browser sink
@@ -18,7 +18,7 @@ pub trait DesktopCommandSink {
     /// Run `read` over the desktop the widgets render.
     fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R;
     /// The admitted revision a command against `workspace` binds to.
-    fn source(&mut self, workspace: RoomId) -> Result<CommandSource, String>;
+    fn source(&mut self, workspace: WorkspaceId) -> Result<CommandSource, String>;
     /// Apply a per-device view change. It never changes the topology.
     fn apply_local(&mut self, intent: LocalViewIntent);
     /// Hand a bound command to the owner.
@@ -30,7 +30,7 @@ pub trait DesktopCommandSink {
     fn submit(&mut self, command: BoundCommand) -> Result<(), String>;
 }
 
-fn group_workspace(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
+fn group_workspace(tree: &DesktopTree, group: GroupId) -> Option<WorkspaceId> {
     tree.workspaces
         .iter()
         .find(|workspace| {
@@ -39,7 +39,7 @@ fn group_workspace(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
                 .iter()
                 .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
         })
-        .map(tilo_desktop_model::Workspace::room)
+        .map(tilo_desktop_model::Workspace::id)
 }
 
 /// Route one widget intent: view changes stay on this device, session
@@ -98,7 +98,7 @@ pub fn bind_intent(
     let workspace = tree
         .workspaces
         .iter()
-        .find(|workspace| workspace.room().to_string() == source.workspace)
+        .find(|workspace| workspace.id().to_string() == source.workspace)
         .ok_or("source workspace is not present in the rendered desktop")?;
     let group_id = intent.group();
     let (strip, group) = workspace

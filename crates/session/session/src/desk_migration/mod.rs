@@ -291,7 +291,7 @@ mod tests {
         let desk = crate::desk_doc::DeskDoc::load(Some(state.path()), None, "ada");
         let opened = desk.tree().expect("the desk opens");
         assert_eq!(opened.workspaces[0].name, LAST_NAME);
-        assert_eq!(opened.workspaces[0].room(), left.workspaces[0].room());
+        assert_eq!(opened.workspaces[0].id(), left.workspaces[0].id());
         assert_eq!(
             opened.workspaces[0].strips[0].window_groups[0].tabs[0].title,
             "Notes"

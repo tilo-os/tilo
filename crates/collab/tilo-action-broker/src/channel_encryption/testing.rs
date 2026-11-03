@@ -14,11 +14,11 @@ pub struct Workspace {
 pub struct Endpoint {
     pub workspace: Arc<Workspace>,
     pub id: usize,
-    pub workspace_id: RoomId,
+    pub workspace_id: WorkspaceId,
 }
 
 impl Endpoint {
-    pub fn join(workspace: &Arc<Workspace>, workspace_id: RoomId, id: usize) -> Self {
+    pub fn join(workspace: &Arc<Workspace>, workspace_id: WorkspaceId, id: usize) -> Self {
         workspace.queues.lock().unwrap().entry(id).or_default();
         Self {
             workspace: Arc::clone(workspace),
@@ -114,12 +114,12 @@ pub struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+    fn governor_of(&self, _: WorkspaceId) -> Option<Ed25519PublicKey> {
         Some(self.governor)
     }
     fn allowed_devices(
         &self,
-        _: RoomId,
+        _: WorkspaceId,
         channel: ChannelId,
         route: Option<&ChannelRoute>,
         now: u64,
@@ -154,7 +154,7 @@ impl ChannelDirectory for Directory {
             Some(Announcements::Own(epoch)) => Some(epoch.load(Ordering::SeqCst)),
         }
     }
-    fn next_policy_change(&self, _: RoomId, now: u64) -> Option<u64> {
+    fn next_policy_change(&self, _: WorkspaceId, now: u64) -> Option<u64> {
         self.policy
             .until
             .lock()

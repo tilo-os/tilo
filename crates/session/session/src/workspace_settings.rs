@@ -101,10 +101,9 @@ pub(crate) fn open_route(
     route: runtime_portal::tools::WorkspaceSettingsRoute,
 ) -> Result<(), String> {
     let seat = seat.ok_or("this session shows no workspace settings")?;
-    let front = fed.handle.read(|tree| {
-        tree.active_workspace()
-            .map(|front| front.room().to_string())
-    });
+    let front = fed
+        .handle
+        .read(|tree| tree.active_workspace().map(|front| front.id().to_string()));
     if front.as_deref() != Some(workspace) {
         return Err("workspace settings opens for the workspace in front".to_owned());
     }
@@ -408,7 +407,7 @@ fn govern(
     if changed.is_empty() {
         return;
     }
-    let workspace_id = workspace.room();
+    let workspace_id = workspace.id();
     let governance = fed
         .engine
         .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
@@ -678,7 +677,7 @@ fn settings(
 /// devices to show it on: it is theirs only while they are in it.
 fn general(tree: &DesktopTree, personal: Option<&RefCell<Personal>>) -> sheet::General {
     let devices = match (tree.active_workspace(), personal) {
-        (Some(workspace), Some(personal)) => personal.borrow().device_choices(workspace.room()),
+        (Some(workspace), Some(personal)) => personal.borrow().device_choices(workspace.id()),
         _ => Vec::new(),
     };
     let at = tree.active_workspace().and_then(|workspace| {
@@ -739,8 +738,7 @@ fn toggle_device(
         tracing::debug!(%device, "not a device key: nothing changed");
         return false;
     };
-    let Some(workspace_id) = handle.read(|tree| tree.active_workspace().map(Workspace::room))
-    else {
+    let Some(workspace_id) = handle.read(|tree| tree.active_workspace().map(Workspace::id)) else {
         return false;
     };
     let mut personal = personal.borrow_mut();

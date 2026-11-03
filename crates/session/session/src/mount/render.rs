@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -161,7 +161,7 @@ impl Broker {
             std::fs::remove_file(&path)
                 .map_err(|error| format!("remove stale render broker socket: {error}"))?;
         }
-        let listener = UnixListener::bind(&path)
+        let listener = tilo_files::native::socket::bind(&path)
             .map_err(|error| format!("bind render broker {}: {error}", path.display()))?;
         let exe = std::env::current_exe()
             .map_err(|error| format!("render broker: the session's own binary: {error}"))?;
@@ -533,7 +533,7 @@ mod tests {
         let mut tree = tilo_desktop_model::DesktopTree::default();
         let mut workspace = tilo_desktop_model::Workspace::create("Notes");
         workspace.set_owner(person.to_owned());
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         tree.workspaces.push(workspace);
 
         assert_eq!(

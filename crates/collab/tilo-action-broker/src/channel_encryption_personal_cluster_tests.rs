@@ -8,12 +8,12 @@ fn an_ungoverned_workspace_whose_readers_are_named_opens_and_admits_only_them() 
     /// the devices it names, and it knows no governor.
     struct Ungoverned(Policy);
     impl ChannelDirectory for Ungoverned {
-        fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+        fn governor_of(&self, _: WorkspaceId) -> Option<Ed25519PublicKey> {
             None
         }
         fn allowed_devices(
             &self,
-            _: RoomId,
+            _: WorkspaceId,
             channel: ChannelId,
             route: Option<&ChannelRoute>,
             now: u64,
@@ -36,7 +36,7 @@ fn an_ungoverned_workspace_whose_readers_are_named_opens_and_admits_only_them() 
     }
 
     let workspace = Arc::new(Workspace::default());
-    let workspace_id = RoomId::new();
+    let workspace_id = WorkspaceId::new();
     let channel = ChannelId::new();
     // The identity's two devices, not the outsider's.
     let policy = Policy::default();

@@ -154,7 +154,7 @@ mod tests {
             said.key,
             PresenceKey::Pointer {
                 space: collab_types::presence::PointerSpace::Tile {
-                    room: "w1".into(),
+                    workspace: "w1".into(),
                     tab: 3,
                 },
             }

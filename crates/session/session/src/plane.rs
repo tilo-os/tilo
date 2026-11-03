@@ -286,7 +286,7 @@ struct ContentIndex(std::sync::Arc<AppContentIndex>);
 impl SearchIndexServices for ContentIndex {
     fn publish(
         &self,
-        room: tilo_desktop_model::RoomId,
+        room: tilo_desktop_model::WorkspaceId,
         app: &str,
         record: &str,
         delta: &[u8],
@@ -561,15 +561,11 @@ impl DeskAuthority {
 impl tilo_identity_host::broker::WorkspaceMembership for DeskAuthority {
     fn with_workspace(
         &self,
-        workspace: &tilo_desktop_model::RoomId,
+        workspace: &tilo_desktop_model::WorkspaceId,
         read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
     ) {
         let tree = self.tree.lock_recover();
-        if let Some(held) = tree
-            .workspaces
-            .iter()
-            .find(|held| &held.room() == workspace)
-        {
+        if let Some(held) = tree.workspaces.iter().find(|held| &held.id() == workspace) {
             read(held);
         }
     }
@@ -618,7 +614,8 @@ impl WorkspaceMemberships for SessionMemberships {
     /// A workspace this session's engine holds is one whose people change
     /// here.
     fn requires_workspace(&self, workspace: &str) -> bool {
-        tilo_desktop_model::RoomId::parse(workspace).is_some_and(|room| self.engine.holds(room))
+        tilo_desktop_model::WorkspaceId::parse(workspace)
+            .is_some_and(|room| self.engine.holds(room))
     }
 
     /// The engine keeps no checkpoints of a workspace's records: its owner
@@ -703,6 +700,10 @@ fn seams(
         tools,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
+    // The desk decides who may administer a workspace's identity, and the
+    // fabric is where pairing reaches the person's other devices.
+    let desk_authority = std::sync::Arc::clone(&desk);
+    let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
     let certificates: std::sync::Arc<dyn tilo_action_broker::CertificateAuthority> = certificates
@@ -855,9 +856,22 @@ fn seams(
             "this session keeps no personal-scope store: the person's records travel with \
              their workspaces",
         ),
-        // The workspace's activity: what the Activity app shows, served by
-        // the desk's own model.
-        host_steps: Seam::served(vec![activity as std::sync::Arc<dyn HostStepServices>]),
+        // The steps only this session may take for the person: the
+        // workspace's activity the Activity app reads, pairing a nearby
+        // device, and administering their identities and the devices trusted
+        // under them, whose secret stays here.
+        host_steps: Seam::served(vec![
+            activity as std::sync::Arc<dyn HostStepServices>,
+            std::sync::Arc::new(crate::pairing::BrokerDoor {
+                desk: std::sync::Arc::clone(&desk_authority),
+                fabric: steps_fabric,
+                pairing: crate::pairing::Pairing::session(),
+            }),
+            std::sync::Arc::new(crate::identity_admin::BrokerDoor {
+                desk: desk_authority,
+                admin: crate::identity_admin::IdentityAdmin::session(),
+            }),
+        ]),
     }
 }
 
@@ -1156,7 +1170,7 @@ mod tests {
         let search_index = services
             .search_index
             .expect("a session with an index offers apps its search index");
-        let workspace_id = tilo_desktop_model::RoomId::new();
+        let workspace_id = tilo_desktop_model::WorkspaceId::new();
         let delta = IndexDelta {
             reset: true,
             upsert: vec![IndexEntry {
@@ -1315,8 +1329,22 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            1,
-            "the workspace's activity is served as the step it is"
+            3,
+            "the steps this session serves are the workspace's activity, device \
+             pairing and identity administration"
+        );
+        let providers: Vec<&str> = services
+            .host_steps
+            .iter()
+            .map(|steps| steps.provider())
+            .collect();
+        assert!(
+            providers.contains(&tilo_actions::remote::device_pairing::PROVIDER),
+            "Settings pairs a device through this session: {providers:?}"
+        );
+        assert!(
+            providers.contains(&tilo_actions::remote::identity_admin::PROVIDER),
+            "Settings administers the person's devices through this session: {providers:?}"
         );
         assert_eq!(
             services.display_control.is_some(),

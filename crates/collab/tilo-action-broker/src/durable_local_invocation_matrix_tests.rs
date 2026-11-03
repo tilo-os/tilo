@@ -64,7 +64,7 @@ mod durable_local_matrix {
             let origin = clock.new_origin();
             let mut workspace = crate::test_support::Workspace::in_workspace(
                 crate::test_support::WorkspaceSlot(84),
-                tilo_desktop_model::RoomId::parse(owner.peer().workspace_id()).unwrap(),
+                tilo_desktop_model::WorkspaceId::parse(owner.peer().workspace_id()).unwrap(),
                 "Durable actual RPC",
             );
             // Someone the workspace grants everything until 50 seconds after the
@@ -84,7 +84,7 @@ mod durable_local_matrix {
             workspace.grant(changes);
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
-                workspace.room().to_string(),
+                workspace.id().to_string(),
                 "document-1",
             );
             let mut tree = WorkspaceTree::default();

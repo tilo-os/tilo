@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(rebuilt.active, tree.active);
         assert_eq!(rebuilt.workspaces.len(), tree.workspaces.len());
         assert_eq!(rebuilt.workspaces[0].name, tree.workspaces[0].name);
-        assert_eq!(rebuilt.workspaces[0].room(), tree.workspaces[0].room());
+        assert_eq!(rebuilt.workspaces[0].id(), tree.workspaces[0].id());
         let windows = |desk: &DesktopTree| -> Vec<(u64, String)> {
             desk.workspaces
                 .iter()

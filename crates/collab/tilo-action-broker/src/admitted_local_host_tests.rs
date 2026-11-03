@@ -606,7 +606,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
                 collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
                 let workspace_id =
-                    tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                    tilo_desktop_model::WorkspaceId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
@@ -675,7 +675,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
             env.route.cluster_id = uuid::Uuid::new_v4().to_string();
             {
                 let workspace_id =
-                    tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                    tilo_desktop_model::WorkspaceId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
@@ -718,7 +718,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                 collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
                 let workspace_id =
-                    tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                    tilo_desktop_model::WorkspaceId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(

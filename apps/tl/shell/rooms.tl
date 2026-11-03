@@ -17,7 +17,7 @@ view workspaces(d: Desk) {
         }
         row(gap: .related, align: .end, wrap: true) {
             ui.TextInput(value: name, placeholder: "Name a new workspace", fill) {
-                on submit: session.new_workspace(name: name)
+                on submit: session.new_workspace(name: name).then(set(name, ""))
             }
             ui.Button("Create", icon: .plus, role: .primary) {
                 on press: session.new_workspace(name: name)

@@ -383,7 +383,7 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         .handle()
         .read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
         })
         .expect("a workspace is in front");
     index_mailbox(&index, &app, &workspace);

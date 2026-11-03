@@ -6,8 +6,8 @@
     reason = "test fixtures: a failed step is the test failing"
 )]
 use crate::owner::{
-    NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, RoomId, Store,
-    VerifiedNativeEnrollmentIntent, publication,
+    NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
+    VerifiedNativeEnrollmentIntent, WorkspaceId, publication,
 };
 use crate::owner_commit::OwnerCommitRequest;
 use crate::{SeedDocument, SeedState, StatePeer, join, seed_workspace, workspace::media};
@@ -333,7 +333,7 @@ pub fn finalize(
 /// published, for a test naming another attempt than the retained one.
 #[must_use]
 pub fn pending_id(
-    workspace: crate::owner::RoomId,
+    workspace: crate::owner::WorkspaceId,
     generation: u64,
 ) -> crate::owner::PendingEnrollmentId {
     crate::owner::PendingEnrollmentId::new(workspace, generation, [0; 32])
@@ -419,7 +419,7 @@ pub fn bump_generation(view: &mut NativeCommittedView) {
 }
 pub fn insert_workspace(
     storage: &mut NativeAuthorityStorage,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     view: NativeCommittedView,
 ) {
     storage.workspaces.insert(workspace, view.record);
@@ -435,7 +435,7 @@ pub struct Stored {
     pub projection: Vec<Vec<u8>>,
 }
 #[must_use]
-pub fn stored(storage: &NativeAuthorityStorage, workspace: RoomId) -> Option<Stored> {
+pub fn stored(storage: &NativeAuthorityStorage, workspace: WorkspaceId) -> Option<Stored> {
     let record = storage.workspaces.get(&workspace)?;
     Some(Stored {
         peer: record.peer.clone(),

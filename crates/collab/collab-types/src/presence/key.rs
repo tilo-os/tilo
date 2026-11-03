@@ -70,7 +70,12 @@ pub enum PointerSpace {
     /// meaningful on the device that measured them: its monitors decide
     /// where anything is, so a collaborator's desktop is a different shape.
     /// A person's pointer goes to other devices as [`Self::Tile`] instead.
-    Desktop { room: String },
+    Desktop {
+        /// The workspace whose desktop this is. It keeps the key `room` on
+        /// the wire, the name every build before the rename wrote.
+        #[serde(rename = "room")]
+        workspace: String,
+    },
     /// Content coordinates inside the surface `surface` names — the app id
     /// that surface announces (`ui::local_surface_id`). Named by the
     /// app rather than the window instance: two windows of one app on one
@@ -78,12 +83,18 @@ pub enum PointerSpace {
     /// processor are not, even when the broker hands both the same frame.
     Surface { surface: String },
     /// Logical pixels from the top-left corner of the tile that shows tab
-    /// `tab` of `room`. Tabs are the room's, shared by every device in it,
-    /// while which monitor shows a tab and where is each device's own
+    /// `tab` of `workspace`. Tabs are the workspace's, shared by every device
+    /// in it, while which monitor shows a tab and where is each device's own
     /// layout — so this is how a person's desktop pointer travels: every
     /// receiver places it over its own tile for that tab, above every
     /// window, whatever its monitors look like.
-    Tile { room: String, tab: u64 },
+    Tile {
+        /// The workspace whose tab `tab` shows. It keeps the key `room` on
+        /// the wire, the name every build before the rename wrote.
+        #[serde(rename = "room")]
+        workspace: String,
+        tab: u64,
+    },
 }
 
 /// First path field of a [`PresenceKey::digest_form`] key.
@@ -148,19 +159,22 @@ impl PresenceKey {
         }
     }
 
-    /// The key a pointer measured on `room`'s desktop is published under.
-    pub fn desktop_pointer(room: impl Into<String>) -> Self {
+    /// The key a pointer measured on `workspace`'s desktop is published
+    /// under.
+    pub fn desktop_pointer(workspace: impl Into<String>) -> Self {
         PresenceKey::Pointer {
-            space: PointerSpace::Desktop { room: room.into() },
+            space: PointerSpace::Desktop {
+                workspace: workspace.into(),
+            },
         }
     }
 
-    /// The key a pointer placed relative to the tile of `room`'s tab `tab`
-    /// is published under.
-    pub fn tile_pointer(room: impl Into<String>, tab: u64) -> Self {
+    /// The key a pointer placed relative to the tile of `workspace`'s tab
+    /// `tab` is published under.
+    pub fn tile_pointer(workspace: impl Into<String>, tab: u64) -> Self {
         PresenceKey::Pointer {
             space: PointerSpace::Tile {
-                room: room.into(),
+                workspace: workspace.into(),
                 tab,
             },
         }
@@ -197,9 +211,11 @@ impl PresenceKey {
     pub fn pointer_space(&self) -> Option<PointerSpace> {
         match self {
             PresenceKey::Pointer { space } => Some(space.clone()),
-            PresenceKey::Workspace { id } => Some(PointerSpace::Desktop { room: id.clone() }),
+            PresenceKey::Workspace { id } => Some(PointerSpace::Desktop {
+                workspace: id.clone(),
+            }),
             PresenceKey::Widget { path } if path.is_empty() => Some(PointerSpace::Desktop {
-                room: String::new(),
+                workspace: String::new(),
             }),
             _ => None,
         }

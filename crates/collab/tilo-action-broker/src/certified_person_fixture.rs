@@ -77,7 +77,7 @@ pub fn certified_person_fixture_for_seeds(
     let workspace_id = collab_types::personal_cluster(&certificate.user_public_key);
     let mut workspace = crate::test_support::Workspace::in_workspace(
         crate::test_support::WorkspaceSlot(71),
-        tilo_desktop_model::RoomId::parse(&workspace_id.to_string()).unwrap(),
+        tilo_desktop_model::WorkspaceId::parse(&workspace_id.to_string()).unwrap(),
         "Synthetic personal cluster",
     );
     workspace.set_owner(hex::encode(certificate.user_public_key));

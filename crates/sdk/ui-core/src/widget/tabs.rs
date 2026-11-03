@@ -1127,17 +1127,22 @@ impl TabBar {
         let active = self.active_id;
         let mut toolbar = self.active_toolbar().cloned();
         // With nothing open the window is named by its app: slots that name
-        // no location show the tab's title in the location's place. A menu
-        // alone leaves the title in its tab.
+        // no location — none, or one whose label is blank, an app with
+        // nothing open to name — show the tab's title in the location's
+        // place. A menu alone leaves the title in its tab.
         if let Some(toolbar) = toolbar.as_mut()
             && !toolbar.menu_only()
-            && toolbar.location.is_none()
+            && toolbar
+                .location
+                .as_ref()
+                .is_none_or(|location| location.label.trim().is_empty())
             && let Some(tab) = self.tabs.iter().find(|tab| tab.id == active)
         {
-            toolbar.location = Some(crate::window_toolbar::ToolbarLocation {
-                label: tab.title.clone(),
-                ..crate::window_toolbar::ToolbarLocation::default()
-            });
+            toolbar
+                .location
+                .get_or_insert_with(crate::window_toolbar::ToolbarLocation::default)
+                .label
+                .clone_from(&tab.title);
         }
         self.toolbar_row.show(
             active,

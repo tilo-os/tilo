@@ -28,7 +28,7 @@ pub(crate) fn app_name(app_id: &str) -> String {
 /// window with no title of its own is the app alone, and a title that is
 /// already the app's name is not said twice.
 pub(crate) fn window_name(app_id: &str, title: &str) -> String {
-    tilo_desktop_search::names::named_window(&app_name(app_id), title)
+    ui::window_name::named(&app_name(app_id), title)
 }
 
 /// The app's name as this device's app lists last read it: the installed

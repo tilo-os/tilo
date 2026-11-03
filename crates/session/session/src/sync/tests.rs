@@ -1,6 +1,6 @@
 use super::*;
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::{RoomId, Workspace};
+use tilo_desktop_model::{Workspace, WorkspaceId as ModelWorkspaceId};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 /// The workspace the tests' only workspace is.
@@ -16,12 +16,12 @@ fn device(seed: u8) -> EndpointId {
 }
 
 fn topic(workspace: &str) -> WorkspaceId {
-    workspace_topic_id(RoomId::parse(workspace).expect("a workspace id"))
+    workspace_topic_id(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
 }
 
 /// A desktop showing one workspace, in `workspace`.
 fn desk(workspace: &str) -> DesktopTree {
-    let workspace = RoomId::parse(workspace).expect("a workspace id");
+    let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
     assert_eq!(topic(&workspace.as_uuid().to_string()), slot.raw());
     let workspace = Workspace::in_workspace(slot, workspace, "Desk");
@@ -60,7 +60,7 @@ fn list_of(
         device.user_public_key,
         device.device_public_key,
     );
-    let workspace = RoomId::parse(workspace).expect("a workspace id");
+    let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     directory
         .add_workspace_with_topic(
             workspace_topic_id(workspace),
@@ -181,7 +181,7 @@ fn pointer_moved(from: u8, workspace: &str, tab: u64, point: (f64, f64)) -> NetE
             user: String::new(),
             key: serde_json::to_string(&PresenceKey::Pointer {
                 space: PointerSpace::Tile {
-                    room: workspace.to_owned(),
+                    workspace: workspace.to_owned(),
                     tab,
                 },
             })
@@ -204,7 +204,7 @@ fn pointer_cleared(from: u8, workspace: &str, tab: u64) -> NetEvent {
             peer: neighbour_wire::peer_handle(from.as_bytes()),
             key: serde_json::to_string(&PresenceKey::Pointer {
                 space: PointerSpace::Tile {
-                    room: workspace.to_owned(),
+                    workspace: workspace.to_owned(),
                     tab,
                 },
             })

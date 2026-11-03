@@ -4,7 +4,7 @@
 //! through a [`FileHost`].
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
-    RoomId, Store, WorkspaceSlot, preflight_storage,
+    Store, WorkspaceId, WorkspaceSlot, preflight_storage,
 };
 use parking_lot::RwLock;
 use std::{
@@ -29,7 +29,7 @@ pub fn owner_file_of(state: &Path) -> PathBuf {
 /// publication of it.
 pub trait FileHost: std::any::Any + Send + Sync {
     /// The workspace a local slot is, where the host has slots.
-    fn slot_workspace(&self, _slot: WorkspaceSlot) -> Option<RoomId> {
+    fn slot_workspace(&self, _slot: WorkspaceSlot) -> Option<WorkspaceId> {
         None
     }
     /// Run `write`, which makes `next` durable and installs it, with
@@ -144,7 +144,7 @@ pub(crate) struct FileStore {
     path: PathBuf,
     history: crate::owner::HistoryContent,
     healthy: AtomicBool,
-    uncertain: RwLock<BTreeSet<RoomId>>,
+    uncertain: RwLock<BTreeSet<WorkspaceId>>,
 }
 
 impl Store for FileStore {
@@ -158,11 +158,11 @@ impl Store for FileStore {
         self.healthy.load(Ordering::Acquire)
     }
 
-    fn uncertain(&self, workspace: RoomId) -> bool {
+    fn uncertain(&self, workspace: WorkspaceId) -> bool {
         self.uncertain.read().contains(&workspace)
     }
 
-    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<RoomId> {
+    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId> {
         self.host.slot_workspace(slot)
     }
 

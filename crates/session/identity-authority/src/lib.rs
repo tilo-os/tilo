@@ -155,7 +155,7 @@ mod tests {
     /// The workspace the device certificates are asked about.
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
-    fn room() -> uuid::Uuid {
+    fn workspace() -> uuid::Uuid {
         uuid::Uuid::parse_str(WORKSPACE).expect("a workspace id")
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let certificate = certificate(73, 74);
         assert_eq!(
             authority
-                .authorize_with_policy_time(room(), &certificate, &foreign_time)
+                .authorize_with_policy_time(workspace(), &certificate, &foreign_time)
                 .unwrap_err(),
             "native certificate policy origin changed"
         );
@@ -236,7 +236,7 @@ mod tests {
         assert!(foreign_time.now_ns().is_err());
         assert_eq!(
             authority
-                .authorize_with_policy_time(room(), &certificate, &foreign_time)
+                .authorize_with_policy_time(workspace(), &certificate, &foreign_time)
                 .unwrap_err(),
             "native certificate policy origin changed"
         );
@@ -266,7 +266,7 @@ mod tests {
         let _login = unprovisioned();
         let authority = NativeCertificates::default();
         let refused = authority
-            .authorize_join(room(), &certificate(81, 82))
+            .authorize_join(workspace(), &certificate(81, 82))
             .expect_err("an uncertified device joins nothing");
         assert_eq!(refused, "workspace identity unavailable");
     }

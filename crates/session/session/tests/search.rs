@@ -405,7 +405,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()
-            .map(|workspace| workspace.room().to_string())
+            .map(|workspace| workspace.id().to_string())
             .expect("a workspace")
     });
 
@@ -749,7 +749,7 @@ fn workspaces(session: &Session) -> Vec<(String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
+            .map(|workspace| (workspace.id().to_string(), workspace.name.clone()))
             .collect()
     })
 }
@@ -760,7 +760,7 @@ fn workspace_in_front(session: &Session) -> String {
         .handle()
         .read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
         })
         .expect("a workspace")
 }

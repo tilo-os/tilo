@@ -9,7 +9,7 @@ use tilo_action_broker::services::{
 };
 use tilo_actions::remote::Pending;
 use tilo_actions::{ActionAddress, ActionContract, ActionDescriptor, ActionParam, ParamType};
-use tilo_desktop_model::{RoomId, Workspace};
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_fs::document_media::{
     DocumentMedia, LegacyImportApproval, LegacyImportAuthority, LegacyImportRequest,
     LegacyMediaImportHost, MAX_LEGACY_IMPORT_LIFETIME,
@@ -71,8 +71,8 @@ fn owner_revision(
     workspace: &str,
     account: &str,
 ) -> anyhow::Result<String> {
-    let id =
-        RoomId::parse(workspace).ok_or_else(|| anyhow::anyhow!("invalid destination workspace"))?;
+    let id = WorkspaceId::parse(workspace)
+        .ok_or_else(|| anyhow::anyhow!("invalid destination workspace"))?;
     let mut revision = None;
     membership.with_workspace(&id, &mut |current| {
         if current.owner().map(String::as_str) == Some(account) {
@@ -81,7 +81,7 @@ fn owner_revision(
             // Retain completed transfers so an away-and-back transfer also
             // invalidates an approval minted before the transfer.
             revision = serde_json::to_vec(&(
-                &current.room(),
+                &current.id(),
                 current.owner(),
                 &current.ownership_transfer_audit,
             ))
@@ -148,7 +148,7 @@ impl WorkspaceGovernanceServices for MediaImport {
     }
 
     fn descriptors(&self, workspace: &Workspace) -> Vec<ActionDescriptor> {
-        if !self.workspace.governs() || workspace.room().to_string() != self.workspace.workspace() {
+        if !self.workspace.governs() || workspace.id().to_string() != self.workspace.workspace() {
             return Vec::new();
         }
         vec![ActionDescriptor {

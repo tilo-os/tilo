@@ -74,11 +74,6 @@ impl HostApps {
                         .iter()
                         .map(|word| (word.clone(), FieldWeight::KEYWORD)),
                 );
-                fields.extend(
-                    app.comment
-                        .iter()
-                        .map(|comment| (comment.clone(), FieldWeight::SUBTITLE)),
-                );
                 fields
             })
             .collect();

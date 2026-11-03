@@ -79,6 +79,10 @@ impl AppLists {
         // first read starts: what later asks for an entry's icon or name on
         // the loop (`crate::app_icons::entry_icon`) finds it read already.
         let scan = desktop_entry::cache::cached_scan();
+        // An installed Tilo app may keep a desktop entry of its own, as its
+        // bundle does: that entry is the same app, listed once.
+        let tilo_apps =
+            app_catalogue::Installed::from_ids(installed.iter().map(|app| app.package_id.clone()));
         // The entries Tilo keeps for the person's downloaded programs are
         // search's own source (`providers::downloaded`): it lists them with
         // what the registry knows of them (their kind, and a file that went
@@ -86,7 +90,7 @@ impl AppLists {
         let host_apps = scan
             .entries
             .iter()
-            .filter(|entry| !entry.no_display && !entry.hidden && entry.downloaded.is_none())
+            .filter(|entry| machine_entry(entry, &tilo_apps))
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -335,6 +339,19 @@ fn listed_apps(
     listed
 }
 
+/// Whether a desktop entry is one of the machine's own to list: it shows,
+/// is not a program Tilo downloaded (search lists those itself), and is not
+/// an installed Tilo app's own entry — that app is listed as itself.
+fn machine_entry(
+    entry: &desktop_entry::DesktopEntry,
+    tilo_apps: &app_catalogue::Installed,
+) -> bool {
+    !entry.no_display
+        && !entry.hidden
+        && entry.downloaded.is_none()
+        && !tilo_apps.contains(&entry.id)
+}
+
 /// Each app's declared reach of the action door, from its signed manifest:
 /// the ceiling the broker admits its calls against.
 fn declared(
@@ -411,5 +428,30 @@ impl Lists {
             Held::Fixed(lists) => Arc::clone(lists),
             Held::Followed(watched) => watched.get(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str) -> desktop_entry::DesktopEntry {
+        desktop_entry::entry::parse(
+            "[Desktop Entry]\nType=Application\nName=Notes\nExec=notes\n",
+            id,
+            std::path::Path::new("/usr/share/applications/notes.desktop"),
+            &[],
+        )
+        .expect("a desktop entry")
+    }
+
+    #[test]
+    fn an_installed_tilo_apps_own_entry_is_not_one_of_the_machines() {
+        let tilo_apps = app_catalogue::Installed::from_ids(["so.tilo.notes"]);
+        // The app is listed as itself; the desktop entry its bundle keeps is
+        // the same app, so search names it once.
+        assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
+        // Any other app's entry is one of the machine's.
+        assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
     }
 }

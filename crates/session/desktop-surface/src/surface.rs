@@ -65,6 +65,7 @@ pub mod peer_view;
 mod personal_ask;
 mod search;
 mod seed;
+mod shared;
 mod shown;
 mod splice;
 mod strip;
@@ -81,7 +82,8 @@ pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutco
 pub use personal_ask::PersonalAsk;
 pub use search::{
     HostAction, HostActionSource, PALETTE_EDGE, SearchHost, SearchHostFeed, SearchRow, TypedField,
-    TypedInsertion, TypedRefusal, is_escape, is_host_offer, is_search_chord, search_chord_keys,
+    TypedInsertion, TypedRefusal, host_action_key, is_escape, is_host_offer, is_search_chord,
+    search_chord_keys,
 };
 pub use seed::seed_tree;
 pub use tile_content::tile_app_kind;
@@ -271,20 +273,6 @@ struct Shared {
     /// What wakes the host holding this desk for a change queued on its handle
     /// ([`DesktopHandle::set_wake`]).
     wake: crate::wake::Waker,
-}
-
-impl Shared {
-    fn changed(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
-        self.wake.wake();
-    }
-
-    fn present(&mut self, presentation: Presentation) {
-        if self.presentation != presentation {
-            self.presentation = presentation;
-            self.presented = self.presented.wrapping_add(1);
-        }
-    }
 }
 
 /// The host's side of a mounted [`DesktopSurface`]: read the tree, publish

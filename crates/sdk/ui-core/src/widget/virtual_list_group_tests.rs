@@ -214,3 +214,308 @@ fn a_long_list_asks_the_model_about_the_rows_in_view_only() {
         "a layout asks about the rows it lays out, not the whole list: {asked} of 100000"
     );
 }
+
+/// Press `key` on the focused list.
+fn key(
+    list: &mut VirtualList<Grouped>,
+    key: NamedKey,
+    taffy: &TaffyTree<()>,
+    node: NodeId,
+) -> bool {
+    Dispatch::new()
+        .layout(taffy, node)
+        .send(list, &crate::synthetic_input::named_key(key))
+        .handled
+}
+
+#[test]
+fn a_finger_gets_a_heading_band_it_can_hit() {
+    let mut list = week();
+    list.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+    let (taffy, node) = settle(&mut list);
+    let target = f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    assert!(
+        list.groups.height >= target - 0.5,
+        "the band is a target a finger presses: {} of {target}",
+        list.groups.height
+    );
+    // The band is still the heading's to press wherever it stands.
+    let middle = list.groups.height / 2.0;
+    assert!(press(&mut list, middle, &taffy, node));
+    let _ = settle(&mut list);
+    assert!(
+        bands(&list)
+            .iter()
+            .all(|(heading, _, closed)| heading != "Monday" || *closed),
+        "Monday folded by the press: {:?}",
+        bands(&list)
+    );
+}
+
+/// The heading holding the keyboard, by name.
+fn focused_heading(list: &VirtualList<Grouped>) -> Option<&str> {
+    list.focused_group
+        .as_ref()
+        .map(|(heading, _)| heading.as_str())
+}
+
+#[test]
+fn the_keyboard_walks_the_headings_and_folds_their_groups() {
+    let mut list = week();
+    let (taffy, node) = settle(&mut list);
+    list.set_focus(true);
+    assert_eq!(list.focused_key(), None);
+
+    // Down from nothing lands on the first row, as a list without headings does; up from
+    // there reaches the heading over it.
+    assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
+    assert_eq!(list.focused_key(), Some(&0));
+    assert_eq!(focused_heading(&list), None);
+    assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Monday"));
+    assert_eq!(list.focused_key(), None, "a heading is not one of the rows");
+
+    // Down again steps into the group the heading heads, and up returns to it.
+    assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
+    assert_eq!(list.focused_key(), Some(&0));
+    assert_eq!(focused_heading(&list), None);
+    assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Monday"));
+
+    // Enter folds the group under the heading: its rows go, and the next stop is the next
+    // heading's.
+    assert!(key(&mut list, NamedKey::Enter, &taffy, node));
+    let (taffy, node) = settle(&mut list);
+    assert!(
+        bands(&list)
+            .iter()
+            .all(|(heading, _, closed)| heading != "Monday" || *closed),
+        "Monday folded: {:?}",
+        bands(&list)
+    );
+    assert!(
+        !mounted_indexes(&list).contains(&0) && !mounted_indexes(&list).contains(&1),
+        "the folded rows let go: {:?}",
+        mounted_indexes(&list)
+    );
+    assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Tuesday"));
+
+    // Space unfolds it where the keyboard already is.
+    assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Monday"));
+    assert!(key(&mut list, NamedKey::Space, &taffy, node));
+    let (taffy, node) = settle(&mut list);
+    assert!(
+        bands(&list)
+            .iter()
+            .all(|(heading, _, closed)| heading != "Monday" || !*closed),
+        "Monday unfolded: {:?}",
+        bands(&list)
+    );
+    assert!(
+        mounted_indexes(&list).contains(&0),
+        "its rows come back: {:?}",
+        mounted_indexes(&list)
+    );
+    // End reaches the last stop: the folded tail's own heading.
+    assert!(key(&mut list, NamedKey::End, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Done"));
+}
+
+#[test]
+fn a_heading_is_a_disclosure_in_the_lists_accessibility_children() {
+    let mut list = week();
+    let (taffy, node) = settle(&mut list);
+    list.set_focus(true);
+    assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
+    assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Monday"));
+
+    let tree = Widget::accessibility(&list).expect("list semantics");
+    let names = tree
+        .children
+        .iter()
+        .map(|child| child.name.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "Monday", "row 0", "row 1", "Tuesday", "row 2", "row 3", "Done"
+        ],
+        "each heading stands before the rows it holds"
+    );
+    // Read as disclosures: the name, how many rows the group holds, and whether they show.
+    let monday = &tree.children[0];
+    assert_eq!(monday.role, crate::a11y::Role::Button);
+    assert_eq!(monday.value.as_deref(), Some("2"));
+    assert_eq!(monday.state.expanded, Some(true));
+    assert!(monday.state.focusable);
+    assert!(monday.state.focused, "the keyboard is on it");
+    assert_eq!(monday.action_target.as_deref(), Some("group:Monday"));
+    assert!(monday.bounds.is_some(), "it is where its band is drawn");
+    let done = tree.children.last().expect("the folded tail's heading");
+    assert_eq!(done.name.as_deref(), Some("Done"));
+    assert_eq!(done.value.as_deref(), Some("2"));
+    assert_eq!(done.state.expanded, Some(false));
+    assert!(!done.state.focused);
+    // The retained rows map onto their own nodes, the headings standing before them.
+    assert_eq!(
+        (0..list.mounted.len())
+            .map(|child| Widget::accessibility_child_parent(&list, child))
+            .collect::<Vec<_>>(),
+        [Some(1), Some(2), Some(4), Some(5)],
+    );
+}
+
+/// The AccessKit nodes the person's screen reader is handed for the list.
+fn access_nodes(list: &mut VirtualList<Grouped>) -> Vec<(accesskit::NodeId, accesskit::Node)> {
+    let _ = settle(list);
+    let theme = Theme::dark();
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map = std::collections::HashMap::new();
+    let _ = list.build_layout(&mut taffy, &theme, &mut node_map);
+    crate::accesskit_bridge::build_tree_update(&*list, &node_map, None, 1.0).nodes
+}
+
+#[test]
+fn the_accesskit_tree_hands_a_reader_each_heading_with_its_expanded_state() {
+    use accesskit::{Action as AkAction, Role as AkRole};
+    let mut list = week();
+    let nodes = access_nodes(&mut list);
+    let heading = |label: &str| {
+        nodes
+            .iter()
+            .find(|(_, node)| node.role() == AkRole::Button && node.label() == Some(label))
+            .map_or_else(|| panic!("no heading labelled {label:?}"), |(_, node)| node)
+    };
+    let monday = heading("Monday");
+    assert_eq!(monday.value(), Some("2"), "the rows it holds");
+    assert_eq!(monday.is_expanded(), Some(true));
+    assert!(monday.supports_action(AkAction::Collapse));
+    assert!(monday.supports_action(AkAction::Click), "a press folds it");
+    let done = heading("Done");
+    assert_eq!(done.value(), Some("2"));
+    assert_eq!(done.is_expanded(), Some(false));
+    assert!(done.supports_action(AkAction::Expand));
+}
+
+#[test]
+fn an_agent_reads_and_toggles_a_heading_as_a_control() {
+    use crate::a11y::Action;
+    let mut list = week();
+    let _ = settle(&mut list);
+    let name = |heading: &str| format!("group:{heading}");
+    fn send(list: &mut VirtualList<Grouped>, target: &str, action: &crate::a11y::Action) -> bool {
+        Widget::perform_semantic_action(
+            list,
+            target,
+            action,
+            &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+            &automerge::ROOT,
+        )
+    }
+    // Focus and activate: the tail opens, and the keyboard moves to it.
+    assert!(send(&mut list, &name("Done"), &Action::Activate));
+    assert_eq!(focused_heading(&list), Some("Done"));
+    let _ = settle(&mut list);
+    assert!(
+        mounted_indexes(&list).contains(&4),
+        "the tail's rows show: {:?}",
+        mounted_indexes(&list)
+    );
+    // Read back through the tree the agent reads.
+    let tree = Widget::accessibility(&list).expect("list semantics");
+    let done = tree
+        .children
+        .iter()
+        .find(|child| child.name.as_deref() == Some("Done"))
+        .expect("the tail's heading");
+    assert_eq!(done.state.expanded, Some(true));
+    // Fold and unfold a day from outside the keyboard.
+    assert!(send(&mut list, &name("Monday"), &Action::Collapse));
+    let _ = settle(&mut list);
+    assert!(
+        bands(&list)
+            .iter()
+            .all(|(heading, _, closed)| heading != "Monday" || *closed),
+        "Monday folded: {:?}",
+        bands(&list)
+    );
+    assert!(send(&mut list, &name("Monday"), &Action::Expand));
+    let _ = settle(&mut list);
+    assert!(
+        bands(&list)
+            .iter()
+            .all(|(heading, _, closed)| heading != "Monday" || !*closed),
+        "Monday unfolded: {:?}",
+        bands(&list)
+    );
+    // Focusing a heading moves the keyboard to it, and it scrolls into view.
+    assert!(send(&mut list, &name("Tuesday"), &Action::Focus));
+    assert_eq!(focused_heading(&list), Some("Tuesday"));
+    // A heading that is not there is not acted on.
+    assert!(!send(&mut list, &name("Wednesday"), &Action::Activate));
+}
+
+/// The list painted as a window paints it, rasterised to RGBA rows `300` wide.
+fn painted(list: &mut VirtualList<Grouped>, theme: &Theme) -> Vec<u8> {
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let mut scene = Scene::new();
+    list.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        theme,
+        &PresenceCtx::empty(),
+    );
+    let mut renderer =
+        crate::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(300, 400)
+            .expect("the offscreen renderer");
+    renderer.render_rgba(&scene)
+}
+
+/// The pixels of `rgba` (300 wide) that wear the focus ring's colour on `row`, at its sides.
+fn ring_pixels(rgba: &[u8], theme: &Theme, row: usize) -> usize {
+    let ring = theme.border_focus;
+    let wanted = [0, 1, 2]
+        .map(|channel| crate::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
+    (0..300)
+        .filter(|x| *x < 5 || *x >= 295)
+        .filter(|x| {
+            let at = (row * 300 + x) * 4;
+            rgba.get(at..at + 3).is_some_and(|pixel: &[u8]| {
+                pixel
+                    .iter()
+                    .zip(wanted)
+                    .all(|(found, want)| (i32::from(*found) - want).abs() < 70)
+            })
+        })
+        .count()
+}
+
+#[test]
+fn the_heading_holding_the_keyboard_wears_a_focus_ring() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut list = week();
+    let (taffy, node) = settle(&mut list);
+    let band = list.groups.height;
+    let unfocused = painted(&mut list, &theme);
+    let middle = crate::num::usize_of_f64(band / 2.0);
+    assert_eq!(
+        ring_pixels(&unfocused, &theme, middle),
+        0,
+        "no heading holds the keyboard: no ring"
+    );
+    list.set_focus(true);
+    assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
+    assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Monday"));
+    let focused = painted(&mut list, &theme);
+    assert!(
+        ring_pixels(&focused, &theme, middle) >= 2,
+        "the heading the keyboard is on wears its ring on both its sides"
+    );
+}

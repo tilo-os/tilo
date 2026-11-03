@@ -30,7 +30,7 @@ use tilo_action_broker::{
     },
     collab_core::BrokerChannels,
 };
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::provisioning::IdentityStorage;
 use tilo_lock::MutexRecover as _;
 
@@ -125,7 +125,7 @@ fn spawn_pump(
 /// sessions.
 pub(super) fn open(
     profile: &Path,
-    profile_workspace: RoomId,
+    profile_workspace: WorkspaceId,
     storage: IdentityStorage,
     device_key: ed25519_dalek::SigningKey,
     joined: Arc<Joined>,
@@ -156,7 +156,7 @@ struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, workspace: RoomId) -> Option<Ed25519PublicKey> {
+    fn governor_of(&self, workspace: WorkspaceId) -> Option<Ed25519PublicKey> {
         self.joined.governor_of(workspace)
     }
 
@@ -164,7 +164,7 @@ impl ChannelDirectory for Directory {
     /// record.
     fn allowed_devices(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
         now: u64,
@@ -210,7 +210,7 @@ impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
                 let Some(access) = keys.get() else {
                     return Some(Err("this device's channel service is not running".into()));
                 };
-                let workspace = RoomId::parse(&workspace)?;
+                let workspace = WorkspaceId::parse(&workspace)?;
                 if create {
                     match access.access_record(workspace, &route).0 {
                         ChannelAccess::Ready(keys) => Some(Ok(keys)),
@@ -231,7 +231,11 @@ impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
 
 /// The key sealing `workspace`'s channel state in `profile`, created once: in the
 /// login Keychain on macOS, else in an owner-only file.
-fn vault_key(profile: &Path, workspace: RoomId, storage: IdentityStorage) -> io::Result<VaultKey> {
+fn vault_key(
+    profile: &Path,
+    workspace: WorkspaceId,
+    storage: IdentityStorage,
+) -> io::Result<VaultKey> {
     let file = profile.join(CHANNEL_STATE_KEY);
     #[cfg(target_os = "macos")]
     if storage == IdentityStorage::Platform {
@@ -272,13 +276,13 @@ fn random_key() -> [u8; 32] {
 /// file.
 #[cfg(target_os = "macos")]
 mod keychain {
-    use super::{RoomId, random_key, read_key_file};
+    use super::{WorkspaceId, random_key, read_key_file};
     use std::{io, path::Path};
     use tilo_secrets::{PutOptions, SecretStore};
 
     const SECRETS_APP: &str = "so.tilo.runtime";
 
-    pub(super) fn vault_key(file: &Path, workspace: RoomId) -> io::Result<[u8; 32]> {
+    pub(super) fn vault_key(file: &Path, workspace: WorkspaceId) -> io::Result<[u8; 32]> {
         let store = SecretStore::for_app(SECRETS_APP);
         let name = format!("channel-state-v1.{workspace}");
         let stored = get(&store, &name)?;

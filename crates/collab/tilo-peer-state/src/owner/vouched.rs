@@ -8,7 +8,7 @@
 use crate::StatePeer;
 use crate::join::JoinTransportResponse;
 use crate::owner::record::{StoredVouch, StoredWorkspace};
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, RoomId, publication};
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 use web_time::SystemTime;
 
@@ -57,12 +57,12 @@ fn membership(bytes: &[u8]) -> Result<Membership, String> {
 /// Check a restored record against the membership answer it was installed
 /// from.
 pub(crate) fn validate(
-    workspace: RoomId,
+    workspace: WorkspaceId,
     record: &StoredWorkspace,
     bytes: &[u8],
 ) -> Result<(), String> {
     let answer = membership(bytes)?;
-    if RoomId::parse(&answer.workspace) != Some(workspace)
+    if WorkspaceId::parse(&answer.workspace) != Some(workspace)
         || answer.workspace_id != record.workspace_id
         || answer.host != record.workspace_host
         || answer.device.device_public_key != record.device.device_public_key
@@ -101,7 +101,8 @@ impl NativeWorkspaceOwner {
         if answer.device.device_public_key != device.device_public_key {
             return Err("the workspace's bootstrap names another device".into());
         }
-        let workspace = RoomId::parse(&answer.workspace).ok_or("noncanonical vouched workspace")?;
+        let workspace =
+            WorkspaceId::parse(&answer.workspace).ok_or("noncanonical vouched workspace")?;
         let _turn = self.0.mutation.lock();
         if let Some(held) = self.0.authority.read().workspaces.get(&workspace) {
             if held.enrollment.is_some() {

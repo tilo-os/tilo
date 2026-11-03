@@ -555,7 +555,6 @@ impl ActorState {
         if let Err(error) = session.live_join() {
             tracing::warn!(ws, %error, "could not join the workspace's live plane");
         }
-        self.native_media.reconnected(ws, &session);
         self.reopen_records(ws, &session);
         self.host_sessions.insert(
             (ws, host),

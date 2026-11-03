@@ -348,7 +348,7 @@ pub(crate) mod signed_test_support {
     impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerReceipts {
         fn health(&self) -> Result<(), String> {
             let workspace =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                     .unwrap();
             self.owner.with_current(workspace, |_| Ok(()))
         }
@@ -443,11 +443,11 @@ pub(crate) mod signed_test_support {
             .expect("provision the production receipt signer");
             let mut workspace = Workspace::in_workspace(
                 WorkspaceSlot(9),
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                     .unwrap(),
                 "Host actions",
             );
-            let workspace_id = workspace.room().to_string();
+            let workspace_id = workspace.id().to_string();
             let (key, certificate) =
                 tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
             let owner = Arc::new(
@@ -812,7 +812,7 @@ mod identity_admin_tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Identities");
         workspace.set_owner(owner.clone());
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -858,7 +858,7 @@ mod identity_admin_tests {
             tilo_action_policy::roles::AgentPreset::Observer,
             &tilo_action_policy::Subject::person(owner.clone()),
         );
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -1643,7 +1643,7 @@ mod settings_records_tests {
         workspace.set_owner(owner.clone());
         workspace.admit_agent("scribe", KindSet::READ);
         workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(

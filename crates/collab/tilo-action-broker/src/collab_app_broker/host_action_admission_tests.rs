@@ -158,7 +158,7 @@ fn certificate_less_local_origin_is_compatible_only_without_identity_authority()
     let actor = principal_id_for_root(root_key);
     let mut workspace = Workspace::new(WorkspaceSlot(17), "Owner workspace");
     workspace.set_owner(actor.clone());
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let route = crate::route::CrdtRoute::cluster(&workspace_id);
     let admitted = super::super::admit_verified_join_at(
         Some(&workspace),

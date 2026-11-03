@@ -356,7 +356,7 @@ impl Apps {
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         handle.read(|tree| match tree.active_workspace() {
             Some(shown) => {
-                let mut launched = Workspace::under(&runtime_dir(), shown.room().to_string());
+                let mut launched = Workspace::under(&runtime_dir(), shown.id().to_string());
                 launched.grants = shown.launch_grants(unix_seconds());
                 launched
             }
@@ -377,7 +377,7 @@ impl Apps {
                     let held = tree
                         .workspaces
                         .iter()
-                        .find(|held| held.room().to_string() == workspace);
+                        .find(|held| held.id().to_string() == workspace);
                     let mut launched = Workspace::under(&runtime_dir(), workspace.to_owned());
                     if let Some(workspace) = held {
                         launched.grants = workspace.launch_grants(unix_seconds());

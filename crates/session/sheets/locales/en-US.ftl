@@ -508,3 +508,20 @@ agent-door-session-reads-only = An agent reads the desktop’s own resources her
 keyboard-shortcuts-resource = Keyboard shortcuts
 keyboard-shortcuts-list = List shortcuts
 keyboard-shortcuts-list-description = Every desktop shortcut with its current and default keys.
+
+## The collaboration network's own questions: an agent on a workspace host
+## asks its person to allow one action, and a device asks its sibling for the
+## disk key it boots with.
+network-agent-question-title = Let { $agent } { $action }?
+network-agent-question-detail = It acts on { $resource } in “{ $workspace }”. Allow only what you know it is doing.
+network-agent-question-risk = It could { $risk }.
+network-agent-question-allow = Allow once
+network-agent-risk-none = do nothing you would notice
+network-agent-risk-low = change what you see here
+network-agent-risk-destructive = delete or overwrite something
+network-agent-risk-privileged = act as an administrator
+network-agent-risk-sensitive = expose something private
+network-agent-risk-something = do something that cannot be undone
+network-device-unlock-title = Unlock { $device }?
+network-device-unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code above with the one on its boot screen.
+network-device-unlock-allow = Release its key

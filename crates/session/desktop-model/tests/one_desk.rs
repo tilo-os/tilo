@@ -18,12 +18,12 @@ use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record;
 use tilo_desktop_model::{
-    DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, WorkspaceSlot,
 };
 
-fn identity() -> RoomId {
-    RoomId::parse("00000000-0000-4000-8000-000000000042").expect("a workspace identity")
+fn identity() -> WorkspaceId {
+    WorkspaceId::parse("00000000-0000-4000-8000-000000000042").expect("a workspace identity")
 }
 
 fn tab(id: u64, title: &str) -> Tab {

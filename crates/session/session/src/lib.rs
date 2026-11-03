@@ -46,6 +46,7 @@ pub mod capture;
 mod capture_grants;
 mod capture_send;
 mod capture_studio;
+mod certification;
 mod channels;
 mod chrome;
 mod clock_wait;
@@ -83,6 +84,7 @@ mod held;
 mod here;
 mod i18n;
 pub mod identity;
+mod identity_admin;
 mod import_readiness;
 mod input_method;
 mod input_sources;
@@ -94,15 +96,18 @@ mod lists;
 pub mod live;
 mod lock_screen;
 mod lock_service;
+pub mod logging;
 mod membership;
 pub mod messages;
 pub mod mount;
+mod network;
 pub mod night_light;
 pub mod notices;
 mod notifications;
 mod options;
 pub mod overlays;
 mod owner_session;
+mod pairing;
 mod panels;
 mod pass;
 mod people;
@@ -554,7 +559,7 @@ impl Shared {
     fn active_workspace_id(&self) -> String {
         self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| held.room().to_string())
+                .map(|held| held.id().to_string())
                 .unwrap_or_default()
         })
     }
@@ -608,7 +613,7 @@ impl Shared {
     /// showing it.
     fn open_from_history(
         &self,
-        workspace_id: &tilo_desktop_model::RoomId,
+        workspace_id: &tilo_desktop_model::WorkspaceId,
         target: &ui::HistoryResourceTarget,
     ) {
         let Some(apps) = &self.launch else {
@@ -645,7 +650,7 @@ impl Shared {
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
         self.session_doors
-            .answer(&self.doors, &self.services, &self.person);
+            .answer(&self.doors, &self.services, &self.search, &self.person);
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
@@ -955,6 +960,9 @@ impl Session {
         ));
         let watched = std::sync::Arc::clone(&notification_policy);
         let woken = options.wake.handle();
+        // A device's answer to another's ask about the person is worked out
+        // off the loop; when it lands here, the loop wakes to put it to them.
+        crate::certification::attach(options.wake.handle());
         // The pictures the desk shows are this device's, kept beside its
         // desk: a change of the person's reaches them the same way.
         let wallpapers = std::sync::Arc::new(wallpapers::Wallpapers::new(
@@ -2295,6 +2303,17 @@ impl Session {
         &self.shared.arrangement
     }
 
+    /// The resource the text `text` typed on the canvas places: the top
+    /// result of the one search the palette, the canvas and an agent's
+    /// `find` run, as [`arrangement::found`] reads it. The same call
+    /// `session.place_found` makes, for a caller that asks what a text names
+    /// without placing it.
+    #[must_use]
+    pub fn placed_by(&self, text: &str) -> Option<String> {
+        let search = Rc::clone(&self.shared.search);
+        arrangement::found(text, &|needle| search.find(needle))
+    }
+
     /// Undo the person's last arranging step, through the published action
     /// as any caller does.
     ///
@@ -2655,6 +2674,11 @@ impl Session {
             tilo_speaker_service::remote_audio::pump(fabric.as_ref(), media_enabled, None);
             tilo_speaker_service::groups::pump(fabric.as_ref(), media_enabled);
             tilo_speaker_service::settings::observe(fabric.as_ref());
+            // A device another of the person's devices found asks here to be
+            // them: its answer leaves, and a new ask is put to the person
+            // from their own top bar, where they decide it.
+            crate::certification::pump(fabric.as_ref());
+            self.shared.follow_device_asks();
             // The person's settings follow them between their devices on the
             // same fabric: what they set here is offered to it, and what
             // they set there reaches the document this session reads.

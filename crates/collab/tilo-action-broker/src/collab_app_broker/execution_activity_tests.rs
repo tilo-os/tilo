@@ -50,7 +50,7 @@ fn fixture_granting(
 ) {
     let mut workspace = Workspace::new(WorkspaceSlot(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     workspace.policy.grants.extend(grants(&workspace_id));
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
@@ -881,7 +881,7 @@ fn continuation_fixture() -> (
     use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
     let mut workspace = Workspace::new(WorkspaceSlot(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
     workspace.admit("b2".repeat(32), Role::Editor);

@@ -513,7 +513,7 @@ mod tests {
     /// — and the workspace's devices, as its document lists them.
     fn shared_windows() -> (Workspace, BTreeMap<u16, String>) {
         use crate::app::AppKind;
-        use crate::ids::{RoomId, StripId, WorkspaceSlot};
+        use crate::ids::{StripId, WorkspaceId, WorkspaceSlot};
         use crate::layout::{Strip, Tab, TileContent, WindowGroup};
         use crate::width::WindowWidth;
 
@@ -528,7 +528,7 @@ mod tests {
         };
         let mut workspace = Workspace::in_workspace(
             WorkspaceSlot(1),
-            RoomId::parse(WORKSPACE).expect("a room id"),
+            WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
             "Team",
         );
         workspace.strips = vec![Strip {

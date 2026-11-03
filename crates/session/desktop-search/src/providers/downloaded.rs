@@ -177,7 +177,6 @@ fn app_row(
         (app.name.clone(), FieldWeight::TITLE),
         (app.desktop_id.clone(), FieldWeight::IDENTITY),
         (kind.clone(), FieldWeight::KEYWORD),
-        (subtitle.clone().unwrap_or_default(), FieldWeight::SUBTITLE),
     ];
     let hit = Hit {
         row: None,

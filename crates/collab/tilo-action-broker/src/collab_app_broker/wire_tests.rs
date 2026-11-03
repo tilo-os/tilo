@@ -27,11 +27,7 @@ impl Workspace {
         for seed in members {
             workspace.admit(principal(*seed), crate::test_support::Role::Editor);
         }
-        let route = CrdtRoute::record(
-            "so.tilo.notes",
-            workspace.room().to_string(),
-            "meeting-notes",
-        );
+        let route = CrdtRoute::record("so.tilo.notes", workspace.id().to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();

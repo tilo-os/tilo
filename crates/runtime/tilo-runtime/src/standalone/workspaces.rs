@@ -5,7 +5,7 @@
 use super::{joined::Joined, workspace::ProfileWorkspace};
 use std::sync::Arc;
 use tilo_action_broker::services::WorkspaceAuthority;
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_identity_host::broker::WorkspaceMembership;
 
 pub(super) struct Workspaces {
@@ -36,12 +36,7 @@ impl WorkspaceAuthority for Workspaces {
             .joined
             .workspaces()
             .into_iter()
-            .filter(|joined| {
-                !tree
-                    .workspaces
-                    .iter()
-                    .any(|own| own.room() == joined.room())
-            })
+            .filter(|joined| !tree.workspaces.iter().any(|own| own.id() == joined.id()))
             .collect();
         tree.workspaces.extend(joined);
         read(&tree);
@@ -66,9 +61,9 @@ impl WorkspaceAuthority for Workspaces {
         let Some(read) = read else {
             return Ok(());
         };
-        let joined = RoomId::parse(workspace)
+        let joined = WorkspaceId::parse(workspace)
             .and_then(|id| self.joined.workspace(id))
-            .filter(|held| held.room().to_string() == workspace);
+            .filter(|held| held.id().to_string() == workspace);
         read(joined.as_ref());
         Ok(())
     }
@@ -79,7 +74,7 @@ impl WorkspaceAuthority for Workspaces {
 }
 
 impl WorkspaceMembership for Workspaces {
-    fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
+    fn with_workspace(&self, workspace: &WorkspaceId, read: &mut dyn FnMut(&Workspace)) {
         let mut found = false;
         WorkspaceMembership::with_workspace(self.profile.as_ref(), workspace, &mut |held| {
             found = true;

@@ -758,7 +758,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     assert!(link.sent().is_empty(), "nothing plays: nothing is sent");
     let workspace = harness.session.handle().read(|tree| {
         tree.active_workspace()
-            .map(|workspace| workspace.room().to_string())
+            .map(|workspace| workspace.id().to_string())
             .unwrap_or_default()
     });
     assert_eq!(

@@ -4751,6 +4751,17 @@ impl FrameHarness {
         self.focused
     }
 
+    /// Give the keyboard up: no widget of the tree holds it, as a window whose
+    /// field had the focus has none once another window comes forward. What a
+    /// host that drew a field asks for when the person went elsewhere, so the
+    /// field stops taking what is typed.
+    pub fn clear_focus(&mut self) {
+        self.invalidate_local();
+        self.pump_component_wakes();
+        self.set_focused(None);
+        self.relayout();
+    }
+
     /// Move keyboard focus to the widget at `node`, toggling `set_focus` on
     /// the outgoing/incoming widgets exactly as
     /// [`crate::app::App::set_focused_node`] does.

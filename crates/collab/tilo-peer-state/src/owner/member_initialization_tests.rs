@@ -100,7 +100,7 @@ fn member_with_empty_record() -> (
     (joined, creator, empty, document)
 }
 
-fn outgoing(joined: (RoomId, SystemTime), owner: &NativeWorkspaceOwner) -> usize {
+fn outgoing(joined: (WorkspaceId, SystemTime), owner: &NativeWorkspaceOwner) -> usize {
     owner
         .with_outgoing(joined.0, joined.1, |_, outgoing| {
             Ok(outgoing.entries().count())

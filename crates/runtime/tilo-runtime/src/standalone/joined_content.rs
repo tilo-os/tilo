@@ -19,7 +19,7 @@ use tilo_action_broker::{
     },
     route::CrdtRoute,
 };
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::peer_handle;
 
 /// Devices whose key this device remembers for an answer.
@@ -27,10 +27,10 @@ const MAX_REMEMBERED_REQUESTERS: usize = 256;
 
 /// Who asked a joined workspace for content, by the handle their requests name.
 #[derive(Default)]
-pub(super) struct Requesters(Mutex<HashMap<(RoomId, ContentPeer), [u8; 32]>>);
+pub(super) struct Requesters(Mutex<HashMap<(WorkspaceId, ContentPeer), [u8; 32]>>);
 
 impl Requesters {
-    fn remember(&self, workspace: RoomId, peer: ContentPeer, device: [u8; 32]) {
+    fn remember(&self, workspace: WorkspaceId, peer: ContentPeer, device: [u8; 32]) {
         if let Ok(mut requesters) = self.0.lock() {
             if requesters.len() >= MAX_REMEMBERED_REQUESTERS
                 && !requesters.contains_key(&(workspace, peer))
@@ -41,7 +41,7 @@ impl Requesters {
         }
     }
 
-    fn device(&self, workspace: RoomId, peer: ContentPeer) -> Option<[u8; 32]> {
+    fn device(&self, workspace: WorkspaceId, peer: ContentPeer) -> Option<[u8; 32]> {
         self.0.lock().ok()?.get(&(workspace, peer)).copied()
     }
 }
@@ -85,7 +85,7 @@ struct JoinedPeers(Arc<Joined>);
 
 impl ContentPeers for JoinedPeers {
     fn want(&self, route: &CrdtRoute, hash: &str) {
-        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
             return;
         };
         let Some(live) = self.0.live(workspace) else {
@@ -103,7 +103,7 @@ impl ContentPeers for JoinedPeers {
     }
 
     fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
-        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
             return;
         };
         let (Some(live), Some(device)) = (
@@ -128,7 +128,7 @@ impl ContentPeers for JoinedPeers {
     }
 
     fn lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
-        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
             return;
         };
         let (Some(live), Some(device)) = (
@@ -152,7 +152,7 @@ impl ContentPeers for JoinedPeers {
     /// The host the workspace's session is connected to, and the members it
     /// reports connected: this device reaches them only through it.
     fn sources(&self, route: &CrdtRoute) -> ContentSources {
-        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
             return ContentSources::default();
         };
         ContentSources {
@@ -200,7 +200,7 @@ impl Joined {
     /// published. Returns whether `message` was such a request.
     pub(super) fn content_wanted(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         author: [u8; 32],
         message: &NeighbourMsg,
     ) -> bool {
@@ -215,7 +215,7 @@ impl Joined {
         };
         if *requester != peer_handle(&author)
             || *requester == self.own_handle()
-            || RoomId::parse(cluster_id) != Some(workspace)
+            || WorkspaceId::parse(cluster_id) != Some(workspace)
         {
             return true;
         }
@@ -232,7 +232,7 @@ impl Joined {
 
     /// A piece of content another member sent this device through the
     /// host, or word that a device keeps none of what this one asked for.
-    pub(super) fn content_arrived(&self, workspace: RoomId, from: [u8; 32], frame: &[u8]) {
+    pub(super) fn content_arrived(&self, workspace: WorkspaceId, from: [u8; 32], frame: &[u8]) {
         if let Ok(NeighbourMsg::RecordContentLacks {
             responder,
             requester,
@@ -243,7 +243,7 @@ impl Joined {
         {
             if responder == peer_handle(&from)
                 && requester == self.own_handle()
-                && RoomId::parse(&cluster_id) == Some(workspace)
+                && WorkspaceId::parse(&cluster_id) == Some(workspace)
                 && let Some(content) = self.content.get().cloned()
             {
                 let route = CrdtRoute::app(app_id, cluster_id);
@@ -266,7 +266,7 @@ impl Joined {
         };
         if responder != peer_handle(&from)
             || requester != self.own_handle()
-            || RoomId::parse(&cluster_id) != Some(workspace)
+            || WorkspaceId::parse(&cluster_id) != Some(workspace)
         {
             return;
         }

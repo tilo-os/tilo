@@ -34,7 +34,7 @@ pub use tilo_store_node::ALPN;
 
 use iroh::EndpointAddr;
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_peer_state::{StatePeer, TransportOrigin};
@@ -124,7 +124,7 @@ impl StoreSession {
     pub async fn keep_workspace(
         &mut self,
         owner: &NativeWorkspaceOwner,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         now: std::time::SystemTime,
     ) -> Result<usize, StoreLinkError> {
         let outgoing: Vec<NeighbourMsg> = owner
@@ -159,7 +159,7 @@ impl StoreSession {
     pub async fn catch_up_workspace(
         &mut self,
         owner: &NativeWorkspaceOwner,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         now: std::time::SystemTime,
     ) -> Result<usize, StoreLinkError> {
         let mut standing = workspace_cursors(owner, workspace).map_err(StoreLinkError::Replica)?;
@@ -246,7 +246,7 @@ pub fn cursors(sync: &DirectSync) -> Vec<Cursor> {
 /// The workspace is not held here or is fenced.
 pub fn workspace_cursors(
     owner: &NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
 ) -> Result<Vec<Cursor>, String> {
     owner.with_current(workspace, |view| Ok(cursors_of(view.peer())))
 }

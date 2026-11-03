@@ -218,7 +218,7 @@ mod tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Devices");
         workspace.set_owner(owner.clone());
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(

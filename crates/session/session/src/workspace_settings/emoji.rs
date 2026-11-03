@@ -223,7 +223,7 @@ impl Emoji {
         let held = self.open.borrow();
         let Some(open) = held
             .as_ref()
-            .filter(|open| open.workspace == workspace.room().to_string())
+            .filter(|open| open.workspace == workspace.id().to_string())
             .filter(|open| open.person.0 == *person)
         else {
             return false;
@@ -245,7 +245,7 @@ impl Emoji {
         person: &UserId,
     ) -> Option<WorkspaceRecord<Record>> {
         let workspace = workspace?;
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let author = ui::permissions::UserId(person.clone());
         let held = self.open.borrow();
         let current = held.as_ref().filter(|open| {

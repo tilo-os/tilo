@@ -114,8 +114,8 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     assert!(view.ownership_transfer_audit.is_empty());
     assert!(view.ownership_transfer_cancellations.is_empty());
     assert_eq!(
-        (view.slot, &view.room(), &view.name),
-        (workspace.slot, &workspace.room(), &workspace.name)
+        (view.slot, &view.id(), &view.name),
+        (workspace.slot, &workspace.id(), &workspace.name)
     );
 
     let people = ["owner", "editor", "stranger"];
@@ -147,7 +147,7 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
             .answer
     };
     assert_eq!(app(&view), app(&workspace));
-    let code = Actor::app("so.tilo.notes").in_workspace(workspace.room().to_string());
+    let code = Actor::app("so.tilo.notes").in_workspace(workspace.id().to_string());
     let notes_files = ResourceRef::FsPath("/var/workspace/notes/a.md".into());
     assert_eq!(
         view.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),

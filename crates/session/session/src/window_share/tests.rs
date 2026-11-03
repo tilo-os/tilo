@@ -35,8 +35,8 @@ use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, WINDOW_KIND, tab_resource_id};
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
-    DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceSlot,
+    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceSlot,
 };
 use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::{NetEvent, WorkspaceId as Topic};
@@ -68,8 +68,8 @@ fn device(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
 
-fn workspace_id() -> RoomId {
-    RoomId::parse(WORKSPACE).expect("a workspace id")
+fn workspace_id() -> WorkspaceId {
+    WorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
 /// A desk with one workspace, its one tab showing `tile`: what a session

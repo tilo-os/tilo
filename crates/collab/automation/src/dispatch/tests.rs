@@ -38,7 +38,7 @@ fn verb(action: &str) -> Did {
 
 fn post(actor: InteractionActor, change: &str, caused_by: Option<Cause>) -> RecordEvent {
     RecordEvent {
-        room: "ws-1".into(),
+        workspace: "ws-1".into(),
         record: "rec-1".into(),
         kind: "chat.workspace".into(),
         change: change.into(),
@@ -434,7 +434,7 @@ fn an_app_declaring_an_event_fires_the_trigger_watching_its_kind() {
     let event = announced("mail.message");
     assert_eq!(event.app_id, APP);
     assert_eq!(event.kind, "mail.message");
-    assert_eq!(event.room, "ws-1");
+    assert_eq!(event.workspace, "ws-1");
     let out = dispatch(&as_shortcut(&shortcut), Event::AppEvent(&event));
     assert_eq!(out.firings.len(), 1);
     assert_eq!(

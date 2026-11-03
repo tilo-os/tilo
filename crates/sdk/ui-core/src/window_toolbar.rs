@@ -46,9 +46,11 @@
 //! app's widgets offer ([`WindowOffer`]), or opens the platform search
 //! narrowed to the app.
 //!
-//! The tab label (what tells two tabs apart) stays the window's title; the
-//! location is where you are. A window whose app declares no slots shows
-//! its title, as before.
+//! The tab label (what tells two tabs apart) is a window's name, and a
+//! window is named by what it shows: the location's label stands in the tab,
+//! the bar, the overview and search — a note's title, a folder's path — and
+//! the window's own title only where its app names nothing. A window whose
+//! app declares no slots shows its title, as before.
 //!
 //! The bar's own controls reach an app in its own process the same way: the
 //! app says what its window offers them ([`WindowOffer`]: what the search

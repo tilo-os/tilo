@@ -288,6 +288,7 @@ pub(crate) fn start_collaboration(
         sync::configured_hosts(),
         media,
         options.wake.handle(),
+        options.questions.clone(),
         beside,
     ) {
         Ok(sync) => Some(Rc::new(sync)),
@@ -308,8 +309,8 @@ pub(crate) fn open_engine(
     let workspaces: Vec<_> = handle.read(|tree| {
         tree.workspaces
             .iter()
-            .filter(|workspace| !workspace.room().is_nil())
-            .map(|workspace| (workspace.slot, workspace.room()))
+            .filter(|workspace| !workspace.id().is_nil())
+            .map(|workspace| (workspace.slot, workspace.id()))
             .collect()
     });
     match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {

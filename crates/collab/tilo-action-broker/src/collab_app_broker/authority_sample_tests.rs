@@ -161,7 +161,7 @@ fn owned_workspace() -> (DesktopTree, String) {
             completed_at: 0,
         })
         .collect();
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let tree = DesktopTree {
         active: WorkspaceSlot(91),
         workspaces: vec![workspace],
