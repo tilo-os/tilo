@@ -268,6 +268,9 @@ d-ty5fvze2 = Mark
 
 d-gbehvj6x = Unseen
 
+d-p6gfsj72 = Seat
+    .doc = Whether it is seated at the person's agent door now, a client they admitted, rather than a run's own agent.
+
 d-jlqw5py5 = Room
     .doc = A workspace the person is in, as the workspace overview names it.
     .noun = { $count ->

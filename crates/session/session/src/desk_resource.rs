@@ -39,6 +39,8 @@ pub(crate) struct DeskKey {
         String,
         u64,
     ),
+    /// The agents seated at the person's agent door.
+    agents: u64,
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
     /// revision of its own to say so.
     revealed: bool,
@@ -110,6 +112,13 @@ pub(crate) enum DeskEffect {
             "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
         )]
         surface: String,
+    },
+    /// End the agent `agent`'s work here: the connection the person admitted closes and its
+    /// presence leaves the bar
+    #[effect(label = "Stop")]
+    StopAgent {
+        #[param("The agent, by the key its presence names it")]
+        agent: String,
     },
     /// Close the surface `surface`, when it is the one up.
     CloseSurface {
@@ -232,6 +241,9 @@ pub(crate) struct Desk {
     /// The runs of what the person asked the session's agents: each run's conversation is
     /// the desk's to show (shell.md §8.1).
     pub(crate) runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    /// The agents the person admitted at its agent door: each works here as itself, and the
+    /// bar shows it as its own presence.
+    pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
     /// This device's workspaces' record, when the session holds one: the invitations
     /// a workspace's people made are kept there, by the device that made them.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
@@ -393,6 +405,7 @@ impl Desk {
                 self.surfaces.overlays.here(),
                 self.runs.revision(),
             ),
+            agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
         }
     }
@@ -502,7 +515,7 @@ impl Desk {
                 .map(|notice| notice.id.to_string())
                 .unwrap_or_default(),
             windows: self.windows_reaching(tree, instant),
-            agents: Vec::new(),
+            agents: self.seats.readings(),
             rooms: tree
                 .workspaces
                 .iter()
@@ -983,6 +996,14 @@ impl Service for Desk {
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
             self.surfaces.toggle(surface);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::StopAgent { agent } = &effect {
+            if !self.seats.stop(agent) {
+                return Err(DoorError::InvalidArguments(format!(
+                    "no agent {agent} works here"
+                )));
+            }
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::CloseSurface { surface } = &effect {

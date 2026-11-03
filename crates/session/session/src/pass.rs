@@ -155,13 +155,14 @@ impl Session {
         let locked = self.compositor.locked();
         let lock_screen_drawn = self.compositor.lock_drawn();
         crate::test_control::serve(
-            self.control.as_ref(),
+            &self.control,
             &mut self.compositor,
             crate::test_control::Desk {
                 doors: &self.shared.doors,
                 handle: &self.shared.handle,
                 overlays: &self.shared.overlays,
                 engine: self.shared.engine.as_deref(),
+                seats: &self.shared.seats,
                 locked,
                 lock_screen_drawn,
             },

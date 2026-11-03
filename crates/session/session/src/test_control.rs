@@ -231,13 +231,16 @@ pub fn owner_decision(
 
 /// What the session is, for the answers that read it: the doors every hosted surface's actions
 /// go through, the desk's tree, what stands over it, the workspaces this computer holds, whether
-/// the person locked the screen, and whether the lock screen's own frame is on it.
+/// the person locked the screen, whether the lock screen's own frame is on it, and the agents
+/// seated at the person's door.
 #[derive(Clone, Copy)]
 pub(crate) struct Desk<'a> {
     pub(crate) doors: &'a Doors,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
     pub(crate) engine: Option<&'a Engine>,
+    /// The agents the person admitted at its door, as the desk's bar shows them.
+    pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
 }
@@ -676,7 +679,7 @@ impl Socket {
             let ctx = Context::at(self.gate);
             let spawned = std::thread::Builder::new()
                 .name("tilo-control".into())
-                .spawn(move || serve_connection(stream, ctx, &door, None));
+                .spawn(move || serve_connection(stream, &ctx, &door, None));
             if let Err(error) = spawned {
                 tracing::warn!(%error, "control: a connection could not be served");
             }
@@ -733,7 +736,7 @@ pub(crate) fn serve_app(
         gate: Gate::App,
         scope: Some(Arc::new(Scope { app, workspace })),
     };
-    serve_connection(stream, ctx, door, Some(first));
+    serve_connection(stream, &ctx, door, Some(first));
 }
 
 /// A connection's writer: shared with the thread that streams the desk's state, so a state line
@@ -743,7 +746,7 @@ type Writer = Arc<Mutex<UnixStream>>;
 /// Read `stream`'s requests one line at a time, answer each, and write its answer, until the
 /// client closes it or the session ends. `gate` is the socket it came in on: an op that socket
 /// does not serve is refused here, before it reaches anything ([`served`]).
-fn serve_connection(stream: UnixStream, ctx: Context, door: &Door, first: Option<String>) {
+fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Option<String>) {
     if let Err(error) = stream.set_nonblocking(false) {
         tracing::debug!(%error, "control: a connection cannot block");
         return;
@@ -772,13 +775,13 @@ fn serve_connection(stream: UnixStream, ctx: Context, door: &Door, first: Option
         let answer = match serde_json::from_str::<Json>(&line) {
             Err(error) => refusal("parse_error", &error.to_string()),
             Ok(request) => match Op::of(&request) {
-                None => unsupported(&ctx, &request),
+                None => unsupported(ctx, &request),
                 Some(op) if !served(ctx.gate, op) => not_this_doors(op),
-                Some(op) => match asked_here(op, &request, &writer, &mut watching, &ctx, door) {
+                Some(op) => match asked_here(op, &request, &writer, &mut watching, ctx, door) {
                     Some(answer) => answer,
                     // The loop answers every request it takes; a session that ends drops it
                     // unanswered.
-                    None => match ask_loop(op, &request, &ctx, door) {
+                    None => match ask_loop(op, &request, ctx, door) {
                         Some(answer) => answer,
                         None => return,
                     },
@@ -2203,9 +2206,23 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
     }
     let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
         .unwrap_or(Json::Null);
+    let agents: Vec<Json> = desk
+        .seats
+        .readings()
+        .iter()
+        .map(|agent| {
+            json!({
+                "key": agent.key,
+                "name": agent.name,
+                "doing": agent.doing,
+                "seat": agent.seat,
+            })
+        })
+        .collect();
     json!({"state": {
         "workspace_tree": tree,
         "held_workspaces": held_workspaces,
+        "agents": agents,
         "chrome": {
             "session_locked": desk.locked,
             // The lock screen's own frame is what the outputs show, not the

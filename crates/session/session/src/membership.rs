@@ -222,11 +222,13 @@ fn agent_grants(workspace: &Workspace) -> Vec<Grant> {
 }
 
 /// Admit `agent` to the workspace `workspace` of `tree` as `actor` with the
-/// Observer preset's grants, through the workspace's governance when
-/// `engine` holds it: the one way an agent becomes a member, whether the
+/// Observer preset's grants, through the workspace's governance when this
+/// device holds it: the one way an agent becomes a member, whether the
 /// person admitted it on the settings sheet or the agent door admitted it on
 /// its sheet. The desk keeps the change only once the workspace took it; a
-/// refusal leaves `tree` as it was and says why. Whether `tree` changed.
+/// refusal leaves `tree` as it was and says why. A workspace whose
+/// governance this device does not hold has only the desk, as the settings
+/// sheet changes it: the membership is the desk's own.
 ///
 /// # Errors
 /// The workspace is gone, `actor` does not administer it, or this device
@@ -257,7 +259,7 @@ pub(crate) fn admit_agent(
             &[("agent", agent)],
         ));
     }
-    if let Some(engine) = engine {
+    if let Some(engine) = engine.filter(|engine| engine.policy(&workspace.to_string()).is_ok()) {
         let membership = Membership::of(engine, *workspace);
         membership.write(&membership.changes(held, &edit))?;
     }

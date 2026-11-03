@@ -296,6 +296,10 @@ pub struct AgentReading {
     pub doing: String,
     pub mark: String,
     pub unseen: i64,
+    /// Whether it is seated at the person's agent door now, a client they admitted, rather
+    /// than a run's own agent.
+    #[serde(default)]
+    pub seat: bool,
 }
 
 /// A workspace the person is in, as the workspace overview names it.

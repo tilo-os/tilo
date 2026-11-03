@@ -397,6 +397,12 @@ pub const KINDS: &[OriginKind] = &[
                 "Int",
                 "How many changes of its the person has not seen.",
             ),
+            field(
+                "seat",
+                "Bool",
+                "Whether it is seated at the person's agent door now, a client they admitted, \
+                 rather than a run's own agent.",
+            ),
         ],
     },
     OriginKind {
