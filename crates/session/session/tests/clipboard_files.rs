@@ -28,6 +28,9 @@ use ui::dnd::{COPIED_FILES_MIME, copied_files_list};
 const STAGING_PREFIX: &str = ".tilo-transfer-";
 /// How many files the folder of the crash test holds.
 const BIG: usize = 500;
+/// How long a paste on its own thread may take on a loaded machine before a
+/// test that waits on it fails: minutes of wall clock, not a count of turns.
+const WAIT: Duration = Duration::from_secs(120);
 
 fn session() -> Session {
     Session::headless(
@@ -50,15 +53,18 @@ fn step(session: &mut Session) {
 }
 
 /// Step the session until `done`, so a paste on its own thread has time to
-/// finish.
+/// finish. A step moves the session's clock on, not the machine's: the paste
+/// copies on its own thread, so what bounds the wait is the time the machine
+/// takes, never a count of turns a loaded machine would run through too fast.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut() -> bool) {
-    for _ in 0..200_000 {
-        if done() {
-            return;
-        }
+    let started = Instant::now();
+    while !done() {
+        assert!(
+            started.elapsed() < WAIT,
+            "{what} did not happen within {WAIT:?}"
+        );
         step(session);
     }
-    panic!("{what} did not happen");
 }
 
 /// An app copies (`cut == false`) or cuts a list of files.
@@ -364,55 +370,33 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
 }
 
 /// The paste a child process starts, and the moment it loses power: the
-/// process kills itself while the transfer is in flight, so nothing of it
-/// survives to tidy up.
+/// transfer ends the process at the moment `CLIPBOARD_KILL_AT` names, so
+/// nothing of it survives to tidy up.
 fn kill_mid_transfer_child() {
-    let Some(stage) = std::env::var_os("CLIPBOARD_KILL_STAGE") else {
+    let Some(stage) = std::env::var_os("CLIPBOARD_KILL_AT") else {
         return;
     };
     let source = PathBuf::from(std::env::var_os("CLIPBOARD_KILL_SOURCE").expect("a source"));
     let destination =
         PathBuf::from(std::env::var_os("CLIPBOARD_KILL_DESTINATION").expect("a destination"));
-    let state_home = PathBuf::from(std::env::var_os("XDG_STATE_HOME").expect("a state directory"));
-    let receipt = state_home.join("tilo/file-paste/paste.json");
     let mut paths = tree(&source, 6);
     paths.push(source.join("big"));
 
     let mut session = session();
     copy(&mut session, &paths, true);
     paste_into(&mut session, &destination, None);
-    // The paste runs on a thread of its own: the loop lets the command reach
-    // it and then watches the disk, so the moment it is killed for is a
-    // moment the transfer is really in flight.
-    for round in 0..2_000_000 {
-        if round % 1000 == 0 {
-            step(&mut session);
-        }
-        let some_staged = staging(&destination).iter().any(|folder| {
-            fs::read_dir(folder).is_ok_and(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .any(|entry| entry.file_name().to_string_lossy() != "replaced")
-            })
-        });
-        let some_published = (0..6).any(|index| destination.join(index.to_string()).exists())
-            || destination.join("big").exists();
-        let caught = receipt.exists()
-            && match stage.to_string_lossy().as_ref() {
-                // In the middle of the copying: some of it is staged, none
-                // of it is published.
-                "staging" => some_staged,
-                // In the middle of the publishing: some of it stands under
-                // its own name.
-                _ => some_published,
-            };
-        if caught {
-            // SAFETY: the process ends here, as a power cut would end it:
-            // no destructor runs and nothing is tidied up.
-            unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
-        }
+    // The paste dies at the moment `stage` names (it ends this process
+    // there, as a power cut would), so this loop only lets it run: no reading
+    // of the disk races the transfer, and the machine's pace, not a count of
+    // turns, decides when it dies.
+    let started = Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < WAIT,
+            "the transfer never reached {stage:?}"
+        );
+        step(&mut session);
     }
-    panic!("the transfer was never caught in flight");
 }
 
 #[test]
@@ -425,7 +409,8 @@ fn kill_mid_transfer() {
 fn kill_under(stage: &str, source: &Path, destination: &Path) -> std::process::ExitStatus {
     Command::new(std::env::current_exe().expect("this test's binary"))
         .args(["--exact", "kill_mid_transfer", "--ignored", "--nocapture"])
-        .env("CLIPBOARD_KILL_STAGE", stage)
+        .env("CLIPBOARD_KILL_AT", stage)
+        .env("TILO_FILE_PASTE_CRASH_POINT", stage)
         .env("CLIPBOARD_KILL_SOURCE", source)
         .env("CLIPBOARD_KILL_DESTINATION", destination)
         .spawn_locked()
