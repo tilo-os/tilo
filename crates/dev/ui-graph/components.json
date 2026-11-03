@@ -4809,7 +4809,7 @@
         },
         {
           "name": "hide_root",
-          "doc": "The tree's one root node's label is its own name: the nodes under it form the top level.",
+          "doc": "The tree's root node — the tree itself, labelled with its `name` — is not a row: the nodes at the top level are, at the first depth. Off, the tree's name stands over them as a row of its own. Hide it where a heading or a page title already names the tree.",
           "type": "bool"
         },
         {

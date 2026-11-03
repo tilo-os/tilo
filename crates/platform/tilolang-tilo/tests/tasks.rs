@@ -296,7 +296,7 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
     let (mut ada, root) = workspace();
     let dated = call(
         &ada,
-        "add",
+        "new_task",
         vec![root.clone(), Value::text("Buy oat milk and eggs")],
     );
     call(
@@ -304,7 +304,7 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
         "schedule",
         vec![dated, Value::some(Value::text("2026-10-30"))],
     );
-    call(&ada, "add", vec![root, Value::text("Book a haircut")]);
+    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
     assert_eq!(
         overview_count(&ada.view(APP)),
         Some(2),
@@ -317,7 +317,7 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
 #[test]
 fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changing() {
     let (mut ada, root) = workspace();
-    let dated = |title: &str| call(&ada, "add", vec![root.clone(), Value::text(title)]);
+    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
     ada.commit();

@@ -305,7 +305,7 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: Rc<Phrases>,
+        phrases: &Phrases,
         wake: Waker,
     ) -> Result<Self, RecordError> {
         let record = InstanceRecord::open(manager, &kept.documents, spec.person.clone())?;
@@ -322,7 +322,7 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: Rc<Phrases>,
+        phrases: &Phrases,
         wake: Waker,
     ) -> Self {
         let surface: SurfaceSlot = Rc::default();
@@ -330,6 +330,14 @@ impl Hosted {
             package_resource_id(&bundle.meta.app),
             bundle.meta.package_kind(),
         );
+        // The window speaks the language its package ships, the person's when it ships it: the
+        // frames' words and the history's sentences follow the app's own copy.
+        let catalogues = bundle.catalogues();
+        let shipped: Vec<&str> = catalogues
+            .iter()
+            .map(|(locale, _)| locale.as_str())
+            .collect();
+        let phrases = Rc::new(phrases.for_window(&shipped));
         let record = record.speaking(phrases.locale());
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),

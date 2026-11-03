@@ -48,9 +48,10 @@ impl Checker<'_> {
             .any(|a| a.name.is_none() && !self.is_flag(None, &a.value))
     }
 
-    /// A row view's body is one list row, after any `let`s it reads.
-    pub(super) fn row_view_body(&mut self, view: &str, ty: &str, rest: &[UiStmt], span: Span) {
-        let ok = match rest.split_last() {
+    /// Whether `rest` is one list row, after any `let`s it reads: what a view draws when it
+    /// draws one item's row.
+    pub(super) fn body_is_row(&self, rest: &[UiStmt]) -> bool {
+        match rest.split_last() {
             Some((
                 UiStmt {
                     kind: UiKind::Call(c),
@@ -74,8 +75,12 @@ impl Checker<'_> {
                     }
             }
             _ => false,
-        };
-        if !ok {
+        }
+    }
+
+    /// A row view's body is one list row, after any `let`s it reads.
+    pub(super) fn row_view_body(&mut self, view: &str, ty: &str, rest: &[UiStmt], span: Span) {
+        if !self.body_is_row(rest) {
             self.err("E093", span, format!("`{view}` is the row view of {ty}, so its body is one list row, after any `let`s: `row(x.title, secondary: ...)` or `ui.ListRow(title: x.title, ...)`"));
         }
     }
@@ -335,7 +340,7 @@ impl Checker<'_> {
             self.err("E097", span, "a row with a title is a list row and takes no block; for a layout row write `row { ... }` with the title inside it as `text(...)`");
         }
         if !self.st.ui.list_row_ok {
-            self.err("E097", span, "a list row `row(title, ...)` stands directly in a list's item block, `list(xs) { x -> row(x.title) }`, or is a row view's body; for a layout row write `row { ... }`");
+            self.err("E097", span, "a list row `row(title, ...)` stands directly in a list's item block, `list(xs) { x -> row(x.title) }`, is a row view's body, or is the whole body of a view of the item it draws; for a layout row write `row { ... }`");
         }
         let key = self.node_key(c);
         let row_key = self.fresh(Ty::Text);

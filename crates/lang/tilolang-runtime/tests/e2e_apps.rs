@@ -1564,10 +1564,13 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
+        // The header offers a command as a button or, when it is not the window's main thing
+        // and the app does not mark it frequent, in the one menu the rest go behind.
         let labels = |v: &ViewInstance| -> Vec<String> {
-            of_kind(v.tree(), "ui.Button")
+            ["ui.Button", "ui.MenuItem"]
                 .iter()
-                .map(|button| text_prop(button, "label"))
+                .flat_map(|kind| of_kind(v.tree(), kind))
+                .map(|node| text_prop(node, "label"))
                 .collect()
         };
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);

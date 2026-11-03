@@ -21,7 +21,7 @@ root       = "root" [ ident ":" ] type ;                      (* `root notes: No
 alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
-role       = "primary" | "destructive" | "migration" ;
+role       = "primary" | "destructive" | "migration" | "internal" ;
 
 type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
 field      = { doc } ident ":" type [ "merge" merge_kind ] [ "(" ( "title" | "body" | "previously" ) ")" ]

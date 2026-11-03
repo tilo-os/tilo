@@ -166,8 +166,8 @@ pub(crate) struct UiPlace {
     /// The primitive whose block is being lowered, empty at a view's top: `sidebar` and
     /// `inspector` sit directly in a frame, a fact directly in `facts`.
     parent: &'static str,
-    /// Whether a list row `row(title, ...)` may stand here: directly in a list's item block or
-    /// as a row view's body.
+    /// Whether a list row `row(title, ...)` may stand here: directly in a list's item block,
+    /// as a row view's body, or as the whole body of a view of the item it draws.
     list_row_ok: bool,
     /// Whether it is inside a `card`: a list there is the card's preview
     /// ([`crate::prims::PREVIEW_ROWS`]).
@@ -548,6 +548,11 @@ impl Checker<'_> {
             .find(|(key, view)| key.app == env.app && *view == c.name);
         if let Some((key, _)) = row_of {
             self.row_view_body(&c.name, &key.name, &rest, v.body_span);
+            self.st.ui.list_row_ok = true;
+        } else if self.st.subject.is_some() && self.body_is_row(&rest) {
+            // A view of one item whose body is its row is that item's row wherever it is
+            // drawn: the parameters after the item are what the place around it states, which
+            // is how a place states a fact once instead of every row repeating it.
             self.st.ui.list_row_ok = true;
         }
         self.view_body(&rest);

@@ -14,6 +14,16 @@ enum Priority {
     urgent (icon: .triangle_alert)
 }
 
+/// What the place a task's row stands in already says, and the row therefore leaves out.
+enum RowPlace {
+    /// Nothing: a plain list, a card, a surface of the system's own.
+    full
+    /// The day it is grouped under, as a list of a day is.
+    day
+    /// Its project, as a project's list is of one.
+    project
+}
+
 /// Something to do: what, by when, by whom, and in which project.
 type Task {
     title: Text (title)
@@ -93,7 +103,7 @@ default view task_page for Task
 
 default view project_page for Project
 
-row view task_row for Task
+row view task_summary for Task
 
 /// Gives each step of a task from before steps were tasks a task of its own, under the task it
 /// was a step of, in the order it was in. A step whose task was removed becomes a task of its
@@ -112,15 +122,17 @@ migration action adopt_steps(tasks: Tasks) {
     }
 }
 
-/// Adds a task with this title to the inbox.
-action add(tasks: Tasks, title: Text) -> Task {
+/// Adds a task with this title to the inbox: the way a program or an agent adds one, not a
+/// command of the window, whose entry and New task are how a person adds.
+internal action add(tasks: Tasks, title: Text) -> Task {
     tasks.items.insert(Task(title: title))
 }
 
 /// Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
 /// when ("Call the landlord tomorrow 9am"), that is its due day and moment and the rest its
-/// title; without, a task added `today` is due today. An empty entry adds nothing.
-action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) {
+/// title; without, a task added `today` is due today. An empty entry adds nothing. It is the
+/// entry's, not a command: the entry is how a task is added.
+internal action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) {
     let said = dated(entry, now)
     let due: Option<Date> = if let day = said.day { .some(day) } else if today { dated("today", now).day } else { .none }
     if said.text != "" {
@@ -187,8 +199,9 @@ action prioritize(t: Task, priority: Priority) (icon: .flag) {
     t.priority = priority
 }
 
-/// Adds a subtask under a task: a task of its own, in its project and section.
-action add_subtask(tasks: Tasks, t: Task, title: Text) {
+/// Adds a subtask under a task: a task of its own, in its project and section. The subtasks
+/// entry is how one is added.
+internal action add_subtask(tasks: Tasks, t: Task, title: Text) {
     if title != "" {
         tasks.items.insert(Task(title: title, parent: .some(t), project: t.project, section: t.section))
     }
@@ -196,8 +209,9 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) {
 
 /// Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level
 /// for none), where `before` stands when it is given, or at the end of the top level. A task
-/// cannot go inside itself.
-action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) {
+/// cannot go inside itself. The outline's drag, `Tab` and `Shift-Tab` name it; it is not a
+/// command of its own.
+internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) {
     require not within(tasks.items, parent, moved) and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
     if let b = before {
         moved.parent = b.parent
@@ -256,8 +270,9 @@ destructive action remove_project(tasks: Tasks, p: Project) (icon: .trash, label
     tasks.projects.remove(p)
 }
 
-/// Shows a project's tasks as a board, a lane per section, or as a list again.
-action show_board(p: Project, on: Bool = not p.board) (label: "Board", icon: .layout_grid, on: p.board) {
+/// Shows a project's tasks as a board, a lane per section, or as a list again. It is a switch a
+/// project's window keeps beside its New task, not a command reached for occasionally.
+action show_board(p: Project, on: Bool = not p.board) (label: "Board", icon: .layout_grid, on: p.board, frequent: true) {
     p.board = on
 }
 
@@ -279,21 +294,17 @@ destructive action remove_section(s: Section) (icon: .trash, label: "Delete sect
     tasks.sections.remove(s)
 }
 
-/// Adds a task at the end of a lane of a project's board.
-action add_to(p: Project, s: Option<Section>) -> Task (icon: .plus, label: "New task") {
+/// Adds a task at the end of a lane of a project's board: `s` names the lane, none for the
+/// first. It is a project's primary action, so its window's New task adds to the first lane.
+primary action add_to(p: Project, s: Option<Section> = .none) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.items.insert(Task(title: "", project: p, section: s))
 }
 
 /// Puts a task into a lane of its project's board, `s` (none for the first lane), at the place
-/// `at` among the tasks already there.
-action place(t: Task, s: Option<Section>, at: Int) {
+/// `at` among the tasks already there. It is what a card's drag names.
+internal action place(t: Task, s: Option<Section>, at: Int) {
     t.section = s
     tasks.items.move(t, to: at, among: tasks.items.filter(x -> x.project == t.project and x.section == s and not x.done))
-}
-
-/// Moves a task to just after another.
-action move(tasks: Tasks, t: Task, after: Task) {
-    tasks.items.move(t, after: after)
 }
 
 /// Renames a project.
@@ -394,7 +405,7 @@ view home(t: Tasks) {
                     }
                 }
                 std.rows(shown, "No tasks here", .none, .some("list-checks"), group: .due, closed: .done) { x ->
-                    task_row(x)
+                    task_row(x, .day)
                 }
             }
         }
@@ -432,7 +443,7 @@ view project_list(p: Project, draft: State<Text>) {
                     }
                 }
                 std.rows(shown, "No tasks yet", .none, .some("folder")) { x ->
-                    task_row(x)
+                    task_row(x, .project)
                 }
             }
         }
@@ -497,20 +508,31 @@ view task_card(t: Task, sections: List<Section>) {
                 }
             }
         }
-        task_row(t)
+        task_row(t, .project)
     }
 }
 
-/// One task in a list: a checkbox for whether it is done, its title, its project, when it is
-/// due, a flag while it matters, and who is doing it.
-view task_row(t: Task) {
+/// One task as a row: whether it is done, its title, its project, when it is due, a flag while
+/// it matters, and who is doing it. `place` leaves out what the place the row stands in already
+/// says — the day a list of a day is grouped by, the project a project's list is of — so a row
+/// repeats nothing the page around it states.
+view task_row(t: Task, place: RowPlace) {
+    let project: Option<Text> = if place == .project { .none } else { t.project?.name }
+    let due: Option<Date> = if place == .day { .none } else { t.due }
+    row(t.title, checkbox: t.done, secondary: project, meta: due, mark: t.priority.icon(), avatar: t.assignee)
+}
+
+/// A task as the system shows it on a surface of its own — a result, a notice — where no page
+/// around it says anything: its row with every fact.
+view task_summary(t: Task) {
     row(t.title, checkbox: t.done, secondary: t.project?.name, meta: t.due, mark: t.priority.icon(), avatar: t.assignee)
 }
 
-/// One task in an outline: the same, in the tree, which counts its done subtasks while it is
-/// folded.
-view task_outline_row(t: Task) {
-    ui.TreeViewRow(checkbox: t.done, icon: t.priority.icon(), secondary: t.project?.name, trailing: t.due)
+/// One task in an outline, which counts its done subtasks while it is folded. `project` is the
+/// project of the page around the outline: a row repeats no project the page already names, and
+/// names its own while the subtask is of another.
+view task_outline_row(t: Task, project: Option<Project>) {
+    ui.TreeViewRow(checkbox: t.done, icon: t.priority.icon(), secondary: if t.project == project { .none } else { t.project?.name }, trailing: t.due)
 }
 
 /// A task's window: whether it is done and its title, when it is due, its project, how much it
@@ -567,8 +589,10 @@ view task_page(t: Task) {
                 // Every task under this one, at any depth: the outline nests each under its
                 // parent.
                 let kids = tasks.items.filter(x -> x != t and under(tasks.items, x, t))
-                std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet", (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x), fill: false) { x ->
-                    task_outline_row(x)
+                std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet",
+                    (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x),
+                    fill: false) { x ->
+                    task_outline_row(x, t.project)
                 }
             }
             ui.TextInput(value: step, placeholder: "Add a subtask") {

@@ -140,9 +140,10 @@ view rows<T>(
 }
 
 /// Items as an outline, each item over its own to any depth, opened and closed where a person
-/// puts them, its row the one `row` draws. A move — a drag, `Tab` and `Shift-Tab`, the
-/// accessibility move actions — is reported with the item it lands under and the item it lands
-/// before, and `place` puts it in the one place they name:
+/// puts them, its row the one `row` draws. The outline is named `name` for a reader; the name
+/// is the page's, not a row over the items, so the page states it once. A move — a drag, `Tab`
+/// and `Shift-Tab`, the accessibility move actions — is reported with the item it lands under
+/// and the item it lands before, and `place` puts it in the one place they name:
 /// `(moved, .none, .none)` is the end of the top level, `(moved, .some(x), .none)` the end of
 /// `x`'s own, and `(moved, .none, .some(x))` where `x` stands. One step, so two people moving
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. An item whose
@@ -163,7 +164,7 @@ view outline<T>(
     if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
     } else {
-        ui.TreeView(name: .some(name), fill: fill, reorder: true, tab_indents: true) {
+        ui.TreeView(name: .some(name), fill: fill, reorder: true, tab_indents: true, hide_root: true) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
                 let offered = actions(x)
@@ -188,10 +189,11 @@ view outline<T>(
 }
 
 /// A header's controls, as native headers place them: the sort menu and search first, then
-/// `extra`, then each action in the app's order — one with an icon as an icon button (drawn on
-/// while the state it toggles is), one without as a button labelled with the name the app gave
-/// it, as a desktop bar's menus name it — and the primary action last as the labelled Primary
-/// button. The window's header lays them out: what does not fit gives way to where the system
+/// `extra`, then the window's actions — its primary action as the labelled Primary button, a
+/// command the app marked `frequent` as a button of its own, and all the rest behind one
+/// "More actions" menu, as a desktop bar holds them. The primary action comes first among
+/// them so that a narrow window gives way with the menus, never with the one main thing to
+/// do. The window's header lays them out: what does not fit gives way to where the system
 /// lists the window's actions (the desktop bar's window menu), else behind the header's own
 /// door, so every action stays reachable at every width.
 view header<S>(
@@ -211,20 +213,31 @@ view header<S>(
     ui.SearchButton()
     extra
     for a in offered {
-        if not a.primary and a.icon != .none {
-            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
-                on press: a.run
-            }
-        } else if not a.primary {
-            ui.Button(a.label, toggled: a.on == .some(true), key: a.key) {
+        if a.primary {
+            ui.Button(a.label, icon: a.icon, role: .primary, key: a.key) {
                 on press: a.run
             }
         }
     }
     for a in offered {
-        if a.primary {
-            ui.Button(a.label, icon: a.icon, role: .primary, key: a.key) {
+        if a.frequent and not a.primary and a.icon != .none {
+            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
                 on press: a.run
+            }
+        } else if a.frequent and not a.primary {
+            ui.Button(a.label, toggled: a.on == .some(true), key: a.key) {
+                on press: a.run
+            }
+        }
+    }
+    if offered.any(a -> not a.primary and not a.frequent) {
+        ui.MenuButton(phrase("tilolang-more"), icon: .more_horizontal, icon_only: true) {
+            for a in offered {
+                if not a.primary and not a.frequent {
+                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key, checked: a.on == .some(true)) {
+                        on choose: a.run
+                    }
+                }
             }
         }
     }

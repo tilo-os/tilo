@@ -502,6 +502,40 @@ pub fn follow_configured_language() {
     }
 }
 
+/// The language a window speaks, chosen once from the person's preference and the languages
+/// what the window shows ships (`shipped`, the locales of its catalogues): the language they
+/// prefer when it is among them, the same language in another region when that is, the source
+/// language when it ships that, else the first it ships. One window speaks one language, so an
+/// app that ships a translation leaves none of its chrome, its frames' words or its dates in
+/// another. See [`tilo_history::window_language`].
+#[must_use]
+pub fn window_language(shipped: &[&str]) -> String {
+    let preference = preferred_locale().map(|locale| locale.to_string());
+    tilo_history::window_language(preference.as_deref(), shipped)
+}
+
+/// Install a package's catalogues (`(locale, Fluent text)`) and make this window speak one
+/// language: the person's when the package ships it, the package's source language otherwise.
+/// The toolkit's own words and the platform's formats follow the same language, so a window of
+/// an app written in one language reads in that language throughout. A host that draws one
+/// window on a thread calls this when the package loads; its language stays as the window's.
+pub fn speak_window_language(catalogues: &[(String, String)]) -> String {
+    // The toolkit's own labels first: on a thread with no catalogue yet they install it, in
+    // the desktop's language, so the window's language is chosen over a catalogue that exists
+    // rather than one built after it and left speaking the desktop's.
+    I18nManager::register_widget_messages();
+    for (locale, text) in catalogues {
+        I18nManager::add_resource(locale, text.clone());
+    }
+    let shipped: Vec<&str> = catalogues
+        .iter()
+        .map(|(locale, _)| locale.as_str())
+        .collect();
+    let language = window_language(&shipped);
+    I18nManager::set_locale(&language);
+    language
+}
+
 fn new_bundle(locale: &LanguageIdentifier) -> Bundle {
     let mut bundle = FluentBundle::new(vec![locale.clone()]);
     // Don't wrap interpolated variables in Unicode bidi isolation marks
@@ -1543,6 +1577,51 @@ mod tests {
                 serde_json::json!({"appearance": {"language": "C"}})
             )),
             None
+        );
+    }
+
+    /// A window speaks one language: an app that ships English only leaves the toolkit's words
+    /// and the platform's formats English too, whatever the person's preference.
+    #[test]
+    fn an_english_only_app_leaves_the_window_english() {
+        let _restore = RestoreLookupState::capture();
+        I18nManager::install(
+            "en-US",
+            "de-DE",
+            &[
+                ("en-US", "en-only = English"),
+                ("de-DE", "de-only = Deutsch"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(I18nManager::lookup_plain("de-only"), "Deutsch");
+        let language = speak_window_language(&[("en-US".to_owned(), "d-new = New".to_owned())]);
+        assert_eq!(
+            language, "en-US",
+            "the app ships English only, so its window does"
+        );
+        assert_eq!(I18nManager::current_locale(), "en-US");
+        assert_eq!(I18nManager::lookup_plain("d-new"), "New");
+        assert_eq!(
+            I18nManager::lookup_plain("de-only"),
+            "de-only",
+            "the window stopped speaking German"
+        );
+    }
+
+    #[test]
+    fn a_window_speaks_its_language_over_the_toolkits_own_words() {
+        let _restore = RestoreLookupState::capture();
+        // A thread that has drawn nothing yet: its first catalogue is the toolkit's, installed
+        // in the desktop's language, and the window's language must win over it.
+        let language = speak_window_language(&[("en-US".to_owned(), "d-new = New".to_owned())]);
+        assert_eq!(language, "en-US");
+        assert_eq!(I18nManager::current_locale(), "en-US");
+        assert_eq!(I18nManager::lookup_plain("d-new"), "New");
+        assert_eq!(
+            I18nManager::lookup_plain("date-field-none"),
+            "No date",
+            "the toolkit's own words follow the window's language"
         );
     }
 

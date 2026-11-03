@@ -119,16 +119,18 @@ impl Platform for InProcess {
         tilo_ui_host::i18n::word(id, args, id)
     }
 
-    /// The package's own words: its catalogues join the person's, so what it declares reads in
-    /// their language.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_catalogues(catalogues);
-    }
-
     /// When the person's language, or a catalogue, moves, what the window published is
     /// published again in it.
     fn words_revision(&self) -> u64 {
         tilo_ui_host::i18n::revision()
+    }
+
+    /// The package's words, and the one language its window speaks: the person's when the
+    /// package ships it, the package's source language otherwise, so the app's copy, the
+    /// chrome's words and the toolkit's dates all read in the same language.
+    fn add_words(&self, catalogues: &[(String, String)]) {
+        tilo_ui_host::i18n::ensure();
+        ui::i18n::speak_window_language(catalogues);
     }
 
     /// The toolkit's clock, as every time the window shows is: a capture pins it, so a

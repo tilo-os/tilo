@@ -32,6 +32,8 @@ tilolang-done = Done
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
 tilolang-sort = Sort
+# The header menu the rest of a window's actions fold into.
+tilolang-more = More actions
 tilolang-undo = Undo
 # Typed while the window was busy with a press that opened no field, and no field had the keyboard.
 tilolang-typing-unplaced = Nothing took what you typed: “{ $typed }”

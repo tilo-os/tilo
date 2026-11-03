@@ -384,7 +384,7 @@ impl Hosted {
             Arc::new(bundle.clone()),
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
-            Rc::new(Phrases::new("en-US")),
+            &Phrases::new("en-US"),
             wake,
         );
         host.add(hosted, None);

@@ -124,7 +124,7 @@ fn open(
         Arc::clone(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        Rc::clone(phrases),
+        phrases,
         Arc::new(|| {}),
     );
     host.add(hosted, None);

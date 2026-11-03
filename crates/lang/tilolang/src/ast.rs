@@ -292,6 +292,10 @@ pub enum ActionRole {
     /// subject's type that a version before it wrote, as an ordinary action, to bring what that
     /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
     Migration,
+    /// `internal action`: never offered. The app drives it from a gesture of its own — a drag,
+    /// an entry, a lane's button — so it is not a command a header, a menu or an action bar
+    /// lists beside the ones a person chooses from.
+    Internal,
 }
 
 impl ActionRole {
@@ -300,6 +304,7 @@ impl ActionRole {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
             Self::Migration => "migration",
+            Self::Internal => "internal",
         }
     }
 }

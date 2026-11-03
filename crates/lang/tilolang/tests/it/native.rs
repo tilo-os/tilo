@@ -263,6 +263,72 @@ fn a_presented_state_is_typed_and_reads_only_the_subject() {
 }
 
 #[test]
+fn a_view_of_one_item_draws_that_items_row() {
+    // The row is the view's whole body, so the parameters after the item are what the place
+    // around the row says: a list grouped by a day gives the day, and the row leaves it out.
+    ok(r#"type Note {
+    title: Text (title)
+    pinned: Bool = false
+}
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+root Notebook
+
+default view notebook for Notebook
+
+row view note_row for Note
+
+view note_row(n: Note) {
+    row(n.title)
+}
+
+view note_in_place(n: Note, pinned: Bool) {
+    let secondary: Option<Text> = if pinned { "Pinned" } else { .none }
+    row(n.title, secondary: secondary)
+}
+
+view notebook(nb: Notebook) {
+    list(nb.notes) { n ->
+        note_in_place(n, n.pinned)
+    }
+}
+"#);
+}
+
+#[test]
+fn a_view_of_one_item_that_draws_more_than_its_row_is_no_row() {
+    expect(
+        "E097",
+        r"type Note {
+    title: Text (title)
+}
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+root Notebook
+
+default view notebook for Notebook
+
+view note_layout(n: Note) {
+    section(n.title) {
+        row(n.title)
+    }
+}
+
+view notebook(nb: Notebook) {
+    list(nb.notes) { n ->
+        note_layout(n)
+    }
+}",
+    );
+}
+
+#[test]
 fn row_views_are_in_the_metadata() {
     let c = notes();
     let id = |n: &str| c.ids.get(n).expect("id").to_string();

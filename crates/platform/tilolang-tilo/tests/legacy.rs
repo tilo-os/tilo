@@ -287,13 +287,18 @@ fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
     let before = listed(&replica, &list, &items_field);
     assert!(before.len() >= 3);
     let item = |id: &str| Value::resource(&list.item(id, item_ty.clone()));
-    // The last item, moved after the first.
+    // The last item, moved to stand where the second one stands.
     let moving = before.last().unwrap().clone();
     call(
         &mut replica,
         app,
-        "move",
-        vec![Value::resource(&list), item(&moving), item(&before[0])],
+        "move_to",
+        vec![
+            Value::resource(&list),
+            item(&moving),
+            Value::none(),
+            Value::some(item(&before[1])),
+        ],
     );
     let moved = listed(&replica, &list, &items_field);
     assert_eq!(moved[1], moving, "{moved:?}");
@@ -637,8 +642,13 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
     call(
         &mut replica,
         app,
-        "move",
-        vec![Value::resource(&list), item(&items[2]), item(&items[0])],
+        "move_to",
+        vec![
+            Value::resource(&list),
+            item(&items[2]),
+            Value::none(),
+            Value::some(item(&items[1])),
+        ],
     );
     assert_eq!(listed(&replica, &list, &items_field)[1], items[2]);
     call(

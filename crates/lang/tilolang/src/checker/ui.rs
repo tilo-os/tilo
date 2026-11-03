@@ -1153,7 +1153,7 @@ fn removed_prim(name: &str) -> Option<&'static str> {
             "`heading` is gone: the window's title is the root resource's `(title)` field, and the platform draws it in the header. Group content with `section(\"Title\") { }`, or write `text(x, role: .title)`"
         }
         "list_row" => {
-            "`list_row` is now `row(title, secondary: ...)`, inside a list's item block (`list(xs) { x -> row(x.title) }`) or as a `row view`"
+            "`list_row` is now `row(title, secondary: ...)`, inside a list's item block (`list(xs) { x -> row(x.title) }`), as a `row view`, or as the body of a view of the item it draws"
         }
         "column" => "`column` is `stack`: a column of content",
         "card" => {
