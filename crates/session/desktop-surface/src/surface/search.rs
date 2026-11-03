@@ -624,7 +624,7 @@ fn windows(
                     let title = if named {
                         app_title.clone()
                     } else {
-                        tilo_desktop_search::names::named_window(&app_title, &tab.title)
+                        ui::window_name::named(&app_title, &tab.title)
                     };
                     out.push(WindowEntry {
                         tab: tab.id,
