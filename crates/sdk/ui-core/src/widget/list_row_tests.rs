@@ -1236,6 +1236,27 @@ fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
     );
 }
 
+/// A row checked off reads as done with: its title struck through and in the weaker ink, as a
+/// row of an item that left reads. The box says it, so the row says it too, and a row whose
+/// item came back says it no more.
+#[test]
+fn a_checked_rows_title_is_struck_through_and_muted() {
+    let face_strikes = |row: &ListRow| row.with_face(|face| face.struck);
+    let mut row = ListRow::new("milk", "Buy oat milk").checkbox(false, |_| {});
+    assert!(!face_strikes(&row), "an unchecked row's title is plain");
+    press_leading_checkbox(&mut row);
+    assert!(
+        face_strikes(&row),
+        "a checked row's title is struck through and drawn in the weaker ink"
+    );
+    press_leading_checkbox(&mut row);
+    assert!(!face_strikes(&row), "a reopened row's title is plain again");
+    assert!(
+        face_strikes(&ListRow::new("stale", "Old errand").struck()),
+        "a row of a removed item is struck the same way"
+    );
+}
+
 #[test]
 fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
     use crate::time::testing::with_monotonic_time;

@@ -2975,7 +2975,12 @@ impl ListRow {
                 Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
-        face = face.struck(self.struck);
+        // A row checked off is done with: its title strikes through and mutes, as a removed
+        // item's does. The box follows the value it is bound to, so a check shows in the row
+        // itself, whoever made it and wherever its row stands.
+        face = face.struck(
+            self.struck || matches!(&self.leading, Some(Leading::Checkbox { checked: true, .. })),
+        );
         if let Some(change) = &self.change {
             face = face.change(RowChange {
                 identity: &change.identity,

@@ -905,6 +905,205 @@ fn checking_a_task_off_checks_every_task_under_it() {
     }
 }
 
+/// Every row of the home list, in the order it stands: its place, the key of the row the host
+/// draws, the task it presents, and whether its box is drawn checked.
+fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)> {
+    view.poll_patches().unwrap();
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    let mut out = Vec::new();
+    for index in 0..view.list_len(&list).unwrap_or(0) {
+        let Some(row) = view.row(&list, index).unwrap().cloned() else {
+            continue;
+        };
+        let Some(item) = all(&row, "ui.ListItem").first().copied() else {
+            continue;
+        };
+        let Some(Value::Ref(at)) = item.props.get("item") else {
+            panic!("a row presents its task: {:?}", item.props.get("item"));
+        };
+        let Some(drawn) = all(&row, "ui.ListRow").first().copied() else {
+            continue;
+        };
+        // The box is bound to whether the task is done: what a person sees it filled with.
+        let checked = match view.bound_value(&drawn.key) {
+            Some(Value::Bool(checked)) => checked,
+            other => panic!("a row's box follows whether its task is done: {other:?}"),
+        };
+        out.push((index, drawn.key.clone(), at.target.id_string(), checked));
+    }
+    out
+}
+
+/// The home list's row that presents `item`: its place, its key, and what its box draws.
+fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
+    home_list_rows(view)
+        .into_iter()
+        .find(|(_, _, of, _)| of == item)
+        .map(|(place, key, _, checked)| (place, key, checked))
+        .unwrap_or_else(|| panic!("no row presents {item}"))
+}
+
+/// The row the home list draws for `item`, as a tree.
+fn home_row_node(view: &mut ViewInstance, item: &str) -> UiNode {
+    let (place, _, _) = home_row_of(view, item);
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    view.row(&list, place)
+        .unwrap()
+        .expect("the row is drawn")
+        .clone()
+}
+
+/// Switch the window's place, as a press on the sidebar's item does.
+fn go_to(view: &mut ViewInstance, place: &str) {
+    let key = key_of(view, "ui.NavItem", &|node| {
+        node.props.get("label") == Some(&Value::text(place))
+    });
+    view.fire(&key, "select").unwrap();
+    view.poll_patches().unwrap();
+}
+
+/// Checking a task off in the place it stands keeps its row where it is, drawn checked, for as
+/// long as the person stays; leaving the place settles the list. Pressing the box again while
+/// the row lingers reopens the task where it stands.
+#[test]
+fn a_checked_task_keeps_its_row_until_the_place_is_left() {
+    let (mut ada, root) = workspace();
+    for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
+        let made = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        call(
+            &ada,
+            "schedule",
+            vec![made, Value::some(Value::text("2026-10-29"))],
+        );
+        ada.commit();
+    }
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    let bill = task(&ada, "Pay the electricity bill");
+    let of = target(&bill).expect("a task");
+    let before = home_list_rows(&mut view);
+    assert_eq!(before.len(), 3, "three tasks are due today: {before:?}");
+    let (place, key, checked) = home_row_of(&mut view, &of);
+    assert!(!checked, "the box is empty");
+    // A press on the row's box, as the person makes it.
+    view.fire_with(&key, "check", None).unwrap();
+    ada.commit();
+    assert_eq!(read(&ada, &bill, "done"), Value::Bool(true), "it is done");
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 3, "nothing left the list: {rows:?}");
+    let (now, _, drawn) = home_row_of(&mut view, &of);
+    assert_eq!(now, place, "in the place it stood");
+    assert!(drawn, "its box drawn checked");
+    // Typing the next task into the entry is not leaving the place: the row stays.
+    view.set_lens("draft", Value::text("Buy bread"));
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 3, "typing settles nothing: {rows:?}");
+    // Pressing the box again opens it where it is.
+    let (place, key, _) = home_row_of(&mut view, &of);
+    view.fire_with(&key, "check", None).unwrap();
+    ada.commit();
+    assert_eq!(read(&ada, &bill, "done"), Value::Bool(false), "reopened");
+    let (again, _, drawn) = home_row_of(&mut view, &of);
+    assert_eq!(again, place, "in the place it stood");
+    assert!(!drawn, "its box drawn empty again");
+    // Checked off once more, the row waits for the person to leave the place.
+    let (_, key, _) = home_row_of(&mut view, &of);
+    view.fire_with(&key, "check", None).unwrap();
+    ada.commit();
+    assert_eq!(home_list_rows(&mut view).len(), 3, "the row is still here");
+    go_to(&mut view, "Inbox");
+    go_to(&mut view, "Today");
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 2, "the checked task is no longer today's");
+    assert!(rows.iter().all(|(_, _, row, _)| *row != of));
+}
+
+/// Filing a task out of the inbox keeps its row in the list, drawn with the project it went
+/// to, until the person leaves the view; coming back shows the inbox without it.
+#[test]
+fn a_task_filed_out_of_the_inbox_keeps_its_row_until_the_view_is_left() {
+    let (mut ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Move flat")],
+    );
+    let packed = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Pack the books")],
+    );
+    call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Buy oat milk")],
+    );
+    ada.commit();
+    let mut view = ada.view(APP);
+    let of = target(&packed).expect("a task");
+    let (place, _, _) = home_row_of(&mut view, &of);
+    call(&ada, "file", vec![packed.clone(), project]);
+    ada.commit();
+    assert!(
+        target(&read(&ada, &packed, "project")).is_some(),
+        "it is in the project now"
+    );
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 2, "nothing left the list: {rows:?}");
+    let (now, _, _) = home_row_of(&mut view, &of);
+    assert_eq!(now, place, "in the place it stood");
+    let row = home_row_node(&mut view, &of);
+    assert_eq!(
+        all(&row, "ui.ListRow")
+            .first()
+            .and_then(|drawn| drawn.props.get("secondary")),
+        Some(&Value::text("Move flat")),
+        "the row says where it went"
+    );
+    go_to(&mut view, "Today");
+    go_to(&mut view, "Inbox");
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 1, "the inbox no longer holds it");
+    assert!(rows.iter().all(|(_, _, row, _)| *row != of));
+}
+
+/// A task somebody else completes leaves the list as any change of theirs does: it waits for
+/// no one to leave the place.
+#[test]
+fn a_peers_completion_takes_its_row_away() {
+    let (mut ada, root) = workspace();
+    for title in ["Buy oat milk", "Pay the electricity bill"] {
+        let made = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        call(
+            &ada,
+            "schedule",
+            vec![made, Value::some(Value::text("2026-10-29"))],
+        );
+        ada.commit();
+    }
+    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    ben.host.sync_from(&ben.doc);
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    assert_eq!(home_list_rows(&mut view).len(), 2);
+    let of = target(&task(&ada, "Pay the electricity bill")).expect("a task");
+    call(&ben, "check", vec![task(&ben, "Pay the electricity bill")]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 1, "the row left: {rows:?}");
+    assert!(rows.iter().all(|(_, _, row, _)| *row != of));
+}
+
 /// A list row's checkbox asks the app's check, so a press on it takes the tasks under the one
 /// it stands for, not the one field the box shows.
 #[test]

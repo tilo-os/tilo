@@ -910,6 +910,8 @@ impl TiloStore {
                     doc,
                     fields,
                     listings,
+                    // The record's change: who made it is read per resource, not here.
+                    by: None,
                 });
             }
         }
@@ -2142,7 +2144,7 @@ impl Store for TiloStore {
         // sent or versioned. It stays there until the record moves on, which leaves it in the
         // mirror ([`Inner::drop_committed_local`]). An action writes one kind or the other;
         // one that tried both is a fault, and its derived writes still stay unsaved.
-        if unsaved::commit_derived(&mut inner, &mut state) {
+        if unsaved::commit_derived(&mut inner, &mut state, &note.invoker) {
             return Ok(());
         }
         if state.derived > 0 {
@@ -2202,6 +2204,7 @@ impl Store for TiloStore {
                 doc,
                 fields: fields.into_iter().collect(),
                 listings: own,
+                by: Some(note.invoker.clone()),
             });
         }
         Ok(())

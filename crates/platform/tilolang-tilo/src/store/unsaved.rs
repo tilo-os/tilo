@@ -56,7 +56,7 @@ pub(super) fn writes_derived(
 /// Commit a transaction that wrote only what an origin derives: tell each reader what changed,
 /// and queue, send and version nothing. Whether it did (a transaction with any saved write is
 /// the record's, and the caller commits it as ever).
-pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState) -> bool {
+pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) -> bool {
     if state.saved > 0 {
         return false;
     }
@@ -73,6 +73,7 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState) -> bool {
             doc,
             fields: fields.into_iter().collect(),
             listings: own,
+            by: Some(by.to_owned()),
         });
     }
     true

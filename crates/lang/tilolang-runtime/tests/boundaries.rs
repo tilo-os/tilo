@@ -790,6 +790,50 @@ view tinted_row(item: Item, tint: Text) {
     }
 
     #[test]
+    fn a_row_the_viewer_checks_out_of_a_query_keeps_its_place() {
+        let rows = Rows::new(6);
+        let mut view = rows.view("chosen");
+        choose(&view, "is:open");
+        view.poll_patches().unwrap();
+        let list = list_key(&view);
+        let before = row_keys(&view, &list);
+        assert_eq!(before.len(), 6, "all six are open: {before:?}");
+        // The person checks the third off: the query leaves it out, and its row stands.
+        rows.call("check", vec![Value::resource(&rows.items[2])]);
+        let patches = view.poll_patches().unwrap();
+        assert!(
+            !patches.iter().any(|p| matches!(
+                p,
+                Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
+            )),
+            "no row moves: {patches:?}"
+        );
+        assert_eq!(
+            row_keys(&view, &list),
+            before,
+            "the row stands where it was"
+        );
+        assert_eq!(
+            titles(view.row(&list, 2).unwrap().unwrap()).concat(),
+            "item 2",
+            "the row still presents the item"
+        );
+
+        // Leaving the place settles the list: the checked item is not one of the open ones.
+        choose(&view, "all");
+        view.poll_patches().unwrap();
+        choose(&view, "is:open");
+        view.poll_patches().unwrap();
+        let settled = row_keys(&view, &list);
+        assert_eq!(
+            settled.len(),
+            5,
+            "the checked item is not open: {settled:?}"
+        );
+        assert!(!settled.contains(&before[2]));
+    }
+
+    #[test]
     fn a_view_that_reads_every_item_follows_every_change() {
         let rows = Rows::new(300);
         let mut view = rows.view("done_count");
@@ -831,9 +875,14 @@ view tinted_row(item: Item, tint: Text) {
         };
         assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
 
-        // Checked: out of the count and the preview.
+        // Checked: out of the count, and its row standing where it was until the view is left.
         rows.call("check", vec![Value::resource(&rows.items[2])]);
         view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["296 open"]);
+        assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
+
+        // A view opened anew lists only the open items.
+        let mut view = rows.view("open_card");
         assert_eq!(texts(view.tree()), ["296 open"]);
         assert_eq!(preview(&mut view), ["skip", "item 4", "item 5"]);
 
@@ -884,7 +933,21 @@ view tinted_row(item: Item, tint: Text) {
         let checked = view.poll_patches().unwrap();
         follow(&view, &list, &mut held, &checked);
         assert_eq!(held, row_keys(&view, &list));
-        assert_eq!(held.len(), 28, "{checked:?}");
+        assert_eq!(
+            held.len(),
+            30,
+            "the checked rows stand where they are: {checked:?}"
+        );
+        built_in_order(&view, &list, &held);
+
+        // Leaving the view settles the rows: the checked items are not open.
+        choose(&view, "all");
+        view.poll_patches().unwrap();
+        choose(&view, "is:open");
+        let settled = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &settled);
+        assert_eq!(held, row_keys(&view, &list));
+        assert_eq!(held.len(), 28, "{settled:?}");
         built_in_order(&view, &list, &held);
         rows.call("uncheck", vec![Value::resource(&rows.items[2])]);
         let unchecked = view.poll_patches().unwrap();

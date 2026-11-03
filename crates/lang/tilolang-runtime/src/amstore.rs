@@ -844,6 +844,7 @@ impl Store for AmStore {
                 doc: id,
                 fields: fields.into_iter().collect(),
                 listings,
+                by: Some(note.invoker.clone()),
             });
         }
         Ok(())

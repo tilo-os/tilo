@@ -815,6 +815,11 @@ pub struct ChangeSummary {
     pub doc: DocId,
     pub fields: Vec<FieldKey>,
     pub listings: Vec<ListingChange>,
+    /// Who made the change, when the store knows: the person whose action it was, as the
+    /// change's invoker. `None` for a change read from the record, whose author is not told
+    /// per document. A reader showing a live query tells the person's own changes from
+    /// others' by it ([`crate::live::Live::absorb`]).
+    pub by: Option<String>,
 }
 
 impl ChangeSummary {
@@ -824,6 +829,7 @@ impl ChangeSummary {
             doc: doc.into(),
             fields: Vec::new(),
             listings: Vec::new(),
+            by: None,
         }
     }
 
