@@ -188,7 +188,6 @@ fn fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file() {
         ),
     ]);
     let out = format_package(&messy).unwrap();
-    assert!(out.with_comments.is_empty());
     let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
     let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
     assert!(
@@ -206,14 +205,33 @@ fn fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file() {
 }
 
 #[test]
-fn fmt_leaves_a_file_with_plain_comments_alone_and_names_it() {
+fn fmt_keeps_plain_comments_above_what_they_explain() {
     let out = format_package(&files(&[
-        ("a.tl", HEAD),
-        ("b.tl", "/// Add one.\naction increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n}\n"),
+        (
+            "a.tl",
+            "app so.tilo.counter \"Counter\"\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n",
+        ),
+        (
+            "b.tl",
+            "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n",
+        ),
     ]))
     .unwrap();
-    assert_eq!(out.with_comments, vec![("b.tl".to_string(), 3)]);
-    assert!(out.files.iter().all(|f| f.0 != "b.tl"));
+    let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n"
+    );
+    let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
+    assert_eq!(
+        b,
+        "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\n\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n"
+    );
+    // Canonical text formats to itself.
+    let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
+    for (_, old, new) in &again.files {
+        assert_eq!(old, new);
+    }
 }
 
 #[test]

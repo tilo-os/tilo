@@ -488,9 +488,9 @@ tilolang describe [dir] [--search DIR]    prints what an app publishes as tilola
 whenever a `.tl` file of the package or its imports changes. Exit status: 0 fine, 1 errors in
 the sources, 2 anything else (a missing directory, a bad option).
 
-`fmt` prints the one canonical text projection. It keeps `///` doc comments; plain `//`
-comments are not part of the canonical form, so `fmt` leaves a file that has any alone and
-names it, instead of deleting what someone wrote.
+`fmt` prints the one canonical text projection. It keeps `///` doc comments, and plain `//`
+comments above the declaration, field, statement or match arm they were written over; one
+written inside a declaration's head or an expression prints above the next statement.
 
 ## Packages are apps
 

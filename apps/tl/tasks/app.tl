@@ -105,11 +105,7 @@ migration action adopt_steps(tasks: Tasks) {
         if let own = tasks.items.find(x -> x == s.task) {
             let made = tasks.items.insert(Task(title: s.title, done: s.done, parent: .some(own), project: own.project, section: own.section))
             let siblings = tasks.items.filter(x -> x.parent == .some(own) and x != made)
-            if let last = siblings.last() {
-                tasks.items.move(made, after: last)
-            } else {
-                tasks.items.move(made, after: own)
-            }
+            if let last = siblings.last() { tasks.items.move(made, after: last) } else { tasks.items.move(made, after: own) }
         } else {
             tasks.items.insert(Task(title: s.title, done: s.done))
         }
@@ -126,13 +122,7 @@ action add(tasks: Tasks, title: Text) -> Task {
 /// title; without, a task added `today` is due today. An empty entry adds nothing.
 action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) {
     let said = dated(entry, now)
-    let due: Option<Date> = if let day = said.day {
-        .some(day)
-    } else if today {
-        dated("today", now).day
-    } else {
-        .none
-    }
+    let due: Option<Date> = if let day = said.day { .some(day) } else if today { dated("today", now).day } else { .none }
     if said.text != "" {
         tasks.items.insert(Task(title: said.text, due: due, at: said.at, project: p))
     }
@@ -214,11 +204,7 @@ action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<T
         tasks.items.move(moved, before: b)
     } else {
         moved.parent = parent
-        if let last = tasks.items.filter(x -> x.parent == parent and x != moved).last() {
-            tasks.items.move(moved, after: last)
-        } else if let p = parent {
-            tasks.items.move(moved, after: p)
-        }
+        if let last = tasks.items.filter(x -> x.parent == parent and x != moved).last() { tasks.items.move(moved, after: last) } else if let p = parent { tasks.items.move(moved, after: p) }
     }
 }
 
@@ -227,9 +213,7 @@ action indent(t: Task) (label: "Indent", icon: .arrow_right) {
     let siblings = tasks.items.filter(x -> x.parent == t.parent)
     if let at = siblings.index_of(t) {
         if at > 0 {
-            if let above = siblings.take(at).last() {
-                move_to(tasks, t, .some(above), .none)
-            }
+            if let above = siblings.take(at).last() { move_to(tasks, t, .some(above), .none) }
         }
     }
 }
@@ -581,9 +565,7 @@ view task_page(t: Task) {
                 // Every task under this one, at any depth: the outline nests each under its
                 // parent.
                 let kids = tasks.items.filter(x -> x != t and under(tasks.items, x, t))
-                std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet",
-                    (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x),
-                    fill: false) { x ->
+                std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet", (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x), fill: false) { x ->
                     task_outline_row(x)
                 }
             }

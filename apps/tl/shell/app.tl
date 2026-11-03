@@ -426,9 +426,7 @@ view network_status() {
             if let called = joined.name { "Wi-Fi, {called}" } else { "Wi-Fi" }
         } else if joined.kind == .wired {
             if let called = joined.name { "Wired, {called}" } else { "Wired" }
-        } else {
-            "Offline"
-        }
+        } else { "Offline" }
         ui.Button(label, icon: if joined.kind == .wifi { .wifi } else if joined.kind == .wired { .ethernet_port } else { .wifi_off }, icon_only: true, role: .bar) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }

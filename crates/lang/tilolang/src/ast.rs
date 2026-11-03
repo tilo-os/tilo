@@ -60,6 +60,41 @@ pub enum Item {
     Fn(FnDecl),
 }
 
+impl Item {
+    /// The `///` lines a declaration is written with, in order; an item that takes none has
+    /// none.
+    pub fn doc(&self) -> &[String] {
+        match self {
+            Self::Type(d) => &d.doc,
+            Self::Alias(d) => &d.doc,
+            Self::Enum(d) => &d.doc,
+            Self::Scenario(d) => &d.doc,
+            Self::Action(d) => &d.doc,
+            Self::Flow(d) => &d.doc,
+            Self::View(d) => &d.doc,
+            Self::Fn(d) => &d.doc,
+            Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
+        }
+    }
+
+    /// Where the item is written.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Use(d) => d.span,
+            Self::Type(d) => d.span,
+            Self::Alias(d) => d.span,
+            Self::Enum(d) => d.span,
+            Self::Root(d) => d.span,
+            Self::DefaultView(d) | Self::RowView(d) => d.span,
+            Self::Scenario(d) => d.span,
+            Self::Action(d) => d.span,
+            Self::Flow(d) => d.span,
+            Self::View(d) => d.span,
+            Self::Fn(d) => d.span,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct UseDecl {
     pub node: NodeId,

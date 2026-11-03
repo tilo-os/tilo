@@ -114,5 +114,6 @@ Tokens:
   `@version` (`@so.tilo.todo.Todo:01J8/3K`). An older reference's `/field:item` steps still
   read, as the item of its last step.
 - `.name` where a lambda goes is a key path, the lambda `x -> x.name` (`sort_by(.due)`).
-- `//` starts a comment to the end of the line. `///` is a doc comment: it belongs to the
-  declaration that follows, is kept in the metadata, and is what agents read.
+- `//` starts a comment to the end of the line; the canonical form keeps it above the
+  declaration, field, statement or match arm it was written over. `///` is a doc comment: it
+  belongs to the declaration that follows, is kept in the metadata, and is what agents read.

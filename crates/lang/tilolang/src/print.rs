@@ -5,21 +5,29 @@ use crate::ast::{
     SearchBlock, SearchEntryKind, Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind, UiCall, UiKind,
     UiStmt, UnOp,
 };
+use crate::lexer::Comment;
 
 /// A block of one expression whose text is at most this long prints on one line: `{ x }`.
 const INLINE_BLOCK: usize = 40;
 
 /// Prints a module in canonical form.
 pub fn print_module(m: &Module) -> String {
-    print_file(Some(&m.app), &m.items)
+    print_file(Some(&m.app), &m.items, &[])
 }
 
 /// Prints one file of a package in canonical form: the `app` header when the file has it, then
 /// its items, a blank line between items (consecutive `use`s stay together).
-pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
+///
+/// `comments` are the file's plain `//` comments ([`crate::lexer::plain_comments`]): each prints
+/// just above the declaration, field, statement or match arm it was written over, after that
+/// node's `///` lines. A comment written inside a declaration's head or an expression has no line
+/// of its own to keep, so it prints above the next statement.
+pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Comment]) -> String {
     let mut p = Printer {
         out: String::new(),
         level: 0,
+        comments,
+        seen: 0,
     };
     if let Some(app) = header {
         let mut options = Vec::new();
@@ -53,6 +61,8 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
         prev_use = is_use;
         p.item(item);
     }
+    // Comments after the last item, which belong to no declaration.
+    p.comments_before(usize::MAX);
     p.out
 }
 
@@ -86,6 +96,8 @@ fn block_text(b: &Block, level: usize) -> String {
     let mut sub = Printer {
         out: String::new(),
         level: level + 1,
+        comments: &[],
+        seen: 0,
     };
     for s in &b.stmts {
         sub.stmt(s);
@@ -371,12 +383,17 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
     }
 }
 
-struct Printer {
+struct Printer<'a> {
     out: String,
     level: usize,
+    /// The file's plain `//` comments, in source order.
+    comments: &'a [Comment],
+    /// How many of them have been printed: the printer writes nodes in source order, so a
+    /// comment is printed above the first node that starts after it.
+    seen: usize,
 }
 
-impl Printer {
+impl Printer<'_> {
     /// An expression printed at this printer's level.
     fn ex(&self, e: &Expr) -> String {
         expr_text(e, 0, self.level)
@@ -400,6 +417,23 @@ impl Printer {
         }
     }
 
+    /// The plain `//` comments written above the node that starts at `start`.
+    fn comments_before(&mut self, start: usize) {
+        while let Some(text) = self
+            .comments
+            .get(self.seen)
+            .filter(|c| c.span.start < start)
+            .map(|c| c.text.clone())
+        {
+            self.seen += 1;
+            if text.is_empty() {
+                self.line("//");
+            } else {
+                self.line(&format!("// {text}"));
+            }
+        }
+    }
+
     fn params(params: &[Param]) -> String {
         let inner: Vec<String> = params
             .iter()
@@ -416,6 +450,8 @@ impl Printer {
     }
 
     fn item(&mut self, item: &Item) {
+        self.docs(item.doc());
+        self.comments_before(item.span().start);
         match item {
             Item::Use(u) => {
                 let alias = u
@@ -426,7 +462,6 @@ impl Printer {
                 self.line(&format!("use {}{alias}", u.app));
             }
             Item::Type(t) => {
-                self.docs(&t.doc);
                 match &t.origin {
                     Some(origin) => {
                         self.line(&format!(
@@ -450,11 +485,11 @@ impl Printer {
                 self.line("}");
             }
             Item::Enum(e) => {
-                self.docs(&e.doc);
                 self.line(&format!("enum {} {{", e.name.name));
                 self.level += 1;
                 for v in &e.variants {
                     self.docs(&v.doc);
+                    self.comments_before(v.span.start);
                     let mut text = v.name.name.clone();
                     if !v.fields.is_empty() {
                         text.push_str(&Self::params(&v.fields));
@@ -470,7 +505,6 @@ impl Printer {
                 None => self.line(&format!("root {}", print_type(&r.ty))),
             },
             Item::Alias(a) => {
-                self.docs(&a.doc);
                 self.line(&format!("type {} = {}", a.name.name, print_type(&a.ty)));
             }
             Item::DefaultView(d) => self.line(&format!(
@@ -484,7 +518,6 @@ impl Printer {
                 print_type(&d.ty)
             )),
             Item::Scenario(sc) => {
-                self.docs(&sc.doc);
                 let result = sc
                     .result
                     .as_ref()
@@ -495,7 +528,6 @@ impl Printer {
                 self.line("}");
             }
             Item::Action(a) => {
-                self.docs(&a.doc);
                 let role = a
                     .role
                     .map(|(r, _)| format!("{} ", r.word()))
@@ -524,7 +556,6 @@ impl Printer {
                 self.line("}");
             }
             Item::Flow(f) => {
-                self.docs(&f.doc);
                 let mut head = format!("flow {}{}", f.name.name, Self::params(&f.params));
                 if let Some(r) = &f.result {
                     head.push_str(&format!(" -> {}", print_type(r)));
@@ -535,7 +566,6 @@ impl Printer {
                 self.line("}");
             }
             Item::Fn(f) => {
-                self.docs(&f.doc);
                 self.line(&format!(
                     "fn {}{} -> {} {{",
                     f.name.name,
@@ -546,7 +576,6 @@ impl Printer {
                 self.line("}");
             }
             Item::View(v) => {
-                self.docs(&v.doc);
                 let types = if v.type_params.is_empty() {
                     String::new()
                 } else {
@@ -578,6 +607,7 @@ impl Printer {
 
     fn field(&mut self, f: &FieldDecl) {
         self.docs(&f.doc);
+        self.comments_before(f.span.start);
         let mut text = format!("{}: {}", f.name.name, print_type(&f.ty));
         if let Some(m) = &f.merge {
             text.push_str(&format!(" merge {}", m.kind.name()));
@@ -595,6 +625,7 @@ impl Printer {
         self.line("search {");
         self.level += 1;
         for entry in &search.entries {
+            self.comments_before(entry.span.start);
             let text = match &entry.kind {
                 SearchEntryKind::Field { field, label, opts } => match label {
                     Some(label) => {
@@ -627,10 +658,13 @@ impl Printer {
         for s in &b.stmts {
             self.stmt(s);
         }
+        // A comment after the last statement is the block's, not the next one's.
+        self.comments_before(b.span.end);
         self.level -= 1;
     }
 
     fn stmt(&mut self, s: &Stmt) {
+        self.comments_before(s.span.start);
         match &s.kind {
             StmtKind::Let { name, ty, value } => {
                 let ann = ty
@@ -682,6 +716,7 @@ impl Printer {
     }
 
     fn ui_stmt(&mut self, s: &UiStmt) {
+        self.comments_before(s.span.start);
         match &s.kind {
             UiKind::Let { name, ty, value } => {
                 let v = self.ex(value);
@@ -716,6 +751,7 @@ impl Printer {
                 self.line(&format!("match {m} {{"));
                 self.level += 1;
                 for arm in arms {
+                    self.comments_before(arm.pattern.span.start);
                     let pat = pattern_text(&arm.pattern);
                     if arm.braced {
                         if arm.body.is_empty() {
@@ -730,6 +766,8 @@ impl Printer {
                     let mut sub = Printer {
                         out: String::new(),
                         level: self.level,
+                        comments: &[],
+                        seen: 0,
                     };
                     for st in &arm.body {
                         sub.ui_stmt(st);

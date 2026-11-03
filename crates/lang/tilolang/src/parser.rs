@@ -12,7 +12,7 @@ use crate::ast::{
     ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
-use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
+use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
 /// Whether call arguments name only a filter's options: `(icon: .circle)`.
@@ -92,6 +92,9 @@ pub fn parse_module(src: &str) -> (Option<Module>, Vec<Diagnostic>) {
 pub struct ParsedFile {
     pub header: Option<AppHeader>,
     pub items: Vec<Item>,
+    /// The file's plain `//` comments, in the package's span space: the canonical printer keeps
+    /// them where they were written.
+    pub comments: Vec<Comment>,
     /// The first node id after this file's: the next file of the package starts there.
     pub next_node: NodeId,
 }
@@ -108,6 +111,7 @@ pub fn parse_file_at(src: &str, base: usize, first_node: NodeId) -> (ParsedFile,
     let parsed = ParsedFile {
         header,
         items,
+        comments: crate::lexer::plain_comments_at(src, base),
         next_node: p.next_node,
     };
     (parsed, diags)

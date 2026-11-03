@@ -176,12 +176,13 @@ pub fn parse_package(source: &PackageSource) -> Result<ast::Module, Vec<Diagnost
 }
 
 /// One file of a package, parsed on its own, for printing it back: `path`, its header when it
-/// has one, and its items.
+/// has one, its items, and the plain `//` comments printed among them.
 #[derive(Clone, Debug)]
 pub struct FileSyntax {
     pub path: String,
     pub header: Option<ast::AppHeader>,
     pub items: Vec<ast::Item>,
+    pub comments: Vec<crate::lexer::Comment>,
 }
 
 /// Parses each file of a package for the canonical printer (`tilolang fmt`). Syntax errors in
@@ -199,6 +200,7 @@ pub fn parse_package_files(source: &PackageSource) -> Result<Vec<FileSyntax>, Ve
             path: f.path.to_string(),
             header: p.header,
             items: p.items,
+            comments: p.comments,
         })
         .collect())
 }

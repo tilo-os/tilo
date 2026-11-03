@@ -164,14 +164,28 @@ pub fn lex_at(src: &str, base: usize) -> (Vec<Token>, Vec<Diagnostic>) {
     (lx.toks, lx.diags)
 }
 
-/// The plain `//` comments of `src` (not `///` doc comments): what printing the canonical form
-/// would drop.
-pub fn plain_comments(src: &str) -> Vec<Span> {
+/// One plain `//` comment (not a `///` doc comment): where it is, and what it says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub span: Span,
+    /// The text after the `//`, with the one space the canonical form prints taken off and no
+    /// trailing space; empty for a line of `//` alone.
+    pub text: String,
+}
+
+/// The plain `//` comments of `src`, in source order: the canonical form keeps them, above the
+/// declaration or statement they were written over.
+pub fn plain_comments(src: &str) -> Vec<Comment> {
+    plain_comments_at(src, 0)
+}
+
+/// The plain `//` comments of `src`, whose spans start at `base` as [`lex_at`] places tokens.
+pub fn plain_comments_at(src: &str, base: usize) -> Vec<Comment> {
     let mut lx = Lexer {
         src,
         bytes: src.as_bytes(),
         pos: 0,
-        base: 0,
+        base,
         depth: 0,
         toks: Vec::new(),
         diags: Vec::new(),
@@ -195,8 +209,8 @@ struct Lexer<'a> {
     depth: usize,
     toks: Vec<Token>,
     diags: Vec<Diagnostic>,
-    /// Plain `//` comments, which the canonical form does not keep.
-    comments: Vec<Span>,
+    /// Plain `//` comments, which the canonical form keeps where they were written.
+    comments: Vec<Comment>,
 }
 
 const fn is_ident_start(b: u8) -> bool {
@@ -346,7 +360,10 @@ impl Lexer<'_> {
         }
         if !doc {
             let span = self.span(start, self.pos);
-            self.comments.push(span);
+            // As a doc comment: one space after the marker, and none at the end.
+            let text = self.slice(start + 2, self.pos);
+            let text = text.strip_prefix(' ').unwrap_or(text).trim_end().to_owned();
+            self.comments.push(Comment { span, text });
         }
         if doc {
             let text = self.slice(start + 3, self.pos);
