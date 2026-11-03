@@ -685,7 +685,7 @@ fn frost_cost_at_1080p() {
 #[test]
 fn a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder() {
     let theme = Theme::dark();
-    let (width, height) = backdrop_texels(PANEL);
+    let (width, height) = backdrop_texels(PANEL, Sampling::Smooth, 0.0);
     assert_eq!((width, height), (64, 48));
     let blurred = crate::raster::rgba8_premultiplied(
         [200_u8, 10, 10, 255].repeat((width * height) as usize),
@@ -719,6 +719,62 @@ fn a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder() 
     assert_eq!(
         (surfaces[0].image.width, surfaces[0].image.height),
         (64, 48)
+    );
+    provide_backdrops(Vec::new());
+}
+
+/// A cell-sampled surface (Pixelated) takes one texel per cell, and the
+/// size a host is told to provide is that size: a host that hands back an
+/// image at any other size leaves the surface showing its opaque
+/// placeholder, so its cells never appear — which is what the live shell
+/// did while the request was sized for a smooth sample.
+#[test]
+fn a_blocky_surface_asks_for_one_texel_per_cell() {
+    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let mut scene = Scene::new();
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    floating(&mut scene, Affine::IDENTITY, &theme);
+    let surfaces = recording.finish();
+    assert_eq!(surfaces.len(), 1, "the panel samples");
+    let surface = &surfaces[0];
+    assert_eq!(
+        surface.sampling,
+        Sampling::Blocky,
+        "Pixelated's floating surface is shown as cells"
+    );
+    let cell = surface.cell_px;
+    assert!(cell >= 2.0, "a cell of {cell} px shows no pixels");
+    let requested = backdrop_texels(surface.bounds, surface.sampling, cell);
+    assert_eq!(
+        (surface.image.width, surface.image.height),
+        requested,
+        "the texels the host is asked for are the placeholder's own"
+    );
+    // And it is the cell grid's size, not the smooth sample's.
+    let smooth = backdrop_texels(surface.bounds, Sampling::Smooth, 0.0);
+    assert!(
+        requested.0 * 2 <= smooth.0,
+        "one texel per {cell} px cell ({requested:?}) is coarser than a smooth \
+         sample ({smooth:?})"
+    );
+    // Handed back at that size, the provided image takes the placeholder's
+    // place: the cells are drawn from what the host blurred.
+    let image = crate::raster::rgba8_premultiplied(
+        [90_u8, 140, 200, 255].repeat((requested.0 * requested.1) as usize),
+        requested.0,
+        requested.1,
+    );
+    provide_backdrops(vec![(0, image.clone())]);
+    let mut scene = Scene::new();
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    floating(&mut scene, Affine::IDENTITY, &theme);
+    let surfaces = recording.finish();
+    assert_eq!(
+        surfaces[0].image.data.id(),
+        image.data.id(),
+        "the provided cells are drawn, not the opaque placeholder"
     );
     provide_backdrops(Vec::new());
 }

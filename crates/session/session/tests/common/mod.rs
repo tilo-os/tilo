@@ -147,6 +147,33 @@ pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
     }
 }
 
+/// Type `text` (lower-case letters and spaces) on the keyboard, a key at a time, as the person
+/// does.
+pub fn type_text(session: &mut Session, text: &str) {
+    const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
+    const SPACE: u32 = 57;
+    for letter in text.chars() {
+        let keycode = if letter == ' ' {
+            SPACE
+        } else {
+            ROWS.iter()
+                .find_map(|(row, first)| {
+                    row.chars()
+                        .position(|c| c == letter)
+                        .map(|at| first + u32::try_from(at).unwrap())
+                })
+                .unwrap_or_else(|| panic!("no key types {letter:?}"))
+        };
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(InputEvent::Key { keycode, pressed })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+    }
+}
+
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and a note in it for each of `titles`, made through the app's own actions: their ids, in
 /// order.

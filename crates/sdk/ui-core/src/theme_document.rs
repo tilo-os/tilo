@@ -102,6 +102,27 @@ impl ThemeShape {
     pub const USABLE: std::ops::RangeInclusive<f32> = 0.0..=28.0;
 }
 
+/// How icons are drawn ([`crate::icons`]): one icon set, at a weight the
+/// theme names. Sizes stay the metrics' (a 16 px glyph in a row, 20 at a
+/// bar's head); a theme moves the outline, never the size a layout is built
+/// against.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeIcons {
+    /// The outline's width in logical pixels: 1.5 at stock (Lucide's own);
+    /// a look with pixels wants 2, a whole-pixel stroke it can land on.
+    pub stroke: f32,
+}
+
+impl ThemeIcons {
+    /// Band a document may state: below one pixel an outline breaks up at
+    /// 1x, and past two and a half it reads as a drawn shape, not a symbol.
+    pub const STROKE_ADMITTED: std::ops::RangeInclusive<f32> = 1.0..=2.5;
+
+    /// The design language's icons.
+    pub const STOCK: Self = Self { stroke: 1.5 };
+}
+
 /// The spacing scale, as a multiple of the stock 4 px scale. Pointer
 /// targets and control heights stay put.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -408,6 +429,10 @@ pub struct ThemeDocument {
     /// when its motion curve is `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<crate::tokens::Response>,
+    /// How icons are drawn: the outline's width. Absent keeps the design
+    /// language's 1.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icons: Option<ThemeIcons>,
 }
 
 fn text_field_ok(value: &str) -> bool {
@@ -453,6 +478,7 @@ impl ThemeDocument {
             },
             depth: Depth::STOCK,
             response: None,
+            icons: None,
         }
     }
 
@@ -503,6 +529,11 @@ impl ThemeDocument {
         self.depth.validate()?;
         if let Some(response) = &self.response {
             response.validate()?;
+        }
+        if let Some(icons) = &self.icons
+            && !within(icons.stroke, &ThemeIcons::STROKE_ADMITTED)
+        {
+            return Err("icon stroke outside 1..=2.5");
         }
         self.material.roles().validate()?;
         let selector = &self.material.selector;
@@ -1024,6 +1055,39 @@ mod tests {
         assert_eq!(block.motion.curve, MotionCurve::None);
         assert!(block.shape.border.outlines());
         assert_eq!(block.material.roles().opaque(), block.material.roles());
+
+        // Every look's icon role is its own: Pixelated's outline is a whole
+        // 2 px it can land on, and no other shipped look restates it.
+        let pixelated = Preset::Pixelated.document();
+        assert_eq!(pixelated.icons, Some(ThemeIcons { stroke: 2.0 }));
+        for preset in Preset::ALL {
+            if preset == Preset::Pixelated {
+                continue;
+            }
+            assert_eq!(
+                preset.document().icons,
+                None,
+                "{} keeps the stock icons",
+                preset.name()
+            );
+        }
+        // And the built theme carries it.
+        assert!(
+            (crate::theme::Theme::preset(Preset::Pixelated)
+                .tokens
+                .icon_stroke_px
+                - 2.0)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (crate::theme::Theme::preset(Preset::Block)
+                .tokens
+                .icon_stroke_px
+                - 1.5)
+                .abs()
+                < f32::EPSILON
+        );
     }
 
     /// A theme a person saved at schema 7 keeps applying: it is read as

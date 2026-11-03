@@ -30,7 +30,8 @@ use tilolang_tilo::records_service::RecordService;
 
 use common::{
     HEIGHT, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, WIDTH, control, on_screen,
-    place_the_inbox, placed, press, press_sheet, private_home, repl_session, seeded_session, until,
+    place_the_inbox, placed, placed_resources, press, press_sheet, private_home, repl_session,
+    seeded_session, until,
 };
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -1105,4 +1106,95 @@ fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Repl) {
     until(session, "the overview closed", |session| {
         on_screen(session, "Overview").is_none()
     });
+}
+
+/// The REPL's `find` is the agent's `tilo_find`, and answers by the one search the palette and
+/// text typed on the canvas run: over the same sources, with the same ranking. A text naming
+/// what something is ("my mails"), what it is called, or both, finds there what
+/// `session.place_found` places — never a second ranking that knows a note's title but not
+/// Mail's inbox.
+#[test]
+fn the_repl_finds_what_place_found_places() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: true,
+            collab: false,
+            services: vec![Box::new(apps)],
+            questions: Some(questions),
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(root.path().join("agent.sock")),
+            admit_repl: vec![program],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Frames").is_some()
+    });
+    press(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, "Typed").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    // Each text, and a word the resource it names must carry (its kind, or
+    // the app it belongs to).
+    for (text, wanted) in [
+        ("my mails", "mail.Mail"),
+        ("notes", "notes."),
+        ("Groceries", "notes.Note"),
+        ("mail archive", "mail.Mailbox"),
+    ] {
+        // What the canvas places for `text`: the one search's first result,
+        // typed on the canvas as a person would.
+        let (answer, failed) = repl.call(
+            &mut session,
+            "tilo",
+            &json!({"program": format!(
+                "session.place_found(text: {text:?}, view: .none, x: .some(80), y: .some(60))"
+            )}),
+        );
+        assert!(!failed, "{text:?} is placed: {answer}");
+        until(&mut session, &format!("{text:?} placed"), |session| {
+            !placed_resources(session).is_empty()
+        });
+        let shown = placed_resources(&session);
+        assert_eq!(shown.len(), 1, "{text:?} places one thing: {shown:?}");
+        let (placed_kind, _) = shown[0].clone();
+        assert!(
+            placed_kind.contains(wanted),
+            "{text:?} places a {placed_kind}, not a {wanted}: {shown:?}"
+        );
+
+        // And `find` leads with the same thing: the first row names a
+        // resource of that kind, from the one search.
+        let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": text}));
+        assert!(!failed, "{text:?} answers: {found}");
+        let first = found
+            .lines()
+            .next()
+            .unwrap_or_else(|| panic!("{text:?} finds nothing: {found}"));
+        assert_eq!(
+            first.split("  ").nth(1),
+            Some(placed_kind.as_str()),
+            "{text:?}: find leads with {first}, and the canvas places {shown:?}"
+        );
+
+        // Each `place_found` is a step of the person's: take it back, so the
+        // next text places on its own.
+        let (undone, failed) = repl.call(&mut session, "tilo", &json!({"program": "undo"}));
+        assert!(!failed, "{undone}");
+        until(&mut session, "the canvas cleared", |session| {
+            placed_resources(session).is_empty()
+        });
+    }
 }

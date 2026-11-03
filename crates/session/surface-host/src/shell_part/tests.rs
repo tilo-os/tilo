@@ -50,6 +50,30 @@ fn click(part: &mut ShellPart, name: &str) {
     }
 }
 
+/// Type `text` into the field that has the keyboard, a key at a time.
+fn type_into(part: &mut ShellPart, text: &str) {
+    for letter in text.chars() {
+        for pressed in [true, false] {
+            let key = tilo_compositor::HostKey {
+                keycode: 0,
+                pressed,
+                repeat: false,
+                keysym: u32::from(letter),
+                unmodified_keysym: u32::from(letter),
+                latin_keysym: u32::from(letter),
+                text: pressed.then(|| letter.to_string()),
+                modifiers: tilo_compositor::KeyModifiers::default(),
+            };
+            tilo_compositor::SurfaceHost::key(part, &key);
+            part.prepare_frame();
+        }
+    }
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+}
+
 /// The shell the session ships is every file of the package the session runs: a file added to
 /// `apps/tl/shell` and not listed here would compile in `tilolang check` and fail only in the
 /// session. `scenarios.tl` is the one file it does not ship, and the only one: the harness the
@@ -564,6 +588,56 @@ fn a_part_on_a_fullscreen_display_steps_aside_and_comes_back() {
 }
 
 #[test]
+fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
+    // The compositor routes a key to the topmost surface that wants the keyboard. A part that
+    // never says it wants it never hears a key, however the field is focused: the canvas's
+    // entry (and every field the shell draws) stays empty.
+    let _settled = ui::motion::testing::settled();
+    let (mut part, _link) = part();
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    assert!(
+        !SurfaceHost::wants_keyboard(&part),
+        "a part nobody typed in leaves the keys to the window in front"
+    );
+    click(&mut part, "Frames");
+    click(&mut part, "Typed");
+    assert!(
+        SurfaceHost::text_input(&part).is_some(),
+        "the press put the caret in the canvas's entry"
+    );
+    assert!(
+        SurfaceHost::wants_keyboard(&part),
+        "the entry has the caret: what is typed goes to the part"
+    );
+    type_into(&mut part, "groceries");
+    assert!(
+        part.says("groceries"),
+        "the entry shows what was typed: {:?}",
+        part.accessible_labels()
+    );
+    // A press on a window over the shell (or anywhere off the part) hands the keys back: what
+    // is typed next reaches what the person pressed on, and the entry keeps its words.
+    SurfaceHost::pressed_elsewhere(&mut part, 300.0, 300.0);
+    part.prepare_frame();
+    assert!(
+        SurfaceHost::text_input(&part).is_none(),
+        "the field gave the keyboard up"
+    );
+    assert!(
+        !SurfaceHost::wants_keyboard(&part),
+        "the part leaves the keys to the window again"
+    );
+    assert!(
+        part.says("groceries"),
+        "what was typed stands in the entry: {:?}",
+        part.accessible_labels()
+    );
+}
+
+#[test]
 fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     let (mut part, _link) = part();
     let display = part.placement().expect("the part stands on its display");
@@ -832,30 +906,6 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
             ..Default::default()
         }
     );
-}
-
-/// Type `text` into the field that has the keyboard, a key at a time.
-fn type_into(part: &mut ShellPart, text: &str) {
-    for letter in text.chars() {
-        for pressed in [true, false] {
-            let key = tilo_compositor::HostKey {
-                keycode: 0,
-                pressed,
-                repeat: false,
-                keysym: u32::from(letter),
-                unmodified_keysym: u32::from(letter),
-                latin_keysym: u32::from(letter),
-                text: pressed.then(|| letter.to_string()),
-                modifiers: tilo_compositor::KeyModifiers::default(),
-            };
-            tilo_compositor::SurfaceHost::key(part, &key);
-            part.prepare_frame();
-        }
-    }
-    for _ in 0..6 {
-        part.prepare_frame();
-        part.draw();
-    }
 }
 
 #[test]

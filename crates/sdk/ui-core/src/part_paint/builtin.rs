@@ -298,11 +298,14 @@ impl PartPainter for Block {
 }
 
 /// Pixelated: what lies below the part, sampled at a coarse cell so the
-/// surface shows it as pixels. A window, a panel and a bar show the
-/// backdrop through the cell grid at `cover`; where there is no backdrop
-/// pass (a window's own ground, a panel outside a recording) the part is
-/// its fill, the ground ink is measured on, and a control face is its
-/// fill.
+/// surface shows it as pixels, and the cell grid itself drawn over the body
+/// so the surface reads as pixels even where nothing below it varies: each
+/// cell its ground at `cover`, every `cell`th line a shade off it (a dither
+/// of the surface's own fill towards its ink at `grid`). A window, a panel
+/// and a bar show the backdrop through the cell grid; where there is no
+/// backdrop pass (a window's own ground, a panel outside a recording) the
+/// part is its fill and the grid is what shows, and a control face is its
+/// fill with the grid on it.
 struct Pixelated;
 
 impl PartPainter for Pixelated {
@@ -314,12 +317,14 @@ impl PartPainter for Pixelated {
         _progress: f32,
         tokens: &PartTokens,
     ) -> Option<PaintedPart> {
-        let path = body(size, tokens).to_path(0.1);
+        let body = body(size, tokens);
+        let path = body.to_path(0.1);
         let cell = tokens.param("cell", 8.0).clamp(1.0, 64.0);
         let cover = tokens.param("cover", 0.85).clamp(0.0, 1.0);
         // Softening before the cells: none by default, so each cell is the
         // plain average of what lies below it.
         let softening = tokens.param("blur", 0.0);
+        let grid = tokens.param("grid", 0.16).clamp(0.0, 0.5);
         let mut scene = PartScene::new();
         match part {
             Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
@@ -339,14 +344,23 @@ impl PartPainter for Pixelated {
                             glaze: Vec::new(),
                         },
                     );
-                    scene.fill(path, Brush::Solid(tokens.fill.with_alpha(cover)));
+                    scene.fill(path.clone(), Brush::Solid(tokens.fill.with_alpha(cover)));
                 } else {
-                    scene.fill(path, Brush::Solid(tokens.fill));
+                    scene.fill(path.clone(), Brush::Solid(tokens.fill));
                 }
+                // The cell grid, over the body's fill: one texel of every
+                // cell is the fill stepped towards its ink, so the surface
+                // reads as pixels even over a ground that varies nowhere.
+                scene
+                    .ops
+                    .extend(cell_grid(&body, tokens.fill, tokens.ink, cell, grid));
             }
             Part::ControlFace => {
                 if tokens.fill.components[3] > 0.0 {
-                    scene.fill(path, Brush::Solid(tokens.fill));
+                    scene.fill(path.clone(), Brush::Solid(tokens.fill));
+                    scene
+                        .ops
+                        .extend(cell_grid(&body, tokens.fill, tokens.ink, cell, grid));
                 }
             }
             _ => return None,
@@ -359,8 +373,70 @@ impl PartPainter for Pixelated {
             ParamSpec::new("cell", Some(8.0), CELL_ADMITTED).usable_within(CELL_USABLE),
             ParamSpec::new("cover", Some(0.85), COVER_ADMITTED),
             ParamSpec::new("blur", Some(0.0), BLUR_ADMITTED).usable_within(BLUR_USABLE),
+            ParamSpec::new("grid", Some(0.16), DITHER_ADMITTED),
         ]
     }
+}
+
+/// A shade a document may state for a dither's strength: the cells and grid
+/// marks of the Pixelated set, and the pattern of the Shader set. Past half
+/// the dither reads as a texture of its own, not as the surface's tone.
+pub const DITHER_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
+
+/// The 4 by 4 Bayer matrix: the order in which a cell grid's texels turn
+/// over as the dither deepens (`crate::part_paint::builtin::dither`).
+const BAYER: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+/// One tile's bytes: 16 RGBA texels.
+const TILE_BYTES: usize = 64;
+
+/// A 4 by 4 dither tile between `from` and `to`, `amount` (0 to 1) of whose
+/// texels are `to`, turned over in Bayer order so the tone is even and
+/// crisp at any scale. Drawn as a [`Brush::Pattern`] at the cell's side, its
+/// texels are the pixels.
+fn dither(from: Color, to: Color, amount: f32) -> super::PartImage {
+    let from = from.to_rgba8();
+    let to = to.to_rgba8();
+    let mut rgba = Vec::with_capacity(TILE_BYTES);
+    for rank in BAYER {
+        let texel = if (f32::from(rank) + 0.5) / 16.0 < amount {
+            to
+        } else {
+            from
+        };
+        rgba.extend([texel.r, texel.g, texel.b, texel.a]);
+    }
+    super::PartImage {
+        width: 4,
+        height: 4,
+        rgba,
+    }
+}
+
+/// The pixel cells a Pixelated body shows over its fill: a dither tile
+/// spanning `cell` logical pixels per texel, from `fill` towards `ink` by
+/// `strength`, clipped to the body's rounded outline. Nothing at `0` or on
+/// a body too small to hold a cell.
+fn cell_grid(body: &RoundedRect, fill: Color, ink: Color, cell: f32, strength: f32) -> Vec<Op> {
+    let rect = body.rect();
+    if strength <= 0.0 || rect.width() < f64::from(cell) || rect.height() < f64::from(cell) {
+        return Vec::new();
+    }
+    let stepped = <Color as crate::animation::Lerp>::lerp(fill, ink, strength * 0.5);
+    let mut ops = vec![Op::PushLayer {
+        clip: body.to_path(0.1),
+        alpha: 1.0,
+    }];
+    ops.push(Op::Fill {
+        path: rect.to_path(0.1),
+        brush: Brush::Pattern {
+            image: dither(Color::TRANSPARENT, stepped, strength),
+            scale: cell,
+        },
+        brush_transform: Affine::IDENTITY,
+    });
+    ops.push(Op::PopLayer);
+    ops
 }
 
 /// Shader: the theme's own WGSL fragment over the fixed input set

@@ -1,10 +1,55 @@
 //! What a word a caller searches with matches: the word itself and its
-//! inflections.
+//! inflections, and one resource a search found.
 //!
 //! An agent describes what it wants to do in its own words, and an app
 //! describes the same gesture in its own: "draw" against "drawing a
 //! signature", "scrolling" against "Scroll down with `PageDown`". Reducing
 //! both to a stem is what makes those the same word.
+//!
+//! [`ResourceSearch`] is the one search the desktop runs — the palette, text
+//! typed on the canvas and an agent's `find` — reached from a host that
+//! holds it. Its results are the ranking's own, best first, each naming the
+//! resource a caller addresses.
+
+use super::ActionHostError;
+
+/// One resource a search found, as every caller of the one search reads a
+/// result: the resource it is about, what it is, and what it reads as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    /// The resource's published id: what a caller addresses it by.
+    pub resource: String,
+    /// Its kind (`tl.so.tilo.lang.notes.Notes`), as its app publishes it.
+    pub kind: String,
+    /// Its label, as the person reads it.
+    pub label: String,
+    /// The action a caller runs to open it, when the result is one a caller
+    /// opens (`open`); `None` for a result that is not a resource of an app
+    /// (a setting, a file, a command) or one reached another way.
+    pub open: Option<String>,
+    /// The arguments that open it, by parameter name.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// The app publishing it, when one does: what a caller names it as.
+    pub app: Option<String>,
+}
+
+/// The desktop's one search, as a host that holds it offers it to a caller
+/// who asks by words: the palette's ranking, the same results in the same
+/// order. The search itself lives on the thread that holds the desktop, so
+/// an answer comes back later, as an action's does.
+pub trait ResourceSearch: Send + Sync {
+    /// What `needle` finds, best first, over the workspace `caller` acts in
+    /// and what it may read there.
+    ///
+    /// # Errors
+    /// The search could not be run: the host has none, or it refuses
+    /// `caller`.
+    fn find(
+        &self,
+        caller: &super::Caller,
+        needle: &str,
+    ) -> super::Pending<Result<Vec<Found>, ActionHostError>>;
+}
 
 /// The stem an English word is matched by: its plural, its participle and
 /// its "-ing" form reduce to the word a description most likely spells

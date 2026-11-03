@@ -30,10 +30,7 @@ view desk(d: Desk) {
 view desk_around(d: Desk, front: Option<Arrangement>) {
     let s = shell
     let docked = front != .none and dock_shows(s, d) and s.dock_edge == .bottom
-    let resting = d.here == ""
-        or d.here == "none"
-        or d.here == "desk"
-        or d.here == "switcher" and not d.switcher_revealed
+    let resting = d.here == "" or d.here == "none" or d.here == "desk" or d.here == "switcher" and not d.switcher_revealed
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {
@@ -43,15 +40,7 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
                 if let a = front {
                     stack(gap: .tight, fill) {
                         at_rest(d)
-                        shown_preset(
-                            a,
-                            bar_lists_actions(
-                                s,
-                                d,
-                                space.width_class == .expanded or space.width_class == .wide,
-                            ),
-                            fill,
-                        )
+                        shown_preset(a, bar_lists_actions(s, d, space.width_class == .expanded or space.width_class == .wide), fill)
                     }
                 } else {
                     at_rest(d)
@@ -65,13 +54,7 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
             }
             if docked {
                 row(align: .center, distribute: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .bottom,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                        fill: if s.dock_fit == .full { 1 } else { 0 },
-                    ) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
                         dock(s, d)
                     }
                 }
@@ -80,52 +63,51 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
         if dock_shows(s, d) and not docked {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, distribute: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .bottom,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                        fill: if s.dock_fit == .full { 1 } else { 0 },
-                    ) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
                         dock(s, d)
                     }
                 }
             } else if s.dock_edge == .top {
                 row(at: .top, fill, align: .center, distribute: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .top,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                        fill: if s.dock_fit == .full { 1 } else { 0 },
-                    ) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .top, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
                         dock(s, d)
                     }
                 }
             } else if s.dock_edge == .left {
                 stack(at: .leading, fill, align: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .leading,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                    ) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .leading, material: if s.dock_finish == .translucent { .glass } else { .calm }) {
                         dock(s, d)
                     }
                 }
             } else {
                 stack(at: .trailing, fill, align: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .trailing,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                    ) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .trailing, material: if s.dock_finish == .translucent { .glass } else { .calm }) {
                         dock(s, d)
                     }
                 }
             }
         }
+    }
+}
+
+/// The desk as the whole of a display (`tilo-session --shell screen`): the bar, the dock and the
+/// desk's surfaces around the person's arrangement as the preset they picked shows it, each
+/// app's window standing in the well its place leaves it, as a window of the desk shows it
+/// (`desk_view`). The traditional desktop on a roomy display is its own whole screen, its frames
+/// under the desk's bar and dock.
+///
+/// This is the one definition of the whole screen: the arrangement's default view (`desk_view`)
+/// draws it, so a person shows the desk as a window and as a display by the same code, and the
+/// session's `screen` layer and a window's `desk_view` never drift apart.
+view screen(a: Arrangement) {
+    let v = viewing
+    if (v.showing == .desktop or bar_is_traditional(shell)) and not space.compact {
+        layers(fill) {
+            traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
+            desk(root Desk, fill)
+        }
+    } else {
+        desk_around(root Desk, .some(a), fill)
     }
 }
 
@@ -159,47 +141,25 @@ view bar_on_edge(s: Shell, d: Desk) {
     let on_top = s.bar_edge == .top
     if s.bar_fit == .full and on_top {
         row(at: .top, fill, align: .center) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .square,
-                edge: .top,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-                fill,
-            ) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
                 top_bar(d)
             }
         }
     } else if s.bar_fit == .full {
         row(at: .bottom, fill, align: .center) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .square,
-                edge: .bottom,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-                fill,
-            ) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
                 top_bar(d)
             }
         }
     } else if on_top {
         row(at: .top, align: .center, padding: .related) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .rounded,
-                edge: .top,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-            ) {
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
                 top_bar(d)
             }
         }
     } else {
         row(at: .bottom, align: .center, padding: .related) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .rounded,
-                edge: .bottom,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-            ) {
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
                 top_bar(d)
             }
         }
@@ -210,8 +170,13 @@ view bar_on_edge(s: Shell, d: Desk) {
 /// what the desk's bar and the desk window's bar both draw. The traditional desktop shows its
 /// own bar instead (`traditional.tl`), where the focused window's commands stand beside the
 /// parts the person chose, so a person picks between the two by picking the preset.
+///
+/// The bar follows the desk's preset (`Viewing.showing`) as well as the chrome's: a desk shown
+/// as the traditional desktop gets its bar, whose focused window's commands list what the
+/// window's own header had to give way, even before the person applies the chrome preset that
+/// makes it their own.
 view top_bar(d: Desk) {
-    if bar_is_traditional(shell) {
+    if bar_is_traditional(shell) or viewing.showing == .desktop {
         traditional_bar(d)
     } else {
         bar(d)

@@ -377,6 +377,25 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
   (a resource or an app). Whether it runs, its badge and whether it wants attention are read
   live from `Window` and `Notice`, never saved in the person's record.
 
+## 8.4 Apps written in Rust on the canvas
+
+A place shows a resource, whatever language its app is written in. There is one app model,
+not a tilolang one and a Rust one with a bridge between them. A Rust app declares the same
+things a tilolang package does: types (resources, with noun and app), actions, and named views
+of a type that return described components the host draws. Its model and actions run where a
+tilolang package's do, in the session's document host, over the same storage. The shell owns
+windows and places for both. So a Rust app's channel page stands on the canvas exactly as
+Mail's inbox does, with nothing the app does for it.
+
+What a person sees: they type "youtube videos of mkbhd" on the canvas, and a frame stands where
+they typed, showing that creator's page: their videos, their name, the subscribe action. There
+is no Tube window or sidebar around it. Pressing a video places the video beside it.
+
+The Rust SDK becomes another way to write that model. Its `ResourceApp`, `#[resource]` models,
+`LiveRow` rows and per-app windows today differ from it in views, item resources, storage,
+windows, search and permission checks. The SDK and every Rust app change once to the one
+model. The design maps each piece onto the code: [one-app-model.md](one-app-model.md).
+
 ## 9. Open
 
 - Shared or personal arrangement. A workspace whose arrangement everyone shares gives presence

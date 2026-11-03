@@ -502,11 +502,14 @@ fn bar_shows(s: Shell, d: Desk) -> Bool {
 /// (`ui.WindowFrame(lists_actions:)`), so its header's actions give way to that menu, not to
 /// a door of their own; a window behind has them there once it is in front, as on every
 /// desktop.
+///
+/// A desk shown as the traditional desktop (`Viewing.showing == .desktop`) counts as one: its
+/// bar is that bar (`top_bar`), so the frames let their header's actions give way to it.
 fn bar_lists_actions(s: Shell, d: Desk, roomy: Bool) -> Bool {
     if not bar_shows(s, d) {
         return false
     }
-    if bar_is_traditional(s) {
+    if bar_is_traditional(s) or viewing.showing == .desktop {
         return true
     }
     roomy and s.bar_parts.any(p -> p.slot == Slot.app_menu and p.shown)
