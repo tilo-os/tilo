@@ -81,7 +81,8 @@ pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutco
 pub use personal_ask::PersonalAsk;
 pub use search::{
     HostAction, HostActionSource, PALETTE_EDGE, SearchHost, SearchHostFeed, SearchRow, TypedField,
-    TypedInsertion, TypedRefusal, is_escape, is_host_offer, is_search_chord, search_chord_keys,
+    TypedInsertion, TypedRefusal, host_action_key, is_escape, is_host_offer, is_search_chord,
+    search_chord_keys,
 };
 pub use seed::seed_tree;
 pub use tile_content::tile_app_kind;

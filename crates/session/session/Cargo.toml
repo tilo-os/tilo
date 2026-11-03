@@ -351,6 +351,9 @@ tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", feat
 futures-util.workspace = true
 tempfile.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
+# The threshold signature material a test identity key is made of, as the
+# identity host's key holds it.
+threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-audio-service = { path = "../audio-service" }
 tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.

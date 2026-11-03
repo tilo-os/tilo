@@ -597,6 +597,45 @@ notification-not-now = Später
 notification-app-failed-title = Eine App konnte nicht geöffnet werden
 notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar
 
+# Deine Geräte: ein neues von einem deiner anderen koppeln und deine
+# Identitäten verwalten, wie die Einstellungen die Sitzung darum bitten.
+search-action-identity-resource = Deine Identitäten
+search-action-identity-list = Deine Identitäten anzeigen
+search-action-identity-list-subtitle = Die Identitäten auf diesem Gerät zeigen und mit welcher sich neue Apps anmelden
+search-action-identity-activate = Identität für neue Apps verwenden
+search-action-identity-activate-subtitle = Apps, die du ab jetzt öffnest, mit einer deiner Identitäten anmelden
+search-action-identity-remove = Identität von diesem Gerät entfernen
+search-action-identity-remove-subtitle = Eine Identität, die du hier nicht mehr nutzt, samt ihrem Schlüssel löschen
+search-action-identity-protect = Schlüssel einer Identität schützen
+search-action-identity-protect-subtitle = Den Schlüssel einer Identität aus einer einfachen Datei in geschützten Speicher verschieben
+search-action-identity-devices-list = Vertrauenswürdige Geräte anzeigen
+search-action-identity-devices-list-subtitle = Die Geräte zeigen, denen die Identität dieses Arbeitsbereichs vertraut, und welche widerrufen sind
+search-action-identity-device-revoke = Gerät einer Identität widerrufen
+search-action-identity-device-revoke-subtitle = Einem verlorenen, ausgemusterten oder kompromittierten Gerät dauerhaft nicht mehr vertrauen
+search-action-identity-home-peer-remove = Heimserver entfernen
+search-action-identity-home-peer-remove-subtitle = Einen gekoppelten Heimserver widerrufen, damit er deine Arbeitsbereiche nicht mehr bereitstellt
+search-action-identity-home-peer-retry = Entfernen von Heimservern abschließen
+search-action-identity-home-peer-retry-subtitle = Entfernten Heimservern, die vorher nicht erreichbar waren, das Ende mitteilen
+search-action-identity-device-pair-resource = Geräte in der Nähe koppeln
+search-action-identity-device-pair-discover = Gerät in der Nähe zum Koppeln suchen
+search-action-identity-device-pair-discover-subtitle = In diesem Netzwerk nach einem neuen Gerät oder Heimserver suchen, das beitreten möchte
+search-action-identity-device-pair-approve = Gerät in der Nähe bestätigen
+search-action-identity-device-pair-approve-subtitle = Das gefundene Gerät beitreten lassen, sobald beide Bildschirme denselben Code zeigen
+search-action-identity-device-pair-reject = Gerät in der Nähe ablehnen
+search-action-identity-device-pair-reject-subtitle = Ein gefundenes Gerät vergessen und seine Bestätigung abbrechen
+search-action-identity-device-pair-asking = Geräte, die als du beitreten möchten
+search-action-identity-device-pair-asking-subtitle = Neue Geräte, die deine anderen Geräte gefunden haben und hier auf deine Bestätigung warten
+search-action-identity-device-pair-answer = Einem Gerät antworten, das als du beitreten möchte
+search-action-identity-device-pair-answer-subtitle = Ein Gerät, das ein anderes deiner Geräte gefunden hat, bestätigen oder ablehnen, wie in seiner Mitteilung
+
+# Ein neues Gerät, das ein anderes deiner Geräte gefunden hat: die Mitteilung,
+# die hier die Person fragt.
+pairing-asks-title = Ein Gerät möchte du sein
+pairing-asks-body = { $device }{ $from }, { $when }. Wenn du bestätigst, handelt es als du. Bestätige nur, wenn es { $code } zeigt.
+pairing-asks-via = {" "}(gefunden von deinem Gerät { $device })
+pairing-approve = { $code } bestätigen
+pairing-decline = Ablehnen
+
 # Workspace settings
 workspace-settings-roles-resource = Berechtigungsrollen von { $workspace }
 workspace-settings-role-save = Berechtigungsrolle erstellen oder aktualisieren

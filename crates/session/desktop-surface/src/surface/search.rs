@@ -299,10 +299,21 @@ impl HostAction {
         notice
     }
 
-    /// The banner action key this action is offered under.
-    fn key(&self) -> String {
-        format!("{HOST_PREFIX}{}", self.id)
+    /// The banner action key this action is offered under: a banner button
+    /// with this key hands `id` back when the person chooses it, so a host
+    /// offering two answers to one ask (approve or decline a device) can
+    /// make both its own.
+    #[must_use]
+    pub fn key(&self) -> String {
+        host_action_key(&self.id)
     }
+}
+
+/// The banner action key host action `id` is offered under
+/// ([`HostAction::key`]).
+#[must_use]
+pub fn host_action_key(id: &str) -> String {
+    format!("{HOST_PREFIX}{id}")
 }
 
 pub fn is_host_offer(notification: &crate::notifications::Notification) -> bool {

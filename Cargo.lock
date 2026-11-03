@@ -21332,6 +21332,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "test-http",
+ "threshold-identity",
  "tilo-accessibility-settings",
  "tilo-action-broker",
  "tilo-action-policy",

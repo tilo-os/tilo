@@ -46,6 +46,7 @@ pub mod capture;
 mod capture_grants;
 mod capture_send;
 mod capture_studio;
+mod certification;
 mod channels;
 mod chrome;
 mod clock_wait;
@@ -83,6 +84,7 @@ mod held;
 mod here;
 mod i18n;
 pub mod identity;
+mod identity_admin;
 mod import_readiness;
 mod input_method;
 mod input_sources;
@@ -105,6 +107,7 @@ mod notifications;
 mod options;
 pub mod overlays;
 mod owner_session;
+mod pairing;
 mod panels;
 mod pass;
 mod people;
@@ -957,6 +960,9 @@ impl Session {
         ));
         let watched = std::sync::Arc::clone(&notification_policy);
         let woken = options.wake.handle();
+        // A device's answer to another's ask about the person is worked out
+        // off the loop; when it lands here, the loop wakes to put it to them.
+        crate::certification::attach(options.wake.handle());
         // The pictures the desk shows are this device's, kept beside its
         // desk: a change of the person's reaches them the same way.
         let wallpapers = std::sync::Arc::new(wallpapers::Wallpapers::new(
@@ -2657,6 +2663,11 @@ impl Session {
             tilo_speaker_service::remote_audio::pump(fabric.as_ref(), media_enabled, None);
             tilo_speaker_service::groups::pump(fabric.as_ref(), media_enabled);
             tilo_speaker_service::settings::observe(fabric.as_ref());
+            // A device another of the person's devices found asks here to be
+            // them: its answer leaves, and a new ask is put to the person
+            // from their own top bar, where they decide it.
+            crate::certification::pump(fabric.as_ref());
+            self.shared.follow_device_asks();
             // The person's settings follow them between their devices on the
             // same fabric: what they set here is offered to it, and what
             // they set there reaches the document this session reads.

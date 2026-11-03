@@ -579,6 +579,44 @@ notification-not-now = Not now
 notification-app-failed-title = Couldn't open an app
 notification-service-unavailable = This isn't available on this desktop yet
 
+# Your devices: pairing a new one from another of yours, and administering
+# your identities, as Settings asks the session for them.
+search-action-identity-resource = Your identities
+search-action-identity-list = List your identities
+search-action-identity-list-subtitle = Show the identities on this device and which one new apps sign in as
+search-action-identity-activate = Use an identity for new apps
+search-action-identity-activate-subtitle = Sign apps you open from now on in as one of your identities
+search-action-identity-remove = Remove an identity from this device
+search-action-identity-remove-subtitle = Delete an identity you no longer use here, with its key
+search-action-identity-protect = Protect an identity's key
+search-action-identity-protect-subtitle = Move an identity's key from a plain file into protected storage
+search-action-identity-devices-list = List your trusted devices
+search-action-identity-devices-list-subtitle = Show the devices trusted under this workspace's identity and which are revoked
+search-action-identity-device-revoke = Revoke an identity device
+search-action-identity-device-revoke-subtitle = Permanently stop trusting a lost, retired, or compromised device
+search-action-identity-home-peer-remove = Remove a home server
+search-action-identity-home-peer-remove-subtitle = Revoke a paired home server and stop it serving your workspaces
+search-action-identity-home-peer-retry = Finish removing home servers
+search-action-identity-home-peer-retry-subtitle = Tell removed home servers that could not be reached before to stop
+search-action-identity-device-pair-resource = Nearby device pairing
+search-action-identity-device-pair-discover = Find a nearby device to pair
+search-action-identity-device-pair-discover-subtitle = Look on this network for a new device or home server waiting to join
+search-action-identity-device-pair-approve = Approve a nearby device
+search-action-identity-device-pair-approve-subtitle = Let the device found nearby join once both screens show the same code
+search-action-identity-device-pair-reject = Reject a nearby device
+search-action-identity-device-pair-reject-subtitle = Forget a device found nearby and stop approving it
+search-action-identity-device-pair-asking = Devices asking to be you
+search-action-identity-device-pair-asking-subtitle = The new devices your other devices found, waiting for you to approve them here
+search-action-identity-device-pair-answer = Answer a device asking to be you
+search-action-identity-device-pair-answer-subtitle = Approve or decline a device another of your devices found, as its notification does
+
+# A new device another of yours found: the banner that asks the person here.
+pairing-asks-title = A device asks to be you
+pairing-asks-body = { $device }{ $from }, { $when }. Approving lets it act as you. Only approve if it shows { $code }.
+pairing-asks-via = {" "}(found by your { $device })
+pairing-approve = Approve { $code }
+pairing-decline = Decline
+
 # Workspace settings
 workspace-settings-roles-resource = { $workspace } permission roles
 workspace-settings-role-save = Create or update permission role
