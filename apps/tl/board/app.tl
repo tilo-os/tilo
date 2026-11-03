@@ -75,7 +75,12 @@ view board(b: Board) {
         ui.Scroll(across: true) {
             ui.Board {
                 for col in b.columns {
-                    ui.BoardLane(col, title: col.title, count: col.cards.len(), action: "New card") {
+                    ui.BoardLane(
+                        col,
+                        title: col.title,
+                        count: col.cards.len(),
+                        action: "New card",
+                    ) {
                         on act: new_card(col)
                         on drop(moved: Card): move_to(moved, col)
                         for card in col.cards {
@@ -128,11 +133,18 @@ scenario "a release board" {
     let todo = b.columns.insert(Column(title: "To do"))
     let doing = b.columns.insert(Column(title: "Doing"))
     let done = b.columns.insert(Column(title: "Done"))
-    todo.cards.insert(Card(title: "Write the release notes", notes: "Lead with the sync fix, then the new board."))
+    todo.cards.insert(
+        Card(
+            title: "Write the release notes",
+            notes: "Lead with the sync fix, then the new board.",
+        ),
+    )
     todo.cards.insert(Card(title: "Screenshots for the docs"))
     todo.cards.insert(Card(title: "Translate the onboarding", notes: "German and French first."))
     todo.cards.insert(Card(title: "Check the importer on large tables"))
-    doing.cards.insert(Card(title: "Fix the sidebar at large text", notes: "It collapses too early above 150%."))
+    doing.cards.insert(
+        Card(title: "Fix the sidebar at large text", notes: "It collapses too early above 150%."),
+    )
     doing.cards.insert(Card(title: "Review the sharing dialog"))
     done.cards.insert(Card(title: "Bump the version"))
     done.cards.insert(Card(title: "Merge the offline queue", notes: "Landed on Tuesday."))

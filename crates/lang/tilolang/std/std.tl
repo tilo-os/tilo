@@ -14,17 +14,33 @@
 /// items is called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view state is
 /// the header's sort menu. Items whose type has a window of
 /// their own open in the next column; the list follows which one is open.
-view list<R, T, S>(of: R, items: List<T>, sort: Option<State<S>> = .none, place: Text = "", everything: Text = phrase("tilolang-all", kind: meta(T).plural), empty: Text = phrase("tilolang-empty"), row: (T) -> View) {
+view list<R, T, S>(
+    of: R,
+    items: List<T>,
+    sort: Option<State<S>> = .none,
+    place: Text = "",
+    everything: Text = phrase("tilolang-all", kind: meta(T).plural),
+    empty: Text = phrase("tilolang-empty"),
+    row: (T) -> View,
+) {
     window query: Text = place
     let kind = meta(T)
     let offered = actions(of)
     let places = filters(T).filter(f -> f.toggle)
     let shown = items.matching(query)
-    let title = places.find(p -> p.query == query)?.label ?? if places.is_empty() { meta(of).title } else { everything }
+    let title = places.find(p -> p.query == query)?.label
+        ?? if places.is_empty() { meta(of).title } else { everything }
     // An empty list offers the primary action while nothing was made yet: on the place a
     // window starts on, or on all of the items. One another filter emptied says only that.
     let primary = if query == "" or query == place { offered.find(a -> a.primary) } else { .none }
-    ui.NavShell(content_kind: if kind.opens { .document } else { .list }, sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) }, overview_title: if kind.opens { .some(title) } else { .none }, overview_count: if kind.opens { .some(shown.len()) } else { .none }, title: if kind.opens { .none } else { .some(title) }, count: if kind.opens { .none } else { .some(shown.len()) }) {
+    ui.NavShell(
+        content_kind: if kind.opens { .document } else { .list },
+        sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) },
+        overview_title: if kind.opens { .some(title) } else { .none },
+        overview_count: if kind.opens { .some(shown.len()) } else { .none },
+        title: if kind.opens { .none } else { .some(title) },
+        count: if kind.opens { .none } else { .some(shown.len()) },
+    ) {
         sidebar: {
             if not places.is_empty() {
                 ui.NavList(selected: if query == "" { "all" } else { query }) {
@@ -32,7 +48,12 @@ view list<R, T, S>(of: R, items: List<T>, sort: Option<State<S>> = .none, place:
                         on select: set(query, "")
                     }
                     for p in places {
-                        ui.NavItem(p.query, p.label, icon: p.icon, count: .some(items.matching(p.query).len())) {
+                        ui.NavItem(
+                            p.query,
+                            p.label,
+                            icon: p.icon,
+                            count: .some(items.matching(p.query).len()),
+                        ) {
                             on select: set(query, p.query)
                         }
                     }
@@ -74,7 +95,19 @@ view list<R, T, S>(of: R, items: List<T>, sort: Option<State<S>> = .none, place:
 /// `closed` and the items it is true of stand last, under `closed_title`, folded away until the
 /// person opens them. Give `parent` and the items stand as a tree: each indented under the item
 /// it is a subtask of, with a disclosure that folds its subtasks away.
-view rows<T>(items: List<T>, empty: Text, primary: Option<host.Action>, icon: Option<Text>, group: Option<(T) -> Option<Date>> = .none, closed: Option<(T) -> Bool> = .none, closed_title: Text = phrase("tilolang-done"), parent: Option<(T) -> Option<T>> = .none, parent_title: Option<(T) -> Option<Text>> = .none, progress: Option<(T) -> Option<Text>> = .none, row: (T) -> View) {
+view rows<T>(
+    items: List<T>,
+    empty: Text,
+    primary: Option<host.Action>,
+    icon: Option<Text>,
+    group: Option<(T) -> Option<Date>> = .none,
+    closed: Option<(T) -> Bool> = .none,
+    closed_title: Text = phrase("tilolang-done"),
+    parent: Option<(T) -> Option<T>> = .none,
+    parent_title: Option<(T) -> Option<Text>> = .none,
+    progress: Option<(T) -> Option<Text>> = .none,
+    row: (T) -> View,
+) {
     if items.is_empty() {
         if let a = primary {
             ui.EmptyState(empty, icon: icon, action: a.label) {
@@ -88,7 +121,12 @@ view rows<T>(items: List<T>, empty: Text, primary: Option<host.Action>, icon: Op
         // stable, so the order the caller gave holds among them and among the rest.
         let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
         let nested = if let p = parent { true } else { false }
-        ui.VirtualList(selection_follows_focus: true, in_column: true, tail_title: .some(closed_title), tree: nested) {
+        ui.VirtualList(
+            selection_follows_focus: true,
+            in_column: true,
+            tail_title: .some(closed_title),
+            tree: nested,
+        ) {
             on select(x: T): open(x, front: false)
             on activate(x: T): open(x)
             for x in shown {
@@ -98,10 +136,23 @@ view rows<T>(items: List<T>, empty: Text, primary: Option<host.Action>, icon: Op
                 let under: Option<T> = if let p = parent { p(x) } else { .none }
                 let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
                 let count: Option<Text> = if let c = progress { c(x) } else { .none }
-                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who, group: heading, tail: tail, parent: under, parent_title: belongs, progress: count) {
+                ui.ListItem(
+                    item: x,
+                    presence: lenses(x).find(l -> not l.mine)?.who,
+                    group: heading,
+                    tail: tail,
+                    parent: under,
+                    parent_title: belongs,
+                    progress: count,
+                ) {
                     menu: {
                         for a in offered {
-                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
+                            ui.MenuItem(
+                                a.label,
+                                icon: a.icon,
+                                destructive: a.destructive,
+                                key: a.key,
+                            ) {
                                 on choose: a.run
                             }
                         }
@@ -134,11 +185,28 @@ view rows<T>(items: List<T>, empty: Text, primary: Option<host.Action>, icon: Op
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. An item whose
 /// parent is not among `items` stands at the top, so a deleted parent never hides what was
 /// inside it.
-view outline<T>(name: Text, items: List<T>, parent: (T) -> Option<T>, label: (T) -> Text, empty: Text, place: (T, Option<T>, Option<T>) -> Action, toggled: (T) -> Action, icon: Option<Text> = .none, fill: Bool = true, row: (T) -> View) {
+view outline<T>(
+    name: Text,
+    items: List<T>,
+    parent: (T) -> Option<T>,
+    label: (T) -> Text,
+    empty: Text,
+    place: (T, Option<T>, Option<T>) -> Action,
+    toggled: (T) -> Action,
+    icon: Option<Text> = .none,
+    fill: Bool = true,
+    row: (T) -> View,
+) {
     if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
     } else {
-        ui.TreeView(name: .some(name), fill: fill, reorder: true, tab_indents: true, hide_root: true) {
+        ui.TreeView(
+            name: .some(name),
+            fill: fill,
+            reorder: true,
+            tab_indents: true,
+            hide_root: true,
+        ) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
                 let offered = actions(x)
@@ -148,7 +216,12 @@ view outline<T>(name: Text, items: List<T>, parent: (T) -> Option<T>, label: (T)
                     on check: toggled(x)
                     menu: {
                         for a in offered {
-                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
+                            ui.MenuItem(
+                                a.label,
+                                icon: a.icon,
+                                destructive: a.destructive,
+                                key: a.key,
+                            ) {
                                 on choose: a.run
                             }
                         }
@@ -191,7 +264,13 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
     }
     for a in offered {
         if a.frequent and not a.primary and a.icon != .none {
-            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
+            ui.Button(
+                a.label,
+                icon: a.icon,
+                icon_only: true,
+                toggled: a.on == .some(true),
+                key: a.key,
+            ) {
                 on press: a.run
             }
         } else if a.frequent and not a.primary {
@@ -202,7 +281,13 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
     }
     for a in offered {
         if not a.primary and not a.frequent {
-            ui.Button(a.label, icon: a.icon, toggled: a.on == .some(true), key: a.key, in_menu: true) {
+            ui.Button(
+                a.label,
+                icon: a.icon,
+                toggled: a.on == .some(true),
+                key: a.key,
+                in_menu: true,
+            ) {
                 on press: a.run
             }
         }
@@ -234,7 +319,14 @@ view document<R>(of: R, content: View) {
 /// own parts, which is what a board's lanes need; a page that grows with what it holds (a grid
 /// of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so and offers
 /// its primary action.
-view page<R>(of: R, canvas: Bool = false, fill: Bool = false, empty: Bool = false, header: View, content: View) {
+view page<R>(
+    of: R,
+    canvas: Bool = false,
+    fill: Bool = false,
+    empty: Bool = false,
+    header: View,
+    content: View,
+) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of)) {
@@ -282,7 +374,13 @@ view page<R>(of: R, canvas: Bool = false, fill: Bool = false, empty: Bool = fals
 /// `unread` names the first item the person has not seen (`first_unseen(of)`, or `.none`): the
 /// list draws the "New messages" divider over it, keeps the reader where they are as items
 /// arrive, and offers the way back to it, or to what is new, while they read history.
-view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer: View, row: (T) -> View) {
+view transcript<R, T>(
+    of: R,
+    items: List<T>,
+    unread: Option<T> = .none,
+    composer: View,
+    row: (T) -> View,
+) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of))
@@ -301,7 +399,12 @@ view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
                             menu: {
                                 for a in offered {
-                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
+                                    ui.MenuItem(
+                                        a.label,
+                                        icon: a.icon,
+                                        destructive: a.destructive,
+                                        key: a.key,
+                                    ) {
                                         on choose: a.run
                                     }
                                 }
@@ -350,7 +453,9 @@ view history<R>(of: R) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
                 let single = s.versions.len() == 1
-                let what = if let run = s.task { run.title } else if let v = s.versions.last() {
+                let what = if let run = s.task {
+                    run.title
+                } else if let v = s.versions.last() {
                     if v.description == "" { v.what } else { v.description }
                 } else { "" }
                 stack(gap: .related) {
@@ -360,7 +465,11 @@ view history<R>(of: R) {
                             ui.Text(s.who.name(), role: .label)
                             ui.Text(what, role: .caption, secondary: true)
                             if not single {
-                                ui.Text(phrase("tilolang-history-changes", count: s.versions.len()), role: .caption, secondary: true)
+                                ui.Text(
+                                    phrase("tilolang-history-changes", count: s.versions.len()),
+                                    role: .caption,
+                                    secondary: true,
+                                )
                             }
                         }
                         spacer()
@@ -388,7 +497,10 @@ view history<R>(of: R) {
                         for v in s.versions {
                             stack(gap: .tight) {
                                 row(gap: .related, align: .center) {
-                                    ui.Text(if v.description == "" { v.what } else { v.description }, role: .caption)
+                                    ui.Text(
+                                        if v.description == "" { v.what } else { v.description },
+                                        role: .caption,
+                                    )
                                     spacer()
                                     ui.Time(v.at, role: .caption, secondary: true)
                                     if v.mine {

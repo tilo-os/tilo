@@ -39,7 +39,11 @@ view today(t: Today) {
             button(morning_cleanup(todos, notes.notes)) as morning
         }
         grid(min: 22rem) {
-            ui.Card(item: todos, title: meta(todos).title, count: todos.items.count(item -> not item.done)) {
+            ui.Card(
+                item: todos,
+                title: meta(todos).title,
+                count: todos.items.count(item -> not item.done),
+            ) {
                 list(todos.items.filter(item -> not item.done)) { item ->
                     row(item)
                 }

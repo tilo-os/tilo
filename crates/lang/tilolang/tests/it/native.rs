@@ -232,7 +232,9 @@ fn an_action_presents_its_state_through_a_hidden_view() {
         &tilolang::parse(&format!("app t.x \"X\"\n{PIN}\n")).expect("parses"),
     );
     assert!(
-        printed.contains("(label: if n.pinned { \"Unpin\" } else { \"Pin\" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned)"),
+        printed.contains(
+            "action toggle_pin(n: Note, pinned: Bool = not n.pinned) (\n    label: if n.pinned { \"Unpin\" } else { \"Pin\" },\n    icon: if n.pinned { .bell_off } else { .pin },\n    on: n.pinned,\n) {"
+        ),
         "{printed}"
     );
 }

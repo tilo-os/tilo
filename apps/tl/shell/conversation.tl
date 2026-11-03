@@ -108,8 +108,16 @@ view program_step(d: Desk, r: Run, e: RunEntry) {
 /// that id names, of whichever app.
 view reference(r: Run, x: EntryRef) {
     let a = arrangement
-    ui.ListRow(if x.label == "" { x.resource } else { x.label }, secondary: .some(type_label(x.type_kind)), icon: .file) {
-        on activate: session.place(resource: resource(x.resource, of: host.Resource), x: beside_x(a, r), y: beside_y(a, r))
+    ui.ListRow(
+        if x.label == "" { x.resource } else { x.label },
+        secondary: .some(type_label(x.type_kind)),
+        icon: .file,
+    ) {
+        on activate: session.place(
+            resource: resource(x.resource, of: host.Resource),
+            x: beside_x(a, r),
+            y: beside_y(a, r),
+        )
     }
 }
 

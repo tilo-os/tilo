@@ -58,7 +58,11 @@ view shell_parts(x: ShellParts) {
         }
         ui.Section("Unread") {
             ui.UnreadDivider()
-            ui.Text("The line above marks where a reader's unread messages start.", role: .caption, secondary: true)
+            ui.Text(
+                "The line above marks where a reader's unread messages start.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
 }

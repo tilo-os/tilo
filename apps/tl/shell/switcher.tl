@@ -23,21 +23,32 @@ view switcher(d: Desk) {
     let desk = d.windows.filter(w -> w.workspace_key == front_workspace(d)).sort_by(w -> w.recency)
     let pick = desk.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }
-    let windows = if d.switcher_scope == "app" { desk.filter(w -> w.app_key == front_app) } else { desk }
+    let windows = if d.switcher_scope == "app" {
+        desk.filter(w -> w.app_key == front_app)
+    } else { desk }
     let count = windows.len()
     let per_page = page_size(space.compact, space.width, space.height)
     let at = if let p = pick { walk_place(windows, p) } else { 1 }
     let from = if at > per_page / 2 { at - per_page / 2 } else { 1 }
-    let shown = windows.filter(w -> walk_place(windows, w) >= from and walk_place(windows, w) < from + per_page)
+    let shown = windows.filter(
+        w -> walk_place(windows, w) >= from and walk_place(windows, w) < from + per_page,
+    )
     let this_app = if d.switcher_scope == "app" {
         if let p = pick { p.origin_app } else { "" }
     } else { "" }
-    let caption = if this_app != "" { "{this_app} · {at} of {count}" } else if count > per_page { "{at} of {count}" } else { "" }
+    let caption = if this_app != "" {
+        "{this_app} · {at} of {count}"
+    } else if count > per_page { "{at} of {count}" } else { "" }
     row(fill, align: .center, distribute: .center, padding: .related) {
         ui.FloatingPanel {
             body: {
                 if count == 0 {
-                    ui.EmptyState("No windows", message: "Open something to switch to it", icon: .app_window, inline: true)
+                    ui.EmptyState(
+                        "No windows",
+                        message: "Open something to switch to it",
+                        icon: .app_window,
+                        inline: true,
+                    )
                 } else {
                     stack(gap: .section) {
                         row(gap: .related, align: .center, distribute: .center, wrap: true) {
@@ -130,7 +141,11 @@ view window_picture(w: Win) {
         ui.WindowPreview(w.key)
         if w.preview != "live" {
             row(fill, align: .center, distribute: .center) {
-                ui.Icon(if w.preview == "withheld" { .eye_off } else { w.icon }, size: .large, secondary: true)
+                ui.Icon(
+                    if w.preview == "withheld" { .eye_off } else { w.icon },
+                    size: .large,
+                    secondary: true,
+                )
             }
         }
     }

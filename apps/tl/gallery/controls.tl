@@ -50,11 +50,28 @@ view controls(c: Controls) {
             }
         }
         ui.Section("Numbers") {
-            ui.NumberInput(value: c.share, label: .some("Share"), min: .some(0.0), max: .some(1.0), step: .some(0.05), precision: .some(2))
-            ui.Slider(value: c.share, label: .some("Time"), max: .some(1.0), step: .some(0.05), shows_value: true)
+            ui.NumberInput(
+                value: c.share,
+                label: .some("Share"),
+                min: .some(0.0),
+                max: .some(1.0),
+                step: .some(0.05),
+                precision: .some(2),
+            )
+            ui.Slider(
+                value: c.share,
+                label: .some("Time"),
+                max: .some(1.0),
+                step: .some(0.05),
+                shows_value: true,
+            )
         }
         ui.Section("Choices") {
-            ui.Dropdown(value: c.room, options: ["Studio", "Gallery", "Annex"], placeholder: .some("Choose a room"))
+            ui.Dropdown(
+                value: c.room,
+                options: ["Studio", "Gallery", "Annex"],
+                placeholder: .some("Choose a room"),
+            )
             ui.ToggleGroup(selected: .some(c.step), caption: .some("Steps")) {
                 ui.Segment("Grid")
                 ui.Segment("List")
@@ -78,12 +95,24 @@ view controls(c: Controls) {
             ui.TimePicker(value: c.clock, label: .some("At"))
         }
         ui.Section("Colours") {
-            ui.ColorPicker(value: c.accent, swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"], columns: .some(3))
-            ui.ColorSwatchPicker(swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"], columns: 4, selected: .some(0))
+            ui.ColorPicker(
+                value: c.accent,
+                swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"],
+                columns: .some(3),
+            )
+            ui.ColorSwatchPicker(
+                swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"],
+                columns: 4,
+                selected: .some(0),
+            )
         }
         ui.Section("Text") {
             ui.EditableLabel(value: c.title)
-            ui.ShortcutRecorder(value: c.shortcut, default: .some("Ctrl+K"), label: .some("Open with"))
+            ui.ShortcutRecorder(
+                value: c.shortcut,
+                default: .some("Ctrl+K"),
+                label: .some("Open with"),
+            )
             ui.Autocomplete(value: c.recipient, placeholder: .some("Who it goes to")) {
                 ui.Suggestion("ada@example.com")
                 ui.Suggestion("bo@example.com", label: .some("Bo"))

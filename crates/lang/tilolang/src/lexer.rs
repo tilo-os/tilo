@@ -283,19 +283,25 @@ impl Lexer<'_> {
         if matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Newline)) {
             return;
         }
+        // A statement never ends with a comma: the line continues the list it is in, as a long
+        // `if let` breaks between its binds.
+        if matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Comma)) {
+            return;
+        }
         // A line that starts `.name` continues the previous one as a method call, unless the
-        // previous line ended a block or the new line is a match arm (`.name(..) =>`).
-        if !matches!(self.toks.last().map(|t| &t.tok), Some(Tok::RBrace))
-            && self.next_line_continues()
-        {
+        // previous line ended a block or the new line is a match arm (`.name(..) =>`); a line
+        // that starts a binary operator continues it too, however the line before ended.
+        let ended_block = matches!(self.toks.last().map(|t| &t.tok), Some(Tok::RBrace));
+        if self.next_line_continues(ended_block) {
             return;
         }
         self.push(Tok::Newline, start);
     }
 
-    /// Whether the next significant character is a `.` that starts a method call, so the
-    /// previous line continues.
-    fn next_line_continues(&self) -> bool {
+    /// Whether the next line continues the previous one: its first token is a `.` or `?.` that
+    /// names a field or method, or a binary operator, which a broken expression leads its
+    /// continuation line with.
+    fn next_line_continues(&self, ended_block: bool) -> bool {
         let mut i = self.pos;
         loop {
             match self.bytes.get(i).copied() {
@@ -309,10 +315,36 @@ impl Lexer<'_> {
                     }
                 }
                 Some(b'.') => {
-                    return self.bytes.get(i + 1).is_some_and(|b| is_ident_start(*b))
+                    return !ended_block
+                        && self.bytes.get(i + 1).is_some_and(|b| is_ident_start(*b))
                         && !self.is_match_arm(i + 1);
                 }
-                _ => return false,
+                Some(b'?') => {
+                    return match self.bytes.get(i + 1) {
+                        // `?.name`: a field or method of what the line before left.
+                        Some(b'.') => {
+                            !ended_block
+                                && self.bytes.get(i + 2).is_some_and(|b| is_ident_start(*b))
+                        }
+                        // `??`, the value or the fallback.
+                        Some(b'?') => true,
+                        _ => false,
+                    };
+                }
+                Some(b) if is_ident_start(b) => {
+                    // The operators spelled as words; nothing else starts a statement.
+                    let mut end = i;
+                    while self.bytes.get(end).is_some_and(|b| is_ident_char(*b)) {
+                        end += 1;
+                    }
+                    return matches!(self.bytes.get(i..end), Some(b"and" | b"or"));
+                }
+                Some(b) => {
+                    // The symbolic operators. `-`, `not` and `/` are left out: each can begin an
+                    // expression, a value or a regular expression of its own.
+                    return matches!(b, b'+' | b'*' | b'%' | b'=' | b'!' | b'<' | b'>');
+                }
+                None => return false,
             }
         }
     }

@@ -239,7 +239,15 @@ view desk_view(a: Arrangement) {
     let v = viewing
     if (v.showing == .desktop or bar_is_traditional(shell)) and not space.compact {
         layers(fill) {
-            traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
+            traditional_desktop(
+                a,
+                bar_lists_actions(
+                    shell,
+                    root Desk,
+                    space.width_class == .expanded or space.width_class == .wide,
+                ),
+                fill,
+            )
             desk(root Desk, fill)
         }
     } else {
@@ -277,8 +285,18 @@ view bar(d: Desk) {
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
-            if part.shown and (space.wide or not part_gives_way(part, roomy)) and not (part.slot == .people and nobody) {
-                ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status { .trailing } else if part.slot == .space { .space } else { .leading }) {
+            if part.shown
+                and (space.wide or not part_gives_way(part, roomy))
+                and not (part.slot == .people and nobody) {
+                ui.DragItem(
+                    part,
+                    title: part.title,
+                    group: if part.slot == .clock {
+                        .center
+                    } else if part.slot == .people or part.slot == .status {
+                        .trailing
+                    } else if part.slot == .space { .space } else { .leading },
+                ) {
                     bar_part(d, part)
                 }
             }
@@ -370,7 +388,12 @@ view bar_part(d: Desk, part: BarPart) {
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu(d: Desk) {
     let name = if d.workspace != "" { d.workspace } else { "Workspaces" }
-    ui.MenuButton(name, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
+    ui.MenuButton(
+        name,
+        icon: if space.width < 18.0 { .layers },
+        icon_only: space.width < 18.0,
+        role: .bar,
+    ) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)
@@ -414,7 +437,12 @@ view volume_status() {
     if let volume = sound.volume {
         // Rounded, not cut: a level of 0.65 is 65%.
         let percent = (volume * 100.0 + 0.5).to_int()
-        ui.Button(if sound.muted { "Volume, muted" } else { "Volume, {percent}%" }, icon: if sound.muted { .volume_x } else { .volume_2 }, icon_only: true, role: .bar) {
+        ui.Button(
+            if sound.muted { "Volume, muted" } else { "Volume, {percent}%" },
+            icon: if sound.muted { .volume_x } else { .volume_2 },
+            icon_only: true,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -430,7 +458,14 @@ view network_status() {
         } else if joined.kind == .wired {
             if let called = joined.name { "Wired, {called}" } else { "Wired" }
         } else { "Offline" }
-        ui.Button(label, icon: if joined.kind == .wifi { .wifi } else if joined.kind == .wired { .ethernet_port } else { .wifi_off }, icon_only: true, role: .bar) {
+        ui.Button(
+            label,
+            icon: if joined.kind == .wifi {
+                .wifi
+            } else if joined.kind == .wired { .ethernet_port } else { .wifi_off },
+            icon_only: true,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -446,7 +481,13 @@ view battery_status() {
     if b.present {
         let charging = b.state == "charging" or b.state == "pending-charge"
         let name = if charging { "{b.percentage}%, charging" } else { "{b.percentage}%" }
-        ui.Button("{b.percentage}%", accessible_name: name, icon: if charging { .battery_charging } else { .battery }, icon_only: space.compact, role: .bar) {
+        ui.Button(
+            "{b.percentage}%",
+            accessible_name: name,
+            icon: if charging { .battery_charging } else { .battery },
+            icon_only: space.compact,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -461,8 +502,16 @@ view battery_status() {
 /// the bell nor the control beside it.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
-    let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
-    ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar, count: d.unread) {
+    let label = if d.unread == 0 {
+        name
+    } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
+    ui.Button(
+        label,
+        icon: if d.quiet { .bell_off } else { .bell },
+        icon_only: true,
+        role: .bar,
+        count: d.unread,
+    ) {
         on press: device.show_surface(device.desk, surface: "quick-settings")
     }
 }

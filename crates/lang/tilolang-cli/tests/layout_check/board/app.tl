@@ -27,7 +27,12 @@ view board(b: Board) {
         ui.Scroll(across: true) {
             ui.Board {
                 for col in b.columns {
-                    ui.BoardLane(col, title: col.title, count: col.cards.len(), action: "New card") {
+                    ui.BoardLane(
+                        col,
+                        title: col.title,
+                        count: col.cards.len(),
+                        action: "New card",
+                    ) {
                         for card in col.cards {
                             ui.BoardCard(card, title: card.title)
                         }

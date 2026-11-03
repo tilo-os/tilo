@@ -38,7 +38,13 @@ primary action new_note(notes: Notes) -> Note (icon: .plus, group: "Note", frequ
 }
 
 /// Pins or unpins a note.
-action pin(n: Note, pinned: Bool = not n.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: n.pinned, group: "Note", frequent: true) {
+action pin(n: Note, pinned: Bool = not n.pinned) (
+    label: if pinned { "Pin" } else { "Unpin" },
+    icon: .pin,
+    on: n.pinned,
+    group: "Note",
+    frequent: true,
+) {
     n.pinned = pinned
 }
 
@@ -79,7 +85,11 @@ view notebook(notes: Notes) {
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
 view note_row(n: Note) {
-    ui.ListRow(title: if n.title.len() == 0 { "Untitled" } else { n.title }, secondary: n.body.excerpt, mark: if n.pinned { .pin })
+    ui.ListRow(
+        title: if n.title.len() == 0 { "Untitled" } else { n.title },
+        secondary: n.body.excerpt,
+        mark: if n.pinned { .pin },
+    )
 }
 
 /// A note's window: its title, its tags as chips that come off with their remove button, its
@@ -103,27 +113,113 @@ view note_editor(n: Note) {
 
 /// A notebook a week into a project: enough notes to scroll, a few of them pinned.
 scenario "a week of notes" -> Note {
-    let plan = notes.insert(Note(title: "Q3 plan", body: RichText("Ship the offline editor, then sharing. Hiring stays flat until October."), pinned: true))
+    let plan = notes.insert(
+        Note(
+            title: "Q3 plan",
+            body: RichText(
+                "Ship the offline editor, then sharing. Hiring stays flat until October.",
+            ),
+            pinned: true,
+        ),
+    )
     plan.tags.add("planning")
     plan.tags.add("work")
     plan.tags.add("q3")
-    notes.insert(Note(title: "Standup, Monday", body: RichText("Ada is on the sync bug. Bo pairs with Chen on the importer.")))
-    notes.insert(Note(title: "Groceries", body: RichText("Oat milk, eggs, sourdough, two lemons, coffee beans."), pinned: true))
-    notes.insert(Note(title: "Interview questions", body: RichText("Ask about the last project they were proud of, and what they would change.")))
-    notes.insert(Note(title: "Standup, Tuesday", body: RichText("Sync bug reproduced on two laptops. Importer handles tables now.")))
-    notes.insert(Note(title: "Book list", body: RichText("The Dispossessed, Piranesi, A Psalm for the Wild-Built.")))
-    notes.insert(Note(title: "Flat viewing", body: RichText("Saturday at eleven. Bring the deposit papers and measure the bedroom.")))
-    notes.insert(Note(title: "Standup, Wednesday", body: RichText("Release candidate cut. Docs still need the new screenshots.")))
-    notes.insert(Note(title: "Gift ideas", body: RichText("A good kitchen knife for Sam, concert tickets for Mia.")))
-    notes.insert(Note(title: "Retro notes", body: RichText("Fewer meetings on Thursdays. Keep the demo at the end of each week.")))
-    notes.insert(Note(title: "Standup, Thursday", body: RichText("Two blockers left. Chen is out on Friday.")))
-    notes.insert(Note(title: "Running plan", body: RichText("Three easy runs and one long run a week, up to fifteen kilometres."), pinned: true))
-    notes.insert(Note(title: "Recipe: lentil soup", body: RichText("Onion, carrot, red lentils, cumin, a tin of tomatoes, lemon at the end.")))
-    notes.insert(Note(title: "Standup, Friday", body: RichText("Release went out at four. Nobody deploys over the weekend.")))
+    notes.insert(
+        Note(
+            title: "Standup, Monday",
+            body: RichText("Ada is on the sync bug. Bo pairs with Chen on the importer."),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Groceries",
+            body: RichText("Oat milk, eggs, sourdough, two lemons, coffee beans."),
+            pinned: true,
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Interview questions",
+            body: RichText(
+                "Ask about the last project they were proud of, and what they would change.",
+            ),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Standup, Tuesday",
+            body: RichText("Sync bug reproduced on two laptops. Importer handles tables now."),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Book list",
+            body: RichText("The Dispossessed, Piranesi, A Psalm for the Wild-Built."),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Flat viewing",
+            body: RichText(
+                "Saturday at eleven. Bring the deposit papers and measure the bedroom.",
+            ),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Standup, Wednesday",
+            body: RichText("Release candidate cut. Docs still need the new screenshots."),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Gift ideas",
+            body: RichText("A good kitchen knife for Sam, concert tickets for Mia."),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Retro notes",
+            body: RichText("Fewer meetings on Thursdays. Keep the demo at the end of each week."),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Standup, Thursday",
+            body: RichText("Two blockers left. Chen is out on Friday."),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Running plan",
+            body: RichText("Three easy runs and one long run a week, up to fifteen kilometres."),
+            pinned: true,
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Recipe: lentil soup",
+            body: RichText(
+                "Onion, carrot, red lentils, cumin, a tin of tomatoes, lemon at the end.",
+            ),
+        ),
+    )
+    notes.insert(
+        Note(
+            title: "Standup, Friday",
+            body: RichText("Release went out at four. Nobody deploys over the weekend."),
+        ),
+    )
     plan
 }
 
 /// A notebook just started: one note, half written.
 scenario "a first note" {
-    notes.insert(Note(title: "Ideas for the garden", body: RichText("Tomatoes along the south wall, herbs by the door.")))
+    notes.insert(
+        Note(
+            title: "Ideas for the garden",
+            body: RichText("Tomatoes along the south wall, herbs by the door."),
+        ),
+    )
 }
