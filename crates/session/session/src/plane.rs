@@ -767,12 +767,12 @@ fn seams(
         // What people ask this session's agents to do: a run is the broker's
         // to deliver, and its reports come back to the run.
         tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
-        // Private texts are this session's own `messages` resource, sent
-        // between the two people's devices; the action door's chat channel is
-        // not wired to it, so an app asking there is answered nothing.
+        // A person's private conversations are kept in their workspaces'
+        // private person state, which this session's owner holds; the action
+        // door has no route to it, so Chat's calls there are refused.
         person_chat: Seam::unserved(
-            "private texts live on this session's messages resource, and the action door \
-             serves no per-app chat channel over them",
+            "Chat's private conversations live in the workspaces' private person state, and \
+             this session's owner serves none of it on an app's door: Chat's calls are refused",
         ),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
@@ -870,14 +870,20 @@ fn seams(
         browser_service_sessions: Seam::unserved(
             "the Browser app keeps its service sessions itself, in its own record",
         ),
-        // Handing a window, a file or a call to another of the person's
-        // devices is the device fabric's, reached from the desk.
+        // Files offers a file to the person's other devices through the
+        // device fabric; this session gives an app no route into the fabric's
+        // nearby sends, so Files' offer there is refused.
         nearby_transfer: Seam::unserved(
-            "a window, a file or a call reaches another of the person's devices through \
-             the device fabric, not an app's action door",
+            "Files offers a file to the person's other devices through the device fabric, and \
+             this session gives an app no route into it: Files' send to a nearby device is \
+             refused",
         ),
+        // Files reads and opens what a person selected through the portal's
+        // selection; this session gives an app no route to that selection.
         file_clipboard: Seam::unserved(
-            "the clipboard belongs to the compositor, which serves it to windows itself",
+            "Files reads and opens the files a person selected through the portal's selection, \
+             and this session gives an app no route to it: Files' selected-open and clipboard \
+             calls are refused",
         ),
         app_action_access: Seam::served(app_action_access),
         // A grant for an app to take another app's action is kept in a
