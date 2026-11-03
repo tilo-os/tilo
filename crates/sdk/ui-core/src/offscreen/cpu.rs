@@ -111,7 +111,9 @@ impl CpuSurface {
     /// the pixels are its own and it keeps the frame before, so it proves
     /// what a caller cannot, more finely than `damage` says and for nothing
     /// when nothing changed. `damage` is what the caller knows of the
-    /// change, drawn where that proof is too large to list.
+    /// change, drawn where that proof is too large to list, and a change
+    /// listed in more places than [`MAX_REGIONS`] is drawn in the region
+    /// they cover.
     pub fn draw(
         &mut self,
         scene: &vello::Scene,
@@ -140,6 +142,15 @@ impl CpuSurface {
         if drawn.is_empty() {
             return None;
         }
+        // The rasterizer walks its scene once per region, so a frame that
+        // changed in many places is drawn in their bounds instead: the walk
+        // is what it pays for, and a hundred small regions cost more than
+        // the picture they cover.
+        let drawn = if drawn.len() > MAX_REGIONS {
+            vec![bounds(&drawn, width, height)]
+        } else {
+            drawn
+        };
         let stride = (width as usize).saturating_mul(4);
         let mut target =
             tilo_cpu_raster::Target::new(&mut self.pixels, width, height, stride).ok()?;
@@ -158,6 +169,36 @@ impl CpuSurface {
                 .collect(),
         )
     }
+}
+
+/// Regions a frame is drawn in before it is drawn in their bounds: each one
+/// walks the prepared scene, and past this many that walk costs more than
+/// drawing what lies between them.
+const MAX_REGIONS: usize = 32;
+
+/// What `regions` cover together, as one region of a `width` x `height`
+/// surface.
+fn bounds(regions: &[tilo_cpu_raster::Region], width: u32, height: u32) -> tilo_cpu_raster::Region {
+    let left = regions.iter().map(|region| region.x).min().unwrap_or(0);
+    let top = regions.iter().map(|region| region.y).min().unwrap_or(0);
+    let right = regions
+        .iter()
+        .map(|region| region.x.saturating_add(region.width))
+        .max()
+        .unwrap_or(width)
+        .min(width);
+    let bottom = regions
+        .iter()
+        .map(|region| region.y.saturating_add(region.height))
+        .max()
+        .unwrap_or(height)
+        .min(height);
+    tilo_cpu_raster::Region::new(
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    )
 }
 
 /// The CPU rasterizer [`render_on_cpu`] draws with, kept for the glyph
@@ -302,5 +343,50 @@ mod tests {
             surface.draw(&chip(40.0), None).is_none(),
             "an unchanged frame draws nothing"
         );
+    }
+
+    /// A frame that changed in more places than a scene walk is worth is
+    /// drawn in one region covering them, and leaves the same picture
+    /// behind.
+    #[test]
+    fn many_changed_places_are_drawn_in_their_bounds() {
+        let (width, height) = (200, 100);
+        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+        let chips = |shift: f64| {
+            let mut scene = Scene::new();
+            for index in 0..40 {
+                let x = 2.0 + f64::from(index) * 4.0 + shift;
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    Color::from_rgb8(0x20, 0x60, 0xc0),
+                    None,
+                    &Rect::new(x, 10.0, x + 2.0, 12.0),
+                );
+            }
+            scene
+        };
+        let first = surface
+            .draw(&chips(0.0), None)
+            .expect("the first frame covers the surface");
+        assert_eq!(first, vec![(0, 0, width, height)]);
+
+        let moved = surface
+            .draw(&chips(20.0), Some(&[]))
+            .expect("every chip moved");
+        assert_eq!(
+            moved,
+            vec![(2, 10, 178, 2)],
+            "the chips and where they were are drawn as the one region they cover"
+        );
+        let full = render_on_cpu(&chips(20.0), width, height, Color::TRANSPARENT).expect("drawn");
+        for index in [0_u32, 20, 39] {
+            let x = 2 + index * 4 + 20;
+            assert_eq!(
+                pixel(surface.pixels(), width, x, 10),
+                pixel(&full, width, x, 10),
+                "the chip at {x} is where a whole render of the frame puts it"
+            );
+        }
     }
 }
