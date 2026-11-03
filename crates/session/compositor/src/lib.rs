@@ -350,6 +350,7 @@ impl Compositor {
             .map_err(io)?;
         state.loop_handle = Some(event_loop.handle());
         let backend = make_backend(&event_loop.handle(), &mut state)?;
+        host::composes_on_cpu(backend.composes_on_cpu());
         let mut compositor = Self {
             event_loop,
             display,

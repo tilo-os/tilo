@@ -102,11 +102,12 @@ enum Target {
 }
 
 impl Target {
-    /// The drawing `size` frames, on the GPU where this machine has one and
-    /// on the CPU where the toolkit draws every frame there; `None` where
-    /// this build's toolkit has no rasterizer to draw one with.
+    /// The drawing `size` frames, on the GPU where the frames are shown from
+    /// a texture and the machine has a GPU to draw them on, on the CPU
+    /// otherwise; `None` where this build's toolkit has no rasterizer to draw
+    /// one with.
     fn new(size: (u32, u32)) -> Option<Self> {
-        if let Some(gpu) = Gpu::new(size) {
+        if let Some(gpu) = draws_on_gpu().then(|| Gpu::new(size)).flatten() {
             return Some(Self::Gpu(Box::new(gpu)));
         }
         tracing::info!("surface apps' frames are drawn on the CPU: no GPU to draw them on");
@@ -166,15 +167,18 @@ impl Target {
             Self::Gpu(gpu) => gpu.draw(scene, damage),
             Self::Cpu(cpu) => {
                 let (width, height) = cpu.size();
-                let changed = match damage {
-                    Some(rects) => regions(rects, width, height),
-                    None => vec![Region::new(0, 0, width, height)],
-                };
-                let rects: Vec<(u32, u32, u32, u32)> = changed
-                    .iter()
-                    .map(|region| (region.x, region.y, region.width, region.height))
-                    .collect();
-                cpu.draw(scene, &rects).then_some(changed)
+                let asked = damage.map(|rects| {
+                    regions(rects, width, height)
+                        .into_iter()
+                        .map(|region| (region.x, region.y, region.width, region.height))
+                        .collect::<Vec<_>>()
+                });
+                cpu.draw(scene, asked.as_deref()).map(|drawn| {
+                    drawn
+                        .into_iter()
+                        .map(|(x, y, width, height)| Region::new(x, y, width, height))
+                        .collect()
+                })
             }
         }
     }
@@ -251,6 +255,22 @@ impl Gpu {
         self.finished_frames |= complete;
         complete.then_some(changed)
     }
+}
+
+/// Whether hosted surfaces' frames are drawn on a GPU here: never where the
+/// compositor reads their pixels itself (they are rasterized for it, so a GPU
+/// would only copy them back every frame), and never on a machine whose
+/// adapter rasterizes on the CPU. The adapter question opens the toolkit's
+/// device, so it is asked once per process rather than per surface.
+fn draws_on_gpu() -> bool {
+    static DRAWS_ON_GPU: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if tilo_compositor::host::hosted_frames_on_cpu() {
+        return false;
+    }
+    *DRAWS_ON_GPU.get_or_init(|| {
+        ui::offscreen::shared_adapter_info()
+            .is_some_and(|adapter| !ui::gpu::rasterizes_on_cpu(&adapter))
+    })
 }
 
 /// The pixels of a `size` surface.
