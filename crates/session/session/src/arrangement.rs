@@ -196,19 +196,51 @@ pub fn found(
     // anchor, or the one an action hit acts on. The best such hit the place
     // can show wins, in the search's order: a hit the arrangement cannot
     // place (a settings section) does not stand in the way of one it can.
-    hits.iter()
+    let named: Vec<(&str, &str)> = hits
+        .iter()
         .filter_map(|hit| match &hit.target {
             tilo_desktop_search::Target::Invoke(invoke)
                 if invoke.address.action == tilo_desktop_search::OPEN_ACTION =>
             {
-                Some(invoke.address.resource.as_str().to_owned())
+                let named = invoke.address.resource.as_str();
+                let label = invoke
+                    .descriptor
+                    .as_ref()
+                    .map_or("", |descriptor| descriptor.resource_label.as_str());
+                Some((named, label))
             }
             tilo_desktop_search::Target::Action(action) => {
-                Some(action.resource.as_str().to_owned())
+                Some((action.resource.as_str(), action.resource_label.as_str()))
             }
             _ => None,
         })
-        .find(|resource| shows(resource))
+        .filter(|(resource, _)| shows(resource))
+        .collect();
+    most_specific(&named, text)
+}
+
+/// The resource `text` names among the hits a place can show, each with the
+/// name its resource goes by: the top of them, or the one inside it that
+/// carries the same name when the text is that name — a note titled like the
+/// notebook it sits in is the note, while a resource the text only describes
+/// stays itself.
+fn most_specific(named: &[(&str, &str)], text: &str) -> Option<String> {
+    let (resource, label) = named.first()?;
+    if !text.trim().eq_ignore_ascii_case(label) {
+        return Some((*resource).to_owned());
+    }
+    let deeper = named.iter().find(|(other, other_label)| {
+        other != resource && other_label == label && inside(other, resource)
+    });
+    Some(deeper.map_or(*resource, |(other, _)| *other).to_owned())
+}
+
+/// Whether `resource` is a level under `other` (`inbox/m1` is under `inbox`).
+fn inside(resource: &str, other: &str) -> bool {
+    resource != other
+        && resource
+            .strip_prefix(other)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// A resource as the arrangement makes a place of it: the app publishing
@@ -2058,7 +2090,7 @@ fn actions_between(was: &Strips, became: &Strips) -> Vec<ArrangementAction> {
 
 #[cfg(test)]
 mod tests {
-    use super::found;
+    use super::{found, most_specific};
     use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
 
     /// A row text typed on the canvas would stand for: what it opens, and what it is.
@@ -2100,6 +2132,30 @@ mod tests {
             found("Chat", &|_| hits.clone(), |_| false),
             None,
             "and with nothing placeable, nothing is placed"
+        );
+    }
+
+    #[test]
+    fn the_text_places_what_it_names_inside_the_resource_it_sits_in() {
+        let named = [
+            ("notes", "Groceries"),
+            ("notes/i1", "Groceries"),
+            ("notes/i2", "Groceries"),
+        ];
+        assert_eq!(
+            most_specific(&named, "Groceries").as_deref(),
+            Some("notes/i1"),
+            "a note titled like its notebook is the note, and the top of them"
+        );
+        assert_eq!(
+            most_specific(&named, "my notes").as_deref(),
+            Some("notes"),
+            "a resource the text only describes stays itself"
+        );
+        assert_eq!(
+            most_specific(&[("inbox", "Inbox")], "inbox").as_deref(),
+            Some("inbox"),
+            "and the top stays when nothing inside it carries the same name"
         );
     }
 }

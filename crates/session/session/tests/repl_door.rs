@@ -75,8 +75,14 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         "the arrangement is among the session's resources: {desk}"
     );
 
-    // `ls` lists each action as a program calls it, what it may go without included.
-    let (chrome, failed) = repl.call(session, "tilo_ls", &json!({"path": "session/Desktop"}));
+    // `ls` lists each action as a program calls it, what it may go without included. The
+    // chrome by its key: a window's control reads under the window's name, and the desk's
+    // window is another `Desktop`.
+    let (chrome, failed) = repl.call(
+        session,
+        "tilo_ls",
+        &json!({"path": "session/desktop:chrome"}),
+    );
     assert!(!failed, "{chrome}");
     assert!(
         chrome
@@ -108,16 +114,21 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         &json!({"path": format!("session/{book}")}),
     );
     assert!(!failed, "{notebook}");
+    // The note's own line: a reference, then the name it goes by. The
+    // listing's first line is the path as it resolves, which names the
+    // notebook by the title it shares with its note.
     let reference = notebook
         .lines()
-        .find(|line| line.contains(NOTE_TITLE))
-        .and_then(|line| line.split_whitespace().next())
-        .filter(|word| {
-            word.strip_prefix('n')
-                .is_some_and(|number| number.chars().all(|digit| digit.is_ascii_digit()))
+        .find_map(|line| {
+            let mut words = line.split_whitespace();
+            let reference = words.next()?;
+            (words.next() == Some(NOTE_TITLE)
+                && reference.strip_prefix('n').is_some_and(|number| {
+                    !number.is_empty() && number.chars().all(|digit| digit.is_ascii_digit())
+                }))
+            .then(|| reference.to_owned())
         })
-        .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"))
-        .to_owned();
+        .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"));
     // An action read as a value says how it is called.
     let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
     assert!(failed, "{named}");

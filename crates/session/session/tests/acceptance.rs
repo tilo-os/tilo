@@ -124,10 +124,21 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
         desk.contains("shell:arrangement") || desk.contains("arrangement"),
         "the arrangement is among them: {desk}"
     );
-    assert!(desk.contains("Desktop"), "the desk is: {desk}");
+    // A listing names the roots of what the session publishes: the desk is a row of its own,
+    // by the kind its resource is, and what it holds is read a level down.
+    assert!(
+        desk.lines().any(|line| line.contains("  desktop  ")),
+        "the desk is: {desk}"
+    );
 
-    // Each action as a program calls it, what it may go without included.
-    let (chrome, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": "session/Desktop"}));
+    // Each action as a program calls it, what it may go without included. The chrome by its
+    // key: a window's control reads under the window's name, and the desk's window is another
+    // `Desktop`.
+    let (chrome, failed) = repl.call(
+        &mut session,
+        "tilo_ls",
+        &json!({"path": "session/desktop:chrome"}),
+    );
     assert!(!failed, "{chrome}");
     assert!(
         chrome
