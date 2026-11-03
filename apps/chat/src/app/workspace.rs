@@ -66,7 +66,7 @@ impl ChatApp {
         // here. An answer naming nobody besides this window's own person is
         // still an answer — the workspace is otherwise empty.
         self.workspace_presence_answers = true;
-        self.person_contacts = ui::person_chat::contacts();
+        self.person_contacts = self.direct_contacts();
         self.adopt_own_participant(presence);
         self.workspace_voice = self
             .channels

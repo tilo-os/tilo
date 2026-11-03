@@ -1,7 +1,14 @@
-//! Person-only conversations. Bodies and drafts never enter the workspace record.
+//! Chat's direct conversations as its views show them: the state, drafts and
+//! effects of the person-only conversation, answered by the pair records this
+//! window holds ([`Records`]). A page keeps no workspace records of its own
+//! and reaches its conversations through its host on the person door until
+//! the record is there; both answer this module's [`Answer`].
+
+use std::rc::Rc;
 
 use crate::app::{ChatApp, Focus};
 use crate::composer::ConversationKey;
+use crate::direct::Records;
 use crate::effects::ChatEffect;
 use ui::framework::{Effect, EffectAnswer, Effected, LiveRow};
 
@@ -11,28 +18,74 @@ impl Drop for ChatApp {
     }
 }
 
-/// A conversation being opened, by its peer, until the workspace answers.
-pub(crate) type Opening = (
-    String,
-    ui::person_chat::Pending<ui::person_chat::Conversation>,
-);
+/// What answered a conversation call: the records here at once, or the host
+/// of a page later.
+pub(crate) enum Answer<T> {
+    Now(Result<T, String>),
+    Later(ui::person_chat::Pending<T>),
+}
 
-/// A message on its way, kept until the workspace accepts or refuses it.
+impl<T: Clone> Answer<T> {
+    /// The answer, once it is here; taken, it is gone.
+    pub(crate) fn take(&self) -> Option<Result<T, String>> {
+        match self {
+            Self::Now(answer) => Some(answer.clone()),
+            Self::Later(pending) => pending.take(),
+        }
+    }
+
+    /// The answer still on its way, for a window that waits for it.
+    pub(crate) fn later(self) -> Option<ui::person_chat::Pending<T>> {
+        match self {
+            Self::Now(_) => None,
+            Self::Later(pending) => Some(pending),
+        }
+    }
+}
+
+/// A conversation being opened, by its peer, until it answers.
+pub(crate) type Opening = (String, Answer<ui::person_chat::Conversation>);
+
+/// A message on its way, kept until the conversation accepts or refuses it.
 pub(crate) struct Sending {
     peer: String,
     key: ConversationKey,
     revision: Option<u64>,
-    reply: ui::person_chat::Pending<ui::person_chat::Conversation>,
+    reply: Answer<ui::person_chat::Conversation>,
 }
 
 impl ChatApp {
+    /// The records this window keeps its conversations in, where it keeps
+    /// them here at all: a page has none, and asks its host.
+    fn direct_records(&self) -> Option<&Rc<Records>> {
+        self.direct.as_ref()
+    }
+
+    /// The people this window may talk to, each with whether a conversation
+    /// of theirs holds messages.
+    pub(crate) fn direct_contacts(&self) -> Vec<ui::person_chat::Contact> {
+        if let Some(records) = self.direct_records() {
+            return records.contacts();
+        }
+        // Publication can run before widget sync after a snapshot wake. Read
+        // the same bounded host snapshot rather than a stale painted list.
+        let _ = ui::person_chat::contacts();
+        ui::person_chat::contacts_snapshot()
+    }
+
+    /// Whether this view holds the conversation with `peer` still open, so a
+    /// floating view of it keeps its lane: the records hold theirs until the
+    /// window closes; a page's lane is retained one owner more.
+    pub(crate) fn retains_person(&self, peer: &str) -> bool {
+        self.direct_records().is_some() || ui::person_chat::retain(peer)
+    }
+
     pub(crate) fn close_person_conversation(&mut self) {
         if let Some(peer) = self.direct_person.take()
-            && let Some(token) = self.person_subscription.take()
+            && self.direct_records().is_none()
         {
-            ui::person_chat::close_current(&peer, token);
+            ui::person_chat::close(&peer);
         }
-        self.person_subscription = None;
         self.person_sending = None;
         self.person_messages.clear();
         self.person_body_views.clear();
@@ -99,12 +152,15 @@ impl ChatApp {
     }
 
     /// Open the conversation with `public_key`. The view moves to it once
-    /// the workspace has it open: at once from the native host, a moment later
-    /// in a page, which never waits for the workspace on the UI thread.
+    /// it is open: at once from the records this window holds, a moment later
+    /// in a page, which never waits for its host on the UI thread.
     pub(crate) fn open_person_conversation(&mut self, public_key: &str) -> Result<(), String> {
-        self.person_contacts = ui::person_chat::contacts();
+        self.person_contacts = self.direct_contacts();
         self.require_person_contact(public_key)?;
-        let opening = ui::person_chat::open(public_key);
+        let opening = match self.direct_records() {
+            Some(records) => Answer::Now(records.open(public_key)),
+            None => Answer::Later(ui::person_chat::open(public_key)),
+        };
         if let Some(answer) = opening.take() {
             return self.opened_person_conversation(public_key, answer);
         }
@@ -126,11 +182,8 @@ impl ChatApp {
         if conversation.peer != public_key {
             return Err(crate::i18n::t("chat-person-chat-unavailable"));
         }
-        // Open acquires the new owner first, including when reopening the same
-        // peer. Release this view's previous selection without touching floats.
         self.close_person_conversation();
         self.direct_person = Some(public_key.to_owned());
-        self.person_subscription = ui::person_chat::subscription_token(public_key);
         self.active_channel = Self::person_conversation_key(public_key).draft_key();
         self.person_messages = conversation.messages;
         self.person_error = None;
@@ -145,12 +198,15 @@ impl ChatApp {
         Ok(())
     }
 
-    /// Take up what the workspace answered an open or a send since the last sync.
+    /// Take up what an open or a send answered since the last sync.
     fn settle_person_replies(&mut self) {
+        let page = self.direct_records().is_none();
         self.person_abandoned
             .retain(|(peer, opening)| match opening.take() {
                 Some(Ok(_)) => {
-                    ui::person_chat::close(peer);
+                    if page {
+                        ui::person_chat::close(peer);
+                    }
                     false
                 }
                 Some(Err(_)) => false,
@@ -194,9 +250,9 @@ impl ChatApp {
     pub(crate) fn refresh_person_conversation(&mut self) {
         self.refresh_direct_people();
         self.settle_person_replies();
-        // Native contacts hydrate after the first mounted frame. Keep the
-        // semantic rows current even before any conversation is selected.
-        let contacts = ui::person_chat::contacts();
+        // Contacts hydrate after the first mounted frame. Keep the semantic
+        // rows current even before any conversation is selected.
+        let contacts = self.direct_contacts();
         let changed = contacts != self.person_contacts;
         self.person_contacts = contacts;
         if changed {
@@ -205,15 +261,11 @@ impl ChatApp {
         let Some(public_key) = self.direct_person.clone() else {
             return;
         };
-        if self.person_subscription.is_none()
-            || self.person_subscription != ui::person_chat::subscription_token(&public_key)
-        {
-            self.person_messages.clear();
-            self.person_body_views.clear();
-            self.person_error = Some(crate::i18n::t("chat-person-chat-unavailable"));
-            return;
-        }
-        match ui::person_chat::snapshot(&public_key) {
+        let shown = match self.direct_records() {
+            Some(records) => records.read(&public_key),
+            None => ui::person_chat::snapshot(&public_key),
+        };
+        match shown {
             Ok(conversation) if conversation.peer == public_key => {
                 if conversation.messages.len() != self.person_messages.len() {
                     self.request_relayout();
@@ -238,16 +290,18 @@ impl ChatApp {
         }
     }
 
-    /// An explicit read of the conversation with `public_key`, answered
-    /// once the workspace has (an invocation's read is checked against its
-    /// original custody there).
+    /// An explicit read of the conversation with `public_key`, answered at
+    /// once from the records here or later by a page's host.
     pub(crate) fn read_person_conversation(
         &mut self,
         public_key: &str,
-    ) -> Result<ui::person_chat::Pending<ui::person_chat::Conversation>, String> {
-        self.person_contacts = ui::person_chat::contacts();
+    ) -> Result<Answer<ui::person_chat::Conversation>, String> {
+        self.person_contacts = self.direct_contacts();
         self.require_person_contact(public_key)?;
-        Ok(ui::person_chat::read(public_key))
+        Ok(match self.direct_records() {
+            Some(records) => Answer::Now(records.read(public_key)),
+            None => Answer::Later(ui::person_chat::read(public_key)),
+        })
     }
 
     /// What a read answered, as the effect's value.
@@ -273,21 +327,31 @@ impl ChatApp {
         Ok(Effected::value(value))
     }
 
-    /// Send `text` to `public_key`; the reply says when the workspace accepted it.
+    /// Send `text` to `public_key`; the answer says when it was accepted.
     pub(crate) fn send_person_message(
         &mut self,
         public_key: &str,
         text: &str,
-    ) -> Result<ui::person_chat::Pending<ui::person_chat::Conversation>, String> {
-        self.person_contacts = ui::person_chat::contacts();
+        invocation: Option<tilo_actions::InvocationId>,
+    ) -> Result<Answer<ui::person_chat::Conversation>, String> {
+        self.person_contacts = self.direct_contacts();
         self.require_person_contact(public_key)?;
         if text.trim().is_empty() {
             return Err(crate::i18n::t("chat-person-chat-empty"));
         }
-        Ok(ui::person_chat::send(public_key, text))
+        Ok(match self.direct_records() {
+            Some(records) => Answer::Now(records.send(
+                public_key,
+                text,
+                invocation.map_or_else(uuid::Uuid::new_v4, |id| id.0),
+            )),
+            None => Answer::Later(ui::person_chat::with_invocation(invocation, || {
+                ui::person_chat::send(public_key, text)
+            })),
+        })
     }
 
-    /// What the workspace answered a message to `public_key`, as the effect's value.
+    /// What an answer to a message to `public_key` says, as the effect's value.
     pub(crate) fn sent_person_answer(
         &mut self,
         public_key: &str,
@@ -309,7 +373,7 @@ impl ChatApp {
     }
 
     /// Send what the composer holds to the open conversation. Its draft
-    /// clears once the workspace accepted the message, not before.
+    /// clears once the conversation accepted the message, not before.
     pub(crate) fn send_person_focused(&mut self) -> bool {
         let Some(public_key) = self.direct_person.clone() else {
             return false;
@@ -323,7 +387,7 @@ impl ChatApp {
         }
         let key = Self::person_conversation_key(&public_key);
         let revision = self.composer_main.conversation_revision(&key);
-        let reply = match self.send_person_message(&public_key, &text) {
+        let reply = match self.send_person_message(&public_key, &text, None) {
             Ok(reply) => reply,
             Err(error) => {
                 self.person_error = Some(error);
@@ -363,11 +427,8 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    pub(crate) fn person_conversation_rows() -> Vec<LiveRow> {
-        // Publication can run before widget sync after a snapshot wake. Read
-        // the same bounded native snapshot rather than a stale painted list.
-        let _ = ui::person_chat::contacts();
-        ui::person_chat::contacts_snapshot()
+    pub(crate) fn person_conversation_rows(&self) -> Vec<LiveRow> {
+        self.direct_contacts()
             .iter()
             .map(|contact| {
                 let name = if contact.display_name.trim().is_empty() {

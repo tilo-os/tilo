@@ -1,14 +1,13 @@
-//! Chat's private conversations, as the session serves them to the app: the
-//! workspace's owner lists the other people here, opens the conversation with
-//! one of them, sends, and tells the app when the conversation changed, so a
-//! message written by another of the person's devices arrives without the app
-//! asking again.
+//! What Chat still needs of the session for a direct conversation: which pair
+//! records this person shares, the announcement that makes a pair's record
+//! theirs, and the one import of the old private store before it is emptied.
 //!
-//! The people of this workspace are the person whose device runs the session,
-//! another device of theirs, and someone else the workspace certified. The
-//! bodies of the conversation live only in the owner's private person state,
-//! and the app reaches them as the certificate the broker attested on its
-//! connection.
+//! The conversation itself is the pair's record, which Chat reads and writes
+//! as the app's own resource and which never passes this door
+//! (`apps/chat/src/direct/acceptance.rs`). The people of this workspace are
+//! the person whose device runs the session, another device of theirs, and
+//! someone else the workspace certified; the app reaches the door as the
+//! certificate the broker attested on its connection.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -73,11 +72,6 @@ impl Keys {
     /// The other person, as the workspace and the conversation name a person.
     fn peer_key(&self) -> String {
         person(self.peer_cert.user_public_key)
-    }
-
-    /// This person, as the messages they sent name them.
-    fn root_key(&self) -> String {
-        person(self.root)
     }
 }
 
@@ -435,206 +429,6 @@ async fn ask(
     serde_json::from_slice(&reply).expect("the session answers JSON")
 }
 
-/// What Chat found, and what it was told while it waited.
-struct Proof {
-    contacts: serde_json::Value,
-    opened: serde_json::Value,
-    sent: serde_json::Value,
-    refused: String,
-    /// The conversation before the other device wrote.
-    first_lane: serde_json::Value,
-    /// What the conversation's lane gave next: its generation, and the
-    /// conversation.
-    arrived: (u64, serde_json::Value),
-    read_again: serde_json::Value,
-}
-
-/// Chat's own calls: read the contacts, open the conversation with the other
-/// person, send them a message, and wait on the conversation while another of
-/// the person's devices writes in it.
-fn chat_calls(socket: &PathBuf, keys: &Keys) -> Proof {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime for the app");
-    let peer = keys.peer_key();
-    runtime.block_on(async {
-        let client = connect(socket);
-        let mine = client
-            .join_channel(&channel(), &presentation(&keys.device, &keys.cert))
-            .await
-            .expect("the app the session launched joins the workspace's channel");
-        let contacts = ask(&mine, serde_json::json!({"operation": "contacts"})).await;
-        let opened = ask(
-            &mine,
-            serde_json::json!({"operation": "open", "public_key": peer}),
-        )
-        .await;
-        let sent = ask(
-            &mine,
-            serde_json::json!({
-                "operation": "send",
-                "public_key": peer,
-                "text": "hello Bo",
-                "invocation": uuid::Uuid::new_v4(),
-            }),
-        )
-        .await;
-        // A person this workspace never certified is not someone the owner
-        // opens a conversation with.
-        let refused = mine
-            .person_chat(
-                &serde_json::to_vec(&serde_json::json!({
-                    "operation": "open",
-                    "public_key": "ab".repeat(32),
-                }))
-                .expect("a command is JSON"),
-                &[],
-            )
-            .await
-            .expect_err("the owner refuses a person of no certified device here")
-            .to_string();
-        // The conversation's own lane, held before the other device writes:
-        // what arrives on it is what the app shows next, without asking.
-        let lane = mine
-            .subscribe_person_chat(&peer, &[])
-            .await
-            .expect("the conversation's change lane");
-        let (_, body) = lane.read().await.expect("the conversation as it stands");
-        let first_lane: serde_json::Value =
-            serde_json::from_slice(&body).expect("the conversation is JSON");
-
-        // Another of the person's devices, as the broker admits it, writes in
-        // the same conversation.
-        let phone = connect(socket);
-        let theirs = phone
-            .join_channel(&channel(), &presentation(&keys.phone, &keys.phone_cert))
-            .await
-            .expect("the person's other device joins the workspace's channel");
-        ask(
-            &theirs,
-            serde_json::json!({
-                "operation": "send",
-                "public_key": peer,
-                "text": "from the phone",
-                "invocation": uuid::Uuid::new_v4(),
-            }),
-        )
-        .await;
-
-        // The lane wakes on the write: the app reads the new conversation
-        // without ever asking whether it changed.
-        let (generation, body) = lane.read().await.expect("the conversation as it changed");
-        let live: serde_json::Value =
-            serde_json::from_slice(&body).expect("the conversation is JSON");
-        let read_again = ask(
-            &mine,
-            serde_json::json!({"operation": "read", "public_key": peer}),
-        )
-        .await;
-        Proof {
-            contacts,
-            opened,
-            sent,
-            refused,
-            first_lane,
-            arrived: (generation, live),
-            read_again,
-        }
-    })
-}
-
-#[test]
-fn chat_lists_the_other_person_opens_sends_and_hears_a_new_message_live() {
-    let home = private_home();
-    let socket = home.path().join("collab.sock");
-    let fixture = fixture();
-    let mut session = session(&socket, &fixture);
-
-    let (done, received) = std::sync::mpsc::channel();
-    let plane = socket;
-    let keys = fixture.keys.clone();
-    let apps = std::thread::spawn(move || {
-        let proof = chat_calls(&plane, &keys);
-        let _ = done.send(proof);
-    });
-    let proof = until_the_apps_are_done(&mut session, &received);
-    let ended = apps.join();
-    let proof = match (proof, ended) {
-        (Some(proof), Ok(())) => proof,
-        (_, Err(panic)) => panic!("the app's calls failed: {panic:?}"),
-        (None, Ok(())) => panic!("the app left without answering"),
-    };
-
-    let peer = &proof.opened["peer"];
-    assert_eq!(
-        peer,
-        &serde_json::Value::String(fixture.keys.peer_key()),
-        "the conversation is with the person Chat opened it with"
-    );
-    let contacts = proof.contacts.as_array().expect("a list of contacts");
-    let contact = contacts
-        .iter()
-        .find(|contact| contact["public_key"] == *peer)
-        .expect("the other person is in the workspace's contacts");
-    assert_eq!(
-        contact["conversation"], false,
-        "no conversation with them held a message before Chat wrote one"
-    );
-    assert!(
-        contacts
-            .iter()
-            .all(|contact| contact["public_key"] != fixture.keys.root_key()),
-        "a person is not their own contact"
-    );
-    assert!(
-        proof.opened["messages"]
-            .as_array()
-            .is_some_and(Vec::is_empty),
-        "a conversation opens empty: {}",
-        proof.opened
-    );
-    let sent = proof.sent["messages"]
-        .as_array()
-        .expect("the conversation's messages");
-    assert_eq!(sent.len(), 1, "the message the app sent is there");
-    assert_eq!(sent[0]["author"], fixture.keys.root_key());
-    assert_eq!(sent[0]["text"], "hello Bo");
-    assert!(
-        proof
-            .refused
-            .contains("not another current certified person"),
-        "the session refuses a person the workspace never certified: {}",
-        proof.refused
-    );
-
-    assert_eq!(
-        proof.first_lane["messages"].as_array().map(Vec::len),
-        Some(1),
-        "the lane's first read is the conversation so far"
-    );
-    let (generation, arrived) = &proof.arrived;
-    assert!(
-        *generation > 1,
-        "the lane reports the conversation's new state: {generation}"
-    );
-    let messages = arrived["messages"]
-        .as_array()
-        .expect("the conversation's messages");
-    assert_eq!(
-        messages.len(),
-        2,
-        "the other device's message arrived on the lane: {arrived}"
-    );
-    assert_eq!(messages[1]["text"], "from the phone");
-    assert_eq!(messages[1]["author"], fixture.keys.root_key());
-    assert_eq!(
-        proof.read_again["messages"].as_array().map(Vec::len),
-        Some(2),
-        "a read after the lane woke holds the message too"
-    );
-}
-
 /// A person's root public key as a pair's people are spelt, and as the pair's
 /// id is named with.
 fn root_hex(root: [u8; 32]) -> String {
@@ -827,7 +621,11 @@ fn import_calls(socket: &PathBuf, keys: &Keys) -> ImportProof {
         // Importing only reads: the old store still holds what it did.
         let kept = ask(
             &mine,
-            serde_json::json!({"operation": "read", "public_key": peer}),
+            serde_json::json!({
+                "operation": "import",
+                "public_key": peer,
+                "after_sequence": 0,
+            }),
         )
         .await;
         // The history is in the pair's record: the migration empties the old
@@ -969,7 +767,7 @@ fn pairs_wake_calls(socket: &PathBuf, keys: &Keys) -> PairsWakeProof {
             let Some(pairs) = next.person_pairs else {
                 continue;
             };
-            let done = pairs.iter().any(|named| *named == pair);
+            let done = pairs.contains(&pair);
             named.push(pairs);
             if done {
                 break;

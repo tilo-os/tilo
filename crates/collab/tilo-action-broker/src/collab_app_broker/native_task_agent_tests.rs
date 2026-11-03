@@ -121,7 +121,6 @@ impl Fixture {
         let route = CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main");
         wire_channel(super::JoinedChannel {
             as_app: None,
-            person_chat_views: std::cell::RefCell::default(),
             committed_read: Rc::new(std::cell::RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),
             directories: self.directories.clone(),

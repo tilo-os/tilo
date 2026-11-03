@@ -171,7 +171,7 @@ pub mod external_moderation;
 #[cfg(feature = "broker-transport")]
 pub mod write_attribution_lane;
 #[cfg(feature = "broker-transport")]
-pub use broker::{person_chat_command, subscribe_person_chat};
+pub use broker::person_chat_command;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;

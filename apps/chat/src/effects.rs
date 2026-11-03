@@ -950,7 +950,7 @@ impl ChatApp {
             .chain(messages)
             .chain(people)
             .chain(reports)
-            .chain(Self::person_conversation_rows())
+            .chain(self.person_conversation_rows())
             .collect()
     }
 

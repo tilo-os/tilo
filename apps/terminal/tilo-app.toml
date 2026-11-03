@@ -71,11 +71,11 @@ open-uri = "via-host"
 [sandbox.services]
 # Required application runtime; the launcher passes its connected descriptor as
 # `TILO_SVC_USH_FD`.
-ush    = "required@16"
+ush    = "required@17"
 # Authenticated permission prompt for the device shell.
 shell-ui = "optional@21"
-collab = "optional@16"
-tilo-fs = "optional@16"
+collab = "optional@17"
+tilo-fs = "optional@17"
 
 [entrypoint]
 bin             = "bin/terminal"

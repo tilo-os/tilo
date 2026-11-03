@@ -117,3 +117,23 @@ reason = "write-only: one JSON line a session's lease carries to the app that as
 file = "crates/collab/collab-types/src/peer.rs"
 enum = "PeerPresencePayload"
 reason = "postcard presence frames between devices and between an app and its runtime, which speak only at an equal peer and runtime version; that variant said which services carried a page's media into a call, which calls riding the call lane no longer have, and both numbers were raised past its removal, so no device or app reads a frame written before it"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "Topic"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation topic went with the private lane it named, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "Event"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation event went with the private lane that delivered it, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
+
+[[break]]
+file = "crates/collab/tilo-action-broker/src/services/person_chat.rs"
+enum = "PersonChatCommand"
+reason = "one JSON request per call over the socket between an app and the runtime it runs in, tagged by its `operation` name; a conversation's body is the pair's own record now, so the four operations that carried it are gone, and both ends of the socket ship in one build"
+
+[[break]]
+file = "crates/collab/tilo-action-broker/src/services/person_chat.rs"
+enum = "ClosedPersonChatCommand"
+reason = "the decoder of `PersonChatCommand`: the same JSON, by name, on the same one-build socket, so the operations that went with the pair's own record take their names with them and no stored byte points at a position"

@@ -283,7 +283,6 @@ impl AppConnection {
         phases.mark("hold");
         let hold_id = hold.id();
         let handle = JoinedChannel {
-            person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: state.clone(),
             directories: Rc::clone(&self.directories),

@@ -1,17 +1,14 @@
-//! A person's private conversations with the other people of their
-//! workspaces: what the Chat app reads and writes on the action door.
+//! What only the workspaces' owner can say about a person's private
+//! conversations: which pairs the workspace proves they are in, the
+//! announcement that makes a pair's record theirs, and the old private store
+//! their history is imported from once and then emptied.
 //!
-//! The bodies never enter a workspace's records. The workspaces' owner keeps
-//! them beside its own record, in the private person state it alone writes,
-//! and decides every call itself: the caller is the certificate the broker
-//! attested on the app's connection, never something an app said about
-//! itself, and the owner refuses one that is not a current device of a person
-//! here, and every call on a workspace this device only enrolled in rather
-//! than hosts.
-//!
-//! Live updates are the owner's own watch (one per conversation, signalled
-//! after the message was published durably), never a poll: the broker holds
-//! it on the app's channel and answers its next read when it changes.
+//! A conversation's body is its pair's record, which the app reads and writes
+//! itself; nothing of it passes this door. What does is decided here: the
+//! caller is the certificate the broker attested on the app's connection,
+//! never something an app said about itself, and the owner refuses one that
+//! is not a current device of a person here, and every call on a workspace
+//! this device only enrolled in rather than hosts.
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -19,9 +16,7 @@ use std::time::SystemTime;
 use tilo_action_broker::services::person_chat::{PersonChatCommand, PersonChatServices};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::caller_authority::CallerAuthority;
-use tilo_peer_state::owner::{
-    DirectConversation, DirectConversationPage, DirectMessageSend, NativeWorkspaceOwner,
-};
+use tilo_peer_state::owner::{DirectConversation, DirectConversationPage, NativeWorkspaceOwner};
 use tilo_user_identity::DeviceCert;
 
 use crate::engine::Engine;
@@ -79,23 +74,6 @@ impl PersonChatServices for PersonChat {
             .collect())
     }
 
-    fn subscribe(
-        &self,
-        workspace: &str,
-        caller: &DeviceCert,
-        peer: &str,
-    ) -> Result<tokio::sync::watch::Receiver<u64>, String> {
-        let (workspace, owner) = self.owner(workspace)?;
-        owner.subscribe_direct_conversation(
-            workspace,
-            peer,
-            &CallerAuthority::Person {
-                caller: caller.clone(),
-            },
-            SystemTime::now(),
-        )
-    }
-
     fn command(
         &self,
         workspace: &str,
@@ -113,17 +91,6 @@ impl PersonChatServices for PersonChat {
         };
         let now = SystemTime::now();
         let value = match command {
-            PersonChatCommand::Contacts => serde_json::json!(
-                owner
-                    .direct_contacts(workspace, &authority, now)?
-                    .into_iter()
-                    .map(|contact| serde_json::json!({
-                        "public_key": contact.public_key,
-                        "display_name": contact.display_name.unwrap_or_default(),
-                        "conversation": contact.conversation,
-                    }))
-                    .collect::<Vec<_>>()
-            ),
             // The records this person's conversations live in, so a device
             // that never opened one still syncs it. Only their own pairs:
             // who else talks with whom is not this door's.
@@ -136,27 +103,6 @@ impl PersonChatServices for PersonChat {
                     }))
                     .collect::<Vec<_>>()
             ),
-            PersonChatCommand::Open { public_key } => {
-                owner.open_direct_conversation(workspace, &public_key, &authority, now)?;
-                conversation(whole(owner, workspace, &public_key, &authority, now)?)
-            }
-            PersonChatCommand::Read { public_key } => {
-                conversation(whole(owner, workspace, &public_key, &authority, now)?)
-            }
-            PersonChatCommand::Send {
-                public_key,
-                text,
-                invocation,
-            } => {
-                owner.send_direct_message(
-                    workspace,
-                    &public_key,
-                    &authority,
-                    DirectMessageSend { invocation, text },
-                    now,
-                )?;
-                conversation(whole(owner, workspace, &public_key, &authority, now)?)
-            }
             // The one write a conversation needs of its host: the pair the
             // two people share, so their devices read and change its record.
             // What it holds is the record's own, and stays off this door.
@@ -244,77 +190,6 @@ fn peer_key(public_key: &str) -> Result<[u8; 32], String> {
     <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| "invalid conversation peer".into())
 }
 
-/// The whole conversation, page by page, held to the bound the workspace
-/// carries a conversation at: Chat shows it whole, and a page is how the
-/// owner hands one over.
-fn whole(
-    owner: &NativeWorkspaceOwner,
-    workspace: WorkspaceId,
-    peer: &str,
-    authority: &CallerAuthority,
-    now: SystemTime,
-) -> Result<DirectConversation, String> {
-    let mut result = owner.read_direct_conversation(
-        workspace,
-        peer,
-        authority,
-        DirectConversationPage {
-            after_sequence: 0,
-            limit: PAGE,
-        },
-        now,
-    )?;
-    let mut bytes = text_bytes(&result, 0)?;
-    check_bound(result.messages.len(), bytes)?;
-    while result.has_more {
-        let next = owner.read_direct_conversation(
-            workspace,
-            peer,
-            authority,
-            DirectConversationPage {
-                after_sequence: result.next_sequence,
-                limit: PAGE,
-            },
-            now,
-        )?;
-        // The owner's pages are of one conversation, each after the one
-        // before: a page of another pair, or one that repeats, is refused
-        // instead of concatenated.
-        if next.id != result.id || next.next_sequence <= result.next_sequence {
-            return Err("private conversation page binding changed".into());
-        }
-        bytes = text_bytes(&next, bytes)?;
-        let messages = result
-            .messages
-            .len()
-            .checked_add(next.messages.len())
-            .ok_or("private conversation snapshot exceeds bound")?;
-        check_bound(messages, bytes)?;
-        result.next_sequence = next.next_sequence;
-        result.has_more = next.has_more;
-        result.messages.extend(next.messages);
-    }
-    Ok(result)
-}
-
-/// The text of `page`'s messages in bytes, added to what `before` carried.
-fn text_bytes(page: &DirectConversation, before: usize) -> Result<usize, String> {
-    page.messages
-        .iter()
-        .try_fold(before, |bytes, message| {
-            bytes.checked_add(message.text.len())
-        })
-        .ok_or_else(|| "private conversation snapshot exceeds bound".into())
-}
-
-fn check_bound(messages: usize, bytes: usize) -> Result<(), String> {
-    use tilo_relay_protocol::workspaces::private::{MAX_WHOLE_MESSAGES, MAX_WHOLE_TEXT_BYTES};
-    if bytes > MAX_WHOLE_TEXT_BYTES || messages > MAX_WHOLE_MESSAGES {
-        return Err("private conversation snapshot exceeds bound".into());
-    }
-    Ok(())
-}
-
 /// What the owner says when the person has no conversation with this peer.
 const PRIVATE_CONVERSATION_NOT_OPENED: &str = "private conversation not opened";
 /// How much text one import page carries, so a page of long messages stays
@@ -349,17 +224,5 @@ fn import_page(value: DirectConversation) -> serde_json::Value {
         "messages": messages,
         "has_more": has_more,
         "next_sequence": next_sequence,
-    })
-}
-
-/// The conversation as Chat reads it: who it is with, and its messages.
-fn conversation(value: DirectConversation) -> serde_json::Value {
-    serde_json::json!({
-        "peer": value.peer,
-        "messages": value.messages.into_iter().map(|message| serde_json::json!({
-            "id": message.id,
-            "author": message.sender,
-            "text": message.text,
-        })).collect::<Vec<_>>(),
     })
 }

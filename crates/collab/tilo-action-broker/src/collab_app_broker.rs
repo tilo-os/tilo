@@ -8559,7 +8559,6 @@ fn joined_record_kind(kind: &str) -> Result<Option<String>, BrokerError> {
 /// Per-channel handle established by `join_channel`; every subsequent
 /// method call inherits its (`channel_id`, `peer_id`, identity) context.
 struct JoinedChannel {
-    person_chat_views: RefCell<person_chat::SelectedViews>,
     committed_read: Rc<RefCell<committed_document::Slot>>,
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
@@ -12322,7 +12321,6 @@ pub mod tests {
         ) -> runtime_collab::ChannelHandle {
             wire_channel(JoinedChannel {
                 as_app: None,
-                person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: Arc::clone(&self.state),
                 directories: Rc::clone(&self.directories),

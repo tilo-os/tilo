@@ -557,27 +557,6 @@ impl ChannelHandle {
         })))
     }
 
-    /// Open a body-free private change lane, authorized as the original person.
-    ///
-    /// # Errors
-    /// Returns unavailable if certification or the private subscription fails.
-    pub async fn subscribe_person_chat(
-        &self,
-        peer: &str,
-        original: &[u8],
-    ) -> Result<PersonChatStream, NotAvailable> {
-        if peer.len() != 64 || !matches!(original.len(), 0 | 16) {
-            return Err(refused("invalid private subscription"));
-        }
-        Ok(PersonChatStream(
-            self.feed(Topic::PersonChat {
-                peer: peer.to_owned(),
-                on_behalf_of: original.to_vec(),
-            })
-            .await?,
-        ))
-    }
-
     /// Fetch or acknowledge an ephemeral editor on the certified native channel.
     /// The private command lane carries this separate closed envelope; no
     /// editor body enters the action protocol or person-message persistence.
@@ -1803,34 +1782,6 @@ impl RealtimeStream {
     pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
         match self.0.event().await? {
             Event::Realtime(event) => Ok(event),
-            other => Err(unexpected_event(&other)),
-        }
-    }
-}
-
-/// The app's private conversation with one person, as it stands and then
-/// on each change.
-#[derive(Clone)]
-pub struct PersonChatStream(Feed);
-
-impl PersonChatStream {
-    /// The conversation's next generation and its body, in the person chat
-    /// reply encoding.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended, or the body is oversized.
-    pub async fn read(&self) -> Result<(u64, Vec<u8>), NotAvailable> {
-        match self.0.event().await? {
-            Event::PersonChat {
-                generation,
-                conversation,
-            } => {
-                if conversation.len() > 1024 * 1024 {
-                    return Err(refused("private conversation reply exceeds bound"));
-                }
-                Ok((generation, conversation))
-            }
             other => Err(unexpected_event(&other)),
         }
     }

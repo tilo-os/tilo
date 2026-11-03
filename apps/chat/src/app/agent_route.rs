@@ -29,15 +29,10 @@ impl ChatApp {
             .clone_from(&parent.capture_agent_presence);
         view.agent_authors.clone_from(&parent.agent_authors);
         view.former_ids.clone_from(&parent.former_ids);
-        view.person_subscription = parent.person_subscription;
         view.direct_person = parent
             .direct_person
             .as_ref()
-            .filter(|peer| {
-                parent
-                    .person_subscription
-                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
-            })
+            .filter(|peer| parent.retains_person(peer))
             .cloned();
         view.person_contacts.clone_from(&parent.person_contacts);
         view.person_messages.clone_from(&parent.person_messages);
@@ -196,17 +191,11 @@ impl ChatApp {
             return;
         };
         channel.clone_into(&mut self.active_channel);
-        self.person_subscription = surface.view.person_subscription;
         self.direct_person = surface
             .view
             .direct_person
             .as_ref()
-            .filter(|peer| {
-                surface
-                    .view
-                    .person_subscription
-                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
-            })
+            .filter(|peer| surface.view.retains_person(peer))
             .cloned();
         self.person_contacts
             .clone_from(&surface.view.person_contacts);

@@ -365,16 +365,15 @@ pub struct ChatApp {
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     pub(crate) direct_person: Option<String>,
-    pub(crate) person_subscription: Option<uuid::Uuid>,
     pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
     pub(crate) person_messages: Vec<ui::person_chat::Message>,
     pub(crate) person_error: Option<String>,
-    /// The conversation being opened, until the workspace answers.
-    pub(crate) person_opening: Option<crate::person_conversation::Opening>,
+    /// The conversation being opened, until it answers.
+    pub(crate) person_opening: Option<crate::direct::window::Opening>,
     /// Opens another one replaced: each lane they open is released.
-    pub(crate) person_abandoned: Vec<crate::person_conversation::Opening>,
-    /// The message the composer is sending, until the workspace accepts it.
-    pub(crate) person_sending: Option<crate::person_conversation::Sending>,
+    pub(crate) person_abandoned: Vec<crate::direct::window::Opening>,
+    /// The message the composer is sending, until it is accepted.
+    pub(crate) person_sending: Option<crate::direct::window::Sending>,
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
     /// The direct conversations as the pair's own records, in a live window
     /// of a workspace that keeps them: what answers [`ui::person_chat`]
@@ -772,7 +771,6 @@ impl ChatApp {
             workspace_agents: Vec::new(),
             capture_agent_presence: None,
             direct_person: None,
-            person_subscription: None,
             person_contacts: Vec::new(),
             person_messages: Vec::new(),
             person_error: None,
@@ -1086,18 +1084,14 @@ impl ChatApp {
     }
 
     /// Keep the direct conversations in the pair's own records, in the
-    /// workspace `workspace` whose records `handle` opens: from now on
-    /// [`ui::person_chat`] answers from them in this window.
+    /// workspace `workspace` whose records `handle` opens: this window's
+    /// views read and write them there from now on.
     pub(crate) fn attach_direct(
         &mut self,
         handle: ui::framework::WorkspaceHandle,
         workspace: String,
     ) {
-        let records = crate::direct::Records::new(handle, workspace, &self.me.id);
-        ui::person_chat::install_native(Some(
-            std::rc::Rc::clone(&records) as std::rc::Rc<dyn ui::person_chat::Native>
-        ));
-        self.direct = Some(records);
+        self.direct = Some(crate::direct::Records::new(handle, workspace, &self.me.id));
     }
 
     /// Keep the composers' drafts in the person's own `record`: theirs

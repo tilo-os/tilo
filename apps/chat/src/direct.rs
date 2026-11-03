@@ -16,13 +16,11 @@
 //! ([`crate::direct_parts`], [`DirectPart`]): 2000 messages or 1 MiB of text
 //! each, as many as the conversation needs.
 //!
-//! The views keep calling [`ui::person_chat`], which this window answers
-//! from the records ([`Records`] as its [`ui::person_chat::Native`]): the
-//! same functions, the same contact and message shapes, a different source.
-//! What only the session's owner can do stays on its door: announcing the
-//! pair, reading which pairs this person is in, and reading the old private
-//! store so the conversations kept there are imported once
-//! ([`Records::import_old_store`]).
+//! The window reads and writes them here ([`Records`]); Chat's views go
+//! through [`crate::direct::window`]. What only the session's owner can do
+//! stays on its door ([`ui::person_chat`]): announcing the pair, reading
+//! which pairs this person is in, and reading the old private store so the
+//! conversations kept there are imported once ([`Records::import_old_store`]).
 //!
 //! A person is kept in the conversation under the key the private store has
 //! always used for them ([`ui::person_chat::person_key`], the hash of their
@@ -261,7 +259,7 @@ impl Records {
         self.held(peer).map_or(0, |open| {
             open.record
                 .get()
-                .unread(&self.conversation(&open), &self.me, peer)
+                .unread(&Self::conversation(&open), &self.me, peer)
         })
     }
 
@@ -332,14 +330,14 @@ impl Records {
     /// The conversation with `peer` as a view shows it: the messages the
     /// record kept before the parts, and every message of the parts held
     /// here, oldest first.
-    fn conversation(&self, open: &Open) -> direct_parts::Conversation {
+    fn conversation(open: &Open) -> direct_parts::Conversation {
         direct_parts::Conversation::new(open.chain.parts())
     }
 
     /// The conversation with `peer` as a view shows it.
-    fn shown(&self, open: &Open, peer: &str) -> ui::person_chat::Conversation {
+    fn shown(open: &Open, peer: &str) -> ui::person_chat::Conversation {
         let state = open.record.get();
-        let parts = self.conversation(open);
+        let parts = Self::conversation(open);
         let mut messages: BTreeMap<String, (i64, ui::person_chat::Message)> = state
             .messages
             .iter()
@@ -418,7 +416,7 @@ impl Records {
         let Some(open) = self.held(peer) else {
             return;
         };
-        let mark = self.conversation(&open).read_to_end(peer);
+        let mark = Self::conversation(&open).read_to_end(peer);
         let held = open
             .record
             .get()
@@ -475,7 +473,7 @@ impl Records {
         // head full does.
         let mut rest = imported;
         while !rest.is_empty() {
-            let conversation = self.conversation(&open);
+            let conversation = Self::conversation(&open);
             let (room, text_room) = match conversation.parts().last() {
                 Some((head, part)) if conversation.post_part() == *head => (
                     PART_MESSAGES.saturating_sub(part.messages.len()).max(1),
@@ -554,7 +552,10 @@ fn imported_room(
     let mut take = 0;
     let mut bytes: usize = 0;
     while take < rest.len() && take < room {
-        let len = rest[take].text.len();
+        let Some(message) = rest.get(take) else {
+            break;
+        };
+        let len = message.text.len();
         if take > 0 && bytes.saturating_add(len) > text_room {
             break;
         }
@@ -564,8 +565,12 @@ fn imported_room(
     rest.split_off(take)
 }
 
-impl ui::person_chat::Native for Records {
-    fn contacts(&self) -> Vec<ui::person_chat::Contact> {
+/// What Chat's views read and write: the same contacts and conversations
+/// the person door used to answer, from the pair records this window holds.
+impl Records {
+    /// The workspace's people this person may talk to, each with whether a
+    /// conversation of theirs holds messages.
+    pub(crate) fn contacts(&self) -> Vec<ui::person_chat::Contact> {
         self.refresh_pairs();
         let held: Vec<String> = self
             .open
@@ -592,7 +597,9 @@ impl ui::person_chat::Native for Records {
             .collect()
     }
 
-    fn open(&self, peer: &str) -> Result<ui::person_chat::Conversation, String> {
+    /// The whole conversation with `peer`, opened: its record is created
+    /// where the workspace holds none yet.
+    pub(crate) fn open(&self, peer: &str) -> Result<ui::person_chat::Conversation, String> {
         // Whoever opens a conversation makes its record the pair's: the one
         // write only the session's owner can sign. Before the record is
         // opened here, so this window writes nothing an unproved pair owns.
@@ -603,12 +610,13 @@ impl ui::person_chat::Native for Records {
         for (index, _) in open.chain.parts() {
             let _ = open.chain.hold(index);
         }
-        Ok(self.shown(&open, peer))
+        Ok(Self::shown(&open, peer))
     }
 
-    fn read(&self, peer: &str) -> Result<ui::person_chat::Conversation, String> {
+    /// The whole conversation with `peer`, as it stands.
+    pub(crate) fn read(&self, peer: &str) -> Result<ui::person_chat::Conversation, String> {
         match self.held(peer) {
-            Some(open) => Ok(self.shown(&open, peer)),
+            Some(open) => Ok(Self::shown(&open, peer)),
             // No conversation here yet is an empty one, not a refusal.
             None if self.person(peer).is_some() => Ok(ui::person_chat::Conversation {
                 peer: peer.to_owned(),
@@ -618,7 +626,9 @@ impl ui::person_chat::Native for Records {
         }
     }
 
-    fn send(
+    /// Send `text` to `peer` once: `invocation` names the message, so a
+    /// retry is the same message and not another.
+    pub(crate) fn send(
         &self,
         peer: &str,
         text: &str,
@@ -631,12 +641,17 @@ impl ui::person_chat::Native for Records {
                 text: text.to_owned(),
             }))
             .map_err(|error| error.to_string())?;
-        Ok(self.shown(&open, peer))
+        Ok(Self::shown(&open, peer))
     }
 }
 
 #[cfg(test)]
 mod acceptance;
+
+#[cfg(test)]
+mod conversation_tests;
+
+pub(crate) mod window;
 
 #[cfg(test)]
 mod tests {

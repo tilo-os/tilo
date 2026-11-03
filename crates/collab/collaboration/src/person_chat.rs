@@ -1,10 +1,12 @@
-//! Private person conversations, kept by the workspace's governor and reached
-//! through the host: the native broker's authenticated Chat channel, or the
-//! page's own session with the workspace (`install_transport`). Reads on the UI
-//! sync path use a bounded, revocable local snapshot; an operation answers
-//! with a [`Pending`] reply that a page fills later, never by waiting on the
-//! UI thread. There is no standalone store, workspace-document fallback, or
-//! model-facing host tool.
+//! What the workspace's owner alone can say about a person's conversations,
+//! and how a page's views read and write them: the door of `Request`s, the
+//! page's session with its host (`install_transport`), and the lane a selected
+//! view keeps. A native window keeps its conversations in the pair records
+//! and asks the door only for what the records cannot say: which pairs this
+//! person is in, the pair's announcement, the old private store to import
+//! once, and its emptying. Reads on the UI sync path use a bounded, revocable
+//! local snapshot; an operation answers with a [`Pending`] reply that a page
+//! fills later, never by waiting on the UI thread.
 use crate::time::{Duration, Instant};
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -147,43 +149,6 @@ pub fn install_transport(transport: Option<Arc<dyn Transport>>) {
 fn transport() -> Option<Arc<dyn Transport>> {
     use tilo_lock::RwLockRecover as _;
     TRANSPORT.read_recover().clone()
-}
-
-/// A native app's own reading and writing of these conversations: the pair
-/// record the app holds open (`ui::framework::WorkspaceRecord`), answered in
-/// the door's own vocabulary so a view keeps calling the same functions.
-///
-/// An app installs one for its window ([`install_native`]). What only the
-/// session's owner can do stays on the door whatever an app installs: a
-/// pair's announcement, and reading the old private store for the import.
-pub trait Native {
-    /// The workspace's people this person may talk to, each in the spelling
-    /// the conversations keep for them, with whether a conversation of
-    /// theirs holds messages.
-    fn contacts(&self) -> Vec<Contact>;
-    /// The whole conversation with `peer`, opened: its record is created
-    /// where the workspace holds none yet.
-    fn open(&self, peer: &str) -> Result<Conversation, String>;
-    /// The whole conversation with `peer`, as it stands.
-    fn read(&self, peer: &str) -> Result<Conversation, String>;
-    /// Send `text` to `peer` once: `invocation` names the message, so a
-    /// retry is the same message and not another.
-    fn send(&self, peer: &str, text: &str, invocation: uuid::Uuid) -> Result<Conversation, String>;
-}
-
-thread_local! { static NATIVE: std::cell::RefCell<Option<std::rc::Rc<dyn Native>>> = const { std::cell::RefCell::new(None) }; }
-
-/// Make `native` this window's source of private conversations, or take it
-/// away with `None`: from then on the conversation functions answer from
-/// the app's own records, and what the door alone can do still goes to it.
-pub fn install_native(native: Option<std::rc::Rc<dyn Native>>) {
-    NATIVE.with(|current| *current.borrow_mut() = native);
-    invalidate();
-    wake_all();
-}
-
-fn native() -> Option<std::rc::Rc<dyn Native>> {
-    NATIVE.with(|native| native.borrow().clone())
 }
 
 /// The key a conversation keeps a person under, from a person as the
@@ -596,9 +561,6 @@ pub fn contacts() -> Vec<Contact> {
     if original().is_err() {
         return Vec::new();
     }
-    if let Some(native) = native() {
-        return native.contacts();
-    }
     load_contacts_once();
     contacts_snapshot()
 }
@@ -607,11 +569,6 @@ pub fn contacts() -> Vec<Contact> {
 /// list did not have: at most once every ten seconds, and the list in hand
 /// stays until the new one comes.
 pub fn refresh_contacts() {
-    // An app's own records list the people it can reach, and its windows are
-    // woken by the records themselves: nothing to ask again.
-    if native().is_some() {
-        return;
-    }
     let mut value = cache().lock_recover();
     current(&mut value);
     let recent = value.attempts.get("").is_some_and(|at| {
@@ -630,9 +587,6 @@ pub fn refresh_contacts() {
 /// decoded, before its private effect context exists. This starts no RPC and
 /// exposes no conversation bodies or authority to open/read a conversation.
 pub fn contacts_snapshot() -> Vec<Contact> {
-    if let Some(native) = native() {
-        return native.contacts();
-    }
     let mut value = cache().lock_recover();
     current(&mut value);
     value
@@ -805,17 +759,12 @@ fn start_subscription(peer: &str, original: Option<uuid::Uuid>) -> Result<uuid::
             },
         );
     }
-    // An app's record wakes its own window: no host watch is asked for.
+    // Only a page's host watches a conversation: a native window's pair
+    // records wake its window themselves, and this build has no page door.
     #[cfg(feature = "broker-transport")]
-    let result = if native().is_some() {
-        Ok(())
-    } else {
-        crate::subscribe_person_chat(
-            peer.to_owned(),
-            original.map_or_else(Vec::new, |id| id.as_bytes().to_vec()),
-            token,
-            receiver,
-        )
+    let result: Result<(), String> = {
+        let _ = (original, receiver);
+        Err("a window's conversations are its pair's records".to_owned())
     };
     #[cfg(not(feature = "broker-transport"))]
     let result = {
@@ -832,6 +781,31 @@ fn start_subscription(peer: &str, original: Option<uuid::Uuid>) -> Result<uuid::
         subscription_failed(token, peer);
     }
     result.map(|()| token)
+}
+
+#[cfg(not(feature = "broker-transport"))]
+fn subscription_current(token: uuid::Uuid, peer: &str) -> bool {
+    let mut value = cache().lock_recover();
+    current(&mut value);
+    value
+        .active
+        .get(peer)
+        .is_some_and(|active| active.token == token)
+}
+
+fn subscription_failed(token: uuid::Uuid, peer: &str) {
+    let mut value = cache().lock_recover();
+    current(&mut value);
+    if value
+        .active
+        .get(peer)
+        .is_some_and(|active| active.token == token)
+    {
+        value.active.remove(peer);
+        value.conversations.remove(peer);
+        drop(value);
+        wake_all();
+    }
 }
 
 /// Follow the conversation with `peer` through a page's transport: each
@@ -950,47 +924,8 @@ fn release(public_key: &str, token: Option<uuid::Uuid>) {
     }
 }
 
-pub(crate) fn subscription_current(token: uuid::Uuid, peer: &str) -> bool {
-    let mut value = cache().lock_recover();
-    current(&mut value);
-    value
-        .active
-        .get(peer)
-        .is_some_and(|active| active.token == token)
-}
-
-pub(crate) fn subscription_failed(token: uuid::Uuid, peer: &str) {
-    {
-        let mut value = cache().lock_recover();
-        current(&mut value);
-        if value
-            .active
-            .get(peer)
-            .is_some_and(|active| active.token == token)
-        {
-            value.active.remove(peer);
-            value.conversations.remove(peer);
-            drop(value);
-            wake_all();
-        }
-    }
-}
-
-#[cfg(feature = "broker-transport")]
-pub(crate) fn subscription_snapshot(
-    token: uuid::Uuid,
-    peer: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    if bytes.len() > 1024 * 1024 {
-        return Err("private conversation reply exceeds bound".into());
-    }
-    let snapshot: Conversation =
-        serde_json::from_slice(bytes).map_err(|_| "invalid private conversation snapshot")?;
-    store_snapshot(token, peer, snapshot)
-}
-
 /// Keep a refreshed `snapshot` for the open lane `token` of `peer`.
+#[cfg(not(feature = "broker-transport"))]
 fn store_snapshot(token: uuid::Uuid, peer: &str, snapshot: Conversation) -> Result<(), String> {
     if snapshot.peer != peer {
         return Err("private conversation peer binding changed".into());
@@ -1028,9 +963,6 @@ pub fn open(public_key: &str) -> Pending<Conversation> {
         Ok(original) => original,
         Err(error) => return Pending::ready(Err(error)),
     };
-    if let Some(native) = native() {
-        return Pending::ready(native_opened(&*native, public_key, original));
-    }
     let generation = match generation() {
         Ok(generation) => generation,
         Err(error) => return Pending::ready(Err(error)),
@@ -1045,21 +977,6 @@ pub fn open(public_key: &str) -> Pending<Conversation> {
         move |answer| fill.fill(opened(answer, &peer, generation, original)),
     );
     pending
-}
-
-/// Open `peer` in the app's own record, with the lane its views keep: the
-/// record's changes wake the window, so the lane carries no watch of its own.
-fn native_opened(
-    native: &dyn Native,
-    peer: &str,
-    original: Option<uuid::Uuid>,
-) -> Result<Conversation, String> {
-    let conversation = native.open(peer)?;
-    let token = start_subscription(peer, original)?;
-    if subscription_token(peer) != Some(token) {
-        return Err("private conversation channel was replaced".into());
-    }
-    Ok(conversation)
 }
 
 fn opened(
@@ -1099,9 +1016,6 @@ fn opened(
 /// original person custody.
 pub fn snapshot(public_key: &str) -> Result<Conversation, String> {
     original()?;
-    if let Some(native) = native() {
-        return native.read(public_key);
-    }
     let mut value = cache().lock_recover();
     current(&mut value);
     register_reader(&mut value);
@@ -1121,9 +1035,6 @@ pub fn read(public_key: &str) -> Pending<Conversation> {
         Ok(None) => return Pending::ready(snapshot(public_key)),
         Err(error) => return Pending::ready(Err(error)),
     };
-    if let Some(native) = native() {
-        return Pending::ready(native.read(public_key));
-    }
     conversation(
         Request::Read {
             public_key: public_key.to_owned(),
@@ -1143,10 +1054,6 @@ pub fn send(public_key: &str, text: &str) -> Pending<Conversation> {
         Ok(original) => original,
         Err(error) => return Pending::ready(Err(error)),
     };
-    if let Some(native) = native() {
-        let invocation = original.unwrap_or_else(uuid::Uuid::new_v4);
-        return Pending::ready(native.send(public_key, text, invocation));
-    }
     conversation(
         Request::Send {
             public_key: public_key.to_owned(),
@@ -1271,8 +1178,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "broker-transport")]
-    fn late_subscription_reply_cannot_restore_a_closed_or_switched_peer() {
+    fn an_older_view_cannot_release_or_retain_a_newer_lane() {
         let _guard = tilo_test_env::lock();
         invalidate();
         let old = uuid::Uuid::new_v4();
@@ -1286,20 +1192,18 @@ mod tests {
                 _cancel: cancel,
             },
         );
-        let bytes = br#"{"peer":"old-peer","messages":[]}"#;
-        subscription_snapshot(old, "old-peer", bytes).unwrap();
-        subscription_failed(old, "old-peer");
-        assert!(subscription_current(current, "new-peer"));
-        // An older view of this very peer must not release or retain the new
-        // lane after a host/security-context replacement.
         close_current("new-peer", old);
         assert!(!retain_current("new-peer", old));
-        assert!(subscription_current(current, "new-peer"));
+        assert_eq!(
+            cache().lock().unwrap().active["new-peer"].token,
+            current,
+            "the newer lane stays open"
+        );
         assert!(snapshot("old-peer").is_err());
         close("old-peer");
-        assert!(subscription_current(current, "new-peer"));
+        assert!(cache().lock().unwrap().active.contains_key("new-peer"));
         invalidate();
-        assert!(!subscription_current(current, "new-peer"));
+        assert!(cache().lock().unwrap().active.is_empty());
     }
 
     #[test]

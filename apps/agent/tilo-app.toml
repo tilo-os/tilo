@@ -62,8 +62,8 @@ mode = "off"
 [sandbox.services]
 # Required, not optional: with no broker there is no document to join
 # and the agent has nothing to do.
-collab = "required@16"
-model-gateway = "required@16"
+collab = "required@17"
+model-gateway = "required@17"
 
 [entrypoint]
 bin  = "bin/tilo-agent"

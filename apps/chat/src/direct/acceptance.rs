@@ -265,10 +265,10 @@ impl Device {
         match (&mut self.marks, &mut peer.marks) {
             (Some(mine), Some(theirs)) => mine.sync_with(theirs).expect("a record merges"),
             (Some(mine), None) => {
-                peer.marks = Some(Replica::load(&mine.save()).expect("a record loads"))
+                peer.marks = Some(Replica::load(&mine.save()).expect("a record loads"));
             }
             (None, Some(theirs)) => {
-                self.marks = Some(Replica::load(&theirs.save()).expect("a record loads"))
+                self.marks = Some(Replica::load(&theirs.save()).expect("a record loads"));
             }
             (None, None) => {}
         }
@@ -497,6 +497,92 @@ fn a_conversation_kept_in_the_old_store_imports_readable_once() {
         ada_laptop.unread(&mut store, BOB),
         1,
         "Bob's one is unread for Ada"
+    );
+}
+
+/// Two devices of the person that meet with no host in between exchange the
+/// conversation directly: what a device that comes back into reach of another
+/// does, without the workspace's store carrying it.
+#[test]
+fn two_devices_that_meet_exchange_the_conversation_directly() {
+    let (mut ada_laptop, mut ada_phone, mut bob_laptop, _) = devices();
+    let store = Store::default();
+    ada_laptop.send(&store, "dm_h1", "written on her laptop");
+    // Her phone has never seen the store: the two devices meet directly.
+    ada_phone.meet(&mut ada_laptop);
+    assert_eq!(
+        ada_phone.shown(),
+        ada_laptop.shown(),
+        "the devices that met hold the same conversation"
+    );
+    assert_eq!(ada_phone.shown().len(), 1);
+    // Bob's laptop meets her phone, and reads it: the store held nothing.
+    bob_laptop.meet(&mut ada_phone);
+    assert_eq!(
+        bob_laptop
+            .shown()
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        ["written on her laptop"]
+    );
+}
+
+/// After the migration has emptied the old store, the conversation lives on
+/// in the pair's record: Ada writes, and Bob's open conversation shows it, the
+/// same on both of his devices.
+#[test]
+fn after_the_migration_a_message_still_reaches_an_open_conversation() {
+    let (mut ada_laptop, mut ada_phone, mut bob_laptop, mut bob_phone) = devices();
+    let mut store = Store::default();
+    // Bob imports what the old store held, and the migration empties it once
+    // nothing more can be read: what the app does as its imports drain.
+    let old = |id: &str, text: &str| crate::direct_parts::StoredMessage {
+        id: id.to_owned(),
+        author: ui::person_chat::person_key(ADA),
+        text: text.to_owned(),
+        at: 10,
+    };
+    bob_laptop.import(
+        &store,
+        vec![
+            old("dm_old1", "before the records"),
+            old("dm_old2", "and one more"),
+        ],
+    );
+    bob_laptop.upload(&mut store);
+    bob_phone.download(&store);
+    // The old store is gone: importing again finds nothing, and the two
+    // messages Bob's devices read are the pair's own now.
+    bob_phone.import(&store, Vec::new());
+    assert_eq!(bob_laptop.shown().len(), 2);
+    assert_eq!(bob_phone.shown(), bob_laptop.shown());
+    // Bob's conversations are open on both devices; Ada writes after the
+    // clear, with Bob's devices online and their store handing it to them.
+    ada_laptop.send(&store, "dm_after", "after the migration");
+    ada_laptop.upload(&mut store);
+    bob_laptop.download(&store);
+    bob_phone.download(&store);
+    assert_eq!(
+        bob_laptop
+            .shown()
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        ["before the records", "and one more", "after the migration"],
+        "Bob's open conversation shows the message written after the migration"
+    );
+    assert_eq!(bob_phone.shown(), bob_laptop.shown());
+    assert_eq!(
+        bob_laptop.unread(&mut store, ADA),
+        3,
+        "and counts it as one more of Ada's for him to read"
+    );
+    ada_phone.download(&store);
+    assert_eq!(
+        ada_phone.shown(),
+        ada_laptop.shown(),
+        "Ada's other device holds the conversation both wrote"
     );
 }
 

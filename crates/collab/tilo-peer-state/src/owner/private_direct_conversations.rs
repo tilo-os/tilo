@@ -335,6 +335,7 @@ fn authorized_pair(
     people.sort();
     Ok((pair_id(workspace, &people)?, people))
 }
+#[cfg(any(test, feature = "test-support"))]
 fn ensure_pair(
     store: &mut PrivateDirectConversationStore,
     workspace: WorkspaceId,
@@ -357,38 +358,6 @@ fn ensure_pair(
     Ok(())
 }
 impl NativeWorkspaceOwner {
-    /// Subscribe only to an existing, freshly authorized certified pair.
-    /// The mutation guard closes the snapshot/subscription race with persistence.
-    ///
-    /// # Errors
-    /// Refuses stale certificates, unavailable custody, or an unauthorized pair.
-    pub fn subscribe_direct_conversation(
-        &self,
-        workspace: WorkspaceId,
-        peer: &str,
-        authority: &CallerAuthority,
-        now: SystemTime,
-    ) -> Result<tokio::sync::watch::Receiver<u64>, String> {
-        let _turn = self.0.mutation.lock();
-        let (id, count) = self.with_current(workspace, |view| {
-            let (id, _) = authorized_pair(view, workspace, peer, authority, now)?;
-            let pair = view
-                .record
-                .private_direct_conversations
-                .pairs
-                .get(&id)
-                .ok_or("private conversation is not open")?;
-            Ok((id, pair.messages.len() as u64))
-        })?;
-        let mut channels = self.0.direct_changes.lock();
-        // Closed pairs need no retained process-local channel.
-        channels.retain(|_, sender| sender.receiver_count() > 0);
-        Ok(channels
-            .entry(id)
-            .or_insert_with(|| tokio::sync::watch::channel(count).0)
-            .subscribe())
-    }
-
     /// Caller authority must be derived from real native transport, never app arguments.
     ///
     /// # Errors
@@ -407,8 +376,14 @@ impl NativeWorkspaceOwner {
     }
     /// Persist the unordered certified pair before returning its stable owner ID.
     ///
+    /// A conversation's messages are its pair's record now: nothing in a
+    /// running session writes the old store. This, and its send, remain the
+    /// fixture of the one test that proves a device's old history still
+    /// imports, and are compiled for it alone.
+    ///
     /// # Errors
     /// Refuses unauthorized pairs, invalid keys, or unavailable durable custody.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_direct_conversation(
         &self,
         workspace: WorkspaceId,
@@ -461,11 +436,11 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         authority: &CallerAuthority,
-        _now: SystemTime,
+        now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(workspace, |view| {
-            let _ = caller(view, authority, _now)?;
+            caller(view, authority, now)?;
             Ok(view.clone())
         })?;
         if candidate.record.private_direct_conversations.is_empty() {
@@ -479,6 +454,9 @@ impl NativeWorkspaceOwner {
             .ok_or("owner generation exhausted")?;
         self.publish_workspace(workspace, candidate, None)
     }
+    /// One page of the conversation with `peer_public_key`, as the old
+    /// private store holds it: the migration reads a person's history here
+    /// before it is cleared.
     ///
     /// # Errors
     /// Refuses unauthorized pairs, invalid cursors, or unavailable custody.
@@ -499,8 +477,12 @@ impl NativeWorkspaceOwner {
     }
     /// Saved means the owner atomic persistence barrier completed, not delivery.
     ///
+    /// [`Self::open_direct_conversation`]'s fixture counterpart: a device's
+    /// old history, kept so the migration's import has something to read.
+    ///
     /// # Errors
     /// Refuses unauthorized pairs, invalid payloads, conflicting invocation IDs, or full custody.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn send_direct_message(
         &self,
         workspace: WorkspaceId,
@@ -574,10 +556,6 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("owner generation exhausted")?;
         self.publish_workspace(workspace, candidate, None)?;
-        // A failed durable publication, or an idempotent retry, never signals.
-        if let Some(sender) = self.0.direct_changes.lock().get(&id) {
-            sender.send_replace(message.sequence);
-        }
         Ok(DirectMessageReceipt {
             status: DirectMessageStatus::Saved,
             conversation_id: id,
@@ -738,86 +716,6 @@ mod tests {
                 self.now,
             )
         }
-    }
-
-    #[test]
-    fn private_change_lane_is_pair_scoped_and_only_signals_durable_new_sends() {
-        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
-        let fixture = Fixture::new();
-        let peer = fixture.member(71, MemberRole::Editor);
-        let other = fixture.member(73, MemberRole::Editor);
-        let public_key = key(peer.user_public_key);
-        assert!(
-            fixture
-                .owner
-                .subscribe_direct_conversation(
-                    fixture.workspace,
-                    &public_key,
-                    &fixture.person(),
-                    fixture.now
-                )
-                .is_err()
-        );
-        fixture
-            .owner
-            .open_direct_conversation(
-                fixture.workspace,
-                &public_key,
-                &fixture.person(),
-                fixture.now,
-            )
-            .unwrap();
-        let mut changes = fixture
-            .owner
-            .subscribe_direct_conversation(
-                fixture.workspace,
-                &public_key,
-                &fixture.person(),
-                fixture.now,
-            )
-            .unwrap();
-        assert_eq!(*changes.borrow_and_update(), 0);
-        fixture
-            .send(&other, uuid::Uuid::new_v4(), "another pair")
-            .unwrap();
-        assert!(!changes.has_changed().unwrap());
-        assert!(
-            with_failure(Checkpoint::BeforePublish, || fixture.send(
-                &peer,
-                uuid::Uuid::new_v4(),
-                "not persisted"
-            ))
-            .is_err()
-        );
-        assert!(!changes.has_changed().unwrap());
-        let id = uuid::Uuid::new_v4();
-        fixture.send(&peer, id, "persisted").unwrap();
-        assert!(changes.has_changed().unwrap());
-        assert_eq!(*changes.borrow_and_update(), 1);
-        fixture.send(&peer, id, "persisted").unwrap();
-        assert!(!changes.has_changed().unwrap());
-        // The other endpoint sees the same count, not a public workspace event.
-        let reverse = fixture
-            .owner
-            .subscribe_direct_conversation(
-                fixture.workspace,
-                &key(fixture.governor.user_public_key),
-                &CallerAuthority::Person { caller: peer },
-                fixture.now,
-            )
-            .unwrap();
-        assert_eq!(*reverse.borrow(), 1);
-        assert!(
-            fixture
-                .owner
-                .subscribe_direct_conversation(
-                    fixture.workspace,
-                    &public_key,
-                    &CallerAuthority::Person { caller: other },
-                    fixture.now
-                )
-                .is_err()
-        );
     }
 
     #[test]
@@ -1088,13 +986,6 @@ mod tests {
                 .unwrap()
                 .contains(reason)
         );
-        assert!(
-            owner
-                .subscribe_direct_conversation(workspace, peer, authority, now)
-                .err()
-                .unwrap()
-                .contains(reason)
-        );
         for invocation in [saved_invocation, uuid::Uuid::new_v4()] {
             assert!(
                 owner
@@ -1167,17 +1058,6 @@ mod tests {
                     &peer,
                     &local_authority,
                     DirectConversationPage::default(),
-                    fixture.now,
-                )
-                .is_ok()
-        );
-        assert!(
-            fixture
-                .owner
-                .subscribe_direct_conversation(
-                    fixture.workspace,
-                    &peer,
-                    &local_authority,
                     fixture.now,
                 )
                 .is_ok()
@@ -1283,17 +1163,6 @@ mod tests {
         assert!(
             fixture
                 .owner
-                .subscribe_direct_conversation(
-                    fixture.workspace,
-                    &key(peer.user_public_key),
-                    &fixture.person(),
-                    fixture.now
-                )
-                .is_err()
-        );
-        assert!(
-            fixture
-                .owner
                 .open_direct_conversation(
                     fixture.workspace,
                     &key(peer.user_public_key),
@@ -1341,17 +1210,6 @@ mod tests {
         let mut changed = peer.clone();
         changed.device_label = "not current evidence".into();
         let forged = CallerAuthority::Person { caller: changed };
-        assert!(
-            fixture
-                .owner
-                .subscribe_direct_conversation(
-                    fixture.workspace,
-                    &key(peer.user_public_key),
-                    &forged,
-                    fixture.now
-                )
-                .is_err()
-        );
         assert!(
             fixture
                 .owner

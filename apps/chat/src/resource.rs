@@ -662,16 +662,24 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
                 chat.borrow_mut().answer_effect(effect)
             });
         }
-        // The workspace answers these: at once from the native host, later in
-        // a page. Either way the effect answers when it has.
+        // The records here answer these at once; a page's host later. Either
+        // way the effect answers when it has.
         ChatEffect::SendDirectMessage { public_key, text } => {
-            let reply = ui::person_chat::with_invocation(cx.invocation(), || {
-                chat.borrow_mut().send_person_message(public_key, text)
+            let invocation = cx.invocation();
+            let reply = ui::person_chat::with_invocation(invocation, || {
+                chat.borrow_mut()
+                    .send_person_message(public_key, text, invocation)
             })?;
+            if let Some(answer) = reply.take() {
+                return chat.borrow_mut().sent_person_answer(public_key, answer);
+            }
+            let Some(later) = reply.later() else {
+                return Err(crate::i18n::t("chat-person-chat-unavailable"));
+            };
             let public_key = public_key.clone();
             let chat = Rc::clone(chat);
             return Ok(cx.spawn(
-                |_| reply,
+                |_| later,
                 move |(), answer, _| chat.borrow_mut().sent_person_answer(&public_key, answer),
             ));
         }
@@ -679,10 +687,16 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             let reply = ui::person_chat::with_invocation(cx.invocation(), || {
                 chat.borrow_mut().read_person_conversation(public_key)
             })?;
+            if let Some(answer) = reply.take() {
+                return chat.borrow_mut().read_person_answer(public_key, answer);
+            }
+            let Some(later) = reply.later() else {
+                return Err(crate::i18n::t("chat-person-chat-unavailable"));
+            };
             let public_key = public_key.clone();
             let chat = Rc::clone(chat);
             return Ok(cx.spawn(
-                |_| reply,
+                |_| later,
                 move |(), answer, _| chat.borrow_mut().read_person_answer(&public_key, answer),
             ));
         }

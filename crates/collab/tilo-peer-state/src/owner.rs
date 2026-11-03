@@ -165,8 +165,6 @@ struct SharedOwner {
     mutation: Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
-    /// Process-local private pair notifications, never serialized or replicated.
-    direct_changes: Mutex<BTreeMap<String, tokio::sync::watch::Sender<u64>>>,
 }
 #[derive(Default)]
 struct Current {
@@ -333,7 +331,6 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
-            direct_changes: Mutex::new(BTreeMap::new()),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -374,7 +371,6 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
-            direct_changes: Mutex::new(BTreeMap::new()),
         })))
     }
     #[must_use]

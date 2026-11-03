@@ -247,34 +247,6 @@ pub fn speaker_command(
 
 static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
 
-pub fn subscribe_person_chat(
-    peer: String,
-    original: Vec<u8>,
-    token: uuid::Uuid,
-    cancel: tokio::sync::watch::Receiver<()>,
-) -> Result<(), String> {
-    let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "private person bridge unavailable")?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
-        .ok_or("private conversations need the certified native host")?;
-    if !enqueue_sdk_command(
-        &sender,
-        SdkCommand::SubscribePersonChat {
-            peer,
-            original,
-            token,
-            cancel,
-        },
-        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
-    ) {
-        return Err("private subscription queue unavailable".into());
-    }
-    Ok(())
-}
-
 pub fn person_chat_command(command: Vec<u8>, original: Vec<u8>) -> Result<Vec<u8>, String> {
     if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
         return Err("invalid private conversation request".into());
@@ -1083,12 +1055,6 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
-    },
-    SubscribePersonChat {
-        peer: String,
-        original: Vec<u8>,
-        token: uuid::Uuid,
-        cancel: tokio::sync::watch::Receiver<()>,
     },
     PersonChat {
         command: Vec<u8>,
@@ -4166,44 +4132,6 @@ async fn drive_shovel(
                     Err("primary collaboration route is unavailable".into())
                 };
                 let _ = reply.send(result);
-            }
-            SdkCommand::SubscribePersonChat {
-                peer,
-                original,
-                token,
-                mut cancel,
-            } => {
-                if let Some(key) = primary.as_ref()
-                    && let Some(route) = routes.get(key)
-                {
-                    let channel = route.channel.clone();
-                    tokio::task::spawn_local(async move {
-                        let follow = async {
-                            let stream = channel
-                                .subscribe_person_chat(&peer, &original)
-                                .await
-                                .map_err(|error| error.to_string())?;
-                            loop {
-                                let (_, bytes) =
-                                    stream.read().await.map_err(|error| error.to_string())?;
-                                if !crate::person_chat::subscription_current(token, &peer) {
-                                    return Ok::<(), String>(());
-                                }
-                                crate::person_chat::subscription_snapshot(token, &peer, &bytes)?;
-                            }
-                        };
-                        tokio::select! {
-                            _ = cancel.changed() => {}
-                            result = follow => {
-                                if result.is_err() {
-                                    crate::person_chat::subscription_failed(token, &peer);
-                                }
-                            }
-                        }
-                    });
-                } else {
-                    crate::person_chat::subscription_failed(token, &peer);
-                }
             }
             SdkCommand::PersonChat {
                 command,

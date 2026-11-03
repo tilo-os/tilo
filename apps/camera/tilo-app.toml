@@ -63,9 +63,9 @@ mode = "off"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@16"
-tilo-fs = "optional@16"
-tools = "optional@16"
+collab = "optional@17"
+tilo-fs = "optional@17"
+tools = "optional@17"
 
 [entrypoint]
 bin             = "bin/camera"
