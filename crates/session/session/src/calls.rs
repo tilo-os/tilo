@@ -770,9 +770,15 @@ impl Shared {
             Arc::new(move || call.upgrade().is_some_and(|call| !call.closed()))
         };
         let mut side = self.side.lock_recover();
-        side.voice.start(&source, still_current)?;
-        side.microphone =
-            tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok();
+        let started = side.voice.start(&source, still_current);
+        started?;
+        // Muting stops this device's capture, not its place in the call's
+        // stream: the frames sealed after it unmutes carry the sequence after
+        // the ones the others already heard, so they go on hearing it.
+        if side.microphone.is_none() {
+            side.microphone =
+                tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok();
+        }
         drop(side);
         Ok(())
     }
@@ -780,7 +786,6 @@ impl Shared {
     fn stop_capture(&self) {
         let mut side = self.side.lock_recover();
         side.voice.stop();
-        side.microphone = None;
     }
 
     fn set_deafened(&self, deafened: bool) {
@@ -1076,7 +1081,9 @@ impl Shared {
         let captured = match side.voice.pump(now) {
             Ok(captured) => captured,
             Err(issue) => {
-                side.microphone = None;
+                // The person's microphone stopped: capture is off from now
+                // on, and the call says why. Its place in the stream stays
+                // where it is, so starting capture again is heard at once.
                 *self.issue.lock_recover() = Some(issue);
                 return;
             }
@@ -1092,9 +1099,8 @@ impl Shared {
                 Err(_) => break,
             }
         }
-        if side.voice.playout(now).is_err() {
-            side.microphone = None;
-            *self.issue.lock_recover() = Some(Issue::TransportFailed);
+        if let Err(issue) = side.voice.playout(now) {
+            *self.issue.lock_recover() = Some(issue);
             return;
         }
         #[cfg(test)]
@@ -1200,10 +1206,12 @@ impl Shared {
                 .as_ref()
                 .map(|current| current.keys.clone());
             let mut side = self.side.lock_recover();
-            if side.microphone.is_some() {
-                side.microphone = keys.and_then(|keys| {
-                    tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok()
-                });
+            if let (Some(microphone), Some(keys)) = (side.microphone.as_mut(), keys) {
+                // The epoch's keys, not the stream's place: what this device
+                // seals from now on follows what the others already heard.
+                if microphone.rekey(&keys, self.own, &self.scope).is_err() {
+                    side.microphone = None;
+                }
             }
         }
     }
@@ -1724,7 +1732,22 @@ mod tests {
         reason = "a session's client is not Send, and the test runtime does not need it to be"
     )]
     async fn wait_heard(what: &str, probe: &Arc<Mutex<Vec<f32>>>, heard: bool) {
-        let deadline = tilo_test_env::hang_deadline();
+        wait_heard_by(what, probe, heard, tilo_test_env::hang_deadline()).await;
+    }
+
+    /// As [`wait_heard`], by the instant `deadline`: the audio a person
+    /// unmuting is heard again is theirs at once, not after a bound long
+    /// enough for a stream that started over to catch up with where it was.
+    #[allow(
+        clippy::future_not_send,
+        reason = "a session's client is not Send, and the test runtime does not need it to be"
+    )]
+    async fn wait_heard_by(
+        what: &str,
+        probe: &Arc<Mutex<Vec<f32>>>,
+        heard: bool,
+        deadline: Instant,
+    ) {
         loop {
             let playing = level(probe, Duration::from_millis(200)).await > HEARD;
             if playing == heard {
@@ -1826,14 +1849,30 @@ mod tests {
         wait_heard("each device hears the other's tone", &left.probe, true).await;
         wait_heard("the other device hears this one's tone", &right.probe, true).await;
 
+        // The tone has been heard this long before this device is muted: a
+        // stream that starts over when it unmutes is behind by every frame
+        // it spoke here, which is seconds of silence, not the instant a
+        // stream that keeps its place is heard at once.
+        assert!(
+            level(&left.probe, Duration::from_secs(6)).await > HEARD,
+            "the tone speaks until this device mutes"
+        );
+
         // Muted, this device is heard by no one, while it still hears.
         here.stop_capture();
         wait_heard("a muted device is not heard", &right.probe, false).await;
         wait_heard("a muted device still hears", &left.probe, true).await;
 
-        // Deafened, this device hears nothing, while the call plays on.
+        // Unmuted, this device is heard again at once, and deafened it hears
+        // nothing while the call plays on.
         here.start_capture("tone").expect("the test's tone");
-        wait_heard("unmuting is heard again", &right.probe, true).await;
+        wait_heard_by(
+            "unmuting is heard again",
+            &right.probe,
+            true,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await;
         here.set_deafened(true);
         wait_heard("a deafened device hears nothing", &left.probe, false).await;
         wait_heard("the call still plays for everyone else", &right.probe, true).await;

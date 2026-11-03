@@ -105,10 +105,9 @@ impl Page {
     ///
     /// As [`Self::new`].
     pub fn set_keys(&mut self, keys: &ChannelContentKeys, roster: Roster) -> Result<(), Refusal> {
-        let microphone = Microphone::new(keys, self.bridge, &self.scope, REPEATS)?;
+        self.microphone.rekey(keys, self.bridge, &self.scope)?;
         let opener = Opener::new(keys.clone(), roster);
         self.seal_pictures(keys)?;
-        self.microphone = microphone;
         self.opener = opener;
         Ok(())
     }
@@ -116,8 +115,8 @@ impl Page {
     /// Who may send to this page from now on, under the same keys.
     ///
     /// A call's roster follows the workspace's membership turn by turn; the
-    /// page keeps its microphone's and pictures' places while it does, which
-    /// [`Self::set_keys`] starts over.
+    /// page keeps its microphone's and pictures' places while it does, as it
+    /// does across an epoch's keys.
     pub fn set_roster(&mut self, roster: Roster) {
         self.opener.set_roster(roster);
     }
