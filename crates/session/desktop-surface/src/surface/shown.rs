@@ -13,6 +13,15 @@ impl DesktopHandle {
         self.shared.borrow().shown_tabs.content()
     }
 
+    /// Where each window of the shown strip's active tab stands, in the
+    /// surface's coordinates, as of the last layout: the tab's content where
+    /// it has laid out, and the whole window where it has not (a window this
+    /// device shows but has not opened, whose position an offset on it still
+    /// means something across). Hidden tabs and other strips are absent.
+    pub fn shown_tiles(&self) -> Vec<(TabId, Rect)> {
+        self.shared.borrow().shown_tabs.tiles()
+    }
+
     /// The top of the shown windows' content, in the surface's coordinates,
     /// as of the last layout: where the transients pinned into the display's
     /// top-right corner start, below the windows' bars. Zero with no window.
@@ -69,6 +78,19 @@ impl ShownTabs {
         self.0
             .iter()
             .filter_map(|shown| Some((shown.tab, shown.content?)))
+            .collect()
+    }
+
+    /// Where each window of the shown strip's active tab stands: the tab's
+    /// content where its window laid one out, and the whole window where it
+    /// has not. A window shown without its content laid out (one this device
+    /// has open bit does not draw here) still has a place on the desk, and
+    /// what is drawn on its tile — another person's pointer — keeps meaning
+    /// there.
+    pub(super) fn tiles(&self) -> Vec<(TabId, Rect)> {
+        self.0
+            .iter()
+            .map(|shown| (shown.tab, shown.content.unwrap_or(shown.window)))
             .collect()
     }
 
