@@ -135,7 +135,7 @@ enum Run {
         child: Child,
     },
     /// The engine would not stay up, and is not started again this session.
-    Failed(InputMethodEngine),
+    Failed,
 }
 
 impl InputMethod {
@@ -178,7 +178,7 @@ impl InputMethod {
             self.open_x11(runtime);
             return;
         }
-        if matches!(self.run, Run::Failed(_)) {
+        if matches!(self.run, Run::Failed) {
             return;
         }
         self.start(compositor, engine, sources);
@@ -238,7 +238,7 @@ impl InputMethod {
                 starts = self.starts,
                 "the input method would not stay up: it is not started again this session"
             );
-            self.run = Run::Failed(engine);
+            self.run = Run::Failed;
             return;
         }
         self.starts = self.starts.saturating_add(1);

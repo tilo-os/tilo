@@ -711,8 +711,8 @@ fn peer_cursors(
     }
     // A window this device has open but has not laid its content out for
     // still has its tile where it stands: the pointer over it is drawn there.
-    let tiles = handle.shown_tiles();
-    let tab_rects: HashMap<u64, Rect> = tiles.into_iter().collect();
+    let laid_out = handle.shown_tiles();
+    let tab_rects: HashMap<u64, Rect> = laid_out.into_iter().collect();
     let titles: HashMap<u64, String> = handle.read(|tree| {
         tree.active_workspace()
             .into_iter()
