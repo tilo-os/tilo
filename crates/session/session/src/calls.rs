@@ -1398,7 +1398,7 @@ mod tests {
 
     use crate::fabric::Continuity;
     use channel_crypto::VaultKey;
-    use collab_types::presence::{Availability, PresenceKey};
+    use collab_types::presence::{Availability, Payload, Presence};
     use collab_types::{ChannelRoute, Ed25519PublicKey, PeerPresence};
     use iroh::EndpointId;
     use runtime_collab::native_media::{Command, Request, State};
@@ -1641,30 +1641,31 @@ mod tests {
         )
     }
 
-    /// One presence `from` said of themselves in the workspace.
-    fn presence(from: u8, payload: collab_types::PeerPresencePayload) -> NetEvent {
-        let device_key = public(from);
-        said(
-            from,
-            neighbour_wire::NeighbourMsg::AppPresenceV2 {
-                peer: neighbour_wire::peer_handle(device_key.as_bytes()),
-                app_id: DESKTOP_PRESENCE_APP.to_owned(),
-                cluster_id: WORKSPACE.to_owned(),
-                presence: PeerPresence {
-                    key: postcard::to_stdvec(&PresenceKey::Workspace {
-                        id: WORKSPACE.to_owned(),
-                    })
-                    .expect("a key"),
-                    payload,
-                },
-                colour: None,
+    /// One presence `from` said of themselves on the workspace's live plane.
+    fn presence(client: &Client, from: u8, payload: collab_types::PeerPresencePayload) {
+        let payload = match payload {
+            collab_types::PeerPresencePayload::Arrived => Payload::Arrived,
+            collab_types::PeerPresencePayload::Availability {
+                state,
+                call,
+                camera,
+                screen,
+            } => Payload::Availability {
+                state,
+                call,
+                camera,
+                screen,
             },
-        )
+            other => panic!("the tests say no {other:?} as a desktop"),
+        };
+        let frame = Presence::desktop(WORKSPACE, payload);
+        client.heard_presence(WORKSPACE, public(from), &frame);
     }
 
     /// How available `from` says they are, and the call they say they are in.
-    fn availability(from: u8, call: Option<String>) -> NetEvent {
+    fn availability(client: &Client, from: u8, call: Option<String>) {
         presence(
+            client,
             from,
             collab_types::PeerPresencePayload::Availability {
                 state: Availability::default().id().to_owned(),
@@ -1672,13 +1673,14 @@ mod tests {
                 camera: false,
                 screen: false,
             },
-        )
+        );
     }
 
     /// `from` is in the call `call` names, with their camera and screen as
     /// `camera` and `screen` say.
-    fn availability_showing(from: u8, call: String, camera: bool, screen: bool) -> NetEvent {
+    fn availability_showing(client: &Client, from: u8, call: String, camera: bool, screen: bool) {
         presence(
+            client,
             from,
             collab_types::PeerPresencePayload::Availability {
                 state: Availability::default().id().to_owned(),
@@ -1686,7 +1688,7 @@ mod tests {
                 camera,
                 screen,
             },
-        )
+        );
     }
 
     /// The call `CHANNEL` is, as a person in it publishes it.
@@ -1793,8 +1795,8 @@ mod tests {
         // Each session hears the other say it is in the channel's call.
         for (here, there) in [(&laptop, 0x22_u8), (&desk, 0x11_u8)] {
             here.hear(hello(there, "the other device"));
-            here.hear(presence(there, collab_types::PeerPresencePayload::Arrived));
-            here.hear(availability(there, Some(call_presence())));
+            presence(here, there, collab_types::PeerPresencePayload::Arrived);
+            availability(here, there, Some(call_presence()));
         }
         bound(&laptop).await;
         bound(&desk).await;
@@ -1922,8 +1924,8 @@ mod tests {
         ben.follow_desktop(&desk_tree());
         for (here, there) in [(&ana, 0x22_u8), (&ben, 0x11_u8)] {
             here.hear(hello(there, "the other device"));
-            here.hear(presence(there, collab_types::PeerPresencePayload::Arrived));
-            here.hear(availability(there, Some(call_presence())));
+            presence(here, there, collab_types::PeerPresencePayload::Arrived);
+            availability(here, there, Some(call_presence()));
         }
         bound(&ana).await;
         bound(&ben).await;
@@ -2047,8 +2049,8 @@ mod tests {
         laptop.follow_desktop(&desk_tree());
         desk.follow_desktop(&desk_tree());
         laptop.hear(hello(0x11, "the other device"));
-        laptop.hear(presence(0x11, collab_types::PeerPresencePayload::Arrived));
-        laptop.hear(availability(0x11, Some(call_presence())));
+        presence(&laptop, 0x11, collab_types::PeerPresencePayload::Arrived);
+        availability(&laptop, 0x11, Some(call_presence()));
         bound(&laptop).await;
         let (keys, _kept) = keys(0x22, 0x11, &[0x11, 0x22]);
         let left = carrier(&laptop, &keys);
@@ -2139,8 +2141,8 @@ mod tests {
         let peer = Client::untethered(public(0xb0), OwnPresence::default());
         peer.follow_desktop(&desk_tree());
         peer.hear(hello(0xf0, "Quinten"));
-        peer.hear(presence(0xf0, collab_types::PeerPresencePayload::Arrived));
-        peer.hear(availability(0xf0, Some(call_presence())));
+        presence(&peer, 0xf0, collab_types::PeerPresencePayload::Arrived);
+        availability(&peer, 0xf0, Some(call_presence()));
         let calls = peer.calls();
         let heard = calls
             .iter()
@@ -2176,8 +2178,8 @@ mod tests {
         // on.
         for (seed, label) in [(0xaa, "Framework 16"), (0xbb, "ThinkPad")] {
             mine.hear(hello(seed, label));
-            mine.hear(presence(seed, collab_types::PeerPresencePayload::Arrived));
-            mine.hear(availability(seed, Some(call_presence())));
+            presence(&mine, seed, collab_types::PeerPresencePayload::Arrived);
+            availability(&mine, seed, Some(call_presence()));
         }
 
         let calls = Calls::new();
@@ -2196,7 +2198,7 @@ mod tests {
         assert!(heard.screens.is_empty(), "{heard:?}");
 
         // Their camera on, their screen shared: the roster says so.
-        mine.hear(availability_showing(0xaa, call_presence(), true, true));
+        availability_showing(&mine, 0xaa, call_presence(), true, true);
         calls.follow(&mine, None);
         let heard = roster(&calls);
         assert_eq!(heard.cameras, [person(0xaa)]);
@@ -2345,8 +2347,8 @@ mod tests {
         laptop.connect(bound_addr(&endpoint));
         laptop.follow_desktop(&desk_tree());
         laptop.hear(hello(0x22, "Page"));
-        laptop.hear(presence(0x22, collab_types::PeerPresencePayload::Arrived));
-        laptop.hear(availability(0x22, Some(call_presence())));
+        presence(&laptop, 0x22, collab_types::PeerPresencePayload::Arrived);
+        availability(&laptop, 0x22, Some(call_presence()));
         bound(&laptop).await;
         let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
         let left = carrier(&laptop, &keys);

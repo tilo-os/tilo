@@ -2,13 +2,12 @@
 //! collaboration plane.
 //!
 //! The session takes part in the workspace each window shows. It says this
-//! person's presence on the workspace's topic — that they are here, what they
-//! say they are doing, how available they are, whose view they follow, where
-//! their pointer is — and hears everyone else's from there, as one
-//! [`PeerPresence`] under the workspace's scope. The wire is the collaboration
-//! plane's own message ([`NeighbourMsg::AppPresenceV2`]), so a browser, an
-//! agent and this session are present to each other alike, and the session
-//! needs nothing of its own to be one of them.
+//! person's presence on the workspace's live plane — that they are here, what
+//! they say they are doing, how available they are, whose view they follow,
+//! where their pointer is — as a [`Presence`] frame on
+//! [`Track::Presence`], and hears everyone else's from there. The frame is
+//! the one a browser and an agent say too, so the three are present to each
+//! other alike, and the session needs nothing of its own to be one of them.
 //!
 //! Nothing here is drawn. The roster it feeds is the desktop's
 //! (`tilo_desktop::here`): the People panel, the bar's faces and the markers
@@ -30,13 +29,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::fabric::{Continuity, SessionFabric};
-use collab_types::presence::{Availability, PointerSpace, PresenceKey};
-use collab_types::{PeerPresence, PeerPresencePayload};
+use collab_types::presence::{
+    Availability, DESKTOP_APP, Payload, PointerSpace, Presence, PresenceKey,
+};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::ContentSources;
 use tilo_desktop::chrome::WaveNotice;
-use tilo_desktop::here::{Here, LiveMember, Wave};
+use tilo_desktop::here::{Focus, Here, LiveMember, Wave};
 use tilo_desktop_model::{
     DesktopTree, TabId, WorkspaceId as DeskWorkspaceId, WorkspaceSlot as DeskSlot,
 };
@@ -44,6 +44,8 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
+use tilo_live::live::Track;
+use tilo_live::presence;
 use tilo_network_actor::{
     HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RecordContentDelivery, RosterDevice,
     WorkspaceControlRoute, WorkspaceId, native_ingress, workspace_topic_id,
@@ -58,10 +60,6 @@ mod gate;
 mod plane;
 
 use plane::{Beside, Bound, Serving, run};
-
-/// The app id the desktop of a workspace says its own presence under, as the
-/// browser, the agents and every app reading a workspace expect it.
-const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 
 /// How often this person says again where they are, so someone whose host
 /// session came up after the first word still hears them, and so a workspace never
@@ -185,6 +183,9 @@ struct Peer {
     /// Where their pointer is: the tab of this workspace its tile shows, and the
     /// position on that tile in logical pixels from its corner.
     pointer: Option<(u64, f64, f64)>,
+    /// Their own view of their desktop, as a shell — or an agent, which says
+    /// its face, where it works and what it is doing the same way — said it.
+    shell: Option<Box<collab_types::presence::ShellPresence>>,
     /// They said they are here and have not left: what makes them a member.
     here: bool,
 }
@@ -201,24 +202,45 @@ impl Peer {
             wave: None,
             call: None,
             pointer: None,
+            shell: None,
             here: false,
         }
     }
 
-    /// What the desktop lists of them.
+    /// What the desktop lists of them: an agent's face and the record it
+    /// works in come from its shell frame, a person's from its certificate
+    /// and its own words.
     fn member(&self) -> LiveMember {
+        let shell = self.shell.as_deref();
+        let agent = shell.is_some_and(|shell| shell.agent);
+        let label = if self.label.trim().is_empty() {
+            shell.map(|shell| shell.label.clone()).unwrap_or_default()
+        } else {
+            self.label.clone()
+        };
         LiveMember {
             publisher: self.publisher.to_string(),
-            kind: "person".into(),
-            label: self.label.clone(),
-            focus: None,
-            activity: self.status.clone(),
-            place: None,
+            kind: if agent { "agent" } else { "person" }.into(),
+            label,
+            focus: shell
+                .and_then(collab_types::presence::ShellPresence::focus)
+                .map(|(app, record)| Focus {
+                    app: app.to_owned(),
+                    record: hex::encode(record),
+                }),
+            activity: shell
+                .and_then(|shell| shell.activity.clone())
+                .or_else(|| self.status.clone()),
+            place: shell.and_then(|shell| shell.place.clone()),
             user: self.user.clone(),
             wave: self.wave.clone(),
             layout: None,
             following: self.following.clone(),
-            availability: Some(self.availability.id().to_owned()),
+            availability: (if agent {
+                None
+            } else {
+                Some(self.availability.id().to_owned())
+            }),
             call: self.call.as_ref().map(|call| call.call.encode()),
         }
     }
@@ -273,19 +295,41 @@ impl Workspace {
     }
 
     /// They are here: this and what they say of themselves.
-    fn hear(&mut self, from: EndpointId, presence: &PeerPresence) {
-        let Ok(key) = postcard::from_bytes::<PresenceKey>(&presence.key) else {
+    fn hear(&mut self, from: EndpointId, presence: &Presence) {
+        if presence.app != DESKTOP_APP {
             return;
-        };
-        match (&key, &presence.payload) {
+        }
+        match (&presence.key, &presence.payload) {
+            // A pointer moves many times a second, so it is compared where it
+            // is rather than by copying the whole entry.
+            (
+                PresenceKey::Pointer {
+                    space: PointerSpace::Tile { workspace, tab },
+                },
+                Payload::Pointer { x, y },
+            ) => {
+                if *workspace == self.id {
+                    self.point(from, *tab, (f64::from(*x), f64::from(*y)));
+                }
+            }
+            (
+                PresenceKey::Pointer {
+                    space: PointerSpace::Tile { workspace, .. },
+                },
+                Payload::Left,
+            ) => {
+                if *workspace == self.id {
+                    self.clear_point(from);
+                }
+            }
             (PresenceKey::Workspace { id }, payload) if *id == self.id => {
                 self.with(from, |peer| match payload {
-                    PeerPresencePayload::Arrived => peer.here = true,
-                    PeerPresencePayload::Left => peer.here = false,
-                    PeerPresencePayload::Status { text, .. } => {
+                    Payload::Arrived => peer.here = true,
+                    Payload::Left => peer.here = false,
+                    Payload::Status { text, .. } => {
                         peer.status = Some(text.trim().to_owned()).filter(|text| !text.is_empty());
                     }
-                    PeerPresencePayload::Availability {
+                    Payload::Availability {
                         state,
                         call,
                         camera,
@@ -302,54 +346,32 @@ impl Workspace {
                                     screen: *screen,
                                 });
                     }
-                    PeerPresencePayload::Following { target } => {
+                    Payload::Following { target } => {
                         peer.following.clone_from(target);
                     }
-                    PeerPresencePayload::Wave { seq, target } => {
+                    Payload::Wave { seq, target } => {
                         peer.wave = Some(Wave {
                             seq: *seq,
                             target: target.clone(),
                         });
                     }
+                    // A shell — a page's desktop, or an agent's face — says
+                    // where its person is and, for an agent, that it works
+                    // here at all.
+                    Payload::Shell(shell) => {
+                        peer.here = true;
+                        peer.shell = Some(shell.clone());
+                    }
                     _ => {}
-                });
-            }
-            (
-                PresenceKey::Pointer {
-                    space:
-                        PointerSpace::Tile {
-                            workspace: room,
-                            tab,
-                        },
-                },
-                PeerPresencePayload::Pointer { x, y },
-            ) if *room == self.id => {
-                self.with(from, |peer| {
-                    peer.pointer = Some((*tab, f64::from(*x), f64::from(*y)));
                 });
             }
             _ => {}
         }
     }
 
-    /// Where their pointer moved on the tile of a tab of this workspace. A
-    /// pointer moves many times a second, so nothing is copied to tell
-    /// whether it moved: it is compared where it is.
-    fn point(&mut self, from: EndpointId, key: &PresenceKey, point: (f64, f64)) {
-        let PresenceKey::Pointer {
-            space:
-                PointerSpace::Tile {
-                    workspace: room,
-                    tab,
-                },
-        } = key
-        else {
-            return;
-        };
-        if *room != self.id {
-            return;
-        }
-        let now = Some((*tab, point.0, point.1));
+    /// Where their pointer moved on the tile of `tab` of this workspace.
+    fn point(&mut self, from: EndpointId, tab: u64, point: (f64, f64)) {
+        let now = Some((tab, point.0, point.1));
         if let Some(peer) = self.peers.iter_mut().find(|peer| peer.publisher == from) {
             if peer.pointer != now {
                 peer.pointer = now;
@@ -364,15 +386,7 @@ impl Workspace {
     }
 
     /// Their pointer left the tile it was on.
-    fn clear_point(&mut self, from: EndpointId, key: &PresenceKey) {
-        if !matches!(
-            key,
-            PresenceKey::Pointer {
-                space: PointerSpace::Tile { .. },
-            }
-        ) {
-            return;
-        }
+    fn clear_point(&mut self, from: EndpointId) {
         let cleared = self
             .peers
             .iter_mut()
@@ -506,38 +520,10 @@ impl Plane {
         if from == self.publisher {
             return;
         }
-        let Some(id) = self
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.ws == ws)
-            .map(|workspace| workspace.id.clone())
-        else {
-            return;
-        };
-        let Some(workspace) = self.workspace(ws) else {
-            return;
-        };
-        match msg {
-            NeighbourMsg::AppPresenceV2 {
-                app_id,
-                cluster_id,
-                presence,
-                ..
-            } if app_id == DESKTOP_PRESENCE_APP && cluster_id == id => {
-                workspace.hear(from, &presence);
-            }
-            NeighbourMsg::PresenceMoved { key, point, .. } => {
-                if let Some(key) = pointer_key(&key) {
-                    workspace.point(from, &key, point);
-                }
-            }
-            NeighbourMsg::PresenceCleared { key, .. } => {
-                if let Some(key) = pointer_key(&key) {
-                    workspace.clear_point(from, &key);
-                }
-            }
-            NeighbourMsg::IdentityHello { cert, .. } => workspace.certified(from, &cert),
-            _ => {}
+        if let NeighbourMsg::IdentityHello { cert, .. } = msg
+            && let Some(workspace) = self.workspace(ws)
+        {
+            workspace.certified(from, &cert);
         }
     }
 
@@ -560,20 +546,6 @@ impl Plane {
             .map(|held| held.pointers(tab))
             .unwrap_or_default()
     }
-}
-
-/// Where a moved pointer was, from the key a pointer message names it by:
-/// the wire's own JSON of a [`PresenceKey`].
-fn pointer_key(key: &str) -> Option<PresenceKey> {
-    serde_json::from_str(key).ok()
-}
-
-/// One workspace's address, as a publish names it.
-fn workspace_key(workspace: &str) -> Vec<u8> {
-    postcard::to_stdvec(&PresenceKey::Workspace {
-        id: workspace.to_owned(),
-    })
-    .unwrap_or_default()
 }
 
 /// One window stream's message as it reached this device: another member's
@@ -698,6 +670,12 @@ pub struct Client {
     said_at: Cell<Instant>,
     /// The count this person's last wave carried here.
     wave_seq: Cell<u32>,
+    /// The object this device last said on a workspace's presence track.
+    presence_seq: Cell<u32>,
+    /// What this device said while it held no plane to say it on, for the
+    /// tests that read what a session would have published.
+    #[cfg(test)]
+    said: RefCell<Vec<Presence>>,
     /// The wave this person sent last, for their own row to say sent.
     sent_wave: RefCell<Option<Wave>>,
     /// The last wave at this person, for the bar to say.
@@ -911,6 +889,9 @@ impl Client {
             here: Here::default(),
             said_at: Cell::new(Instant::now()),
             wave_seq: Cell::new(0),
+            presence_seq: Cell::new(0),
+            #[cfg(test)]
+            said: RefCell::new(Vec::new()),
             sent_wave: RefCell::new(None),
             notice: RefCell::new(None),
             outgoing,
@@ -1098,7 +1079,9 @@ impl Client {
         }
         for (ws, id) in joined {
             let _ = self.outgoing.send(Outgoing::Join(ws));
-            self.say(ws, &id);
+            if let Some(desk) = DeskWorkspaceId::parse(&id) {
+                self.say(desk, &id);
+            }
             changed = true;
         }
         for ws in left {
@@ -1126,6 +1109,9 @@ impl Client {
             self.hear(event);
             heard = true;
         }
+        if self.hear_presence() {
+            heard = true;
+        }
         // What arrived moved this device's fabric — a copy from another
         // device, a device that is gone: the person's other devices hear so
         // on the same pass.
@@ -1140,6 +1126,80 @@ impl Client {
             self.say_again();
         }
         heard
+    }
+
+    /// Take every presence frame the workspaces' live planes heard since the
+    /// last call: each is one member's word about themselves or their
+    /// pointer, opened with the scope's keys. Whether any did.
+    fn hear_presence(&self) -> bool {
+        let Some(live) = &self.live else {
+            return false;
+        };
+        let own = self.plane.borrow().publisher;
+        let topics: Vec<(DeskWorkspaceId, String)> = self
+            .plane
+            .borrow()
+            .workspaces
+            .iter()
+            .filter_map(|workspace| {
+                DeskWorkspaceId::parse(&workspace.id).map(|id| (id, workspace.id.clone()))
+            })
+            .collect();
+        let mut heard = false;
+        for (ws, workspace) in topics {
+            while let Some(object) = live.try_recv(ws) {
+                if object.track != Track::Presence {
+                    // Calls and camera media run on their own tracks and their
+                    // own lanes; nothing here draws them.
+                    continue;
+                }
+                let Some(frame) = presence::decode(&object.body) else {
+                    continue;
+                };
+                let Ok(from) = EndpointId::from_bytes(&object.sender) else {
+                    continue;
+                };
+                if from == own {
+                    continue;
+                }
+                self.heard_presence(&workspace, from, &frame);
+                heard = true;
+            }
+        }
+        heard
+    }
+
+    /// One member's word about themselves on `workspace`'s live plane: what
+    /// they said of themselves, where their pointer went.
+    ///
+    /// A session takes these from its planes on every [`follow`](Self::follow).
+    /// One with no plane of its own — a test, an embedder that carries the
+    /// frames itself — hands them here instead.
+    pub fn heard_presence(&self, workspace: &str, from: EndpointId, frame: &Presence) {
+        {
+            let mut plane = self.plane.borrow_mut();
+            if from == plane.publisher {
+                return;
+            }
+            let found = plane
+                .workspaces
+                .iter()
+                .find(|held| held.id == workspace)
+                .map(|held| held.ws);
+            let Some(ws) = found else {
+                return;
+            };
+            let Some(workspace) = plane.workspace(ws) else {
+                return;
+            };
+            workspace.hear(from, frame);
+        }
+        // Every surface that lists people draws what the frame changed: a
+        // pointer landing draws one frame, and one that says the same place
+        // again draws none.
+        self.note_reachability();
+        self.show_here();
+        self.show_waves();
     }
 
     /// Take one thing the plane heard, and hand the desktop who is here now:
@@ -1688,58 +1748,86 @@ impl Client {
             else {
                 return;
             };
-            (ws, workspace.id.clone())
+            (DeskWorkspaceId::parse(&workspace.id), workspace.id.clone())
+        };
+        let Some(ws) = ws else {
+            return;
         };
         self.say(ws, &id);
         self.said_at.set(Instant::now());
     }
 
-    /// Say all of this person's presence in the workspace `workspace`, on its topic
-    /// `ws`.
-    fn say(&self, ws: WorkspaceId, workspace: &str) {
+    /// Say all of this person's presence in the workspace `workspace`, on its
+    /// live plane `ws`.
+    fn say(&self, ws: DeskWorkspaceId, workspace: &str) {
         let own = self.own.borrow().clone();
-        let mut payloads = vec![
-            PeerPresencePayload::Arrived,
-            PeerPresencePayload::Availability {
-                state: own.availability.id().to_owned(),
-                call: own.call.as_ref().map(|call| call.call.encode()),
-                camera: own.call.as_ref().is_some_and(|call| call.camera),
-                screen: own.call.as_ref().is_some_and(|call| call.screen),
-            },
+        let mut frames = vec![
+            Presence::desktop(workspace, Payload::Arrived),
+            Presence::desktop(
+                workspace,
+                Payload::Availability {
+                    state: own.availability.id().to_owned(),
+                    call: own.call.as_ref().map(|call| call.call.encode()),
+                    camera: own.call.as_ref().is_some_and(|call| call.camera),
+                    screen: own.call.as_ref().is_some_and(|call| call.screen),
+                },
+            ),
         ];
         if let Some(status) = own.status {
-            payloads.push(PeerPresencePayload::Status {
-                text: status,
-                automatic: false,
-            });
+            frames.push(Presence::desktop(
+                workspace,
+                Payload::Status {
+                    text: status,
+                    automatic: false,
+                },
+            ));
         }
         if own.following.is_some() {
-            payloads.push(PeerPresencePayload::Following {
-                target: own.following,
-            });
+            frames.push(Presence::desktop(
+                workspace,
+                Payload::Following {
+                    target: own.following,
+                },
+            ));
         }
         if let Some(wave) = self.sent_wave.borrow().clone() {
-            payloads.push(PeerPresencePayload::Wave {
-                seq: wave.seq,
-                target: wave.target,
-            });
-        }
-        for payload in payloads {
-            let msg = NeighbourMsg::AppPresenceV2 {
-                peer: self.peer_hash(),
-                app_id: DESKTOP_PRESENCE_APP.into(),
-                cluster_id: workspace.to_owned(),
-                presence: PeerPresence {
-                    key: workspace_key(workspace),
-                    payload,
+            frames.push(Presence::desktop(
+                workspace,
+                Payload::Wave {
+                    seq: wave.seq,
+                    target: wave.target,
                 },
-                colour: None,
-            };
-            let _ = self.outgoing.send(Outgoing::Publish {
-                ws,
-                msg: Box::new(msg),
-            });
+            ));
         }
+        for frame in &frames {
+            self.say_frame(ws, frame);
+        }
+    }
+
+    /// Say one presence frame on the live plane of `ws`: one object on its
+    /// presence track, sealed with the workspace scope's keys. Nothing while
+    /// this session holds no plane there: presence is ephemeral, and the next
+    /// change says where its sender is.
+    fn say_frame(&self, ws: DeskWorkspaceId, frame: &Presence) {
+        #[cfg(test)]
+        self.said.borrow_mut().push(frame.clone());
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Ok(body) = frame.encode() else {
+            return;
+        };
+        let sequence = self.presence_seq.get().wrapping_add(1);
+        self.presence_seq.set(sequence);
+        if let Err(error) = live.publish(ws, Track::Presence, sequence, &body) {
+            tracing::debug!(%error, "presence was not said on the live plane");
+        }
+    }
+
+    /// What this device said while it held no plane, and the frame each was.
+    #[cfg(test)]
+    fn take_said(&self) -> Vec<Presence> {
+        std::mem::take(&mut *self.said.borrow_mut())
     }
 
     /// This device's presence handle, as a publish stamps it.
@@ -1767,30 +1855,12 @@ impl Client {
         let Some(workspace) = plane.workspaces.iter().find(|workspace| workspace.ws == ws) else {
             return;
         };
-        let key = postcard::to_stdvec(&PresenceKey::Pointer {
-            space: PointerSpace::Tile {
-                workspace: workspace.id.clone(),
-                tab,
-            },
-        })
-        .unwrap_or_default();
-        let msg = NeighbourMsg::AppPresenceV2 {
-            peer: tilo_network_actor::behaviour::peer_liveness_handle(&plane.publisher),
-            app_id: DESKTOP_PRESENCE_APP.into(),
-            cluster_id: workspace.id.clone(),
-            presence: PeerPresence {
-                key,
-                payload: PeerPresencePayload::Pointer {
-                    x: x as f32,
-                    y: y as f32,
-                },
-            },
-            colour: None,
+        let frame = Presence::pointing(workspace.id.clone(), tab, x as f32, y as f32);
+        let Some(ws) = DeskWorkspaceId::parse(&workspace.id) else {
+            return;
         };
-        let _ = self.outgoing.send(Outgoing::Publish {
-            ws,
-            msg: Box::new(msg),
-        });
+        drop(plane);
+        self.say_frame(ws, &frame);
     }
 
     /// Whether `publisher` is this person: this device, or any device of
@@ -1827,23 +1897,18 @@ impl Client {
         let Some(workspace) = plane.workspaces.iter().find(|workspace| workspace.ws == ws) else {
             return;
         };
-        let msg = NeighbourMsg::AppPresenceV2 {
-            peer: tilo_network_actor::behaviour::peer_liveness_handle(&plane.publisher),
-            app_id: DESKTOP_PRESENCE_APP.into(),
-            cluster_id: workspace.id.clone(),
-            presence: PeerPresence {
-                key: workspace_key(&workspace.id),
-                payload: PeerPresencePayload::Wave {
-                    seq: wave.seq,
-                    target: wave.target,
-                },
+        let frame = Presence::desktop(
+            workspace.id.clone(),
+            Payload::Wave {
+                seq: wave.seq,
+                target: wave.target,
             },
-            colour: None,
+        );
+        let Some(ws) = DeskWorkspaceId::parse(&workspace.id) else {
+            return;
         };
-        let _ = self.outgoing.send(Outgoing::Publish {
-            ws,
-            msg: Box::new(msg),
-        });
+        drop(plane);
+        self.say_frame(ws, &frame);
     }
 
     /// How many times what the workspace in front knows of its people
@@ -1986,6 +2051,9 @@ impl Client {
                 here: Here::default(),
                 said_at: Cell::new(Instant::now()),
                 wave_seq: Cell::new(0),
+                presence_seq: Cell::new(0),
+                #[cfg(test)]
+                said: RefCell::new(Vec::new()),
                 sent_wave: RefCell::new(None),
                 notice: RefCell::new(None),
                 outgoing,
