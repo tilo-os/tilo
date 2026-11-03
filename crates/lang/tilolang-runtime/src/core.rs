@@ -308,14 +308,14 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, CallFn, ChangeView,
-            CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere,
-            CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
-            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen, FloatToStr,
-            IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
-            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPushF,
-            ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
-            MapSetAdd, MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside,
-            OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
+            CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove,
+            CollWhere, CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs,
+            EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen,
+            FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
+            IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut,
+            MapRemove, MapSetAdd, MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now,
+            Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
             PrincipalRole, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
             RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
             ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
@@ -330,10 +330,10 @@ impl Core {
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
             | StrFind | StrSlice | StrReplace => self.text_import(imp, mem, a),
-            ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
-            | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf | TupleNew
-            | TupleSetI | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH
-            | SomeI | SomeF | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => {
+            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | ListGetI
+            | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf
+            | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH
+            | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => {
                 self.aggregate_import(imp, a)
             }
             CollWhere => {

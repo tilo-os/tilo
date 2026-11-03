@@ -94,6 +94,7 @@ imports! {
     CollRemove = "coll_remove" ([H, H, H] -> []);
     CollMove = "coll_move" ([H, H, H, H, I32] -> []);
     CollWhere = "coll_where" ([H, H] -> [H]);
+    CollCount = "coll_count" ([H] -> [I64]);
     SetAdd = "set_add" ([H, H, H] -> []);
     SetRemove = "set_remove" ([H, H, H] -> []);
     MapPut = "map_put" ([H, H, H, H] -> []);

@@ -146,9 +146,14 @@ impl Core {
                 let v = self.val_whole(a.h(1)?)?;
                 self.list_push(a.h(0)?, v)
             }
-            Imp::ListLen => match self.list_or_coll(a.h(0)?)? {
+            // `len` is the length the store knows without reading the run; `count` is how many
+            // items it holds, read to the run's end where the store cannot say.
+            Imp::ListLen | Imp::CollCount => match self.list_or_coll(a.h(0)?)? {
                 ListOrColl::Len(len) => ret_i64(len_to_i64(len)),
-                ListOrColl::Coll(coll) => ret_i64(len_to_i64(self.coll_len(&coll)?)),
+                ListOrColl::Coll(coll) => {
+                    let count = imp == Imp::CollCount;
+                    ret_i64(len_to_i64(self.coll_len_or_count(&coll, count)?))
+                }
             },
             Imp::ListGetI | Imp::ListGetF | Imp::ListGetH => {
                 let at = index(a.long(1)?, "list")?;

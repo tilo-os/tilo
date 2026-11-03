@@ -2066,8 +2066,12 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let m = name.name.as_str();
+        // A count says how many items there are: a collection the store lists as it reads it
+        // is read to its end where the store cannot say otherwise, which is what counting it
+        // costs ([`Imp::CollCount`]). Length is what the store knows without that
+        // ([`Imp::ListLen`]); a list holds a collection too, so the host tells them apart.
         if m == "count" && args.is_empty() {
-            return Ex::host(Imp::ListLen, vec![list], Ty::Int);
+            return Ex::host(Imp::CollCount, vec![list], Ty::Int);
         }
         let lambda = match args {
             [a] if a.name.is_none() => super::optional::lambda_of(&a.value),

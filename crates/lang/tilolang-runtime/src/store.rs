@@ -659,7 +659,8 @@ impl Listing {
     }
 
     /// The items it holds: [`Self::len`] where that is its length, a listing that checks its
-    /// items as it reads them read to its end (which is what saying how many it holds costs).
+    /// items as it reads them read to its end, which is what saying how many it holds costs.
+    /// [`Self::len`] is the length the store knows without reading it; this is the count.
     pub fn count(&self) -> usize {
         if self.len_is_exact() {
             return self.len();
