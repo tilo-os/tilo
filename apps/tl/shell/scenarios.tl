@@ -64,12 +64,12 @@ scenario "the overview" {
     d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
     d.rooms.insert(Room(key: "studio", name: "Studio", current: true, members: "Ada, Mia, Fieldwork", present: 2, activity: "Mia edited Release planning"))
     d.rooms.insert(Room(key: "home", name: "Home", members: "Ada", present: 0, activity: "Your notes from the weekend"))
-    d.windows.insert(Win(key: "w1", title: "Release planning", origin_app: "Notes", app_key: "so.tilo.notes", icon: "notebook", strip: "Drafts", workspace: "Studio", recency: 1, focused: true, preview: "live"))
-    d.windows.insert(Win(key: "w2", title: "Launch checklist", origin_app: "Tasks", app_key: "so.tilo.tasks", icon: "list_checks", strip: "Drafts", workspace: "Studio", recency: 2, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w3", title: "Screenshots for the docs", origin_app: "Gallery", app_key: "so.tilo.gallery", icon: "layout_grid", strip: "Drafts", workspace: "Studio", recency: 3, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w6", title: "Q3 budget", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", workspace: "Studio", recency: 6, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w9", title: "Inbox", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 9, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w15", title: "Supplier quotes", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", workspace: "Home", recency: 15, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w1", title: "Release planning", origin_app: "Notes", app_key: "so.tilo.notes", icon: "notebook", strip: "Drafts", strip_key: "drafts", workspace: "Studio", workspace_key: "studio", group_key: "g1", tab_index: 0, share: 0.5, place: 1, recency: 1, focused: true, preview: "live"))
+    d.windows.insert(Win(key: "w2", title: "Launch checklist", origin_app: "Tasks", app_key: "so.tilo.tasks", icon: "list_checks", strip: "Drafts", strip_key: "drafts", workspace: "Studio", workspace_key: "studio", group_key: "g2", tab_index: 0, share: 0.5, place: 2, recency: 2, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w3", title: "Screenshots for the docs", origin_app: "Gallery", app_key: "so.tilo.gallery", icon: "layout_grid", strip: "Drafts", strip_key: "drafts", workspace: "Studio", workspace_key: "studio", group_key: "g2", tab_index: 1, share: 0.5, place: 3, recency: 3, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w6", title: "Q3 budget", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", strip_key: "money", workspace: "Studio", workspace_key: "studio", group_key: "g3", tab_index: 0, share: 1.0, place: 4, recency: 6, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w9", title: "Inbox", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", strip_key: "mail", workspace: "Studio", workspace_key: "studio", group_key: "g4", tab_index: 0, share: 1.0, place: 5, recency: 9, focused: false, preview: "live", not_responding: true))
+    d.windows.insert(Win(key: "w15", title: "Supplier quotes", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", strip_key: "money", workspace: "Home", workspace_key: "home", group_key: "g5", tab_index: 0, share: 1.0, place: 6, recency: 15, focused: false, preview: "live"))
 }
 
 /// The same overview opened while the person's last search still stands: what that search
@@ -88,13 +88,13 @@ scenario "the overview, searching" {
     d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
     d.rooms.insert(Room(key: "studio", name: "Studio", current: true, members: "Ada, Mia, Fieldwork", present: 2, activity: "Mia edited Release planning"))
     d.rooms.insert(Room(key: "home", name: "Home", members: "Ada", present: 0, activity: "Your notes from the weekend"))
-    d.windows.insert(Win(key: "w1", title: "Release planning", origin_app: "Notes", app_key: "so.tilo.notes", icon: "notebook", strip: "Drafts", workspace: "Studio", recency: 1, focused: true, preview: "live"))
-    d.windows.insert(Win(key: "w2", title: "Launch checklist", origin_app: "Tasks", app_key: "so.tilo.tasks", icon: "list_checks", strip: "Drafts", workspace: "Studio", recency: 2, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w3", title: "Screenshots for the docs", origin_app: "Gallery", app_key: "so.tilo.gallery", icon: "layout_grid", strip: "Drafts", workspace: "Studio", recency: 3, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w6", title: "Q3 budget", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", workspace: "Studio", recency: 6, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w9", title: "Inbox", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 9, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w15", title: "Supplier quotes", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", workspace: "Home", recency: 15, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "w17", title: "Quotes for the printer", origin_app: "Notes", app_key: "so.tilo.notes", icon: "notebook", strip: "Drafts", workspace: "Home", recency: 17, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w1", title: "Release planning", origin_app: "Notes", app_key: "so.tilo.notes", icon: "notebook", strip: "Drafts", strip_key: "drafts", workspace: "Studio", workspace_key: "studio", group_key: "g1", tab_index: 0, share: 0.5, place: 1, recency: 1, focused: true, preview: "live"))
+    d.windows.insert(Win(key: "w2", title: "Launch checklist", origin_app: "Tasks", app_key: "so.tilo.tasks", icon: "list_checks", strip: "Drafts", strip_key: "drafts", workspace: "Studio", workspace_key: "studio", group_key: "g2", tab_index: 0, share: 0.5, place: 2, recency: 2, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w3", title: "Screenshots for the docs", origin_app: "Gallery", app_key: "so.tilo.gallery", icon: "layout_grid", strip: "Drafts", strip_key: "drafts", workspace: "Studio", workspace_key: "studio", group_key: "g2", tab_index: 1, share: 0.5, place: 3, recency: 3, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w6", title: "Q3 budget", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", strip_key: "money", workspace: "Studio", workspace_key: "studio", group_key: "g3", tab_index: 0, share: 1.0, place: 4, recency: 6, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w9", title: "Inbox", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", strip_key: "mail", workspace: "Studio", workspace_key: "studio", group_key: "g4", tab_index: 0, share: 1.0, place: 5, recency: 9, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w15", title: "Supplier quotes", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", strip_key: "money", workspace: "Home", workspace_key: "home", group_key: "g5", tab_index: 0, share: 1.0, place: 6, recency: 15, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w17", title: "Quotes for the printer", origin_app: "Notes", app_key: "so.tilo.notes", icon: "notebook", strip: "Drafts", strip_key: "drafts", workspace: "Home", workspace_key: "home", group_key: "g6", tab_index: 0, share: 1.0, place: 7, recency: 17, focused: false, preview: "live"))
 }
 
 /// The switcher with two windows: what Alt+Tab shows once it is held past the flick.
@@ -125,7 +125,7 @@ scenario "the switcher, twenty windows" {
     d.windows.insert(Win(key: "s6", title: "Q3 budget", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", workspace: "Studio", recency: 6, focused: false, preview: "live"))
     d.windows.insert(Win(key: "s7", title: "Supplier quotes", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", workspace: "Studio", recency: 7, focused: false, preview: "live"))
     d.windows.insert(Win(key: "s8", title: "Pricing model", origin_app: "Sheets", app_key: "so.tilo.sheets", icon: "table", strip: "Money", workspace: "Studio", recency: 8, focused: false, preview: "live"))
-    d.windows.insert(Win(key: "s9", title: "Inbox", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 9, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "s9", title: "Inbox", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 9, focused: false, preview: "live", not_responding: true))
     d.windows.insert(Win(key: "s10", title: "From Ada", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 10, focused: false, preview: "live"))
     d.windows.insert(Win(key: "s11", title: "Release notes draft", origin_app: "Mail", app_key: "so.tilo.mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 11, focused: false, preview: "live"))
     d.windows.insert(Win(key: "s12", title: "Competitor scan", origin_app: "Notes", app_key: "so.tilo.notes", icon: "notebook", strip: "Research", workspace: "Studio", recency: 12, focused: false, preview: "live"))

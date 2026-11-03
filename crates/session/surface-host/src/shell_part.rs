@@ -188,7 +188,7 @@ pub fn desk_layer() -> RootView {
     }
 }
 
-/// The shell's whole screen: the `screen` view over the person's arrangement (the package's
+/// The shell's whole screen: the `desk_view` view over the person's arrangement (the package's
 /// `arrangement` root), which stands the desk's bar, dock and surfaces around the places as the
 /// preset the person picked lays them out. Each place an app's window shows in is a well, and
 /// the window stands where that well does.
@@ -196,7 +196,7 @@ pub fn desk_layer() -> RootView {
 pub fn screen_layer() -> RootView {
     RootView {
         root: Some("arrangement".to_owned()),
-        view: Some("screen".to_owned()),
+        view: Some("desk_view".to_owned()),
     }
 }
 

@@ -927,8 +927,6 @@ d-gctjtdv7 = Desk
 d-6jkhhsvr = Desk around
     .w-dock = Dock
 
-d-p2yoggx4 = Screen
-
 d-bhxvwkho = Shown preset
 
 d-afjfzjl6 = Bar on edge
@@ -1143,8 +1141,6 @@ d-scru4wch = Strip controls
 
 d-so5z33zr = Tab chip
 
-d-74cbhzyb = Place content
-
 d-43am22do = Place view
 
 d-z4vc77e6 = Place controls
@@ -1227,6 +1223,8 @@ d-wh7n4fhq-row0 = Banner row for a
 d-f5tl6n63-row0 = Rooms here for r
 
 d-u2b66n4a-row0 = Window group for v
+
+d-u2b66n4a-row1 = Window group for v
 
 d-6l3wldtm-row0 = Window menu for s
     .w-move-to = Move to { $strip_name }

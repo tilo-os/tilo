@@ -61,27 +61,50 @@ view rooms_here(d: Desk) {
 }
 
 /// One strip: its windows as places leading to trailing, each at its share of the strip's
-/// width, opening what it shows and carrying its menu of moves.
+/// width, opening what it shows and carrying its menu of moves. A phone's output holds one place
+/// across, so there the strip's places stand one under the other.
 view picture(d: Desk, windows: List<Win>, strip: Text) {
+    let fronts = windows.filter(v -> v.strip_key == strip and v.tab_index == 0).sort_by(v -> v.place)
     ui.Section(strip_name(d, strip)) {
-        row(gap: .related, align: .start) {
-            for w in windows.filter(v -> v.strip_key == strip and v.tab_index == 0).sort_by(v -> v.place) {
-                window_group(d, windows, w)
+        if space.compact {
+            stack(gap: .related) {
+                for w in fronts {
+                    window_group(d, windows, w)
+                }
+            }
+        } else {
+            row(gap: .related, align: .start) {
+                for w in fronts {
+                    window_group(d, windows, w)
+                }
             }
         }
     }
 }
 
 /// One window of the desk with the tabs behind it: the tab in front at the window's share of
-/// the strip, each tab behind it a narrower slice beside it, as the window stands on the desk.
+/// the strip, each tab behind it a narrower slice beside it, as the window stands on the desk. A
+/// slice that narrow holds the tab's picture and name and no commands, so a compact output, which
+/// has the room for every window's own commands, stacks the group's windows one under the other
+/// instead.
 view window_group(d: Desk, windows: List<Win>, w: Win) {
     let behind = behind_tabs(windows, w)
-    row(fill(group_weight(w, behind)), gap: .tight, align: .start) {
-        window_place(d, w, 1.0)
-        for v in behind {
-            // A tab behind stands 0.75 as wide as its picture is tall, and a picture is 1.6
-            // times as wide as it is tall: beside the front tab, that is 0.469 of its width.
-            window_place(d, v, 0.469)
+    if space.compact {
+        stack(gap: .related) {
+            window_place(d, w, 1.0, peek: false)
+            for v in behind {
+                window_place(d, v, 1.0, peek: false)
+            }
+        }
+    } else {
+        row(fill(group_weight(w, behind)), gap: .tight, align: .start) {
+            window_place(d, w, 1.0, peek: false)
+            for v in behind {
+                // A tab behind stands 0.75 as wide as its picture is tall, and a picture is 1.6
+                // times as wide as it is tall: beside the front tab, that is 0.469 of its width,
+                // a slice that keeps its picture and its name and no commands of its own.
+                window_place(d, v, 0.469, peek: true)
+            }
         }
     }
 }
@@ -102,22 +125,31 @@ fn group_weight(w: Win, behind: List<Win>) -> Float {
 /// workspace, closes it, or asks about it. Its card takes `weight` of the strip's width, so a
 /// place stands as wide as the window stands on the desk, up to the width a place shows at on
 /// this screen: past that the picture would stand taller than the page it is on, so a window
-/// wider than the screen allows is pictured no wider than that.
-view window_place(d: Desk, w: Win, weight: Float) {
-    let cap = if space.compact { 16rem } else if space.width_class == .expanded or space.width_class == .wide { 26rem } else { 20rem }
-    ui.Card(item: w, title: w.title, selected: w.focused, fill(weight), max: cap) {
+/// wider than the screen allows is pictured no wider than that. A compact output holds one place
+/// across, so there the card takes the room it is given instead of a share of a strip.
+///
+/// A `peek` is a tab standing beside the window in front of it, in a slice in which the window's
+/// commands and the buttons of an app that stopped answering would not fit: it keeps the
+/// picture and its name, and its commands are the window's own when it comes forward.
+view window_place(d: Desk, w: Win, weight: Float, peek: Bool) {
+    let cap = if space.compact { 100rem } else if space.width_class == .expanded or space.width_class == .wide { 26rem } else { 20rem }
+    ui.Card(item: w, title: w.title, selected: w.focused, fill(if space.compact { 0.0 } else { weight }), max: cap) {
         stack(gap: .tight) {
             layers(aspect: 1.6) {
                 window_picture(w)
             }
             ui.Text(w.title, role: .label, lines: 1, truncate)
-            row(gap: .tight, align: .center) {
+            if peek {
                 ui.Text(app_line(w), role: .caption, secondary: true, lines: 1, truncate)
-                spacer
-                window_menu(d, w)
+            } else {
+                row(gap: .tight, align: .center) {
+                    ui.Text(app_line(w), role: .caption, secondary: true, lines: 1, truncate)
+                    spacer
+                    window_menu(d, w)
+                }
             }
         }
-        if w.not_responding {
+        if w.not_responding and not peek {
             hung_window(w)
         }
         on activate: session.focus(window(w))

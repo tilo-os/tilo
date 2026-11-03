@@ -126,10 +126,12 @@ view window_face(w: Win) {
 /// Every place a window is pictured frames this at the window's shape: the switcher's cards and
 /// the overview's places, so the same window never looks like two things.
 view window_picture(w: Win) {
-    ui.WindowPreview(w.key)
-    if w.preview != "live" {
-        row(fill, align: .center, distribute: .center) {
-            ui.Icon(if w.preview == "withheld" { .eye_off } else { w.icon }, size: .large, secondary: true)
+    layers {
+        ui.WindowPreview(w.key)
+        if w.preview != "live" {
+            row(fill, align: .center, distribute: .center) {
+                ui.Icon(if w.preview == "withheld" { .eye_off } else { w.icon }, size: .large, secondary: true)
+            }
         }
     }
 }

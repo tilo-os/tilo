@@ -90,15 +90,6 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
     }
 }
 
-/// The desk as the whole of a display (`tilo-session --shell screen`): the bar, the dock and the
-/// desk's surfaces around the person's arrangement as the preset they picked shows it, each
-/// app's window standing in the well its place leaves it, as a window of the desk shows it
-/// (`desk_view`). The traditional desktop on a roomy display is its own whole screen, its frames
-/// under the desk's bar and dock.
-view screen(a: Arrangement) {
-    desk_view(a, fill)
-}
-
 /// What stands between the bar and the dock when the desk shows the arrangement: the places as
 /// the preset the person picked lays them out, under the switch between the presets, as
 /// `desk_view` shows them. The traditional desktop shows the window in front alone here, as a
