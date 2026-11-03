@@ -5094,7 +5094,7 @@
         },
         {
           "name": "ungrouped_title",
-          "doc": "The title over the group of rows whose item names no group: a list grouped by a thing some items lack (a day, a place) shows those together after every other group, under this heading, never under the last group that has one. `None` leaves them among the others.",
+          "doc": "The title over the group of rows whose item names no group: a list grouped by a thing some items lack (a day, a place) heads those rows with it, never folding them under the last group that names one. The rows keep the order their list gives. `None` leaves them among the others.",
           "type": {
             "option": "text"
           }

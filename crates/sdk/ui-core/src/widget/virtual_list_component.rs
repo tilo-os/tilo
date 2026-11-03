@@ -174,9 +174,9 @@ pub struct VirtualListProps {
     /// them away. The list works the tree out of the items as it builds their rows.
     pub tree: bool,
     /// The title over the group of rows whose item names no group: a list grouped by a thing
-    /// some items lack (a day, a place) shows those together after every other group, under
-    /// this heading, never under the last group that has one. `None` leaves them among the
-    /// others.
+    /// some items lack (a day, a place) heads those rows with it, never folding them under the
+    /// last group that names one. The rows keep the order their list gives. `None` leaves them
+    /// among the others.
     pub ungrouped_title: Option<String>,
     /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
     /// the "New messages" divider stands over the row that shows it, and while that is above

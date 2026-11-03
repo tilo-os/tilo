@@ -118,16 +118,16 @@ view rows<T>(
             ui.EmptyState(empty, icon: icon)
         }
     } else {
-        // An item that names no group stands after every group that does, under the heading
-        // for it: a sort is stable, so the order the caller gave holds among them.
+        // An item that names no group stands under a heading of its own, in the order the
+        // caller gave, rather than under the last group's heading.
         let ungrouped: Option<Text> = if let g = group {
             .some(phrase("tilolang-no-date"))
         } else {
             .none
         }
-        let shown = if let g = group { items.sort_by(x -> g(x) == .none) } else { items }
-        // The items done with stand last, under the one heading their group folds.
-        let shown = if let c = closed { shown.sort_by(x -> c(x)) } else { shown }
+        // The items done with stand last, under the one heading their group folds: a sort is
+        // stable, so the order the caller gave holds among them and among the rest.
+        let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
         let nested = if let p = parent { true } else { false }
         ui.VirtualList(
             selection_follows_focus: true,

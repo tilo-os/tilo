@@ -38,6 +38,8 @@ pub(super) fn selection_sink<'a>(
     widget: &'a mut dyn Widget,
 ) -> Option<&'a mut (dyn RowSelectionSink + 'static)> {
     use crate::widget::capability::capability_mut;
+    // Asked twice: the answer borrows `widget` for as long as it lives, and the walk below
+    // needs it back.
     if capability_mut::<dyn RowSelectionSink>(widget).is_some() {
         return capability_mut::<dyn RowSelectionSink>(widget);
     }
