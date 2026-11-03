@@ -12,6 +12,9 @@ d-oidkt4g5 = Title
 
 d-fgvmlm5n = Done
 
+d-oddfuemr = Folded
+    .doc = Whether it folds away in a list: done, and so is every task it is under, so a task done with under one still open stays where it stands, checked and muted under its task.
+
 d-g6kykjp2 = Due
     .doc = The day it is due by, if any.
 
@@ -122,6 +125,9 @@ d-ifftrju4 = Its project, as a project's list is of one
 d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
+d-daewwrbf = Derive fold
+    .doc = Reads a record a version without folding wrote, each branch from its top down: the tasks done with every task above them done again stand in the Done tail, where that version read the tasks each row is under.
+
 d-u7a3fue4 = Quick add
     .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`.
 
@@ -130,6 +136,9 @@ d-rs3ubifz = New task
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
+
+d-5tdyrlqe = Fold over
+    .doc = Sets whether a task and the tasks under it fold away, each reading the task it is under, which is read already: a task folds when it is done, with every task it is under done too, and none under a task still open folds.
 
 d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.

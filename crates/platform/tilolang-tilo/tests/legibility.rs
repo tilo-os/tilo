@@ -230,9 +230,14 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
         [VersionKind::Created]
     );
     let checked = store.versions(&landlord).unwrap();
+    // Checking it writes what a list reads to put it with the done tasks, not only that it is
+    // done.
     assert_eq!(
         checked.last().unwrap().fields,
-        [field(&ada, TASKS_APP, "Task", "done")]
+        [
+            field(&ada, TASKS_APP, "Task", "done"),
+            field(&ada, TASKS_APP, "Task", "folded")
+        ]
     );
     // A removed record stays answerable: who removed it, in which run.
     for removed in [&old, &stale] {

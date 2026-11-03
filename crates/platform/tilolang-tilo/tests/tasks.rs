@@ -591,11 +591,18 @@ fn a_checklist_written_before_subtasks_opens_as_subtasks() {
         );
         ada.commit();
     }
+    // Done, in the version that kept no note of which tasks fold.
+    call(&ada, "check", vec![copy.clone(), Value::Bool(true)]);
+    ada.commit();
 
     // The same workspace, opened by the version that keeps subtasks.
     let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
     later.host.sync_from(&later.doc);
-    assert_eq!(later.host.migrate(), 1, "the checklist migration runs");
+    assert_eq!(
+        later.host.migrate(),
+        2,
+        "the checklist migration and the fold of what it made run"
+    );
     for done in later.host.take_committed() {
         later.apply(&done.action);
     }
@@ -627,6 +634,11 @@ fn a_checklist_written_before_subtasks_opens_as_subtasks() {
         Value::Bool(false),
         "a step keeps what it had"
     );
+    assert_eq!(
+        read(&later, &tasks[0], "folded"),
+        Value::Bool(true),
+        "a task done before folding was kept folds as a list of it reads"
+    );
     assert_eq!(later.host.migrate(), 0, "the migration runs once");
 }
 
@@ -652,7 +664,11 @@ fn a_step_whose_task_was_removed_becomes_a_task_of_its_own() {
 
     let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
     later.host.sync_from(&later.doc);
-    assert_eq!(later.host.migrate(), 1, "the steps migration runs");
+    assert_eq!(
+        later.host.migrate(),
+        2,
+        "the steps migration and the fold of what it made run"
+    );
     for done in later.host.take_committed() {
         later.apply(&done.action);
     }
