@@ -821,7 +821,7 @@ fn chat_learns_its_pair_from_the_workspaces_governance_change() {
     );
     assert_eq!(
         proof.named.last().map(|pairs| pairs[0].clone()),
-        Some(pair.clone()),
+        Some(pair),
         "the pair is the one the workspace proves: {:?}",
         proof.named
     );
