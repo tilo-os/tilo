@@ -23,6 +23,11 @@ pub mod grant;
 #[cfg(feature = "native")]
 pub mod native;
 
+/// Another relay of one scope, carried into this one: members split across
+/// two relays of a workspace still hear each other.
+#[cfg(all(feature = "relay", feature = "plane"))]
+pub mod bridge;
+
 /// The client half of the carrier (present a grant, run `moq-lite`), which
 /// a page runs too: it needs no runtime of its own.
 #[cfg(feature = "plane")]

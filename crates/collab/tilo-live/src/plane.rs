@@ -125,6 +125,8 @@ pub(crate) struct Shared {
     heard: Mutex<VecDeque<Heard>>,
     ended: Mutex<bool>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Told once, when the plane ends: what rejoins the scope elsewhere.
+    ended_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
@@ -176,6 +178,7 @@ impl Shared {
             heard: Mutex::new(VecDeque::new()),
             ended: Mutex::new(false),
             wake: Mutex::new(None),
+            ended_hook: Mutex::new(None),
         }))
     }
 
@@ -208,6 +211,10 @@ impl Shared {
             !std::mem::replace(&mut *ended, true)
         };
         if first {
+            let hook = self.ended_hook.lock_recover().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
             self.wake();
         }
     }
@@ -262,12 +269,28 @@ impl Plane {
     /// [`PlaneError::Refused`] when the scope's keys do not cover this
     /// device's own presence.
     pub async fn join(dial: &impl Dial, grant: &[u8], join: Join) -> Result<Self, PlaneError> {
+        Self::join_within(dial, grant, join, JOINT).await
+    }
+
+    /// Join as [`Self::join`], waiting at most `within` for the carrier and
+    /// the admission: a device trying the relays of a scope in turn spends no
+    /// more than this on one that is not there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::join`].
+    pub async fn join_within(
+        dial: &impl Dial,
+        grant: &[u8],
+        join: Join,
+        within: Duration,
+    ) -> Result<Self, PlaneError> {
         let (outgoing, outgoing_task) = OriginTask::produce(origin_config(INGRESS, RETAIN));
         let (incoming, incoming_task) = OriginTask::produce(origin_config(EGRESS, RETAIN));
         let shared = Shared::new(&join, &outgoing, &incoming)?;
         let publish = shared.publication(&outgoing);
         let subscribe = shared.subscription(&incoming)?;
-        let connected = dial.dial(grant, publish, subscribe, JOINT).await?;
+        let connected = dial.dial(grant, publish, subscribe, within).await?;
         let plane = Self::serve(shared, vec![outgoing_task, incoming_task], Some(connected));
         Ok(plane)
     }
@@ -420,6 +443,12 @@ impl Plane {
     /// Ask `wake` to run whenever an object is heard or the session ends.
     pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *self.shared.wake.lock_recover() = Some(wake);
+    }
+
+    /// Ask `ended` to run once, when the plane ends: the carrier closed, the
+    /// relay went away, or the roster no longer opens what it reads.
+    pub fn set_ended(&self, ended: Arc<dyn Fn() + Send + Sync>) {
+        *self.shared.ended_hook.lock_recover() = Some(ended);
     }
 
     /// Whether the carrier has ended.
