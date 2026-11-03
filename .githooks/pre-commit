@@ -145,6 +145,95 @@ if [ -n "$fmt_rs" ] && command -v rustfmt >/dev/null 2>&1; then
   fi
 fi
 
+# tilolang sources are kept in canonical form (`tlc fmt`), and the compiler's
+# tests hold std and the example packages to it; a hand-wrapped .tl file fails
+# them on main. Format the staged ones here, as rustfmt above. The formatter
+# takes one package at a time (a package is a directory of .tl files): the
+# example packages and std are the ones whose canonical form is held, and a
+# fixture elsewhere is the text its test parses, wrapping and all.
+tl_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
+    --diff-filter=ACM -- '*.tl' \
+  | while IFS= read -r f; do
+      case "$f" in
+        crates/lang/tilolang/std/*.tl) printf '%s\n' crates/lang/tilolang/std ;;
+        apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
+      esac
+    done | sort -u)
+if [ -n "$tl_packages" ]; then
+  # A binary from this tree prints this tree's canonical form. TILO_TLC names
+  # one built elsewhere: a tree whose builds run on a builder has none in
+  # target/.
+  tl_fmt=""
+  if [ -n "${TILO_TLC:-}" ] && [ -x "${TILO_TLC}" ]; then
+    tl_fmt=$TILO_TLC
+  fi
+  for c in "$root/target/debug/tlc" "$root/target/release/tlc" \
+           "$root/target/debug/tilolangc" "$root/target/release/tilolangc" \
+           "$(command -v tlc 2>/dev/null || true)" \
+           "$(command -v tilolangc 2>/dev/null || true)"; do
+    if [ -z "$tl_fmt" ] && [ -n "$c" ] && [ -x "$c" ]; then tl_fmt=$c; fi
+  done
+  if [ -z "$tl_fmt" ]; then
+    # The formatter is this tree's compiler, so build its one binary; in a tree
+    # that is already built that is a link, seconds. A tree whose builds run
+    # elsewhere leaves no binary here, which is remembered so that one commit
+    # pays it rather than every commit.
+    tl_none="$(git rev-parse --path-format=absolute --git-common-dir)/tilolang-fmt-unavailable"
+    if [ ! -e "$tl_none" ] && command -v cargo >/dev/null 2>&1; then
+      if (cd "$root" && cargo build --quiet --locked -p tilolang --bin tlc) >/dev/null 2>&1 \
+         && [ -x "$root/target/debug/tlc" ]; then
+        tl_fmt="$root/target/debug/tlc"
+      else
+        : > "$tl_none"
+      fi
+    fi
+  fi
+  if [ -z "$tl_fmt" ]; then
+    # No binary to format with, so these are left as they are: the compiler's
+    # canonical-form tests, which CI runs, hold the invariant either way.
+    note "tilolang fmt: no formatter to check the staged .tl files with (build tlc, or point TILO_TLC at one)"
+  else
+    tl_formatted=0
+    tl_unformatted=""
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      if GIT_INDEX_FILE="$full_index" git diff --quiet -- "$d"; then
+        # Formatting is not a judgement call, so do it rather than ask.
+        tl_status=0
+        tl_out=$(cd "$root" && "$tl_fmt" fmt "$d" 2>&1) || tl_status=$?
+        if [ "$tl_status" -ne 0 ]; then
+          # A package that does not parse is the formatter's to report: its
+          # message names the file, the line and what it expected.
+          printf '%s\n' "$tl_out" | sed 's/^/  /' >&2
+          fail=1
+          continue
+        fi
+        if [ -n "$(GIT_INDEX_FILE="$full_index" git diff --name-only -- "$d")" ]; then
+          GIT_INDEX_FILE="$full_index" git add -u -- "$d"
+          tl_formatted=$((tl_formatted + 1))
+        fi
+      else
+        # A package with unstaged changes is left alone: rewriting it would
+        # stage those too. It is named only when it does need formatting.
+        tl_status=0
+        (cd "$root" && "$tl_fmt" fmt --check "$d") >/dev/null 2>&1 || tl_status=$?
+        if [ "$tl_status" -ne 0 ]; then
+          tl_unformatted="$tl_unformatted$d"$'\n'
+          fail=1
+        fi
+      fi
+    done <<< "$tl_packages"
+    if [ "$tl_formatted" -gt 0 ]; then
+      note "tilolang fmt: formatted $tl_formatted package(s) and staged them"
+    fi
+    if [ -n "$tl_unformatted" ]; then
+      note "tilolang fmt: cannot format packages with unstaged changes, stage the whole package first:"
+      printf '%s' "$tl_unformatted" | sed 's/^/  /' >&2
+      fail=1
+    fi
+  fi
+fi
+
 # Require a reason for added #[ignore] attributes.
 if grep -qE '^\+\s*#\[ignore\]\s*$' <<< "$own_diff"; then
   note "#[ignore] added with no reason string. Use #[ignore = \"why\"]."

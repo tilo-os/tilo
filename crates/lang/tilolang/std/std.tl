@@ -122,9 +122,7 @@ view rows<T>(
         // caller gave, rather than under the last group's heading.
         let ungrouped: Option<Text> = if let g = group {
             .some(phrase("tilolang-no-date"))
-        } else {
-            .none
-        }
+        } else { .none }
         // The items done with stand last, under the one heading their group folds: a sort is
         // stable, so the order the caller gave holds among them and among the rest.
         let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
