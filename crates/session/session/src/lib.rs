@@ -94,6 +94,7 @@ mod lists;
 pub mod live;
 mod lock_screen;
 mod lock_service;
+pub mod logging;
 mod membership;
 pub mod messages;
 pub mod mount;

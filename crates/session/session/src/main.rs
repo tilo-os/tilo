@@ -75,6 +75,10 @@ fn main() -> std::process::ExitCode {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
+    // Everything this process reports, and the panic that would end it, goes
+    // through the one log from here on — including the render service, which
+    // is this binary in its own mode.
+    tilo_session::logging::install();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it
@@ -371,7 +375,6 @@ fn start(
         seed_apps,
     } = line;
     let buses = reach.buses.clone();
-    record_panics(backend);
     // Who sits here, read now and kept current by workers: nothing the loop
     // asks of the identity directory waits on the disk.
     tilo_session::identity::install();
@@ -631,16 +634,6 @@ fn run(
             eprintln!("tilo-session: {error}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// A session that ends without a word leaves the person at the login screen
-/// with no idea why: the one that owns the machine leaves a record of every
-/// panic, which its next start tells them about.
-#[cfg(target_os = "linux")]
-fn record_panics(backend: Backend) {
-    if backend == Backend::Drm {
-        tilo_crash_records::install(tilo_crash_records::PANIC_TITLE);
     }
 }
 

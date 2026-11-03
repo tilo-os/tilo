@@ -313,6 +313,8 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 pollster.workspace = true
 tracing.workspace = true
+# The session's own log: the filter `RUST_LOG` sets, written to its stderr.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
