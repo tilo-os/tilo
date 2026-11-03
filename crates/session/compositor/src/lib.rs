@@ -23,6 +23,7 @@
 #![cfg(target_os = "linux")]
 
 pub mod a11y;
+pub mod app_liveness;
 pub mod backdrop;
 pub mod backend;
 pub mod capture;
@@ -496,6 +497,7 @@ impl Compositor {
                     .filter_map(|host| host.next_deadline()),
             )
             .chain(self.keys.next_deadline())
+            .chain(self.data.state.app_liveness_deadline())
             .chain(alert)
             .min()
             .map(|at| at.saturating_duration_since(now))
@@ -760,8 +762,11 @@ impl Compositor {
         // was ended by work arriving.
         self.recorder.mark_sleep(parked);
         let expired = timeout.is_some_and(|timeout| parked.saturating_add(WAKE_MARGIN) >= timeout);
-        self.recorder
-            .mark_wake(if expired { "idle" } else { tilo_frame_metrics::WAKE_IO });
+        self.recorder.mark_wake(if expired {
+            "idle"
+        } else {
+            tilo_frame_metrics::WAKE_IO
+        });
         dispatched?;
         self.recorder
             .mark_input(started.elapsed().saturating_sub(parked));
@@ -795,6 +800,9 @@ impl Compositor {
             x11.publish_x_hints(&mut self.data.state);
         }
         self.configure_from_clients();
+        // What answered in this turn is answered; what stayed silent past its
+        // time is not responding.
+        self.data.state.advance_app_liveness_at(Instant::now());
         if let Some(undo) = self.data.state.display_changes.due(display_clock_now()) {
             self.put_back(&undo);
         }
@@ -1929,6 +1937,35 @@ impl Compositor {
     /// client decides what closing means, and does it.
     pub fn close_window(&mut self, id: u64) {
         self.data.state.close_window(id);
+    }
+
+    /// Judge every app the person sent input to: one that has not answered
+    /// its ping within [`app_liveness::UNANSWERED`] is not responding.
+    /// Returns whether the set of such windows changed. The loop calls this
+    /// on its own when [`Compositor::next_wait`] says a verdict is due; tests
+    /// pass the instant to judge at.
+    pub fn advance_app_liveness_at(&mut self, now: Instant) -> bool {
+        self.data.state.advance_app_liveness_at(now)
+    }
+
+    /// The windows whose app is not responding now, by id.
+    #[must_use]
+    pub fn not_responding_windows(&self) -> &[u64] {
+        self.data.state.not_responding()
+    }
+
+    /// The person chose "Wait" on window `id`: its app gets another period
+    /// to answer. Returns whether the windows that say "Not responding"
+    /// changed.
+    pub fn wait_window(&mut self, id: u64) -> bool {
+        self.data.state.wait_for_window(id)
+    }
+
+    /// The person chose "Force quit" on window `id`: the client's
+    /// connection ends, so its windows go now, and the process it was is
+    /// returned for the session to end.
+    pub fn force_quit_window(&mut self, id: u64) -> Option<u32> {
+        self.data.state.force_quit_window(id)
     }
 
     /// Whether a client keeps the session from idling (idle-inhibit).
