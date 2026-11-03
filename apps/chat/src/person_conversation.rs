@@ -183,7 +183,7 @@ impl ChatApp {
     /// Tell the direct conversations who the workspace's people are now,
     /// and import a few conversations the old private store still holds:
     /// each is a migration the window does once, not a reason to stall.
-    fn refresh_direct_people(&mut self) {
+    fn refresh_direct_people(&self) {
         let Some(direct) = self.direct.clone() else {
             return;
         };

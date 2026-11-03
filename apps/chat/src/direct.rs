@@ -22,9 +22,10 @@
 //! one spelling, so an imported message and a new one are told apart by
 //! their author the same way.
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use ui::framework::WorkspaceRecord;
 use ui::tilo_resource::{self, ActionCx, Collection, Id, JsonSchema, Model, Refusal};
@@ -35,11 +36,13 @@ pub const OWNER: &str = "so.tilo.chat";
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 /// The most messages a conversation keeps: what the door hands over whole.
 pub const MAX_MESSAGES: usize = 2000;
-/// The messages one import page asks the old store for.
-const IMPORT_PAGE: usize = 100;
 /// How many people one window imports from the old store per sync: the
 /// import is a migration, not a reason to stall a frame.
 const IMPORTS_PER_SYNC: usize = 4;
+/// How often a window asks which pairs it is in again: a pair the other
+/// person opened while this device was away is learnt here, without asking
+/// the workspace every frame.
+const PAIRS_AGAIN: Duration = Duration::from_secs(5);
 
 /// A message of a direct conversation.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -90,7 +93,7 @@ impl DirectConversation {
             .iter()
             .map(|(id, message)| (id.clone(), message))
             .collect();
-        messages.sort_by(|(_, a), (_, b)| a.at.cmp(&b.at));
+        messages.sort_by_key(|(_, message)| message.at);
         ui::person_chat::Conversation {
             peer: peer.to_owned(),
             messages: messages
@@ -128,7 +131,7 @@ pub fn message_id(invocation: uuid::Uuid) -> String {
 fn person(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
         .filter(|author| !author.is_empty() && author.len() <= 4096)
-        .map(|author| ui::person_chat::person_key(author))
+        .map(ui::person_chat::person_key)
         .ok_or_else(|| Refusal::new("a message is always someone's"))
 }
 
@@ -277,6 +280,10 @@ pub(crate) struct Records {
     open: RefCell<BTreeMap<String, WorkspaceRecord<DirectConversation>>>,
     /// The people whose old private conversation is still to be imported.
     imports: RefCell<VecDeque<String>>,
+    /// The people whose old conversation was taken in already.
+    imported: RefCell<BTreeSet<String>>,
+    /// When the workspace last answered which pairs this person is in.
+    asked_pairs: Cell<Option<Instant>>,
     /// The pairs this window announced, so a send asks the workspace once.
     announced: RefCell<BTreeSet<String>>,
     /// The pairs this person is in, as the workspace last proved them.
@@ -284,6 +291,13 @@ pub(crate) struct Records {
 }
 
 impl Records {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            dead_code,
+            reason = "a page reaches its direct conversations through its host"
+        )
+    )]
     pub(crate) fn new(
         handle: ui::framework::WorkspaceHandle,
         workspace: String,
@@ -296,6 +310,8 @@ impl Records {
             people: RefCell::default(),
             open: RefCell::default(),
             imports: RefCell::default(),
+            imported: RefCell::default(),
+            asked_pairs: Cell::default(),
             announced: RefCell::default(),
             pairs: RefCell::new(None),
         })
@@ -305,7 +321,10 @@ impl Records {
     /// already has: what the direct message list shows.
     pub(crate) fn set_people(&self, people: Vec<Person>) {
         for person in &people {
-            if !person.key.is_empty() && !self.imports.borrow().contains(&person.key) {
+            if !person.key.is_empty()
+                && !self.imports.borrow().contains(&person.key)
+                && !self.imported.borrow().contains(&person.key)
+            {
                 self.imports.borrow_mut().push_back(person.key.clone());
             }
         }
@@ -317,15 +336,24 @@ impl Records {
     /// pair the workspace proved exists: opening its record creates nothing
     /// nobody asked for.
     fn refresh_pairs(&self) {
+        if self.pairs.borrow().is_some()
+            && self
+                .asked_pairs
+                .get()
+                .is_some_and(|asked| asked.elapsed() < PAIRS_AGAIN)
+        {
+            return;
+        }
         let Some(Ok(pairs)) = ui::person_chat::pairs().take() else {
             return;
         };
+        self.asked_pairs.set(Some(Instant::now()));
         let me = self.root();
         let mut pairs: Vec<_> = pairs
             .into_iter()
-            .filter(|pair| pair.people.iter().any(|person| *person == me))
+            .filter(|pair| pair.people.contains(&me))
             .collect();
-        pairs.sort_by(|a, b| a.pair.cmp(&b.pair));
+        pairs.sort_by_key(|pair| pair.pair.clone());
         for pair in &pairs {
             if !self.open.borrow().contains_key(&pair.pair)
                 && let Some(record) = self.handle.direct::<DirectConversation>(OWNER, &pair.pair)
@@ -452,13 +480,12 @@ impl Records {
         let mut after = 0;
         let mut imported = Vec::new();
         loop {
-            let page = match ui::person_chat::import_archive(peer, after).take() {
-                Some(Ok(page)) => page,
-                // The old store has nothing more here: done, whatever came.
-                Some(Err(_)) | None => break,
+            // The old store has nothing more here: done, whatever came.
+            let Some(Ok(page)) = ui::person_chat::import_archive(peer, after).take() else {
+                break;
             };
             after = page.next_sequence;
-            if page.messages.is_empty() && !page.has_more {
+            if page.messages.is_empty() {
                 break;
             }
             imported.extend(page.messages.into_iter().map(|message| StoredMessage {
@@ -472,14 +499,19 @@ impl Records {
             }
         }
         if imported.is_empty() {
+            self.imported.borrow_mut().insert(peer.to_owned());
             return true;
         }
         let Ok(record) = self.announce(peer).and_then(|()| self.record(peer)) else {
             return false;
         };
-        record
+        let taken = record
             .invoke(&DirectConversation::IMPORT.with(conversation::Import { messages: imported }))
-            .is_ok()
+            .is_ok();
+        if taken {
+            self.imported.borrow_mut().insert(peer.to_owned());
+        }
+        taken
     }
 
     /// Import a few conversations the old private store still holds, so a
@@ -515,7 +547,7 @@ impl ui::person_chat::Native for Records {
             .map(|person| {
                 let conversation = self
                     .pair(&person.root)
-                    .is_ok_and(|pair| held.iter().any(|held| *held == pair));
+                    .is_ok_and(|pair| held.contains(&pair));
                 ui::person_chat::Contact {
                     public_key: person.key.clone(),
                     display_name: person.name.clone(),
@@ -566,6 +598,7 @@ impl ui::person_chat::Native for Records {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming as _;
     use ui::tilo_resource::Replica;
 
     const ADA: &str = "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad";
@@ -635,7 +668,9 @@ mod tests {
         let mut bob = second_device(&ada, BOB, 2_000);
         send(&mut ada, "dm_1", "one").unwrap();
         send(&mut bob, "dm_2", "two").unwrap();
-        ada.doc_mut().merge(&mut bob.doc().clone()).unwrap();
+        ada.doc_mut()
+            .merge_incoming(&mut bob.doc().clone())
+            .unwrap();
         let (ada_key, bob_key) = (
             ui::person_chat::person_key(ADA),
             ui::person_chat::person_key(BOB),
@@ -652,7 +687,9 @@ mod tests {
         bob.set_now_ms(3_000);
         bob.apply(DirectConversation::MARK_READ.with(conversation::MarkRead { seen: 2_000 }))
             .unwrap();
-        bob.doc_mut().merge(&mut ada.doc_mut().clone()).unwrap();
+        bob.doc_mut()
+            .merge_incoming(&mut ada.doc_mut().clone())
+            .unwrap();
         let state = bob.state().unwrap();
         assert_eq!(state.unread(&ada_key), 0);
         assert_eq!(state.unread(&bob_key), 0);

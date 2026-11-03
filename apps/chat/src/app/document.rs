@@ -17,6 +17,29 @@ fn read_record(doc: &AutoCommit) -> Option<crate::record::Chat> {
     <crate::record::Chat as ui::tilo_resource::Resource>::read(doc).ok()
 }
 
+/// The people a direct conversation can be had with: the workspace's people,
+/// each under the key a conversation keeps them by and with the root key its
+/// pair record is named with. Agents and this window's own person are not
+/// people one talks to.
+fn direct_people<'a>(
+    people: impl Iterator<Item = &'a crate::record::Person>,
+    me: &str,
+) -> Vec<crate::direct::Person> {
+    people
+        .filter(|person| {
+            !person.agent
+                && person.id.0.len() == 64
+                && person.id.0.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && person.id.0 != me
+        })
+        .map(|person| crate::direct::Person {
+            root: person.id.0.clone(),
+            key: ui::person_chat::person_key(&person.id.0),
+            name: person.name.clone(),
+        })
+        .collect()
+}
+
 impl ChatApp {
     /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
     /// after every mutation so `draw` always reflects the latest document.
@@ -117,21 +140,7 @@ impl ChatApp {
         // The people a conversation can be had with: the workspace's people
         // as the chat holds them, under the key a direct conversation keeps
         // them. Agents and this window's own person are not one of them.
-        self.direct_people = chat
-            .people
-            .iter()
-            .filter(|person| {
-                !person.agent
-                    && person.id.0.len() == 64
-                    && person.id.0.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    && person.id.0 != self.me.id
-            })
-            .map(|person| crate::direct::Person {
-                root: person.id.0.clone(),
-                key: ui::person_chat::person_key(&person.id.0),
-                name: person.name.clone(),
-            })
-            .collect();
+        self.direct_people = direct_people(chat.people.iter(), &self.me.id);
         self.reports = chat
             .feedback
             .iter()
