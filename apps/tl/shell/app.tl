@@ -313,7 +313,6 @@ fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
 /// bar the tray items and the sound give way: what a glance needs — the clock, the workspace,
 /// the connection, the charge, the notifications and the person's own face — keeps its room.
 view bar_part(d: Desk, part: BarPart) {
-    let roomy = space.width_class == .expanded or space.width_class == .wide
     if part.slot == .space {
         spacer
     } else if part.slot == .clock {
@@ -323,7 +322,9 @@ view bar_part(d: Desk, part: BarPart) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
                 on press: session.tilo_menu()
             }
-            if roomy {
+            // The switch between the presets keeps the bar's seat where it has the room; a
+            // phone's desk carries it in the row under the bar instead.
+            if space.width_class == .expanded or space.width_class == .wide {
                 preset_menu(viewing)
             }
         }

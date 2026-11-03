@@ -584,9 +584,9 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     // The window's pin presses the place the window is on.
     press(&mut session, "This window");
     until(&mut session, "the window's menu", |session| {
-        on_screen(session, "Pin").is_some()
+        on_screen(session, "Pin window").is_some()
     });
-    press(&mut session, "Pin");
+    press(&mut session, "Pin window");
     until(&mut session, "the place pinned", |session| {
         session
             .arrangement()

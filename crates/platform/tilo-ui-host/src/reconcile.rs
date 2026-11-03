@@ -1382,13 +1382,19 @@ impl Reconciler {
                 let kept = scroll
                     .child_mut()
                     .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
-                // A surface the person pans (a desk of strips) shows a card that just arrived
-                // on it, as a window placed on a desk comes into view.
-                if kept
-                    && token(new_node, "axis") == Some("both")
-                    && let Some(arrived) = arrived_card(old_node, new_node)
-                {
-                    scroll.reveal_on_layout(arrived);
+                // A surface the person pans (a desk of strips) shows what just arrived on it: a
+                // card put on a canvas, or the window of a place just placed, comes into view.
+                if kept {
+                    let canvas = token(new_node, "axis") == Some("both");
+                    let arrived = if canvas {
+                        arrived_card(old_node, new_node)
+                    } else {
+                        None
+                    }
+                    .or_else(|| arrived_window(old_node, new_node));
+                    if let Some(arrived) = arrived {
+                        scroll.reveal_on_layout(arrived);
+                    }
                 }
                 (!kept).then(|| self.build(new_node))
             }
@@ -1591,6 +1597,28 @@ fn arrived_card(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
     let (mut before, mut now) = (Vec::new(), Vec::new());
     cards(old_node, &mut before);
     cards(new_node, &mut now);
+    now.into_iter()
+        .rev()
+        .find(|key| !before.contains(key))
+        .map(str::to_owned)
+}
+
+/// The window that arrived under `new_node` since `old_node`, by its key: the frames a row of a
+/// desk holds, the last of them new. A row pans to the window just placed in it, as the desk's
+/// own row does, so the place that just came onto the desk stands where the person can see it.
+fn arrived_window(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
+    fn frames<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
+        if node.kind == crate::adapter::kind("WindowFrame") {
+            out.push(&node.key);
+            return;
+        }
+        for child in &node.children {
+            frames(child, out);
+        }
+    }
+    let (mut before, mut now) = (Vec::new(), Vec::new());
+    frames(old_node, &mut before);
+    frames(new_node, &mut now);
     now.into_iter()
         .rev()
         .find(|key| !before.contains(key))

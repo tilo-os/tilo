@@ -47,6 +47,10 @@ use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 #[derive(Component, Default)]
 #[component(name = "WindowFrame", role = "Group", label = "name")]
 pub struct WindowFrameProps {
+    /// The window's key where it stands: what finds the frame by id, as the row it arrived in
+    /// pans to show it.
+    #[component(key)]
+    pub key: String,
     /// The window's name: what assistive technology reads, and the title of the frame's own
     /// bar when the content has no header row to hold the controls.
     #[component(data)]
@@ -89,6 +93,8 @@ enum BarShape {
 /// [`WindowFrameProps`] built: layers on the window surface, the content (under the frame's
 /// own bar while it needs one) and the controls over its bar's trailing end.
 pub struct WindowFrame {
+    /// Its key where it stands, as the surface laying it out names it.
+    key: String,
     name: Option<String>,
     focused: bool,
     lists_actions: bool,
@@ -191,6 +197,7 @@ impl Described for WindowFrame {
 
     fn from_props(_key: &str, props: WindowFrameProps) -> Self {
         let WindowFrameProps {
+            key,
             name,
             focused,
             lists_actions,
@@ -219,6 +226,7 @@ impl Described for WindowFrame {
             .push_slot(slot(Box::new(column), Fit::fill(1.0)))
             .push_at(Box::new(controls), At::TopTrailing);
         Self {
+            key,
             name,
             focused,
             lists_actions,
@@ -251,6 +259,7 @@ impl Described for WindowFrame {
             // The own bar shows the name: build it again with the new one.
             self.title = None;
         }
+        self.key = props.key;
         self.name = props.name;
         self.focused = props.focused;
         self.lists_actions = props.lists_actions;
@@ -695,6 +704,12 @@ impl Decorator for WindowFrame {
 
     fn name(&self) -> &'static str {
         "WindowFrame"
+    }
+
+    /// The window is found by the key it stands under, so a surface that pans can bring the
+    /// one that just arrived into view.
+    fn test_id(&self) -> Option<&str> {
+        (!self.key.is_empty()).then_some(self.key.as_str())
     }
 
     /// The frame is a group named for the window, and what it holds is read inside it.

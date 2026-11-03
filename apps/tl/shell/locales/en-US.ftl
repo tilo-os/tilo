@@ -926,6 +926,8 @@ d-gctjtdv7 = Desk
 
 d-6jkhhsvr = Desk around
 
+d-w3f6bqf5 = Screen
+
 d-gb3g4lte = Dock ground
     .w-dock = Dock
 
@@ -1034,8 +1036,6 @@ d-f5tl6n63 = Rooms here
 
 d-7nxhynyj = Picture
 
-d-u2b66n4a = Window group
-
 d-nxpbvfox = Window place
 
 d-6l3wldtm = Window menu
@@ -1126,7 +1126,8 @@ d-r34xb7ak = Preset switch
     .w-spaces = Spaces
     .w-desktop = Desktop
 
-d-2qcr3c5b = Preset menu
+d-i6kntbiy = Preset menu
+    .w-showing = Showing { $preset_title }
     .w-strips = Strips
     .w-frames = Frames
     .w-spaces = Spaces
@@ -1134,33 +1135,36 @@ d-2qcr3c5b = Preset menu
 
 d-qrahog47 = Strips view
 
-d-mpazezbv = Workspace rows
+d-4qeo26jr = Workspace rows
 
-d-3e5q2ijn = Rows of the desk
+d-7qrrtifg = Rows of the desk
     .w-no-window-here-yet = No window here yet
     .w-open-something-into-this-strip = Open something into this strip.
 
-d-rkxghzb3 = Strip window
+d-7sxqbtn2 = Row window
+
+d-2fofsa7f = Strip window
     .w-nothing-here = Nothing here
     .w-open-something-into-this-strip = Open something into this strip.
 
-d-ns5lwawo = Window controls
+d-p5wzoqr5 = Window controls
     .w-this-window = This window
     .w-narrow = Narrow
     .w-normal = Normal
     .w-wide = Wide
     .w-bring-to-front = Bring to front
-    .w-unpin = Unpin
-    .w-pin = Pin
+    .w-unpin-window = Unpin window
+    .w-pin-window = Pin window
     .w-restore = Restore
     .w-maximize = Maximize
     .w-close = Close
 
 d-z4vc77e6 = Place controls
-    .w-pinned = Pinned
-    .w-pin = Pin
+    .w-pin-place = Pin place
     .w-move-to-row = Move to row
     .w-close = Close
+
+d-oyjbbzbk = Place content
 
 d-43am22do = Place view
 
@@ -1237,7 +1241,13 @@ d-wh7n4fhq-row0 = Banner row for a
 
 d-f5tl6n63-row0 = Rooms here for r
 
-d-u2b66n4a-row0 = Window group for v
+d-7nxhynyj-row0-row0 = Picture for v
+
+d-7nxhynyj-row0 = Picture for w
+
+d-7nxhynyj-row1-row0 = Picture for v
+
+d-7nxhynyj-row1 = Picture for w
 
 d-6l3wldtm-row0 = Window menu for s
     .w-move-to = Move to { $strip_name }
@@ -1247,11 +1257,9 @@ d-6l3wldtm-row1 = Window menu for r
 
 d-qrahog47-row0 = Strips view for workspace
 
-d-3e5q2ijn-row0 = Rows of the desk for s
+d-2fofsa7f-row0 = Strip window for p
 
-d-rkxghzb3-row0 = Strip window for p
-
-d-ns5lwawo-row0 = Window controls for r
+d-p5wzoqr5-row0 = Window controls for r
     .w-move-to = Move to { $name }
 
 d-z4vc77e6-row0 = Place controls for r

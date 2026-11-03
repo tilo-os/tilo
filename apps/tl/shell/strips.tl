@@ -32,10 +32,10 @@ fn rows_of(a: Arrangement, workspace: Text) -> List<ArrangementRow> {
     a.rows.filter(r -> r.workspace == workspace)
 }
 
-/// The strip the shell shows in front: the one the person brought forward, or the first of the
-/// desk while they have brought none forward yet.
+/// The strip the shell shows in front: the one the person brought forward, or the window that
+/// came to the desk last, so the desk's front follows what arrived on it.
 fn strip_in_front(a: Arrangement, v: Viewing) -> Text {
-    if v.focused != "" { v.focused } else { a.strips.first()?.key ?? "" }
+    if v.focused != "" { v.focused } else { a.strips.last()?.key ?? "" }
 }
 
 /// The strips standing maximized: each shows alone as the window the desk is, the others behind
@@ -80,7 +80,12 @@ fn preset_title(p: Preset) -> Text {
 /// and no second row stands between them and it. The menu names the preset the desk shows, so the
 /// bar says what a person is looking at, and neither reads as one of the presets it offers.
 view preset_menu(v: Viewing) {
-    ui.MenuButton("Showing {preset_title(v.showing)}", icon: .layout_grid, role: .bar) {
+    ui.MenuButton(
+        "Showing {preset_title(v.showing)}",
+        icon: .layout_grid,
+        role: .bar,
+        icon_only: space.compact,
+    ) {
         ui.MenuItem("Strips", icon: .columns_2, checked: .some(v.showing == .strips)) {
             on choose: show_preset(v, .strips)
         }
@@ -138,7 +143,7 @@ view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
 /// chrome's desk does.
 view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
     let strips = strips_of(a, held.key)
-    let front = strips.find(s -> s.key == strip_in_front(a, v)) ?? strips.first()
+    let front = strips.find(s -> s.key == strip_in_front(a, v)) ?? strips.last()
     stack(gap: .related, fill) {
         if a.rows.len() > 1 {
             ui.Text(held.name, role: .subheading)
@@ -250,11 +255,11 @@ view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Opt
             }
             if let p = shown {
                 if p.pinned {
-                    ui.MenuItem("Unpin", icon: .pin, checked: .some(true)) {
+                    ui.MenuItem("Unpin window", icon: .pin, checked: .some(true)) {
                         on choose: session.pin(place: the_place(p.key), pinned: false)
                     }
                 } else {
-                    ui.MenuItem("Pin", icon: .pin) {
+                    ui.MenuItem("Pin window", icon: .pin) {
                         on choose: session.pin(place: the_place(p.key), pinned: true)
                     }
                 }
@@ -293,11 +298,11 @@ view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Opt
 view place_controls(a: Arrangement, p: ArrangementPlace) {
     row(gap: .tight, align: .center) {
         if p.pinned {
-            ui.Button("Pinned", icon: .pin, icon_only: true, toggled: .some(true), role: .plain) {
+            ui.Button("Pin place", icon: .pin, icon_only: true, toggled: .some(true), role: .plain) {
                 on press: session.pin(place: the_place(p.key), pinned: false)
             }
         } else {
-            ui.Button("Pin", icon: .pin, icon_only: true, role: .plain) {
+            ui.Button("Pin place", icon: .pin, icon_only: true, role: .plain) {
                 on press: session.pin(place: the_place(p.key), pinned: true)
             }
         }
