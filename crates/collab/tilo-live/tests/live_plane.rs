@@ -449,8 +449,12 @@ async fn a_plane_seals_under_the_keys_it_now_holds() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_member_that_reached_another_relay_is_heard_here() {
     let authority = Authority::new();
-    let (alpha_endpoint, beta_endpoint, publisher_endpoint, member_endpoint) =
-        (endpoint().await, endpoint().await, endpoint().await, endpoint().await);
+    let (alpha_endpoint, beta_endpoint, publisher_endpoint, member_endpoint) = (
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+    );
     let (alpha_key, beta_key) = (
         *alpha_endpoint.id().as_bytes(),
         *beta_endpoint.id().as_bytes(),
@@ -502,10 +506,76 @@ async fn a_member_that_reached_another_relay_is_heard_here() {
         alpha.counters().accepted >= 2 && beta.counters().accepted >= 1
     });
 
-    publisher.publish(Track::Presence, 1, b"relay=alpha").unwrap();
+    publisher
+        .publish(Track::Presence, 1, b"relay=alpha")
+        .unwrap();
     wait_until("the member on the other relay hears the publisher", || {
         heard(&member, Track::Presence)
             .iter()
             .any(|object| object.body == b"relay=alpha" && object.sender == publisher_key)
     });
+}
+
+/// A participant that joins after another has said its presence hears it
+/// within one frame of subscribing: the reader starts at the track's latest
+/// group, not at whatever is said next. Nothing is published again here, so a
+/// plane that only heard the next heartbeat could not pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+
+    let a = Plane::join(
+        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("the first participant is admitted", || {
+        relay.counters().accepted == 1
+    });
+    a.publish(Track::Presence, 1, b"role=member").unwrap();
+    // The relay holds the frame and its author rests: this workspace's
+    // presence heartbeat is twenty seconds apart, so anything the joiner sees
+    // within two seconds came from where it subscribed, not from a new frame.
+    wait_until("the relay carried the presence", || {
+        relay.counters().forwarded >= 1
+    });
+
+    let joined = std::time::Instant::now();
+    let b = Plane::join(
+        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&b_cert),
+        join(b_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    // The joiner draws the frame its author said before the join, with no
+    // further word from that author: the presence heartbeat is twenty seconds
+    // apart, so anything within a second came from where it subscribed.
+    let mut drawn = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    while tokio::time::Instant::now() < deadline {
+        drawn.extend(heard(&b, Track::Presence));
+        if drawn.iter().any(|object| object.body == b"role=member") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        drawn
+            .iter()
+            .any(|object| object.body == b"role=member" && object.sender == a_key),
+        "the joiner drew nothing of the presence said before it joined, in {:?}: {drawn:?}",
+        joined.elapsed()
+    );
+    drop(b);
 }
