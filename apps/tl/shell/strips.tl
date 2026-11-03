@@ -136,12 +136,14 @@ view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
 view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
     let strips = strips_of(a, held.key)
     let count = strips.len()
-    let each = if count == 0 { space.width } else { space.width / count.to_float() }
+    // A window needs a window's width: the row shows its strips side by side while every one
+    // of them keeps it, and pans across them when the desk cannot give it.
+    let crowded = count > 0 and strips.any(s -> space.width * (if s.width > 0 { s.width.to_float() } else { 667.0 }) / 667.0 / count.to_float() < 13.0)
     stack(gap: .related, fill) {
         if a.rows.len() > 1 {
             ui.Text(held.name, role: .subheading)
         }
-        if each >= 12.0 {
+        if not crowded {
             row(gap: .group, fill) {
                 for s in strips {
                     // Its share of the row by the width it names: a desk of more windows than
@@ -157,8 +159,8 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
                 row(gap: .group, fill) {
                     for s in strips {
                         // The least a window may stand at: narrow enough for a phone's strip,
-                        // wide enough for a window's bar and the app's own header under it.
-                        strip_window(a, v, s, lists, fill(1), min: 12rem)
+                        // wide enough for a window's bar, the pill at its end and the app under it.
+                        strip_window(a, v, s, lists, fill(1), min: 13rem)
                     }
                     if strips.is_empty() {
                         ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
@@ -222,13 +224,15 @@ flow show_place(v: Viewing, strip: Text, place: session.Place) {
     session.activate(place: place)
 }
 
-/// A window's own controls, in the pill at the trailing end of its one bar: the strip's width,
-/// the window's place in front, maximize or restore, and the place's pin, move and close. Each
-/// is one arranging action of the session's, so a press and an agent change the desk the same
-/// way, and none of them ever asks for a bar of its own.
+/// A window's own controls, in the pill at the trailing end of its one bar: the window's menu
+/// (its width, coming to the front, and the place's pin and row), maximize or restore, and
+/// close. Three controls whatever the place holds, so the pill still fits a window on a phone;
+/// nothing about the place but its close stands in the bar of its own. Each is one arranging
+/// action of the session's, so a press and an agent change the desk the same way, and none of
+/// them ever asks for a bar of its own.
 view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Option<ArrangementPlace>, in_front: Bool) {
     row(gap: .tight, align: .center) {
-        ui.MenuButton("Width", icon: .columns_2, icon_only: true, role: .plain) {
+        ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
             ui.MenuItem("Narrow", checked: .some(width_of(s.width) == .narrow)) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.narrow))
             }
@@ -238,10 +242,30 @@ view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Opt
             ui.MenuItem("Wide", checked: .some(width_of(s.width) == .wide)) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.wide))
             }
-        }
-        if not in_front {
-            ui.Button("Bring to front", icon: .app_window, icon_only: true, role: .plain) {
-                on press: focus_strip(v, s.key)
+            if not in_front {
+                ui.MenuItem("Bring to front", icon: .app_window) {
+                    on choose: focus_strip(v, s.key)
+                }
+            }
+            if let p = shown {
+                if p.pinned {
+                    ui.MenuItem("Unpin", icon: .pin, checked: .some(true)) {
+                        on choose: session.pin(place: the_place(p.key), pinned: false)
+                    }
+                } else {
+                    ui.MenuItem("Pin", icon: .pin) {
+                        on choose: session.pin(place: the_place(p.key), pinned: true)
+                    }
+                }
+                if a.rows.len() > 1 {
+                    for r in a.rows {
+                        if r.key != strip_row(a, p.strip) {
+                            ui.MenuItem("Move to {r.name}", icon: .navigation) {
+                                on choose: session.move(place: the_place(p.key), row: the_row(r.key))
+                            }
+                        }
+                    }
+                }
             }
         }
         if s.maximized {
@@ -254,13 +278,17 @@ view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Opt
             }
         }
         if let p = shown {
-            place_controls(a, p)
+            ui.Button("Close", icon: .x, icon_only: true, role: .plain) {
+                on press: session.close(place: the_place(p.key))
+            }
         }
     }
 }
 
 /// A place's own controls: its pinned mark, its pin, its move to another row, and its close.
-/// Outside the well, so a press there is the shell's and one on the well is the app's.
+/// Outside the well, so a press there is the shell's and one on the well is the app's. The
+/// canvas's framed places carry these alone: they are not a strip's window, so its width and
+/// its way to the front are not theirs.
 view place_controls(a: Arrangement, p: ArrangementPlace) {
     row(gap: .tight, align: .center) {
         if p.pinned {

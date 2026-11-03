@@ -827,7 +827,7 @@ impl Reconciler {
         // A fragment draws nothing of its own, so what it asks for is the child standing under
         // it: a `for`'s fill reaches each row it places in a row or a grid, and the narrowest
         // width it names floors each of them.
-        let mut passed = inherited;
+        let mut passed = None;
         let mut aspect = None;
         for fragment in through {
             passed = number(fragment, "fill").or(passed);
@@ -1604,20 +1604,14 @@ fn frames(node: &UiNode) -> bool {
 /// own, its children stacked tight.
 fn placed(node: &UiNode) -> Vec<Placed<'_>> {
     // A row and a grid place every child a loop's fragment holds, as slots of their own, so a
-    // row's items share the row's spans one by one. Every other container does the same for a
-    // fragment holding one child: a fragment draws nothing of its own, so a loop's sizing and
-    // placement belong to the one node it places.
-    let every = matches!(node.kind.as_str(), "grid" | "row");
-    fn flatten<'a>(
-        node: &'a UiNode,
-        every: bool,
-        through: &mut Vec<&'a UiNode>,
-        out: &mut Vec<Placed<'a>>,
-    ) {
+    // row's items share the row's spans one by one. Every other container keeps a fragment as
+    // a slot of its own: a view call is a box standing where the view put it, and what the
+    // view asks for is asked of that box.
+    fn flatten<'a>(node: &'a UiNode, through: &mut Vec<&'a UiNode>, out: &mut Vec<Placed<'a>>) {
         for child in &node.children {
-            if child.kind == "fragment" && (every || child.children.len() == 1) {
+            if child.kind == "fragment" {
                 through.push(child);
-                flatten(child, every, through, out);
+                flatten(child, through, out);
                 through.pop();
             } else {
                 out.push(Placed {
@@ -1628,7 +1622,14 @@ fn placed(node: &UiNode) -> Vec<Placed<'_>> {
         }
     }
     let mut out = Vec::new();
-    flatten(node, every, &mut Vec::new(), &mut out);
+    if matches!(node.kind.as_str(), "grid" | "row") {
+        flatten(node, &mut Vec::new(), &mut out);
+    } else {
+        out.extend(node.children.iter().map(|child| Placed {
+            node: child,
+            through: Vec::new(),
+        }));
+    }
     out
 }
 

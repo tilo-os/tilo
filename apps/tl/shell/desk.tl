@@ -183,50 +183,32 @@ view shown_preset(a: Arrangement, lists: Bool) {
 /// output it spans is what its fit says.
 view bar_on_edge(s: Shell, d: Desk) {
     let on_top = s.bar_edge == .top
-    if s.bar_fit == .full and on_top {
-        row(at: .top, fill, align: .center) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .square,
-                edge: .top,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-                fill,
-            ) {
-                top_bar(d)
+    // The stack holds the bar at its own height: the bar fills the desk's width, and takes no
+    // share of its height, so the desk's windows get the room the bar leaves.
+    stack {
+        if s.bar_fit == .full and on_top {
+            row(at: .top, fill, align: .center) {
+                ui.Chrome(name: "Top bar", shape: .square, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
+                    top_bar(d)
+                }
             }
-        }
-    } else if s.bar_fit == .full {
-        row(at: .bottom, fill, align: .center) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .square,
-                edge: .bottom,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-                fill,
-            ) {
-                top_bar(d)
+        } else if s.bar_fit == .full {
+            row(at: .bottom, fill, align: .center) {
+                ui.Chrome(name: "Top bar", shape: .square, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
+                    top_bar(d)
+                }
             }
-        }
-    } else if on_top {
-        row(at: .top, align: .center, padding: .related) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .rounded,
-                edge: .top,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-            ) {
-                top_bar(d)
+        } else if on_top {
+            row(at: .top, align: .center, padding: .related) {
+                ui.Chrome(name: "Top bar", shape: .rounded, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
+                    top_bar(d)
+                }
             }
-        }
-    } else {
-        row(at: .bottom, align: .center, padding: .related) {
-            ui.Chrome(
-                name: "Top bar",
-                shape: .rounded,
-                edge: .bottom,
-                material: if s.bar_finish == .translucent { .glass } else { .calm },
-            ) {
-                top_bar(d)
+        } else {
+            row(at: .bottom, align: .center, padding: .related) {
+                ui.Chrome(name: "Top bar", shape: .rounded, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
+                    top_bar(d)
+                }
             }
         }
     }

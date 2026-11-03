@@ -104,6 +104,9 @@ pub struct WindowFrame {
     /// The name the frame's own bar shows, and whether the window was in front: pressing the
     /// bar again is nothing, so the name is built again only when it says something else.
     title: Option<(String, bool)>,
+    /// The name the bar last built: the window's name elided to one line in the room the bar
+    /// has, and nothing while the bar has no room for a name at all.
+    shown: Option<(String, bool)>,
     /// How wide the controls were laid out, the room the content's header row keeps for
     /// them.
     controls_width: f64,
@@ -124,6 +127,13 @@ const CONTROLS: usize = 1;
 /// In the content's column: the frame's own bar, then the content.
 const OWN_BAR: usize = 0;
 const BODY: usize = 1;
+/// The room the frame's own bar keeps for the window's name, logical pixels: below it a name
+/// would be an ellipsis and nothing more, so the bar shows the decorations alone. Six steps of
+/// the spacing scale, so it follows the theme's own.
+fn name_room(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s16 + theme.tokens.spacing.s8)
+}
+
 /// In the frame's own bar: the window's tabs, its name, then the room the controls keep.
 const TABS: usize = 0;
 const NAME: usize = 1;
@@ -222,6 +232,7 @@ impl Described for WindowFrame {
                 BarShape::Merged
             },
             title: None,
+            shown: None,
             controls_width: 0.0,
             relayout: false,
             metrics: None,
@@ -389,43 +400,71 @@ impl WindowFrame {
 
     /// Build the frame's own bar for `shape`: one bar tall, nothing in it while the app's
     /// header holds the bar, else its name — and never a second bar of the app's under it.
-    fn build_bar(&mut self, shape: BarShape, m: &HeaderRowMetrics) {
+    fn build_bar(&mut self, shape: BarShape, m: &HeaderRowMetrics, theme: &Theme, room: f64) {
         self.shape = shape;
-        let shown = shape != BarShape::Merged;
+        let bar = shape != BarShape::Merged;
         if let Some(column) = self.column() {
-            let _ = column.set_placement(OWN_BAR, bar_fit(shown), 1, None);
+            column.set_placement(OWN_BAR, bar_fit(bar), 1, None);
         }
-        let wanted = match shape {
+        let title = match shape {
             BarShape::Title => Some((self.name.clone().unwrap_or_default(), self.focused)),
             _ => None,
         };
-        if wanted == self.title {
+        let shown = title
+            .clone()
+            .map(|(name, focused)| (self.elided(&name, m, theme, room), focused));
+        if title == self.title && shown == self.shown {
             return;
         }
-        self.title = wanted.clone();
-        let element: Element = match wanted {
-            Some((name, focused)) => {
-                let mut title = Text::new(&name).with_role(TextRole::Label);
-                if !focused {
-                    title = title.dimmed();
-                }
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a header row measure fits f32"
-                )]
-                let gutter = Spacer::fixed(m.gutter as f32);
-                let row = Stack::row()
-                    .align(Align::Center)
-                    .push(Box::new(gutter))
-                    .push(Box::new(title))
-                    .push_slot(slot(empty(), Fit::fill(1.0)));
-                Box::new(row)
-            }
-            None => empty(),
-        };
+        self.title = title;
+        self.shown = shown;
+        let element = self.name_element(m);
         if let Some(own) = self.own_bar_row() {
             let _ = own.replace(NAME, element);
         }
+    }
+
+    /// The window's name, elided to one line of the room `room` the bar has for it, as a tab's
+    /// title is: a name too long for the bar ends in an ellipsis, never in a second line taller
+    /// than the bar. Below the room a name needs at all the bar shows no name: the decorations
+    /// alone say whose window it is.
+    fn elided(&self, name: &str, m: &HeaderRowMetrics, theme: &Theme, room: f64) -> String {
+        let budget = room - m.gutter;
+        if room < name_room(theme) || budget <= 0.0 {
+            return String::new();
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a window's bar room fits f32"
+        )]
+        let budget = budget as f32;
+        let style = theme.text(TextRole::Label);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            text.elide_to_width_style(name, budget, &style)
+        })
+    }
+
+    /// The name the frame's own bar shows: nothing while the bar has no room for it, so a window
+    /// too narrow for its name shows its decorations alone instead of a name folded into a column.
+    fn name_element(&self, m: &HeaderRowMetrics) -> Element {
+        let Some((name, focused)) = self.shown.clone().filter(|(name, _)| !name.is_empty()) else {
+            return empty();
+        };
+        let mut title = Text::new(&name).with_role(TextRole::Label);
+        if !focused {
+            title = title.dimmed();
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a header row measure fits f32"
+        )]
+        let gutter = Spacer::fixed(m.gutter as f32);
+        let row = Stack::row()
+            .align(Align::Center)
+            .push(Box::new(gutter))
+            .push(Box::new(title))
+            .push_slot(slot(empty(), Fit::fill(1.0)));
+        Box::new(row)
     }
 
     /// The bar's row: the content's header row when it holds the bar, else the frame's own.
@@ -489,7 +528,12 @@ impl Decorator for WindowFrame {
     ) -> NodeId {
         let m = HeaderRowMetrics::resolve(theme);
         self.offer_bar(&m);
-        self.build_bar(self.shape(), &m);
+        // The room the bar has left of its controls' pill: what its tabs and its name share.
+        let room = self.rect.width()
+            - self.controls_width
+            - crate::widget::window_controls::EDGE_INSET
+            - crate::widget::window_controls::LEAD_GAP;
+        self.build_bar(self.shape(), &m, theme, room);
         // The controls stand in a row as tall as the bar's, centred in it.
         #[allow(
             clippy::cast_possible_truncation,
@@ -508,10 +552,6 @@ impl Decorator for WindowFrame {
         // The tabs and the name have the room the controls leave, never more: a window narrow
         // enough that its bar cannot hold them both squeezes them, and the strip shows the
         // titles it can, rather than the two covering each other.
-        let room = self.rect.width()
-            - self.controls_width
-            - crate::widget::window_controls::EDGE_INSET
-            - crate::widget::window_controls::LEAD_GAP;
         if room > 0.0 {
             #[allow(
                 clippy::cast_possible_truncation,
@@ -669,7 +709,37 @@ impl Decorator for WindowFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::Described;
+    use crate::component::{Described, Event, ResourceId};
+    use crate::widget::{TabItemProps, TabStrip, TabStripProps};
+
+    /// A window's tabs, as the shell's strip hands them to its frame: two places, the first in
+    /// front.
+    fn two_places() -> Box<TabStrip> {
+        let tab = |key: &str, title: &str| TabItemProps {
+            key: key.to_owned(),
+            item: Some(ResourceId(format!("@notes.Note:{key}"))),
+            title: Some(title.to_owned()),
+            icon: None,
+            attention: false,
+            modified: false,
+            busy: false,
+            presence: Vec::new(),
+        };
+        let tabs = vec![tab("a", "Sorting"), tab("b", "Second")];
+        Box::new(TabStrip::from_props(
+            "frame",
+            TabStripProps {
+                key: "frame".to_owned(),
+                active: tabs.first().and_then(|t| t.item.clone()),
+                focused: true,
+                activate: Event::None,
+                close: Event::None,
+                reorder: Event::None,
+                detach: Event::None,
+                tabs,
+            },
+        ))
+    }
 
     /// The window drawn on its ground at `rect`, rendered: what a person sees around its edge.
     fn rendered(theme: &Theme, focused: bool, rect: Rect) -> Vec<u8> {
@@ -797,7 +867,7 @@ mod tests {
             WindowFrameProps {
                 name: Some("Two notes".to_owned()),
                 focused: true,
-                tabs: Some(Box::new(Spacer::fixed(120.0))),
+                tabs: Some(two_places()),
                 body: Some(Box::new(Spacer::new())),
                 ..WindowFrameProps::default()
             },
