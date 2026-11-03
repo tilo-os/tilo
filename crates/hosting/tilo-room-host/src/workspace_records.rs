@@ -4,7 +4,7 @@
 //! The service answering it (the app-serving plane) must read the record as
 //! the host retains it and commit the action's change the way a device
 //! commits one: ordered, retained, fanned out to every subscriber and queued
-//! for offline members. [`RoomRecords`] is that seam, without a network hop:
+//! for offline members. [`WorkspaceRecords`] is that seam, without a network hop:
 //!
 //! - [`WorkspaceRecords::retained`] is what a first-time subscriber is replayed —
 //!   every retained checkpoint and delta of the workspace, as the signed

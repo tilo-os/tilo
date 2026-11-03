@@ -3,7 +3,7 @@
 //! Every relay plane that admits a device into a workspace — subscribe, the
 //! access audit, state delivery, replay, remote actions, the browser live
 //! plane, content discovery, compute and environments — asks [`decide`] with
-//! its [`RoomOperation`]. The rule is written once:
+//! its [`WorkspaceOperation`]. The rule is written once:
 //!
 //! 1. The certificate is current relay-wide ([`RelayTrust::cert`]): not
 //!    expired, not revoked, admitted by the live trust policy.
