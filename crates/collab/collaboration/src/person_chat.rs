@@ -95,6 +95,9 @@ pub enum Request {
         public_key: String,
         after_sequence: u64,
     },
+    /// Empty the device's old private store, once its conversations are in
+    /// the pair records.
+    Clear,
 }
 
 /// What the host answered a [`Request`].
@@ -105,6 +108,8 @@ pub enum Answer {
     Announced,
     Pairs(Vec<Pair>),
     ImportPage(ImportPage),
+    /// The old private store was emptied.
+    Cleared,
 }
 
 /// Called once with what the host answered.
@@ -489,6 +494,7 @@ enum Reply {
     Announced,
     Pairs,
     ImportPage,
+    Cleared,
 }
 
 #[cfg(feature = "broker-transport")]
@@ -499,6 +505,7 @@ impl Reply {
             Request::Announce { .. } => Self::Announced,
             Request::Pairs => Self::Pairs,
             Request::Import { .. } => Self::ImportPage,
+            Request::Clear => Self::Cleared,
             Request::Open { .. } | Request::Read { .. } | Request::Send { .. } => {
                 Self::Conversation
             }
@@ -525,6 +532,7 @@ fn decode(reply: Reply, bytes: &[u8]) -> Result<Answer, String> {
         Reply::ImportPage => serde_json::from_slice(bytes)
             .map(Answer::ImportPage)
             .map_err(|_| "invalid private conversation import reply".into()),
+        Reply::Cleared => Ok(Answer::Cleared),
     }
 }
 
@@ -746,6 +754,25 @@ pub fn import_archive(public_key: &str, after_sequence: u64) -> Pending<ImportPa
             });
         },
     );
+    pending
+}
+
+/// Empty the device's old private conversation store, once every conversation
+/// it held is in its pair's record: what the workspace keeps of a person's
+/// old history is the records.
+pub fn clear_archive() -> Pending<()> {
+    let original = match original() {
+        Ok(original) => original,
+        Err(error) => return Pending::ready(Err(error)),
+    };
+    let (pending, fill) = Pending::new();
+    exchange(Request::Clear, original, move |answer| {
+        fill.fill(match answer {
+            Ok(Answer::Cleared) => Ok(()),
+            Ok(_) => Err("invalid private conversation clear reply".into()),
+            Err(error) => Err(error),
+        });
+    });
     pending
 }
 

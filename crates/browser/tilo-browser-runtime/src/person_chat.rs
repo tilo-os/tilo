@@ -171,6 +171,9 @@ impl PagePrivate {
             Request::Announce { .. } | Request::Pairs | Request::Import { .. } => {
                 Err("the page's door keeps no pair records".into())
             }
+            // A page holds no old private store: the device's own archive is
+            // the host's.
+            Request::Clear => Err("the page's door keeps no private archive".into()),
         }
     }
 }

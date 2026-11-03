@@ -178,6 +178,12 @@ impl PersonChatServices for PersonChat {
                 owner.commit_direct_pair(workspace, caller, &other, &key, now)?;
                 serde_json::json!({})
             }
+            // The old store's conversations are in the pair records: one
+            // publication empties it, and nothing writes there again.
+            PersonChatCommand::Clear => {
+                owner.clear_private_direct_conversations(workspace, &authority, now)?;
+                serde_json::json!({})
+            }
             // One page of a conversation still in the old private store, so
             // the pair's record can take it over. Reading only: an empty
             // answer means this person holds no such conversation.

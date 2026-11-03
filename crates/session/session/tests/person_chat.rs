@@ -771,13 +771,17 @@ fn chat_announces_its_pair_and_the_workspace_proves_it() {
     );
 }
 
-/// What the import door answered: the conversation the old store holds, and
-/// what asking again past its end answers.
+/// What the import door answered: the conversation the old store holds, what
+/// asking again past its end answers, and what is left after the migration
+/// empties it.
 struct ImportProof {
     announced: serde_json::Value,
     first: serde_json::Value,
     ended: serde_json::Value,
     kept: serde_json::Value,
+    cleared: serde_json::Value,
+    /// The old store after the clear: nothing more to import.
+    emptied: serde_json::Value,
 }
 
 fn import_calls(socket: &PathBuf, keys: &Keys) -> ImportProof {
@@ -826,11 +830,25 @@ fn import_calls(socket: &PathBuf, keys: &Keys) -> ImportProof {
             serde_json::json!({"operation": "read", "public_key": peer}),
         )
         .await;
+        // The history is in the pair's record: the migration empties the old
+        // store in one write, and nothing is left to import.
+        let cleared = ask(&mine, serde_json::json!({"operation": "clear"})).await;
+        let emptied = ask(
+            &mine,
+            serde_json::json!({
+                "operation": "import",
+                "public_key": peer,
+                "after_sequence": 0,
+            }),
+        )
+        .await;
         ImportProof {
             announced,
             first,
             ended,
             kept,
+            cleared,
+            emptied,
         }
     })
 }
@@ -887,6 +905,18 @@ fn chat_imports_the_conversation_the_old_store_holds() {
         "importing never moves or repeats what the old store holds: {}",
         proof.kept
     );
+    assert_eq!(
+        proof.cleared,
+        serde_json::json!({}),
+        "the migration empties the old store once"
+    );
+    assert_eq!(
+        proof.emptied["messages"].as_array().map(Vec::len),
+        Some(0),
+        "the emptied store has nothing more to import: {}",
+        proof.emptied
+    );
+    assert_eq!(proof.emptied["has_more"], false);
 }
 
 /// What the app heard about the pairs it is in: the updates it read from the

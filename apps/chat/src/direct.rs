@@ -174,6 +174,11 @@ pub(crate) struct Records {
     imports: RefCell<VecDeque<String>>,
     /// The people whose old conversation was taken in already.
     imported: RefCell<BTreeSet<String>>,
+    /// Emptying the old private store, once every conversation it held is in
+    /// its pair's record.
+    clearing: RefCell<Option<ui::person_chat::Pending<()>>>,
+    /// The old store is empty: the migration is done here.
+    cleared: Cell<bool>,
     /// The workspace's answer on which pairs this person is in, and the
     /// time it answered for: `None` until the first answer.
     pairs: RefCell<Option<Vec<ui::person_chat::Pair>>>,
@@ -199,6 +204,8 @@ impl Records {
             open: RefCell::default(),
             imports: RefCell::default(),
             imported: RefCell::default(),
+            clearing: RefCell::default(),
+            cleared: Cell::default(),
             pairs: RefCell::new(None),
             pairs_generation: Cell::default(),
             announced: RefCell::default(),
@@ -494,17 +501,46 @@ impl Records {
     }
 
     /// Import a few conversations the old private store still holds, so a
-    /// person's history comes over once without stalling a frame.
+    /// person's history comes over once without stalling a frame; once none
+    /// is left, empty the old store in one publication.
     pub(crate) fn import_old_store(&self) {
         for _ in 0..IMPORTS_PER_SYNC {
             let Some(peer) = self.imports.borrow_mut().pop_front() else {
-                return;
+                break;
             };
             if !self.import(&peer) {
                 // Its record could not be written yet: ask again next sync.
                 self.imports.borrow_mut().push_back(peer);
             }
         }
+        if !self.imports.borrow().is_empty() || self.cleared.get() {
+            return;
+        }
+        // A roster this window has not read yet proves no conversation was
+        // imported, so nothing is emptied on its word.
+        if self.people.borrow().is_empty() {
+            return;
+        }
+        if self.clearing.borrow().is_some() {
+            let answered = self
+                .clearing
+                .borrow()
+                .as_ref()
+                .and_then(ui::person_chat::Pending::take);
+            match answered {
+                Some(Ok(())) => {
+                    self.cleared.set(true);
+                    return;
+                }
+                // The workspace could not write it: ask again next sync.
+                Some(Err(_)) => {
+                    self.clearing.borrow_mut().take();
+                }
+                None => return,
+            }
+        }
+        self.clearing
+            .replace(Some(ui::person_chat::clear_archive()));
     }
 }
 

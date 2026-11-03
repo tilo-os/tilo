@@ -63,6 +63,9 @@ pub enum PersonChatCommand {
         public_key: String,
         after_sequence: u64,
     },
+    /// Empty the person's old private store: the conversations it held are in
+    /// the pair records, and nothing reads or writes it again.
+    Clear,
 }
 // An internally tagged unit variant accepts extra fields even with
 // deny_unknown_fields. Decode Contacts as an empty struct to close that door.
@@ -89,6 +92,7 @@ enum ClosedPersonChatCommand {
         public_key: String,
         after_sequence: u64,
     },
+    Clear {},
 }
 
 impl<'de> serde::Deserialize<'de> for PersonChatCommand {
@@ -116,6 +120,7 @@ impl<'de> serde::Deserialize<'de> for PersonChatCommand {
                     public_key,
                     after_sequence,
                 },
+                ClosedPersonChatCommand::Clear {} => Self::Clear,
             },
         )
     }
@@ -139,6 +144,7 @@ impl PersonChatCommand {
             Self::Send { .. } => "send-direct-message",
             Self::Announce { .. } => "announce-direct-pair",
             Self::Import { .. } => "import-direct-conversation",
+            Self::Clear => "clear-private-archive",
         }
     }
 }

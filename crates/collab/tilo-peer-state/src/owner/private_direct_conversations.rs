@@ -206,6 +206,9 @@ impl PrivateDirectConversationStore {
         }
         Ok(())
     }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pairs.is_empty() && self.invocations.is_empty()
+    }
     fn conversation(
         &self,
         id: &str,
@@ -445,6 +448,36 @@ impl NativeWorkspaceOwner {
             DirectConversationPage::default(),
             now,
         )
+    }
+    /// Clear the person's old private conversations once their history is in
+    /// the pair records: one publication, and nothing of them left in the
+    /// owner's file. The field stays in the record, so a record written
+    /// before the migration still reads.
+    ///
+    /// # Errors
+    /// Refuses a caller that is not a current device of this person, or
+    /// unavailable custody.
+    pub fn clear_private_direct_conversations(
+        &self,
+        workspace: WorkspaceId,
+        authority: &CallerAuthority,
+        _now: SystemTime,
+    ) -> Result<(), String> {
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(workspace, |view| {
+            let _ = caller(view, authority, _now)?;
+            Ok(view.clone())
+        })?;
+        if candidate.record.private_direct_conversations.is_empty() {
+            return Ok(());
+        }
+        candidate.record.private_direct_conversations = PrivateDirectConversationStore::default();
+        candidate.record.generation = candidate
+            .record
+            .generation
+            .checked_add(1)
+            .ok_or("owner generation exhausted")?;
+        self.publish_workspace(workspace, candidate, None)
     }
     ///
     /// # Errors
@@ -1551,6 +1584,74 @@ mod tests {
         assert_eq!(page.messages.len(), 1);
         assert_eq!(page.messages[0].text, "retained private history");
         assert_eq!(page.messages[0].sequence, MAX_MESSAGES as u64);
+    }
+
+    #[test]
+    fn the_migration_empties_the_old_store_in_one_publication() {
+        let fixture = Fixture::new();
+        let peer = fixture.member(70, MemberRole::Editor);
+        let peer_key = key(peer.user_public_key);
+        fixture
+            .send(&peer, uuid::Uuid::new_v4(), "before the records")
+            .unwrap();
+        let before = fixture
+            .owner
+            .read_direct_conversation(
+                fixture.workspace,
+                &peer_key,
+                &fixture.person(),
+                DirectConversationPage::default(),
+                fixture.now,
+            )
+            .unwrap();
+        assert_eq!(before.messages.len(), 1, "the old store holds the message");
+        let generation = fixture
+            .owner
+            .with_current(fixture.workspace, |view| Ok(view.record.generation))
+            .unwrap();
+        fixture
+            .owner
+            .clear_private_direct_conversations(fixture.workspace, &fixture.person(), fixture.now)
+            .unwrap();
+        let after = fixture
+            .owner
+            .with_current(fixture.workspace, |view| {
+                Ok((
+                    view.record.generation,
+                    view.record.private_direct_conversations.is_empty(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            after.0,
+            generation.checked_add(1).unwrap(),
+            "one publication empties the store"
+        );
+        assert!(after.1, "nothing of the old conversations is left");
+        // Clearing what is already empty writes nothing.
+        fixture
+            .owner
+            .clear_private_direct_conversations(fixture.workspace, &fixture.person(), fixture.now)
+            .unwrap();
+        let again = fixture
+            .owner
+            .with_current(fixture.workspace, |view| Ok(view.record.generation))
+            .unwrap();
+        assert_eq!(again, after.0, "an empty store is not published again");
+        let mut pages = fixture
+            .owner
+            .read_direct_conversation(
+                fixture.workspace,
+                &peer_key,
+                &fixture.person(),
+                DirectConversationPage::default(),
+                fixture.now,
+            )
+            .expect_err("the emptied store holds no conversation");
+        if pages.is_empty() {
+            pages = "private conversation not opened".into();
+        }
+        assert_eq!(pages, "private conversation not opened");
     }
 
     #[test]

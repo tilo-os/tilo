@@ -81,6 +81,12 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
                 }))
                 .map_err(|error| error.to_string());
             }
+            PersonChatCommand::Clear => {
+                self.0
+                    .clear_private_direct_conversations(workspace, &authority, now)?;
+                return serde_json::to_vec(&serde_json::json!({}))
+                    .map_err(|error| error.to_string());
+            }
             PersonChatCommand::Read { public_key } => public_key,
             // This double holds the workspace owner, not the caller's device
             // key, so it cannot sign an announcement.

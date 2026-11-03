@@ -289,6 +289,10 @@ impl OriginalInvocationData {
                 // Importing the old private store is a native snapshot too.
                 return Err("private conversation import is not an action".into());
             }
+            PersonChatCommand::Clear => {
+                // Emptying the old private store is the migration's own write.
+                return Err("emptying the private archive is not an action".into());
+            }
             PersonChatCommand::Pairs => {
                 return Err("a person's pairs are a private native snapshot, not an action".into());
             }
