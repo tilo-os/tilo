@@ -1086,6 +1086,19 @@ impl TextStyle {
         self.size * self.line_height
     }
 
+    /// The line box this style paints, grown by `text_scale` for a style whose size is a 1×
+    /// base ([`TextScaling::Renderer`]) and painted as given otherwise: the height one line
+    /// of it takes, as [`TextRenderer`] measures and paints it.
+    #[must_use]
+    pub fn line_height_px_at(&self, text_scale: f32) -> f32 {
+        let scale = if self.scaling == TextScaling::Renderer {
+            text_scale
+        } else {
+            1.0
+        };
+        self.line_height_px() * scale
+    }
+
     /// Resolve the integer weight accepted by cosmic-text: the last explicit
     /// `wght` overrides the named tier, rounds to nearest, then clamps to 1..1000.
     /// Painting uses each shaped glyph's resulting weight, including span bold.

@@ -4539,6 +4539,18 @@
           "name": "secondary",
           "doc": "What it says stands beside the content it is about, in secondary ink: \"edited\" after a message, \"Pinned\" over it.",
           "type": "bool"
+        },
+        {
+          "name": "lines",
+          "doc": "How many lines it takes: what does not fit is elided at the last of them, so a clamp holds however long the words are. Unset, it wraps to as many lines as its width needs.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "truncate",
+          "doc": "It elides at the room it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
+          "type": "bool"
         }
       ],
       "semantics": {
@@ -5133,16 +5145,6 @@
         {
           "name": "activate",
           "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
-          "value": "resource"
-        },
-        {
-          "name": "indent",
-          "doc": "Tab moved the row with the keyboard under the row over it: carries the item it shows.",
-          "value": "resource"
-        },
-        {
-          "name": "outdent",
-          "doc": "Shift+Tab moved it out from under its parent: carries the item it shows.",
           "value": "resource"
         }
       ],
