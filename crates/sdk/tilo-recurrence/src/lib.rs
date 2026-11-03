@@ -1198,6 +1198,26 @@ mod tests {
             compared += made_from_the_seed.len();
         }
         assert!(compared > 50, "the windows compare real dates");
+
+        // Asking the old series for its next date lands in the window too.
+        let next = date(2026, 9, 30);
+        let mut from_the_seed = None;
+        walk(
+            weekly.engine(date(1996, 6, 3), weekly.count(), true),
+            date(1996, 6, 3),
+            |day| {
+                if day >= next {
+                    from_the_seed = Some(day);
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(
+            weekly.next_on_or_after(date(1996, 6, 3), next),
+            from_the_seed
+        );
+        assert_eq!(from_the_seed, Some(date(2026, 10, 5)));
     }
 
     #[test]
