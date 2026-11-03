@@ -349,6 +349,9 @@ pub struct FrameHarness {
     /// remounts their children in the retained tree, unless it rebuilds.
     remount: bool,
     layout_requested: bool,
+    /// The input generation the last drawn frame read: input handed to the
+    /// tree after it makes the next frame due.
+    drawn_input: u64,
     state: Box<State>,
     root: Box<dyn Widget>,
     history: Option<crate::history_mode::host::HistoryChrome>,
@@ -1532,6 +1535,7 @@ impl FrameHarness {
             composition_replaced: false,
             remount: false,
             layout_requested: false,
+            drawn_input: 0,
             state: Box::new(state),
             root,
             taffy: TaffyTree::new(),
@@ -2661,7 +2665,8 @@ impl FrameHarness {
                 .iter()
                 .any(|root| root.needs_redraw() || root.needs_animation_frame())
                 || queued_work
-                || self.permissions_moved(),
+                || self.permissions_moved()
+                || self.drawn_input != crate::input_generation::generation(),
             queued_work,
         })
     }
@@ -4021,6 +4026,7 @@ impl FrameHarness {
             );
             self.root.mark_drawn();
         }
+        self.drawn_input = crate::input_generation::generation();
         if let Some(history) = &mut self.history {
             history.draw_overlay(
                 &mut self.scene,

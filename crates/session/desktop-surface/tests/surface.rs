@@ -2645,8 +2645,8 @@ fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
     }
 }
 
-/// An event handed to a settled desk draws the frame it changed: the widgets
-/// that paint what the pointer brought keep no flag of their own, so the
+/// An event handed to a settled desk draws the frame it may have changed: a
+/// widget that paints state outside itself keeps no flag of its own, so the
 /// drawing kept from the last frame is only good until input arrives.
 #[test]
 fn an_event_on_a_settled_desk_draws_the_frame_it_changed() {
@@ -2668,7 +2668,9 @@ fn an_event_on_a_settled_desk_draws_the_frame_it_changed() {
     });
     assert!(
         driver.frame_schedule().needs_redraw,
-        "input was handed to the tree: the frame it changed is due"
+        "input was handed to the tree: the frame it changed is due: {:?} from {:?}",
+        driver.frame_schedule(),
+        driver.redraw_sources()
     );
 
     driver.settle_for_capture(Duration::from_millis(2000));

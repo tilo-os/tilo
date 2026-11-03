@@ -877,6 +877,9 @@ impl Widget for TimeZoneGlobe {
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
+        // The globe turns and hovers through state it shares with the rest
+        // of the app: what it paints is only current until the next input.
+        ui::outside_paint::note();
         let colors = &theme.tokens.colors;
         let palette = GlobePalette::of(colors);
         // The globe's paths are built around the origin and moved into

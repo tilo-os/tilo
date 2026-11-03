@@ -83,6 +83,9 @@ pub struct DesktopSurface {
     deck_index: usize,
     pub(crate) navigation: crate::navigation::Navigation,
     root: Box<dyn Widget>,
+    /// The input generation the last drawn frame read: input handed to the
+    /// tree after it makes the next frame due.
+    drawn_input: u64,
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
     retained_wakes: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -316,6 +319,7 @@ impl DesktopSurface {
             navigation: crate::navigation::Navigation::default(),
             root,
             context: tree.active_workspace().map(|w| (w.slot, w.id())),
+            drawn_input: ui::input_generation::generation(),
             empty_workspace_visible,
             component_wake,
             retained_wakes: vec![],
@@ -1312,6 +1316,11 @@ impl Widget for DesktopSurface {
     fn needs_redraw(&self) -> bool {
         self.has_pending_component_wake()
             || (self.root.needs_redraw() || self.root.needs_animation_frame())
+            || self.drawn_input != ui::input_generation::generation()
+    }
+    fn mark_drawn(&mut self) {
+        self.drawn_input = ui::input_generation::generation();
+        self.mark_children_drawn();
     }
     fn build_layout(
         &mut self,

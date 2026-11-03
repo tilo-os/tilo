@@ -1,11 +1,11 @@
 use super::*;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use crate::widget::{Chip, Column, Tooltip};
-use std::collections::HashMap;
 use taffy::{Size, Style};
 use vello::kurbo::Rect;
 
@@ -105,6 +105,9 @@ impl Widget for Readout {
         _theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        // The width stands outside this widget: the drawing depends on
+        // readings no flag of its own reports.
+        crate::outside_paint::note();
         let width = f64::from(self.width.get());
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -120,7 +123,7 @@ impl Widget for Readout {
 }
 
 #[test]
-fn input_handed_to_the_tree_repaints_what_the_cache_kept() {
+fn a_cache_that_read_outside_state_repaints_once_input_arrives() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((320, 120), Theme::dark());
     let width = Rc::new(Cell::new(40.0f32));
@@ -148,7 +151,24 @@ fn input_handed_to_the_tree_repaints_what_the_cache_kept() {
     let handed = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(48));
     assert!(
         !at_rest.encoding_eq(&handed),
-        "input reached the tree: a widget that paints it without a flag of \
-         its own paints it again, not the drawing kept from before"
+        "input reached the tree: a cache whose drawing read state outside it \
+         paints that again, not the drawing kept from before"
+    );
+}
+
+#[test]
+fn a_cache_that_read_nothing_outside_keeps_its_drawing_across_input() {
+    let t0 = crate::time::now();
+    let mut frame = ShotFrame::new((320, 120), Theme::dark());
+    let mut column = Column::new().push(Box::new(Chip::new("alpha")));
+
+    let first = frame_at(&mut frame, &mut column, t0);
+    crate::widget::Widget::mark_drawn(&mut column);
+    crate::input_generation::note();
+    let after_input = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(16));
+    assert!(
+        first.encoding_eq(&after_input),
+        "input changes nothing a cache that read inside the tree paints: it \
+         keeps its drawing, which is what lets a scroll frame copy"
     );
 }

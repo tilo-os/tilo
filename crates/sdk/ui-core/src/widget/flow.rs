@@ -55,11 +55,13 @@ pub(super) struct Flow {
     /// the tree marking it, so a cache from another generation is stale.
     cache_permissions: u64,
     /// The input generation the cache was painted at
-    /// ([`crate::input_generation`]): a child that reads an event or a
-    /// document revision without keeping a flag of its own paints other
-    /// pixels once input has been handed to the tree, and the cache does
-    /// not know it.
+    /// ([`crate::input_generation`]), and whether that drawing read state
+    /// outside the widgets that made it ([`crate::outside_paint`]): such a
+    /// drawing paints other pixels once input has been handed to the tree,
+    /// with nothing in the tree marking it, so only that cache is stale on
+    /// input. One that read nothing outside keeps across it.
     cache_input: u64,
+    cache_outside: bool,
     cache_present: bool,
     descendant_caches_released: bool,
     /// The cache holds floating surfaces over the blurred material. A reused
@@ -160,6 +162,7 @@ impl Flow {
             cache_theme: None,
             cache_permissions: 0,
             cache_input: 0,
+            cache_outside: false,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
@@ -492,7 +495,8 @@ impl Flow {
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
         let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
-        let input_moved = self.cache_input != crate::input_generation::generation();
+        let input_moved =
+            self.cache_outside && self.cache_input != crate::input_generation::generation();
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
@@ -517,6 +521,7 @@ impl Flow {
             self.cache_present = false;
             self.descendant_caches_released = false;
             self.drawn_shifted = false;
+            let enclosing = crate::outside_paint::begin();
             for child in &mut self.children {
                 super::draw_child(
                     child.as_mut(),
@@ -527,6 +532,7 @@ impl Flow {
                     presence,
                 );
             }
+            crate::outside_paint::end(enclosing);
             return true;
         }
         if needs_rebuild {
@@ -587,6 +593,7 @@ impl Flow {
             // drawn into this cache would otherwise vanish from it.
             // The cache lands on screen through `transform`; a scroller
             // drawn into it offers copies in screen space.
+            let enclosing = crate::outside_paint::begin();
             self.cache_parts = crate::scroll_copy::drawing_into_cache(transform, || {
                 if tracked {
                     crate::scene_parts::record(&mut local, draw_children).1
@@ -595,6 +602,7 @@ impl Flow {
                     None
                 }
             });
+            self.cache_outside = crate::outside_paint::end(enclosing);
             self.cache_shows_secret = secrets.finish();
             self.cache_carries_material = crate::scene_parts::append_with(
                 scene,
@@ -631,6 +639,11 @@ impl Flow {
             if self.cache_shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
+            if self.cache_outside {
+                // This drawing read outside the tree, so the frame that
+                // reuses it stands on the same readings.
+                crate::outside_paint::note();
+            }
             if !self.descendant_caches_released {
                 for child in &mut self.children {
                     child.release_scene_cache();
@@ -663,10 +676,6 @@ impl Flow {
             || self.disclosing_any
             || !self.ghosts.is_empty()
             || self.extents.len() != self.children.len()
-            // A near view draws only what stands around the viewport: input
-            // handed to the tree since the cache was made may have changed
-            // what the rest paints, so this frame draws whole.
-            || self.cache_input != crate::input_generation::generation()
         {
             return false;
         }
