@@ -101,10 +101,10 @@ impl PersonChatServices for PersonChat {
             ),
             PersonChatCommand::Open { public_key } => {
                 owner.open_direct_conversation(workspace, &public_key, &authority, now)?;
-                conversation(whole(&owner, workspace, &public_key, &authority, now)?)
+                conversation(whole(owner, workspace, &public_key, &authority, now)?)
             }
             PersonChatCommand::Read { public_key } => {
-                conversation(whole(&owner, workspace, &public_key, &authority, now)?)
+                conversation(whole(owner, workspace, &public_key, &authority, now)?)
             }
             PersonChatCommand::Send {
                 public_key,
@@ -118,7 +118,7 @@ impl PersonChatServices for PersonChat {
                     DirectMessageSend { invocation, text },
                     now,
                 )?;
-                conversation(whole(&owner, workspace, &public_key, &authority, now)?)
+                conversation(whole(owner, workspace, &public_key, &authority, now)?)
             }
         };
         let mut reply = BoundedReply(Vec::new());
@@ -208,7 +208,7 @@ fn text_bytes(page: &DirectConversation, before: usize) -> Result<usize, String>
         .try_fold(before, |bytes, message| {
             bytes.checked_add(message.text.len())
         })
-        .ok_or("private conversation snapshot exceeds bound".into())
+        .ok_or_else(|| "private conversation snapshot exceeds bound".into())
 }
 
 fn check_bound(messages: usize, bytes: usize) -> Result<(), String> {
