@@ -3135,12 +3135,21 @@ impl crate::widget::ReservedShape for ListRow {
     }
 }
 
+impl crate::widget::RowSelectionSink for ListRow {
+    fn take_selection(&mut self, selection: crate::widget::RowSelection) {
+        self.set_selected(selection.selected);
+        self.set_join(selection.join());
+        self.set_separator(selection.has_next, selection.below);
+    }
+}
+
 impl Widget for ListRow {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
-        dyn crate::widget::ReservedShape
+        dyn crate::widget::ReservedShape,
+        dyn crate::widget::RowSelectionSink
     );
 
     fn set_interaction_environment(
