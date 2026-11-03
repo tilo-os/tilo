@@ -2,7 +2,7 @@
 //! never refused because somebody else changed the same record since.
 
 use automerge::transaction::{CommitOptions, Transactable};
-use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
+use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_actions::ActionContext;
 
 use super::*;
@@ -280,6 +280,52 @@ fn a_removed_item_comes_back_after_its_neighbours_changed() {
         titles(&doc, &list),
         ["Eggs (free range)", "Milk", "Butter", "Rye"],
         "Milk is back after Eggs, where it was"
+    );
+}
+
+/// Who a field holds, as a record stores a person: nobody, or the name in the
+/// object under the field's key.
+fn assignee(doc: &AutoCommit) -> Option<String> {
+    match doc.get(ROOT, "assignee").unwrap().unwrap() {
+        (Value::Scalar(_), _) => None,
+        (Value::Object(_), who) => match doc.get(&who, "principal").unwrap().unwrap().0 {
+            Value::Scalar(scalar) => scalar.as_str().map(str::to_owned),
+            other => panic!("a principal: {other:?}"),
+        },
+    }
+}
+
+#[test]
+fn a_value_restored_into_a_recreated_object_keeps_its_older_steps_undoable() {
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(GENESIS));
+    doc.put(ROOT, "title", "Plan").map(drop).unwrap();
+    doc.commit();
+    // Someone picks Ada, changes it to Ben where it stands, then clears it:
+    // the clear replaces the object the field held.
+    step(&mut doc, ALICE, None, |doc| {
+        let who = doc.put_object(ROOT, "assignee", ObjType::Map).unwrap();
+        doc.put(&who, "principal", "ada").map(drop).unwrap();
+    });
+    step(&mut doc, ALICE, None, |doc| {
+        let (_, who) = doc.get(ROOT, "assignee").unwrap().unwrap();
+        doc.put(&who, "principal", "ben").map(drop).unwrap();
+    });
+    step(&mut doc, ALICE, None, |doc| {
+        doc.put(ROOT, "assignee", "nobody").map(drop).unwrap();
+    });
+
+    undo_as(&mut doc, ALICE, &scope(ALICE));
+    assert_eq!(assignee(&doc).as_deref(), Some("ben"), "the clear undone");
+    undo_as(&mut doc, ALICE, &scope(ALICE));
+    assert_eq!(
+        assignee(&doc).as_deref(),
+        Some("ada"),
+        "the pick before it, into the object the clear's undo recreated"
+    );
+    assert_eq!(
+        doc.get(ROOT, "title").unwrap().unwrap().0.as_str(),
+        Some("Plan")
     );
 }
 
