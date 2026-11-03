@@ -471,6 +471,19 @@ impl Strips {
         }
     }
 
+    /// Maximize the strip `id` (`maximized`), so it stands alone as the window the desk is,
+    /// or restore it beside its row's other windows.
+    pub fn maximize(&mut self, id: GroupId, maximized: bool) -> bool {
+        match self.strips.iter_mut().find(|strip| strip.id == id) {
+            Some(strip) => {
+                let changed = strip.maximized != maximized;
+                strip.maximized = maximized;
+                changed
+            }
+            None => false,
+        }
+    }
+
     /// Take the place `id` out of the arrangement, as closing its window
     /// does.
     pub fn close_place(&mut self, id: TabId) -> bool {

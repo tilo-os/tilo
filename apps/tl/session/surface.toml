@@ -745,6 +745,15 @@ name = "permille"
 required = true
 type = "int"
 
+[[resources.verbs]]
+id = "maximize-strip"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "on"
+required = false
+type = "bool"
+
 [[resources]]
 instances = true
 kind = "arrangement.place"

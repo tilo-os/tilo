@@ -655,6 +655,52 @@ fn resizing_a_strip_is_one_step_and_undone() {
     assert_eq!(back, was, "undo restores the width");
 }
 
+// A window is maximized through the published action, so the desk shows the one window it is,
+// and one undo brings the others back beside it.
+#[test]
+fn maximizing_a_window_is_one_step_and_undone() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    let other = open_window_called(&mut session, "org.example.Notes", "Other");
+    step(&mut session);
+    let strip = strip_of(&session, window).expect("it has a strip");
+    let other_strip = strip_of(&session, other).expect("the other place is in a strip");
+    assert!(
+        arrangement(&session)
+            .strips
+            .iter()
+            .all(|strip| !strip.maximized),
+        "the desk starts beside itself"
+    );
+
+    invoke_as(
+        &mut session,
+        &strip_resource(strip),
+        "maximize-strip",
+        &serde_json::json!({}),
+    );
+    let maximized = |session: &Session, strip: u64| {
+        arrangement(session)
+            .strip(strip)
+            .map(|strip| strip.maximized)
+            .expect("the strip is in the record")
+    };
+    assert!(maximized(&session, strip), "the window fills the desk");
+    assert!(
+        !maximized(&session, other_strip),
+        "and no other window does"
+    );
+
+    session.undo_arrangement().unwrap();
+    step(&mut session);
+    assert!(
+        !maximized(&session, strip),
+        "undo restores the windows beside each other"
+    );
+}
+
 /// A session on a device whose salt is the top of an id's high bits: every place, strip and
 /// row here is above `i64::MAX`, so no id fits the integer an id-shaped verb would take.
 fn salted_session() -> Session {
