@@ -436,6 +436,123 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     );
 }
 
+/// The window each place of the person's record opens, as the record keeps it
+/// on disk; empty while no session has kept one.
+fn record_states(state: &Path) -> Vec<serde_json::Value> {
+    let Ok(text) = fs::read(state.join("tilo").join("arrangement.automerge")) else {
+        return Vec::new();
+    };
+    let doc = ui::automerge::AutoCommit::load(&text).expect("this build's record");
+    tilo_desktop_model::own_arrangement::read(&doc)
+        .places()
+        .map(|place| place.state.clone())
+        .collect()
+}
+
+/// How many times the launcher wrote a start down: one line per app the
+/// session started.
+fn starts(started: &Path) -> usize {
+    fs::read_to_string(started)
+        .map(|written| {
+            written
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// A window the person opened in one session opens again in the next: a
+/// session that showed a running window keeps it in the person's record, and
+/// the next session opens the app that window was, in the tab it was in.
+#[test]
+fn a_window_the_person_opened_opens_again_after_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let launcher = installed_probe(&mut home, &started);
+    let state = state_of(&home);
+
+    // The person opens the app from the desk, the compositor maps its window
+    // into the tab it made, and the session stops with that window open.
+    let before = {
+        let apps = apps_at(&home, Some(launcher.path().to_owned()));
+        let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+        let workspace = session
+            .handle()
+            .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+            .expect("a workspace is in front");
+        apps.start(
+            &tilo_app_launch::Launch::Package {
+                app: PROBE.into(),
+                open: None,
+            },
+            &apps.workspace_named(&workspace),
+        )
+        .expect("the desk starts the app");
+        until(&mut session, "the app is started", |_| {
+            starts(&started) == 1
+        });
+        session
+            .desktop()
+            .with_policy(|policy| policy.map(window(11, PROBE)))
+            .expect("the window maps");
+        until(&mut session, "the window is in its tab", |session| {
+            tabs(session).len() == 1
+                && matches!(
+                    tile_of(session, tabs(session)[0].0),
+                    Some(TileContent::Foreign { surface_id: 11, .. })
+                )
+        });
+        until(&mut session, "the record keeps the window", |_| {
+            matches!(
+                record_states(&state).as_slice(),
+                [state] if state.get("Foreign").is_some()
+            )
+        });
+        tabs(&session)
+    };
+
+    // The record keeps the window the session showed, which no next session
+    // can show: what opens it is what it must keep instead.
+    assert!(
+        matches!(
+            record_states(&state).as_slice(),
+            [state] if state.get("Foreign").is_some()
+        ),
+        "the record a session leaves keeps its running window"
+    );
+
+    // The next session starts on what this one kept, and asks the app for its
+    // window again, into the tab it was in.
+    let mut next = session_keeping(
+        &state,
+        Some(apps_at(&home, Some(launcher.path().to_owned()))),
+    );
+    until(&mut next, "the app is asked for its window again", |_| {
+        starts(&started) == 2
+    });
+    assert_eq!(
+        tabs(&next),
+        before,
+        "the tab it was in is kept for it while the app starts"
+    );
+    next.desktop()
+        .with_policy(|policy| policy.map(window(12, PROBE)))
+        .expect("the window maps");
+    until(&mut next, "the app's new window takes its tab", |session| {
+        matches!(
+            tile_of(session, before[0].0),
+            Some(TileContent::Foreign { surface_id: 12, .. })
+        )
+    });
+    assert_eq!(
+        tabs(&next),
+        before,
+        "no second tab opens beside the saved one"
+    );
+}
+
 #[test]
 fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     let _settled = ui::motion::testing::settled();

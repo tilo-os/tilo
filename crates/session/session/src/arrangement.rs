@@ -27,7 +27,7 @@ use tilo_actions::{
 };
 use tilo_desktop_model::own_arrangement::{self, Place, SHELL, Strips};
 use tilo_desktop_model::{
-    CanvasPlace, DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceSlot,
+    CanvasPlace, DesktopTree, GroupId, StripId, Tab, TabId, TileContent, WindowWidth, WorkspaceSlot,
 };
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
@@ -383,23 +383,54 @@ impl Arrangement {
                 tracing::warn!(%error, "the desk could not be migrated into the person's record");
             }
         }
-        // A place whose window was this device's own surface is not open any
-        // more: its app was not running when the session stopped, and it
-        // takes its place again when it runs. The rows, strips, widths and
-        // canvas places stay.
-        let live: Vec<TabId> = kept
-            .places()
-            .filter(|place| place.state.get("Foreign").is_some())
-            .map(|place| place.id)
-            .collect();
-        if !live.is_empty() {
-            let mut pruned = kept.clone();
-            for place in live {
-                pruned.close_place(place);
+        // A place the record kept as the live window this device showed at
+        // the last write is one its app opens again: nothing of a window
+        // outlives the session that mapped it, so the record keeps what opens
+        // it, as the desk keeps a window it must open again
+        // ([`tilo_desktop_model::Tab::relaunchable`]). Keeping the live window
+        // instead would leave the place opening nothing, and the desk loses
+        // the tab it was in. The rows, strips, widths and canvas places stay,
+        // and so does every place that is not a live window; a live window
+        // that names no app opens nothing, so its place goes as it did.
+        let mut revived = kept.clone();
+        let mut changed = false;
+        for strip in &mut revived.strips {
+            let places = std::mem::take(&mut strip.places);
+            for mut place in places {
+                if place.state.get("Foreign").is_none() {
+                    strip.places.push(place);
+                    continue;
+                }
+                let Some(tile) = serde_json::from_value::<TileContent>(place.state.clone()).ok()
+                else {
+                    // A live window this build cannot read opens nothing.
+                    changed = true;
+                    continue;
+                };
+                let relaunchable = Tab {
+                    id: place.id,
+                    title: place.title.clone(),
+                    tile,
+                    app_title: None,
+                }
+                .relaunchable();
+                if matches!(&relaunchable.tile, TileContent::LocalApp { app_id, .. }
+                    if app_id.trim().is_empty())
+                {
+                    changed = true;
+                    continue;
+                }
+                if let Ok(state) = serde_json::to_value(&relaunchable.tile)
+                    && state != place.state
+                {
+                    place.state = state;
+                    changed = true;
+                }
+                strip.places.push(place);
             }
-            if let Err(error) = own_arrangement::write(&mut doc, &pruned) {
-                tracing::warn!(%error, "the closed windows could not leave the record");
-            }
+        }
+        if changed && let Err(error) = own_arrangement::write(&mut doc, &revived) {
+            tracing::warn!(%error, "the windows to open again could not be kept");
         }
         let undo = UndoLog::new(&mut doc);
         Self {
