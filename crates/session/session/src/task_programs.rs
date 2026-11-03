@@ -109,7 +109,7 @@ const PARAMS: &[ActionParam] = &[PROGRAM, CONFIRM, THIS, RUN, RUN_LABEL];
 
 /// The task's program, described for the broker's catalogue.
 fn descriptor() -> tilo_actions::ActionDescriptor {
-    use tilo_desktop_surface::i18n::t;
+    use crate::i18n::t;
     tilo_actions::ActionDescriptor {
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
