@@ -417,7 +417,7 @@ impl ListSlot {
 
     /// What an assistive technology asked of a row since the last read: the
     /// row it asked to open, and the row and point it asked a menu for.
-    pub(super) fn take_row_requests(&self) -> (Option<usize>, Option<(usize, Point)>) {
+    pub(crate) fn take_row_requests(&self) -> (Option<usize>, Option<(usize, Point)>) {
         self.0.borrow_mut().take_row_requests()
     }
 

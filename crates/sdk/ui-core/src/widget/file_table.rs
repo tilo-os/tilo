@@ -931,41 +931,24 @@ impl<R: FileRow> FileTable<R> {
         state: &mut crate::widget::Edits<'_>,
         path: &crate::widget::ModelPath,
     ) -> bool {
+        // An activation is the row the app opens, read by the host once a
+        // frame ([`Self::take_row_requests`]) and opened as a double-click or
+        // Enter opens it. The table's own view operation is not this app's
+        // open: the file explorer navigates from the command, not from an
+        // operation published for a window it does not host.
+        if matches!(action, crate::a11y::Action::Activate)
+            && let Some(index) = self
+                .table
+                .as_ref()
+                .and_then(|table| table.semantic_row(target))
+        {
+            self.mailbox.activate.set(Some(index));
+            return true;
+        }
         let Some(table) = self.table.as_mut() else {
             return false;
         };
-        let handled = Widget::perform_semantic_action(table, target, action, state, path);
-        if handled {
-            answer_row_actions(table, state);
-        }
-        handled
-    }
-}
-
-/// Answer the row actions the table queued for itself: a host holds a widget
-/// in its tree and drains what its presses publish, but this list is hosted
-/// outside one, so what a row's activation published is answered here by the
-/// host's rule — the action the table publishes, started on the table.
-fn answer_row_actions<R: FileRow>(
-    table: &mut DataTable<Held<R>>,
-    state: &mut crate::widget::Edits<'_>,
-) {
-    while let Some(invocation) = crate::widget::controls::take_control_invocation(table) {
-        let Some(spec) =
-            crate::widget::controls::published_action(table, state.doc(), &invocation.address)
-        else {
-            continue;
-        };
-        let Ok(encoded) = spec.build_json(&invocation.arguments) else {
-            continue;
-        };
-        let operation = crate::widget::ResourceOperation::local(
-            crate::tilo_actions::InvocationId::new(),
-            spec.kind,
-            &encoded.type_id,
-            &encoded.payload,
-        );
-        let _ = crate::widget::start_operation(table, &operation, state, &automerge::ROOT);
+        Widget::perform_semantic_action(table, target, action, state, path)
     }
 }
 
@@ -1088,8 +1071,9 @@ mod tests {
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        // The activation publishes the list's own open action; the app answers
-        // it on the way out of the accessibility call, as it does for a press.
+        // The activation publishes the list's own open action; the host
+        // answers it on the way out of the accessibility call, as it does for
+        // a press.
         assert_eq!(
             crate::testing::answer_controls(table.table.as_mut().expect("the table")),
             1
