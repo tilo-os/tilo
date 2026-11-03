@@ -347,6 +347,7 @@ members = [
     "crates/platform/tilo-system-info",
     "crates/platform/tilo-render-protocol",
     "crates/platform/tilo-ui-host",
+    "crates/platform/tilo-view",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/platform/tilo-subject",
