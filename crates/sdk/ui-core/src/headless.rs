@@ -7231,6 +7231,17 @@ impl FrameHarness {
             .is_some_and(|palette| palette.is_presented() && palette.asking().is_none())
     }
 
+    /// The rows the window's own search shows, as its list paints them: what
+    /// each says, the line under it, its picture and its shortcut's keys (for
+    /// tests and diagnostics).
+    pub fn palette_rows(&self) -> Vec<crate::search::SearchResult> {
+        self.action_palette
+            .as_deref()
+            .filter(|palette| palette.is_presented())
+            .map(|palette| palette.result_hits())
+            .unwrap_or_default()
+    }
+
     /// The control the open confirmation stands beside, as a popover,
     /// while it asks about what the person pressed there.
     pub fn asking_at(&self) -> Option<Rect> {

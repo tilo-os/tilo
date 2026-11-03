@@ -75,6 +75,7 @@ mod empty_state;
 mod facet_chips;
 mod history;
 mod host;
+mod inspect;
 mod rows;
 mod window_place;
 pub use api::{ACTION_PALETTE, MakeActionPalette, builtin_action_palette};
@@ -1320,29 +1321,6 @@ impl ActionPalette {
         let query = self.field.value().to_owned();
         self.rebuild(&query);
         true
-    }
-
-    /// The labels currently shown, in display order (for tests / diagnostics).
-    pub fn result_labels(&self) -> Vec<String> {
-        self.results
-            .groups()
-            .iter()
-            .flat_map(|g| g.results.iter().map(|r| r.title.clone()))
-            .collect()
-    }
-
-    /// The rows currently shown as a person reads them, label and the line
-    /// under it, in display order (for tests / diagnostics).
-    pub fn result_rows(&self) -> Vec<(String, Option<String>)> {
-        self.results
-            .groups()
-            .iter()
-            .flat_map(|g| {
-                g.results
-                    .iter()
-                    .map(|r| (r.title.clone(), r.subtitle.clone()))
-            })
-            .collect()
     }
 
     pub fn len(&self) -> usize {

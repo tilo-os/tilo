@@ -1867,6 +1867,32 @@ fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
             "{internal} is runtime machinery, never a person's row: {all:?}"
         );
     }
+    // Each row is painted from the action it lists: the picture the app drew
+    // and the chord the action declares, as the keys it names.
+    let rows = session.window.harness().palette_rows();
+    let row = |title: &str| {
+        rows.iter()
+            .find(|row| row.title == title)
+            .unwrap_or_else(|| panic!("{title} is a row: {rows:?}"))
+    };
+    let new_task = row("New task");
+    assert_eq!(
+        new_task.icon,
+        Some(ui::icons::Icon::Plus),
+        "the picture New task declares"
+    );
+    let Some(ui::search::SearchRow::Command(command)) = &new_task.row else {
+        panic!("a row is painted from what the action carries: {new_task:?}");
+    };
+    assert_eq!(
+        command.keycaps,
+        Some(vec!["Ctrl".to_owned(), "N".to_owned()]),
+        "and its chord as the keys it names"
+    );
+    assert!(
+        rows.iter().all(|row| row.icon.is_some()),
+        "no row is a bare line: {rows:?}"
+    );
     // Typed, only what it names.
     let new = listed(&mut session, "new");
     assert!(
