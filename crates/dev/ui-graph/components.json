@@ -5093,6 +5093,13 @@
           "type": "bool"
         },
         {
+          "name": "ungrouped_title",
+          "doc": "The title over the group of rows whose item names no group: a list grouped by a thing some items lack (a day, a place) shows those together after every other group, under this heading, never under the last group that has one. `None` leaves them among the others.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "unread",
           "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
           "type": {
