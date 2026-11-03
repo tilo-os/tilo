@@ -281,3 +281,42 @@ fn a_hit_that_runs_an_action_is_its_row() {
     );
     assert!(labels.contains(&"Pin"), "{rows:?}");
 }
+
+/// An action that asks more than a row takes is no row, but whoever names it —
+/// the control bound to it, an assistive activation, a search opened on it —
+/// still asks the palette for it, and the field collects its arguments.
+#[test]
+fn an_action_no_row_lists_is_still_asked_for_by_address() {
+    use tilo_actions::{ActionParam, ParamType};
+
+    let resources = vec![
+        ResourceSpec::new("tl:so.tilo.chat:root", "chat.workspace", "Chat").with_action(an_action(
+            "forward",
+            "Forward",
+            vec![
+                ActionParam::required("to", ParamType::Text, "To"),
+                ActionParam::required("subject", ParamType::Text, "Subject"),
+            ],
+        )),
+    ];
+    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        SearchField::with_language("en_US")
+    });
+    palette.load_open_resources(&resources);
+    palette.open();
+    while palette.advance_search_page().pending {}
+
+    let rows = palette.result_rows();
+    assert!(
+        !rows.iter().any(|(title, _)| title == "Forward"),
+        "a row cannot take two arguments, so none lists it: {rows:?}"
+    );
+    assert!(
+        palette.activate_address("tl:so.tilo.chat:root", "forward"),
+        "the app's own control still asks for it"
+    );
+    assert!(
+        palette.in_argument_mode(),
+        "and the field asks the arguments it takes"
+    );
+}

@@ -152,7 +152,9 @@ const VIEW_OPEN_SUFFIX: &str = "#open";
 const PER_GROUP_CAP: usize = 12;
 
 mod row_text;
-pub(crate) use row_text::{found_by, lists_a_row, merged_facets, scope_token_label, without_token};
+pub(crate) use row_text::{
+    found_by, lists_a_row, merged_facets, offers_a_person, scope_token_label, without_token,
+};
 /// Maximum number of provider hits materialised for one keystroke. Providers
 /// may emit several groups, so leave room for each while keeping work bounded.
 const PROVIDER_HIT_BUDGET: usize = 32;
@@ -383,6 +385,11 @@ pub struct ActionPalette {
     /// Row `action_id` → how activating it resolves.
     index: HashMap<String, RowResolution>,
     base_index: HashMap<String, RowResolution>,
+    /// Resolution key → the actions the palette may be asked for whether or not
+    /// it lists them as rows: a control bound to one, an assistive activation
+    /// and a search request name the action they want the field to collect the
+    /// arguments of (`offers_a_person`, [`Self::activate_address`]).
+    askable: HashMap<String, RowResolution>,
     action_rows: Vec<SearchResult>,
     provider_rows: Vec<SearchResult>,
     provider_index: HashMap<String, RowResolution>,
@@ -687,6 +694,7 @@ impl ActionPalette {
                 .with_test_id("action-palette-results"),
             index: HashMap::new(),
             base_index: HashMap::new(),
+            askable: HashMap::new(),
             action_rows: Vec::new(),
             provider_rows: Vec::new(),
             provider_index: HashMap::new(),
@@ -1122,12 +1130,19 @@ impl ActionPalette {
         target: &crate::bound_dispatch::BoundActionTarget,
     ) -> bool {
         let key = target.key();
-        if self.index.contains_key(&key) {
+        if self.resolution_of(&key).is_some() {
             self.resolve_activation(&key);
             true
         } else {
             false
         }
+    }
+
+    /// How activating `id` resolves: a row of the list, or an action the
+    /// palette was asked for by address and does not list as a row
+    /// ([`Self::askable`]).
+    fn resolution_of(&self, id: &str) -> Option<&RowResolution> {
+        self.index.get(id).or_else(|| self.askable.get(id))
     }
 
     pub fn open(&mut self) {
@@ -1833,7 +1848,7 @@ impl ActionPalette {
     /// jump around the palette's policy flow.
     pub fn activate_address(&mut self, resource: &str, action: &str) -> bool {
         let id = format!("{resource}{}{action}", tilo_actions::KEY_SEP);
-        if self.index.contains_key(&id) {
+        if self.resolution_of(&id).is_some() {
             self.resolve_activation(&id);
             true
         } else {
@@ -1849,7 +1864,9 @@ impl ActionPalette {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> bool {
-        if !self.index.contains_key(&address.encode()) && !self.hidden_from_people(address, None) {
+        if self.resolution_of(&address.encode()).is_none()
+            && !self.hidden_from_people(address, None)
+        {
             return false;
         }
         self.activate_with_arguments(address.clone(), None, arguments)
@@ -2131,7 +2148,7 @@ impl ActionPalette {
             }
             return;
         }
-        match self.index.get(id).cloned() {
+        match self.resolution_of(id).cloned() {
             Some(resolution @ (RowResolution::Address(_) | RowResolution::Bound(_))) => {
                 let (address, bound) = match resolution {
                     RowResolution::Address(address) => (address, None),
@@ -2299,6 +2316,10 @@ impl ActionPalette {
         // of the same resource (its bar and its document) are one thing to
         // the person. Different targets stay different rows.
         let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // What the palette may be asked for by address, whether or not it is a
+        // row: a control bound to an action, an assistive activation and a
+        // search request name what they want the field to ask the arguments of.
+        let mut askable: HashMap<String, RowResolution> = HashMap::new();
 
         // Keep only inert addresses in the row index. Encoding and callbacks
         // are resolved later, against the authority snapshot current at the
@@ -2307,19 +2328,30 @@ impl ActionPalette {
             .into_iter()
             // Programmatic actions are for agents and scripts, never a row;
             // a scoped palette offers the actions of that part of the app.
-            .filter(|fa| lists_a_row(fa) && parsed.in_scope(fa.resource_id.as_str()))
+            .filter(|fa| offers_a_person(fa) && parsed.in_scope(fa.resource_id.as_str()))
             .collect();
+        // What it offers is not all rows: an action asking for more than a row
+        // takes stays askable by address, and the field collects its arguments.
+        for fa in &flat {
+            askable.insert(
+                fa.key.clone(),
+                RowResolution::Address(tilo_actions::ActionAddress::new(
+                    fa.resource_id.as_str(),
+                    fa.action.id.as_str(),
+                )),
+            );
+        }
         // Two open documents offering the same action read alike: name the
         // document under each, so the person can tell which one it acts on.
         let mut targets_of: HashMap<tilo_actions::ListedRow, std::collections::HashSet<&str>> =
             HashMap::new();
-        for fa in &flat {
+        for fa in flat.iter().filter(|fa| lists_a_row(fa)) {
             targets_of
                 .entry(fa.row())
                 .or_default()
                 .insert(fa.key.as_str());
         }
-        for fa in &flat {
+        for fa in flat.iter().filter(|fa| lists_a_row(fa)) {
             if !listed.insert(fa.key.clone()) {
                 continue;
             }
@@ -2356,7 +2388,7 @@ impl ActionPalette {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {
-                    if !lists_a_row(&fa) {
+                    if !offers_a_person(&fa) {
                         continue;
                     }
                     // The same row as any other action: never the component
@@ -2375,7 +2407,10 @@ impl ActionPalette {
                         },
                     };
                     let key = target.key();
-                    if !listed.insert(key.clone()) {
+                    askable
+                        .entry(key.clone())
+                        .or_insert_with(|| RowResolution::Bound(target.clone()));
+                    if !lists_a_row(&fa) || !listed.insert(key.clone()) {
                         continue;
                     }
                     let found = found_by(&row, &fa.resource_label);
@@ -2433,6 +2468,7 @@ impl ActionPalette {
         self.query = parsed;
         self.action_rows = rows;
         self.base_index = index;
+        self.askable = askable;
         self.provider_rows.clear();
         self.provider_index.clear();
         self.provider_validation.clear();
