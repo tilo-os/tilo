@@ -224,7 +224,7 @@ impl Workspaces {
     /// workspace was asked to.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed and settled; whether the lint sees it depends on the features built"
+        reason = "the workspace stays locked until its decision is committed and settled; whether the lint sees it depends on the features built"
     )]
     pub async fn set_layout(
         &self,
@@ -277,7 +277,7 @@ impl Workspaces {
     /// What the workspace itself holds stays. Changes nothing a second time.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed and settled; whether the lint sees it depends on the features built"
+        reason = "the workspace stays locked until its decision is committed and settled; whether the lint sees it depends on the features built"
     )]
     pub(super) async fn keep_personal(&self, workspace: &str) -> Result<(), CollaborationError> {
         let host = &self.inner.host;
@@ -332,7 +332,7 @@ impl Workspaces {
     #[cfg(not(feature = "agents"))]
     #[expect(
         clippy::unused_async,
-        reason = "one signature with the build that authors room records"
+        reason = "one signature with the build that authors workspace records"
     )]
     async fn clear_shared_desktop(&self, workspace: &str) -> Result<(), CollaborationError> {
         let _ = workspace;

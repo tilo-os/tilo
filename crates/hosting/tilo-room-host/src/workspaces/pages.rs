@@ -377,7 +377,7 @@ impl Workspaces {
     /// name. A name they already go by writes nothing.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked from the check until the name is committed"
+        reason = "the workspace stays locked from the check until the name is committed"
     )]
     pub(crate) async fn name_self(
         &self,
@@ -1137,7 +1137,7 @@ impl Workspaces {
 
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
+        reason = "the workspace stays locked until its decision is committed, published and answered"
     )]
     pub(super) async fn admit_page(
         &self,
@@ -1306,7 +1306,7 @@ impl Workspaces {
 
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked while the request is recorded"
+        reason = "the workspace stays locked while the request is recorded"
     )]
     async fn prove(
         &self,
@@ -1437,7 +1437,7 @@ impl Workspaces {
     /// Admit every pre-admitted redemption queued for `workspace`.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its admissions are committed, published and answered"
+        reason = "the workspace stays locked until its admissions are committed, published and answered"
     )]
     async fn admit_queued(&self, identity: &str) {
         let workspace = self.workspace(identity).await;

@@ -1053,7 +1053,7 @@ impl StatePublisher {
     /// every delivery in `delivered`.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room guard is used until the end of each frame, through LiveFanout::deliver; the lint counts only method calls on the guard"
+        reason = "the workspace guard is used until the end of each frame, through LiveFanout::deliver; the lint counts only method calls on the guard"
     )]
     async fn deliver(
         &self,

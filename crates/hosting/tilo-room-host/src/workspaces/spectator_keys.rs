@@ -34,7 +34,7 @@ impl Workspaces {
     /// does not exist yet.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked from the decision until its keys are read"
+        reason = "the workspace stays locked from the decision until its keys are read"
     )]
     pub async fn spectator_keys(
         &self,

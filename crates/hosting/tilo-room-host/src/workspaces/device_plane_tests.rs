@@ -3,7 +3,7 @@
 //! keeps for whom, and who may run it here.
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay, its rooms and the devices' planes are this test's subject until its last assertion"
+    reason = "the relay, its workspaces and the devices' planes are this test's subject until its last assertion"
 )]
 
 use super::fixtures::{door_join, door_join_as};

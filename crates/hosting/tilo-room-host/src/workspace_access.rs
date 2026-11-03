@@ -636,6 +636,6 @@ pub fn role_writes(role: collab_types::Role) -> bool {
 #[path = "workspace_access_tests.rs"]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "each test keeps its room runtime until its last assertion"
+    reason = "each test keeps its workspace runtime until its last assertion"
 )]
 pub(crate) mod tests;

@@ -1941,7 +1941,7 @@ impl Workspaces {
     /// after ([`Self::keep_soon`]).
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
+        reason = "the workspace stays locked until its decision is committed, published and answered"
     )]
     async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         let host = &self.inner.host;
@@ -2065,7 +2065,7 @@ impl Workspaces {
     /// every few seconds for nothing.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
+        reason = "the workspace stays locked until its decision is committed, published and answered"
     )]
     async fn absorb_topology(
         &self,

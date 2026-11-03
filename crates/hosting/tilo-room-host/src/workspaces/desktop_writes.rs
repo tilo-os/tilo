@@ -145,7 +145,7 @@ impl Workspaces {
     /// author did not make and may not moderate, or it is not a desktop.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked while its desktop decides the write and takes it in"
+        reason = "the workspace stays locked while its desktop decides the write and takes it in"
     )]
     pub(crate) async fn decide_desktop_write(
         &self,

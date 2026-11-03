@@ -665,7 +665,7 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one window write decided as the room's grants change keeps its fixture visible"
+    reason = "one window write decided as the workspace's grants change keeps its fixture visible"
 )]
 async fn legacy_window_write_respects_current_member_grants() {
     use collab_types::Role;
@@ -2098,7 +2098,7 @@ async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> 
 /// the governor, should it reach it anyway, commits nothing of it.
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
+    reason = "the workspace and the relay stay held through the assertions; Relay::shutdown consumes the relay"
 )]
 #[tokio::test]
 async fn in_a_public_room_b_never_sees_the_windows_a_opens() {

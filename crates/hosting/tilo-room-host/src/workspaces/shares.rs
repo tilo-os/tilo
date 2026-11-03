@@ -36,7 +36,7 @@ impl Workspaces {
     /// change that could not commit.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked from the decision through the committed change"
+        reason = "the workspace stays locked from the decision through the committed change"
     )]
     pub async fn share_resource(
         &self,
@@ -91,7 +91,7 @@ impl Workspaces {
     /// commit.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked from the decision through the committed change"
+        reason = "the workspace stays locked from the decision through the committed change"
     )]
     pub async fn unshare_resource(
         &self,

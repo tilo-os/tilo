@@ -2302,7 +2302,7 @@ mod tests {
     /// pre-admissions, removals kept in `dir`.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the rooms handle moves into what answers pre-admissions"
+        reason = "the workspaces handle moves into what answers pre-admissions"
     )]
     async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Admitter) {
         let root = SigningKey::from_bytes(&[1; 32]);
@@ -2479,7 +2479,7 @@ mod tests {
         feature = "agents",
         expect(
             clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions"
+            reason = "Relay::shutdown consumes the relay, and so its workspaces, after the assertions"
         )
     )]
     async fn taking_people_by_invitation_members_invite_whom_the_door_turns_away() {

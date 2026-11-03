@@ -449,7 +449,7 @@ impl Workspaces {
     /// primary of an app without one, invalid genesis or failed publication.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the governor transaction retains its room lock through durable signed publication"
+        reason = "the governor transaction retains its workspace lock through durable signed publication"
     )]
     pub async fn prepare_application(
         &self,

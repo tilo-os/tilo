@@ -147,7 +147,7 @@ impl Workspaces {
     /// Cancel an unredeemed invitation of `workspace`.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
+        reason = "the workspace stays locked until its decision is committed, published and answered"
     )]
     pub async fn cancel(
         &self,
@@ -192,7 +192,7 @@ impl Workspaces {
     /// owner. Returns whether governance changed.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
+        reason = "the workspace stays locked until its decision is committed, published and answered"
     )]
     pub async fn enter(
         &self,
@@ -698,7 +698,7 @@ impl Workspaces {
     /// rules do not let `device` make, and a change that could not commit.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its change is committed and published"
+        reason = "the workspace stays locked until its change is committed and published"
     )]
     pub async fn commit_own_membership(
         &self,
@@ -763,7 +763,7 @@ impl Workspaces {
     /// [`WorkspaceMembershipCommand::RenewBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RenewBot
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room remains locked through the committed and published administration decision"
+        reason = "the workspace remains locked through the committed and published administration decision"
     )]
     pub async fn govern_bot(
         &self,
@@ -911,7 +911,7 @@ impl Workspaces {
     /// kind in its digest.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room remains locked through the committed and published administration decision"
+        reason = "the workspace remains locked through the committed and published administration decision"
     )]
     async fn govern_as_member(
         &self,

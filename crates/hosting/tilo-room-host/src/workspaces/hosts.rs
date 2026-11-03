@@ -69,7 +69,7 @@ impl Workspaces {
     /// governor.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed and settled"
+        reason = "the workspace stays locked until its decision is committed and settled"
     )]
     async fn name_host(
         &self,
