@@ -19,6 +19,7 @@ impl KeyHex {
 
     pub(crate) fn as_str(&self) -> &str {
         // Every byte is an ASCII hex digit, so the fallback is never taken.
+        // ignored-failure: every byte is an ASCII hex digit, so the fallback is never taken
         std::str::from_utf8(&self.0).unwrap_or_default()
     }
 }

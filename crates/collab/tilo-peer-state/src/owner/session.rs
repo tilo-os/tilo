@@ -413,7 +413,7 @@ impl Scope {
             &identity.device_signing_key,
             std::time::SystemTime::now(),
         ) {
-            tracing::debug!(%error,"native publication reconciliation blocked");
+            tracing::warn!(workspace = %self.connect.workspace, %error, "native publication reconciliation blocked");
         }
         if let Some(reseal) = reseal
             && let Err(error) = self.connect.owner.renew_outgoing(
@@ -423,7 +423,7 @@ impl Scope {
                 std::time::SystemTime::now(),
             )
         {
-            tracing::debug!(%error, "native sealed write renewal blocked");
+            tracing::warn!(workspace = %self.connect.workspace, %error, "native sealed write renewal blocked");
         }
         self.connect.owner.with_outgoing(
             self.connect.workspace,

@@ -262,7 +262,13 @@ impl PersonalSync {
                     connection.close(REFUSED.into(), reason.as_bytes());
                     return Err(reason);
                 }
-                Err(_) => {}
+                Err(reason) => {
+                    // The store's verdict on this one write, not on the link:
+                    // it stays out of this device, and the peer that sent it
+                    // is told nothing, so the journal is the only place the
+                    // loss is visible.
+                    tracing::warn!(remote = %hex::encode(remote), %reason, "a peer's write was refused");
+                }
             }
         }
         Ok(())

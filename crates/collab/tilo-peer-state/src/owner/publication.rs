@@ -1203,7 +1203,10 @@ impl NativeWorkspaceOwner {
                 Ok(Some(renewal)) => renewal,
                 Ok(None) => continue,
                 Err(error) => {
-                    tracing::debug!(%error, "sealed write stays unrenewed in custody");
+                    // The write stays valid only until its own expiry: a
+                    // person whose change does not reach the workspace needs
+                    // this in the journal, not below what the journal keeps.
+                    tracing::warn!(%error, "sealed write stays unrenewed in custody");
                     continue;
                 }
             };
@@ -1289,7 +1292,7 @@ impl NativeWorkspaceOwner {
                     compacted = compacted.saturating_add(1);
                 }
                 Err(error) => {
-                    tracing::debug!(%error, %app, %record,
+                    tracing::warn!(%error, %app, %record,
                         "sealed record history stays uncompacted here");
                 }
             }

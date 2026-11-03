@@ -539,7 +539,7 @@ fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp)
     let brings_index = || {
         envelope.encryption.is_none()
             && collab_types::DocumentMutation::decode(&envelope.payload)
-                .ok()
+                .ok() // ignored-failure: change bytes that do not parse bring no index
                 .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
                 .is_some_and(|changes| collab_types::units::brings_index(&changes))
     };
@@ -713,6 +713,7 @@ impl StatePeer {
         if workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
+            // ignored-failure: an identity row that does not decode is not that certificate
             .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).ok())
             .is_some_and(|old| old.device_cert == cert)
         {

@@ -34,20 +34,37 @@ impl Destination for PolicyData {
         Ok(())
     }
     fn grant(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
-        if let Ok(grant) = serde_json::from_slice(bytes) {
-            self.grants.push(grant);
+        match serde_json::from_slice(bytes) {
+            Ok(grant) => self.grants.push(grant),
+            // A row that does not read back grants nobody, so the person who
+            // was given it finds the workspace shut and this says why.
+            Err(error) => {
+                tracing::warn!(%error, "a workspace grant row does not decode; it grants nobody");
+            }
         }
         Ok(())
     }
     fn member(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error> {
-        if let Ok(role) = serde_json::from_slice(bytes) {
-            self.members.insert(key.to_owned(), role);
+        match serde_json::from_slice(bytes) {
+            Ok(role) => {
+                self.members.insert(key.to_owned(), role);
+            }
+            // A member whose role does not read back holds none; their writes
+            // are refused without another word, so this is the account of it.
+            Err(error) => {
+                tracing::warn!(%error, %key, "a member row does not decode; the person holds no role");
+            }
         }
         Ok(())
     }
     fn member_joined(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error> {
-        if let Ok(at) = serde_json::from_slice(bytes) {
-            self.joined.insert(key.to_owned(), at);
+        match serde_json::from_slice(bytes) {
+            Ok(at) => {
+                self.joined.insert(key.to_owned(), at);
+            }
+            Err(error) => {
+                tracing::warn!(%error, %key, "a joined row does not decode; the join is undated");
+            }
         }
         Ok(())
     }
@@ -69,6 +86,7 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     // This concrete legacy adapter has neither resource failures nor fallible
     // destination operations. Malformed native lookups retain the historical
     // ignored-value behavior inside visit_governance_entries.
+    // ignored-failure: the legacy adapter's destination operations are infallible
     let _ = project(&read::LegacyRead(document), &mut value);
     value
 }

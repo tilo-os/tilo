@@ -343,6 +343,7 @@ fn saved_shortcuts_proven(
     let mut written = workspace_shortcuts_of(candidate)
         .into_iter()
         .filter(|saved| !held.contains(saved))
+        // ignored-failure: a shortcut that does not decode proves no saver, so admits nothing
         .filter_map(|saved| saved.decode().ok())
         .filter(|shortcut| shortcut.saved_by.is_some())
         .peekable();
@@ -398,6 +399,7 @@ fn direct_pairs_proven(
     }
     let revocations = super::saved_shortcut::workspace_revocations(candidate);
     for (pair, bytes) in added {
+        // ignored-failure: a pair announcement that does not decode proves no pair
         let proven = serde_json::from_slice::<super::direct_pair::DirectPair>(bytes)
             .ok()
             .and_then(|announcement| {

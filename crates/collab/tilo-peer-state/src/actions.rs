@@ -768,7 +768,7 @@ impl ActionPlane {
             let plane = self.clone();
             self.0.runtime.spawn(async move {
                 if let Err(error) = plane.answer_stream(remote, send, recv).await {
-                    tracing::debug!(%error, "a remote action stream ended in error");
+                    tracing::warn!(%error, "a remote action stream ended in error");
                 }
             });
         }
@@ -1120,6 +1120,7 @@ impl Device {
         let heard = async {
             let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
+            // ignored-failure: an answer that does not decode is no answer; the caller answers `away`
             postcard::from_bytes::<Answer>(&answer).ok()
         };
         let Some(mut heard) = heard.await else {

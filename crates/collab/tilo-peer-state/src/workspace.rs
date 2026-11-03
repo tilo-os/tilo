@@ -180,6 +180,7 @@ pub fn workspace_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceB
     let mut bots: Vec<tilo_desktop_model::WorkspaceBot> = governance_of(Some(doc))
         .identities
         .values()
+        // ignored-failure: a row that does not decode names no bot, per this reader's contract
         .filter_map(|bytes| serde_json::from_slice::<crate::state::GovernedIdentity>(bytes).ok())
         .filter_map(|identity| {
             let row = identity.delegate?;
@@ -271,6 +272,7 @@ pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<Aut
 pub fn declared_workspace_mismatches(candidate: &AutoCommit, workspace: uuid::Uuid) -> bool {
     let declared = match candidate.get(ROOT, "room").ok().flatten() {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
+            // ignored-failure: a workspace id that does not parse declares no other workspace
             ScalarValue::Str(value) => uuid::Uuid::parse_str(value).ok(),
             _ => None,
         },
@@ -339,6 +341,7 @@ thread_local! { pub(crate) static RECEIPT_DECODES: std::cell::Cell<usize> = cons
 fn decode_receipt(bytes: &[u8]) -> Option<serde_json::Value> {
     #[cfg(test)]
     RECEIPT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
+    // ignored-failure: an unreadable receipt carries no evidence
     serde_json::from_slice(bytes).ok()
 }
 
@@ -570,6 +573,7 @@ pub(crate) fn admit_receipts(
 /// Every readable effect receipt in `doc`, decoded.
 pub fn receipt_values(doc: &AutoCommit) -> BTreeMap<String, serde_json::Value> {
     let mut values = BTreeMap::new();
+    // ignored-failure: the visitor's error type is `Infallible`; an unreadable receipt drops out
     let _ = visit_receipt_bytes(doc, |key, bytes| {
         if let Some(value) = decode_receipt(bytes) {
             values.insert(key.to_owned(), value);
