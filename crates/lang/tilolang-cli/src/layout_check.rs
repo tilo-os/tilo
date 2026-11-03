@@ -1315,11 +1315,11 @@ pub fn render(report: &Report) -> String {
     out
 }
 
-/// The shell's traditional desktop as a person sees it, staged from its own scenario through
-/// the UI host's path: windows standing with their apps' content, one bar per window, and the
-/// trailing parts of the top bar at its edge.
+/// The shell's windows as a person sees them, staged from its own scenarios through the UI
+/// host's path: windows standing with their apps' content, one bar per window, filling the
+/// strips the desk gives them, and the trailing parts of the top bar at its edge.
 #[cfg(test)]
-mod traditional_desktop {
+mod windows {
     use std::path::Path;
     use std::rc::Rc;
 
@@ -1428,6 +1428,90 @@ mod traditional_desktop {
                 "the app's header keeps room for the frame's controls: {overlapping:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "a desk of places",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let root = staged.harness().root_widget();
+        let frames = named(root, "WindowFrame");
+        assert!(
+            frames.len() >= 6,
+            "the desk's strips stand as windows, not cards: {} frames",
+            frames.len()
+        );
+        // A window is a window: it fills its strip's whole room, and every window of the desk
+        // shares that height, as the chrome's groups do. A card is a few hundred pixels tall
+        // with a sliver of its app under it.
+        let height = frames[0].get_rect().height();
+        assert!(
+            height > 500.0,
+            "a window fills the desk's height: {height} at 1280x800"
+        );
+        for frame in &frames {
+            let window = frame.get_rect();
+            assert!(
+                (window.height() - height).abs() < 1.0,
+                "every window of the desk is as tall as the desk: {window:?} beside {height}"
+            );
+            // Its share of the row, never squeezed under what its own width names.
+            assert!(
+                window.width() >= 400.0,
+                "a window keeps its share of the row: {window:?}"
+            );
+        }
+        // One bar per window, whichever state it is in: the tabs of a window of several places,
+        // or the app's own header row — and its app's content under that, filling the rest.
+        let mut tabbed = 0;
+        for frame in &frames {
+            let window = frame.get_rect();
+            let strips = named(frame, "TabStrip");
+            let shells = named(frame, "NavShell");
+            if let [tabs] = strips[..] {
+                tabbed += 1;
+                let bar = tabs.get_rect();
+                assert!(
+                    bar.height() > 40.0 && bar.height() < 56.0,
+                    "the tabs are one window bar tall: {bar:?}"
+                );
+                assert!(
+                    bar.y0 - window.y0 < 1.0,
+                    "the tabs are the window's own bar, at its top edge: {bar:?} in {window:?}"
+                );
+                if let [shell] = shells[..] {
+                    assert!(
+                        shell.get_rect().y0 >= bar.y1 - 1.0,
+                        "the app stands under the tabs, not over them: {:?} under {bar:?}",
+                        shell.get_rect()
+                    );
+                }
+            }
+            for shell in shells {
+                let content = shell.get_rect();
+                assert!(
+                    content.y0 - window.y0 < 56.0,
+                    "one bar stands over the app, never two: {content:?} in {window:?}"
+                );
+                assert!(
+                    window.y1 - content.y1 < 1.0,
+                    "the app fills the window to its foot: {content:?} in {window:?}"
+                );
+            }
+        }
+        assert!(
+            tabbed >= 3,
+            "the strips of several places show their tabs: {tabbed} tabbed windows"
+        );
     }
 
     /// The controls under `root` outside any window, with their names: the shell's own.

@@ -159,24 +159,21 @@ view screen(a: Arrangement) {
 }
 
 /// What stands between the bar and the dock when the desk shows the arrangement: the places as
-/// the preset the person picked lays them out, under the switch between the presets, as
-/// `desk_view` shows them. The traditional desktop shows the window in front alone here, as a
-/// compact display does, its header's actions giving way when the bar lists them (`lists`).
+/// the preset the person picked lays them out, from the bar's edge down, so nothing stands
+/// between a window and the bar. The preset itself is the bar's own menu (`preset_menu`), so the
+/// switch takes no row of the desk. The traditional desktop shows the window in front alone
+/// here, as a compact display does, its header's actions giving way when the bar lists them
+/// (`lists`).
 view shown_preset(a: Arrangement, lists: Bool) {
     let v = viewing
     if v.showing == .desktop {
         front_window(a, lists, fill)
+    } else if v.showing == .frames {
+        framed_canvas(a, fill)
+    } else if v.showing == .spaces {
+        spaces_canvas(a, fill)
     } else {
-        stack(gap: .tight, fill) {
-            preset_switch(v)
-            if v.showing == .frames {
-                framed_canvas(a, fill)
-            } else if v.showing == .spaces {
-                spaces_canvas(a, fill)
-            } else {
-                strips_view(a, v, fill)
-            }
-        }
+        strips_view(a, v, lists, fill)
     }
 }
 
