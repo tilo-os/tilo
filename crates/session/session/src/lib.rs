@@ -111,6 +111,7 @@ mod pairing;
 mod panels;
 mod pass;
 mod people;
+mod person_chat;
 mod plane;
 pub mod portal_link;
 mod press_outside;

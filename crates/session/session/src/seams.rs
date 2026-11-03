@@ -287,7 +287,6 @@ pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[
     "browser_service_sessions",
     "file_clipboard",
     "nearby_transfer",
-    "person_chat",
 ];
 
 #[cfg(test)]

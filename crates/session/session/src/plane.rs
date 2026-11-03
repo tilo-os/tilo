@@ -695,7 +695,7 @@ fn seams(
         agent_runs,
         sealed,
         own_device,
-        engine: _,
+        engine,
         record_content,
         action_offload,
         journal_root,
@@ -768,12 +768,13 @@ fn seams(
         // to deliver, and its reports come back to the run.
         tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
         // A person's private conversations are kept in their workspaces'
-        // private person state, which this session's owner holds; the action
-        // door has no route to it, so Chat's calls there are refused.
-        person_chat: Seam::unserved(
-            "Chat's private conversations live in the workspaces' private person state, and \
-             this session's owner serves none of it on an app's door: Chat's calls are refused",
-        ),
+        // private person state, beside the owner's own record: Chat reads and
+        // writes them through the owner this session opened, where this
+        // device is the workspace's host, and follows them by its watch.
+        person_chat: Seam::when(engine.map(|engine| {
+            std::sync::Arc::new(crate::person_chat::PersonChat::new(engine))
+                as tilo_action_broker::services::person_chat::PersonChatService
+        })),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
