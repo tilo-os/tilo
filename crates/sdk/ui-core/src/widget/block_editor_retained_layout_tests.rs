@@ -1304,7 +1304,9 @@ fn a_keystroke_builds_the_accessibility_row_of_its_block_alone() {
         );
         let typed = tree
             .iter()
-            .find(|node| node.name.as_deref() == Some("Paragraph block 1"))
+            .find(|node| {
+                node.role == crate::a11y::Role::ListItem && node.place.pos_in_set == Some(1)
+            })
             .map(|node| node.id.clone())
             .expect("the typed block's row");
         assert_eq!(

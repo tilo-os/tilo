@@ -1,0 +1,6 @@
+# The list's rows carry a box that finishes an issue and a menu that opens or
+# finishes it. Both closures submit the tracker's published `place` action
+# through the dispatcher, which the audit cannot see through a callback, so
+# the two are counted here.
+[ratchets.closure_control]
+"apps/tasks/src/list.rs" = 2

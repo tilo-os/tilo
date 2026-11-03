@@ -9,6 +9,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "a11y_rows.rs"]
+mod a11y_rows;
 #[path = "accessibility_publication.rs"]
 mod accessibility_publication;
 #[path = "click_link_navigates.rs"]

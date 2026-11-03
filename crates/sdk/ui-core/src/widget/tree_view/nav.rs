@@ -755,6 +755,16 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         true
     }
 
+    /// Whether `id`'s row has a menu a reader can open: the list reports
+    /// menus and the row is one that asks for it.
+    pub(super) fn nav_row_has_menu(&self, id: NodeId) -> bool {
+        self.nav_offers_menu()
+            && matches!(
+                self.nav_spec(id),
+                Some(NavRowSpec::Item(_) | NavRowSpec::Section { menu: true, .. })
+            )
+    }
+
     /// Whether the navigation list reports row menus.
     pub(super) fn nav_offers_menu(&self) -> bool {
         self.nav.as_ref().is_some_and(|nav| nav.on_menu.is_some())

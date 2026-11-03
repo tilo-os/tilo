@@ -92,6 +92,10 @@ struct AccessRowInputs<'a> {
     depth: usize,
     expanded: Option<bool>,
     selected: bool,
+    /// The row's checkbox, checked or not, and whether its menu can be
+    /// opened: both are on the pointer's path already and belong in the tree.
+    checked: Option<bool>,
+    menu: bool,
     focused: bool,
     /// Which of [`TreeMove::ALL`] the hierarchy has room for.
     moves: [bool; 4],
@@ -119,6 +123,8 @@ impl AccessRowInputs<'_> {
             depth: self.depth,
             expanded: self.expanded,
             selected: self.selected,
+            checked: self.checked,
+            menu: self.menu,
             focused: self.focused,
             moves: self.moves,
             description: self
@@ -315,6 +321,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 .is_branch(id)
                 .then(|| self.expanded.contains(&id)),
             selected: self.selection.is_selected(&id),
+            checked: self.access_row_checked(id),
+            menu: self.access_row_has_menu(id),
             focused: self.row_has_focus(TreeRowKey::Node(id)),
             moves: TreeMove::ALL
                 .map(|movement| reorderable && self.move_target(id, movement).is_some()),
@@ -357,6 +365,24 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         holds
     }
 
+    /// The row's checkbox state: a navigation row's check, or the box a row
+    /// decoration painted. `None` for a row with no checkbox.
+    fn access_row_checked(&self, id: NodeId) -> Option<bool> {
+        self.nav_semantics(id)
+            .and_then(|(_, checked)| checked)
+            .or_else(|| self.row_checks.get(&id).copied())
+    }
+
+    /// Whether a reader is offered the row's menu, which the pointer opens by
+    /// right click, the menu key or the row's own more button.
+    fn access_row_has_menu(&self, id: NodeId) -> bool {
+        if self.is_nav() {
+            self.nav_row_has_menu(id)
+        } else {
+            self.context_menu_items.is_some()
+        }
+    }
+
     /// Whether `key`'s row itself (not one of its buttons) has focus.
     fn row_has_focus(&self, key: TreeRowKey) -> bool {
         self.is_focused && self.focused_affordance.is_none() && self.focused == Some(key)
@@ -388,7 +414,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         delegate_child: Option<AccessNode>,
     ) -> Option<AccessNode> {
         let delegate_label = delegate_child.as_ref().and_then(|child| child.name.clone());
-        let (label, expanded, busy, invalid, selected) = match key {
+        let (label, expanded, busy, invalid, selected, checked, menu) = match key {
             TreeRowKey::Node(id) => (
                 self.model.label(id)?.to_owned(),
                 self.model
@@ -397,6 +423,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 false,
                 false,
                 self.selection.is_selected(&id),
+                self.access_row_checked(id),
+                self.access_row_has_menu(id),
             ),
             TreeRowKey::Slot(slot) => match self.model.child_state(slot.parent, slot.index) {
                 Arrival::Ready(_) => return None,
@@ -408,12 +436,14 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                     true,
                     false,
                     false,
+                    None,
+                    false,
                 ),
                 Arrival::Failed(message) => {
                     let label = delegate_label.unwrap_or_else(|| {
                         format!("{}. Activate to retry", message.unwrap_or("Could not load"))
                     });
-                    (label, None, false, true, false)
+                    (label, None, false, true, false, None, false)
                 }
             },
         };
@@ -429,6 +459,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 focusable: true,
                 focused: self.row_has_focus(key),
                 selected,
+                checked,
+                context_menu: menu,
                 expanded,
                 disabled: !self.is_enabled(),
                 busy,
@@ -444,12 +476,9 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
             item = item.with_description(description.clone());
         }
         if let TreeRowKey::Node(id) = key
-            && let Some((description, checked)) = self.nav_semantics(id)
+            && let Some((Some(description), _)) = self.nav_semantics(id)
         {
-            if let Some(description) = description {
-                item = item.with_description(description);
-            }
-            item.state.checked = checked;
+            item = item.with_description(description);
         }
         if let TreeRowKey::Node(id) = key
             && let Some(semantic) = self.model.semantic_key(id)
@@ -463,6 +492,18 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         }
         if let TreeRowKey::Node(id) = key {
             let label = self.model.label(id).unwrap_or_default();
+            if let Some(checked) = checked {
+                // The box the row paints, as the control it is: a reader
+                // hears it, and a toggle reaches the app's own callback.
+                let mut checkbox = AccessNode::new(Role::Checkbox)
+                    .with_name(label.to_owned())
+                    .with_action_target(format!("check:{id}"))
+                    .with_state(AccessState::new().checked(checked).focusable(true));
+                if let Some(bounds) = self.checkboxes.get(&id) {
+                    checkbox = checkbox.with_bounds(*bounds);
+                }
+                item_children.push(checkbox);
+            }
             item_children.extend(self.row_semantic_children(
                 id,
                 label,
@@ -558,6 +599,82 @@ mod tests {
             let _ = Widget::accessibility_shared(&view);
             assert_eq!(Widget::accessibility(&view), published_afresh(&view));
         }
+    }
+
+    /// A row's checkbox is in the tree as the control it is: a reader hears
+    /// whether it is checked, and toggling it reaches the app's own callback,
+    /// the one a press on the box reaches.
+    #[test]
+    fn a_rows_checkbox_is_a_control_a_reader_toggles() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::super::tests::draw_view;
+        use crate::a11y::{Action, Role};
+        use crate::widget::TreeRowDecoration;
+
+        let toggled = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&toggled);
+        let mut view = TreeView::new(TreeNode::branch(
+            1,
+            "root",
+            (),
+            vec![
+                TreeNode::leaf(2, "Send the notes", ()),
+                TreeNode::leaf(3, "Read the mail", ()),
+            ],
+        ))
+        .hide_root()
+        .with_expanded([1])
+        .with_row_decoration(|_, row, _| {
+            if row.id == 2 {
+                TreeRowDecoration::new().checkbox(true)
+            } else {
+                TreeRowDecoration::new()
+            }
+        })
+        .on_check(move |id| log.borrow_mut().push(id));
+        let _ = lay_out_tree(&mut view, 320.0);
+        draw_view(&mut view);
+
+        let node = Widget::accessibility(&view).expect("the tree's node");
+        let row = |name: &str| {
+            node.children
+                .iter()
+                .find(|row| row.name.as_deref() == Some(name))
+                .expect("the row is in the tree")
+        };
+        let done = row("Send the notes");
+        assert_eq!(
+            done.state.checked,
+            Some(true),
+            "a checked row says it is checked"
+        );
+        let box_ = done
+            .children
+            .iter()
+            .find(|child| child.role == Role::Checkbox)
+            .expect("the box the row paints is a control of its own");
+        assert_eq!(box_.name.as_deref(), Some("Send the notes"));
+        assert_eq!(box_.state.checked, Some(true));
+        assert!(
+            row("Read the mail")
+                .children
+                .iter()
+                .all(|child| child.role != Role::Checkbox),
+            "a row without a box has no checkbox"
+        );
+
+        let target = box_.action_target.clone().expect("the box is addressable");
+        let mut doc = automerge::AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut view,
+            &target,
+            &Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(*toggled.borrow(), [2], "the app answers the toggle");
     }
 
     /// A row a change elsewhere moved (the tree laid out narrower) is built

@@ -923,6 +923,9 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     /// Where the checkboxes painted last frame are, by node: a press there
     /// asks [`Self::on_check`] instead of selecting the row.
     checkboxes: HashMap<NodeId, Rect>,
+    /// Whether each checkbox painted last frame is checked, by node: the rows'
+    /// semantics read the state a reader announces without painting them.
+    row_checks: HashMap<NodeId, bool>,
     /// A row's checkbox was pressed: the row it belongs to.
     on_check: Option<Box<dyn FnMut(NodeId)>>,
     reorder: ReorderController<NodeId>,
@@ -1214,6 +1217,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             hovered: None,
             row_descriptions: HashMap::new(),
             checkboxes: HashMap::new(),
+            row_checks: HashMap::new(),
             on_check: None,
             reorder: ReorderController::new(),
             reorder_validator: None,
@@ -3337,6 +3341,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
 
         self.row_descriptions.clear();
         self.checkboxes.clear();
+        self.row_checks.clear();
         let visible = self.visible_row_range();
         'rows: for i in visible {
             // Where this row paints, once it is known: its part's bounds.
@@ -3593,6 +3598,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                                 id,
                                 Rect::new(label_x, row_rect.y0, box_rect.x1 + gap, row_rect.y1),
                             );
+                            self.row_checks.insert(id, checked);
                             let used = box_rect.width() + gap;
                             label_x += used;
                             label_max -= used;
@@ -4275,6 +4281,38 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
             return performed;
+        }
+        if let Some(raw) = target.strip_prefix("check:") {
+            let Ok(id) = raw.parse::<NodeId>() else {
+                return false;
+            };
+            if !self.model.contains(id) {
+                return false;
+            }
+            return match action {
+                // The checkbox a row paints is the row's own control: an
+                // assistive technology toggles it exactly as a press on it
+                // does, through the callback the app already answers.
+                Action::Activate | Action::ToggleCheck => {
+                    if self.is_nav_checkable(id) {
+                        self.toggle_nav_check(id)
+                    } else if let Some(callback) = self.on_check.as_mut() {
+                        callback(id);
+                        self.paint_dirty = true;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Action::Focus => {
+                    self.focused_affordance = None;
+                    let Some(index) = self.visible_index_of(id) else {
+                        return false;
+                    };
+                    self.focus_at(index)
+                }
+                _ => false,
+            };
         }
         if let Some(raw) = target.strip_prefix("node:") {
             let Ok(id) = raw.parse::<NodeId>() else {

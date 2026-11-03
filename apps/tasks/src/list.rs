@@ -8,9 +8,10 @@
 use std::rc::Rc;
 
 use crate::model::money;
-use crate::model::{Issue, Tracker, tracker};
+use crate::model::{Issue, Status, Tracker, tracker};
 use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
+use ui::widget::context_menu::MenuItem;
 use ui::widget::{TreeClickActivation, TreeRowDecoration, TreeRowTone};
 
 use crate::{Filter, Nav, reference, tr};
@@ -139,6 +140,16 @@ fn tree(
     let validate_issue = issue_of.clone();
     let dispatcher = cx.dispatcher();
     let parents = tracker.clone();
+    // The row's own controls: the box that finishes an issue and the menu a
+    // right click, the menu key or its more button opens. Both reach the
+    // tracker through the same actions the board and the issue page use.
+    let check_row = row_check(issue_of.clone(), tracker.clone(), dispatcher.clone());
+    let row_menu_chosen = row_menu_callback(
+        issue_of.clone(),
+        nav.clone(),
+        tracker.clone(),
+        dispatcher.clone(),
+    );
     Box::new(
         TreeView::new(TreeNode::branch(
             ROOT,
@@ -157,6 +168,9 @@ fn tree(
                 opener.open(&issue);
             }
         })
+        .on_check(check_row)
+        .with_context_menu(row_menu)
+        .on_context_menu_item(row_menu_chosen)
         .with_row_decoration(decorate)
         .with_reorder(
             move |_, source, target| {
@@ -196,7 +210,7 @@ fn tree(
 fn decorate(
     model: &TreeNode<Option<Row>>,
     row: ui::widget::TreeRowInfo,
-    theme: &ui::theme::Theme,
+    _theme: &ui::theme::Theme,
 ) -> TreeRowDecoration {
     let Some(Some(data)) = model.find(row.id).map(|node| node.data.clone()) else {
         return TreeRowDecoration::new();
@@ -222,17 +236,120 @@ fn decorate(
             ],
         );
     }
+    // The box finishes the issue, the way a task list's boxes do; what it
+    // says is a reader's "checked" too.
     let decoration = TreeRowDecoration::new()
+        .checkbox(data.status.closed())
         .trailing(status.clone())
         .description(format!("{}, {status}", reference(data.number)));
     if data.status.closed() {
-        decoration
-            .tone(TreeRowTone::Secondary)
-            .icon(ui::icons::Icon::CircleCheck, theme.tokens.colors.text_dim)
+        decoration.tone(TreeRowTone::Secondary)
     } else {
-        decoration.icon(
-            ui::icons::Icon::CircleDot,
-            theme.tokens.colors.intent.accent,
-        )
+        decoration
     }
+}
+
+/// The row's box: ticking it finishes the issue, unticking reopens it.
+fn row_check(
+    issue_of: impl Fn(u64) -> Option<Id> + 'static,
+    tracker: Tracker,
+    dispatcher: ui::prelude::Dispatcher<Tracker>,
+) -> impl FnMut(u64) + 'static {
+    move |key| {
+        let Some(issue) = issue_of(key) else {
+            return;
+        };
+        let Some(status) = tracker.issues.get(&issue).map(|now| {
+            if now.status.closed() {
+                Status::Todo
+            } else {
+                Status::Done
+            }
+        }) else {
+            return;
+        };
+        change_status(&tracker, &dispatcher, issue, status);
+    }
+}
+
+/// What a row's menu reports, once the reader chooses an item.
+fn row_menu_callback(
+    issue_of: impl Fn(u64) -> Option<Id> + 'static,
+    nav: Nav,
+    tracker: Tracker,
+    dispatcher: ui::prelude::Dispatcher<Tracker>,
+) -> impl FnMut(Option<u64>, usize) + 'static {
+    move |target, index| {
+        if let Some(issue) = target.and_then(&issue_of) {
+            row_menu_chosen(&tracker, &nav, &dispatcher, issue, index);
+        }
+    }
+}
+
+/// Set `issue`'s status as the row's box and menu do: a place in the list
+/// that keeps the issue where it is.
+fn change_status(
+    tracker: &Tracker,
+    dispatcher: &ui::prelude::Dispatcher<Tracker>,
+    issue: Id,
+    status: Status,
+) {
+    // Finishing an issue is not a move: it keeps the place it had in the
+    // list, before the issue that follows it.
+    let before = tracker
+        .issues
+        .iter()
+        .map(|(id, _)| id.clone())
+        .skip_while(|id| id != &issue)
+        .nth(1);
+    dispatcher.submit(Tracker::PLACE.with(tracker::Place {
+        issue,
+        status,
+        before,
+    }));
+}
+
+/// A row's menu: open it, and finish or reopen it.
+fn row_menu(model: &TreeNode<Option<Row>>, target: Option<u64>) -> Vec<MenuItem> {
+    let Some(Some(row)) = target
+        .and_then(|key| model.find(key))
+        .map(|node| node.data.clone())
+    else {
+        return Vec::new();
+    };
+    vec![
+        MenuItem::icon_action(ui::icons::Icon::ArrowUpRight, tr("tasks-row-open"), || {}),
+        if row.status.closed() {
+            MenuItem::icon_action(ui::icons::Icon::RotateCcw, tr("tasks-row-reopen"), || {})
+        } else {
+            MenuItem::icon_action(
+                ui::icons::Icon::CircleCheck,
+                tr("tasks-row-complete"),
+                || {},
+            )
+        },
+    ]
+}
+
+/// What a row's menu item does, by the order [`row_menu`] lists them.
+fn row_menu_chosen(
+    tracker: &Tracker,
+    nav: &Nav,
+    dispatcher: &ui::prelude::Dispatcher<Tracker>,
+    issue: Id,
+    index: usize,
+) {
+    let Some(now) = tracker.issues.get(&issue) else {
+        return;
+    };
+    let status = match (index, now.status.closed()) {
+        (0, _) => {
+            nav.open(&issue);
+            return;
+        }
+        (1, false) => Status::Done,
+        (1, true) => Status::Todo,
+        _ => return,
+    };
+    change_status(tracker, dispatcher, issue, status);
 }
