@@ -1123,8 +1123,14 @@ impl BrowserShell {
                 // Leaving a workspace is a session's to carry out and say.
                 // It places no desk widget, so no music control of one is
                 // here to press: steering a player is the session's, on the
-                // machine that runs it.
-                DesktopAsk::Shortcut(_) | DesktopAsk::LeftWorkspace(_) | DesktopAsk::Music(_) => {}
+                // machine that runs it. A window that stopped answering is
+                // waited for or quit where the compositor runs, which a page
+                // has none of.
+                DesktopAsk::Shortcut(_)
+                | DesktopAsk::LeftWorkspace(_)
+                | DesktopAsk::Music(_)
+                | DesktopAsk::WaitWindow(_)
+                | DesktopAsk::ForceQuitApp(_) => {}
             }
         }
         changed
