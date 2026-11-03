@@ -25,11 +25,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tilo_call_lane::Roster;
-use tilo_live::plane::{Join, Plane};
+#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+use tilo_live::plane::Join;
+use tilo_live::plane::Plane;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{Command, Host, Link, PeerEvent, Task, lock};
+#[cfg(feature = "iroh")]
+use super::Host;
+use super::{Command, Link, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
 
 /// The wait before a plane this page could not reach is asked for again.
