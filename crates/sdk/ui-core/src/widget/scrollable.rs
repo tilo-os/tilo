@@ -736,10 +736,14 @@ impl Scrollable {
         )
     }
 
-    /// Where the content's origin lands on screen, as drawn.
+    /// Where the content's origin lands on screen, as drawn. It stands on a device pixel, as a
+    /// hand's scroll and a reveal leave it: an offset kept across a display whose scale changed
+    /// (a window dragged to another screen) lands whole too, rather than smearing every edge.
     fn content_origin(&self) -> Point {
         let (x, y) = self.drawn_offset();
-        Point::new(self.rect.x0 - x, self.rect.y0 - y)
+        let scale = f64::from(super::layout::device_scale()).max(f64::MIN_POSITIVE);
+        let on_grid = |at: f64| (at * scale).floor() / scale;
+        Point::new(on_grid(self.rect.x0 - x), on_grid(self.rect.y0 - y))
     }
 
     /// Whether the give moved since the content was placed with it.
