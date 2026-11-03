@@ -371,3 +371,65 @@ fn backspace_at_a_callouts_start_and_enter_in_an_empty_one_leave_it() {
     assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
     assert_eq!(editor.blocks[0].text(), "Keep me");
 }
+
+/// The space above block `index`, in theme pixels.
+fn above(editor: &BlockEditor, index: usize, theme: &Theme) -> f32 {
+    editor.stack_boxes[index].margin_top / theme.text_scale
+}
+
+#[test]
+fn a_block_that_paints_a_surface_clears_the_prose_around_it() {
+    let theme = Theme::dark();
+    let spacing = theme.tokens.spacing;
+    let mut editor = page(vec![
+        Block::paragraph("Before"),
+        Block::code_block(Some("rust".to_owned()), "fn main() {}"),
+        Block::code_block(Some("toml".to_owned()), "name = "),
+        Block::paragraph("Between"),
+        Block::quote("Quoted"),
+        Block::quote("The same quote continues"),
+        Block::paragraph("After"),
+        Block::divider(),
+        Block::paragraph("End"),
+    ]);
+    lay_out_and_draw(&mut editor, &theme);
+    // A code ground reaches past its box and its header sits inside the block: one surface gap
+    // on either side of it, and of a second fence beside it.
+    assert_eq!(above(&editor, 1, &theme), spacing.s4, "above the fence");
+    assert_eq!(above(&editor, 2, &theme), spacing.s4, "between fences");
+    assert_eq!(above(&editor, 3, &theme), spacing.s4, "below the fence");
+    // The lines of one quote are one unit; the quote as a whole stands apart from the prose.
+    assert_eq!(above(&editor, 4, &theme), spacing.s4, "above the quote");
+    assert!(above(&editor, 5, &theme) < spacing.s4, "within the quote");
+    assert_eq!(above(&editor, 6, &theme), spacing.s4, "below the quote");
+    assert_eq!(above(&editor, 7, &theme), spacing.s4, "above the rule");
+    assert_eq!(above(&editor, 8, &theme), spacing.s4, "below the rule");
+}
+
+#[test]
+fn a_heading_opens_its_section_with_room_and_its_first_block_sits_close_under_it() {
+    let theme = Theme::dark();
+    let spacing = theme.tokens.spacing;
+    let mut editor = page(vec![
+        Block::paragraph("Before"),
+        Block::heading(2, "Section"),
+        Block::paragraph("First line of the section"),
+        Block::paragraph("Second paragraph"),
+    ]);
+    lay_out_and_draw(&mut editor, &theme);
+    assert_eq!(
+        above(&editor, 1, &theme),
+        spacing.s6,
+        "room above a heading"
+    );
+    assert_eq!(
+        above(&editor, 2, &theme),
+        spacing.s3,
+        "the section's first block sits close under its heading"
+    );
+    assert_eq!(
+        above(&editor, 3, &theme),
+        spacing.s1,
+        "prose keeps its compact gap"
+    );
+}

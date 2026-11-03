@@ -1081,15 +1081,24 @@ fn culled_frames_keep_on_screen_chrome_and_links_live() {
         fixture.editor.link_at_point(link.center()),
         Some(LinkTarget::Page(Uuid::nil()))
     );
-    let reach = viewport.inflate(0.0, viewport.height());
-    assert!(
-        fixture
-            .editor
-            .code_copy_hits
-            .iter()
-            .all(|(rect, _, _)| rect.y1 >= reach.y0 - CODE_HEADER_HEIGHT && rect.y0 <= reach.y1),
-        "no chrome is derived for a run a screen or more away"
-    );
+    // A run's chrome rides inside its paint rect, and the culling window keeps only the
+    // runs whose paint rect (the run's first line and the header above it) is on screen or
+    // within a screen of it. A run whose first line only just crosses the window's top edge
+    // still paints, and its chrome therefore starts up to that line above the window; a run
+    // a screen or more away derives none.
+    let paint_window = viewport.inflate(0.0, viewport.height());
+    for (rect, start, _) in &fixture.editor.code_copy_hits {
+        let first = fixture.editor.blocks[*start].line.get_rect();
+        let paint = Rect::new(first.x0, first.y0 - CODE_HEADER_HEIGHT, first.x1, first.y1);
+        assert!(
+            paint.y1 >= paint_window.y0 && paint.y0 <= paint_window.y1,
+            "no chrome is derived for a run a screen or more away"
+        );
+        assert!(
+            rect.y0 >= paint.y0 && rect.y1 <= paint.y1,
+            "a run's chrome rides inside its paint rect"
+        );
+    }
 }
 
 /// The window of a note scrolled to its middle, rendered.

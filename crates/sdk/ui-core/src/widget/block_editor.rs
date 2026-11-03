@@ -8299,15 +8299,46 @@ impl BlockEditor {
         self.refresh_layout_theme(theme);
         // Lines within one authored fence stay together; distinct adjacent
         // fences need space outside both painted backgrounds.
-        let is_code: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
-            .collect();
         let is_paragraph: Vec<bool> = self
             .blocks
             .iter()
             .map(|block| matches!(block.kind, BlockKind::Paragraph))
+            .collect();
+        // A block that paints a surface of its own (a code fence, a quote's rule, a callout's
+        // wash, a table, a rule) reaches past its box, so it stands apart from the text around
+        // it: prose spacing would leave little or no visible gap under a code ground.
+        let is_surface: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| {
+                matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. }
+                        | BlockKind::Quote
+                        | BlockKind::Callout(_)
+                        | BlockKind::Table { .. }
+                        | BlockKind::Divider
+                )
+            })
+            .collect();
+        // The lines of one quote or one callout are one unit: they keep the prose gap between
+        // them, and the surface gap only at the run's edges.
+        let within_surface_run: Vec<bool> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                matches!(block.kind, BlockKind::Quote | BlockKind::Callout(_))
+                    && index
+                        .checked_sub(1)
+                        .is_some_and(|previous| self.blocks[previous].kind == block.kind)
+            })
+            .collect();
+        // A heading opens a section: room above, and its first line close under it.
+        let is_heading: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| matches!(block.kind, BlockKind::Heading(_)))
             .collect();
         let continues_code: Vec<bool> = self
             .blocks
@@ -8420,8 +8451,14 @@ impl BlockEditor {
             // for soft-break continuations, the first block, and consecutive
             // code lines (one contiguous fenced unit).
             let continues_code_block = continues_code[i];
-            let adjacent_fences =
-                is_code[i] && i.checked_sub(1).is_some_and(|previous| is_code[previous]);
+            let against_surface = (is_surface[i]
+                || i.checked_sub(1)
+                    .is_some_and(|previous| is_surface[previous]))
+                && !within_surface_run[i];
+            let heading_above = is_heading[i];
+            let heading_below = i
+                .checked_sub(1)
+                .is_some_and(|previous| is_heading[previous]);
             let compact_paragraph_pair = self.compact_paragraph_spacing
                 && is_paragraph[i]
                 && i.checked_sub(1)
@@ -8445,8 +8482,12 @@ impl BlockEditor {
             };
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
-            } else if adjacent_fences || around_embed {
+            } else if heading_above {
+                theme.tokens.spacing.s6 * theme.text_scale
+            } else if against_surface || around_embed {
                 theme.tokens.spacing.s4 * theme.text_scale
+            } else if heading_below {
+                theme.tokens.spacing.s3 * theme.text_scale
             } else if list_item_pair {
                 paragraph_gap / 2.0 * theme.text_scale
             } else if compact_paragraph_pair {

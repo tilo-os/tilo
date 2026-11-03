@@ -658,3 +658,52 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
         "no row shows a participant's id"
     );
 }
+
+/// The key of the node bound to `field` in a window.
+fn bound_key(node: &UiNode, field: &str) -> Option<String> {
+    if node
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .is_some_and(|(_, bound)| bound == field)
+    {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| bound_key(child, field))
+}
+
+#[test]
+fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
+    let (mut ada, _notes, tasks) = two_people();
+    let task = call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add",
+        vec![tasks, Value::text("Buy oat milk")],
+    );
+    ada.commit();
+    let at = target(&task);
+    let title =
+        crate::fixtures::field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
+    let mut page = ada.host.open_resource(&at, None).unwrap();
+    let input = bound_key(page.tree(), &title).expect("the task's title is bound to its input");
+    page.edit(&input, &Value::text("Bring oat milk")).unwrap();
+    ada.commit();
+    drop(page);
+
+    // The entry says what was edited, in words, and never the platform's verb id.
+    let mut page = ada.host.open_resource(&at, None).unwrap();
+    let section = history(&mut page);
+    let said: Vec<&str> = nodes(&section).into_iter().filter_map(text).collect();
+    assert!(
+        said.contains(&"Edited title"),
+        "the entry says what was edited: {said:?}"
+    );
+    assert!(
+        !said.iter().any(|what| what.contains("dit-text")),
+        "no entry shows an action id: {said:?}"
+    );
+}
