@@ -93,19 +93,19 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let hosted = start(&identity, &host, state.path()).await;
     let workspace = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create("Feedback fixture")
         .await
         .unwrap();
-    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.room).await;
+    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
     let person = hex::encode(identity.verifying_key().to_bytes());
     hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .prepare_application(
-            &workspace.room,
+            &workspace.workspace,
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
@@ -132,7 +132,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mutation = queued.take_mutation().unwrap();
     browser.peer.close();
     drop(browser);
-    browser = Browser::open_workspace(&hosted, &device, &host, &workspace.room).await;
+    browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
     publish_participant(&mut browser, &route, &mutation);
     submit_local_participant(&mut browser, &route, &submission, &person);
     assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
@@ -147,7 +147,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     )
     .await;
     let value = output.value.unwrap();
-    assert_eq!(value["record"]["workspaceId"], workspace.room);
+    assert_eq!(value["record"]["workspaceId"], workspace.workspace);
     assert_eq!(value["record"]["appId"], "so.tilo.chat");
     assert_eq!(value["record"]["recordId"], "");
     let receipt: ui::feedback::Receipt = serde_json::from_value(value["content"].clone()).unwrap();
@@ -209,7 +209,8 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
     let restored = start(&identity, &host, state.path()).await;
-    let mut returning = Browser::open_workspace(&restored, &device, &host, &workspace.room).await;
+    let mut returning =
+        Browser::open_workspace(&restored, &device, &host, &workspace.workspace).await;
     let after = resolved_status(&mut returning, &submission).await;
     assert_signed_canonical(&mut returning, &submission, &host.cert, &device.cert).await;
     assert_eq!(
@@ -274,17 +275,17 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
     .await;
     let workspace = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create("Reviewed feedback")
         .await
         .unwrap();
     hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .prepare_application(
-            &workspace.room,
+            &workspace.workspace,
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
@@ -292,7 +293,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         )
         .await
         .unwrap();
-    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.room).await;
+    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
     let route = create_feedback_record(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
@@ -351,17 +352,17 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     let hosted = start(&owner, &host, state.path()).await;
     let workspace = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create("Commenter feedback")
         .await
         .unwrap();
     hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .prepare_application(
-            &workspace.room,
+            &workspace.workspace,
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
@@ -370,7 +371,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         .await
         .unwrap();
     let mut owner_browser =
-        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.room).await;
+        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
     let route = create_feedback_record(&mut owner_browser).await;
     owner_browser
         .peer
@@ -382,12 +383,12 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     admit_person(
         &hosted,
         &host,
-        &workspace.room,
+        &workspace.workspace,
         &guest_device,
         MemberRole::Commenter,
     )
     .await;
-    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.room).await;
+    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.workspace).await;
     let submission = approved(&route);
     let submit = || {
         request(

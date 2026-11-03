@@ -36,7 +36,7 @@ async fn retained_by(
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
     hosted
         .relay
-        .room_records()
+        .workspace_records()
         .retained(workspace)
         .await
         .unwrap()
@@ -124,7 +124,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let hosted = start(&owner, &host, state.path()).await;
     let workspace = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create("Sealed records, governed here")
         .await
@@ -132,13 +132,14 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     admit_person(
         &hosted,
         &host,
-        &workspace.room,
+        &workspace.workspace,
         &member_device,
         MemberRole::Editor,
     )
     .await;
-    let mut page = Browser::open_workspace(&hosted, &page_device, &host, &workspace.room).await;
-    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.room).await;
+    let mut page =
+        Browser::open_workspace(&hosted, &page_device, &host, &workspace.workspace).await;
+    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.workspace).await;
 
     // The owner's page writes a Sheets record. It is sealed on its channel,
     // which this host takes part in.
@@ -228,7 +229,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         .invoke(InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
-            target: application_open_target(&workspace.room, SHEETS),
+            target: application_open_target(&workspace.workspace, SHEETS),
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
@@ -262,7 +263,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         .to_owned();
     let created = DocumentRoute {
         app_id: SHEETS.into(),
-        cluster_id: workspace.room.clone(),
+        cluster_id: workspace.workspace.clone(),
         record,
     };
     let first = until_retained(&hosted, workspace.workspace_id, &created, host_key, 1).await;
