@@ -212,10 +212,6 @@ type ReorderValidator<M> =
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 
 use super::row_selection::selection_sink;
-/// A row's selection with its neighbours', for a delegate that paints its
-/// own selection: a run of selected rows is one lift
-/// ([`crate::chrome::RowJoin`]), and a separator hides beside a selected
-/// row.
 pub use super::row_selection::{RowSelection, RowSelectionSink};
 
 struct MountedRow<K> {
