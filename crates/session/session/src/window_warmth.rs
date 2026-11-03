@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use serde_json::{Map, Value};
 use tilo_desktop_model::DesktopTree;
-use tilo_desktop_model::ids::RoomId;
+use tilo_desktop_model::ids::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::warmth::WindowWarmth;
 use ui::Theme;
@@ -126,10 +126,10 @@ fn workspace_sync(
     tree: &DesktopTree,
     app: &str,
     person: &str,
-    persons: &RefCell<HashMap<RoomId, String>>,
+    persons: &RefCell<HashMap<WorkspaceId, String>>,
 ) -> Option<WorkspaceSync> {
     let workspace = tree.workspace_holding_app(app)?;
-    let workspace_id = workspace.room();
+    let workspace_id = workspace.id();
     let person = persons
         .borrow_mut()
         .entry(workspace_id)

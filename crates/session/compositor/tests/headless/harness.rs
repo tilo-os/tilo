@@ -30,6 +30,9 @@ use wayland_protocols::wp::color_management::v1::client::{
     wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1,
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
+use wayland_protocols::wp::idle_inhibit::zv1::client::{
+    zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+};
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
     zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
@@ -148,6 +151,8 @@ pub struct Seen {
     /// The deltas the compositor sent, as `(dx, dy)`.
     pub relative: Vec<(f64, f64)>,
     pub inhibit_manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub idle_inhibit: Option<ZwpIdleInhibitManagerV1>,
+    pub idle_inhibitor: Option<ZwpIdleInhibitorV1>,
     pub inhibitor: Option<ZwpKeyboardShortcutsInhibitorV1>,
     /// Whether the compositor lets this client answer the desktop's chords.
     pub shortcuts_inhibited: bool,
@@ -254,6 +259,19 @@ impl TestClient {
         surface.commit();
         self.surface = Some(surface);
         self.toplevel = Some(toplevel);
+    }
+
+    /// Ask the compositor to keep the screen on while this window shows:
+    /// what a video player does.
+    pub fn inhibit_idle(&mut self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .idle_inhibit
+            .as_ref()
+            .expect("zwp_idle_inhibit_manager_v1");
+        let surface = self.surface.as_ref().expect("surface");
+        self.seen.idle_inhibitor = Some(manager.create_inhibitor(surface, &qh, ()));
     }
 
     /// Attach a buffer of one colour (RGBA) and commit it with a frame
@@ -699,6 +717,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
                     seen.inhibit_manager = Some(registry.bind(name, 1, qh, ()));
                 }
+                "zwp_idle_inhibit_manager_v1" => {
+                    seen.idle_inhibit = Some(registry.bind(name, 1, qh, ()));
+                }
                 "wp_color_manager_v1" => {
                     seen.color_manager = Some(registry.bind(name, version.min(1), qh, ()));
                 }
@@ -724,6 +745,8 @@ impl Dispatch<XdgToplevelIconManagerV1, ()> for Seen {
 }
 
 delegate_noop!(Seen: ignore XdgToplevelIconV1);
+delegate_noop!(Seen: ignore ZwpIdleInhibitManagerV1);
+delegate_noop!(Seen: ignore ZwpIdleInhibitorV1);
 
 impl Dispatch<XdgWmBase, ()> for Seen {
     fn event(

@@ -12,8 +12,8 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::{
-    ArrangementKind, CanvasPlace, DesktopTree, DropTarget, IdMinter, RoomId, Strip, StripId, Tab,
-    TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+    ArrangementKind, CanvasPlace, DesktopTree, DropTarget, IdMinter, Strip, StripId, Tab,
+    TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId, WorkspaceSlot,
 };
 
 fn tab(id: u64) -> Tab {
@@ -45,7 +45,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 fn tree() -> DesktopTree {
     let mut ws = Workspace::in_workspace(
         WorkspaceSlot(1),
-        RoomId::parse("00000000-0000-4000-8000-000000000042").unwrap(),
+        WorkspaceId::parse("00000000-0000-4000-8000-000000000042").unwrap(),
         "Desk",
     );
     ws.set_owner("ada");
@@ -112,7 +112,7 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
             "each strip by the name it was given"
         );
         let ws = &back.workspaces[0];
-        assert_eq!(ws.room(), tree.workspaces[0].room());
+        assert_eq!(ws.id(), tree.workspaces[0].id());
         assert_eq!(ws.owner().map(String::as_str), Some("ada"));
         assert_eq!(ws.sandbox, tree.workspaces[0].sandbox);
         let sorted = |policy: &tilo_action_policy::WorkspacePolicy| {
@@ -255,7 +255,7 @@ fn the_view_of_the_desk_round_trips_with_it() {
 #[test]
 fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
     let id = WorkspaceSlot(37);
-    let identity = RoomId::parse("00000000-0000-4000-8000-000000000037").unwrap();
+    let identity = WorkspaceId::parse("00000000-0000-4000-8000-000000000037").unwrap();
     let mut doc = AutoCommit::new();
     assert!(desktop_doc::append_workspace(
         &mut doc, id, "Research", identity
@@ -266,7 +266,7 @@ fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
     let actual = rebuilt.workspaces.iter().find(|ws| ws.slot == id).unwrap();
     let mut expected = Workspace::in_workspace(id, identity, "Research");
     expected.set_owner("ada");
-    assert_eq!(actual.room(), identity);
+    assert_eq!(actual.id(), identity);
     assert_eq!(actual.policy, expected.policy);
 
     let revoked = expected.policy.grants[0].id.clone();
@@ -574,7 +574,7 @@ fn two_workspaces() -> DesktopTree {
     let mut desktop = tree();
     let mut lab = Workspace::in_workspace(
         WorkspaceSlot(2),
-        RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap(),
+        WorkspaceId::parse("00000000-0000-4000-8000-000000000043").unwrap(),
         "Lab",
     );
     let mut strip = Strip::new(StripId(3), "C");

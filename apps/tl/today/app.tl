@@ -17,36 +17,14 @@ default view today for Today
 /// changes belong to the todo and notes apps, so each one asks until Today is trusted.
 flow morning_cleanup(list: todo.Tasks, nb: notes.Notes) -> Int {
     let n = 0
-    if list.items.any(x -> finished(list.items, x)) {
+    // Whether anything is finished is the tasks app's rule, read where it is written.
+    if list.items.any(x -> todo.finished(list.items, x)) {
         n = todo.clear_done(list)
     }
     let note = notes.new_note(nb)
     notes.retitle(note, "Morning: {n} done")
     notes.tag(note, "morning")
     n
-}
-
-/// Whether `top` is `x` or one of the tasks over it: the chain of parents, followed 64 deep —
-/// deeper than anyone nests a task, so a chain that loops still ends.
-fn under(items: List<todo.Task>, x: todo.Task, top: todo.Task) -> Bool {
-    let cur: Option<todo.Task> = .some(x)
-    let found = false
-    for n in items.take(64) {
-        if let at = cur {
-            if at == top {
-                found = true
-            }
-            cur = at.parent
-        }
-    }
-    found
-}
-
-/// Whether every task under `t` is done too: a done task whose steps are unfinished is not
-/// finished. The tasks app reads the same rule for the `clear_done` it offers, which a flow has
-/// to know before it asks anyone.
-fn finished(items: List<todo.Task>, t: todo.Task) -> Bool {
-    t.done and not items.any(x -> x != t and under(items, x, t) and not x.done)
 }
 
 /// Today's window: a card per app, holding that app's resources as rows that open them: the

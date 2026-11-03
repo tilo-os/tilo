@@ -128,7 +128,7 @@ pub fn participants(scope: &crate::scope::Scope) -> String {
 }
 
 /// The workspace segment for a workspace record's uuid bytes: the hyphenated
-/// spelling a `RoomId` displays, which is what a namespace and a grant's
+/// spelling a `WorkspaceId` displays, which is what a namespace and a grant's
 /// bytes must agree on.
 #[must_use]
 pub fn workspace_id(bytes: [u8; 16]) -> String {

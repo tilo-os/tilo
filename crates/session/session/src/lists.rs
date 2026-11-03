@@ -13,6 +13,10 @@ use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_files::native::Watched;
 
+use runtime_portal::tools::{
+    AppEntry as ListedApp, AppKind as ListedKind, AppRemoval, MAX_LISTED_APPS,
+};
+
 /// The apps search lists, as last read.
 #[derive(Clone, Default)]
 pub struct AppLists {
@@ -39,6 +43,10 @@ pub struct AppLists {
     /// What decides the reach the device's settings app has of the settings
     /// document.
     pub launchable: Vec<LaunchableApplication>,
+    /// The person's apps as Files lists them through the `tools` service,
+    /// every kind in one list: the same apps as above, with where each came
+    /// from and so the one way it leaves the list.
+    pub tools: Vec<ListedApp>,
 }
 
 impl AppLists {
@@ -71,6 +79,10 @@ impl AppLists {
         // first read starts: what later asks for an entry's icon or name on
         // the loop (`crate::app_icons::entry_icon`) finds it read already.
         let scan = desktop_entry::cache::cached_scan();
+        // An installed Tilo app may keep a desktop entry of its own, as its
+        // bundle does: that entry is the same app, listed once.
+        let tilo_apps =
+            app_catalogue::Installed::from_ids(installed.iter().map(|app| app.package_id.clone()));
         // The entries Tilo keeps for the person's downloaded programs are
         // search's own source (`providers::downloaded`): it lists them with
         // what the registry knows of them (their kind, and a file that went
@@ -78,7 +90,7 @@ impl AppLists {
         let host_apps = scan
             .entries
             .iter()
-            .filter(|entry| !entry.no_display && !entry.hidden && entry.downloaded.is_none())
+            .filter(|entry| machine_entry(entry, &tilo_apps))
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -141,6 +153,7 @@ impl AppLists {
         let blocks = app_catalogue::BlockList::load();
         let catalogue = catalogue.offered(&present, &blocks).cloned().collect();
         let launchable = launchable(&installed, &scan.entries);
+        let tools = listed_apps(&installed, &scan.entries, &icons);
         Self {
             applications,
             host_apps,
@@ -149,6 +162,7 @@ impl AppLists {
             candidates,
             declared,
             launchable,
+            tools,
         }
     }
 
@@ -213,6 +227,129 @@ fn launchable(
                 }),
         )
         .collect()
+}
+
+/// The person's apps as Files lists them, every kind in one list: the Tilo
+/// apps installed here, then the machine's entries no package answers for.
+/// Where each came from says the one way it leaves the list: a Tilo app the
+/// person added or a downloaded program is uninstalled, a Flatpak of theirs
+/// with its data, and anything the system keeps is only taken off their apps.
+fn listed_apps(
+    installed: &[tilo_installed_apps::InstalledApp],
+    entries: &[desktop_entry::entry::DesktopEntry],
+    icons: &BTreeMap<String, PathBuf>,
+) -> Vec<ListedApp> {
+    // Which copy of each Tilo app runs: the system image's, the person's own,
+    // or theirs rolled back below the image's.
+    let from: std::collections::HashMap<String, String> = app_cli::installed_apps()
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "the installed app registry is not read");
+            Vec::new()
+        })
+        .into_iter()
+        .map(|app| (app.package_id.to_ascii_lowercase(), app.from))
+        .collect();
+    let packages: std::collections::HashSet<String> = installed
+        .iter()
+        .map(|app| app.package_id.to_ascii_lowercase())
+        .collect();
+    let person_applications = tilo_paths::xdg::data_home().map(|home| home.join("applications"));
+    let person_flatpaks = tilo_paths::xdg::data_home().map(|home| home.join("flatpak"));
+    let mut listed: Vec<ListedApp> = installed
+        .iter()
+        .filter(|app| app.has_gui)
+        .map(|app| {
+            let added = from
+                .get(&app.package_id.to_ascii_lowercase())
+                .is_some_and(|from| from == "user");
+            ListedApp {
+                id: app.package_id.clone(),
+                name: app.display_name.clone(),
+                package: Some(app.package_id.clone()),
+                icon: icons
+                    .get(&app.package_id)
+                    .map(|icon| icon.display().to_string()),
+                program: None,
+                removal: if added {
+                    AppRemoval::Uninstall
+                } else {
+                    AppRemoval::RemoveFromApps
+                },
+                kind: ListedKind::Tilo,
+                size: None,
+            }
+        })
+        .chain(
+            entries
+                .iter()
+                .filter(|entry| !entry.no_display && !entry.hidden)
+                .filter(|entry| !packages.contains(&entry.id.to_ascii_lowercase()))
+                .map(|entry| {
+                    let kind = entry.kind(person_applications.as_deref());
+                    let of_person = person_flatpaks
+                        .as_ref()
+                        .is_some_and(|flatpaks| entry.path.starts_with(flatpaks));
+                    let (kind, removal) = match kind {
+                        desktop_entry::EntryKind::Flatpak if of_person => {
+                            (ListedKind::Flatpak, AppRemoval::UninstallWithData)
+                        }
+                        // A Flatpak of the device's installation is uninstalled
+                        // by whoever administers it; here it is taken off the
+                        // person's apps.
+                        desktop_entry::EntryKind::Flatpak => {
+                            (ListedKind::Flatpak, AppRemoval::RemoveFromApps)
+                        }
+                        desktop_entry::EntryKind::AppImage => {
+                            (ListedKind::AppImage, AppRemoval::Uninstall)
+                        }
+                        desktop_entry::EntryKind::Program if entry.downloaded.is_some() => {
+                            (ListedKind::Program, AppRemoval::Uninstall)
+                        }
+                        desktop_entry::EntryKind::Program => {
+                            (ListedKind::Program, AppRemoval::RemoveFromApps)
+                        }
+                        desktop_entry::EntryKind::System => {
+                            (ListedKind::System, AppRemoval::RemoveFromApps)
+                        }
+                    };
+                    ListedApp {
+                        id: entry.id.clone(),
+                        name: entry.name.clone(),
+                        package: None,
+                        icon: None,
+                        program: entry
+                            .downloaded
+                            .as_ref()
+                            .map(|program| program.program.display().to_string()),
+                        removal,
+                        kind,
+                        size: None,
+                    }
+                }),
+        )
+        .filter(ListedApp::fits)
+        .collect();
+    listed.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    listed.truncate(MAX_LISTED_APPS);
+    listed
+}
+
+/// Whether a desktop entry is one of the machine's own to list: it shows,
+/// is not a program Tilo downloaded (search lists those itself), and is not
+/// an installed Tilo app's own entry — that app is listed as itself.
+fn machine_entry(
+    entry: &desktop_entry::DesktopEntry,
+    tilo_apps: &app_catalogue::Installed,
+) -> bool {
+    !entry.no_display
+        && !entry.hidden
+        && entry.downloaded.is_none()
+        && !tilo_apps.contains(&entry.id)
 }
 
 /// Each app's declared reach of the action door, from its signed manifest:
@@ -291,5 +428,30 @@ impl Lists {
             Held::Fixed(lists) => Arc::clone(lists),
             Held::Followed(watched) => watched.get(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str) -> desktop_entry::DesktopEntry {
+        desktop_entry::entry::parse(
+            "[Desktop Entry]\nType=Application\nName=Notes\nExec=notes\n",
+            id,
+            std::path::Path::new("/usr/share/applications/notes.desktop"),
+            &[],
+        )
+        .expect("a desktop entry")
+    }
+
+    #[test]
+    fn an_installed_tilo_apps_own_entry_is_not_one_of_the_machines() {
+        let tilo_apps = app_catalogue::Installed::from_ids(["so.tilo.notes"]);
+        // The app is listed as itself; the desktop entry its bundle keeps is
+        // the same app, so search names it once.
+        assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
+        // Any other app's entry is one of the machine's.
+        assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
     }
 }

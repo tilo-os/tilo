@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 
 /// A sealed write held for a workspace's hosts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +55,7 @@ impl HeldLog {
         Self { dir }
     }
 
-    fn path(&self, workspace: RoomId) -> PathBuf {
+    fn path(&self, workspace: WorkspaceId) -> PathBuf {
         self.dir.join(format!("{workspace}.log"))
     }
 
@@ -63,7 +63,7 @@ impl HeldLog {
     ///
     /// # Errors
     /// The log exists but cannot be read.
-    pub fn read(&self, workspace: RoomId) -> std::io::Result<Vec<HeldWrite>> {
+    pub fn read(&self, workspace: WorkspaceId) -> std::io::Result<Vec<HeldWrite>> {
         Ok(self.replay(workspace)?.0)
     }
 
@@ -72,7 +72,7 @@ impl HeldLog {
     ///
     /// # Errors
     /// The log cannot be read or cut.
-    pub(super) fn repair(&self, workspace: RoomId) -> std::io::Result<()> {
+    pub(super) fn repair(&self, workspace: WorkspaceId) -> std::io::Result<()> {
         let (_, whole, length) = self.replay(workspace)?;
         if whole < length {
             let file = OpenOptions::new().write(true).open(self.path(workspace))?;
@@ -84,7 +84,7 @@ impl HeldLog {
 
     /// The writes `workspace`'s log holds, how many of its bytes are whole
     /// entries, and how many bytes it has.
-    fn replay(&self, workspace: RoomId) -> std::io::Result<(Vec<HeldWrite>, usize, usize)> {
+    fn replay(&self, workspace: WorkspaceId) -> std::io::Result<(Vec<HeldWrite>, usize, usize)> {
         let mut bytes = Vec::new();
         match File::open(self.path(workspace)) {
             Ok(mut file) => {
@@ -139,7 +139,7 @@ impl HeldLog {
     ///
     /// # Errors
     /// The log cannot be written, the disk being full among others.
-    pub(super) fn hold(&self, workspace: RoomId, write: &HeldWrite) -> std::io::Result<()> {
+    pub(super) fn hold(&self, workspace: WorkspaceId, write: &HeldWrite) -> std::io::Result<()> {
         self.append(
             workspace,
             &Entry::Held {
@@ -158,7 +158,7 @@ impl HeldLog {
     /// The log cannot be written or removed.
     pub(super) fn kept(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         ops: Vec<[u8; 16]>,
         empty: bool,
     ) -> std::io::Result<()> {
@@ -171,7 +171,7 @@ impl HeldLog {
         self.append(workspace, &Entry::Kept { ops })
     }
 
-    fn append(&self, workspace: RoomId, entry: &Entry) -> std::io::Result<()> {
+    fn append(&self, workspace: WorkspaceId, entry: &Entry) -> std::io::Result<()> {
         let body = postcard::to_allocvec(entry).map_err(std::io::Error::other)?;
         let length = u32::try_from(body.len()).map_err(std::io::Error::other)?;
         let created = !self.path(workspace).exists();
@@ -221,7 +221,7 @@ mod tests {
     fn a_log_keeps_every_write_held_until_kept_and_goes_once_none_is() {
         let dir = tempfile::tempdir().unwrap();
         let log = HeldLog::new(dir.path().join("held"));
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         assert_eq!(log.read(workspace).unwrap(), [], "nothing held, no log");
         // More than a workspace ever held before: nothing has a bound of its own.
         let writes: Vec<_> = (0..5000).map(write).collect();
@@ -252,7 +252,7 @@ mod tests {
     fn a_write_cut_short_at_the_end_of_the_log_was_never_held() {
         let dir = tempfile::tempdir().unwrap();
         let log = HeldLog::new(dir.path().to_path_buf());
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         log.hold(workspace, &write(1)).unwrap();
         log.hold(workspace, &write(2)).unwrap();
         let path = log.path(workspace);

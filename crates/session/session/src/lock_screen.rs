@@ -1,13 +1,73 @@
 //! The lock screen, as the session keeps it: the screen's app goes up when the
 //! person's lock locks and comes down when it unlocks, is started again when it
 //! is gone, is given what to show, and is given the passwords typed on it off
-//! the loop; one that unlocks lifts the lock.
+//! the loop; one that unlocks lifts the lock. When the app cannot show the
+//! lock at all — no such program, or one that will not stay up — the session
+//! draws the same view itself ([`LockView`]), so a lock never lifts itself.
 
 use tilo_compositor::Error;
+use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+use tilo_sheets::Seat as _;
 
 use crate::lock_service;
 use crate::unlock;
 use crate::{LOCK_SCREEN_TRIES, SessionAction};
+
+/// The lock screen drawn in the session's own process, for the locks its app
+/// cannot show: the same sheet the lock screen's app is, lent the same seat.
+/// What it asks goes to the session over a channel of this process, and what
+/// the session publishes is written into the view it draws.
+pub(crate) struct LockView {
+    seat: tilo_sheets::lock::LockSeat,
+    effects: std::sync::mpsc::Receiver<tilo_sheets::lock::LockEffect>,
+}
+
+impl LockView {
+    /// The view of `seat`, taking what it asks here.
+    pub(crate) fn new(seat: tilo_sheets::lock::LockSeat) -> Self {
+        let (outgoing, effects) = std::sync::mpsc::channel();
+        seat.ask_with(outgoing);
+        Self { seat, effects }
+    }
+
+    /// What the view asked since the session last looked, oldest first.
+    pub(crate) fn take_effects(&self) -> Vec<tilo_sheets::lock::LockEffect> {
+        self.effects.try_iter().collect()
+    }
+
+    /// Put the view up on every display and show it `shown`, keeping what
+    /// only the view can know — whether Caps Lock is on, and whether it
+    /// draws its touch keyboard.
+    fn open(&self, shown: tilo_sheets::lock::Shown) {
+        let presentation = self.seat.presentation();
+        if !presentation.is_open() {
+            presentation.open(false);
+        }
+        self.seat.show(tilo_sheets::lock::Shown {
+            caps_lock: self.seat.shown().caps_lock,
+            keyboard: self.seat.shown().keyboard,
+            ..shown
+        });
+    }
+
+    /// The view has left the screen: nothing of it is drawn.
+    fn close(&self) {
+        if self.seat.presentation().is_drawn() {
+            self.seat.presentation().gone();
+        }
+    }
+}
+
+/// What shows the lock while the session is locked: the lock screen's app, or
+/// the session's own view when that app cannot show it at all.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum LockShown {
+    /// The lock screen's app shows the lock.
+    #[default]
+    App,
+    /// The app cannot show the lock: the session draws the same view itself.
+    View,
+}
 
 impl crate::Session {
     /// Carry out what the compositor's session did since the last pass: a
@@ -32,6 +92,7 @@ impl crate::Session {
                     // The lock screen shows afresh, and is started when the
                     // session runs none.
                     self.lock_starts = 0;
+                    self.lock_shown = LockShown::App;
                     lock.lifted();
                     self.start_lock_screen();
                 }
@@ -43,6 +104,7 @@ impl crate::Session {
                         .owner_session
                         .changed_by_person(tilo_clock::unix_now_ms());
                     self.lock_starts = 0;
+                    self.lock_shown = LockShown::App;
                     lock.lifted();
                     // The lock ends with the screen that showed it: one that
                     // is still up goes, and the compositor lifts the lock
@@ -66,13 +128,23 @@ impl crate::Session {
     }
 
     /// Follow the session's lock: put the lock screen up when it locks and
-    /// down when it unlocks, start it again when it is gone, keep what it
+    /// down when it unlocks, start it again when it is gone, and draw the
+    /// same view here when the app cannot show the lock at all; keep what it
     /// shows current, carry out what it asks, check the passwords it was
-    /// given off the loop, and lift the lock for one that unlocks. A suspend
-    /// the idle timers asked for goes to the system.
+    /// given off the loop, and lift the lock for one that unlocks. Nothing
+    /// but an accepted password lifts a lock. A suspend the idle timers asked
+    /// for goes to the system.
     pub(crate) fn follow_lock(&mut self) -> Result<(), Error> {
         let lock = self.shared.lock.clone();
         self.follow_session_transitions(&lock);
+        // What the session's own view asked goes in first: it asks the same
+        // things the app does, over the same path, so the same check answers
+        // it.
+        if let Some(view) = &self.lock_view {
+            for effect in view.take_effects() {
+                lock.take_in(&effect);
+            }
+        }
         // What the screen asked of the session besides unlocking.
         for asked in lock.take_asked() {
             self.answer_lock(&asked);
@@ -80,43 +152,33 @@ impl crate::Session {
         // A locked session is shown by its lock screen: the person's own
         // lock, the idle timer and the machine going to sleep all lock it
         // here, and one place starts what shows it. Nothing but the screen
-        // offers an action while it is up.
+        // offers an action while it is up. A lock a client put up of its own
+        // is that client's, and ends with it.
         let locked = self.compositor.locked();
         self.shared.doors.locked(locked);
-        // A lock this session cannot show is one nothing could lift: the lock
-        // screen is not installed, so it is lifted here rather than left with
-        // a desktop no one can come back to. The locks a person asks for are
-        // refused before they are taken ([`Session::can_lock`]); one the
-        // session cannot refuse, like the idle timer's, ends here.
         if self.compositor.session_locked()
             && !lock.shown().unlocking
-            && self.lock_screen().is_none()
-        {
-            tracing::error!(
-                "the lock screen is not installed: the lock is lifted rather than left with nothing to unlock it"
-            );
-            self.compositor.unlock()?;
-            return self.follow_lock();
-        }
-        // The screen shows the session's own lock. A lock a client put up of
-        // its own is that client's, and ends with it.
-        if self.compositor.session_locked()
-            && !lock.shown().unlocking
+            && self.lock_shown == LockShown::App
             && let Some(name) = self.lock_screen().map(|surface| surface.name.clone())
             && !self.surfaces.running(&name)
         {
-            // A screen that will not stay up leaves the machine locked with
-            // nothing able to unlock it: the lock is lifted instead.
+            // A screen that will not stay up is not one the session can lean
+            // on: after a few starts the session draws the lock itself, rather
+            // than leave it with nothing able to unlock it.
             if self.lock_starts >= LOCK_SCREEN_TRIES {
-                tracing::error!(
-                    starts = self.lock_starts,
-                    "the lock screen would not stay up: the lock is lifted rather than left with nothing to unlock it"
-                );
-                self.lock_starts = 0;
-                self.compositor.unlock()?;
-                return self.follow_lock();
+                self.show_lock_view("the lock screen would not stay up");
+            } else {
+                self.start_lock_screen();
             }
-            self.start_lock_screen();
+        }
+        // The session's own view stands on every display while it shows the
+        // lock, and leaves with the lock.
+        if let Some(view) = &self.lock_view {
+            if self.compositor.session_locked() && self.lock_shown == LockShown::View {
+                view.open(lock.shown());
+            } else if !self.compositor.session_locked() {
+                view.close();
+            }
         }
         // The machine may sleep once the lock screen's frame is in.
         self.admit_sleep_if_locked();
@@ -160,11 +222,11 @@ impl crate::Session {
         // and the lock lifts at once rather than waiting on an animation
         // nothing draws.
         if lock.shown().unlocking {
-            let leaving = self
+            let shown_by = self
                 .lock_screen()
                 .is_some_and(|surface| self.surfaces.running(&surface.name))
-                && !lock.dissolve_finished();
-            if leaving {
+                || (self.lock_shown == LockShown::View && self.lock_view.is_some());
+            if shown_by && !lock.dissolve_finished() {
                 // Keep the loop turning while the screen leaves; it is one
                 // short animation, and nothing else is going on.
                 self.unlocking.wake.wake_by_ref();
@@ -186,19 +248,41 @@ impl crate::Session {
         self.follow_lock()
     }
 
-    /// Start the lock screen, if it does not run: a locked session is shown by
-    /// its screen, whoever locked it, and the screen is what takes the
-    /// password that lifts the lock. Without one there would be a locked
-    /// session nobody could unlock, so the session says so once instead of
-    /// asking every pass.
-    pub(crate) fn start_lock_screen(&mut self) {
-        let lock = self.shared.lock.clone();
-        if lock.start_failed() {
+    /// The lock screen's app cannot show the lock `reason`: the session draws
+    /// the same view itself from now on, and tells the person once why the
+    /// screen they see is not the app's.
+    fn show_lock_view(&mut self, reason: &'static str) {
+        if self.lock_shown == LockShown::View {
             return;
         }
+        self.lock_shown = LockShown::View;
+        if self.lock_view.is_some() {
+            tracing::error!(
+                reason,
+                "the lock screen cannot show the lock: the session draws it"
+            );
+        } else {
+            tracing::error!(
+                reason,
+                "the lock screen cannot show the lock, and the session has no view of its own: the lock stays"
+            );
+        }
+        self.notices().post(
+            Notification::new(
+                crate::i18n::t("lock-screen-failed-title"),
+                crate::i18n::t("lock-screen-failed-body"),
+            )
+            .with_severity(NotificationSeverity::Error),
+        );
+    }
+
+    /// Start the lock screen, if it does not run: a locked session is shown by
+    /// its screen, whoever locked it, and the screen is what takes the
+    /// password that lifts the lock. One that is not installed, or will not
+    /// start, is one the session draws itself instead.
+    pub(crate) fn start_lock_screen(&mut self) {
         let Some(surface) = self.lock_screen().cloned() else {
-            lock.start_failed_now();
-            tracing::warn!("no lock screen is installed: the session locks with nothing to show");
+            self.show_lock_view("no lock screen is installed");
             return;
         };
         if self.surfaces.running(&surface.name) {
@@ -206,8 +290,8 @@ impl crate::Session {
         }
         self.lock_starts = self.lock_starts.saturating_add(1);
         if let Err(error) = self.start_surface(&surface) {
-            lock.start_failed_now();
             tracing::warn!(%error, "the lock screen did not start");
+            self.show_lock_view("the lock screen did not start");
         }
     }
 

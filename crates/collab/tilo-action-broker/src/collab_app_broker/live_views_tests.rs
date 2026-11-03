@@ -101,7 +101,7 @@ fn broker(
     let mut workspace = Workspace::new(WorkspaceSlot(9), "Live");
     workspace.set_owner(owner.clone());
     grants(&mut workspace);
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
@@ -243,7 +243,7 @@ fn a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_vi
     tree.write()
         .workspaces
         .iter_mut()
-        .find(|candidate| candidate.room().to_string() == workspace)
+        .find(|candidate| candidate.id().to_string() == workspace)
         .unwrap()
         .deny(
             Subject::agent("scribe"),

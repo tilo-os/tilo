@@ -3,7 +3,7 @@
 //! messages reach the workspace afterwards through its sync, each authorized as
 //! any write is.
 use crate::owner::testing::{APP, WORKSPACE, certificate};
-use crate::owner::{NativeWorkspaceOwner, RoomId, VerifiedNativeEnrollmentIntent, open_file};
+use crate::owner::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, WorkspaceId, open_file};
 use crate::{
     InputDisposition, SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace,
 };
@@ -306,7 +306,7 @@ fn joining_a_busy_public_workspace_never_fails_because_of_how_many_messages_it_h
         "the bootstrap carries every message"
     );
     let (_directory, owner, workspace) = install(workspace);
-    let id = RoomId::parse(WORKSPACE).unwrap();
+    let id = WorkspaceId::parse(WORKSPACE).unwrap();
     owner
         .with_current(id, |view| {
             assert_eq!(
@@ -336,7 +336,7 @@ fn a_busy_workspaces_messages_are_authorized_and_visible_once_its_app_syncs() {
     // Still many times what the prerequisite queue holds.
     let (_directory, owner, workspace) = install(busy_workspace(20));
     assert!(workspace.sync.len() > 12 * crate::MAX_HELD_INPUTS);
-    let id = RoomId::parse(WORKSPACE).unwrap();
+    let id = WorkspaceId::parse(WORKSPACE).unwrap();
     let inputs = workspace.sync.len();
     let started = std::time::Instant::now();
     let generation = owner

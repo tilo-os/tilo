@@ -1156,6 +1156,12 @@ impl TiloStore {
         self.held().index.get(doc).map(|(_, ty)| ty.clone())
     }
 
+    /// The app and type of the resource `doc`, as the store's index has them now.
+    #[must_use]
+    pub fn resource_of(&self, doc: &str) -> Option<(AppId, TypeId)> {
+        self.held().index.get(doc).cloned()
+    }
+
     /// Whether the resource `doc` exists.
     #[must_use]
     pub fn contains(&self, doc: &str) -> bool {

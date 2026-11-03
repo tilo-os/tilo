@@ -117,6 +117,13 @@ impl State {
         })
     }
 
+    /// Whether the session draws the lock itself now: the lock screen's app
+    /// is not there, and the session's own view of the lock is on the
+    /// outputs.
+    pub(crate) fn lock_view_shows(&self) -> bool {
+        self.idle.session.is_locked() && self.hosts.iter().any(|host| host.drawn_over_lock())
+    }
+
     /// Whether `output` shows a lock screen now, with a frame of its own on
     /// it: what a capture of it would show.
     pub(crate) fn lock_shows(&self, output: &Output) -> bool {

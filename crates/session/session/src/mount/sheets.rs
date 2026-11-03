@@ -14,6 +14,7 @@ use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::displays::DisplaysSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
+use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::PowerSeat;
 use tilo_sheets::shortcut_guide::GuideSeat;
@@ -37,6 +38,9 @@ pub(crate) struct Sheets {
     pub(crate) shortcut_guide: Option<GuideSeat>,
     pub(crate) add_app: Option<AddSeat>,
     pub(crate) uninstall: Option<UninstallSeat>,
+    /// The lock screen, drawn in the session's own process when the app
+    /// that normally draws it is not there.
+    pub(crate) lock_view: Option<LockSeat>,
 }
 
 pub(crate) fn mount_sheets(
@@ -56,13 +60,13 @@ pub(crate) fn mount_sheets(
     if let Some(power) = &power {
         // The host's power is the host's: a session in a window offers no
         // switching user, suspending or restarting, and a session that could
-        // not be left again offers no locking (no password to check, or no
-        // screen to take it).
-        let lock_screen = options.surfaces.iter().any(|surface| surface.lock);
+        // not be left again offers no locking. Something to show the lock is
+        // always there — the lock screen's app, or the session's own view of
+        // it — so a password that can be checked is all locking needs.
         power.set_offers(tilo_sheets::power::Offers {
             user_switching: options.machine.is_owned(),
             host_power: options.machine.is_owned(),
-            locking: options.verifier.available() && lock_screen,
+            locking: options.verifier.available(),
             hangs_from: 0.0,
         });
     }
@@ -130,6 +134,7 @@ pub(crate) fn mount_sheets(
         options,
     );
     let (add_app, uninstall) = mount_app_questions(compositor, doors, who, options);
+    let lock_view = mount_lock_view(compositor, doors, who, options);
     Sheets {
         power,
         workspace_settings,
@@ -141,6 +146,41 @@ pub(crate) fn mount_sheets(
         shortcut_guide,
         add_app,
         uninstall,
+        lock_view,
+    }
+}
+
+/// The lock screen as a sheet of the session's own: the same view the lock
+/// screen's app shows, drawn here when that app is not there to draw it.
+/// The session opens it when the session is locked and the app cannot show
+/// the lock, so the machine is never left locked with nothing that could
+/// unlock it. It stands on every display while it is up.
+fn mount_lock_view(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    who: (&str, &str),
+    options: &Options,
+) -> Option<LockSeat> {
+    match Sheet::mount(
+        tilo_sheets::lock::definition(),
+        LockSeat::default(),
+        who,
+        (options.presentation)(),
+        options.scale,
+    ) {
+        Ok(sheet) => {
+            let sheet = sheet.standing_over_lock();
+            let seat = sheet.seat().clone();
+            seat.presentation().cover_every_display();
+            let sheet = Rc::new(RefCell::new(sheet));
+            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            doors.add(sheet);
+            Some(seat)
+        }
+        Err(error) => {
+            tracing::warn!(%error, app = tilo_sheets::lock::APP_ID, "lock view not mounted");
+            None
+        }
     }
 }
 

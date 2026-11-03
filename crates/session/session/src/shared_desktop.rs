@@ -23,7 +23,7 @@ use std::collections::{BTreeSet, HashMap};
 use automerge::ChangeHash;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
 use tilo_desktop_model::shared_record::{self, device};
-use tilo_desktop_model::{DesktopTree, RoomId, peer_salt_of};
+use tilo_desktop_model::{DesktopTree, WorkspaceId, peer_salt_of};
 
 use tilo_action_broker::owner_commits::OwnerCustody as _;
 
@@ -37,10 +37,10 @@ use crate::sync::Client as Sync;
 #[derive(Default)]
 pub(crate) struct SharedDesktops {
     /// The heads each workspace's record was folded in at, by workspace.
-    folded: RefCell<HashMap<RoomId, Vec<ChangeHash>>>,
+    folded: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
     /// The heads each workspace's record had when this device last looked at
     /// it to write: a look that finds them again writes nothing.
-    written: RefCell<HashMap<RoomId, Vec<ChangeHash>>>,
+    written: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
     /// The windows this device's desk shows that the workspace's record does
     /// not hold yet: what it opened since the last write, and what the next
     /// write adds.
@@ -48,7 +48,7 @@ pub(crate) struct SharedDesktops {
     /// Every workspace whose record this device has read: while each of the
     /// workspaces it holds is among them and none of the engine's revision
     /// moved since, there is nothing to read again.
-    read: RefCell<BTreeSet<RoomId>>,
+    read: RefCell<BTreeSet<WorkspaceId>>,
     /// The engine revision this device last read the records at.
     seen: Cell<Option<u64>>,
     /// A failure to read or write a record is said once, not on every frame.
@@ -66,8 +66,8 @@ impl SharedDesktops {
             && tree
                 .workspaces
                 .iter()
-                .filter(|workspace| !workspace.room().is_nil())
-                .all(|workspace| read.contains(&workspace.room()));
+                .filter(|workspace| !workspace.id().is_nil())
+                .all(|workspace| read.contains(&workspace.id()));
         self.seen.set(Some(revision));
         settled
     }
@@ -75,7 +75,7 @@ impl SharedDesktops {
     /// `workspace`'s shared desktop record, read from the engine's copy of
     /// the workspace: what the workspace last admitted, what it held before
     /// this device joined included.
-    fn record(engine: &Engine, workspace: RoomId) -> Option<automerge::AutoCommit> {
+    fn record(engine: &Engine, workspace: WorkspaceId) -> Option<automerge::AutoCommit> {
         let bytes = engine
             .record(&workspace.to_string(), DESKTOP_APP, DESKTOP_RECORD)
             .ok()??;
@@ -93,7 +93,7 @@ impl SharedDesktops {
         let mut read = self.read.borrow_mut();
         let mut changed = false;
         for workspace in &mut tree.workspaces {
-            let room = workspace.room();
+            let room = workspace.id();
             if room.is_nil() {
                 continue;
             }
@@ -142,7 +142,7 @@ impl SharedDesktops {
         let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == tree.active) else {
             return false;
         };
-        let room = workspace.room();
+        let room = workspace.id();
         let local = tree.salt;
         if room.is_nil() || local == 0 {
             return false;
@@ -252,7 +252,7 @@ impl SharedDesktops {
         let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == tree.active) else {
             return;
         };
-        let room = workspace.room();
+        let room = workspace.id();
         let Some(doc) = Self::record(engine, room) else {
             return;
         };

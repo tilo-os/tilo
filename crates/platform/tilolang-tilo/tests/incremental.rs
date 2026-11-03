@@ -16,7 +16,7 @@ use tilolang_tilo::publish::{
 use tilolang_tilo::record::DynValue;
 use tilolang_tilo::search::{every_hit, hits};
 
-use crate::fixtures::{Replica, TODO, field_id};
+use crate::fixtures::{COUNTER, Replica, TODO, field_id};
 
 const APP: &str = "so.tilo.todo";
 
@@ -307,6 +307,48 @@ fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
     assert_eq!(
         shape(&published.trees()[&root]),
         published_anew(&ada, &meta, &root)
+    );
+}
+
+/// A turn publishes the records it changed: the counter's record, which nothing typed into
+/// the to-do list reaches, is neither read nor published again.
+#[test]
+fn a_turn_publishes_only_the_record_it_changed() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, ""), (TODO, "")]);
+    let todo = packages[1].meta.clone();
+    let root = ada.host.root_of(APP).unwrap().doc;
+    let counter = ada.host.root_of(crate::fixtures::APP).unwrap().doc;
+    ada.commit();
+    add(&mut ada, &todo, &root, "milk");
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    assert_eq!(
+        published.trees().len(),
+        2,
+        "both records of the workspace are published"
+    );
+    let (held, looked_at, sweeps) = (
+        Rc::clone(&published.trees()[&counter]),
+        published.visited(),
+        published.sweeps(),
+    );
+
+    add(&mut ada, &todo, &root, "eggs");
+    published.settle(&ada.host, &planner);
+    assert_eq!(
+        published.visited().saturating_sub(looked_at),
+        1,
+        "adding an item looked at more than its record"
+    );
+    assert_eq!(
+        published.sweeps(),
+        sweeps,
+        "adding an item read every record of the workspace in full"
+    );
+    assert!(
+        Rc::ptr_eq(&held, &published.trees()[&counter]),
+        "a change to the to-do list published the counter's record again"
     );
 }
 

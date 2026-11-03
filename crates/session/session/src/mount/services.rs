@@ -177,6 +177,15 @@ fn private_parent(path: &std::path::Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// A request from another of the person's own devices is them using this
+/// machine: it holds suspend off for a lease, so nothing falls asleep
+/// mid-task however far the person is from it.
+fn attach_remote_use(actions: &crate::device_actions::DeviceActions, options: &Options) {
+    if let Some(power) = options.power.clone() {
+        actions.attach_power(power);
+    }
+}
+
 /// The plane the apps read and invoke this session's services on, when it
 /// serves one: the socket the launcher hands its apps, and the link the loop
 /// answers their calls through.
@@ -191,6 +200,7 @@ pub(crate) fn start_action_plane(
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    tools: Option<crate::mount::tools::Handle>,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<Plane>, Error> {
     let Collaboration {
@@ -305,6 +315,9 @@ pub(crate) fn start_action_plane(
             // What each installed app declares it may do on the action door,
             // read by search's own worker off the session's thread.
             lists: options.search.lists.clone(),
+            // Files' waits for the drive and app lists to change, which the
+            // tools service answers.
+            tools,
         },
     )?;
     // What arrives on this device's action plane is answered by the broker
@@ -313,6 +326,7 @@ pub(crate) fn start_action_plane(
     let arriving = (actions, broker.app_action_broker());
     if let (Some(actions), Some(host)) = arriving {
         actions.install(host.device_host());
+        attach_remote_use(&actions, options);
     }
     Ok(Some(Plane {
         link,

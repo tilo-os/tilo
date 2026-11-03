@@ -14,8 +14,8 @@ use automerge::AutoCommit;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record::{self, device};
 use tilo_desktop_model::{
-    AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceSlot,
+    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, WorkspaceSlot,
 };
 
 const APP: &str = "so.tilo.word-processor";
@@ -45,7 +45,7 @@ fn group_with(tab: Tab) -> WindowGroup {
     }
 }
 
-fn workspace(identity: RoomId, tab: Tab) -> Workspace {
+fn workspace(identity: WorkspaceId, tab: Tab) -> Workspace {
     let mut workspace =
         Workspace::in_workspace(WorkspaceSlot::of_workspace(identity), identity, "Home");
     let mut strip = Strip::new(StripId(2), "Main");
@@ -55,7 +55,7 @@ fn workspace(identity: RoomId, tab: Tab) -> Workspace {
 }
 
 /// The record of `workspace` holding `tab`, as a peer wrote it.
-fn record(identity: RoomId, tab: Tab) -> AutoCommit {
+fn record(identity: WorkspaceId, tab: Tab) -> AutoCommit {
     let workspace = workspace(identity, tab);
     let mut doc = AutoCommit::new();
     shared_record::write(
@@ -75,7 +75,7 @@ fn record(identity: RoomId, tab: Tab) -> AutoCommit {
 
 /// Fold `doc` into a local workspace holding `local`; the tab it shows, and
 /// whether the fold changed anything.
-fn fold(identity: RoomId, doc: &AutoCommit, local: Tab) -> (Tab, bool) {
+fn fold(identity: WorkspaceId, doc: &AutoCommit, local: Tab) -> (Tab, bool) {
     let mut here = workspace(identity, local);
     let changed = device::fold(doc, &mut here, "here", &device::Kept::NOTHING);
     (here.strips[0].window_groups[0].tabs[0].clone(), changed)
@@ -83,7 +83,7 @@ fn fold(identity: RoomId, doc: &AutoCommit, local: Tab) -> (Tab, bool) {
 
 #[test]
 fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
-    let identity = RoomId::new();
+    let identity = WorkspaceId::new();
     let doc = record(identity, remote_tab("Word Processor", APP));
     // Phase `a_peers_window_arrives_as_the_app_it_names`.
     // A peer's `Foreign` names a surface on *their* compositor. What

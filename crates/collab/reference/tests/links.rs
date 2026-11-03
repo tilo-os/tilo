@@ -184,7 +184,7 @@ fn scope() -> impl Strategy<Value = Scope> {
         )
             .prop_map(|(host, bits, slug)| Scope::Room {
                 host: HostOrigin::new(host).unwrap(),
-                room: uuid::Builder::from_random_bytes(bits.to_le_bytes()).into_uuid(),
+                id: uuid::Builder::from_random_bytes(bits.to_le_bytes()).into_uuid(),
                 slug: slug.map(|slug| Slug::parse(&slug).unwrap()),
             }),
     ]

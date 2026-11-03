@@ -6,7 +6,6 @@ use std::rc::Rc;
 use tilolang::meta::{FilterKind, TypeMeta};
 
 use crate::core::{Core, HResult, trap};
-use crate::handles::FrameKind;
 use crate::query::{Clock, Query, Term, find, resolve};
 use crate::store::{FieldSpec, Lit, lit_of, ordered_cmp};
 use crate::value::{RefValue, Value};
@@ -66,7 +65,7 @@ impl Core {
         let resolved = resolve(&query, declared, &pkg.meta.enums, &clock)?;
         // A view that asked by the time (`is:today`, `received:-7d`) runs again when what it
         // read of it moves on, and only then.
-        self.note_time(clock.changes_at())?;
+        self.note_time(clock.changes_at());
         // A query that asks nothing: the items as they are.
         if resolved.pred == tilolang::pred::Pred::Const(true) && resolved.order.is_none() {
             let held = self.val(scope)?;
@@ -169,8 +168,7 @@ impl Core {
             let Some(f) = info.field(field) else {
                 return Err(format!("`{}` has no field `{field}`", info.name));
             };
-            self.note_reading(crate::foreign::reading_key(&r.target))
-                .map_err(|e| format!("{e:?}"))?;
+            self.note_reading(crate::foreign::reading_key(&r.target));
             let value = self.read_value(&r.target, f, None)?;
             Ok(match crate::foreign::lit_of_value(f.kind, &value) {
                 Some(Lit::Absent) | None => absent.clone(),
@@ -219,14 +217,14 @@ impl Core {
         pred: &crate::store::Pred,
         order: Option<&crate::query::Order>,
     ) -> HResult<Value> {
-        let author = {
+        let (author, in_view) = {
             let frames = self.frames.borrow();
             let top = frames.top()?;
-            if matches!(top.kind, FrameKind::View(_)) {
-                return trap("a query in a view looks inside a resource: `query(T, in: x, ...)`");
-            }
-            top.module.clone()
+            (top.module.clone(), frames.view().is_some())
         };
+        if in_view {
+            return trap("a query in a view looks inside a resource: `query(T, in: x, ...)`");
+        }
         let found = self
             .store
             .borrow()

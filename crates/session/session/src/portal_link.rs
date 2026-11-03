@@ -382,7 +382,7 @@ impl SessionLink {
                             };
                             // A workspace is named to the portal by its id:
                             // the same workspace on every device.
-                            workspaces.insert(app_id.clone(), workspace.room().to_string());
+                            workspaces.insert(app_id.clone(), workspace.id().to_string());
                         }
                     }
                 }
@@ -392,7 +392,7 @@ impl SessionLink {
                         .filter_map(Capability::device_scope)
                         .map(str::to_owned)
                         .collect();
-                    grants.insert((workspace.room().to_string(), app_id), scopes);
+                    grants.insert((workspace.id().to_string(), app_id), scopes);
                 }
             }
             (workspaces, grants)

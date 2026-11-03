@@ -54,8 +54,9 @@ pub struct SessionConfig {
     /// Whether the person's changes to those comforts apply to the login
     /// screens too, or only to their own session.
     pub apply_comforts_to_sign_in: bool,
-    /// Whether the night light warms the displays.
-    pub night_light: bool,
+    /// How warm the night light makes the displays, and whether the switch or
+    /// the day/night schedule shows it.
+    pub night_light: crate::night_light::Preference,
     /// Whether what the person changes in the session (the night light) is
     /// kept in their settings: for settings loaded from them.
     pub kept: bool,
@@ -75,7 +76,7 @@ impl SessionConfig {
         let accessibility = tilo_accessibility_settings::AccessibilitySettings::load();
         let power = loaded_power();
         Self {
-            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
+            night_light: crate::night_light::Preference::load(),
             kept: true,
             idle: idle_config(&power),
             power,
@@ -126,7 +127,7 @@ impl SessionConfig {
             on_screen_keyboard: assists.on_screen_keyboard,
             comforts: sign_in_comforts(&assists, input, false),
             apply_comforts_to_sign_in: true,
-            night_light: false,
+            night_light: crate::night_light::Preference::default(),
             kept: false,
         }
     }

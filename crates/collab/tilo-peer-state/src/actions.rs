@@ -147,7 +147,7 @@ impl Workspaces for crate::owner::NativeWorkspaceOwner {
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
     ) -> ReadFuture<'a> {
-        let Some(room) = tilo_desktop_model::RoomId::parse(workspace) else {
+        let Some(room) = tilo_desktop_model::WorkspaceId::parse(workspace) else {
             return Box::pin(std::future::ready(false));
         };
         // The owner's own store: the read takes its lock for as long as it

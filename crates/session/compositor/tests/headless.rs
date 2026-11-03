@@ -14,6 +14,8 @@
 
 #[path = "headless/harness.rs"]
 mod harness;
+#[path = "headless/idle_inhibit.rs"]
+mod idle_inhibit;
 #[path = "headless/ime.rs"]
 mod ime;
 #[path = "headless/session_follow.rs"]

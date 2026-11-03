@@ -359,7 +359,7 @@ impl OriginalWorkspace {
     /// `workspace` when it is the same workspace another host holds.
     pub fn with_record_content(
         content: Arc<crate::record_content::RouteContent>,
-        workspace: Option<tilo_desktop_model::RoomId>,
+        workspace: Option<tilo_desktop_model::WorkspaceId>,
     ) -> Self {
         Self::hosting(
             DeviceCapabilities::host(),
@@ -376,7 +376,7 @@ impl OriginalWorkspace {
         persist_path: Option<std::path::PathBuf>,
         record_content: Option<(
             Arc<crate::record_content::RouteContent>,
-            Option<tilo_desktop_model::RoomId>,
+            Option<tilo_desktop_model::WorkspaceId>,
         )>,
         current_native: bool,
     ) -> Self {
@@ -400,7 +400,7 @@ impl OriginalWorkspace {
         let key = SigningKey::from_bytes(&[84; 32]);
         let (key, cert, start) = if current_native {
             let (key, cert) = tilo_identity_host::broker::trusted_current_device(
-                &tilo_desktop_model::RoomId::new().to_string(),
+                &tilo_desktop_model::WorkspaceId::new().to_string(),
             )
             .expect("enrolled native device");
             let start = tilo_clock::unix_now_ns();
@@ -441,7 +441,7 @@ impl OriginalWorkspace {
         workspace.grant(changes);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
-            workspace.room().to_string(),
+            workspace.id().to_string(),
             "document-1",
         );
         let mut tree = crate::test_support::WorkspaceTree::default();

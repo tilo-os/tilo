@@ -3,7 +3,7 @@ use crate::resolver::{TileRequest, TileResolver};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tilo_desktop_model::{
-    DesktopTree, OutputPartition, RoomId, Strip, StripId, WindowGroup, WindowWidth,
+    DesktopTree, OutputPartition, Strip, StripId, WindowGroup, WindowWidth, WorkspaceId,
 };
 use tilo_desktop_surface::tile_app_kind;
 use ui::widget::{AppModel, ModelPath};
@@ -86,7 +86,7 @@ pub struct DesktopSurface {
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
     retained_wakes: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
-    context: Option<(tilo_desktop_model::WorkspaceSlot, RoomId)>,
+    context: Option<(tilo_desktop_model::WorkspaceSlot, WorkspaceId)>,
     empty_workspace_visible: Option<bool>,
     /// Each strip's row, by its place in the deck.
     rows: HashMap<StripId, usize>,
@@ -137,7 +137,7 @@ pub fn display_ordered<'a>(partition: &OutputPartition, strip: &'a Strip) -> Vec
 
 pub fn build_group(
     group: &WindowGroup,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     resolver: &mut dyn TileResolver,
     failures: &mut Vec<ui::launch::LaunchError>,
     wake: &std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -275,7 +275,7 @@ impl DesktopSurface {
                     .outputs
                     .lane_order(strip)
                     .into_iter()
-                    .map(|g| build_group(g, workspace.room(), resolver, &mut failures, &wake_sink))
+                    .map(|g| build_group(g, workspace.id(), resolver, &mut failures, &wake_sink))
                     .collect();
                 let mut row = GroupRow::new(groups).with_leading_inset(chrome.leading_inset);
                 row.set_external_navigation(external_navigation);
@@ -315,7 +315,7 @@ impl DesktopSurface {
             deck_index,
             navigation: crate::navigation::Navigation::default(),
             root,
-            context: tree.active_workspace().map(|w| (w.slot, w.room())),
+            context: tree.active_workspace().map(|w| (w.slot, w.id())),
             empty_workspace_visible,
             component_wake,
             retained_wakes: vec![],
@@ -434,7 +434,7 @@ impl DesktopSurface {
                 .iter()
                 .any(|wake| wake.load(std::sync::atomic::Ordering::Acquire))
     }
-    pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceSlot, RoomId)> {
+    pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceSlot, WorkspaceId)> {
         self.context
     }
     /// The tabs this surface hosts.
@@ -730,7 +730,7 @@ impl DesktopSurface {
         let Some(workspace) = tree.active_workspace() else {
             return ReconcileOutcome::RebuildRequired;
         };
-        if Some((workspace.slot, workspace.room())) != self.context {
+        if Some((workspace.slot, workspace.id())) != self.context {
             return ReconcileOutcome::RebuildRequired;
         }
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
@@ -984,7 +984,7 @@ impl DesktopSurface {
                         let replace = tiles.get(&tab.id) != Some(&tab.tile) || arriving;
                         if replace && resolver.ready_to_replace(tab) {
                             let resolution = resolver.resolve(TileRequest {
-                                room: workspace.room(),
+                                room: workspace.id(),
                                 tab,
                             });
                             match resolution {
@@ -1044,7 +1044,7 @@ impl DesktopSurface {
                     } else {
                         resolver
                             .resolve(TileRequest {
-                                room: workspace.room(),
+                                room: workspace.id(),
                                 tab,
                             })
                             .mount(&mut failures, wake_sink.clone())
@@ -1140,7 +1140,7 @@ impl DesktopSurface {
         let mut hosts = HashMap::new();
         if let Some(workspace) = tree.active_workspace().filter(|w| {
             self.context
-                .is_some_and(|(_, workspace)| workspace == w.room())
+                .is_some_and(|(_, workspace)| workspace == w.id())
         }) {
             let keep: Vec<u64> = workspace
                 .strips

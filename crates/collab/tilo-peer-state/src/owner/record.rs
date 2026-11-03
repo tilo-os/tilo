@@ -1,7 +1,7 @@
 use crate::join::TransportHint;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tilo_desktop_model::{RoomId, WorkspaceSlot};
+use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_user_identity::DeviceCert;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
@@ -12,8 +12,8 @@ pub struct NativeAuthorityStorage {
     /// update left, so the map is written under the key it was first written
     /// under; a file written while it was named for the workspace still reads.
     #[serde(rename = "rooms", alias = "workspaces")]
-    pub(crate) workspaces: BTreeMap<RoomId, StoredWorkspace>,
-    pub(crate) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
+    pub(crate) workspaces: BTreeMap<WorkspaceId, StoredWorkspace>,
+    pub(crate) pending: BTreeMap<WorkspaceId, StoredPendingEnrollment>,
 }
 impl NativeAuthorityStorage {
     /// Raised by every publication of the record.
@@ -22,7 +22,7 @@ impl NativeAuthorityStorage {
         self.revision
     }
     #[must_use]
-    pub fn requires(&self, workspace: RoomId) -> bool {
+    pub fn requires(&self, workspace: WorkspaceId) -> bool {
         self.workspaces.contains_key(&workspace) || self.pending.contains_key(&workspace)
     }
     #[must_use]
@@ -30,13 +30,13 @@ impl NativeAuthorityStorage {
         self.workspaces.is_empty() && self.pending.is_empty()
     }
     /// Workspaces that are enrolled or have an enrollment in flight.
-    pub fn workspaces(&self) -> impl Iterator<Item = RoomId> + '_ {
+    pub fn workspaces(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
         self.workspaces.keys().chain(self.pending.keys()).copied()
     }
     /// Whether `workspace`'s host runs on the device `device`: this device entered
     /// it at a host there, or an enrollment into it there is in flight.
     #[must_use]
-    pub fn hosted_on(&self, workspace: RoomId, device: &[u8; 32]) -> bool {
+    pub fn hosted_on(&self, workspace: WorkspaceId, device: &[u8; 32]) -> bool {
         if let Some(stored) = self.workspaces.get(&workspace) {
             return stored.enrollment.as_ref().is_some_and(|enrollment| {
                 crate::owner::hosted_by(&enrollment.transport_hint, device)
@@ -50,19 +50,19 @@ impl NativeAuthorityStorage {
     /// Whether this device holds `workspace`: its replica is installed, not
     /// merely an enrollment into it in flight.
     #[must_use]
-    pub fn holds(&self, workspace: RoomId) -> bool {
+    pub fn holds(&self, workspace: WorkspaceId) -> bool {
         self.workspaces.contains_key(&workspace)
     }
     /// Every workspace whose replica is installed here, with the workspace id the
     /// workspace's record names (the workspace's transport shard).
-    pub fn held(&self) -> impl Iterator<Item = (RoomId, WorkspaceSlot)> + '_ {
+    pub fn held(&self) -> impl Iterator<Item = (WorkspaceId, WorkspaceSlot)> + '_ {
         self.workspaces
             .iter()
             .map(|(workspace, stored)| (*workspace, WorkspaceSlot(stored.workspace_id)))
     }
     /// Every workspace an enrollment is in flight into, with the local workspace
     /// it installs into, where it names one.
-    pub fn joins(&self) -> impl Iterator<Item = (RoomId, Option<WorkspaceSlot>)> + '_ {
+    pub fn joins(&self) -> impl Iterator<Item = (WorkspaceId, Option<WorkspaceSlot>)> + '_ {
         self.pending
             .iter()
             .map(|(workspace, pending)| (*workspace, pending.target_workspace()))
@@ -82,7 +82,7 @@ pub(crate) struct StoredWorkspace {
     /// The workspace this device holds. Files written before this field was
     /// named for it carry `room`.
     #[serde(rename = "room")]
-    pub workspace: RoomId,
+    pub workspace: WorkspaceId,
     /// The workspace's transport shard, as its record names it.
     #[serde(rename = "workspace")]
     pub workspace_id: u64,
@@ -175,12 +175,12 @@ pub struct PendingEnrollmentId {
     /// belongs to is; a handle written while the field was named for the
     /// workspace still reads.
     #[serde(rename = "room", alias = "workspace")]
-    workspace: RoomId,
+    workspace: WorkspaceId,
     generation: u64,
     digest: [u8; 32],
 }
 impl PendingEnrollmentId {
-    pub(crate) fn new(workspace: RoomId, generation: u64, digest: [u8; 32]) -> Self {
+    pub(crate) fn new(workspace: WorkspaceId, generation: u64, digest: [u8; 32]) -> Self {
         Self {
             workspace,
             generation,
@@ -188,7 +188,7 @@ impl PendingEnrollmentId {
         }
     }
     #[must_use]
-    pub fn workspace(&self) -> RoomId {
+    pub fn workspace(&self) -> WorkspaceId {
         self.workspace
     }
     #[must_use]
@@ -215,7 +215,7 @@ pub struct EnrollmentTarget {
     /// bound it as a placeholder slot, under the stored name it keeps; nothing
     /// reads it back.
     #[serde(rename = "prior_room")]
-    pub prior_workspace: RoomId,
+    pub prior_workspace: WorkspaceId,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredPendingEnrollment {

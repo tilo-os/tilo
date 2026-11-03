@@ -51,8 +51,8 @@ struct Native {
 
 /// The issue the fixture's agent runs.
 const ISSUE: &str = "tasks.tracker/issues/release";
-fn workspace_id() -> tilo_desktop_model::RoomId {
-    tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
+fn workspace_id() -> tilo_desktop_model::WorkspaceId {
+    tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
 }
 impl WorkspaceAuthority for Native {
     fn with_tree(

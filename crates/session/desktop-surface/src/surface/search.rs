@@ -299,10 +299,21 @@ impl HostAction {
         notice
     }
 
-    /// The banner action key this action is offered under.
-    fn key(&self) -> String {
-        format!("{HOST_PREFIX}{}", self.id)
+    /// The banner action key this action is offered under: a banner button
+    /// with this key hands `id` back when the person chooses it, so a host
+    /// offering two answers to one ask (approve or decline a device) can
+    /// make both its own.
+    #[must_use]
+    pub fn key(&self) -> String {
+        host_action_key(&self.id)
     }
+}
+
+/// The banner action key host action `id` is offered under
+/// ([`HostAction::key`]).
+#[must_use]
+pub fn host_action_key(id: &str) -> String {
+    format!("{HOST_PREFIX}{id}")
 }
 
 pub fn is_host_offer(notification: &crate::notifications::Notification) -> bool {
@@ -624,7 +635,7 @@ fn windows(
                     let title = if named {
                         app_title.clone()
                     } else {
-                        tilo_desktop_search::names::named_window(&app_title, &tab.title)
+                        ui::window_name::named(&app_title, &tab.title)
                     };
                     out.push(WindowEntry {
                         tab: tab.id,
@@ -688,7 +699,7 @@ fn people(
             },
         )
         .collect();
-    (workspace.room().to_string(), people)
+    (workspace.id().to_string(), people)
 }
 
 /// What search offers to do: the host's actions, then what the focused

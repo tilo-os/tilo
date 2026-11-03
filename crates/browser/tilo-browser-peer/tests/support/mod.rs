@@ -86,7 +86,7 @@ pub fn presence(body: &[u8]) -> Option<collab_types::PeerPresencePayload> {
 pub fn pointer_body(device: &[u8; 32], x: f32, y: f32) -> Vec<u8> {
     let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
         space: collab_types::presence::PointerSpace::Tile {
-            room: WORKSPACE.to_owned(),
+            workspace: WORKSPACE.to_owned(),
             tab: 1,
         },
     })
@@ -619,7 +619,7 @@ pub async fn door(
     let token = random_bytes();
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
-        room: workspace.to_owned(),
+        workspace: workspace.to_owned(),
         role: RoomRole::Editor,
         token_sha256,
         label: "Guest".into(),

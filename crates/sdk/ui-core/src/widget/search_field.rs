@@ -751,6 +751,14 @@ impl Widget for SearchField {
                 width: percent(1.0_f32),
                 height: length(height as f32),
             },
+            // Its text scrolls inside it, so nothing of it stands past its
+            // own edge: a field squeezed below its width reports its box, not
+            // the text's extent, and a container holding it is not laid wider
+            // than the room it has.
+            overflow: taffy::Point {
+                x: taffy::Overflow::Clip,
+                y: taffy::Overflow::Clip,
+            },
             ..Default::default()
         };
         taffy.widget_node(style, &[child], node_map, self)

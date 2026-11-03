@@ -1,0 +1,952 @@
+//! Adding a device to the person from a device that holds none of their
+//! identity's key, or only a share of it.
+//!
+//! Pairing finds the new device and the person checks its code there, as
+//! always. The certificate it needs is then signed by the person's devices
+//! that hold the key ([`tilo_identity_host::certification_ceremony`]): this
+//! device proposes it to each of the person's other devices over their
+//! private fabric ([`certify`]); a device holding key material shows the
+//! person a notification naming the new device, the device that found it and
+//! its code, as for any device asking to be them, and signs only when they
+//! approve it there ([`answer`], from the notification's own buttons); devices
+//! without key material say so at once. A revoked device is refused by every
+//! key holder before anyone is asked.
+
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use tilo_device_fabric::link::{FabricLink, SharedLink};
+use tilo_device_fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
+use tilo_identity_host::certification_ceremony::{
+    self as ceremony, Answer, Ask, Gathering, IdentityKey, Progress, Reply, Signer, Step,
+};
+use tilo_lock::MutexRecover as _;
+use tilo_user_identity::DeviceCert;
+
+/// How long the person has to approve on a device that holds the key. The
+/// new device waits 270 seconds for its pairing; the exchange after the
+/// approval needs part of that.
+pub(crate) const APPROVAL_WINDOW: Duration = Duration::from_secs(200);
+
+/// The host action id prefix a device asking to be the person is answered
+/// under: `<prefix><digest>:approve` or `<prefix><digest>:decline`, which the
+/// session's loop hands back from the notification's buttons.
+const ANSWER_PREFIX: &str = "device-answer:";
+
+/// This device's material of the person's identity key.
+pub(crate) trait Keys: Send + Sync {
+    /// The person's key as this device holds it.
+    ///
+    /// # Errors
+    ///
+    /// When the person's identity cannot be opened here.
+    fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey>, String>;
+    /// Whether `device` was removed from `person`.
+    fn revoked(&self, person: [u8; 32], device: &[u8; 32]) -> bool;
+}
+
+/// [`Keys`] from the session's identity store.
+struct StoreKeys;
+
+impl Keys for StoreKeys {
+    fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey>, String> {
+        let key = crate::identity_admin::fleet_store()?
+            .identity_key(&hex::encode(person))
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(key))
+    }
+
+    fn revoked(&self, person: [u8; 32], device: &[u8; 32]) -> bool {
+        crate::identity_admin::fleet_store()
+            .ok()
+            .and_then(|store| store.load(&hex::encode(person)).ok())
+            .is_some_and(|fleet| fleet.is_revoked(device))
+    }
+}
+
+/// A device another of the person's devices found, waiting for the person
+/// here.
+#[derive(Clone, Debug)]
+pub(crate) struct Asking {
+    /// Names it in the notification's answer.
+    pub(crate) digest: [u8; 32],
+    /// What the new device calls itself.
+    pub(crate) label: String,
+    /// The code the new device shows.
+    pub(crate) code: String,
+    /// The person's device that found it.
+    pub(crate) via: String,
+    pub(crate) asked_at_ms: u64,
+    from: DeviceId,
+    ask: Ask,
+}
+
+impl Asking {
+    /// The new device's key.
+    pub(crate) const fn device(&self) -> [u8; 32] {
+        self.ask.cert.device_public_key
+    }
+}
+
+/// One device's part in certifications.
+#[derive(Default)]
+struct State {
+    asking: Vec<Asking>,
+    signer: Signer,
+    /// The certifications this device runs, by session.
+    gatherings: HashMap<[u8; 16], mpsc::Sender<([u8; 32], Answer)>>,
+    /// Answers waiting for the loop to send them.
+    outbox: Vec<(DeviceId, Answer)>,
+    keys: Option<Arc<dyn Keys>>,
+    /// The asks the person was shown, by digest: a new one is told, one that
+    /// went is withdrawn.
+    shown: Vec<[u8; 32]>,
+}
+
+/// Each device's [`State`], by the device: one session runs one, a test
+/// several.
+static STATES: LazyLock<Mutex<HashMap<DeviceId, State>>> = LazyLock::new(Mutex::default);
+
+fn with_state<T>(local: &DeviceId, change: impl FnOnce(&mut State) -> T) -> T {
+    change(STATES.lock_recover().entry(local.clone()).or_default())
+}
+
+fn keys(local: &DeviceId) -> Arc<dyn Keys> {
+    with_state(local, |state| state.keys.clone()).unwrap_or_else(|| Arc::new(StoreKeys))
+}
+
+/// Stand `keys` in for the identity store of the device `local`.
+#[cfg(test)]
+pub(crate) fn set_keys(local: &DeviceId, keys: Arc<dyn Keys>) {
+    with_state(local, |state| state.keys = Some(keys));
+}
+
+/// What wakes the session's loop when another device's ask landed here.
+static WAKE: std::sync::RwLock<Option<tilo_service::Wake>> = std::sync::RwLock::new(None);
+
+/// Let what lands here wake `wake`, the session's loop.
+pub(crate) fn attach(wake: tilo_service::Wake) {
+    use tilo_lock::RwLockRecover as _;
+    *WAKE.write_recover() = Some(wake);
+}
+
+fn wake() {
+    use tilo_lock::RwLockRecover as _;
+    let wake = WAKE.read_recover().clone();
+    if let Some(wake) = wake {
+        wake();
+    }
+}
+
+fn local(fabric: &dyn FabricLink) -> Result<DeviceId, String> {
+    fabric
+        .local_device_fabric_identity()
+        .map(|(device, _)| device)
+        .ok_or_else(|| "this device has no identity yet".to_string())
+}
+
+fn device_key(device: &DeviceId) -> Option<[u8; 32]> {
+    hex::decode(device.as_str()).ok()?.try_into().ok()
+}
+
+fn device_id(key: [u8; 32]) -> Option<DeviceId> {
+    DeviceId::new(hex::encode(key)).ok()
+}
+
+fn send(
+    fabric: &dyn FabricLink,
+    to: &DeviceId,
+    action: PersonalFabricAction,
+) -> Result<(), String> {
+    fabric.send_personal_fabric_action(to, action).map(drop)
+}
+
+fn ask_action(ask: &Ask) -> Result<PersonalFabricAction, String> {
+    Ok(PersonalFabricAction::CertifyAsk {
+        ask: postcard::to_allocvec(ask).map_err(|error| error.to_string())?,
+    })
+}
+
+fn reply(fabric: &dyn FabricLink, to: &DeviceId, answer: &Answer) -> Result<(), String> {
+    send(
+        fabric,
+        to,
+        PersonalFabricAction::CertifyAnswer {
+            answer: postcard::to_allocvec(answer).map_err(|error| error.to_string())?,
+        },
+    )
+}
+
+/// Send the answers this device worked out off the loop.
+pub(crate) fn pump(fabric: &dyn FabricLink) {
+    let Ok(local) = local(fabric) else {
+        return;
+    };
+    let outbox = with_state(&local, |state| std::mem::take(&mut state.outbox));
+    for (to, answer) in outbox {
+        if let Err(error) = reply(fabric, &to, &answer) {
+            tracing::warn!(%error, "could not answer a device certification ask");
+        }
+    }
+}
+
+/// Take a certification message of the person's fabric; `false` for any
+/// other action.
+pub(crate) fn handle_action(fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
+    match &envelope.action {
+        PersonalFabricAction::CertifyAsk { ask } => {
+            let (Ok(local), Ok(ask)) = (local(fabric.as_ref()), postcard::from_bytes::<Ask>(ask))
+            else {
+                return true;
+            };
+            let from = envelope.source.clone();
+            let person = ask.cert.user_public_key;
+            let via = fabric.device_fabric().snapshots().get(&from).map_or_else(
+                || from.as_str().chars().take(8).collect(),
+                |snapshot| snapshot.presence.label.clone(),
+            );
+            // The identity store may wait on a secret service: off the loop.
+            let spawned = std::thread::Builder::new()
+                .name("tilo-device-certification".into())
+                .spawn(move || {
+                    receive(&local, person, from, via, ask);
+                    wake();
+                });
+            if let Err(error) = spawned {
+                tracing::warn!(%error, "could not take a device certification ask");
+            }
+            true
+        }
+        PersonalFabricAction::CertifyAnswer { answer } => {
+            if let (Some(from), Ok(local), Ok(answer)) = (
+                device_key(&envelope.source),
+                local(fabric.as_ref()),
+                postcard::from_bytes::<Answer>(answer),
+            ) && let Some(gathering) = with_state(&local, |state| {
+                state.gatherings.get(&answer.session).cloned()
+            }) {
+                let _ = gathering.send((from, answer));
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Take `ask` from the person's device `from` at the device `local`: queue
+/// it for the person, or answer it.
+fn receive(local: &DeviceId, person: [u8; 32], from: DeviceId, via: String, ask: Ask) {
+    let keys = keys(local);
+    let session = ask.session;
+    let answer = match &ask.step {
+        Step::Approve => match keys.key(person) {
+            Ok(key) if key.holds_key() => {
+                let now = tilo_clock::unix_now_ns();
+                match ceremony::check_proposal(
+                    &ask,
+                    person,
+                    &|device| keys.revoked(person, device),
+                    now,
+                ) {
+                    Ok(()) => {
+                        queue(local, from, via, ask);
+                        return;
+                    }
+                    Err(reason) => Reply::Refused(reason),
+                }
+            }
+            _ => Reply::HoldsNoKey,
+        },
+        Step::Sign { .. } => match keys.key(person) {
+            Ok(key) => with_state(local, |state| {
+                state
+                    .signer
+                    .sign(key.as_ref(), &ask, tilo_clock::unix_now_ns())
+            }),
+            Err(error) => Reply::Refused(error),
+        },
+    };
+    with_state(local, |state| {
+        state.outbox.push((
+            from,
+            Answer {
+                session,
+                reply: answer,
+            },
+        ));
+    });
+}
+
+fn queue(local: &DeviceId, from: DeviceId, via: String, ask: Ask) {
+    let mut digest = blake3::Hasher::new();
+    digest.update(&ask.session);
+    digest.update(&ask.digest().unwrap_or_default());
+    let asking = Asking {
+        digest: *digest.finalize().as_bytes(),
+        label: ask.cert.device_label.clone(),
+        code: ask.code(),
+        via,
+        asked_at_ms: tilo_clock::unix_now_ms(),
+        from,
+        ask,
+    };
+    let expired = expired_before();
+    with_state(local, |state| {
+        state
+            .asking
+            .retain(|other| other.digest != asking.digest && other.asked_at_ms > expired);
+        state.asking.push(asking);
+    });
+}
+
+/// Asks older than this, Unix-epoch milliseconds, can no longer be answered.
+fn expired_before() -> u64 {
+    tilo_clock::unix_now_ms()
+        .saturating_sub(u64::try_from(APPROVAL_WINDOW.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The devices waiting for the person at this device, oldest first.
+pub(crate) fn asking(fabric: &dyn FabricLink) -> Vec<Asking> {
+    let Ok(local) = local(fabric) else {
+        return Vec::new();
+    };
+    let expired = expired_before();
+    with_state(&local, |state| {
+        state.asking.retain(|asking| asking.asked_at_ms > expired);
+        state.asking.clone()
+    })
+}
+
+/// The asks the person was not shown yet, as the loop offers them: each is
+/// told once, and one that went is withdrawn.
+pub(crate) fn newly_asking(fabric: &dyn FabricLink) -> (Vec<Asking>, Vec<[u8; 32]>) {
+    let Ok(local) = local(fabric) else {
+        return (Vec::new(), Vec::new());
+    };
+    let asking = asking(fabric);
+    let digests: Vec<[u8; 32]> = asking.iter().map(|asking| asking.digest).collect();
+    with_state(&local, |state| {
+        let fresh: Vec<Asking> = asking
+            .into_iter()
+            .filter(|asking| !state.shown.contains(&asking.digest))
+            .collect();
+        let gone: Vec<[u8; 32]> = state
+            .shown
+            .iter()
+            .copied()
+            .filter(|digest| !digests.contains(digest))
+            .collect();
+        state.shown.clone_from(&digests);
+        (fresh, gone)
+    })
+}
+
+/// The person approved (`approve`) or declined the device `digest` names
+/// here. `None` when no device of the person asks under `digest`; else the
+/// device's label. Blocks on the identity store.
+///
+/// # Errors
+///
+/// When this device's key would not sign, or the answer cannot be sent.
+fn answer(
+    fabric: &dyn FabricLink,
+    digest: [u8; 32],
+    approve: bool,
+) -> Result<Option<String>, String> {
+    let local = local(fabric)?;
+    let Some(asking) = with_state(&local, |state| {
+        let index = state
+            .asking
+            .iter()
+            .position(|asking| asking.digest == digest)?;
+        Some(state.asking.remove(index))
+    }) else {
+        return Ok(None);
+    };
+    let person = asking.ask.cert.user_public_key;
+    let answer = if approve {
+        let key = keys(&local).key(person)?;
+        with_state(&local, |state| {
+            state
+                .signer
+                .approve(key.as_ref(), &asking.ask, true, tilo_clock::unix_now_ns())
+        })
+    } else {
+        Reply::Declined
+    };
+    let refused = match &answer {
+        Reply::Refused(reason) => Some(reason.clone()),
+        _ => None,
+    };
+    reply(
+        fabric,
+        &asking.from,
+        &Answer {
+            session: asking.ask.session,
+            reply: answer,
+        },
+    )?;
+    refused.map_or(Ok(Some(asking.label)), Err)
+}
+
+/// The banner button that answers the device asking under `digest` here:
+/// approving lets it act as the person, declining refuses it
+/// ([`host_action`]).
+pub(crate) fn answer_key(digest: [u8; 32], approve: bool) -> String {
+    format!(
+        "{ANSWER_PREFIX}{}:{}",
+        hex::encode(digest),
+        if approve { "approve" } else { "decline" }
+    )
+}
+
+/// The person chose `choice`, one of the notification's buttons, if it is one
+/// of this device's: answers the device it names there, off the loop.
+pub(crate) fn host_action(fabric: &SharedLink, choice: &str) -> bool {
+    let Some(rest) = choice.strip_prefix(ANSWER_PREFIX) else {
+        return false;
+    };
+    let Some((digest, verdict)) = rest.rsplit_once(':') else {
+        return false;
+    };
+    let (Ok(digest), Some(approve)) = (
+        hex::decode(digest)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .ok_or("that is no device ask"),
+        match verdict {
+            "approve" => Some(true),
+            "decline" => Some(false),
+            _ => None,
+        },
+    ) else {
+        return true;
+    };
+    let link = Arc::clone(fabric);
+    let spawned = std::thread::Builder::new()
+        .name("tilo-device-certification-answer".into())
+        .spawn(move || {
+            if let Err(error) = answer(link.as_ref(), digest, approve) {
+                tracing::warn!(%error, "a device asking to be the person was not answered");
+            }
+            wake();
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "could not answer a device asking to be the person");
+    }
+    true
+}
+
+/// Removes a certification's answer route when it ends.
+struct Registered(DeviceId, [u8; 16]);
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        with_state(&self.0, |state| state.gatherings.remove(&self.1));
+    }
+}
+
+/// Have the person's devices that hold their identity's key certify `cert`
+/// (unsigned) for the new device that announced `service`; `threshold` of
+/// the key's `total` devices must sign. The person already confirmed the
+/// device here. Blocks until it is certified, declined, or
+/// [`APPROVAL_WINDOW`] passes.
+///
+/// # Errors
+///
+/// What is still needed, plainly, when it was not certified.
+pub(crate) fn certify(
+    fabric: &SharedLink,
+    cert: DeviceCert,
+    service: [u8; 32],
+    threshold: u16,
+    total: u16,
+) -> Result<DeviceCert, String> {
+    let mut session = [0; 16];
+    getrandom::fill(&mut session).map_err(|error| error.to_string())?;
+    let mut gathering = Gathering::new(session, cert, service, threshold, total);
+    let person = gathering.ask().cert.user_public_key;
+    let here = local(fabric.as_ref())?;
+    let here_key = device_key(&here).ok_or("this device has a malformed key")?;
+    let (answers, arrived) = mpsc::channel();
+    with_state(&here, |state| {
+        state.gatherings.insert(session, answers.clone())
+    });
+    let _registered = Registered(here.clone(), session);
+    // A share held here joins in: the person confirmed the device here.
+    let share = keys(&here).key(person).ok().filter(|key| key.holds_key());
+    let mut asked = 0_usize;
+    for device in fabric.online_device_ids() {
+        if device == here {
+            continue;
+        }
+        match send(fabric.as_ref(), &device, ask_action(gathering.ask())?) {
+            Ok(()) => asked = asked.saturating_add(1),
+            Err(error) => tracing::debug!(%error, "a device of the person could not be asked"),
+        }
+    }
+    if let Some(key) = &share {
+        let now = tilo_clock::unix_now_ns();
+        let reply = with_state(&here, |state| {
+            state
+                .signer
+                .approve(key.as_ref(), gathering.ask(), true, now)
+        });
+        let _ = answers.send((here_key, Answer { session, reply }));
+    } else if asked == 0 {
+        return Err(
+            "none of your other devices is online to approve it: turn on the device you set \
+             up first, then pair again"
+                .into(),
+        );
+    }
+    let deadline = Instant::now()
+        .checked_add(APPROVAL_WINDOW)
+        .ok_or("the approval window does not fit this clock")?;
+    let mut without_key = 0_usize;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok((from, answer)) = arrived.recv_timeout(left) else {
+            return Err(format!(
+                "It was not approved in time. {}",
+                gathering.status()
+            ));
+        };
+        if matches!(answer.reply, Reply::HoldsNoKey) {
+            without_key = without_key.saturating_add(1);
+        }
+        match gathering.answer(from, answer) {
+            Progress::Certified(cert) => return Ok(cert),
+            Progress::Waiting if share.is_none() && without_key >= asked => {
+                return Err(
+                    "none of your devices online now can approve it: turn on the device you \
+                     set up first, then pair again"
+                        .into(),
+                );
+            }
+            Progress::Waiting => {}
+            Progress::Failed(reason) => return Err(reason),
+            Progress::Send(rounds) => {
+                for (to, ask) in rounds {
+                    if let Some(key) = share.as_ref().filter(|_| to == here_key) {
+                        let now = tilo_clock::unix_now_ns();
+                        let reply =
+                            with_state(&here, |state| state.signer.sign(key.as_ref(), &ask, now));
+                        let _ = answers.send((to, Answer { session, reply }));
+                        continue;
+                    }
+                    let to = device_id(to).ok_or("a device answered under a malformed key")?;
+                    send(fabric.as_ref(), &to, ask_action(&ask)?)?;
+                }
+            }
+        }
+    }
+}
+
+/// What a session with no fabric says when a device holding a share of the
+/// person's key would have the others approve: they are not reachable.
+pub(crate) fn cannot_certify_here() -> String {
+    "this session runs no device fabric, so your other devices cannot approve it".into()
+}
+
+/// Answer a device asking to be the person from the `answer` step, which is
+/// the notification's own path: the digest it lists, and the person's
+/// verdict. Blocks on the identity store.
+pub(crate) fn answer_step(
+    fabric: Option<&SharedLink>,
+    ask: &str,
+    approve: bool,
+) -> Result<serde_json::Value, String> {
+    let digest: [u8; 32] = hex::decode(ask.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("ask must be 64 hex characters")?;
+    let fabric = fabric.ok_or_else(|| "the session runs no device fabric".to_string())?;
+    let label =
+        answer(fabric.as_ref(), digest, approve)?.ok_or("no device asks under that any more")?;
+    Ok(serde_json::json!({ "ask": hex::encode(digest), "label": label, "approved": approve }))
+}
+
+/// The devices another of the person's devices found, asking at this device
+/// to be the person, as the `asking` step lists them.
+pub(crate) fn asking_step(fabric: Option<&SharedLink>) -> serde_json::Value {
+    let asking: Vec<serde_json::Value> = fabric.map_or_else(Vec::new, |fabric| {
+        asking(fabric.as_ref())
+            .into_iter()
+            .map(|asking| {
+                serde_json::json!({
+                    "ask": hex::encode(asking.digest),
+                    "device": hex::encode(asking.device()),
+                    "label": asking.label,
+                    "code": asking.code,
+                    "via": asking.via,
+                    "asked_at_ms": asking.asked_at_ms,
+                })
+            })
+            .collect()
+    });
+    serde_json::json!({ "asking": asking })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::EndpointId;
+    use std::collections::{BTreeSet, HashMap};
+    use threshold_identity::{SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces};
+    use tilo_device_fabric::link::PersonalFabricSendError;
+    use tilo_device_fabric::runtime::FabricRuntime;
+    use tilo_device_fabric::{DeviceFabric, DeviceId};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
+
+    /// The person's identity as first boot provisions it, in files.
+    fn identity() -> (tempfile::TempDir, runtime_identity::SigningIdentity) {
+        let root = tempfile::tempdir().expect("temp root");
+        let dir = root.path().join("config/tilo/identity");
+        let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &dir,
+            &device,
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision");
+        let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&dir)
+            .load()
+            .expect("registry");
+        let id = registry.default_identity.expect("default identity");
+        let key = tilo_identity_host::device_fleet::DeviceFleetStore::at(&dir, device)
+            .identity_key(&id)
+            .expect("the person's key");
+        (root, key)
+    }
+
+    /// A device holding the person's key, or, with `revoked`, one the person
+    /// removed.
+    #[derive(Clone)]
+    struct Held {
+        key: Arc<runtime_identity::SigningIdentity>,
+        revoked: bool,
+    }
+
+    impl ceremony::IdentityKey for Held {
+        fn person(&self) -> [u8; 32] {
+            self.key.person()
+        }
+
+        fn holds_key(&self) -> bool {
+            self.key.holds_key()
+        }
+
+        fn sign_whole(&self, digest: &[u8; 32]) -> Result<Option<[u8; 64]>, String> {
+            self.key.sign_whole(digest)
+        }
+
+        fn commit(&self) -> Option<(SigningRound1Commitment, SigningSessionNonces)> {
+            self.key.commit()
+        }
+
+        fn partial(
+            &self,
+            nonces: SigningSessionNonces,
+            digest: &[u8; 32],
+            commitments: &[SigningRound1Commitment],
+        ) -> Result<SigningRound2Partial, String> {
+            self.key.partial(nonces, digest, commitments)
+        }
+    }
+
+    impl Keys for Held {
+        fn key(&self, _person: [u8; 32]) -> Result<Box<dyn ceremony::IdentityKey>, String> {
+            Ok(Box::new(self.clone()))
+        }
+
+        fn revoked(&self, _person: [u8; 32], _device: &[u8; 32]) -> bool {
+            self.revoked
+        }
+    }
+
+    /// A device holding none of the person's key.
+    struct NoKey;
+
+    impl Keys for NoKey {
+        fn key(&self, _person: [u8; 32]) -> Result<Box<dyn ceremony::IdentityKey>, String> {
+            Err("this device holds nothing of your identity".into())
+        }
+
+        fn revoked(&self, _person: [u8; 32], _device: &[u8; 32]) -> bool {
+            false
+        }
+    }
+
+    /// Two of the person's devices on one fabric, with the wire between them
+    /// handed straight to the other's [`handle_action`].
+    struct Wire {
+        links: Mutex<HashMap<String, SharedLink>>,
+        fabric: DeviceFabric,
+        online: BTreeSet<DeviceId>,
+    }
+
+    struct Peer {
+        device: DeviceId,
+        label: &'static str,
+        wire: Arc<Wire>,
+    }
+
+    impl FabricLink for Peer {
+        fn device_fabric(&self) -> DeviceFabric {
+            self.wire.fabric.clone()
+        }
+
+        fn online_device_ids(&self) -> BTreeSet<DeviceId> {
+            self.wire.online.clone()
+        }
+
+        fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+            Some((self.device.clone(), self.label.into()))
+        }
+
+        fn send_personal_fabric_action(
+            &self,
+            target: &DeviceId,
+            action: PersonalFabricAction,
+        ) -> Result<[u8; 16], String> {
+            let peer = self
+                .wire
+                .links
+                .lock_recover()
+                .get(target.as_str())
+                .cloned()
+                .ok_or("that device is not reachable")?;
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [7; 16],
+                source: self.device.clone(),
+                target: target.clone(),
+                issued_unix_ms: tilo_clock::unix_now_ms(),
+                action,
+            };
+            if !handle_action(&peer, &envelope) {
+                return Err("not a certification action".into());
+            }
+            Ok([7; 16])
+        }
+
+        fn try_send_personal_fabric_action(
+            &self,
+            target: &DeviceId,
+            action: PersonalFabricAction,
+        ) -> Result<[u8; 16], PersonalFabricSendError> {
+            self.send_personal_fabric_action(target, action)
+                .map_err(PersonalFabricSendError::Rejected)
+        }
+
+        fn require_media(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// The two devices `a` and `b`, connected to each other.
+    fn pair(a: [u8; 32], b: [u8; 32]) -> (SharedLink, SharedLink, DeviceId, DeviceId) {
+        let first = DeviceId::new(hex::encode(a)).expect("this laptop");
+        let second = DeviceId::new(hex::encode(b)).expect("the other device");
+        // The devices know each other from the live plane, so the ask names
+        // the laptop the way the person knows it.
+        let here = FabricRuntime::restored(Some((first.clone(), "This laptop".into())), None)
+            .expect("a fabric here");
+        let known =
+            DeviceFabric::decode_checkpoint(&here.own_snapshot().expect("this laptop's record"))
+                .expect("this laptop's record");
+        let wire = Arc::new(Wire {
+            links: Mutex::new(HashMap::new()),
+            fabric: known,
+            online: BTreeSet::from([first.clone(), second.clone()]),
+        });
+        let peer = |device: DeviceId, label: &'static str| -> SharedLink {
+            let peer: SharedLink = Arc::new(Peer {
+                device,
+                label,
+                wire: Arc::clone(&wire),
+            });
+            peer
+        };
+        let laptop = peer(first.clone(), "This laptop");
+        let other = peer(second.clone(), "Old phone");
+        wire.links
+            .lock_recover()
+            .insert(first.as_str().to_owned(), Arc::clone(&laptop));
+        wire.links
+            .lock_recover()
+            .insert(second.as_str().to_owned(), Arc::clone(&other));
+        (laptop, other, first, second)
+    }
+
+    /// The certificate proposed for a phone, as the pairing door proposes it.
+    fn proposed(person: [u8; 32]) -> (DeviceCert, [u8; 32]) {
+        let candidate = tilo_identity_host::device_admin::Candidate {
+            device_node_id: hex::encode([0x51; 32]),
+            relay_service_node_id: hex::encode([0x52; 32]),
+            label: "Phone".into(),
+            verification_code: "123456".into(),
+        };
+        tilo_identity_host::device_admin::proposed_certificate(
+            person,
+            &candidate,
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("a proposal")
+    }
+
+    /// The certificate `laptop` gets for the proposed device, its peer's
+    /// answers sent as the session's passes would send them.
+    fn certified(
+        laptop: &SharedLink,
+        peer: &SharedLink,
+        cert: DeviceCert,
+        service: [u8; 32],
+    ) -> Result<DeviceCert, String> {
+        let (done, answers) = mpsc::channel();
+        let asking = Arc::clone(laptop);
+        std::thread::spawn(move || {
+            let _ = done.send(certify(&asking, cert, service, 1, 1));
+        });
+        tilo_test_env::wait_for("the certification", || {
+            pump(peer.as_ref());
+            answers.try_recv().ok()
+        })
+    }
+
+    #[test]
+    fn a_device_a_key_holder_does_not_hold_the_key_for_certifies_after_the_person_approves() {
+        let (_root, key) = identity();
+        let person = key.person();
+        let (laptop, other, laptop_id, other_id) = pair([0xa1; 32], [0xb2; 32]);
+        set_keys(&laptop_id, Arc::new(NoKey));
+        set_keys(
+            &other_id,
+            Arc::new(Held {
+                key: Arc::new(key),
+                revoked: false,
+            }),
+        );
+
+        let (cert, service) = proposed(person);
+        let early = Arc::clone(&laptop);
+        let approved = std::thread::spawn(move || certify(&early, cert, service, 1, 1));
+
+        // The person is asked on the device that holds the key, once.
+        let found = tilo_test_env::wait_for("the device asking here", || {
+            let (fresh, _) = newly_asking(other.as_ref());
+            fresh.into_iter().next()
+        });
+        assert_eq!(found.label, "Phone");
+        assert_eq!(found.code, ceremony::pairing_code([0x51; 32], service));
+        assert_eq!(found.via, "This laptop");
+        let (fresh, _) = newly_asking(other.as_ref());
+        assert!(fresh.is_empty(), "the person is told once");
+
+        // The notification's own button approves it.
+        assert!(host_action(&other, &answer_key(found.digest, true)));
+        let certified = approved
+            .join()
+            .expect("the pairing thread")
+            .expect("the device was certified");
+        assert_eq!(certified.device_public_key, [0x51; 32]);
+        assert_eq!(certified.user_public_key, person);
+        tilo_user_identity::verify_device_cert(&certified).expect("the person's key signed it");
+
+        // The ask the person answered is gone from their screen.
+        assert!(asking(other.as_ref()).is_empty());
+        let (fresh, gone) = newly_asking(other.as_ref());
+        assert!(fresh.is_empty());
+        assert_eq!(gone, vec![found.digest]);
+    }
+
+    #[test]
+    fn a_revoked_device_is_refused_before_the_person_is_asked() {
+        let (_root, key) = identity();
+        let person = key.person();
+        let (laptop, other, laptop_id, other_id) = pair([0xc3; 32], [0xd4; 32]);
+        set_keys(&laptop_id, Arc::new(NoKey));
+        set_keys(
+            &other_id,
+            Arc::new(Held {
+                key: Arc::new(key),
+                revoked: true,
+            }),
+        );
+
+        let (cert, service) = proposed(person);
+        let reason = certified(&laptop, &other, cert, service)
+            .expect_err("a device the person removed cannot join again");
+        assert!(reason.contains("cannot join again"), "{reason}");
+        let (fresh, _) = newly_asking(other.as_ref());
+        assert!(
+            fresh.is_empty(),
+            "nobody is asked to approve a device the person removed"
+        );
+    }
+
+    #[test]
+    fn a_device_with_no_part_of_the_key_says_so_instead_of_signing() {
+        let (_root, key) = identity();
+        let person = key.person();
+        let (laptop, other, laptop_id, other_id) = pair([0xe5; 32], [0xf6; 32]);
+        set_keys(&laptop_id, Arc::new(NoKey));
+        set_keys(&other_id, Arc::new(NoKey));
+
+        let (cert, service) = proposed(person);
+        let reason = certified(&laptop, &other, cert, service)
+            .expect_err("a device without the key cannot approve another");
+        assert!(
+            reason.contains("none of your devices online now can approve it"),
+            "{reason}"
+        );
+        let (fresh, _) = newly_asking(other.as_ref());
+        assert!(fresh.is_empty(), "a device without the key asks nobody");
+    }
+
+    #[test]
+    fn a_revoked_device_loses_its_record_and_its_session_on_the_live_plane() {
+        let key = [0x71; 32];
+        let device = DeviceId::new(hex::encode(key)).expect("the old phone");
+        let cert = DeviceCert {
+            user_public_key: [0x72; 32],
+            device_public_key: key,
+            device_label: "Old phone".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        let revoked = RevocationEntry {
+            user_public_key: [0x72; 32],
+            revoked_device_public_key: key,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        let peer = EndpointId::from_bytes(&key).expect("an endpoint");
+        let mut here = FabricRuntime::restored(None, None).expect("a fabric here");
+        let there = FabricRuntime::restored(Some((device.clone(), "Old phone".into())), None)
+            .expect("a fabric there");
+
+        // The device proved itself and its frames were taken.
+        here.sibling(peer, std::slice::from_ref(&cert), &[]);
+        here.snapshot(peer, &there.own_snapshot().expect("its record"))
+            .expect("its record is kept");
+        assert!(here.device_fabric().snapshots().contains_key(&device));
+        assert!(here.online_device_ids().contains(&device));
+
+        // The person removed it: the next hello carrying the revocation ends
+        // it, and everything it said is dropped rather than kept as theirs.
+        here.sibling(peer, std::slice::from_ref(&cert), &[revoked]);
+        assert!(
+            !here.device_fabric().snapshots().contains_key(&device),
+            "a revoked device's record is gone"
+        );
+        assert!(
+            !here.online_device_ids().contains(&device),
+            "a revoked device has no session"
+        );
+    }
+}

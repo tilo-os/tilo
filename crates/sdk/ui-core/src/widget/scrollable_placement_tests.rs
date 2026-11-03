@@ -229,3 +229,28 @@ fn a_row_whose_paint_grows_is_found_near_the_view_once_it_lays_out_again() {
     assert_eq!(rows.row(80).y0, -440.0);
     assert!(row_80(&rows), "and keeps visiting it as the view moves on");
 }
+
+#[test]
+fn a_scroll_keeps_its_fraction_but_an_offset_from_another_scale_lands_whole() {
+    let mut rows = rows(400);
+    // The content's origin as the rows the view shows stand.
+    let origin = |rows: &Rows| rows.row(2).y0 - 2.0 * f64::from(ROW);
+    // Part of a pixel: the content sits exactly where the scroll put it,
+    // because the copy a host takes of it moves the pixels it showed by that
+    // same part of a pixel.
+    let part = 40.3_f32;
+    rows.scroll_to(part);
+    assert_eq!(
+        origin(&rows),
+        f64::from(-part),
+        "the content sits where the scroll put it"
+    );
+    // The same offset on a display of another scale lands on a whole pixel of
+    // it: the offset is kept in logical pixels, and between that display's
+    // pixels every edge of the content would smear.
+    {
+        let _grid = crate::widget::enter_device_scale(2.0);
+        rows.scroll_to(part);
+    }
+    assert_eq!(origin(&rows), -40.0, "it lands on the display's pixel");
+}

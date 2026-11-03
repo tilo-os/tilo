@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
-use crate::ids::{RoomId, TabId, WorkspaceSlot};
+use crate::ids::{TabId, WorkspaceId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::projection::localise_tile;
@@ -95,7 +95,7 @@ fn written(tile: &TileContent, tab_title: &str) -> TileContent {
 /// else the first.
 fn record_workspace(
     desktop: SharedDesktop,
-    identity: RoomId,
+    identity: WorkspaceId,
 ) -> Option<(Workspace, SharedDesktop)> {
     let mut desktop = desktop;
     let slot = WorkspaceSlot::of_workspace(identity);
@@ -151,7 +151,7 @@ impl Writer<'_> {
 /// The document refused a write.
 pub fn write(
     doc: &mut AutoCommit,
-    identity: RoomId,
+    identity: WorkspaceId,
     workspace: &Workspace,
     writer: &Writer<'_>,
 ) -> Result<bool, automerge::AutomergeError> {
@@ -413,7 +413,7 @@ impl Kept<'_> {
 /// holds no layout yet.
 pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Kept<'_>) -> bool {
     let Some((record, _)) =
-        super::read(doc, None).and_then(|desktop| record_workspace(desktop, workspace.room()))
+        super::read(doc, None).and_then(|desktop| record_workspace(desktop, workspace.id()))
     else {
         return false;
     };

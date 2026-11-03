@@ -598,7 +598,7 @@ impl AppBrokerState {
                 .iter()
                 .map(|workspace| {
                     (
-                        workspace.room().to_string(),
+                        workspace.id().to_string(),
                         membership_actions(workspace, now / 1_000_000_000),
                     )
                 })
@@ -1534,7 +1534,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceSlot(1),
                         "Hosted elsewhere",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
@@ -1608,7 +1608,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceSlot(1),
                         "Made just now",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
@@ -1667,7 +1667,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceSlot(1),
                         "Made just now",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
                 let service = Arc::new(ProjectedLaterMemberships {
                     workspace: workspace.clone(),
@@ -1718,7 +1718,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceSlot(1),
                         "Discovery",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
@@ -2080,7 +2080,7 @@ mod tests {
         }));
         // The changes to the workspace's people are the governance resource a
         // client names without a catalogue page.
-        let governance = governance_resource(&workspace.room().to_string());
+        let governance = governance_resource(&workspace.id().to_string());
         let people = people_actions(&governance);
         assert_eq!(
             people.len(),
@@ -2108,7 +2108,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceSlot(1),
                         "Governed",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
@@ -2170,7 +2170,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceSlot(1),
                         "Governed",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),

@@ -108,5 +108,30 @@ class PrimitivesTests(unittest.TestCase):
             )
 
 
+    def test_raw_colour_counts_what_is_written_not_what_arrives(self):
+        written = [
+            "Color::from_rgb8(30, 30, 30)",
+            "Color::from_rgba8(0, 0, 0, 128)",
+            "Color::from_rgb8(RED)",
+            "Color::new([0.1, 0.2, 0.3, 1.0])",
+            "Color::new(vec![0.1, 0.2, 0.3, 1.0])",
+            "Color::new(picked)",
+            "Color::new(picked,)",
+            "Color::WHITE",
+        ]
+        for text in written:
+            self.assertTrue(primitives.RAW_COLOUR.search(text), text)
+        # A colour the theme holds or a frame was sent is read, not picked.
+        arriving = [
+            "Color::new(frame.base_color)",
+            "Color::new(backdrop.ground)",
+            "Color::new(theme.intent.accent)",
+            "Color::new(self.layers[0])",
+            "Color::from_rgb8(theming.tint.r)",
+        ]
+        for text in arriving:
+            self.assertFalse(primitives.RAW_COLOUR.search(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

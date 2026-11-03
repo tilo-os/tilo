@@ -129,6 +129,15 @@ pub trait Backend {
         ))
     }
 
+    /// Switch the machine to virtual terminal `vt` (numbered from 1), the
+    /// way Ctrl+Alt+F1..F12 does: the way out of a desktop that cannot give
+    /// the machine back. Backends without virtual terminals refuse.
+    fn switch_vt(&mut self, vt: i32) -> Result<(), BackendError> {
+        Err(BackendError(format!(
+            "this backend has no virtual terminal {vt} to switch to"
+        )))
+    }
+
     /// Light the panel of the output named `name` or switch it off (idle
     /// blanking, a power tool, a configuration that turns it off). An
     /// output switched off draws nothing until it is lit again. Backends

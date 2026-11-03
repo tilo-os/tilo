@@ -42,6 +42,7 @@ use tilo_system_stats::server::{Prompter, Server};
 use crate::plane::DeskAuthority;
 
 use super::render;
+use super::tools;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +83,9 @@ pub(crate) enum Service {
     SystemInfo,
     /// This device's data usage, counted into the person's settings.
     DataUsage,
+    /// The typed opens an app asks this session for: a tool at a folder, the
+    /// person's drives and apps, a workspace settings tab.
+    Tools,
     /// The apps' render services: a toolkit app hands its frame to the
     /// service of its workspace, which draws it on the GPU.
     Render,
@@ -144,12 +148,9 @@ pub(crate) const TABLE: &[Door] = &[
         ),
     },
     Door {
-        name: "tools",
+        name: tools::SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Nothing(
-            "an app's typed opens (a terminal at a folder, an application, an uninstall) reach \
-             no tool service in this session yet",
-        ),
+        owner: Owner::Session(Service::Tools),
     },
     Door {
         name: tilo_render_protocol::broker::SERVICE,
@@ -202,6 +203,9 @@ pub(crate) struct Doors {
     system_info: Option<Server>,
     /// What this device's traffic counters said since the last pass.
     usage: Option<data_usage::Counting>,
+    /// The typed opens an app asks this session for, and the lists Files
+    /// reads through it.
+    tools: Option<tools::Tools>,
     /// The apps' render services, one per workspace, and their supervision.
     render: Option<render::Broker>,
 }
@@ -225,6 +229,10 @@ pub(crate) struct Serving {
     /// The person's answers, which the portal keeps: an answer given to one
     /// question stands for the other.
     pub consents: Option<tilo_portal::consent::Consents>,
+    /// The typed opens an app asks this session for, whose lists only the
+    /// loop keeps current: started here, and handed here so the broker can
+    /// serve Files' waits for its lists' changes.
+    pub tools: Option<tools::Handle>,
     /// What wakes the session's loop when a worker read something that the
     /// loop counts.
     pub wake: tilo_service::Wake,
@@ -270,6 +278,19 @@ pub(crate) fn start(mut serving: Serving) -> Doors {
             Service::SystemInfo => {
                 doors.system_info = system_info(serving.questions.take(), serving.consents.take());
             }
+            Service::Tools => {
+                doors.tools =
+                    serving
+                        .tools
+                        .take()
+                        .and_then(|handle| match tools::Tools::serve(handle) {
+                            Ok(tools) => Some(tools),
+                            Err(error) => {
+                                tracing::warn!(%error, "the tools service is unavailable");
+                                None
+                            }
+                        });
+            }
             Service::DataUsage => {}
         }
     }
@@ -277,6 +298,11 @@ pub(crate) fn start(mut serving: Serving) -> Doors {
 }
 
 impl Doors {
+    /// The typed opens an app asks this session for, while it serves them.
+    pub(crate) fn tools(&self) -> Option<&tools::Handle> {
+        self.tools.as_ref().map(tools::Tools::handle)
+    }
+
     /// Count what this device's traffic did since the last pass into the
     /// person's settings, on the loop's pass: the only thread that may
     /// touch the services.
@@ -976,6 +1002,7 @@ mod tests {
             Service::Identity,
             Service::SystemInfo,
             Service::DataUsage,
+            Service::Tools,
             Service::Render,
         ] {
             assert!(

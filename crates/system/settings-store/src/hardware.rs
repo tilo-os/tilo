@@ -1313,6 +1313,13 @@ pub const AUTO_BRIGHTNESS: crate::Key<bool> =
 /// Night light (the Quick Settings tile).
 pub const NIGHT_LIGHT: crate::Key<bool> =
     crate::Key::new(DISPLAY_PERSON_SECTION, "night_light", || false);
+/// How warm the night light makes the displays, in kelvin.
+pub const NIGHT_LIGHT_TEMPERATURE: crate::Key<u32> =
+    crate::Key::new(DISPLAY_PERSON_SECTION, "night_light_temperature", || 3_700);
+/// Whether the night light follows the Appearance day/night schedule instead
+/// of the switch: on from sunset, off from sunrise.
+pub const NIGHT_LIGHT_SCHEDULE: crate::Key<bool> =
+    crate::Key::new(DISPLAY_PERSON_SECTION, "night_light_schedule", || false);
 
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of

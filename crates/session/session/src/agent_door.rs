@@ -654,7 +654,7 @@ impl Loop {
         let now = unix_now();
         let Some((workspace, name)) = handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| (held.room().to_string(), held.name.clone()))
+                .map(|held| (held.id().to_string(), held.name.clone()))
         }) else {
             let _ = decide.send(Consent::Refuse(word("agent-door-no-workspace")));
             return;
@@ -837,8 +837,8 @@ impl Loop {
         let Some(room) = tree
             .workspaces
             .iter()
-            .find(|held| held.room().to_string() == workspace)
-            .map(tilo_desktop_model::Workspace::room)
+            .find(|held| held.id().to_string() == workspace)
+            .map(tilo_desktop_model::Workspace::id)
         else {
             return Err(word("agent-door-workspace-gone"));
         };
@@ -859,7 +859,7 @@ impl Loop {
         handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .find(|held| held.room().to_string() == workspace)
+                .find(|held| held.id().to_string() == workspace)
                 .is_some_and(|held| held.agent_role_at(agent, now).is_some())
         })
     }

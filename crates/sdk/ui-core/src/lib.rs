@@ -364,6 +364,7 @@ pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
 pub mod window_door;
+pub mod window_name;
 pub mod window_pictures;
 pub mod window_share;
 pub mod window_slots;

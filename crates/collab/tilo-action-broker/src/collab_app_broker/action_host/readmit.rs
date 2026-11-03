@@ -19,12 +19,12 @@ impl AppBrokerState {
         destination: &LaunchDestination,
         native: Option<&super::super::native_task_execution::NativeLaunch>,
     ) -> Result<LaunchDestination, ActionHostError> {
-        self.check_launch_origin(caller, origin, &destination.workspace.room().to_string())?;
+        self.check_launch_origin(caller, origin, &destination.workspace.id().to_string())?;
         let current = match native {
             Some(native) => native.destination(self).map_err(refusal)?,
             None => self.admit_launchable(caller, request)?,
         };
-        if current.workspace.room() != destination.workspace.room()
+        if current.workspace.id() != destination.workspace.id()
             || current.app_id != destination.app_id
             || current.record != destination.record
         {

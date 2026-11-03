@@ -113,7 +113,7 @@ impl Core {
     }
 
     /// The members, noted as read by the running view.
-    fn read_members(&self) -> HResult<Vec<Member>> {
+    fn read_members(&self) -> Vec<Member> {
         let key = members_key();
         let (value, generation) = {
             let states = self.view_states.borrow();
@@ -122,8 +122,8 @@ impl Core {
                 states.generation(&key),
             )
         };
-        self.note_state_read(key, generation, &value)?;
-        Ok(self.members.borrow().list.clone())
+        self.note_state_read(key, generation, &value);
+        self.members.borrow().list.clone()
     }
 
     fn member(&self, who: &Principal) -> Option<Member> {
@@ -143,12 +143,12 @@ impl Core {
         use crate::abi::Imp;
         match imp {
             Imp::WorkspaceMembers => {
-                let list = self.read_members()?;
+                let list = self.read_members();
                 self.ret_h(principals(list.iter()))
             }
             Imp::Members => {
                 let target = self.ref_arg(a.h(0)?)?;
-                let list = self.read_members()?;
+                let list = self.read_members();
                 let reads = self.members.borrow().reads.clone();
                 let readers = list.iter().filter(|member| {
                     reads
@@ -169,7 +169,7 @@ impl Core {
                     .borrow()
                     .recent_authors(&target.target, SPEAKERS, RECENT)
                     .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(&target.target)?;
+                self.read_versions_of(&target.target);
                 self.ret_h(Value::List(
                     said.into_iter()
                         .map(|who| Value::Principal(Principal(who)))
@@ -178,7 +178,7 @@ impl Core {
             }
             Imp::PrincipalKind => {
                 let who = self.principal_arg(a.h(0)?)?;
-                let _ = self.read_members()?;
+                let _ = self.read_members();
                 let kind = self.member(&who).map_or_else(
                     // Someone no longer a member keeps what their id says they are.
                     || {
@@ -194,7 +194,7 @@ impl Core {
             }
             Imp::PrincipalRole => {
                 let who = self.principal_arg(a.h(0)?)?;
-                let _ = self.read_members()?;
+                let _ = self.read_members();
                 let role = self.member(&who).and_then(|member| member.role);
                 self.ret_h(role.map_or_else(Value::none, |role| Value::some(Value::Text(role))))
             }

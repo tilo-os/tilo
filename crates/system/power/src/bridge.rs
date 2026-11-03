@@ -20,15 +20,16 @@ use tokio::sync::Notify;
 use crate::policy::PowerPolicy;
 use tilo_lock::MutexRecover as _;
 
-/// A battery/power notification the compositor should surface as an OS toast.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How the battery is running out, for the session to put in the words it
+/// shows the person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerNotification {
-    /// Toast title.
-    pub summary: String,
-    pub body: String,
-    /// `true` for the critical-battery toast (maps to urgency 2), `false`
-    /// for the low-battery heads-up (urgency 1).
+    /// Charge left, percent.
+    pub percent: u8,
+    /// `true` for the critical warning, `false` for the low-charge heads-up.
     pub critical: bool,
+    /// `true` when the policy sleeps the machine for this critical battery.
+    pub suspending: bool,
 }
 
 /// An instruction from the power service to the compositor loop.
@@ -259,9 +260,9 @@ mod tests {
             let b = PowerBridge::new();
             b.push_signal(PowerSignal::Lock);
             b.push_signal(PowerSignal::Notify(PowerNotification {
-                summary: "Battery low".into(),
-                body: "12% remaining".into(),
+                percent: 12,
                 critical: false,
+                suspending: false,
             }));
             assert_eq!(b.pending_signals(), 2);
             let drained = b.drain_signals();

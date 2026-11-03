@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::MemberRole;
@@ -838,7 +838,7 @@ impl Desk {
 impl Desk {
     /// The id of the desk's workspace `key`, or of the workspace in front
     /// when the caller names none.
-    fn workspace_id(&self, workspace: Option<&str>) -> Result<RoomId, DoorError> {
+    fn workspace_id(&self, workspace: Option<&str>) -> Result<WorkspaceId, DoorError> {
         let workspace_id = self.handle.read(|tree| {
             let workspace = match workspace {
                 Some(key) => tree
@@ -847,7 +847,7 @@ impl Desk {
                     .find(|candidate| candidate.slot.0.to_string() == key),
                 None => tree.active_workspace(),
             };
-            workspace.map(Workspace::room)
+            workspace.map(Workspace::id)
         });
         workspace_id.ok_or_else(|| match workspace {
             Some(key) => {

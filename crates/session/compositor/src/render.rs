@@ -459,8 +459,10 @@ where
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
         for host in state.hosts.iter().rev().filter(|host| {
             if locked {
-                // While locked only the session's own readout shows, over the
-                // lock client: it answers a hardware key pressed there.
+                // While locked only what stands over the lock shows, over the
+                // lock client: the session's own lock view when the lock
+                // screen's app cannot show it, and the readout that answers a
+                // hardware key pressed there.
                 host.above_lock()
             } else {
                 host.below_windows() == below

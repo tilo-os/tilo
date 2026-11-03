@@ -22,6 +22,7 @@
 //! the normal action door, so a shortcut, the palette and an agent take a
 //! screenshot the way the bar does.
 
+pub mod audio;
 mod i18n;
 mod recorder;
 

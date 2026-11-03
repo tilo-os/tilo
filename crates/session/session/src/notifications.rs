@@ -634,6 +634,13 @@ impl SessionNotifications {
     /// Tell the person `notice`, which the session itself raised rather than
     /// one of their apps.
     pub(crate) fn tell(&self, notice: crate::notices::Notice) {
+        // The session raises the notice, so it plays its sound here: a
+        // sender's category never reaches the events only the session may
+        // claim, and the notification carries none for the arrival to
+        // repeat.
+        if let Some(event) = notice.sound {
+            self.sounds.play(event, self.quiet_state(), true);
+        }
         match &self.daemon {
             Some(daemon) => notice.tell(daemon),
             // A session without a notifications service still draws its

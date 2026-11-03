@@ -498,7 +498,7 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
         .with_policy(|policy| {
             policy.handle().read(|tree| {
                 tree.active_workspace()
-                    .map(|workspace| workspace.room().to_string())
+                    .map(|workspace| workspace.id().to_string())
             })
         })
         .expect("a workspace in front");

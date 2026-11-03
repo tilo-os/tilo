@@ -1,12 +1,15 @@
 //! The lock screen when the process that draws it goes away: the session is
-//! still locked and starts its screen again, unlocking still works, and a
-//! screen that will not stay up lifts the lock rather than leave the machine
-//! locked with nothing able to unlock it.
+//! still locked and starts its screen again, unlocking still works, and one
+//! that will not stay up is drawn by the session itself rather than lift the
+//! lock, which only the right password lifts.
 
 use super::lock::{
-    apart, lockable_session, pictures, private_home, type_and_enter, until_back, until_drawn,
+    apart, lock_screen, lockable_session, pictures, private_home, type_and_enter, until_back,
+    until_drawn,
 };
 use super::*;
+
+use tilo_session::ActionPlane;
 
 const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
 
@@ -110,7 +113,7 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
 }
 
 #[test]
-fn a_lock_screen_that_will_not_stay_up_lifts_the_lock() {
+fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
     let LockedSession {
         mut session,
         _client,
@@ -120,20 +123,138 @@ fn a_lock_screen_that_will_not_stay_up_lifts_the_lock() {
     } = locked_session();
 
     // The process goes away as soon as it is up, every time: a screen that
-    // cannot stay on the screen.
+    // cannot stay on the screen. The session keeps starting it, and then
+    // draws the lock itself: the lock never lifts.
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while session.compositor().locked() {
+    loop {
         session.stop_surface("lock");
-        session.step(Duration::from_millis(50)).expect("step");
+        session.step(Duration::from_millis(16)).expect("step");
         assert!(
             std::time::Instant::now() < deadline,
-            "the session stayed locked behind a lock screen that never stayed up"
+            "the lock screen's app never stopped being the one that shows the lock"
         );
+        let gone = !session.surfaces().running("lock");
+        if gone && apart(&pictures(&mut session, &DISPLAYS)[0], &desk[0]) > 24.0 {
+            break;
+        }
     }
     assert!(
-        !session.compositor().session_locked(),
-        "the lock is lifted rather than left with nothing to unlock it"
+        session.compositor().session_locked(),
+        "the lock holds behind the screen that would not stay up"
     );
-    // And the desk is back, which is what the person gets instead.
+    assert!(
+        session.compositor().lock_drawn(),
+        "the lock the session draws is what the displays show: nothing waits on the app's frame, and a capture of it is the placeholder"
+    );
+    assert!(
+        publisher(&session, "overview").is_none(),
+        "the locked session withholds the desktop's actions"
+    );
+
+    // What the session draws is the lock screen: a wrong password keeps it
+    // locked and says so, and the right one lifts it.
+    type_and_enter(&mut session, "wrong");
+    pump(&mut session, &mut [], |session, _| {
+        let reading = session
+            .read("lock")
+            .expect("the session publishes the lock");
+        reading["error"].as_str() == Some(tilo_sheets::lock::wrong_password().as_str())
+    });
+    assert!(
+        session.compositor().locked(),
+        "a wrong password keeps the session locked"
+    );
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+    // And the desk is back, which is what the person gets once they unlock.
     until_back(&mut session, &DISPLAYS, &desk);
+}
+
+/// The login's record says the session before this one was left locked: the
+/// one that starts comes back locked, and only an ordered end publishes a
+/// state the next start recovers.
+#[test]
+fn a_session_left_locked_comes_back_locked() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let request = home.path().join("logout-request");
+    // What a session that was killed leaves behind: the armed record, never
+    // published.
+    let killed = tilo_session::recovery::Recovery::begin(&request).expect("a record");
+    drop(killed);
+
+    let recovered = |home: &tempfile::TempDir| {
+        let recovery = tilo_session::recovery::Recovery::begin(&request).expect("a record");
+        assert!(
+            recovery.starts_locked(),
+            "a session left locked is recovered locked"
+        );
+        Session::headless(
+            Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                user: "ada".to_owned(),
+                verifier: std::sync::Arc::new(Sesame),
+                collab: false,
+                action_plane: ActionPlane::At(home.path().join("collab.sock")),
+                surfaces: vec![lock_screen()],
+                recovery: Some(recovery),
+                ..Options::default()
+            },
+            &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        )
+        .expect("session")
+    };
+
+    let mut session = recovered(&home);
+    assert!(
+        session.compositor().session_locked(),
+        "the session starts with the lock it was left with"
+    );
+    assert!(
+        !session.surfaces().running("lock"),
+        "the lock screen has not started before the session steps"
+    );
+    let before = pictures(&mut session, &[DISPLAY]);
+    pump(&mut session, &mut [], |session, _| {
+        session.surfaces().running("lock")
+    });
+    // The person sees the lock screen, and nothing of the desk, until they
+    // unlock it.
+    assert!(
+        publisher(&session, "overview").is_none(),
+        "the recovered lock withholds the desktop's actions"
+    );
+    until_drawn(&mut session, &[DISPLAY], &before);
+    // It ends as it was: the next start still comes back locked.
+    session.run(|_| true).expect("an ordered end");
+    drop(session);
+    let again = tilo_session::recovery::Recovery::begin(&request).expect("a record");
+    assert!(
+        again.starts_locked(),
+        "a session that ended locked leaves the next one locked"
+    );
+    drop(again);
+
+    // The next one unlocks with the right password, and its ordered end is
+    // what the one after it recovers.
+    let mut session = recovered(&home);
+    let before = pictures(&mut session, &[DISPLAY]);
+    pump(&mut session, &mut [], |session, _| {
+        session.surfaces().running("lock")
+    });
+    until_drawn(&mut session, &[DISPLAY], &before);
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+    session.run(|_| true).expect("an ordered end");
+    drop(session);
+    let after = tilo_session::recovery::Recovery::begin(&request).expect("a record");
+    assert!(
+        !after.starts_locked(),
+        "a session that ended unlocked leaves the next one unlocked"
+    );
 }

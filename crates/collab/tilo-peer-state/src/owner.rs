@@ -74,7 +74,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},
 };
-use tilo_desktop_model::{RoomId, WorkspaceSlot};
+use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
@@ -116,9 +116,9 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     /// then stays fenced until it is reopened from what the disk holds.
     fn healthy(&self) -> bool;
     /// Whether such an uncertain publication may have made `workspace` durable.
-    fn uncertain(&self, workspace: RoomId) -> bool;
+    fn uncertain(&self, workspace: WorkspaceId) -> bool;
     /// The workspace a local slot is, where the host has slots.
-    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<RoomId>;
+    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId>;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
     ///
@@ -139,7 +139,7 @@ pub enum Change<'a> {
     /// `workspace` now holds `peer`; a completed enrollment installs into the
     /// workspace made for it, which is `workspace` already.
     Workspace {
-        workspace: RoomId,
+        workspace: WorkspaceId,
         peer: &'a StatePeer,
         /// The host the workspace's commits are ordered by.
         host: &'a DeviceCert,
@@ -149,7 +149,7 @@ pub enum Change<'a> {
     /// into it are gone from the record, and the host takes the workspace's
     /// shared desktop off in the same publication. Nobody else's data goes: the
     /// workspace lives on with its governor and members.
-    Released { workspace: RoomId },
+    Released { workspace: WorkspaceId },
 }
 
 #[derive(Clone)]
@@ -169,9 +169,9 @@ struct SharedOwner {
 }
 #[derive(Default)]
 struct Current {
-    workspaces: BTreeMap<RoomId, Arc<NativeCommittedView>>,
-    required: BTreeSet<RoomId>,
-    denied: BTreeSet<RoomId>,
+    workspaces: BTreeMap<WorkspaceId, Arc<NativeCommittedView>>,
+    required: BTreeSet<WorkspaceId>,
+    denied: BTreeSet<WorkspaceId>,
     fenced: bool,
 }
 /// Closure-scoped borrowed view of the actual owner publication. It is never an authority DTO.
@@ -255,10 +255,10 @@ impl NativeCommittedView {
 
 /// Callbacks synchronously revoke live client/capture fences; no owner reread or I/O.
 pub trait NativeFenceObserver: Send + Sync {
-    fn fence(&self, workspace: RoomId, continuity: u64);
+    fn fence(&self, workspace: WorkspaceId, continuity: u64);
 }
-impl<F: Fn(RoomId, u64) + Send + Sync> NativeFenceObserver for F {
-    fn fence(&self, workspace: RoomId, continuity: u64) {
+impl<F: Fn(WorkspaceId, u64) + Send + Sync> NativeFenceObserver for F {
+    fn fence(&self, workspace: WorkspaceId, continuity: u64) {
         self(workspace, continuity);
     }
 }
@@ -267,7 +267,7 @@ pub struct NativeFenceSubscription {
     _observer: Arc<dyn NativeFenceObserver>,
 }
 impl SharedOwner {
-    fn notify(&self, workspace: RoomId, continuity: u64) {
+    fn notify(&self, workspace: WorkspaceId, continuity: u64) {
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();
             let live = listeners.iter().filter_map(Weak::upgrade).collect();
@@ -290,7 +290,7 @@ impl SharedOwner {
         drop(current);
         policy_changed();
     }
-    fn fenced(&self, current: &Current, workspace: RoomId) -> bool {
+    fn fenced(&self, current: &Current, workspace: WorkspaceId) -> bool {
         current.fenced || current.denied.contains(&workspace) || !self.store.healthy()
     }
     /// Publish through the store; an uncertain failure fences every workspace.
@@ -392,7 +392,7 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     /// The record cannot be published.
-    pub fn release_workspace(&self, workspace: RoomId) -> Result<bool, String> {
+    pub fn release_workspace(&self, workspace: WorkspaceId) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
         let mut next = self.0.authority.read().clone();
         let held = next.workspaces.remove(&workspace).is_some();
@@ -436,11 +436,11 @@ impl NativeWorkspaceOwner {
     }
     /// Every workspace with a committed enrollment.
     #[must_use]
-    pub fn workspaces(&self) -> Vec<RoomId> {
+    pub fn workspaces(&self) -> Vec<WorkspaceId> {
         self.0.current.read().workspaces.keys().copied().collect()
     }
     #[must_use]
-    pub fn contains_workspace(&self, workspace: RoomId) -> bool {
+    pub fn contains_workspace(&self, workspace: WorkspaceId) -> bool {
         self.0.current.read().required.contains(&workspace) || self.0.store.uncertain(workspace)
     }
 
@@ -453,7 +453,7 @@ impl NativeWorkspaceOwner {
     }
     pub fn with_current<T>(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         read: impl FnOnce(&NativeCommittedView) -> Result<T, String>,
     ) -> Result<T, String> {
         let current = self.0.current.read();
@@ -476,7 +476,7 @@ impl NativeWorkspaceOwner {
             _observer: observer,
         }
     }
-    pub fn invalidate_identity(&self, workspace: RoomId) {
+    pub fn invalidate_identity(&self, workspace: WorkspaceId) {
         let mut current = self.0.current.write();
         if !current.denied.insert(workspace) {
             return;
@@ -496,7 +496,7 @@ impl NativeWorkspaceOwner {
     /// refuses it or the result cannot be published.
     pub fn receive(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         origin: TransportOrigin,
         message: NeighbourMsg,
         now: SystemTime,
@@ -518,7 +518,7 @@ impl NativeWorkspaceOwner {
     /// The workspace is fenced, or the batch's commit cannot be published.
     pub fn receive_batch(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         inputs: Vec<(TransportOrigin, NeighbourMsg)>,
         now: SystemTime,
     ) -> Result<Vec<Result<AdmissionReport, String>>, String> {
@@ -590,7 +590,7 @@ impl NativeWorkspaceOwner {
     /// Decide one relay input into `candidate`: refused, it changes nothing.
     fn admit_input(
         candidate: &mut NativeCommittedView,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         origin: TransportOrigin,
         message: NeighbourMsg,
         now: SystemTime,
@@ -632,7 +632,7 @@ impl NativeWorkspaceOwner {
     )]
     fn publish_workspace(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         mut candidate: NativeCommittedView,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {

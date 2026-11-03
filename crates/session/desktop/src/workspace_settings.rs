@@ -574,7 +574,7 @@ pub fn governance_resource_with_access(
     };
 
     let mut root = tilo_actions::ResourceSpec::new(
-        tilo_desktop_model::governance_resource_id(&ws.room()),
+        tilo_desktop_model::governance_resource_id(&ws.id()),
         tilo_action_policy::roles::ROOM_KIND,
         t_args(
             "workspace-settings-roles-resource",
@@ -870,7 +870,7 @@ pub fn ownership_transfer_resource(
     local_user: &UserId,
 ) -> tilo_actions::ResourceSpec {
     let mut resource = tilo_actions::ResourceSpec::new(
-        format!("workspace:{}", ws.room()),
+        format!("workspace:{}", ws.id()),
         "workspace.governance",
         t_args(
             "workspace-settings-ownership-resource",
@@ -2540,7 +2540,7 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<DraftGrant
                         &ws.node(),
                         tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
                         tilo_action_policy::roles::ROOM_KIND,
-                        &tilo_desktop_model::governance_resource_id(&ws.room()),
+                        &tilo_desktop_model::governance_resource_id(&ws.id()),
                         None,
                         action,
                     ),
@@ -5047,7 +5047,7 @@ mod members_pane_tests {
                 ws.admit(recipient.clone(), CapRole::Editor);
                 ws.pending_ownership_transfer = Some(
                     collab_types::OwnershipTransferProposalV1::new(
-                        ws.room().to_string(),
+                        ws.id().to_string(),
                         [8; 32],
                         owner_public,
                         recipient_public,
@@ -5105,7 +5105,7 @@ mod members_pane_tests {
                     tilo_desktop_model::Collaborator::new(recipient.clone(), "Morgan").as_invited(),
                 );
                 ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-                    ws.room().to_string(),
+                    ws.id().to_string(),
                     [23; 32],
                     owner_public,
                     recipient_public,

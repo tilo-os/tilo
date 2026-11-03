@@ -443,7 +443,7 @@ pub fn check_triggers(
             ));
         }
     }
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let others = &tilo_automation::decode_saved(&workspace.shortcuts);
     let target = chord_target(&workspace_id, &shortcut.id);
     let mut keyboard = None;
@@ -1270,7 +1270,7 @@ pub fn readable_folder(
     if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
         return Err("the saver is not a member of the workspace".into());
     }
-    let actor = collab_types::Actor::person(saver).in_workspace(workspace.room().to_string());
+    let actor = collab_types::Actor::person(saver).in_workspace(workspace.id().to_string());
     if workspace.sandbox_decide_at(
         &actor,
         &collab_types::ResourceRef::FsPath(path.clone()),

@@ -1,6 +1,6 @@
 //! The ABI additions for sorting, reading maps, boxed set elements and `try`.
 
-use crate::common::{codes, compile_body, compile_body as compile, validate};
+use crate::common::{codes, compile_body, compile_body as compile, compile_with, validate};
 
 #[test]
 fn sort_by_compiles_to_a_parallel_key_list() {
@@ -122,4 +122,27 @@ fn try_is_for_flows_and_action_calls() {
         codes("flow g() -> Int {\n    let x = try 1\n    return 1\n}"),
         vec!["E044"]
     );
+}
+
+#[test]
+fn another_packages_fn_is_called_where_it_is_written() {
+    let lib = compile_with(
+        "app so.tilo.lib \"Lib\"\nfn double(x: Int) -> Int {\n    return x * 2\n}\nfn ping() -> Int {\n    return 1\n}\n",
+        &[],
+    )
+    .unwrap_or_else(|d| panic!("{d:#?}"))
+    .meta;
+    let c = compile_with(
+        "app t.x \"X\"\nuse so.tilo.lib as lib\n\
+type T {\n    n: Int\n}\nroot T\ndefault view v for T\n\
+fn twice(x: Int) -> Int {\n    return lib.double(lib.double(x))\n}\n\
+flow sweep(t: T) -> Int {\n    let n = lib.double(3)\n    return n\n}\n\
+action bump(t: T) {\n    t.n = twice(2)\n    lib.ping()\n}\n\
+view v(t: T) {\n    text(\"{lib.double(t.n)}\")\n}",
+        &[lib],
+    )
+    .unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&c.wasm);
+    let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has("call_fn"), "the call crosses packages through call_fn");
 }

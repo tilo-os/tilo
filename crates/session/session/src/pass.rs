@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::Session;
+use crate::{Session, import_readiness, quick_settings};
 use tilo_compositor::{Compositor, Error};
 
 impl Session {
@@ -52,7 +52,7 @@ impl Session {
         // (shell.md §8.1).
         let front = self.shared.handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| held.room().to_string())
+                .map(|held| held.id().to_string())
                 .unwrap_or_default()
         });
         self.shared
@@ -93,6 +93,7 @@ impl Session {
         let timeout = self.wait(timeout.into());
         tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
+        self.follow_logout_request();
         // What the session itself does before the frame: the desk, the apps
         // and the overlays this pass lays out.
         let pass = Instant::now();
@@ -219,8 +220,8 @@ impl Session {
     /// again, a frame of a recording, a probe of a device being woken, a
     /// saved window giving up, a schedule's tick, a sample of the
     /// accelerometer, a shared window's next frame, a screen share's next
-    /// frame, a readout no device answered yet. `None` when nothing does, and
-    /// the loop waits for an event alone.
+    /// frame, a readout no device answered yet, the warmth a schedule changes.
+    /// `None` when nothing does, and the loop waits for an event alone.
     pub fn next_deadline(&self) -> Option<Instant> {
         let locked = self.compositor.locked();
         let stream = self.display_sheet.video_stream();
@@ -228,9 +229,23 @@ impl Session {
             .then(|| self.projection_video.next_deadline(stream.as_ref()))
             .flatten();
         let shared_screen = (!locked).then(crate::calls::next_screen_frame).flatten();
+        // A night light that follows a schedule and a panel that follows the
+        // light in the room both come and go on their own: the loop looks at
+        // the clock rather than waiting for someone to touch something.
+        let now = Instant::now();
+        let night_light = self
+            .night_light
+            .wait()
+            .and_then(|wait| now.checked_add(wait));
+        let ambient = self
+            .auto_brightness
+            .wait()
+            .and_then(|wait| now.checked_add(wait));
         let deadlines = vec![
             video,
             shared_screen,
+            night_light,
+            ambient,
             self.shared.notifications.borrow().next_deadline(),
             self.shared
                 .sync
@@ -277,6 +292,102 @@ impl Session {
             self.step(timeout)?;
         }
         self.shared.keep_desk_now();
+        // Nothing of this session outlives it: an ordered end publishes the
+        // lock state the next one recovers, and one that ends any other way
+        // keeps the armed record, which recovers locked.
+        if let Some(recovery) = self.recovery.take()
+            && let Err(error) = recovery.finish(self.compositor.session_locked())
+        {
+            tracing::error!(
+                %error,
+                "the login's lock record was not written: the next start recovers locked"
+            );
+        }
         Ok(())
+    }
+
+    /// Answer the installed folder importer this pass, and open the review it
+    /// saved once the person's first use is over: the Add folders click they
+    /// left for after setup rather than one they must remember.
+    fn follow_folder_import(&self) {
+        let first_use_over = !self.setup_up();
+        let opens_now = self
+            .shared
+            .folder_import
+            .borrow_mut()
+            .as_mut()
+            .is_some_and(|import| import.follow(first_use_over));
+        if !opens_now {
+            return;
+        }
+        let Some(apps) = &self.shared.launch else {
+            return;
+        };
+        let launch = tilo_app_launch::Launch::Host {
+            desktop_id: import_readiness::IMPORT_DESKTOP_ID.to_owned(),
+            open: None,
+        };
+        if let Err(error) = apps.open(&launch) {
+            tracing::warn!(
+                %error,
+                "the saved folder import did not open; Add folders opens it"
+            );
+        }
+    }
+
+    /// What the person is writing with besides the keyboard: dictation and
+    /// the emoji picker, both through the field they are typing in.
+    fn follow_text_inputs(&mut self) {
+        // Dictation writes into the field the person is typing in, so it runs
+        // before the frame rather than with the sheets.
+        let locked = self.compositor.locked();
+        self.shared.dictation.step(
+            &mut self.compositor,
+            &self.shared.handle,
+            &self.shared.clipboard,
+            locked,
+            Instant::now(),
+        );
+        quick_settings::follow_dictation(&self.shared);
+        // The picker's picks go into the field the person was typing in,
+        // through the same text-input door dictation writes through.
+        let origin = self
+            .shared
+            .desktop
+            .with_widgets(|host| host.placement().origin);
+        self.shared
+            .emoji
+            .step(&mut self.compositor, origin, Instant::now());
+    }
+
+    /// A logout asked through the login wrapper's channel, by the power menu
+    /// or by a service of this session, ends it in order: the wrapper tears
+    /// the login down once this process is gone. The request file already says
+    /// the logout was asked for, so none is written again.
+    fn follow_logout_request(&mut self) {
+        if os_actions::take_logout_request() && !self.ended {
+            tracing::info!("the logout asked for through the login wrapper ends this session");
+            if let Some(desktop) = &self.desktop {
+                desktop.end();
+            }
+            self.ended = true;
+        }
+    }
+
+    /// The notifications that arrived this pass, and the flash a person who
+    /// asked for visual alerts sees for them.
+    fn follow_notifications(&mut self) {
+        let compositor = &mut self.compositor;
+        let appeared = self
+            .shared
+            .notifications
+            .borrow_mut()
+            .step(&mut || Some(compositor.activation_token()));
+        // What the person was just told flashes the screen when they asked
+        // for a visual alert: a person who cannot hear the alert sound is
+        // told of it the same way.
+        if appeared && compositor.a11y().visual_alerts {
+            compositor.flash();
+        }
     }
 }

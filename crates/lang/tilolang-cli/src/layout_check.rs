@@ -195,6 +195,11 @@ pub struct Options {
     /// `shell` record): a shot of the shell's desk is `--root Desk`. None lays out the
     /// package's first root, as the launcher opens an app.
     pub root: Option<String>,
+    /// Key presses sent to each window before it is read, in order, as
+    /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`): the layout a
+    /// person reaches by keyboard, for its shot and its semantics. They reach the window at
+    /// the `dump` size, where a shot shows them; none there, at the first layout.
+    pub keys: Vec<String>,
 }
 
 /// The light and the dark variant of the shipped theme `name`: `default` the stock pair,
@@ -746,6 +751,7 @@ impl Worker<'_> {
             dump: self.options.dump,
             shots: self.options.shots.as_deref(),
             themes: &self.options.themes,
+            keys: &self.options.keys,
             gathered: BTreeMap::new(),
             text: &mut self.text,
             ran: 0,
@@ -889,6 +895,7 @@ struct AppCheck<'a> {
     dump: Option<(u32, u32)>,
     shots: Option<&'a Path>,
     themes: &'a [String],
+    keys: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
     text: &'a mut ui::TextRenderer,
@@ -1010,13 +1017,28 @@ impl AppCheck<'_> {
     }
     /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
     fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
+        // The keys reach the window at the size it is read at, where a shot shows them; a
+        // check taken without a dump size reads them at its first layout. Pressed once: at
+        // every layout the presses would pile up, folding and opening what the one before had
+        // left.
+        let read_at = self.dump.or_else(|| {
+            layouts()
+                .first()
+                .map(|layout| (layout.size.width, layout.size.height))
+        });
+        let mut pressed = false;
         for layout in layouts() {
-            staged.lay_out(
-                (layout.size.width, layout.size.height),
-                layout.theme(),
-                layout.input(),
-                layout.display_scale,
-            )?;
+            let viewport = (layout.size.width, layout.size.height);
+            staged.lay_out(viewport, layout.theme(), layout.input(), layout.display_scale)?;
+            if !pressed && !self.keys.is_empty() && Some(viewport) == read_at {
+                // The window a person reaches by keyboard leaves it laid out differently: a
+                // group folded away, a control focused and wearing its ring.
+                for key in self.keys {
+                    staged.key(key);
+                }
+                staged.lay_out(viewport, layout.theme(), layout.input(), layout.display_scale)?;
+                pressed = true;
+            }
             self.audit(staged, layout, label)?;
         }
         Ok(())

@@ -220,6 +220,24 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
     assert!(!edited, "nothing asked for the location yet");
     assert!(button.area() > 0.0, "the slot is a button in the bar");
 
+    // The window is named by what it shows: its app's location label names
+    // the tab, so its bar, the overview and search say the same.
+    let named = handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == front)
+            .map(|tab| tab.title.clone())
+    });
+    assert_eq!(
+        named.as_deref(),
+        Some("plan.md"),
+        "the tab is called what its window shows"
+    );
+    assert_eq!(handle.window_name(front).as_deref(), Some("plan.md"));
+
     frame.click_at(button.center().x, button.center().y);
     for _ in 0..3 {
         frame.relayout();
@@ -287,4 +305,42 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
         .tab_toolbar(front)
         .cloned();
     assert_eq!(gone, None, "nothing of the app's is left in the bar");
+
+    // An app names its window again and then names nothing — the note it
+    // showed is closed: the window goes back to being called by its app, not
+    // by a place it has left.
+    handle.declare_bar(
+        front,
+        43,
+        Some(WindowToolbar {
+            location: Some(ui::window_toolbar::ToolbarLocation {
+                label: "Garden plan".to_owned(),
+                ..ui::window_toolbar::ToolbarLocation::default()
+            }),
+            ..WindowToolbar::default()
+        }),
+    );
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(handle.window_name(front).as_deref(), Some("Garden plan"));
+    handle.declare_bar(front, 43, Some(WindowToolbar::default()));
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(handle.window_name(front), None, "it shows no place now");
+    let back = handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == front)
+            .map(|tab| tab.title.clone())
+    });
+    assert_eq!(
+        back.as_deref(),
+        Some("App0"),
+        "a window whose app names nothing is called by its app"
+    );
 }

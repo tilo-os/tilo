@@ -62,14 +62,7 @@ impl Applications {
         }
         let fields = entries
             .iter()
-            .map(|app| {
-                rank::application_fields(
-                    &app.title,
-                    &app.id,
-                    app.category.as_deref(),
-                    app.description.as_deref(),
-                )
-            })
+            .map(|app| rank::application_fields(&app.title, &app.id, app.category.as_deref()))
             .collect();
         Self {
             entries,
@@ -1859,11 +1852,15 @@ mod tests {
     #[test]
     fn registry_apps_are_found_by_the_words_people_use() {
         let apps = registry_apps();
+        // An app is found by a word that names it begun: what it is called,
+        // and what else people call it ("youtube" for Tube, "posteingang" for
+        // Mail), in any language. A near miss does not find it: half the
+        // catalogue's names are one edit apart ("notes", "nodes"), and a
+        // launch row that is not the app is worse than none.
         for (query, id) in [
             ("tube", "so.tilo.tube"),
             ("youtube", "so.tilo.tube"),
             ("Youtube", "so.tilo.tube"),
-            ("yotube", "so.tilo.tube"),
             ("mail", "so.tilo.mail"),
             ("email", "so.tilo.mail"),
             ("e-mail", "so.tilo.mail"),
@@ -1879,6 +1876,7 @@ mod tests {
                 "{query:?} should lead with {id}"
             );
         }
+        assert_eq!(first_app(&apps, "yotube"), None, "a typo names no app");
     }
 
     #[test]

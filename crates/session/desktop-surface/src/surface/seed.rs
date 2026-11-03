@@ -12,7 +12,7 @@ pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) ->
     // A workspace keeps one identity on every device: the one the person
     // starts from is opened again by the id derived from it, not by an id only
     // this desk knows.
-    workspace.slot = WorkspaceSlot::of_workspace(workspace.room());
+    workspace.slot = WorkspaceSlot::of_workspace(workspace.id());
     let mut strip = tilo_desktop_model::Strip::new(StripId(minter.mint()), "Main");
     strip.window_groups = tabs
         .into_iter()

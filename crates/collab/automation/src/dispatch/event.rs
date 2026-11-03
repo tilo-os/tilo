@@ -17,7 +17,8 @@ pub struct ItemRef {
 pub struct RecordEvent {
     /// The workspace's id. It keeps the key `room` on the wire: a program
     /// reads it as `event.room`, and the bot host fills it in.
-    pub room: String,
+    #[serde(rename = "room")]
+    pub workspace: String,
     /// The record's id.
     pub record: String,
     pub kind: String,
@@ -87,7 +88,7 @@ pub fn event_of(
             .map(|facet| facet.value.clone())
     };
     RecordEvent {
-        room: workspace.to_owned(),
+        workspace: workspace.to_owned(),
         record: record.to_owned(),
         kind: kind.to_owned(),
         change: change.to_owned(),
@@ -189,10 +190,11 @@ pub struct ConnectorEvent {
 /// knows any one app's events.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppEvent {
-    /// The workspace whose record announced it. The field keeps the name
-    /// `room`, as a host compares it with the workspace an armed program
+    /// The workspace whose record announced it. It keeps the key `room` on
+    /// the wire, as a host compares it with the workspace an armed program
     /// watches.
-    pub room: String,
+    #[serde(rename = "room")]
+    pub workspace: String,
     pub app_id: String,
     /// The announced event kind, such as `mail.message`.
     pub kind: String,
@@ -234,7 +236,7 @@ impl AppEvent {
             payload.insert("record".into(), Value::from(item.id.as_str()));
         }
         Some(Self {
-            room: change.room.clone(),
+            workspace: change.workspace.clone(),
             app_id: app_id.to_owned(),
             kind,
             payload,

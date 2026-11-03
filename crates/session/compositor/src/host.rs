@@ -202,10 +202,19 @@ pub trait SurfaceHost {
     }
 
     /// Whether this surface shows over the session's lock. Only what the
-    /// session itself stands up answers a key pressed while locked (the
-    /// hardware keys' readout), and only its pixels show then: the lock still
-    /// takes every key and every pointer press.
+    /// session itself stands up shows then (the hardware keys' readout, and
+    /// the lock view when the lock screen's app is not there), and what
+    /// wants the keyboard or the pointer of those takes them: a locked
+    /// session gives every other surface nothing.
     fn above_lock(&self) -> bool {
+        false
+    }
+
+    /// Whether this surface is the lock itself, drawn by the session where
+    /// the lock screen's app cannot draw it: the lock is what the outputs
+    /// show, so nothing waits for the app's frame, and a capture of a locked
+    /// display is the placeholder as it is for the app's.
+    fn drawn_over_lock(&self) -> bool {
         false
     }
 
