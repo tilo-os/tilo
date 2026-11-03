@@ -188,7 +188,7 @@ impl Service for LockService {
         vec![offer::<LockEffect>(ResourceSpec::new(
             LOCK,
             LOCK_KIND,
-            "Lock screen",
+            crate::i18n::t("session-lock-screen"),
         ))]
     }
 

@@ -243,7 +243,7 @@ pub fn desktop_with(
     let desk = Rc::new(RefCell::new(Desk {
         policy,
         host: WidgetHost::new(root, placement, true)
-            .named("Desktop")
+            .named(crate::i18n::t("desktop"))
             .with_keyboard(keyboard),
         gestures: Vec::new(),
         gesture_config: Some(GestureConfig::default()),

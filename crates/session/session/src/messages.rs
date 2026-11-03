@@ -400,11 +400,18 @@ impl Messages {
 
 impl Service for Messages {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<MessagesEffect>(ResourceSpec::new(
+        let mut messages = offer::<MessagesEffect>(ResourceSpec::new(
             MESSAGES,
             MESSAGES_KIND,
-            "Private messages",
-        ))]
+            crate::i18n::t("session-messages"),
+        ));
+        // The panel keeps the words the rest of the desktop names them by.
+        for spec in &mut messages.actions {
+            if spec.id == "send" {
+                spec.type_mut().label = crate::i18n::t("session-messages-send");
+            }
+        }
+        vec![messages]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {

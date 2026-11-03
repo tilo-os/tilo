@@ -14,7 +14,8 @@ use tilo_actions::{DoorError, ResourcePresentation, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, decode, offer, reading, unavailable};
 
-use crate::{AgentRuns, LABEL, RUN_KIND, RUNS_KIND, RunAction, RunsAction, wire};
+use crate::i18n::t;
+use crate::{AgentRuns, RUN_KIND, RUNS_KIND, RunAction, RunsAction, wire};
 
 /// The runs, served: the session hosts one of these, and the broker reads the
 /// same runs through the [`AgentRuns`] it holds.
@@ -38,10 +39,18 @@ impl Served {
     fn published(&self) -> Vec<ResourceSpec> {
         let runs = self.0.readings();
         let children = runs.iter().map(resource);
-        vec![
-            offer::<RunsAction>(ResourceSpec::new(wire::RESOURCE, RUNS_KIND, LABEL))
-                .with_children(children),
-        ]
+        let mut runs = offer::<RunsAction>(ResourceSpec::new(
+            wire::RESOURCE,
+            RUNS_KIND,
+            t("agent-runs"),
+        ));
+        // The panel keeps the words the rest of the desktop names them by.
+        for spec in &mut runs.actions {
+            if spec.id == "ask" {
+                spec.type_mut().label = t("agent-runs-ask");
+            }
+        }
+        vec![runs.with_children(children)]
     }
 }
 
@@ -143,18 +152,18 @@ impl Service for Served {
 }
 
 /// What phase a run is in, in a word: what a reader with no words of its own
-/// shows as its badge.
-const fn phase_label(phase: wire::Phase) -> &'static str {
-    match phase {
-        wire::Phase::Approved => "asked",
-        wire::Phase::Accepted => "accepted",
-        wire::Phase::Planning => "planning",
-        wire::Phase::Executing => "working",
-        wire::Phase::Waiting => "waiting",
-        wire::Phase::Done => "done",
-        wire::Phase::Failed => "failed",
-        wire::Phase::Stopped => "stopped",
-    }
+/// shows as its badge, in the person's language.
+fn phase_label(phase: wire::Phase) -> String {
+    t(match phase {
+        wire::Phase::Approved => "agent-runs-phase-asked",
+        wire::Phase::Accepted => "agent-runs-phase-accepted",
+        wire::Phase::Planning => "agent-runs-phase-planning",
+        wire::Phase::Executing => "agent-runs-phase-working",
+        wire::Phase::Waiting => "agent-runs-phase-waiting",
+        wire::Phase::Done => "agent-runs-phase-done",
+        wire::Phase::Failed => "agent-runs-phase-failed",
+        wire::Phase::Stopped => "agent-runs-phase-stopped",
+    })
 }
 
 /// A run's facts as its resource's presentation: its agent, and where it
@@ -162,7 +171,7 @@ const fn phase_label(phase: wire::Phase) -> &'static str {
 fn present(run: &wire::Run) -> ResourcePresentation {
     ResourcePresentation {
         detail: Some(run.agent.clone()),
-        badge: Some(phase_label(run.phase).to_owned()),
+        badge: Some(phase_label(run.phase)),
         preview: run
             .said
             .clone()
@@ -209,20 +218,31 @@ fn resource(run: &wire::Run) -> ResourceSpec {
         .with_view(
             tilo_actions::ResourceViewSpec::new(
                 CONVERSATION_VIEW,
-                "Conversation",
+                t("agent-runs-conversation"),
                 OPEN_CONVERSATION,
             )
             .with_primary(true),
         );
     resource.app_id = Some(SHELL_APP.to_owned());
     resource.actions.extend(RunAction::specs());
+    // The panel keeps the words the rest of the desktop names them by.
+    for spec in &mut resource.actions {
+        let label = match spec.id.as_str() {
+            "send-message" => t("agent-runs-send-message"),
+            "stop-run" => t("agent-runs-stop"),
+            "record-step" => t("agent-runs-record-step"),
+            "record-answer" => t("agent-runs-record-answer"),
+            _ => continue,
+        };
+        spec.type_mut().label = label;
+    }
     if !run.phase.active() {
         for action in ["send-message", "stop-run"] {
             unavailable(
                 &mut resource,
                 action,
                 "run-ended",
-                "This run ended; ask again to start another",
+                &t("agent-runs-run-ended"),
             );
         }
     }

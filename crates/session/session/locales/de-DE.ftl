@@ -213,3 +213,18 @@ paste-failed-body = { $failed } von { $total } sind nicht angekommen. { $name }:
 paste-undone-title = Das letzte Einfügen wurde nicht fertig
 paste-undone-body = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest liegt wieder, wo er war.
 paste-undone-trouble = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest konnte noch nicht zurückgelegt werden: { $reason }
+
+## Was die eigenen Zeilen des Schreibtischs sagen: die Frage auf dem Avatar der
+## Person, der Tray-Eintrag einer laufenden Anwendung und wie die Personenliste heißt.
+session-desk-answer-ask = Antworten
+session-desk-ask-later = Später fragen
+session-desk-open = Öffnen
+session-desk-stop-agent = Stoppen
+session-people = Personen
+
+## Wie die privaten Unterhaltungen einer Person heißen und was sie anbieten.
+session-messages = Private Nachrichten
+session-messages-send = Private Nachricht senden
+
+## Wie der Sperrbildschirm heißt, solange er oben ist.
+session-lock-screen = Sperrbildschirm

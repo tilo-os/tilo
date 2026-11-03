@@ -214,7 +214,7 @@ impl Published for People {
     }
 
     fn a11y_name(&self) -> Option<String> {
-        Some("People".to_owned())
+        Some(crate::i18n::t("session-people"))
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
@@ -283,7 +283,8 @@ pub(crate) fn mount(
         size: (1, 1),
         scale: options.scale,
     };
-    let mut host = WidgetHost::new(Box::new(panel), placement, false).named("People");
+    let mut host =
+        WidgetHost::new(Box::new(panel), placement, false).named(crate::i18n::t("session-people"));
     host.set_theme((options.presentation)().theme);
     let wants = Rc::clone(&open);
     let host = host

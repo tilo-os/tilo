@@ -18,6 +18,7 @@ use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 use tilo_surface_host::{DeskReading, shell_part};
 
+use crate::i18n::t;
 use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not
@@ -954,7 +955,20 @@ impl Desk {
 /// The desk's resource, named `label`: what it publishes, and what the session's package
 /// describes of it ([`crate::session_package`]).
 pub(crate) fn desk_spec(label: String) -> ResourceSpec {
-    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
+    let mut resource = offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label));
+    // The desk answers in the person's language: the question on their avatar, the tray
+    // item, and stopping an agent.
+    for spec in &mut resource.actions {
+        let label = match spec.id.as_str() {
+            "answer-ask" => t("session-desk-answer-ask"),
+            "put-off-ask" => t("session-desk-ask-later"),
+            "open-tray-item" => t("session-desk-open"),
+            "stop-agent" => t("session-desk-stop-agent"),
+            _ => continue,
+        };
+        spec.type_mut().label = label;
+    }
+    resource
 }
 
 impl Service for Desk {

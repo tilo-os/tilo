@@ -12,6 +12,7 @@
 mod desktop;
 mod door;
 mod frames;
+mod i18n;
 pub mod shell_part;
 pub mod slot_view;
 mod well_policy;
