@@ -337,7 +337,9 @@ fn tasks_of(p: Project) -> List<Task> {
 /// list asks the index for the task's subtasks, not for every task's.
 fn open_subtasks(t: Task) -> Option<Text> {
     let kids = tasks.items.filter(x -> x.parent == .some(t))
-    if kids.is_empty() { .none } else { .some("{kids.count(k -> not k.done)}/{kids.len()}") }
+    if kids.is_empty() { .none } else {
+        .some("{kids.count(k -> not k.done)}/{kids.len()}")
+    }
 }
 
 /// The sections of a project, in order.
@@ -396,17 +398,7 @@ view home(t: Tasks) {
                         }
                     }
                 }
-                std.rows(
-                    shown,
-                    "No tasks here",
-                    .none,
-                    .some("list-checks"),
-                    group: .due,
-                    closed: .done,
-                    parent: .parent,
-                    parent_title: x -> x.parent?.title,
-                    progress: x -> open_subtasks(x)
-                ) { x ->
+                std.rows(shown, "No tasks here", .none, .some("list-checks"), group: .due, closed: .done, parent: .parent, parent_title: x -> x.parent?.title, progress: x -> open_subtasks(x)) { x ->
                     task_row(x, .day)
                 }
             }
@@ -444,15 +436,7 @@ view project_list(p: Project, draft: State<Text>) {
                         }
                     }
                 }
-                std.rows(
-                    shown,
-                    "No tasks yet",
-                    .none,
-                    .some("folder"),
-                    parent: .parent,
-                    parent_title: x -> x.parent?.title,
-                    progress: x -> open_subtasks(x)
-                ) { x ->
+                std.rows(shown, "No tasks yet", .none, .some("folder"), parent: .parent, parent_title: x -> x.parent?.title, progress: x -> open_subtasks(x)) { x ->
                     task_row(x, .project)
                 }
             }

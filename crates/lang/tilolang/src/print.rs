@@ -627,6 +627,7 @@ impl Printer<'_> {
                 self.line(&head);
                 self.level += 1;
                 for r in &a.requires {
+                    self.comments_before(r.span.start);
                     let (cond, reason) = (self.ex(&r.cond), self.ex(&r.reason));
                     self.line(&format!("require {cond} {reason}"));
                 }

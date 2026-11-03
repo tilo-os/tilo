@@ -74,19 +74,7 @@ view list<R, T, S>(of: R, items: List<T>, sort: Option<State<S>> = .none, place:
 /// `closed` and the items it is true of stand last, under `closed_title`, folded away until the
 /// person opens them. Give `parent` and the items stand as a tree: each indented under the item
 /// it is a subtask of, with a disclosure that folds its subtasks away.
-view rows<T>(
-    items: List<T>,
-    empty: Text,
-    primary: Option<host.Action>,
-    icon: Option<Text>,
-    group: Option<(T) -> Option<Date>> = .none,
-    closed: Option<(T) -> Bool> = .none,
-    closed_title: Text = phrase("tilolang-done"),
-    parent: Option<(T) -> Option<T>> = .none,
-    parent_title: Option<(T) -> Option<Text>> = .none,
-    progress: Option<(T) -> Option<Text>> = .none,
-    row: (T) -> View
-) {
+view rows<T>(items: List<T>, empty: Text, primary: Option<host.Action>, icon: Option<Text>, group: Option<(T) -> Option<Date>> = .none, closed: Option<(T) -> Bool> = .none, closed_title: Text = phrase("tilolang-done"), parent: Option<(T) -> Option<T>> = .none, parent_title: Option<(T) -> Option<Text>> = .none, progress: Option<(T) -> Option<Text>> = .none, row: (T) -> View) {
     if items.is_empty() {
         if let a = primary {
             ui.EmptyState(empty, icon: icon, action: a.label) {

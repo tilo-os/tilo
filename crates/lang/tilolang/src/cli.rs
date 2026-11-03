@@ -359,7 +359,10 @@ fn fmt(dir: &Path, o: &Options) -> Result<bool, String> {
             continue;
         }
         if o.check {
-            eprintln!("{path}: not in canonical form");
+            eprintln!(
+                "{path}: not in canonical form: run `tilolang fmt {}`",
+                dir.display()
+            );
             ok = false;
         } else {
             std::fs::write(path, new).map_err(|e| format!("{path}: {e}"))?;

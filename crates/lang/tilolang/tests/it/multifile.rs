@@ -238,6 +238,23 @@ fn fmt_keeps_plain_comments_above_what_they_explain() {
 }
 
 #[test]
+fn fmt_keeps_a_comment_above_the_require_it_explains() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n"
+    );
+    // Canonical text formats to itself.
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
 fn fmt_keeps_a_paragraph_break_in_a_doc_comment() {
     let out = format_package(&files(&[(
         "a.tl",
@@ -293,7 +310,12 @@ fn the_std_package_is_in_canonical_form() {
     let out = format_package(&source).unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
     assert!(!out.files.is_empty());
     for (path, old, new) in &out.files {
-        assert_eq!(old, new, "{path} is not in canonical form");
+        assert_eq!(
+            old,
+            new,
+            "{path} is not in canonical form: run `tilolang fmt {}`",
+            dir.display()
+        );
     }
 }
 
@@ -303,7 +325,12 @@ fn the_example_packages_are_in_canonical_form() {
         let source = PackageSource::read_dir(&dir).unwrap();
         let out = format_package(&source).unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
         for (path, old, new) in &out.files {
-            assert_eq!(old, new, "{path} is not in canonical form");
+            assert_eq!(
+                old,
+                new,
+                "{path} is not in canonical form: run `tilolang fmt {}`",
+                dir.display()
+            );
         }
     }
 }
