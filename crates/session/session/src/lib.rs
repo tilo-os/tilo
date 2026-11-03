@@ -132,6 +132,7 @@ mod search;
 mod search_ask;
 mod seats;
 pub mod seeded_apps;
+mod service_sessions;
 pub mod session_package;
 mod setup;
 mod shared_desktop;

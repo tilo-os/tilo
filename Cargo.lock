@@ -21326,12 +21326,15 @@ name = "tilo-session"
 version = "0.1.0"
 dependencies = [
  "accesskit_unix",
+ "account-custody",
+ "accounts",
  "agent-provider-config",
  "app-catalogue",
  "app-cli",
  "blake3",
  "block-devices",
  "bounded-command",
+ "browser-continuity",
  "channel-crypto",
  "chrono",
  "collab-types",

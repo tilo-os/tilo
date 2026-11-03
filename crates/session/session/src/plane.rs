@@ -26,11 +26,11 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    ApplicationServices, Caller, ContentStoreServices, DisplayControlServices, DriveServices,
-    Granted, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
-    SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
-    SpeakerChange, SpeakerServices, WifiContinuityServices, WorkspaceAuthority,
-    WorkspaceAuthorityHandle, WorkspaceMemberships,
+    ApplicationServices, BrowserServiceSessionServices, Caller, ContentStoreServices,
+    DisplayControlServices, DriveServices, Granted, HostServices, HostStepServices,
+    PublishedResources, Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest,
+    ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices, WifiContinuityServices,
+    WorkspaceAuthority, WorkspaceAuthorityHandle, WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -743,6 +743,15 @@ fn seams(
             .parent()
             .map(|state| state.join("actions").join("launchable.json"))
     });
+    // The person's account custody: the vault stays on this device, under
+    // their own config root, and a session with no workspace of its own has
+    // no route to decide a call on.
+    let service_sessions: Option<std::sync::Arc<dyn BrowserServiceSessionServices>> =
+        engine.as_ref().map(|engine| {
+            std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
+                std::sync::Arc::clone(engine),
+            )) as std::sync::Arc<dyn BrowserServiceSessionServices>
+        });
     Seams {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.
@@ -875,11 +884,12 @@ fn seams(
             std::sync::Arc::new(crate::wifi_continuity::WifiContinuity::new(fabric))
                 as std::sync::Arc<dyn WifiContinuityServices>
         })),
-        // The Browser app resolves and keeps its own service sessions in its
-        // record, beside its windows.
-        browser_service_sessions: Seam::unserved(
-            "the Browser app keeps its service sessions itself, in its own record",
-        ),
+        // The session is the custodian of the person's account secrets: Browser
+        // resolves, lists and forgets its website sessions here, Settings seals
+        // an account's secret, and Mail is released the one it keeps. Every
+        // call is decided on the certificate the broker attested for the app's
+        // connection in its workspace, and the vault stays on this device.
+        browser_service_sessions: Seam::when(service_sessions),
         // Files offers a file to the person's other devices over the same
         // device fabric this session already runs: one Nearby Send stages a
         // screenshot and a file alike, and the receiving device's person

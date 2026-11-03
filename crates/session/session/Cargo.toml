@@ -172,6 +172,13 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The device's certificate authority the broker admits a join with: the
 # identity store's selected identity and the devices it certifies now.
 tilo-identity-authority = { path = "../identity-authority" }
+# The person's accounts and the vault their secrets are sealed in: the session
+# is the only holder of either, and answers Browser, Settings and Mail from
+# them on the apps' own routes.
+accounts = { path = "../../system/accounts" }
+account-custody = { path = "../../system/account-custody" }
+# The website session a selected custody entry holds, and what it opens.
+browser-continuity = { path = "../../browser/browser-continuity" }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
 runtime-identity = { path = "../../runtime/runtime-identity" }
