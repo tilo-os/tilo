@@ -993,13 +993,13 @@ impl tilo_service::Service for Withholding {
     }
 }
 
-/// A place whose data never arrives does not freeze the screen. Chat is placed while the readings
-/// of its direct conversations never arrive (their sidebar rows are what its window draws): the
-/// place shows the toolkit's waiting state, and the rest of the shell keeps working — a note
-/// placed after it shows on screen, and the overview opens and closes. One place's missing reading
-/// never fails the whole screen's view.
+/// A place whose data never arrives does not freeze the screen. A task is placed while the
+/// session withholds every task's reading: its window has nothing to draw and refuses nothing,
+/// and the rest of the shell keeps working — a note placed after it arrives and shows on
+/// screen, and the overview opens and closes. One place's missing reading never fails the whole
+/// screen's view.
 #[test]
-fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_works() {
+fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
@@ -1012,9 +1012,9 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
             collab: false,
             services: vec![Box::new(Withholding {
                 inner: apps,
-                // Every direct conversation's reading never comes: the sidebar of the place's
-                // window lists them, and the view that lists one waits on it.
-                withheld: "tl.so.tilo.lang.chat.Direct",
+                // Every task's reading never comes: the window of the one placed has no
+                // record to draw.
+                withheld: "tl.so.tilo.lang.tasks.Task",
                 ids: std::cell::RefCell::new(None),
             })],
             questions: Some(Questions::new()),
@@ -1039,17 +1039,17 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
     let (answer, failed) = repl.call(
         &mut session,
         "tilo",
-        &json!({"program": "session.place_found(text: \"Chat\", view: .none, x: .some(80), y: .some(60))"}),
+        &json!({"program": "session.place_found(text: \"Pack the books\", view: .none, x: .some(80), y: .some(60))"}),
     );
-    assert!(!failed, "chat is placed: {answer}");
-    // The place shows the waiting state, not an error: the shell says "Loading" where the
-    // place stands, and refuses nothing.
-    until(&mut session, "the place's waiting state", |session| {
-        session.shell_says("Loading")
+    assert!(!failed, "the task is placed: {answer}");
+    // The place stands with nothing to draw, and the shell refuses nothing: the reading it is
+    // missing is not the screen's fault.
+    until(&mut session, "the place", |session| {
+        on_screen(session, "Pack the books — Tasks").is_some()
     });
     assert!(
         session.shell_refusals().is_empty(),
-        "the place waiting is no refusal: {:?}",
+        "the place without its reading is no refusal: {:?}",
         session.shell_refusals()
     );
 

@@ -181,24 +181,34 @@ pub struct Surface {
 /// never a search of its own (shell.md §8, "Finding what to place").
 pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 
-/// The first resource `text` finds, as the arrangement places it: the top
-/// result that names a resource (an app's own search hit), else the resource
-/// an action hit acts on, else `None` for a query no result answers.
+/// The first resource `text` finds that a place can show, as the arrangement
+/// places it: the top hit that names a resource (an app's own search hit) and
+/// that `shows` accepts, else the resource such an action hit acts on, else
+/// `None` for a query no result answers with something placeable.
 #[must_use]
-pub fn found(text: &str, find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>) -> Option<String> {
+pub fn found(
+    text: &str,
+    find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+    shows: impl Fn(&str) -> bool,
+) -> Option<String> {
     let hits = find(text);
     // What a hit opens is the resource it names: an annotated entry's own
-    // anchor, or the one an action hit acts on. The best such hit wins, in
-    // the search's order.
-    hits.iter().find_map(|hit| match &hit.target {
-        tilo_desktop_search::Target::Invoke(invoke)
-            if invoke.address.action == tilo_desktop_search::OPEN_ACTION =>
-        {
-            Some(invoke.address.resource.as_str().to_owned())
-        }
-        tilo_desktop_search::Target::Action(action) => Some(action.resource.as_str().to_owned()),
-        _ => None,
-    })
+    // anchor, or the one an action hit acts on. The best such hit the place
+    // can show wins, in the search's order: a hit the arrangement cannot
+    // place (a settings section) does not stand in the way of one it can.
+    hits.iter()
+        .filter_map(|hit| match &hit.target {
+            tilo_desktop_search::Target::Invoke(invoke)
+                if invoke.address.action == tilo_desktop_search::OPEN_ACTION =>
+            {
+                Some(invoke.address.resource.as_str().to_owned())
+            }
+            tilo_desktop_search::Target::Action(action) => {
+                Some(action.resource.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .find(|resource| shows(resource))
 }
 
 /// A resource as the arrangement makes a place of it: the app publishing
@@ -409,18 +419,17 @@ impl Arrangement {
     }
 
     /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
-    /// the top result of the system's `find` (`find`), resolved against what the
-    /// session publishes now ([`Catalog`]), standing at `at` through the
-    /// arranging action [`ArrangementAction::Place`] — one attributed, undoable
-    /// change of the person's record (shell.md §8). `view` empty shows the
-    /// resource's primary view.
+    /// the top result of the system's `find` (`find`) that a place can show,
+    /// resolved against what the session publishes now ([`Catalog`]), standing at
+    /// `at` through the arranging action [`ArrangementAction::Place`] — one
+    /// attributed, undoable change of the person's record (shell.md §8). `view`
+    /// empty shows the resource's primary view.
     ///
     /// Returns the place's id, or `None` when nothing the text finds is a
     /// resource the arrangement can place.
     ///
     /// # Errors
-    /// Why the place could not be made, and what the text found that it could
-    /// not place.
+    /// Why the place could not be made, or the text found nothing to place.
     pub fn place_found(
         &mut self,
         asked: &str,
@@ -434,14 +443,11 @@ impl Arrangement {
         if text.is_empty() {
             return Err("nothing is typed to place".into());
         }
-        let Some(resource) = found(text, find) else {
+        let Some(resource) = found(text, find, |resource| {
+            self.catalog.borrow().get(resource).is_some()
+        }) else {
             return Err(format!("nothing matches {text:?}"));
         };
-        if self.catalog.borrow().get(&resource).is_none() {
-            return Err(format!(
-                "`{resource}` publishes nothing an arrangement shows"
-            ));
-        }
         let surface = self.surface_at()?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -2048,4 +2054,52 @@ fn actions_between(was: &Strips, became: &Strips) -> Vec<ArrangementAction> {
         }
     }
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::found;
+    use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
+
+    /// A row text typed on the canvas would stand for: what it opens, and what it is.
+    fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {
+        Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind,
+            provider: "test".into(),
+            id: resource.into(),
+            title: title.into(),
+            subtitle: None,
+            facts: Vec::new(),
+            score: 0,
+            icon: None,
+            target: Target::Invoke(Box::new(InvokeTarget::open("test", "", resource))),
+        }
+    }
+
+    #[test]
+    fn the_text_places_the_top_result_of_the_hits_a_place_can_show() {
+        let hits = vec![
+            opening(
+                "settings.section:agent_models",
+                "Chat models",
+                ResourceKind::Record,
+            ),
+            opening("tl:so.tilo.lang.chat", "Chat", ResourceKind::Application),
+        ];
+        let showable = |resource: &str| resource == "tl:so.tilo.lang.chat";
+        assert_eq!(
+            found("Chat", &|_| hits.clone(), showable).as_deref(),
+            Some("tl:so.tilo.lang.chat"),
+            "a hit the arrangement cannot place does not stand in the way of one it can"
+        );
+        assert_eq!(
+            found("Chat", &|_| hits.clone(), |_| false),
+            None,
+            "and with nothing placeable, nothing is placed"
+        );
+    }
 }
