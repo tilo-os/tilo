@@ -188,16 +188,6 @@ pub enum Inbound {
         /// The piece, as the sender encoded it.
         frame: Vec<u8>,
     },
-    /// A live-plane frame (presence, previews) another live member of the
-    /// workspace published: a native shell, a browser, an agent. The host
-    /// checked its sealed form and stamped the sender from its
-    /// authenticated session.
-    Live {
-        /// The publishing device's public key.
-        from: [u8; 32],
-        /// The canonical `tilo_relay_protocol::live::SealedLiveFrame` bytes.
-        frame: Vec<u8>,
-    },
     /// A device of the workspace joined (`active`) or left the host's live
     /// plane: a member this device reaches through the host, which may
     /// hand over the content the workspace's records reference.

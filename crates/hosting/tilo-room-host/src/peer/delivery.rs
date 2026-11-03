@@ -98,12 +98,14 @@ async fn encode_presence(
         for chunk in run.chunks(PRESENCE_BATCH_ITEMS) {
             let items: Vec<_> = chunk
                 .iter()
-                .map(|presence| tilo_delivery_protocol::transport_v2::PresenceItem {
-                    slot: None,
-                    keep_prefix: 0,
-                    keep_suffix: 0,
-                    middle: presence.payload.to_vec(),
-                })
+                .map(
+                    |presence| tilo_delivery_protocol::transport_v2::PresenceItem {
+                        slot: None,
+                        keep_prefix: 0,
+                        keep_suffix: 0,
+                        middle: presence.payload.to_vec(),
+                    },
+                )
                 .collect();
             out.extend(tilo_delivery_protocol::transport_v2::encode_presence_batch(
                 workspace, &items,

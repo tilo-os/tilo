@@ -99,7 +99,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::Committed { workspace_id, .. }
         | Envelope::CommitRefused { workspace_id, .. }
         | Envelope::RetiredLiveJoin { workspace_id }
-        | Envelope::RetiredLiveLeave { workspace_id }
+        | Envelope::LiveLeave { workspace_id }
         | Envelope::RetiredLive { workspace_id, .. }
         | Envelope::RetiredLiveMember { workspace_id, .. }
         | Envelope::SubscribeFrom { workspace_id, .. }

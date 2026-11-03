@@ -387,20 +387,6 @@ pub enum PeerEvent {
         /// Why.
         reason: String,
     },
-    /// A member's presence, as it published it to the workspace: a
-    /// postcard-encoded `NeighbourMsg`, stamped by the host with the device
-    /// that published it. Nothing publishes this any more — a member's
-    /// presence rides its live plane, and reaches this session as
-    /// [`PeerEvent::LivePlane`] — and it is removed with the rest of the
-    /// retired presence path.
-    Presence {
-        /// The workspace id.
-        workspace_id: u64,
-        /// Host-stamped publishing device.
-        from: [u8; 32],
-        /// A postcard-encoded `NeighbourMsg`.
-        body: Vec<u8>,
-    },
     /// A frame another member published on the workspace's live plane
     /// ([`crate::live`]), opened with the scope's channel keys: what a device
     /// seals on its tracks, carried by the relay that serves the workspace
@@ -416,15 +402,6 @@ pub enum PeerEvent {
         sequence: u32,
         /// The opened body.
         body: Vec<u8>,
-    },
-    /// Live membership changed.
-    LiveMember {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The member.
-        device: [u8; 32],
-        /// Joined or left.
-        active: bool,
     },
     /// The host holds a long sealed history of `route` it cannot read and
     /// asks this device for a snapshot. Answer with
@@ -493,15 +470,6 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
             workspace_id,
             to: to_device_public_key,
             reason,
-        }),
-        Envelope::RetiredLiveMember {
-            workspace_id,
-            device_public_key,
-            active,
-        } => Some(PeerEvent::LiveMember {
-            workspace_id,
-            device: device_public_key,
-            active,
         }),
         _ => None,
     }
@@ -2752,18 +2720,6 @@ impl Task {
                 self.fail("protocol-rejected", reason.clone());
                 self.acknowledge(op, Err(reason));
             }
-            Envelope::RetiredLive {
-                workspace_id,
-                from_device_public_key,
-                frame,
-            } => self.live_frame(
-                crate::held_live::Waiting::Receive {
-                    workspace_id,
-                    from: from_device_public_key,
-                    frame,
-                },
-                true,
-            ),
             Envelope::RecordContentWant {
                 workspace_id,
                 from_device_public_key,

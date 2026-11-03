@@ -1,33 +1,23 @@
-//! What presence costs the host, and that coalescing it keeps what a
-//! receiver draws.
+//! That presence reaches a member of the workspace through the real relay.
 //!
 //! A collaborator drags a pointer at 100 Hz through the real relay, then
 //! moves a caret and clears the pointer, publishing as the shell does
-//! (`RelayCoeditSession::publish_presence`; the relay reads each message's
-//! `presence_slot`). A member reads what the relay writes it, batched and
-//! slot-coded. It must see the pointer paced to at most 20 Hz, its
-//! last position, the caret, and the event after everything sent before it;
-//! the byte budget is checked separately on a controlled writer schedule
-//! in `peer::state_tests::presence_cost`.
+//! (`RelayCoeditSession::publish_presence`). A member reads what the relay
+//! writes it; the host batches what arrives together, in order (see
+//! `crate::presence_mailbox`). The member must see every author stamped, the
+//! pointer's last position, the caret, and the event after everything sent
+//! before it.
 //!
-//! It prints one `PRESENCE_COST key=value …` line. The network scenario
-//! checks final state, order and the frame ceiling. Its byte observations
-//! depend on how transport and executor scheduling group the presence; the
-//! production-writer test gates them on a controlled schedule.
+//! It prints one `PRESENCE_COST key=value …` line; the byte counts it shows
+//! depend on how transport and executor scheduling group the presence.
 //!
 //! A second scenario types: each keystroke is a retained delta followed by
-//! the toolkit's `Typing` and `Caret`, as the shell sends them. The caret
-//! and typing are held for the delta they follow and ride in its write,
-//! when they are pending before the writer takes the delta. It prints one
+//! the toolkit's `Typing` and `Caret`, as the shell sends them. It prints one
 //! `KEYSTROKE_WRITES key=value …` line and verifies every delta, typing range
-//! and caret reaches a member. Network scheduling may also let
-//! the delta go first, so exact write counts are gated at the production
-//! writer boundary in `peer::state_tests::keystroke`, under both schedules.
+//! and caret reaches a member.
 //!
 //! A third publishes a pointer burst from the production client and checks
 //! that the resting position reaches a member with nothing sent after it.
-//! The session writer's paused-clock tests gate its exact write count;
-//! QUIC datagrams also include unrelated path probes and acknowledgements.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -213,10 +203,22 @@ fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protoc
         .filter(|(_, message)| matches!(message, NeighbourMsg::RetiredPresenceMoved { .. }))
         .collect();
     assert!(
-        !moves.is_empty() && moves.len() < 30,
-        "{protocol}: {} pointer moves of {MOVES} published at 100 Hz for 600 ms; \
-         the relay paces a pointer to 20 Hz",
+        !moves.is_empty() && moves.len() <= MOVES as usize,
+        "{protocol}: {} pointer moves of {MOVES} published at 100 Hz",
         moves.len()
+    );
+    // The host keeps what arrives together in the order it arrived, so the
+    // moves a member reads follow the ones published before them.
+    let stamps: Vec<_> = moves
+        .iter()
+        .filter_map(|(_, message)| match message {
+            NeighbourMsg::RetiredPresenceMoved { ts, .. } => Some(*ts),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        stamps.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{protocol}: {stamps:?} arrive in the order they were published"
     );
     assert_eq!(
         moves.last().map(|(_, message)| message),
@@ -231,14 +233,12 @@ fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protoc
         Some(&caret(42)),
         "{protocol}: the caret's last position arrives before the event sent after it"
     );
-    // `seen` ends at the event: the last pointer position and caret above
-    // were delivered before it, as they were sent. Slots are independent
-    // states and may arrive in any order among themselves.
+    // `seen` ends at the event: everything above was delivered before it.
     seen.len()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn presence_is_coalesced_and_slot_coded() {
+async fn presence_reaches_a_member_in_order() {
     let user = TestUser::fresh("Presence cost");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("member", DeviceCapabilities::member());
@@ -455,9 +455,9 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
         writes.len(),
         writes.last().copied().unwrap_or_default(),
     );
-    // One write is guaranteed only when presence is pending before the
-    // delta's writer turn. The deterministic production-writer test checks
-    // that exact count (and the two-write schedule) without a wall-clock race.
+    // Presence is batched by the host's mailbox and written separately from
+    // the delta, so the counts vary with scheduling: the scenario checks that
+    // each delta, its typing range and its caret reach the member.
 }
 
 impl Member {
@@ -487,8 +487,7 @@ impl Member {
 }
 
 /// The resting position traverses the production client and relay with
-/// nothing sent after it. Write amplification is gated in the session
-/// writer's deterministic clock test, not by noisy QUIC packet counts.
+/// nothing sent after it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_clients_resting_pointer_arrives_without_another_message() {
     let user = TestUser::fresh("Pointer pacing");

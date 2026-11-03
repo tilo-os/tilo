@@ -507,9 +507,7 @@ impl RelayCoeditSession {
                         });
                     }
                 }
-                envelope @ (Envelope::RemoteAction { .. }
-                | Envelope::RecordContent { .. }
-                | Envelope::RetiredLive { .. }) => {
+                envelope @ (Envelope::RemoteAction { .. } | Envelope::RecordContent { .. }) => {
                     if let Some(inbound) = self.device_frame(envelope) {
                         return Some(inbound);
                     }
@@ -627,11 +625,6 @@ impl RelayCoeditSession {
                 frame,
                 ..
             } if workspace_id == self.workspace_id => Some(Inbound::RecordContent { from, frame }),
-            Envelope::RetiredLive {
-                workspace_id,
-                from_device_public_key: from,
-                frame,
-            } if workspace_id == self.workspace_id => Some(Inbound::Live { from, frame }),
             _ => None,
         }
     }

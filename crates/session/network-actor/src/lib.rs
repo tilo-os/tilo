@@ -551,13 +551,6 @@ pub enum WorkspaceControlRoute {
 
 #[derive(Debug, Clone)]
 pub enum NetEvent {
-    /// A live frame another live member of `ws` published through a
-    /// workspace host, attributed to the device the host authenticated.
-    Live {
-        ws: WorkspaceId,
-        from: [u8; 32],
-        frame: Vec<u8>,
-    },
     NativeInput(native_ingress::Input),
     /// One of the person's devices proved itself on the session between the
     /// two ([`device_sessions`]), or proved itself anew there (a renewed
@@ -653,7 +646,6 @@ impl NetEvent {
     /// What the event is, for timing: the message kind for a message.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Live { .. } => "Live",
             Self::NativeInput(_) => "NativeInput",
             Self::Sibling { .. } => "Sibling",
             Self::SiblingLeft { .. } => "SiblingLeft",
@@ -855,10 +847,6 @@ struct HeldSurfaceUnits {
 enum HostEvent {
     NativeInput(native_ingress::Input),
     Ready,
-    Live {
-        from: [u8; 32],
-        frame: Vec<u8>,
-    },
     /// A member joined or left the host's live plane.
     Member {
         device: [u8; 32],
@@ -3118,7 +3106,6 @@ impl ActorState {
             }
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => self.host_ready(ws, peer),
-            HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::RecordOpened { channel, frames } => Some(NetEvent::RecordOpened {
                 ws,
@@ -4235,7 +4222,6 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
             _ => "HostNativeInput",
         },
         HostEvent::Ready => "HostReady",
-        HostEvent::Live { .. } => "HostLive",
         HostEvent::Member { .. } => "HostMember",
         HostEvent::RecordOpened { .. } => "HostRecordOpened",
         HostEvent::Kept { .. } => "HostKept",
@@ -4666,7 +4652,6 @@ fn host_event(
             replaying.store(false, Ordering::Release);
             HostEvent::Ready
         }
-        HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
         HostInbound::Member { device, active } => HostEvent::Member { device, active },
         // A call's audio is the session's, carried by the relay session the
         // call itself holds.

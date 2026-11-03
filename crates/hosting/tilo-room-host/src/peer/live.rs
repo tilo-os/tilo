@@ -1,8 +1,79 @@
-//! Ephemeral traffic the relay never keeps: presence, voice calls and record
-//! content handed to one device. Presence is every device's own, browser
-//! pages included.
+//! Ephemeral traffic the relay never keeps: the live plane's membership,
+//! presence, voice calls and record content handed to one device. Presence
+//! is every device's own, browser pages included.
 
-use super::{Arc, AuthenticatedPeer, Envelope, PeerError, SessionCtx, workspace_access};
+use super::{
+    Arc, AuthenticatedPeer, Decision, Envelope, PeerError, WorkspaceOperation, SessionCtx, workspace_access,
+};
+
+/// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live
+/// plane and send it one `LiveMember` per member already present.
+pub(super) async fn handle_live_join(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+) -> Result<Option<Envelope>, PeerError> {
+    const UNSUBSCRIBED: &str = "live join requires a subscription";
+    let refused = |reason: &str| {
+        Ok(Some(Envelope::NotAuthorised {
+            workspace_id,
+            reason: reason.into(),
+        }))
+    };
+    if !subscribed.contains(&workspace_id) {
+        match subscription_refusal(session, peer, workspace_id).await? {
+            Some(reason) => return refused(reason),
+            None => return refused(UNSUBSCRIBED),
+        }
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refused(UNSUBSCRIBED);
+    };
+    let members = {
+        let mut runtime = ws.lock().await;
+        // A spectator neither shows nor sends a cursor.
+        if workspace_access::watches_only(&runtime, peer) {
+            return refused(workspace_access::DenyReason::WatchOnly.reason());
+        }
+        runtime.live_join(peer.device_public_key, workspace_id)
+    };
+    let Some(members) = members else {
+        return refused(UNSUBSCRIBED);
+    };
+    for device in members {
+        // Live state is never authority: a member notice lost to a full
+        // queue costs only a late cursor.
+        let _ = session.outbound.try_send(Envelope::RetiredLiveMember {
+            workspace_id,
+            device_public_key: device,
+            active: true,
+        });
+    }
+    Ok(None)
+}
+
+/// Why the subscription a live join needs was refused, when the host refused
+/// one. A page asks for the live plane right behind its subscription, so a
+/// refused subscription leaves this device unsubscribed too: it must hear the
+/// reason the subscription failed, not that a join needs a subscription it
+/// was never given.
+async fn subscription_refusal(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+) -> Result<Option<&'static str>, PeerError> {
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return Ok(None);
+    };
+    let runtime = crate::workspace_io::fresh_membership(&ws).await?;
+    Ok(
+        match session.decide(&runtime, peer, WorkspaceOperation::Subscribe) {
+            Decision::Deny(reason) => Some(reason.reason()),
+            Decision::Admit | Decision::AdmitAndEnrol => None,
+        },
+    )
+}
 
 /// Where `peer`'s calls in `workspace_id` are held: by this relay's workspace
 /// authority when it governs the workspace, else by the workspace it carries (a

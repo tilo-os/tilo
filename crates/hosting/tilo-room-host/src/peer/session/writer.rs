@@ -230,8 +230,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             .is_some_and(|due| due <= tokio::time::Instant::now())
         {
             self.wrote = "presence";
-            write_presence(self.presence, cx.peer, cx.session, self.write)
-            .await?;
+            write_presence(self.presence, cx.peer, cx.session, self.write).await?;
             return Ok(true);
         }
         Ok(false)

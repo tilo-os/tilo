@@ -9,6 +9,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Longest activity line an agent's presence carries.
+pub const MAX_ACTIVITY_BYTES: usize = 96;
+
 /// One window a shell shows: the app and record it draws, its edges, and
 /// whether it is the one the person works in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -2463,7 +2463,7 @@ impl WasmPeer {
                         },
                         // Semantic work requires an authenticated record
                         // consumer, and presence no longer comes this way.
-                        LiveFrame::Ops(OpsFrame::Semantic { .. }) | LiveFrame::Presence(_) => {
+                        LiveFrame::Ops(OpsFrame::Semantic { .. }) | LiveFrame::RetiredPresence => {
                             return None;
                         }
                     };

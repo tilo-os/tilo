@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{LiveRecord, LiveWireError, Result};
+use super::LiveRecord;
 
 /// Most windows a layout carries: the focused one and those beside it.
 pub const MAX_LAYOUT_WINDOWS: usize = 8;
@@ -118,30 +118,6 @@ impl LiveLayout {
             windows: placed,
         })
     }
-
-    pub(super) fn validate(&self) -> Result<()> {
-        if self.windows.len() > MAX_LAYOUT_WINDOWS {
-            return Err(LiveWireError::Invalid);
-        }
-        self.windows.iter().try_for_each(LiveWindow::validate)
-    }
-}
-
-impl LiveWindow {
-    fn validate(&self) -> Result<()> {
-        let [x0, y0, x1, y1] = self.rect;
-        if self.app.is_empty()
-            || self.app.len() > MAX_LAYOUT_APP_BYTES
-            || x0 > x1
-            || y0 > y1
-            || x1 > LAYOUT_UNITS
-            || y1 > LAYOUT_UNITS
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
 }
 
 impl LiveRecord {
@@ -158,60 +134,34 @@ impl LiveRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{
-        CursorChat, LiveAnchor, LiveFrame, LiveParticipant, LivePointer, LiveWave,
-        MAX_PARTICIPANT_LABEL_BYTES, MAX_PRESENCE_FRAME_BYTES, ParticipantKind, PresenceFrame,
-    };
     use super::*;
 
-    fn window(app: &str, rect: [u16; 4]) -> LiveWindow {
-        LiveWindow {
-            app: app.into(),
-            record: [7; 8],
-            rect,
-            focused: false,
-        }
-    }
-
-    fn laid_out(windows: Vec<LiveWindow>) -> LiveFrame {
-        LiveFrame::Presence(PresenceFrame {
-            seq: 4,
-            sent_at_ms: 1,
-            layout: Some(LiveLayout {
-                size: [1440, 852],
-                windows,
-            }),
-            ..PresenceFrame::default()
-        })
-    }
-
-    /// A layout rides presence by app and record digest; out-of-bounds
-    /// windows, apps and counts are refused.
+    /// A layout names each window by its app and record digest: what a
+    /// receiver can match against what it holds, and nothing more.
     #[test]
-    fn a_layout_rides_presence_by_app_and_digest() {
-        let frame = laid_out(vec![
-            LiveWindow {
-                focused: true,
-                ..window("so.tilo.notes", [0, 0, 5000, 10_000])
-            },
-            window("so.tilo.chat", [5000, 0, 10_000, 10_000]),
-        ]);
-        let bytes = frame.encode().unwrap();
-        assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
-        for refused in [
-            vec![window("", [0, 0, 1, 1])],
-            vec![window(&"a".repeat(MAX_LAYOUT_APP_BYTES + 1), [0, 0, 1, 1])],
-            vec![window("so.tilo.chat", [10, 0, 5, 1])],
-            vec![window("so.tilo.chat", [0, 10, 5, 1])],
-            vec![window(
-                "so.tilo.chat",
-                [0, 0, LAYOUT_UNITS + 1, LAYOUT_UNITS + 1],
-            )],
-            vec![window("so.tilo.chat", [0, 0, 1, LAYOUT_UNITS + 1])],
-            vec![window("so.tilo.chat", [0, 0, 1, 1]); MAX_LAYOUT_WINDOWS + 1],
-        ] {
-            assert_eq!(laid_out(refused).encode(), Err(LiveWireError::Invalid));
-        }
+    fn a_layout_names_windows_by_app_and_digest() {
+        let area = [0.0, 0.0, 1440.0, 852.0];
+        let layout = LiveLayout::place(
+            area,
+            &[
+                (record("r1"), [0.0, 0.0, 500.0, 10_000.0], false),
+                (record("r2"), [720.0, 0.0, 1440.0, 852.0], true),
+            ],
+        )
+        .expect("a screen has a size");
+        assert_eq!(layout.size, [1440, 852]);
+        let named: Vec<_> = layout
+            .windows
+            .iter()
+            .map(|window| (window.app.as_str(), window.record, window.focused))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("so.tilo.notes", record("r1").short_digest(), false),
+                ("so.tilo.notes", record("r2").short_digest(), true),
+            ]
+        );
     }
 
     fn record(name: &str) -> LiveRecord {
@@ -263,7 +213,6 @@ mod tests {
                 ],
             }
         );
-        assert!(layout.validate().is_ok());
         assert_eq!(LiveLayout::place([0.0, 0.0, 0.0, 10.0], &[]), None);
     }
 
@@ -285,69 +234,5 @@ mod tests {
             record: "r1".into(),
         };
         assert_eq!(record.short_digest()[..], record.digest()[..8]);
-    }
-
-    /// The fullest layout, beside a person's other presence at its usual
-    /// sizes (a full name, an activity line, a caret, two sentences of cursor
-    /// chat, a wave, following someone), still fits one presence frame.
-    #[test]
-    fn the_fullest_layout_fits_a_presence_frame() {
-        let record = LiveRecord {
-            app: "so.tilo.notes".into(),
-            record: "0123456789abcdef0123456789abcdef".into(),
-        };
-        let frame = LiveFrame::Presence(PresenceFrame {
-            seq: u64::from(u32::MAX),
-            sent_at_ms: 1_800_000_000_000,
-            focus: Some(record.clone()),
-            pointer: Some(LivePointer::Window {
-                record,
-                at: [640.5, 480.25],
-            }),
-            selection: Some((
-                LiveAnchor {
-                    cursor: vec![1; 24],
-                },
-                LiveAnchor { cursor: vec![2; 3] },
-            )),
-            drag: None,
-            participant: Some(LiveParticipant {
-                kind: ParticipantKind::Person,
-                label: "a".repeat(MAX_PARTICIPANT_LABEL_BYTES),
-                color: [1, 2, 3],
-                activity: Some("Editing the launch notes".into()),
-            }),
-            place: Some("18446744073709551615".into()),
-            chat: Some(CursorChat {
-                text: "Shall we look at the second section together before lunch? ".repeat(2),
-                sent: false,
-            }),
-            reaction: None,
-            wave: Some(LiveWave {
-                seq: u32::MAX,
-                target: "ab".repeat(32),
-            }),
-            layout: Some(LiveLayout {
-                size: [u16::MAX, u16::MAX],
-                windows: vec![
-                    LiveWindow {
-                        app: "a".repeat(MAX_LAYOUT_APP_BYTES),
-                        record: [0xff; 8],
-                        rect: [LAYOUT_UNITS; 4],
-                        focused: true,
-                    };
-                    MAX_LAYOUT_WINDOWS
-                ],
-            }),
-            following: Some("cd".repeat(32)),
-        });
-        let bytes = frame.encode().unwrap();
-        // Measured: what the fullest layout leaves of a frame.
-        println!("fullest presence frame: {} bytes", bytes.len());
-        assert!(
-            bytes.len() <= MAX_PRESENCE_FRAME_BYTES,
-            "{} bytes",
-            bytes.len()
-        );
     }
 }

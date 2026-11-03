@@ -5,9 +5,9 @@
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
-    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_open_record,
-    handle_presence, handle_remote_action,
-    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, route_record_content,
+    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_live_join,
+    handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
+    handle_sync_request, handle_unsubscribe, handle_voice, route_record_content,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write};
@@ -139,6 +139,9 @@ pub(super) async fn handle_envelope(
         env @ Envelope::OpenRecord { .. } => {
             handle_open_record(peer, session, subscribed, env).await
         }
+        Envelope::RetiredLiveJoin { workspace_id } => {
+            handle_live_join(peer, session, subscribed, workspace_id).await
+        }
         Envelope::HostAction { frame } => Ok(handle_host_action(peer, session, &frame)),
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
@@ -150,8 +153,7 @@ pub(super) async fn handle_envelope(
         | Envelope::RemoteActionUndeliverable { .. }
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
-        | Envelope::RetiredLiveJoin { .. }
-        | Envelope::RetiredLiveLeave { .. }
+        | Envelope::LiveLeave { .. }
         | Envelope::RetiredLive { .. }
         | Envelope::RetiredLiveMember { .. }
         | Envelope::Position { .. }

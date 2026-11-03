@@ -169,6 +169,10 @@ pub struct WorkspaceRuntime {
     /// right after the subscription it belongs to and dropped with it; a
     /// subscriber without one gets each presence on its frame queue.
     presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
+    /// The devices on this workspace's live plane ([`Self::live_join`]):
+    /// each is told of the others as they join and leave, so a device knows
+    /// whom its host reaches for content and presence.
+    live_members: HashSet<[u8; 32]>,
     /// Host order of the last admitted delta.
     last_seq: u64,
     /// Recently admitted commits, for de-duplicating resends.
@@ -386,6 +390,7 @@ impl WorkspaceRuntime {
             held_records: HashMap::new(),
             subscribing: HashMap::new(),
             presence_mailboxes: HashMap::new(),
+            live_members: HashSet::new(),
             governor_tap: None,
             workspace_authority: None,
             hosted_replica: None,
@@ -614,6 +619,51 @@ impl WorkspaceRuntime {
         Ok(())
     }
 
+    /// Add subscriber `device` to the live plane and tell the other live
+    /// members. Returns the members already present. A device that is not
+    /// subscribed cannot join.
+    pub fn live_join(&mut self, device: [u8; 32], workspace_id: u64) -> Option<Vec<[u8; 32]>> {
+        if !self.subscribers.contains_key(&device) {
+            return None;
+        }
+        let existing: Vec<[u8; 32]> = self
+            .live_members
+            .iter()
+            .copied()
+            .filter(|member| *member != device)
+            .collect();
+        if self.live_members.insert(device) {
+            self.announce_live_member(device, workspace_id, true);
+        }
+        Some(existing)
+    }
+
+    /// Remove `device` from the live plane and tell the remaining members.
+    pub fn live_leave(&mut self, device: &[u8; 32], workspace_id: u64) {
+        if self.live_members.remove(device) {
+            self.announce_live_member(*device, workspace_id, false);
+        }
+    }
+
+    /// Tell every other live member that `device` is on the plane (`active`)
+    /// or left it. Ephemeral: a member notice lost to a full queue costs
+    /// only a stale peer list, never a change.
+    fn announce_live_member(&self, device: [u8; 32], workspace_id: u64, active: bool) {
+        let envelope = Envelope::RetiredLiveMember {
+            workspace_id,
+            device_public_key: device,
+            active,
+        };
+        for member in self.live_members.iter() {
+            if *member == device {
+                continue;
+            }
+            if let Some(sub) = self.subscribers.get(member) {
+                let _ = sub.tx.try_send(envelope.clone());
+            }
+        }
+    }
+
     /// Drop a subscription for `device`, and its live membership. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
         if self.subscribers.remove(device).is_some() {
@@ -629,6 +679,8 @@ impl WorkspaceRuntime {
         }
         self.checkpoint_served.remove(device);
         self.held_records.remove(device);
+        let workspace_id = self.store.workspace_id();
+        self.live_leave(device, workspace_id);
     }
 
     /// Remove only the session that registered this queue. An old connection

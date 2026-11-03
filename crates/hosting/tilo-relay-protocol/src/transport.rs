@@ -320,19 +320,18 @@ pub enum Envelope {
         reason: String,
     },
 
-    /// Retired: join the workspace's live plane over the relay connection.
-    /// Nothing sends it — a device joins the plane itself, on its own carrier
-    /// — and it stays only so every later variant keeps its postcard
-    /// position.
+    /// Join the workspace's live plane: the host answers with the members
+    /// already present and tells them this device joined. The name keeps the
+    /// variant's place in the wire enum.
     RetiredLiveJoin {
         /// Workspace id.
         workspace_id: u64,
     },
 
-    /// Retired: leave the workspace's live plane. Nothing sends it — the
-    /// plane's own carrier drops a device when it goes — and it stays only
-    /// so every later variant keeps its postcard position.
-    RetiredLiveLeave {
+    /// Leave the workspace's live plane. Nothing sends it — a device that
+    /// goes is dropped with its connection — and it stays only so every
+    /// later variant keeps its postcard position.
+    LiveLeave {
         /// Workspace id.
         workspace_id: u64,
     },
@@ -350,9 +349,9 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// Retired: a device joined (`active`) or left the workspace's live
-    /// plane. Nothing sends it — membership is the plane's own — and it stays
-    /// only so every later variant keeps its postcard position.
+    /// A device joined (`active`) or left the workspace's live plane, sent
+    /// by the host to the plane's other members. The name keeps the
+    /// variant's place in the wire enum.
     RetiredLiveMember {
         workspace_id: u64,
         device_public_key: [u8; 32],
@@ -599,7 +598,7 @@ impl Envelope {
             Self::Committed { .. } => "Committed",
             Self::CommitRefused { .. } => "CommitRefused",
             Self::RetiredLiveJoin { .. } => "LiveJoin",
-            Self::RetiredLiveLeave { .. } => "LiveLeave",
+            Self::LiveLeave { .. } => "LiveLeave",
             Self::RetiredLive { .. } => "Live",
             Self::RetiredLiveMember { .. } => "LiveMember",
             Self::SubscribeFrom { .. } => "SubscribeFrom",
@@ -650,7 +649,7 @@ impl Envelope {
             | Self::Committed { workspace_id, .. }
             | Self::CommitRefused { workspace_id, .. }
             | Self::RetiredLiveJoin { workspace_id }
-            | Self::RetiredLiveLeave { workspace_id }
+            | Self::LiveLeave { workspace_id }
             | Self::RetiredLive { workspace_id, .. }
             | Self::RetiredLiveMember { workspace_id, .. }
             | Self::SubscribeFrom { workspace_id, .. }

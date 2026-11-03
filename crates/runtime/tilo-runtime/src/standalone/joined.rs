@@ -491,7 +491,6 @@ impl Joined {
                     }
                     Some(
                         Inbound::RemoteAction { .. }
-                        | Inbound::Live { .. }
                         | Inbound::RecordOpened { .. }
                         | Inbound::Voice(_),
                     ) => {}
