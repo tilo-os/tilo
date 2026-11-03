@@ -55,6 +55,9 @@ const MAX_NUMBERS: u32 = 9999;
 /// The folder a paste stages its copies in, inside the receiving folder, so
 /// that publishing them is a rename within one filesystem.
 const STAGING_PREFIX: &str = ".tilo-transfer-";
+/// The environment names a moment of a paste a crash test dies at (see
+/// [`crash_point`]).
+const CRASH_POINT_ENV: &str = "TILO_FILE_PASTE_CRASH_POINT";
 /// Where a cut's source hides while its copy is published: a hidden name of
 /// its own in its own folder, so putting it back is a rename.
 const HELD_PREFIX: &str = ".tilo-held-";
@@ -485,8 +488,12 @@ fn transfer(receipt: &mut Receipt, progress: &Mutex<Progress>) -> Result<(), Str
             format!("{} could not be synced: {error}", receipt.staging.display())
         })?;
         save(receipt)?;
+        crash_point("staging");
         for index in start..end {
             publish(receipt, index, progress);
+            if start == 0 && index == 0 {
+                crash_point("publishing");
+            }
         }
         sync_directory(&receipt.destination).map_err(|error| {
             format!(
@@ -506,6 +513,20 @@ fn transfer(receipt: &mut Receipt, progress: &Mutex<Progress>) -> Result<(), Str
     // person can get it back from.
     trash_asides(receipt);
     Ok(())
+}
+
+/// End the process at `stage` of a paste when a crash test asks for it: a
+/// test that kills a session mid-paste names the moment to die at rather than
+/// sampling the disk for it, so it dies at that moment and no other.
+fn crash_point(stage: &str) {
+    let dying = cfg!(debug_assertions)
+        && std::env::var_os(CRASH_POINT_ENV).as_deref() == Some(std::ffi::OsStr::new(stage));
+    if dying {
+        // SAFETY: the process ends here, as a power cut would end it: the
+        // kill cannot be caught, so no destructor runs and nothing of the
+        // paste is tidied up.
+        unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+    }
 }
 
 /// Stage the item at `index`: its whole copy, synced, under the paste's

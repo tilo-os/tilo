@@ -993,11 +993,11 @@ impl tilo_service::Service for Withholding {
     }
 }
 
-/// A place whose data never arrives does not freeze the screen. A task is placed whose record's
-/// reading the session withholds (the `Step`s the task's window lists): the place shows the
-/// toolkit's waiting state, and the rest of the shell keeps working — a note placed after it
-/// shows on screen, and the overview opens and closes. One place's missing reading never fails
-/// the whole screen's view.
+/// A place whose data never arrives does not freeze the screen. Chat is placed while the readings
+/// of its direct conversations never arrive (their sidebar rows are what its window draws): the
+/// place shows the toolkit's waiting state, and the rest of the shell keeps working — a note
+/// placed after it shows on screen, and the overview opens and closes. One place's missing reading
+/// never fails the whole screen's view.
 #[test]
 fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_works() {
     let _settled = ui::motion::testing::settled();
@@ -1012,9 +1012,9 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
             collab: false,
             services: vec![Box::new(Withholding {
                 inner: apps,
-                // The steps of the seeded task the task's own window lists: their reading never
-                // comes, and the view that draws them waits on it.
-                withheld: "tl.so.tilo.lang.tasks.Step",
+                // Every direct conversation's reading never comes: the sidebar of the place's
+                // window lists them, and the view that lists one waits on it.
+                withheld: "tl.so.tilo.lang.chat.Direct",
                 ids: std::cell::RefCell::new(None),
             })],
             questions: Some(Questions::new()),
@@ -1039,9 +1039,9 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
     let (answer, failed) = repl.call(
         &mut session,
         "tilo",
-        &json!({"program": "session.place_found(text: \"Pack the books\", view: .none, x: .some(80), y: .some(60))"}),
+        &json!({"program": "session.place_found(text: \"Chat\", view: .none, x: .some(80), y: .some(60))"}),
     );
-    assert!(!failed, "the task is placed: {answer}");
+    assert!(!failed, "chat is placed: {answer}");
     // The place shows the waiting state, not an error: the shell says "Loading" where the
     // place stands, and refuses nothing.
     until(&mut session, "the place's waiting state", |session| {

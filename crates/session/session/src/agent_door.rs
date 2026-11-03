@@ -1505,6 +1505,11 @@ impl Host {
 
     /// The session's own rows `caller` is offered, as a page of `query`: the
     /// page's cursor reads on to the next, as for any other provider.
+    ///
+    /// A resource's rows stand at its parent's level, as in any other
+    /// published directory: what the session offers is the tree it publishes,
+    /// read a level at a time, so a listing names the tree's roots and never
+    /// the whole of it (which no page holds).
     fn session_page(&self, caller: &Caller, query: &CatalogueQuery) -> Pending<CataloguePage> {
         let (_, reads_only) = Self::at_session(caller);
         let (done, offered) = tilo_actions::remote::pending();
@@ -1515,17 +1520,35 @@ impl Host {
                       resources,
                       revision,
                   }| {
+                fn parents<'a>(
+                    resources: &'a [tilo_actions::ResourceSpec],
+                    parent: &'a str,
+                    out: &mut std::collections::HashMap<&'a str, &'a str>,
+                ) {
+                    for resource in resources {
+                        out.insert(resource.id.as_str(), parent);
+                        parents(&resource.children, resource.id.as_str(), out);
+                    }
+                }
+                let mut stands_under = std::collections::HashMap::new();
+                parents(&resources, "", &mut stands_under);
                 let rows: Vec<_> = tilo_actions::door::survey(&resources)
                     .into_iter()
                     .filter(|descriptor| {
                         !reads_only || descriptor.kind == tilo_actions::OperationKind::View
                     })
                     .map(|descriptor| {
-                        tilo_actions::remote::CatalogueRow::for_action(
+                        let parent = stands_under
+                            .get(descriptor.address.resource.as_str())
+                            .map(|parent| (*parent).to_owned())
+                            .unwrap_or_default();
+                        let mut row = tilo_actions::remote::CatalogueRow::for_action(
                             SESSION_PROVIDER,
                             SESSION_PROVIDER,
                             descriptor,
-                        )
+                        );
+                        row.parent_resource = parent;
+                        row
                     })
                     .collect();
                 CataloguePage::from_rows(revision, rows, &query)

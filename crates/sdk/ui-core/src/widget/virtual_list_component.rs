@@ -492,6 +492,12 @@ impl ListModel for DescribedRows {
     fn group_at(&self, index: usize) -> Option<super::RowGroup> {
         let key = self.key_at(index)?;
         self.with_item(&key, |item| {
+            // A row with something to report — a change nobody has seen, an item removed and
+            // not yet seen go — is not folded away with its group: its group's rows are out of
+            // the way, and what it says is for the person, wherever it would stand.
+            if item.change.is_some() || item.removed {
+                return None;
+            }
             if item.tail {
                 Some(super::RowGroup::Tail)
             } else {
