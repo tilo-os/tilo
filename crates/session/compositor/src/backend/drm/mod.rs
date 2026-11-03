@@ -31,11 +31,12 @@ use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
-use smithay::backend::drm::compositor::FrameFlags;
+use smithay::backend::drm::compositor::{FrameError, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{
-    DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType, VrrSupport,
+    DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType,
+    VrrSupport,
 };
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
@@ -93,7 +94,7 @@ type Renderer<'a> = MultiRenderer<'a, 'a, Api, Api>;
 /// One lit output.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each is a display fact of its own — queued, dark, built in, HDR-capable — not one state"
+    reason = "each is a display fact of its own — queued, dark, off owed, built in, HDR-capable — not one state"
 )]
 struct Lit {
     output: Output,
@@ -105,6 +106,9 @@ struct Lit {
     queued: bool,
     /// The panel is switched off (its CRTC inactive); nothing is drawn.
     dark: bool,
+    /// The CRTC was asked to switch off while the commit before it was
+    /// still in flight: it is switched off on a later pass.
+    off_owed: bool,
     /// A panel built into the machine (eDP, LVDS, DSI): its wake is lit
     /// only once its backlight is unblanked too.
     builtin: bool,
@@ -208,6 +212,17 @@ struct Wake {
 /// How long a queued frame may wait for its vertical blank in a wake
 /// before the link to the display counts as down.
 const LINK_WAIT: Duration = Duration::from_secs(2);
+
+/// Whether a crtc refused a call because the commit before it was still in
+/// flight, or the call was interrupted: it is made again on a later pass and
+/// nothing failed. A crtc takes one commit at a time, and a commit that sets
+/// a mode holds the crtc for as long as the driver's commit tail runs.
+fn retry_later(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EBUSY | libc::EAGAIN | libc::EINTR | libc::EACCES | libc::EPERM)
+    )
+}
 
 /// One GPU: its display device and outputs.
 struct Gpu {
@@ -605,6 +620,12 @@ impl Backend for DrmBackend {
                         &DrmOutputRenderElements::default(),
                     )
                     .map_err(|error| failed(&format!("{}: mode", change.name), error))?;
+                // The new mode reaches the screen with this output's next
+                // commit, which trains the link when the mode needs it: the
+                // wake is judged once a frame follows that commit.
+                if change.enabled {
+                    lit.begin_wake("mode");
+                }
                 let output_mode = OutputMode::from(mode);
                 lit.output
                     .change_current_state(Some(output_mode), None, None, None);
@@ -656,11 +677,21 @@ impl Backend for DrmBackend {
             // to be a whole frame, the old buffers are gone.
             lit.surface.reset_buffers();
             lit.next_frame = Instant::now();
+            lit.off_owed = false;
             lit.begin_wake("dpms");
         } else {
-            lit.surface
+            match lit
+                .surface
                 .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
-                .map_err(|error| failed(&format!("{name}: switch off"), error))?;
+            {
+                Ok(()) => {}
+                // The frame before is still in flight: the crtc is switched
+                // off on a later pass.
+                Err(DrmError::Access(access)) if retry_later(&access.source) => {
+                    lit.off_owed = true;
+                }
+                Err(error) => return Err(failed(&format!("{name}: switch off"), error)),
+            }
             lit.queued = false;
         }
         lit.dark = !on;
@@ -772,6 +803,19 @@ fn render_gpu(
     } = gpu;
     let device = manager.device();
     for lit in outputs.values_mut() {
+        if lit.off_owed {
+            match lit
+                .surface
+                .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+            {
+                Ok(()) => lit.off_owed = false,
+                Err(DrmError::Access(access)) if retry_later(&access.source) => {}
+                Err(error) => {
+                    tracing::warn!(?error, output = lit.output.name(), "CRTC not switched off");
+                    lit.off_owed = false;
+                }
+            }
+        }
         if lit.queued
             && lit.wake.as_ref().is_some_and(|wake| !wake.judged)
             && now.saturating_duration_since(lit.queued_at) > LINK_WAIT
@@ -942,7 +986,7 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
     renderer: &mut Renderer<'r>,
     elements: &[E],
     states: Option<&RenderElementStates>,
-    state: &State,
+    state: &mut State,
     device: &DrmDevice,
     now: Instant,
 ) {
@@ -970,6 +1014,15 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
                     Ok(()) => {
                         lit.queued = true;
                         lit.queued_at = now;
+                    }
+                    // The crtc still has the commit before this frame in
+                    // flight: this frame goes out on a later pass, and the
+                    // output is drawn again for it.
+                    Err(FrameError::DrmError(DrmError::Access(access)))
+                        if retry_later(&access.source) =>
+                    {
+                        lit.queued = false;
+                        state.mark_redraw(&lit.output);
                     }
                     Err(error) => {
                         tracing::warn!(?error, output = lit.output.name(), "frame not queued");
@@ -1028,6 +1081,7 @@ fn vblank(
             cost_p99_us = summary.cost.1,
             build_to_vblank_p50_us = summary.build_to_vblank.0,
             build_to_vblank_p99_us = summary.build_to_vblank.1,
+            gap_max_us = summary.gap_max_us,
             "frame pacing"
         );
     }
@@ -1171,7 +1225,9 @@ impl Lit {
     }
 
     /// The output is asked to light after being dark (`reason`: `dpms`,
-    /// `resume`): its wake is judged once the light-up is known.
+    /// `resume`), to come up for the first time (`hotplug`) or to show
+    /// another mode (`mode`): its wake is judged once the light-up is
+    /// known.
     fn begin_wake(&mut self, reason: &'static str) {
         if self.wake.is_none() {
             self.wake = Some(Wake {
@@ -1926,21 +1982,29 @@ fn light(
         .set_size(name, gamma_size(gpu.manager.device(), crtc));
     let interval = refresh_interval(output_mode.refresh);
     tracing::info!(output = name, ?interval, "output lit");
+    // Lighting the output is one commit, and it runs in the driver's commit
+    // tail: the frame it put up is this output's queued frame until its
+    // vblank, which is what proves the link came up.
+    let now = Instant::now();
     Some(Lit {
         output,
         connector: info.handle(),
         modes: info.modes().to_vec(),
         surface,
-        queued: false,
+        queued: true,
         dark: false,
+        off_owed: false,
         builtin: matches!(
             info.interface(),
             connector::Interface::EmbeddedDisplayPort
                 | connector::Interface::LVDS
                 | connector::Interface::DSI
         ),
-        wake: None,
-        queued_at: Instant::now(),
+        wake: Some(Wake {
+            check: WakeCheck::new(now, "hotplug", None),
+            judged: false,
+        }),
+        queued_at: now,
         vrr,
         vrr_unavailable: (vrr == Vrr::Unable).then_some(AdaptiveSyncUnavailable::DriverUnsupported),
         sink_hdr,
@@ -1948,7 +2012,7 @@ fn light(
         hdr_display,
         color: LitColor::default(),
         feedback,
-        next_frame: Instant::now(),
+        next_frame: now,
         interval,
         pacing: Pacing::default(),
     })
@@ -2008,6 +2072,28 @@ mod tests {
         );
         assert!(!vrr_wanted(true, false, true), "the person turned it off");
         assert!(!vrr_wanted(false, true, true), "the display cannot");
+    }
+
+    #[test]
+    fn a_crtc_that_is_still_committing_is_asked_again_later_not_failed() {
+        for busy in [
+            libc::EBUSY,
+            libc::EAGAIN,
+            libc::EINTR,
+            libc::EACCES,
+            libc::EPERM,
+        ] {
+            assert!(
+                retry_later(&std::io::Error::from_raw_os_error(busy)),
+                "{busy} is the crtc holding the commit before this one"
+            );
+        }
+        for refused in [libc::EINVAL, libc::ENODEV, libc::EIO] {
+            assert!(
+                !retry_later(&std::io::Error::from_raw_os_error(refused)),
+                "{refused} is the crtc refusing the frame for good"
+            );
+        }
     }
 
     #[test]
