@@ -161,6 +161,7 @@ impl DesktopSurface {
             }
         }
         let mut shared = self.shared.borrow_mut();
+        let named_before = shared.window_names.clone();
         let mut changed = shared.take_window_names(names.clone());
         let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
             workspace
@@ -175,6 +176,15 @@ impl DesktopSurface {
         for tab in tabs {
             if let Some(name) = names.get(&tab.id) {
                 changed |= tab.set_window_title(name);
+            } else if named_before
+                .get(&tab.id)
+                .is_some_and(|name| tab.title == *name)
+                && let Some(app) = app_of(tab)
+            {
+                // The app names nothing any more — the note it showed is
+                // closed — so the window goes back to its app's name rather
+                // than keeping a place it has left.
+                changed |= tab.set_window_title(&app);
             }
         }
         if changed {
@@ -258,6 +268,16 @@ fn active_group(
     rows.values_mut()
         .flat_map(|row| row.groups.iter_mut())
         .find(|group| group.active_tab_id() == tab)
+}
+
+/// The name the app showing `tab` goes by: the label the tile carries, or,
+/// for a tile that names only the app, the name the app is listed under.
+fn app_of(tab: &tilo_desktop_model::Tab) -> Option<String> {
+    match &tab.tile {
+        tilo_desktop_model::TileContent::LocalApp { label, .. } => Some(label.clone()),
+        tile => tilo_desktop_model::apps::canonical_app_id(tile)
+            .map(|app| tilo_desktop_search::names::app_name(&app)),
+    }
 }
 
 #[cfg(test)]
