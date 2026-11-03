@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, Strip, Tab, WindowGroup, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::MemberRole;
@@ -175,6 +175,10 @@ pub(crate) struct Surfaces {
     pub(crate) panel: tilo_desktop::overlays::Overlays,
     /// The surface the shell's views show (`crate::overlays::Overlay`).
     pub(crate) overlays: Rc<crate::overlays::Overlays>,
+    /// Whether the overview is the surface up, as the desk's own widgets fold behind it and as
+    /// whoever asks for the desk's state reads it. It turns with the surface itself, so a
+    /// person's press answers at once rather than a frame later.
+    pub(crate) overview: Rc<std::cell::Cell<bool>>,
 }
 
 impl Surfaces {
@@ -199,6 +203,7 @@ impl Surfaces {
             return;
         }
         self.overlays.toggle(surface);
+        self.settled();
     }
 
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
@@ -209,6 +214,7 @@ impl Surfaces {
             return;
         }
         self.overlays.open(name);
+        self.settled();
     }
 
     /// Close `surface` (`close-surface`), when it is the one up.
@@ -219,6 +225,15 @@ impl Surfaces {
             return;
         }
         self.overlays.close(surface);
+        self.settled();
+    }
+
+    /// Keep the desk's reading of the overview in step with the surface just changed: the desk
+    /// folds behind it and its state names it as up the moment the person's press opens it,
+    /// instead of after the shell's next frame.
+    fn settled(&self) {
+        self.overview
+            .set(self.overlays.here() == crate::overlays::Overlay::Overview.name());
     }
 }
 
@@ -255,82 +270,163 @@ fn untitled() -> String {
     tilo_desktop_surface::i18n::t("window-switcher-untitled")
 }
 
-/// The windows the desk shows, by recency: the tabs of every strip of the workspace in front,
-/// the focused one first, then those it was in front of, then the rest along their strips.
+/// Where a tab stands on the desk while its window is read.
+#[derive(Clone, Copy)]
+struct Standing<'a> {
+    workspace: &'a Workspace,
+    strip: &'a Strip,
+    group: &'a WindowGroup,
+    /// The share of its strip's width the window keeps.
+    share: f64,
+    /// Where it stands in the picture of its workspace.
+    place: i64,
+    /// Its place among its group's tabs: `0` for the tab in front.
+    tab_index: i64,
+    focused: bool,
+}
+
+/// One window's reading: what it shows, where it stands and what may be pictured of it.
 ///
 /// `handle` says what may be pictured: a window whose app holds secrets shows its app's glyph
 /// instead of its picture (`withheld`), and one that is not this device's window shows neither
 /// (`none`).
-fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::WindowReading> {
+fn window_reading(
+    tab: &Tab,
+    at: Standing<'_>,
+    handle: &DesktopHandle,
+) -> shell_part::WindowReading {
     use tilo_desktop_model::TileContent;
-    let Some(workspace) = tree.active_workspace() else {
+    let app = match &tab.tile {
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
+        TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
+            label.clone()
+        }
+    };
+    let title = tab.title.trim();
+    // What the window's well shows instead of a picture: its app's own glyph, so two apps'
+    // windows never look alike.
+    let icon = ui::icons::app_glyph(&app, None).name().to_owned();
+    let preview = match &tab.tile {
+        TileContent::Foreign { .. } if handle.withholds(&app) => "withheld",
+        TileContent::Foreign { .. } => "live",
+        _ => "none",
+    };
+    // A window of another of the person's devices runs there, and one of a peer's on theirs:
+    // neither may be pictured here yet, so each says which device it is on.
+    let (local, device, device_name) = match &tab.tile {
+        TileContent::HostedWindow {
+            host, host_label, ..
+        } => (false, host.clone(), host_label.clone()),
+        TileContent::PeerWindow { .. } => (false, String::new(), String::new()),
+        _ => (true, String::new(), String::new()),
+    };
+    shell_part::WindowReading {
+        key: tab.id.to_string(),
+        title: if title.is_empty() {
+            untitled()
+        } else {
+            title.to_owned()
+        },
+        // The app as people know it, never the id: a window is named by what it shows, and
+        // its `app_title` is a person's own name for the window, not its app's name.
+        origin_app: crate::app_names::app_name(&app),
+        app_key: app,
+        icon,
+        strip: at.strip.name.trim().to_owned(),
+        strip_key: at.strip.id.0.to_string(),
+        workspace: at.workspace.name.clone(),
+        workspace_key: at.workspace.slot.0.to_string(),
+        group_key: at.group.id.to_string(),
+        tab_index: at.tab_index,
+        share: at.share,
+        local,
+        device,
+        device_name,
+        place: at.place,
+        recency: 0,
+        focused: at.focused,
+        preview: preview.to_owned(),
+    }
+}
+
+/// The windows the desk shows: every workspace's, the one in front first, each strip top to
+/// bottom and each group leading to trailing, the tab in front of a group first and the tabs
+/// behind it in their order. Each window says where it stands (`place`), the workspace, strip
+/// and group it is in, its tab's place in the group and the share of the strip it keeps, so a
+/// picture can be drawn where the window stands.
+fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::WindowReading> {
+    let Some(front) = tree.active_workspace() else {
         return Vec::new();
     };
     let active_strip = tree
         .active_strip
-        .get(&workspace.slot)
+        .get(&front.slot)
         .copied()
-        .or_else(|| workspace.strips.first().map(|strip| strip.id));
+        .or_else(|| front.strips.first().map(|strip| strip.id));
     // The tabs the focus history remembers, most recent first.
-    let history: Vec<u64> = workspace
+    let history: Vec<u64> = front
         .strips
         .iter()
         .flat_map(|strip| strip.window_groups.iter())
         .flat_map(|group| group.focus_history.iter().rev().copied())
         .collect();
+    let mut workspaces: Vec<&_> = tree.workspaces.iter().collect();
+    workspaces.sort_by_key(|workspace| workspace.slot != front.slot);
     let mut readings = Vec::new();
     let mut focused_tab = None;
-    for strip in &workspace.strips {
-        let active_group = tree
-            .active_group_for(strip.id)
-            .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
-            .or_else(|| strip.window_groups.first().map(|group| group.id));
-        for group in &strip.window_groups {
-            for tab in &group.tabs {
-                let focused = Some(strip.id) == active_strip
-                    && Some(group.id) == active_group
-                    && tab.id == group.active_tab;
-                if focused {
-                    focused_tab = Some(tab.id);
-                }
-                let app = match &tab.tile {
-                    TileContent::Foreign { app_id, .. }
-                    | TileContent::LocalApp { app_id, .. }
-                    | TileContent::PeerWindow { app_id, .. }
-                    | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
-                    TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
-                        label.clone()
-                    }
-                };
-                let title = tab.title.trim();
-                // What the window's well shows instead of a picture: its app's own glyph, so
-                // two apps' windows never look alike.
-                let icon = ui::icons::app_glyph(&app, None).name().to_owned();
-                let preview = match &tab.tile {
-                    TileContent::Foreign { .. } if handle.withholds(&app) => "withheld",
-                    TileContent::Foreign { .. } => "live",
-                    _ => "none",
-                };
-                readings.push(shell_part::WindowReading {
-                    key: tab.id.to_string(),
-                    title: if title.is_empty() {
-                        untitled()
+    for workspace in workspaces {
+        let in_front = workspace.slot == front.slot;
+        let mut place = 0_i64;
+        for strip in &workspace.strips {
+            let active_group = if in_front {
+                tree.active_group_for(strip.id)
+                    .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
+                    .or_else(|| strip.window_groups.first().map(|group| group.id))
+            } else {
+                None
+            };
+            for group in &strip.window_groups {
+                // The width the window keeps on the desk: a strip's groups split its width
+                // between them, so the pictures of a strip keep the desk's proportions.
+                let share = group.width.fraction();
+                let leading = group
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == group.active_tab)
+                    .unwrap_or(0);
+                let mut behind = 0_i64;
+                for (index, tab) in group.tabs.iter().enumerate() {
+                    let tab_index = if index == leading {
+                        0
                     } else {
-                        title.to_owned()
-                    },
-                    // The app as people know it, never the id: a window is named by what it
-                    // shows, and its `app_title` is a person's own name for the window, not
-                    // its app's name.
-                    origin_app: crate::app_names::app_name(&app),
-                    app_key: app,
-                    icon,
-                    strip: strip.name.trim().to_owned(),
-                    strip_key: strip.id.0.to_string(),
-                    workspace: workspace.name.clone(),
-                    recency: 0,
-                    focused,
-                    preview: preview.to_owned(),
-                });
+                        behind = behind.saturating_add(1);
+                        behind
+                    };
+                    let focused = in_front
+                        && Some(strip.id) == active_strip
+                        && Some(group.id) == active_group
+                        && tab.id == group.active_tab;
+                    if focused {
+                        focused_tab = Some(tab.id);
+                    }
+                    place = place.saturating_add(1);
+                    readings.push(window_reading(
+                        tab,
+                        Standing {
+                            workspace,
+                            strip,
+                            group,
+                            share,
+                            place,
+                            tab_index,
+                            focused,
+                        },
+                        handle,
+                    ));
+                }
             }
         }
     }
@@ -361,25 +457,38 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
 }
 
 /// The windows the switcher's walk crosses, as their places in `windows`, with the place in
-/// them of the window in front: every window of the workspace, or the ones the app the front
-/// window shows has. The walk, the mark the reading carries and the commit all count from
-/// this one list.
+/// them of the window in front: every window of the workspace in front, or the ones the app
+/// the front window shows has. The walk, the mark the reading carries and the commit all count
+/// from this one list.
 fn walked(
     windows: &[shell_part::WindowReading],
     scope: crate::overlays::SwitcherScope,
 ) -> (Vec<usize>, Option<usize>) {
     use crate::overlays::SwitcherScope;
     let front = windows.iter().position(|window| window.focused);
-    let application =
-        front.and_then(|front| windows.get(front).map(|window| window.app_key.clone()));
+    let here = front.and_then(|front| windows.get(front));
+    let workspace = here.map(|window| window.workspace_key.clone());
+    let application = here.map(|window| window.app_key.clone());
+    // The walk crosses the workspace in front alone: a window of another workspace is read and
+    // searched, but Alt+Tab never takes the person out of the workspace they are in.
+    let here = |window: &shell_part::WindowReading| {
+        workspace
+            .as_ref()
+            .is_none_or(|workspace| &window.workspace_key == workspace)
+    };
     let walked: Vec<usize> = match (scope, application) {
         (SwitcherScope::App, Some(application)) => windows
             .iter()
             .enumerate()
-            .filter(|(_, window)| window.app_key == application)
+            .filter(|(_, window)| window.app_key == application && here(window))
             .map(|(at, _)| at)
             .collect(),
-        _ => (0..windows.len()).collect(),
+        _ => windows
+            .iter()
+            .enumerate()
+            .filter(|(_, window)| here(window))
+            .map(|(at, _)| at)
+            .collect(),
     };
     let front = front.and_then(|front| walked.iter().position(|at| *at == front));
     (walked, front)
@@ -1089,7 +1198,27 @@ mod tests {
             shell,
             panel: tilo_desktop::overlays::Overlays::new(),
             overlays: Rc::new(crate::overlays::Overlays::new()),
+            overview: Rc::new(std::cell::Cell::new(false)),
         }
+    }
+
+    #[test]
+    fn the_overview_turns_the_desks_reading_with_the_surface() {
+        let surfaces = surfaces(false, true);
+        assert!(!surfaces.overview.get());
+        surfaces.toggle(Overlay::Overview.name());
+        assert!(surfaces.overview.get(), "the overview is up");
+        surfaces.toggle(Overlay::Overview.name());
+        assert!(!surfaces.overview.get(), "a second press closes it");
+        surfaces.open(Overlay::Overview.name());
+        assert!(surfaces.overview.get());
+        surfaces.open(Overlay::Centre.name());
+        assert!(!surfaces.overview.get(), "another surface replaces it");
+        surfaces.open(Overlay::Overview.name());
+        surfaces.close(Overlay::Centre.name());
+        assert!(surfaces.overview.get(), "closing another surface leaves it");
+        surfaces.close(Overlay::Overview.name());
+        assert!(!surfaces.overview.get());
     }
 
     #[test]

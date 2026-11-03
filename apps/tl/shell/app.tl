@@ -147,6 +147,26 @@ type Win (origin: session.window) {
     /// Its strip's id, as moving a window there names the strip.
     strip_key: Text merge register
     workspace: Text merge register
+    /// Its workspace's id, as switching to it names the workspace.
+    workspace_key: Text merge register
+    /// The window it is a tab of: a group's tabs are one window on the desk, and its other
+    /// tabs stand behind it.
+    group_key: Text merge register
+    /// Its place among its group's tabs: 0 for the tab in front, then the tabs behind it in
+    /// their order.
+    tab_index: Int
+    /// Its share of its strip's width, 0..1: the width the window keeps on the desk.
+    share: Float
+    /// Whether it runs on this device: false for a window on another of the person's devices,
+    /// or on a peer's.
+    local: Bool
+    /// The device that runs it, when it is not this one: its key, empty when it is not known.
+    device: Text merge register
+    /// That device's name, as its certificate labels it.
+    device_name: Text merge register
+    /// Where it stands in the picture of its workspace: 1 for the first tab of the first group
+    /// of the first strip, on along them, strips top to bottom.
+    place: Int
     recency: Int
     focused: Bool
     preview: Text merge register

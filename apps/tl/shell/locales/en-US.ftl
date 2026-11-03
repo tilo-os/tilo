@@ -243,6 +243,30 @@ d-g3ddlvlc = Strip key
 
 d-hnoh7dgq = Workspace
 
+d-c7yq7qkl = Workspace key
+    .doc = Its workspace's id, as switching to it names the workspace.
+
+d-bard6ca3 = Group key
+    .doc = The window it is a tab of: a group's tabs are one window on the desk, and its other tabs stand behind it.
+
+d-lbxt5665 = Tab index
+    .doc = Its place among its group's tabs: 0 for the tab in front, then the tabs behind it in their order.
+
+d-kiwhpw3z = Share
+    .doc = Its share of its strip's width, 0..1: the width the window keeps on the desk.
+
+d-hm2x5otu = Local
+    .doc = Whether it runs on this device: false for a window on another of the person's devices, or on a peer's.
+
+d-wxi227u2 = Device
+    .doc = The device that runs it, when it is not this one: its key, empty when it is not known.
+
+d-aadqdflh = Device name
+    .doc = That device's name, as its certificate labels it.
+
+d-ctnewsrr = Place
+    .doc = Where it stands in the picture of its workspace: 1 for the first tab of the first group of the first strip, on along them, strips top to bottom.
+
 d-z3pjamxl = Recency
 
 d-a5fwclo5 = Focused
@@ -999,13 +1023,15 @@ d-rcjzvfxp = Overview
     .w-new-workspace = New workspace
     .w-join-a-workspace = Join a workspace
     .w-search-windows-across-your-workspaces = Search windows across your workspaces
+    .w-no-windows = No windows
+    .w-open-something-and-its-picture-shows = Open something and its picture shows here
 
 d-f5tl6n63 = Rooms here
     .w-here = { $len } here
 
 d-7nxhynyj = Picture
-    .w-nothing-on-this-strip = Nothing on this strip
-    .w-open-something-or-carry-a-window = Open something, or carry a window here
+
+d-u2b66n4a = Window group
 
 d-nxpbvfox = Window place
 
@@ -1016,8 +1042,8 @@ d-6l3wldtm = Window menu
 
 d-6nn35yb7 = Found
     .w-nothing-matches = Nothing matches
-    .w-windows-of-your-other-workspaces-show = Windows of your other workspaces show here. What apps hold is in Search
-    .w-in-other-workspaces = In other workspaces
+    .w-windows-of-every-workspace-show-here = Windows of every workspace show here. What apps hold is in Search
+    .w-windows = Windows
 
 d-kxdzjhoo = Window line
     .w-this-window = This window
@@ -1129,6 +1155,8 @@ d-jzxijptr = Window names
 
 d-3bxeb2i2 = Window face
 
+d-sk6mvhah = Window picture
+
 d-4hp326dv = Traditional desktop
     .w-desktop = Desktop
 
@@ -1189,6 +1217,8 @@ d-t3ywtwqj-row0 = Notice row for a
 d-wh7n4fhq-row0 = Banner row for a
 
 d-f5tl6n63-row0 = Rooms here for r
+
+d-u2b66n4a-row0 = Window group for v
 
 d-6l3wldtm-row0 = Window menu for s
     .w-move-to = Move to { $strip_name }

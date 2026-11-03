@@ -20,7 +20,7 @@
 /// Every choice it offers is the session's action: going to a window is `session.focus`, the
 /// same as a press on its strip.
 view switcher(d: Desk) {
-    let desk = d.windows.filter(w -> w.workspace == d.workspace).sort_by(w -> w.recency)
+    let desk = d.windows.filter(w -> w.workspace_key == front_workspace(d)).sort_by(w -> w.recency)
     let pick = desk.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }
     let windows = if d.switcher_scope == "app" { desk.filter(w -> w.app_key == front_app) } else { desk }
@@ -112,11 +112,21 @@ view window_names(w: Win) {
 /// marked as withheld.
 view window_face(w: Win) {
     layers(min: if space.compact { 4rem } else { 11rem }, aspect: 1.6) {
-        ui.WindowPreview(w.key)
-        if w.preview != "live" {
-            row(fill, align: .center, distribute: .center) {
-                ui.Icon(if w.preview == "withheld" { .eye_off } else { w.icon }, size: .large, secondary: true)
-            }
+        window_picture(w)
+    }
+}
+
+/// A window's own live picture, drawn from the window itself in the place this reports
+/// (`ui.WindowPreview`). Where there is none to draw, the app's glyph stands in it, so the place
+/// still says which window it is; a window that holds secrets is marked as withheld.
+///
+/// Every place a window is pictured frames this at the window's shape: the switcher's cards and
+/// the overview's places, so the same window never looks like two things.
+view window_picture(w: Win) {
+    ui.WindowPreview(w.key)
+    if w.preview != "live" {
+        row(fill, align: .center, distribute: .center) {
+            ui.Icon(if w.preview == "withheld" { .eye_off } else { w.icon }, size: .large, secondary: true)
         }
     }
 }

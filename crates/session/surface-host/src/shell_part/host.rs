@@ -14,9 +14,12 @@ impl SurfaceHost for ShellPart {
     }
 
     /// The whole screen lies under the windows, which stand in its wells; the bar rides over
-    /// them.
+    /// them. A surface of the desk's (the overview, the switcher, the launcher) or a menu of
+    /// the part's stands over the windows instead: while one covers the outputs, the part and
+    /// the pictures it names are drawn above every window, as what it shows is the person's
+    /// to look at rather than a backdrop behind their windows.
     fn below_windows(&self) -> bool {
-        self.widgets.below_windows()
+        self.widgets.below_windows() && !self.cover
     }
 
     /// The live pictures the part's views name: each window's own pixels, where the view would

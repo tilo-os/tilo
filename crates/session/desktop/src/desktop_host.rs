@@ -710,8 +710,12 @@ pub struct DesktopChrome {
     /// The tree revision the open overview shows.
     overview_revision: u64,
     /// Whether the overview is open, as the chrome last drew it, for the
-    /// host whose clock flies its windows in and out.
+    /// host whose clock flies its windows in and out. The panel speaks only
+    /// when it moves: where the shell carries the overview, the panel stays
+    /// shut and the shell's own surface is the one that has the flag.
     overview_open: Option<Rc<Cell<bool>>>,
+    /// What the overview's panel last said of itself.
+    overview_said: bool,
     /// Whether the bar last drew its Tilo mark pressed (its menu open).
     menu_shown: Cell<bool>,
     handle: DesktopHandle,
@@ -837,6 +841,7 @@ impl DesktopChrome {
             navigator_seen: None,
             overview_revision: 0,
             overview_open: None,
+            overview_said: false,
             menu_shown: Cell::new(false),
             handle,
             generation,
@@ -2351,7 +2356,11 @@ impl Widget for DesktopChrome {
         self.observe_navigation();
         self.publish_overlays();
         if let Some(open) = &self.overview_open {
-            open.set(self.overview.is_open());
+            let said = self.overview.is_open();
+            if said != self.overview_said {
+                open.set(said);
+                self.overview_said = said;
+            }
         }
         changed | !self.asks.borrow().is_empty()
     }

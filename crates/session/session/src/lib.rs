@@ -1216,6 +1216,7 @@ impl Session {
             shell: options.shell,
             panel: overlays.clone(),
             overlays: Rc::clone(&desk_overlays),
+            overview: overview.open_flag(),
         };
         let desk_door: tilo_surface_host::Shared =
             shell::desk_door(options.shell, desktop.clone(), surfaces.clone());
@@ -2290,7 +2291,10 @@ impl Session {
     /// away, and before a window on the desk has a picture.
     #[must_use]
     pub fn overview_pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
-        self.shared.overview_pictures()
+        match self.shell.as_ref() {
+            Some(shell) => shell.pictures(),
+            None => self.shared.overview_pictures(),
+        }
     }
 
     /// What the service publishing `resource` reads of it now, as JSON;

@@ -612,6 +612,151 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
     });
 }
 
+/// The desk's reading holds every workspace's windows, not only the workspace in front's: a
+/// window of another workspace keeps its workspace's key, its share of its strip and its place,
+/// so the overview's search over the reading finds it; and the walk Alt+Tab takes still crosses
+/// the workspace in front alone.
+#[test]
+fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_one() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let behind = open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).windows.len() == 1);
+    let first = desk(&session);
+    let first_key = first
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.current)
+        .expect("a workspace is in front")
+        .key
+        .clone();
+    // A second workspace, in front, with a window of its own.
+    session
+        .invoke(
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            "new-workspace",
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    until(&mut session, |session| {
+        desk(session).workspaces.len() == 2 && desk(session).workspace != first.workspace
+    });
+    let front = open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    let now = desk(&session);
+    let elsewhere = now
+        .windows
+        .iter()
+        .find(|window| window.key == behind.to_string())
+        .unwrap_or_else(|| {
+            panic!(
+                "the other workspace's window is read too: {:?}",
+                now.windows
+            )
+        });
+    assert_eq!(
+        elsewhere.workspace_key, first_key,
+        "it names the workspace it is in, not the one in front"
+    );
+    assert_eq!(elsewhere.workspace, first.workspace);
+    assert!(
+        elsewhere.share > 0.0 && elsewhere.share <= 1.0,
+        "it keeps its share of the strip's width: {}",
+        elsewhere.share
+    );
+    assert!(
+        !elsewhere.strip_key.is_empty() && !elsewhere.group_key.is_empty(),
+        "and the strip and window it stands on"
+    );
+    assert_eq!(elsewhere.tab_index, 0, "it is the tab in front of it");
+    assert!(elsewhere.place > 0, "it has a place in its workspace");
+    assert!(!elsewhere.focused, "what has focus is the window in front");
+    // The walk crosses the workspace in front alone.
+    for _ in 0..3 {
+        walk(&mut session, 1, "workspace");
+        session.step(Duration::from_millis(300)).unwrap();
+        until(&mut session, |session| desk(session).switcher_revealed);
+        assert_eq!(
+            reached(&session).key,
+            front.to_string(),
+            "the walk keeps to the workspace in front: {:?}",
+            desk(&session).windows
+        );
+    }
+}
+
+/// The overview's search crosses the workspaces: a window the person left in another
+/// workspace is found, named with the workspace it is in, and choosing it goes there.
+#[test]
+fn the_overviews_search_finds_a_window_of_another_workspace() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let notes = open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).windows.len() == 1);
+    let behind = desk(&session).workspace.clone();
+    session
+        .invoke(
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            "new-workspace",
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    until(&mut session, |session| {
+        desk(session).workspaces.len() == 2 && desk(session).workspace != behind
+    });
+    // The reading holds it, in the workspace behind the one in front.
+    let read = desk(&session);
+    let noted = read
+        .windows
+        .iter()
+        .find(|w| w.key == notes.to_string())
+        .unwrap_or_else(|| panic!("the window behind is read: {:?}", read.windows));
+    assert_eq!(noted.workspace, behind, "it keeps the workspace it is in");
+    assert_ne!(
+        noted.workspace, read.workspace,
+        "the window is not in the workspace in front"
+    );
+    show(&mut session, "overview");
+    let field = "Query";
+    until(&mut session, |session| {
+        session.shell_control(field).is_some()
+    });
+    assert!(
+        session.shell_control("so.tilo.notes").is_none(),
+        "the workspace in front has no window to show: {:?}",
+        session.accessible_labels()
+    );
+    press(&mut session, field);
+    type_text(&mut session, "notes");
+    // It is found; its row names the workspace it is in.
+    until(&mut session, |session| {
+        session.shell_control("so.tilo.notes").is_some()
+    });
+    assert!(
+        session.shell_says(&behind),
+        "the row names the workspace behind: {:?}",
+        session.accessible_labels()
+    );
+    // Choosing it goes there.
+    press(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).workspace == behind);
+    assert!(
+        desk(&session)
+            .windows
+            .iter()
+            .any(|w| w.key == notes.to_string() && w.focused),
+        "the window found is the one in front: {:?}",
+        desk(&session).windows
+    );
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
 #[test]
 fn the_launcher_opens_from_the_bar_and_searches_windows() {
     let _settled = ui::motion::testing::settled();
@@ -1706,6 +1851,7 @@ fn window_menu(session: &mut Session, item: &str) {
     until(session, |session| {
         session.shell_control("This window").is_some()
     });
+    eprintln!("PROBE windows={:#?}", desk(session).windows);
     press(session, "This window");
     until(session, |session| session.shell_control(item).is_some());
 }
@@ -1826,6 +1972,7 @@ fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
     until(&mut session, |session| {
         session.shell_control("This window").is_some()
     });
+    eprintln!("PROBE windows={:#?}", desk(&session).windows);
     press(&mut session, "This window");
     until(&mut session, |session| {
         ["Move to Main", "Move to Research"]

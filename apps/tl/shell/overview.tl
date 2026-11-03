@@ -4,15 +4,15 @@
 /// (`so.tilo.session`), so the arrangement stays the session's: each change is attributed and
 /// undoable.
 ///
-/// The picture is the desk's: each strip top to bottom, the strip's windows left to right in
-/// strip order, under the strip's name. A window's own picture is the host's to supply; this
-/// view lays out its place, names it and marks who else is on it, and it is a surface of the
-/// desk: the desk's bar stays above it, so it holds no sidebar of its own.
+/// The picture is the desk's: each strip top to bottom, its windows left to right at the share
+/// of the strip's width they keep on the desk, a group's other tabs as narrower slices beside
+/// the tab in front, under the strip's name. Each place shows the window's own live picture
+/// (`ui.WindowPreview`), the compositor's, and names it below; it is a surface of the desk: the
+/// desk's bar stays above it, so it holds no sidebar of its own.
 view overview(d: Desk) {
     lens query: Text = d.spotlight
-    let windows = d.windows.sort_by(w -> w.recency)
-    let here = windows.filter(w -> w.workspace == d.workspace)
-    let elsewhere = windows.filter(w -> w.workspace != d.workspace).matching(query)
+    let windows = d.windows.sort_by(w -> w.place)
+    let here = windows.filter(w -> w.workspace_key == front_workspace(d))
     stack(gap: .section) {
         row(gap: .related, align: .center, wrap: true) {
             ui.Text("Overview", role: .heading)
@@ -30,11 +30,14 @@ view overview(d: Desk) {
         }
         rooms_here(d)
         if query == "" {
+            if here.is_empty() {
+                ui.EmptyState("No windows", message: "Open something and its picture shows here", icon: .app_window, inline: true)
+            }
             for s in window_strips(here) {
                 picture(d, here, s)
             }
         } else {
-            found(d, elsewhere)
+            found(d, windows.matching(query))
         }
     }
 }
@@ -57,35 +60,74 @@ view rooms_here(d: Desk) {
     }
 }
 
-/// One strip: its windows as places left to right, each opening what it shows and carrying its
-/// menu of moves.
+/// One strip: its windows as places leading to trailing, each at its share of the strip's
+/// width, opening what it shows and carrying its menu of moves.
 view picture(d: Desk, windows: List<Win>, strip: Text) {
-    ui.Section(strip) {
-        if windows.count(w -> w.strip == strip) == 0 {
-            ui.EmptyState("Nothing on this strip", message: "Open something, or carry a window here", icon: .columns_2, inline: true)
-        }
-        grid(min: 15rem) {
-            for w in windows.filter(w -> w.strip == strip) {
-                window_place(d, w)
+    ui.Section(strip_name(d, strip)) {
+        row(gap: .related, align: .start) {
+            for w in windows.filter(v -> v.strip_key == strip and v.tab_index == 0).sort_by(v -> v.place) {
+                window_group(d, windows, w)
             }
         }
     }
 }
 
-/// One window's place: its picture, its title and the app it shows, lifted while it has focus,
-/// with a menu that moves it to another strip or workspace, closes it, or asks about it.
-view window_place(d: Desk, w: Win) {
-    ui.Card(item: w, title: w.title, selected: w.focused) {
-        row(gap: .related, align: .center) {
-            ui.Icon(if w.preview == "withheld" { .eye_off } else { .app_window }, size: .large, secondary: true)
-            stack(gap: .tight) {
-                ui.Text(w.title, role: .label, lines: 1, truncate)
-                ui.Text(w.origin_app, role: .caption, secondary: true, lines: 1)
+/// One window of the desk with the tabs behind it: the tab in front at the window's share of
+/// the strip, each tab behind it a narrower slice beside it, as the window stands on the desk.
+view window_group(d: Desk, windows: List<Win>, w: Win) {
+    let behind = behind_tabs(windows, w)
+    row(fill(group_weight(w, behind)), gap: .tight, align: .start) {
+        window_place(d, w, 1.0)
+        for v in behind {
+            // A tab behind stands 0.75 as wide as its picture is tall, and a picture is 1.6
+            // times as wide as it is tall: beside the front tab, that is 0.469 of its width.
+            window_place(d, v, 0.469)
+        }
+    }
+}
+
+/// The tabs standing behind `w` on the desk, in their order.
+fn behind_tabs(windows: List<Win>, w: Win) -> List<Win> {
+    return windows.filter(v -> v.group_key == w.group_key and v.tab_index > 0).sort_by(v -> v.tab_index)
+}
+
+/// How much of the strip a window with `behind` tabs behind it takes: the window's share, and
+/// the slice each tab behind it stands in.
+fn group_weight(w: Win, behind: List<Win>) -> Float {
+    return w.share * (1.0 + 0.469 * behind.len().to_float())
+}
+
+/// One window's place: its live picture, the app it shows and the device it runs on when that is
+/// not this one, lifted while it has focus, with a menu that moves it to another strip or
+/// workspace, closes it, or asks about it. Its card takes `weight` of the strip's width, so a
+/// place stands as wide as the window stands on the desk, up to the width a place shows at on
+/// this screen: past that the picture would stand taller than the page it is on, so a window
+/// wider than the screen allows is pictured no wider than that.
+view window_place(d: Desk, w: Win, weight: Float) {
+    let cap = if space.compact { 16rem } else if space.width_class == .expanded or space.width_class == .wide { 26rem } else { 20rem }
+    ui.Card(item: w, title: w.title, selected: w.focused, fill(weight), max: cap) {
+        stack(gap: .tight) {
+            layers(aspect: 1.6) {
+                window_picture(w)
             }
-            window_menu(d, w)
+            ui.Text(w.title, role: .label, lines: 1, truncate)
+            row(gap: .tight, align: .center) {
+                ui.Text(app_line(w), role: .caption, secondary: true, lines: 1, truncate)
+                spacer
+                window_menu(d, w)
+            }
         }
         on activate: session.focus(window(w))
     }
+}
+
+/// The app a window shows, and the device it runs on when it is not this one: a window on the
+/// person's other device is named with it until it can be pictured live.
+fn app_line(w: Win) -> Text {
+    if w.device_name != "" {
+        return "{w.origin_app} · {w.device_name}"
+    }
+    return w.origin_app
 }
 
 /// A window's commands, where its place shows them: going there, carrying it to another strip
@@ -95,14 +137,14 @@ view window_menu(d: Desk, w: Win) {
         ui.MenuItem("Go there", icon: .arrow_right) {
             on choose: session.focus(window(w))
         }
-        for s in strip_keys(d, w.workspace) {
+        for s in strip_keys(d, w.workspace_key) {
             if s != w.strip_key {
                 ui.MenuItem("Move to {strip_name(d, s)}", icon: .arrow_right) {
                     on choose: session.move_tab(tab: w.key, strip: .some(s), workspace: .none, display: .none)
                 }
             }
         }
-        for r in d.rooms.filter(r -> r.name != w.workspace) {
+        for r in d.rooms.filter(r -> r.key != w.workspace_key) {
             ui.MenuItem("Move to {r.name}", icon: .layers) {
                 on choose: session.move_tab(tab: w.key, strip: .none, workspace: .some(r.key), display: .none)
             }
@@ -113,13 +155,13 @@ view window_menu(d: Desk, w: Win) {
     }
 }
 
-/// What a search finds across the person's other workspaces: each window, going there or
-/// moving it here. What apps hold is the platform search's, not the overview's.
+/// What a search finds among the person's windows, in every workspace: each one, going there
+/// or moving it here. What apps hold is the platform search's, not the overview's.
 view found(d: Desk, elsewhere: List<Win>) {
     if elsewhere.is_empty() {
-        ui.EmptyState("Nothing matches", message: "Windows of your other workspaces show here. What apps hold is in Search", icon: .search, inline: true)
+        ui.EmptyState("Nothing matches", message: "Windows of every workspace show here. What apps hold is in Search", icon: .search, inline: true)
     } else {
-        ui.Section("In other workspaces") {
+        ui.Section("Windows") {
             for w in elsewhere.take(16) {
                 window_line(d, w)
             }
@@ -127,16 +169,18 @@ view found(d: Desk, elsewhere: List<Win>) {
     }
 }
 
-/// One window of another workspace, as a row that opens there, with the way to bring it here.
+/// One window a search found, as a row that opens there, with the way to bring it here.
 view window_line(d: Desk, w: Win) {
-    ui.ListRow(w.title, secondary: .some(w.origin_app), meta: .some(w.workspace), item: w, icon: if w.preview == "withheld" { .eye_off } else { .app_window }) {
+    ui.ListRow(w.title, secondary: .some(app_line(w)), meta: .some(w.workspace), item: w, icon: if w.preview == "withheld" { .eye_off } else { .app_window }) {
         trailing: {
             ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
                 ui.MenuItem("Go there", icon: .arrow_right) {
                     on choose: session.focus(window(w))
                 }
-                ui.MenuItem("Move here", icon: .arrow_down) {
-                    on choose: session.move_tab(tab: w.key, strip: .none, workspace: .some(current_room(d)), display: .none)
+                if w.workspace_key != front_workspace(d) {
+                    ui.MenuItem("Move here", icon: .arrow_down) {
+                        on choose: session.move_tab(tab: w.key, strip: .none, workspace: .some(front_workspace(d)), display: .none)
+                    }
                 }
             }
         }
@@ -144,30 +188,28 @@ view window_line(d: Desk, w: Win) {
     }
 }
 
-/// The strips a list of windows names, by name, in the order the windows stand in them.
+/// The strips a list of windows stands on, top to bottom.
 fn window_strips(windows: List<Win>) -> List<Text> {
-    let in_order = windows.sort_by(w -> w.recency).map(w -> w.strip).filter(s -> s != "")
+    let in_order = windows.sort_by(w -> w.place).map(w -> w.strip_key).filter(s -> s != "")
     return in_order.group(s -> s).map(p -> p.key)
 }
 
-/// The ids of the strips of `workspace`, most recent first, as the desk's windows name them.
+/// The ids of the strips of the workspace `workspace`, top to bottom, as the desk's windows
+/// name them.
 fn strip_keys(d: Desk, workspace: Text) -> List<Text> {
-    let in_order = d.windows.filter(w -> w.workspace == workspace).sort_by(w -> w.recency).map(w -> w.strip_key).filter(s -> s != "")
-    return in_order.group(s -> s).map(p -> p.key)
+    let mine = d.windows.filter(w -> w.workspace_key == workspace)
+    let keys = mine.map(w -> w.strip_key).filter(s -> s != "")
+    return keys.group(s -> s).map(p -> p.key)
 }
 
-/// The name of the strip `key`, as its windows name it.
+/// The name of the strip `key`: its own, or the app of the first window on it when it has none,
+/// so no strip is named by where it stands.
 fn strip_name(d: Desk, key: Text) -> Text {
-    if let w = d.windows.filter(w -> w.strip_key == key).first() {
-        return w.strip
-    }
-    return ""
-}
-
-/// The id of the workspace in front.
-fn current_room(d: Desk) -> Text {
-    if let r = d.rooms.filter(r -> r.current).first() {
-        return r.key
+    if let w = d.windows.filter(w -> w.strip_key == key).sort_by(v -> v.place).first() {
+        if w.strip != "" {
+            return w.strip
+        }
+        return w.origin_app
     }
     return ""
 }

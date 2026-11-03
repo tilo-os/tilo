@@ -687,6 +687,41 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     );
 }
 
+/// A surface of the desk's stands over the windows it is over: the whole screen lies under
+/// them at rest, so its wells hold them, and the overview — with the pictures it names — comes
+/// up over every window rather than underneath the window it is showing.
+#[test]
+fn a_surface_of_the_desks_stands_over_the_windows() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = super::tests_support::part_as(reading(), None);
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    assert!(
+        part.below_windows(),
+        "the desk at rest stands under the windows"
+    );
+    link.publish(DeskReading {
+        here: "overview".to_owned(),
+        ..reading()
+    });
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    assert!(
+        !part.below_windows(),
+        "the overview stands over the windows"
+    );
+    link.publish(reading());
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    assert!(
+        part.below_windows(),
+        "and goes under them again when it closes"
+    );
+}
+
 /// The overview over a window on each of `strips`, the first window's on the first strip.
 fn overview_with(strips: &[&str]) -> DeskReading {
     DeskReading {
@@ -706,6 +741,7 @@ fn overview_with(strips: &[&str]) -> DeskReading {
                 recency: i64::try_from(at).unwrap(),
                 focused: at == 0,
                 preview: "none".to_owned(),
+                ..WindowReading::default()
             })
             .collect(),
         ..reading()
@@ -1115,4 +1151,88 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
             );
         }
     }
+}
+
+/// The overview gives every window the share of its strip it keeps on the desk,
+/// and each picture room to show the window: a picture a fraction of a pixel
+/// high shows no window at all.
+#[test]
+fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
+    let _settled = ui::motion::testing::settled();
+    let windows: Vec<WindowReading> = [(7, 0.5, "wide"), (8, 0.25, "narrow")]
+        .into_iter()
+        .enumerate()
+        .map(|(at, (key, share, title))| WindowReading {
+            key: key.to_string(),
+            title: title.to_owned(),
+            origin_app: "so.tilo.notes".to_owned(),
+            app_key: "so.tilo.notes".to_owned(),
+            icon: "app_window".to_owned(),
+            strip: "Main".to_owned(),
+            strip_key: "1".to_owned(),
+            workspace: "Desk".to_owned(),
+            workspace_key: "1".to_owned(),
+            group_key: key.to_string(),
+            share,
+            local: true,
+            place: i64::try_from(at).unwrap(),
+            recency: i64::try_from(at).unwrap(),
+            focused: at == 0,
+            preview: "live".to_owned(),
+            ..WindowReading::default()
+        })
+        .collect();
+    let (mut part, link) = part_with(reading());
+    let previews = ui::widget::Previews::new();
+    part.show_pictures(
+        previews.clone(),
+        std::rc::Rc::new(|key: &str| key.parse::<u64>().ok()),
+    );
+    link.publish(DeskReading {
+        here: "overview".to_owned(),
+        windows,
+        rooms: vec![RoomReading {
+            key: "1".to_owned(),
+            name: "Desk".to_owned(),
+            current: true,
+            ..RoomReading::default()
+        }],
+        ..reading()
+    });
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    let pictures: Vec<(u64, (f64, f64, f64, f64))> = part
+        .window_pictures()
+        .into_iter()
+        .map(|picture| (picture.window, picture.rect))
+        .collect();
+    assert_eq!(
+        pictures.len(),
+        2,
+        "both windows are pictured: {pictures:?} of {:?}",
+        previews.pictures()
+    );
+    for (window, (x, y, width, height)) in &pictures {
+        assert!(*height >= 24.0, "window {window} has room: {pictures:?}");
+        assert!(*width >= 24.0, "window {window} has room: {pictures:?}");
+        assert!(
+            *x >= 0.0 && *y >= 0.0 && x + width <= 1280.0 && y + height <= 800.0,
+            "window {window} is on the display: {pictures:?}"
+        );
+    }
+    // The window keeping half the strip is given at least the room of the one keeping a
+    // quarter, as two windows stand on the desk; a place past the width a page shows it at
+    // keeps a window's shape instead of growing taller than the page.
+    let width = |window: u64| {
+        pictures
+            .iter()
+            .find(|(key, _)| *key == window)
+            .map_or(0.0, |(_, (_, _, width, _))| *width)
+    };
+    assert!(
+        width(7) >= width(8),
+        "the wider window takes the wider room: {pictures:?}"
+    );
 }

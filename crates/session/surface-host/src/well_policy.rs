@@ -23,13 +23,14 @@
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
+use tilo_compositor::gestures::GestureConfig;
 use tilo_compositor::policy::{LayoutPoint, LayoutRect};
-use tilo_compositor::{Arrangement, WindowInfo, WindowPolicy};
+use tilo_compositor::{Arrangement, GestureEvent, WindowInfo, WindowPolicy};
 use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
 use ui::widget::arrange::rem_of;
 
-use crate::desktop::{WindowFollowers, WindowObserver};
+use crate::desktop::{DeskGesture, GestureReader, Reading, WindowFollowers, WindowObserver};
 use crate::widget::WidgetHost;
 
 /// Where a window not shown waits: left of every output, out of sight and out of the pointer's
@@ -64,6 +65,15 @@ pub trait WellDesk {
     fn relayout(&self);
     /// The outputs the windows stand on, as the compositor knows them now.
     fn cover(&self, _outputs: &[LayoutRect]) {}
+    /// How the desk reads touchpad gestures: `None` leaves every one to the
+    /// clients.
+    fn gesture_config(&self) -> Option<GestureConfig> {
+        None
+    }
+    /// The desk took a gesture, and it asked `gesture` of it: it is the same
+    /// desk the strips' policy takes them on, so they reach its chrome the
+    /// same way.
+    fn took_gesture(&self, _gesture: DeskGesture) {}
 }
 
 /// The policy's own desktop ([`well_policy`]).
@@ -100,6 +110,8 @@ pub struct WellPolicy {
     wells: Wells,
     /// The windows given a place, so one gone from the compositor closes its tab.
     mapped: Vec<u64>,
+    /// The touchpad gestures the desk took.
+    gestures: GestureReader,
     /// Those of them that have not shown a buffer yet: they wait in their well, which the
     /// compositor does not list among its windows.
     pending: Vec<u64>,
@@ -134,6 +146,7 @@ impl WellPolicy {
             desk,
             wells: Wells::new(),
             mapped: Vec::new(),
+            gestures: GestureReader::default(),
             pending: Vec::new(),
             followers: WindowFollowers::default(),
         }
@@ -358,6 +371,18 @@ impl WindowPolicy for WellPolicy {
             self.desk.relayout();
         }
         true
+    }
+
+    fn gesture(&mut self, gesture: &GestureEvent) -> bool {
+        let config = self.desk.gesture_config();
+        match self.gestures.read(gesture, config) {
+            Reading::Clients => false,
+            Reading::Taken => true,
+            Reading::Asked(asked) => {
+                self.desk.took_gesture(asked);
+                true
+            }
+        }
     }
 
     fn focused(&mut self) -> Option<u64> {
