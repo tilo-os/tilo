@@ -14,9 +14,9 @@
 /// agent arrange the same way, attributed and undoable.
 ///
 /// Rows of several strips stand side by side across the row's width, each strip taking the share
-/// its own width names. A row too narrow to hold two windows beside each other pans sideways
-/// instead, each window keeping a window's width and the row the strip's height, since a phone
-/// cannot hold two windows side by side.
+/// its own width names against the rest: a row of more windows than it holds gives each a
+/// narrower window rather than pushing one off the desk, so every window of the row stays on it,
+/// on a phone as on a laptop.
 /// The places of the strip `strip`, in the order the record keeps them.
 fn places_of(a: Arrangement, strip: Text) -> List<ArrangementPlace> {
     a.places.filter(p -> p.strip == strip)
@@ -77,9 +77,10 @@ fn preset_title(p: Preset) -> Text {
 
 /// The preset the desk shows as a menu of the bar's own: the same switch the Settings page
 /// offers, where the person passes it on the desk, so the desk's windows start at the bar's edge
-/// and no second row stands between them and it.
+/// and no second row stands between them and it. The menu names the preset the desk shows, so the
+/// bar says what a person is looking at, and neither reads as one of the presets it offers.
 view preset_menu(v: Viewing) {
-    ui.MenuButton(preset_title(v.showing), icon: .layout_grid, role: .bar) {
+    ui.MenuButton("Showing {preset_title(v.showing)}", icon: .layout_grid, role: .bar) {
         ui.MenuItem("Strips", icon: .columns_2, checked: .some(v.showing == .strips)) {
             on choose: show_preset(v, .strips)
         }
@@ -130,42 +131,22 @@ view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
 
 /// One row of the desk: the band across it, named while the desk holds more than one so a person
 /// can tell them apart, with its strips side by side across the room the row is given, each
-/// taking the share its own width names. A row too narrow to give every window a window's least
-/// width pans across its windows instead, each keeping that width and the row the strip's height,
-/// rather than squeezing a window under its own bar.
+/// taking the share its own width names. Every window of the row stands on the desk, so a desk of
+/// many gives each a narrower window rather than pushing one off it.
 view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
     let strips = strips_of(a, held.key)
-    let count = strips.len()
-    // A window needs a window's width: the row shows its strips side by side while every one
-    // of them keeps it, and pans across them when the desk cannot give it.
-    let crowded = count > 0 and strips.any(s -> space.width * (if s.width > 0 { s.width.to_float() } else { 667.0 }) / 667.0 / count.to_float() < 13.0)
     stack(gap: .related, fill) {
         if a.rows.len() > 1 {
             ui.Text(held.name, role: .subheading)
         }
-        if not crowded {
-            row(gap: .group, fill) {
-                for s in strips {
-                    // Its share of the row by the width it names: a desk of more windows than
-                    // it holds gives each a narrower share, as the chrome's own row does.
-                    strip_window(a, v, s, lists, fill(if s.width > 0 { s.width } else { 667 }))
-                }
-                if strips.is_empty() {
-                    ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
-                }
+        row(gap: .group, fill) {
+            for s in strips {
+                // Its share of the row by the width it names: a desk of more windows than
+                // it holds gives each a narrower share, as the chrome's own row does.
+                strip_window(a, v, s, lists, fill(if s.width > 0 { s.width } else { 667 }))
             }
-        } else {
-            scroll(axis: .horizontal, fill) {
-                row(gap: .group, fill) {
-                    for s in strips {
-                        // The least a window may stand at: narrow enough for a phone's strip,
-                        // wide enough for a window's bar, the pill at its end and the app under it.
-                        strip_window(a, v, s, lists, fill(1), min: 13rem)
-                    }
-                    if strips.is_empty() {
-                        ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
-                    }
-                }
+            if strips.is_empty() {
+                ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
             }
         }
     }

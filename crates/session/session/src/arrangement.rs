@@ -1073,9 +1073,6 @@ fn change(
             record,
             state,
         } => {
-            if strips.strip(*strip).is_none() {
-                return Err("that strip is not in the arrangement".into());
-            }
             let opened = Place {
                 id: *place,
                 shows: shows.clone(),
@@ -1086,11 +1083,7 @@ fn change(
                 pinned: false,
                 shell: SHELL.to_owned(),
             };
-            if strips.open_into(*strip, opened, *after) {
-                Ok(true)
-            } else {
-                Err("that place is open already".into())
-            }
+            open_into(strips, *strip, *after, opened)
         }
         ArrangementAction::Move { place, row, before } => {
             if !by_the_person && strips.place(*place).is_some_and(|held| held.pinned) {
@@ -1170,6 +1163,24 @@ fn change(
                 height: *height,
             },
         ),
+    }
+}
+
+/// The place `opened` open in the strip `strip`, after the place `after` or
+/// last. Whether the desk changed.
+fn open_into(
+    strips: &mut Strips,
+    strip: u64,
+    after: Option<u64>,
+    opened: Place,
+) -> Result<bool, String> {
+    if strips.strip(strip).is_none() {
+        return Err("that strip is not in the arrangement".into());
+    }
+    if strips.open_into(strip, opened, after) {
+        Ok(true)
+    } else {
+        Err("that place is open already".into())
     }
 }
 

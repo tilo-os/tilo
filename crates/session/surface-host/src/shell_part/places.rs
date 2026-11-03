@@ -18,6 +18,22 @@ use super::*;
 
 const NOTES_APP: &str = "so.tilo.lang.notes";
 
+/// Click the shell's control `name`, as the person does: what stands there takes the press,
+/// and the frames after it settle what the press made.
+fn click(part: &mut ShellPart, name: &str) {
+    let (x, y, w, h) = part
+        .control_bounds(name)
+        .unwrap_or_else(|| panic!("the screen shows {name}"));
+    part.pointer_motion(x + w / 2.0, y + h / 2.0);
+    part.prepare_frame();
+    part.pointer_button(0x110, true);
+    part.prepare_frame();
+    part.pointer_button(0x110, false);
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+}
+
 /// A room's notebook, published as the session publishes it.
 fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
     let record = tilo_resource::Doc::new();
@@ -365,12 +381,10 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     for _ in 0..6 {
         part.prepare_frame();
     }
-    let (x, y, w, h) = part.control_bounds("Frames").expect("the preset switch");
-    part.pointer_motion(x + w / 2.0, y + h / 2.0);
-    part.prepare_frame();
-    part.pointer_button(0x110, true);
-    part.prepare_frame();
-    part.pointer_button(0x110, false);
+    // The bar's preset menu says the desk shows the strips; its items show the framed canvas,
+    // where the place is drawn through the note's own editor.
+    click(&mut part, "Showing Strips");
+    click(&mut part, "Frames");
     for _ in 0..8 {
         part.prepare_frame();
     }

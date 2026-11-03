@@ -726,7 +726,7 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
     let labels = crate::Published::accessible_labels(&mut part);
-    for name in ["Notifications", "Strips"] {
+    for name in ["Notifications", "Showing Strips"] {
         assert!(
             labels.iter().any(|label| label == name),
             "the screen shows {name}: {labels:?}"
@@ -734,7 +734,7 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     }
     // The preset switch is the bar's own menu, named by the preset in use: the ways of showing
     // the same arrangement are its items, offered when the person opens it.
-    click(&mut part, "Strips");
+    click(&mut part, "Showing Strips");
     let labels = crate::Published::accessible_labels(&mut part);
     for name in ["Frames", "Spaces"] {
         assert!(
@@ -750,18 +750,21 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
         "the well stands on the output, under the bar: {well:?}"
     );
 
-    // The strips show each strip's own controls (its width, beside the place's); the framed
-    // canvas shows none of them, and its entry (what typed text finds is placed on the canvas)
-    // instead.
+    // Each window's own controls stand in its one bar — its menu and its close, beside its
+    // maximize; the framed canvas shows none of them, and its entry (what typed text finds is
+    // placed on the canvas) instead.
     assert!(
-        labels.iter().any(|label| label == "Width"),
-        "the strips show their controls: {labels:?}"
+        labels.iter().any(|label| label == "This window")
+            && labels.iter().any(|label| label == "Close")
+            && labels.iter().any(|label| label == "Maximize"),
+        "the windows show their controls: {labels:?}"
     );
     // The preset switch shows the same place on the framed canvas, its well there.
     click(&mut part, "Frames");
     let labels = crate::Published::accessible_labels(&mut part);
     assert!(
-        !labels.iter().any(|label| label == "Width") && labels.iter().any(|label| label == "Typed"),
+        !labels.iter().any(|label| label == "This window")
+            && labels.iter().any(|label| label == "Typed"),
         "the canvas shows: {labels:?}; refused {:?}",
         part.refusals()
     );

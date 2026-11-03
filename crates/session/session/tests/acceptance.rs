@@ -72,14 +72,20 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
         "the shell covers the display"
     );
 
-    // The preset switch: the three ways of showing the same places.
-    for chip in ["Strips", "Frames", "Spaces"] {
+    // The preset switch: the bar's own menu, saying the preset the desk shows, offering the
+    // ways of showing the same places.
+    press(&mut session, "Showing Strips");
+    for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
         assert!(
-            on_screen(&session, chip).is_some(),
-            "the preset switch shows {chip}: {:?}",
+            on_screen(&session, preset).is_some(),
+            "the preset switch offers {preset}: {:?}",
             session.accessible_labels()
         );
     }
+    press(&mut session, "Strips");
+    until(&mut session, "the menu closed", |session| {
+        on_screen(session, "Frames").is_none()
+    });
     assert!(
         on_screen(&session, "Typed").is_none(),
         "the strips stand first, not the canvas"
@@ -187,7 +193,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches the preset: {answer}");
     until(&mut session, "the strips", |session| {
-        on_screen(session, "Typed").is_none() && on_screen(session, "Strips").is_some()
+        on_screen(session, "Typed").is_none() && on_screen(session, "Showing Strips").is_some()
     });
 
     // The traditional desktop: no preset switch at all, its own top bar instead.
@@ -197,7 +203,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches to the desktop: {answer}");
     until(&mut session, "the traditional desktop", |session| {
-        on_screen(session, "Strips").is_none()
+        on_screen(session, "Showing Strips").is_none()
     });
 }
 
@@ -443,7 +449,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     );
     assert!(!failed, "the desk is the traditional one: {answer}");
     until(&mut session, "the traditional desktop", |session| {
-        on_screen(session, "Strips").is_none() && on_screen(session, "Dock").is_some()
+        on_screen(session, "Showing Strips").is_none() && on_screen(session, "Dock").is_some()
     });
 
     // A dock press opens what its item stands for.
@@ -497,7 +503,7 @@ fn step_9_a_theme_switch_changes_looks_only() {
     }
 
     // Where the desk's own parts stand, and what the screen looks like.
-    let controls = ["Strips", "Frames", "Spaces", "Notifications", "Launcher"];
+    let controls = ["Showing Strips", "Notifications", "Launcher"];
     let before: Vec<(String, (f64, f64, f64, f64))> = controls
         .iter()
         .filter_map(|name| {

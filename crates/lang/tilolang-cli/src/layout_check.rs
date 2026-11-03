@@ -1369,14 +1369,19 @@ mod windows {
 
     /// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the
     /// toolkit's bar), never a tab bar an app puts in its own content.
-    fn tab_strips<'a>(root: &'a dyn Widget) -> Vec<&'a dyn Widget> {
+    fn tab_strips(root: &dyn Widget) -> Vec<&dyn Widget> {
         named(root, "TabBar")
             .into_iter()
-            .filter(|bar| {
-                bar.as_any()
-                    .is_some_and(|any| any.is::<ui::widget::TabStrip>())
-            })
+            .filter(|bar| is_tab_strip(*bar))
             .collect()
+    }
+
+    /// Whether `bar` is a window's own tabs rather than a tab bar an app put in its content.
+    fn is_tab_strip(bar: &dyn Widget) -> bool {
+        match bar.as_any() {
+            Some(any) => any.is::<ui::widget::TabStrip>(),
+            None => false,
+        }
     }
 
     /// How many places the tab strip `bar` shows.
@@ -1462,70 +1467,14 @@ mod windows {
             None,
         )
         .expect("the scenario stages");
-        let root = staged.harness().root_widget();
-        let frames = named(root, "WindowFrame");
+        let frames = named(staged.harness().root_widget(), "WindowFrame");
         assert!(
             frames.len() >= 6,
             "the desk's strips stand as windows, not cards: {} frames",
             frames.len()
         );
-        // A window is a window: it fills its strip's whole room, and every window of the desk
-        // shares that height, as the chrome's groups do. A card is a few hundred pixels tall
-        // with a sliver of its app under it.
-        let height = frames[0].get_rect().height();
-        assert!(
-            height > 500.0,
-            "a window fills the desk's height: {height} at 1280x800"
-        );
-        for frame in &frames {
-            let window = frame.get_rect();
-            assert!(
-                (window.height() - height).abs() < 1.0,
-                "every window of the desk is as tall as the desk: {window:?} beside {height}"
-            );
-            // Its share of the row, never narrower than the chrome's own floor: a row of more
-            // windows than the desk holds pans to them whole.
-            assert!(
-                window.width() >= 160.0,
-                "a window keeps its share of the row: {window:?}"
-            );
-        }
-        // One bar per window, whichever state it is in: the tabs of a window of several places,
-        // or the app's own header row — and its app's content under that, filling the rest.
-        for frame in &frames {
-            let window = frame.get_rect();
-            let strips = tab_strips(*frame);
-            let shells = named(*frame, "NavShell");
-            if let [tabs] = strips[..] {
-                let bar = tabs.get_rect();
-                assert!(
-                    bar.height() > 40.0 && bar.height() < 56.0,
-                    "the tabs are one window bar tall: {bar:?}"
-                );
-                assert!(
-                    bar.y0 - window.y0 < 1.0,
-                    "the tabs are the window's own bar, at its top edge: {bar:?} in {window:?}"
-                );
-                if let [shell] = shells[..] {
-                    assert!(
-                        shell.get_rect().y0 >= bar.y1 - 1.0,
-                        "the app stands under the tabs, not over them: {:?} under {bar:?}",
-                        shell.get_rect()
-                    );
-                }
-            }
-            for shell in shells {
-                let content = shell.get_rect();
-                assert!(
-                    content.y0 - window.y0 < 56.0,
-                    "one bar stands over the app, never two: {content:?} in {window:?}"
-                );
-                assert!(
-                    window.y1 - content.y1 < 1.0,
-                    "the app fills the window to its foot: {content:?} in {window:?}"
-                );
-            }
-        }
+        windows_fill_their_strips(&frames);
+
         // A strip of several places is one window whose bar is its tabs, the place in front
         // filling it under them; a strip of one has no tab bar above its app.
         let grouped = stage::Staged::over(
@@ -1537,17 +1486,81 @@ mod windows {
             None,
         )
         .expect("the scenario stages");
-        let root = grouped.harness().root_widget();
-        let group = named(root, "WindowFrame");
+        let group = named(grouped.harness().root_widget(), "WindowFrame");
         assert_eq!(group.len(), 2, "a window of places beside a window of one");
-        let mut shown = 0;
-        for frame in &group {
+        the_places_of_a_strip_are_its_tabs(&group);
+    }
+
+    /// A window is a window: it fills its strip's whole room, and every window of the desk
+    /// shares that height, as the chrome's groups do. A card is a few hundred pixels tall with
+    /// a sliver of its app under it.
+    fn windows_fill_their_strips(frames: &[&dyn Widget]) {
+        let height = frames[0].get_rect().height();
+        assert!(
+            height > 500.0,
+            "a window fills the desk's height: {height} at 1280x800"
+        );
+        for frame in frames {
+            let window = frame.get_rect();
+            assert!(
+                (window.height() - height).abs() < 1.0,
+                "every window of the desk is as tall as the desk: {window:?} beside {height}"
+            );
+            // Its share of the row, never narrower than the chrome's own floor: a row of more
+            // windows than the desk holds pans to them whole.
+            assert!(
+                window.width() >= 160.0,
+                "a window keeps its share of the row: {window:?}"
+            );
+            bar_and_content_in(*frame, window);
+        }
+    }
+
+    /// One bar per window, whichever state it is in — the tabs of a window of several places,
+    /// or the app's own header row — and its app's content under that, filling the rest.
+    fn bar_and_content_in(frame: &dyn Widget, window: Rect) {
+        let strips = tab_strips(frame);
+        let shells = named(frame, "NavShell");
+        if let [tabs] = strips[..] {
+            let bar = tabs.get_rect();
+            assert!(
+                bar.height() > 40.0 && bar.height() < 56.0,
+                "the tabs are one window bar tall: {bar:?}"
+            );
+            assert!(
+                bar.y0 - window.y0 < 1.0,
+                "the tabs are the window's own bar, at its top edge: {bar:?} in {window:?}"
+            );
+            if let [shell] = shells[..] {
+                assert!(
+                    shell.get_rect().y0 >= bar.y1 - 1.0,
+                    "the app stands under the tabs, not over them: {:?} under {bar:?}",
+                    shell.get_rect()
+                );
+            }
+        }
+        for shell in shells {
+            let content = shell.get_rect();
+            assert!(
+                content.y0 - window.y0 < 56.0,
+                "one bar stands over the app, never two: {content:?} in {window:?}"
+            );
+            assert!(
+                window.y1 - content.y1 < 1.0,
+                "the app fills the window to its foot: {content:?} in {window:?}"
+            );
+        }
+    }
+
+    /// A strip of several places shows them as one window's tabs, the place in front under
+    /// them; the strip of one shows its app from the window's own edge.
+    fn the_places_of_a_strip_are_its_tabs(group: &[&dyn Widget]) {
+        for frame in group {
             let window = frame.get_rect();
             let strips = tab_strips(*frame);
             match &strips[..] {
                 [] => {}
                 [bar] => {
-                    shown += 1;
                     let tabs = bar.get_rect();
                     assert!(
                         (tabs.y0 - window.y0).abs() < 1.0 && (tabs.x0 - window.x0).abs() < 1.0,
@@ -1579,7 +1592,14 @@ mod windows {
                 _ => panic!("one tab bar to a window, not {}", strips.len()),
             }
         }
-        assert_eq!(shown, 1, "the strip of several places shows its tabs");
+        assert_eq!(
+            group
+                .iter()
+                .filter(|frame| !tab_strips(**frame).is_empty())
+                .count(),
+            1,
+            "the strip of several places shows its tabs"
+        );
     }
 
     /// The controls under `root` outside any window, with their names: the shell's own.

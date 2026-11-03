@@ -98,7 +98,7 @@ fn the_session_publishes_its_file_access_list_to_the_files_daemon() {
     );
     // A desk change that grants nothing new is not published again: the
     // daemon signs a list, not every frame.
-    common::press(&mut session, "Frames");
+    common::show_preset(&mut session, "Strips", "Frames");
     for _ in 0..5 {
         session.step(Duration::from_millis(1)).unwrap();
     }

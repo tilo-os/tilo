@@ -39,6 +39,20 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use common::{HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
+/// Click the shell's control `name` through the test-control socket, as the person does: the
+/// socket takes the click, and what it presses is what stands there.
+fn click(session: &mut Session, socket: &Path, name: &str) {
+    let (x, y, w, h) = session
+        .shell_control(name)
+        .unwrap_or_else(|| panic!("the shell shows {name}: {:?}", session.accessible_labels()));
+    let clicked = ask(
+        session,
+        socket,
+        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
+    );
+    assert_eq!(clicked, json!({"ok": {}}), "the click on {name} is taken");
+}
+
 /// A headless session with the shell as the whole screen writes a PNG of it through
 /// `tilo-control snapshot`'s request, and the bar stands in it.
 #[test]
@@ -102,15 +116,17 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
         distinct.len()
     );
 
-    // A click through the socket presses the screen's own control there: the preset switch
-    // shows the framed canvas, whose entry stands where the strips stood.
-    let (x, y, w, h) = session.shell_control("Frames").expect("the preset switch");
-    let clicked = ask(
-        &mut session,
-        &socket,
-        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
+    // A click through the socket presses the screen's own control there: the bar's preset menu
+    // opens, and the framed canvas it offers stands with its entry where the strips stood.
+    click(&mut session, &socket, "Showing Strips");
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control("Frames")
+            .is_some()),
+        "the preset menu offers Frames: {:?}",
+        session.accessible_labels()
     );
-    assert_eq!(clicked, json!({"ok": {}}), "the click is taken");
+    click(&mut session, &socket, "Frames");
     assert!(
         reached(&mut session, |session| session
             .shell_control("Typed")
@@ -437,15 +453,11 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
+    click(&mut session, &socket, "Showing Strips");
     assert!(reached(&mut session, |session| session
         .shell_control("Frames")
         .is_some()));
-    let (x, y, w, h) = session.shell_control("Frames").unwrap();
-    ask(
-        &mut session,
-        &socket,
-        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
-    );
+    click(&mut session, &socket, "Frames");
     assert!(reached(&mut session, |session| session
         .shell_control("Typed")
         .is_some()));

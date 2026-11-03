@@ -173,6 +173,20 @@ pub fn type_text(session: &mut Session, text: &str) {
     }
 }
 
+/// The preset the desk shows, as a person changes it: the bar's own menu names the preset up now
+/// (`showing`), and the one picked in it is the desk's from then on.
+pub fn show_preset(session: &mut Session, showing: &str, preset: &str) {
+    let menu = format!("Showing {showing}");
+    until(session, "the desk's preset menu", |session| {
+        on_screen(session, &menu).is_some()
+    });
+    press(session, &menu);
+    until(session, "the presets the bar offers", |session| {
+        on_screen(session, preset).is_some()
+    });
+    press(session, preset);
+}
+
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and a note in it for each of `titles`, made through the app's own actions: their ids, in
 /// order.
@@ -276,10 +290,7 @@ pub fn seeded_session_with(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Strips", "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, "Typed").is_some()
     });
