@@ -1088,6 +1088,7 @@ impl ChatApp {
     /// Keep the direct conversations in the pair's own records, in the
     /// workspace `workspace` whose records `handle` opens: from now on
     /// [`ui::person_chat`] answers from them in this window.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn attach_direct(
         &mut self,
         handle: ui::framework::WorkspaceHandle,

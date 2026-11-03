@@ -243,7 +243,8 @@ mod tests {
     }
 
     /// Two windows of different apps in one process hold the one record:
-    /// what one writes the other reads.    #[test]
+    /// what one writes the other reads.
+    #[test]
     fn every_window_of_the_workspace_holds_the_one_record() {
         let store = Rc::new(durable_store::MemoryStore::new());
         let owners =

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 //! The record the two people of a pair share, opened beside the window's own:
 //! one record of that pair in the workspace, written by either person's
 //! devices, each person's read mark theirs, merged without an owner in
@@ -177,7 +178,7 @@ fn each_persons_read_mark_is_theirs_and_their_devices_agree() {
         "the other person reads her mark, not a mark of their own"
     );
     assert!(
-        on_bobs.get().read.get(bob().as_str()).is_none(),
+        !on_bobs.get().read.contains_key(bob().as_str()),
         "Bob has read nothing yet"
     );
 }

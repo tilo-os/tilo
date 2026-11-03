@@ -1245,9 +1245,12 @@ fn detached_dispatch<P: Chained>(
 
 /// The chains a window's views opened, by part type and chain: one per each;
 /// and the child records they opened, by container.
+/// The chains a window holds, by part type and chain.
+type HeldChains = BTreeMap<(&'static str, String), Rc<dyn Any>>;
+
 #[derive(Default)]
 pub(crate) struct Chains {
-    held: RefCell<BTreeMap<(&'static str, String), Rc<dyn Any>>>,
+    held: RefCell<HeldChains>,
     /// The child records held, by their container's address.
     children: RefCell<BTreeMap<String, Rc<dyn Any>>>,
     doors: RefCell<Vec<Rc<dyn RecordDoor>>>,

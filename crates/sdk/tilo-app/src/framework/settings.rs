@@ -244,7 +244,9 @@ impl ViewStorage {
     /// settles after the view that asked for one: `None` where the window
     /// keeps no workspace records (a view of a past version).
     pub(crate) fn workspace_handle(&self) -> Option<super::WorkspaceHandle> {
-        self.workspace.as_ref().map(|state| state.handle())
+        self.workspace
+            .as_ref()
+            .map(super::workspace::WorkspaceState::handle)
     }
 
     /// The chain of `P` the app keeps beside its record, opened on first
