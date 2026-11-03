@@ -619,7 +619,7 @@ pub async fn door(
     let token = random_bytes();
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
-        workspace: workspace.to_owned(),
+        room: workspace.to_owned(),
         role: RoomRole::Editor,
         token_sha256,
         label: "Guest".into(),

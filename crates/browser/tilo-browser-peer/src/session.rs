@@ -40,6 +40,7 @@ use tilo_peer_state::document_frame::{
 use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
 
 mod lane;
+mod plane;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -400,6 +401,23 @@ pub enum PeerEvent {
         /// A postcard-encoded `NeighbourMsg`.
         body: Vec<u8>,
     },
+    /// A frame another member published on the workspace's live plane
+    /// ([`crate::live`]), opened with the scope's channel keys: what a device
+    /// seals on its tracks, carried by the relay that serves the workspace
+    /// rather than by this session.
+    LivePlane {
+        /// The workspace id.
+        workspace_id: u64,
+        /// The device that sealed it.
+        from: [u8; 32],
+        /// The track it came from, as the plane names it (`presence`,
+        /// `audio`, `activity`).
+        track: String,
+        /// The object's sequence on that track.
+        sequence: u32,
+        /// The opened body.
+        body: Vec<u8>,
+    },
     /// Live membership changed.
     LiveMember {
         /// The workspace id.
@@ -503,6 +521,18 @@ enum Command {
     InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
     LiveJoin(u64),
+    /// What asking the host for `workspace_id`'s live plane, and joining it,
+    /// came to: the plane itself, except on wasm, where the page's carrier
+    /// cannot travel in a command and waits in [`plane::arrived`].
+    #[cfg(not(target_arch = "wasm32"))]
+    PlaneJoined(u64, Result<Arc<tilo_live::plane::Plane>, plane::Failed>),
+    #[cfg(target_arch = "wasm32")]
+    PlaneJoined(u64),
+    /// The plane of `workspace_id` heard something: drain it.
+    PlaneHeard(u64),
+    /// The plane of `workspace_id` ended: the relay closed it, or the plane
+    /// no longer admits what it reads.
+    PlaneEnded(u64),
     Live(u64, Vec<u8>),
     SealLive(u64, Vec<u8>, LiveCompletion),
     OpenLive(u64, Vec<u8>, LiveCompletion),
@@ -599,6 +629,10 @@ struct Shared {
     /// The current HTTPS session's token, for the page to end it as it
     /// leaves ([`PeerHandle::session_token`]).
     session: Option<String>,
+    /// What the page shows where its live plane would be, when it cannot join
+    /// one at all: set when this browser has no WebTransport to join with
+    /// ([`PeerHandle::live_note`]).
+    live_note: Option<String>,
 }
 
 /// A cheap handle on a running session.
@@ -705,6 +739,7 @@ impl PeerHandle {
             wakes: Vec::new(),
             fetch_proxy: None,
             session: None,
+            live_note: None,
         }));
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
@@ -733,6 +768,7 @@ impl PeerHandle {
             workspaces: BTreeSet::new(),
             placing: BTreeMap::new(),
             live: BTreeSet::new(),
+            planes: plane::Planes::default(),
             outbox: record.outbox.iter().cloned().collect(),
             resending: BTreeSet::new(),
             record,
@@ -782,6 +818,13 @@ impl PeerHandle {
     /// spectator: nobody there sees it, and it writes nothing.
     pub fn watching(&self) -> bool {
         self.watching
+    }
+
+    /// Why this page cannot join its workspaces' live plane at all, in the
+    /// words it shows in its place, or `None` while it can (or did): the
+    /// browser has no WebTransport, and the plane has no fallback.
+    pub fn live_note(&self) -> Option<String> {
+        lock(&self.shared).live_note.clone()
     }
 
     fn send(&self, command: Command) -> Result<(), String> {
@@ -1206,6 +1249,9 @@ struct Task {
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<u64, (String, String)>,
     live: BTreeSet<u64>,
+    /// This page's own live plane per joined workspace
+    /// ([`crate::session::plane`]).
+    planes: plane::Planes,
     outbox: VecDeque<OutboxEntry>,
     /// The outbox entries this session still owes its host on this
     /// connection: a page that recorded while it was away owes more than the
@@ -1714,6 +1760,7 @@ impl Task {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
             }
+            self.settle_planes(Some(&client));
             // What the outbox still owes the host goes as its queue takes it:
             // every answer from the host, every command, every tick is a
             // chance to hand it more.
@@ -1888,6 +1935,24 @@ impl Task {
             Command::LiveJoin(workspace_id) => {
                 self.live.insert(workspace_id);
                 client.is_none_or(|client| client.send(Envelope::LiveJoin { workspace_id }).is_ok())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Command::PlaneJoined(workspace_id, joined) => {
+                self.plane_joined(workspace_id, joined);
+                true
+            }
+            #[cfg(target_arch = "wasm32")]
+            Command::PlaneJoined(workspace_id) => {
+                self.plane_joined(workspace_id, plane::arrived(workspace_id));
+                true
+            }
+            Command::PlaneHeard(workspace_id) => {
+                self.plane_heard(workspace_id);
+                true
+            }
+            Command::PlaneEnded(workspace_id) => {
+                self.plane_ended(workspace_id);
+                true
             }
             command @ (Command::Live(..) | Command::SealLive(..) | Command::OpenLive(..)) => {
                 self.apply_live(command, client);
@@ -2122,6 +2187,10 @@ impl Task {
     /// Restore this session's workspaces, pending commits and call participations.
     fn resume_session(&mut self, client: &Link) -> bool {
         let mut sent_ok = true;
+        // A plane's grant is its session's token: the planes of the last
+        // session ended with it, and every workspace's is joined again with
+        // this one ([`Self::settle_planes`]).
+        self.planes.end_session();
         // A resuming subscription can replay a frame before its covering position.
         // Keep duplicate detection until the host requests a whole subscription.
         if !client.resumable() {

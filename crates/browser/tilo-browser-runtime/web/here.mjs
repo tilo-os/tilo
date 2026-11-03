@@ -59,7 +59,8 @@ export function liveMembers(layer, seen) {
  * @param options.mountId      the desktop mount's id
  * @param options.active       whether the mount is still shown
  * @param options.layer        the workspace's live layer, or undefined
- * @param options.peer         the certified peer: `here(window, actions)`, `participant`
+ * @param options.peer         the certified peer: `here(window, actions)`, `participant`,
+ *                             `liveNote()`, the reason this page joins no live plane at all
  * @param options.presenceUrl  the workspace service's spectator count, if any
  * @param options.photos       follows people's profile pictures (`profile-photos.mjs` `followPhotos`), if any
  */
@@ -87,7 +88,10 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
     const own = peer?.participant
       ? {publisher: live?.publisherId ?? '', kind: 'person', label: peer.participant.label, ...(peer.userPublicKey ? {user: peer.userPublicKey} : {})}
       : null;
-    const json = JSON.stringify({own, members: liveMembers(live, seen)});
+    // Why this page joins no live plane at all: a browser without
+    // WebTransport says so in the members' place, and there is no fallback.
+    const unavailable = peer?.liveNote?.() ?? null;
+    const json = JSON.stringify({own, members: liveMembers(live, seen), unavailable});
     if (json === peopleKey) return;
     peopleKey = json;
     runtime.desktop_set_people(mountId(), json);

@@ -2476,6 +2476,14 @@ impl WasmPeer {
         hex::encode(self.device_key)
     }
 
+    /// Why this page cannot join its workspaces' live plane at all, in the
+    /// words it shows in the members' place, or `null` while it can (or did):
+    /// this browser has no WebTransport, and the plane has no fallback.
+    #[wasm_bindgen(js_name = liveNote)]
+    pub fn live_note(&self) -> Option<String> {
+        self.handle.live_note()
+    }
+
     /// How many changes this page made to its workspace: records it sent, and
     /// windows the person opened, closed or moved on its desktop.
     #[wasm_bindgen(js_name = authoredChanges)]
