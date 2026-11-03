@@ -605,8 +605,10 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
             .filter_map(|(node, _)| {
                 // The list's rows read as references (`#2 Record the demo`);
                 // the sidebar's rows are its filters, which have no number.
+                // A row's box is a control of its own, named the same, so the
+                // rows are what counts.
                 let name = node["name"].as_str().unwrap_or_default();
-                (name.starts_with('#')).then(|| name.to_owned())
+                (name.starts_with('#') && node["role"] == "TreeItem").then(|| name.to_owned())
             })
             .collect()
     };

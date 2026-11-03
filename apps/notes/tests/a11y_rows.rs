@@ -43,8 +43,12 @@ fn every_note_row_is_a_named_item_a_reader_opens_and_menus() {
     let mut app = notebook();
     let plan = add_note(&mut app, "Plan", "");
     let groceries_page = add_note(&mut app, "Groceries", "- [ ] Book the room\n");
-    open(&mut app, plan);
     app.settle();
+    assert_eq!(
+        surface(&mut app, |notes| notes.selected_for_test()),
+        Some(plan),
+        "the first note is the one showing"
+    );
 
     for title in ["Plan", "Groceries"] {
         let row = named(&mut app, title, Role::TreeItem);
@@ -58,18 +62,6 @@ fn every_note_row_is_a_named_item_a_reader_opens_and_menus() {
         );
     }
 
-    // Activating a row opens its note, as a press on it does.
-    let plan_row = id_of(&mut app, "Plan", Role::TreeItem);
-    app.harness()
-        .perform_a11y_action(plan_row, &ui::a11y::Action::Activate)
-        .expect("the row opens the note");
-    app.settle();
-    assert_eq!(
-        surface(&mut app, |notes| notes.selected_for_test()),
-        Some(plan),
-        "the notebook shows the note the reader chose"
-    );
-
     // The menu is the pointer's right-click menu, item by item.
     let groceries = id_of(&mut app, "Groceries", Role::TreeItem);
     app.harness()
@@ -80,6 +72,8 @@ fn every_note_row_is_a_named_item_a_reader_opens_and_menus() {
         named(&mut app, item, Role::MenuItem);
     }
 
+    // Activating a row opens its note, as a press on it does, and its blocks
+    // are what the tree then shows.
     app.harness()
         .perform_a11y_action(groceries, &ui::a11y::Action::Activate)
         .expect("the row opens the note");
@@ -90,6 +84,17 @@ fn every_note_row_is_a_named_item_a_reader_opens_and_menus() {
         "the notebook shows the note the reader chose"
     );
     named(&mut app, "Book the room", Role::ListItem);
+
+    let plan_row = id_of(&mut app, "Plan", Role::TreeItem);
+    app.harness()
+        .perform_a11y_action(plan_row, &ui::a11y::Action::Activate)
+        .expect("the row opens the note");
+    app.settle();
+    assert_eq!(
+        surface(&mut app, |notes| notes.selected_for_test()),
+        Some(plan),
+        "and the reader goes back the same way"
+    );
 }
 
 /// A block of the open note reads as a named item, and a checklist block's
