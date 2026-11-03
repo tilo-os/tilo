@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::RoomRole;
+use crate::workspaces::WorkspaceRole;
 
 /// The directory of a host, below its API prefix.
 pub const DIRECTORY_PATH: &str = "/directory";
@@ -62,7 +62,7 @@ pub struct Listing {
     /// What the workspace is, in a sentence or two.
     pub description: String,
     /// The role everyone who joins through the directory gets.
-    pub default_role: RoomRole,
+    pub default_role: WorkspaceRole,
 }
 
 /// Why a listing cannot be published.
@@ -86,7 +86,7 @@ impl Listing {
         {
             return Err(ListingError::Description);
         }
-        if self.default_role == RoomRole::Moderator {
+        if self.default_role == WorkspaceRole::Moderator {
             return Err(ListingError::Role);
         }
         Ok(Self {
@@ -111,13 +111,14 @@ pub struct Face {
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntry {
     /// The room's UUID.
-    pub room: String,
+    #[serde(rename = "room")]
+    pub workspace: String,
     pub name: String,
     /// What it is.
     #[serde(default)]
     pub description: String,
     /// The role people who join get.
-    pub default_role: RoomRole,
+    pub default_role: WorkspaceRole,
     /// Its door, relative to the directory's address (or absolute).
     pub door: String,
     #[serde(default)]
@@ -232,10 +233,10 @@ mod tests {
 
     fn entry() -> DirectoryEntry {
         DirectoryEntry {
-            room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+            workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
             name: "Coffee".into(),
             description: String::new(),
-            default_role: RoomRole::Commenter,
+            default_role: WorkspaceRole::Commenter,
             door: door_path("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71"),
             here: Vec::new(),
             here_count: 0,
@@ -266,7 +267,7 @@ mod tests {
     fn a_listing_is_text_and_hands_out_no_moderators() {
         let listing = Listing {
             description: "  A place for coffee.\nAnd tea.  ".into(),
-            default_role: RoomRole::Commenter,
+            default_role: WorkspaceRole::Commenter,
         };
         assert_eq!(
             listing.checked().map(|listing| listing.description),
@@ -274,17 +275,17 @@ mod tests {
         );
         let moderators = Listing {
             description: String::new(),
-            default_role: RoomRole::Moderator,
+            default_role: WorkspaceRole::Moderator,
         };
         assert_eq!(moderators.checked(), Err(ListingError::Role));
         let long = Listing {
             description: "x".repeat(MAX_DESCRIPTION_CHARS + 1),
-            default_role: RoomRole::Viewer,
+            default_role: WorkspaceRole::Viewer,
         };
         assert_eq!(long.checked(), Err(ListingError::Description));
         let control = Listing {
             description: "bell\u{7}".into(),
-            default_role: RoomRole::Viewer,
+            default_role: WorkspaceRole::Viewer,
         };
         assert_eq!(control.checked(), Err(ListingError::Description));
     }
@@ -316,7 +317,7 @@ mod tests {
         .unwrap();
         let listed = &page.workspaces[0];
         assert!(listed.community);
-        assert_eq!(listed.default_role, RoomRole::Editor);
+        assert_eq!(listed.default_role, WorkspaceRole::Editor);
         assert_eq!(listed.here_count, 12);
         assert!(listed.here.is_empty());
         let answer: DoorAnswer = serde_json::from_value(serde_json::json!({

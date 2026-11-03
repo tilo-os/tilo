@@ -76,7 +76,7 @@ pub struct GrantRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// Room uuids.
-    pub rooms: Vec<String>,
+    pub workspaces: Vec<String>,
     /// App ids; empty is every app.
     #[serde(default)]
     pub apps: Vec<String>,
@@ -210,7 +210,8 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub room: Option<String>,
+    #[serde(rename = "room")]
+    pub workspace: Option<String>,
     /// Newest first is not implied; tasks in the order they were given.
     pub tasks: Vec<AgentTask>,
     /// Conversation in order.
@@ -229,7 +230,7 @@ pub struct AgentGrant {
     pub id: String,
     /// Display name.
     pub label: String,
-    pub rooms: Vec<String>,
+    pub workspaces: Vec<String>,
     /// Apps it covers; empty is every app.
     pub apps: Vec<String>,
     /// Whether an agent under it is already running.
@@ -295,7 +296,7 @@ mod tests {
                     steps: Vec::new(),
                     error: None,
                 }],
-                room: None,
+                workspace: None,
                 conversation: Vec::new(),
                 delegation: String::new(),
             }],

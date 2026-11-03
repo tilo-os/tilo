@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use tilo_relay_protocol::metrics::RoomEgress;
+use tilo_relay_protocol::metrics::WorkspaceEgress;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent, ReplicationResource,
@@ -138,9 +138,9 @@ fn json_encodings_are_pinned() {
         bytes_sent: 12,
         bytes_sent_live: 13,
         sessions_open: 0,
-        rooms: BTreeMap::from([(
+        workspaces: BTreeMap::from([(
             14,
-            RoomEgress {
+            WorkspaceEgress {
                 bytes_sent: 15,
                 bytes_sent_live: 16,
             },
@@ -195,7 +195,7 @@ fn json_encodings_are_pinned() {
         MetricsSnapshot {
             bytes_sent: 0,
             bytes_sent_live: 0,
-            rooms: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
             ..snapshot
         }
     );
@@ -321,7 +321,7 @@ fn toml_encodings_are_pinned() {
         services: ServiceCapabilities::home_peer(),
         web_entry: None,
         member_limits: None,
-        max_room_grants: None,
+        max_workspace_grants: None,
     };
     let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"

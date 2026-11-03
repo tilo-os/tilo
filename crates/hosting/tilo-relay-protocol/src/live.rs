@@ -777,13 +777,13 @@ impl SealedLiveFrame {
     /// authentication or canonical-frame failure from [`Self::open`].
     pub fn open_in_record<E: std::fmt::Display>(
         &self,
-        room: &str,
+        workspace: &str,
         record: &LiveRecord,
         open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
     ) -> std::result::Result<LiveFrame, LiveSealError> {
         if self.record != record.digest()
             || self.channel_id()
-                != collab_types::document_channel_id(&record.app, room, &record.record)
+                != collab_types::document_channel_id(&record.app, workspace, &record.record)
         {
             return Err(LiveSealError::Mismatch);
         }

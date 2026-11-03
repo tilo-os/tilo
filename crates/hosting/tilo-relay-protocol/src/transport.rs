@@ -554,7 +554,7 @@ pub enum Envelope {
     /// encoded, as a joining native device receives it. Its governance
     /// messages and records stay out: the replay that follows carries the
     /// room's retained governance and records.
-    RoomBootstrap {
+    WorkspaceBootstrap {
         workspace_id: u64,
         #[serde(with = "serde_bytes")]
         bootstrap: Vec<u8>,
@@ -618,7 +618,9 @@ impl Envelope {
             Self::RecordOpened { .. } => "RecordOpened",
             Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
-            Self::RoomBootstrap { .. } => "RoomBootstrap",
+            // The kind names a key in the web envelope JSON, so it keeps the
+            // spelling it was first written under.
+            Self::WorkspaceBootstrap { .. } => "RoomBootstrap",
             Self::RecordContentWant { .. } => "RecordContentWant",
         }
     }
@@ -665,7 +667,7 @@ impl Envelope {
             | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. }
-            | Self::RoomBootstrap { workspace_id, .. }
+            | Self::WorkspaceBootstrap { workspace_id, .. }
             | Self::RecordContentWant { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
         }

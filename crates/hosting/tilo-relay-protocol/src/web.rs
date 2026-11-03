@@ -19,7 +19,7 @@
 //! | `/session/end` ([`SESSION_END_PATH`]) | the session token, lowercase hex text | `204` |
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
-//! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
+//! | `/workspaces` | [`WorkspacesRequest`](crate::rooms::RoomsRequest) | [`WorkspacesReply`](crate::rooms::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
@@ -165,7 +165,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         | Envelope::HostAction { frame }
         | Envelope::RecordContentWant { frame, .. }
         | Envelope::RecordContent { frame, .. } => frame.len(),
-        Envelope::RoomBootstrap { bootstrap, .. } => bootstrap.len(),
+        Envelope::WorkspaceBootstrap { bootstrap, .. } => bootstrap.len(),
         Envelope::NotAuthorised { reason, .. }
         | Envelope::RemoteActionUndeliverable { reason, .. }
         | Envelope::CommitRefused { reason, .. }
@@ -296,7 +296,7 @@ pub const FEATURE_COMPACTION: u64 = 2;
 pub const FEATURE_VOICE: u64 = 4;
 
 /// The host governs rooms a page administers and joins over HTTPS
-/// (`/rooms`, `/join`; see [`crate::rooms`]).
+/// (`/workspaces`, `/join`; see [`crate::workspaces`]).
 pub const FEATURE_ROOMS: u64 = 8;
 
 /// The host serves its members' pages a fetch proxy at [`FETCH_PATH`]
@@ -363,7 +363,8 @@ pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
 pub struct ChannelKeysRequest {
     pub app_id: String,
     /// The room (the record's cluster).
-    pub room: String,
+    #[serde(rename = "room")]
+    pub workspace: String,
     /// The record id.
     pub record: String,
 }

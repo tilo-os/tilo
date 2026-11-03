@@ -3,22 +3,22 @@
 //! persistent room.
 //!
 //! The service writes one [`OperatorCommand`] per line to the child's stdin.
-//! The child writes one [`RoomEvent`] per line to its stdout, each behind
+//! The child writes one [`OperatorEvent`] per line to its stdout, each behind
 //! [`LINE_PREFIX`], so nothing else the child prints can be mistaken for one.
 //! Operator and room relay are built from one tree, so the protocol changes
 //! in one commit;
-//! [`VERSION`] is announced in [`RoomEvent::Started`] and a reader refuses
+//! [`VERSION`] is announced in [`OperatorEvent::Started`] and a reader refuses
 //! any other. Neither side skips a line it cannot decode: an unknown
 //! command, event or field is an error.
 
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::RoomRole;
+use crate::workspaces::WorkspaceRole;
 
-/// Version of this protocol, announced in [`RoomEvent::Started`].
+/// Version of this protocol, announced in [`OperatorEvent::Started`].
 pub const VERSION: u16 = 4;
 
-/// The child reports [`RoomEvent::Online`] at most this often, and only
+/// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy room does not flood the service.
 pub const ONLINE_EVERY_SECS: u64 = 2;
 
@@ -48,8 +48,8 @@ pub const ADMIT_WAIT_SECS: u64 = 60;
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperatorCommand {
     /// Certify the pending browser request that displays this pairing code.
-    /// The child answers with [`RoomEvent::MemberCertified`] or
-    /// [`RoomEvent::AdmitRefused`] for the same code.
+    /// The child answers with [`OperatorEvent::MemberCertified`] or
+    /// [`OperatorEvent::AdmitRefused`] for the same code.
     Admit {
         /// The six-digit code the guest's browser displays.
         pairing_code: String,
@@ -57,23 +57,23 @@ pub enum OperatorCommand {
     /// Pre-admit one guest of a persistent room: the child signs a
     /// pre-admission with the room's owner root for `token_sha256`, issues
     /// an invitation that only `user_public_key` can redeem, and answers
-    /// [`RoomEvent::PreAdmitted`] or [`RoomEvent::PreAdmitRefused`] for the
+    /// [`OperatorEvent::PreAdmitted`] or [`OperatorEvent::PreAdmitRefused`] for the
     /// same digest.
     PreAdmit {
         /// The guest's user root (hex). Binding the invitation to it means a
         /// leaked invitation and token admit nobody else, and lets the
-        /// service map a later [`RoomEvent::MemberRemoved`] back to the join.
+        /// service map a later [`OperatorEvent::MemberRemoved`] back to the join.
         user_public_key: String,
         /// SHA-256 of the one-time admission token (hex).
         token_sha256: String,
         /// How the room's notices name the guest.
         label: String,
-        role: RoomRole,
+        role: WorkspaceRole,
     },
     /// Certify an in-memory browser device as the persistent room's one
     /// read-only spectator person, so a page embedding the room can watch it
     /// without minting a member per visitor. The child answers
-    /// [`RoomEvent::SpectatorCertified`] or [`RoomEvent::SpectateRefused`].
+    /// [`OperatorEvent::SpectatorCertified`] or [`OperatorEvent::SpectateRefused`].
     Spectate {
         /// The browser's device key (hex).
         device_public_key: String,
@@ -83,17 +83,17 @@ pub enum OperatorCommand {
     Shutdown {},
     /// Keep the request of someone who asked at the door of a persistent
     /// room that takes people by invitation, without one: the address
-    /// `contact` ([`crate::rooms::contact_address`]) its answer goes to. The
+    /// `contact` ([`crate::workspaces::contact_address`]) its answer goes to. The
     /// room keeps it on its wait list for whoever may invite. The
-    /// child answers [`RoomEvent::WaitListed`] or
-    /// [`RoomEvent::WaitListRefused`] for the same `request`.
+    /// child answers [`OperatorEvent::WaitListed`] or
+    /// [`OperatorEvent::WaitListRefused`] for the same `request`.
     WaitList {
         /// The service's name for this command's answer (hex), so two
         /// visitors leaving one address are each answered.
         request: String,
         contact: String,
         /// SHA-256 (hex) of the secret the service hands the visitor
-        /// ([`crate::rooms::WAIT_LIST_REMOVAL_BYTES`]): whoever holds it takes
+        /// ([`crate::workspaces::WAIT_LIST_REMOVAL_BYTES`]): whoever holds it takes
         /// the entry off again ([`OperatorCommand::Unlist`]). The secret
         /// itself never reaches the room.
         removal_sha256: String,
@@ -109,8 +109,8 @@ pub enum OperatorCommand {
     },
     /// Take the entry whose removal secret hashes to `removal_sha256` off
     /// the wait list, for whoever left it. The child answers
-    /// [`RoomEvent::Unlisted`] for the same `request` whether or not an
-    /// entry had that secret, or [`RoomEvent::WaitListFailed`].
+    /// [`OperatorEvent::Unlisted`] for the same `request` whether or not an
+    /// entry had that secret, or [`OperatorEvent::WaitListFailed`].
     Unlist {
         /// The service's name for this command's answer (hex).
         request: String,
@@ -118,8 +118,8 @@ pub enum OperatorCommand {
         removal_sha256: String,
     },
     /// Confirm the entry whose confirmation secret hashes to
-    /// `confirm_sha256`. The child answers [`RoomEvent::Confirmed`] or
-    /// [`RoomEvent::WaitListFailed`] for the same `request`.
+    /// `confirm_sha256`. The child answers [`OperatorEvent::Confirmed`] or
+    /// [`OperatorEvent::WaitListFailed`] for the same `request`.
     Confirm {
         /// The service's name for this command's answer (hex).
         request: String,
@@ -146,8 +146,8 @@ pub enum OperatorCommand {
         link_check: String,
     },
     /// Where the entry whose removal secret hashes to `removal_sha256`
-    /// stands, for whoever left it. The child answers [`RoomEvent::Standing`]
-    /// or [`RoomEvent::WaitListFailed`] for the same `request`.
+    /// stands, for whoever left it. The child answers [`OperatorEvent::Standing`]
+    /// or [`OperatorEvent::WaitListFailed`] for the same `request`.
     Standing {
         /// The service's name for this command's answer (hex).
         request: String,
@@ -161,7 +161,7 @@ pub enum OperatorCommand {
 /// What the room relay reports to the room service.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RoomEvent {
+pub enum OperatorEvent {
     /// The relay serves browsers. Always the first event.
     Started {
         /// [`VERSION`] of the child.
@@ -177,7 +177,8 @@ pub enum RoomEvent {
         /// Page origins allowed to call the room cross-origin.
         allowed_origins: Vec<String>,
         /// The governed room's UUID; `None` for a short-lived room.
-        room: Option<String>,
+        #[serde(rename = "room")]
+        workspace: Option<String>,
     },
     /// The browser that displayed `pairing_code` was certified.
     MemberCertified {
@@ -289,7 +290,7 @@ pub enum RoomEvent {
         /// secret, and its address had been confirmed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         told: Option<WaitListMailbox>,
-        /// Relay-private SHA-256 of `rooms::contact_key`, even for a pending
+        /// Relay-private SHA-256 of `workspaces::contact_key`, even for a pending
         /// entry, so the door can cancel its queued mail and receipts. Never
         /// returned by the door's public removal endpoint.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -420,7 +421,7 @@ impl OperatorCommand {
     }
 }
 
-impl RoomEvent {
+impl OperatorEvent {
     /// The event as one stdout line, prefix included and newline excluded
     /// (`println!` adds it).
     #[must_use]
@@ -470,65 +471,65 @@ fn is_false(flag: &bool) -> bool {
 mod tests {
     use super::*;
 
-    fn events() -> Vec<RoomEvent> {
+    fn events() -> Vec<OperatorEvent> {
         vec![
-            RoomEvent::Started {
+            OperatorEvent::Started {
                 version: VERSION,
                 origin: "https://127.0.0.1:9443".into(),
                 plain_origin: Some("http://localhost:9543".into()),
                 user_public_key: "ab".repeat(32),
                 certificate_sha256: None,
                 allowed_origins: vec!["https://rooms.example".into()],
-                room: None,
+                workspace: None,
             },
-            RoomEvent::MemberCertified {
+            OperatorEvent::MemberCertified {
                 device: "cd".repeat(32),
                 label: "Firefox on Linux".into(),
                 pairing_code: "012345".into(),
             },
-            RoomEvent::AdmitRefused {
+            OperatorEvent::AdmitRefused {
                 pairing_code: "012345".into(),
                 reason: RefusalReason::NoMatchingRequest,
             },
-            RoomEvent::AdmitRefused {
+            OperatorEvent::AdmitRefused {
                 pairing_code: "012345".into(),
                 reason: RefusalReason::AmbiguousCode,
             },
-            RoomEvent::AdmitRefused {
+            OperatorEvent::AdmitRefused {
                 pairing_code: "012345".into(),
                 reason: RefusalReason::PolicyDenied,
             },
         ]
     }
 
-    fn current_events() -> Vec<RoomEvent> {
+    fn current_events() -> Vec<OperatorEvent> {
         vec![
-            RoomEvent::Started {
+            OperatorEvent::Started {
                 version: VERSION,
                 origin: "https://rooms.example".into(),
                 plain_origin: None,
                 user_public_key: "ab".repeat(32),
                 certificate_sha256: None,
                 allowed_origins: vec![],
-                room: Some("6f1c3b0e-58a1-4c2e-9d55-0b3c1f6a2e10".into()),
+                workspace: Some("6f1c3b0e-58a1-4c2e-9d55-0b3c1f6a2e10".into()),
             },
-            RoomEvent::PreAdmitted {
+            OperatorEvent::PreAdmitted {
                 token_sha256: "ab".repeat(32),
                 invitation: "AAECAw".into(),
             },
-            RoomEvent::PreAdmitRefused {
+            OperatorEvent::PreAdmitRefused {
                 token_sha256: "ab".repeat(32),
                 reason: "too many pre-admissions are open".into(),
                 removed: false,
                 invite_only: false,
             },
-            RoomEvent::PreAdmitRefused {
+            OperatorEvent::PreAdmitRefused {
                 token_sha256: "ab".repeat(32),
                 reason: "the workspace takes people by invitation only".into(),
                 removed: false,
                 invite_only: true,
             },
-            RoomEvent::SpectatorCertified {
+            OperatorEvent::SpectatorCertified {
                 device_public_key: "ef".repeat(32),
                 certificate: tilo_user_identity::DeviceCert {
                     user_public_key: [1; 32],
@@ -540,11 +541,11 @@ mod tests {
                     signature: [3; 64],
                 },
             },
-            RoomEvent::SpectateRefused {
+            OperatorEvent::SpectateRefused {
                 device_public_key: "ef".repeat(32),
                 reason: "no".into(),
             },
-            RoomEvent::Online {
+            OperatorEvent::Online {
                 people: 3,
                 spectators: 9,
                 here: vec![crate::directory::Face {
@@ -554,21 +555,21 @@ mod tests {
                 members: 40,
                 online: vec!["cd".repeat(32), "ab".repeat(32)],
             },
-            RoomEvent::MemberRemoved {
+            OperatorEvent::MemberRemoved {
                 user_public_key: "cd".repeat(32),
                 banned: true,
             },
-            RoomEvent::WaitListed {
+            OperatorEvent::WaitListed {
                 request: "12".repeat(32),
                 added: true,
                 mail: true,
             },
-            RoomEvent::WaitListRefused {
+            OperatorEvent::WaitListRefused {
                 request: "12".repeat(32),
                 reason: "the wait list is full".into(),
                 full: true,
             },
-            RoomEvent::Unlisted {
+            OperatorEvent::Unlisted {
                 contact_sha256: None,
                 request: "12".repeat(32),
                 told: Some(WaitListMailbox {
@@ -576,19 +577,19 @@ mod tests {
                     language: "de".into(),
                 }),
             },
-            RoomEvent::WaitListFailed {
+            OperatorEvent::WaitListFailed {
                 request: "12".repeat(32),
                 reason: "disk full".into(),
             },
-            RoomEvent::Confirmed {
+            OperatorEvent::Confirmed {
                 request: "12".repeat(32),
                 confirmed: true,
             },
-            RoomEvent::Standing {
+            OperatorEvent::Standing {
                 request: "12".repeat(32),
                 standing: WaitListStanding::Invited,
             },
-            RoomEvent::InviteMail {
+            OperatorEvent::InviteMail {
                 request: "ab".repeat(32),
                 to: WaitListMailbox {
                     contact: "Ada@example.org".into(),
@@ -607,7 +608,7 @@ mod tests {
             user_public_key: "cd".repeat(32),
             token_sha256: "ab".repeat(32),
             label: "Ada".into(),
-            role: RoomRole::Editor,
+            role: WorkspaceRole::Editor,
         };
         assert_eq!(
             pre_admit.to_line(),
@@ -662,10 +663,10 @@ mod tests {
             unlist
         );
         for event in current_events() {
-            assert_eq!(RoomEvent::from_line(&event.to_line()).unwrap(), event);
+            assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
         }
         assert_eq!(
-            RoomEvent::Online {
+            OperatorEvent::Online {
                 people: 7,
                 spectators: 2,
                 here: Vec::new(),
@@ -703,7 +704,7 @@ mod tests {
             );
         }
         assert_eq!(
-            RoomEvent::Standing {
+            OperatorEvent::Standing {
                 request: "12".repeat(32),
                 standing: WaitListStanding::Pending,
             }
@@ -725,19 +726,19 @@ mod tests {
 
     #[test]
     fn pending_removal_contact_digest_round_trips_only_on_the_private_operator_wire() {
-        let event = RoomEvent::Unlisted {
+        let event = OperatorEvent::Unlisted {
             request: "12".repeat(32),
             told: None,
             contact_sha256: Some("ab".repeat(32)),
         };
-        assert_eq!(RoomEvent::from_line(&event.to_line()).unwrap(), event);
+        assert_eq!(OperatorEvent::from_line(&event.to_line()).unwrap(), event);
         let old = format!(
             "tilo-room-operator {{\"event\":\"unlisted\",\"request\":\"{}\"}}",
             "12".repeat(32)
         );
         assert_eq!(
-            RoomEvent::from_line(&old).unwrap(),
-            RoomEvent::Unlisted {
+            OperatorEvent::from_line(&old).unwrap(),
+            OperatorEvent::Unlisted {
                 request: "12".repeat(32),
                 told: None,
                 contact_sha256: None,
@@ -768,7 +769,7 @@ mod tests {
         for event in events() {
             let line = event.to_line();
             assert!(line.starts_with(LINE_PREFIX) && !line.contains('\n'));
-            assert_eq!(RoomEvent::from_line(&line).unwrap(), event);
+            assert_eq!(OperatorEvent::from_line(&line).unwrap(), event);
         }
     }
 
@@ -786,7 +787,7 @@ mod tests {
             "{\"op\":\"shutdown\"}\n"
         );
         assert_eq!(
-            RoomEvent::AdmitRefused {
+            OperatorEvent::AdmitRefused {
                 pairing_code: "012345".into(),
                 reason: RefusalReason::AmbiguousCode,
             }
@@ -826,7 +827,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    RoomEvent::from_line(&format!("{LINE_PREFIX}{json}")),
+                    OperatorEvent::from_line(&format!("{LINE_PREFIX}{json}")),
                     Err(LineError::Malformed(_))
                 ),
                 "{json:?} decoded"
@@ -839,11 +840,11 @@ mod tests {
         let started = events().remove(0);
         let bare = started.to_line().replacen(LINE_PREFIX, "", 1);
         assert!(matches!(
-            RoomEvent::from_line(&bare),
+            OperatorEvent::from_line(&bare),
             Err(LineError::NotProtocol)
         ));
         assert!(matches!(
-            RoomEvent::from_line("2026-10-08T00:00:00Z WARN relay: {\"userPublicKey\":\"ab\"}"),
+            OperatorEvent::from_line("2026-10-08T00:00:00Z WARN relay: {\"userPublicKey\":\"ab\"}"),
             Err(LineError::NotProtocol)
         ));
     }

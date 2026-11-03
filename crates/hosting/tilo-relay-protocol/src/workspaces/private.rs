@@ -1,7 +1,7 @@
 //! The private conversation vocabulary a room's governor serves: two
 //! people's direct messages, which never enter the room's log or its
 //! publication. A native device asks over the governor's dedicated iroh
-//! protocol (`tilo_relay_session::rooms::private`), a page over its HTTPS
+//! protocol (`tilo_relay_session::workspaces::private`), a page over its HTTPS
 //! session at [`PRIVATE_PATH`]; both are authenticated by the device
 //! certificate their transport proved, and both reach the same governor code.
 //! Variant order is append-only across independently updated devices.
@@ -151,7 +151,8 @@ impl core::fmt::Debug for PrivateReply {
 #[derive(Serialize, Deserialize)]
 pub struct PrivateCall {
     /// Exact workspace identifier.
-    pub room: String,
+    #[serde(rename = "room")]
+    pub workspace: String,
     pub operation: PrivateOperation,
 }
 impl core::fmt::Debug for PrivateCall {

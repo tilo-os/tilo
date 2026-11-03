@@ -14,10 +14,10 @@
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
-//! - [`rooms`] — governed rooms over HTTPS: administration and joining;
+//! - [`workspaces`] — governed rooms over HTTPS: administration and joining;
 //! - [`directory`] — the public workspaces a host lists, and the door that
 //!   lets anyone in with the owner's default role;
-//! - [`room_operator`] — the JSON-lines protocol between the public-room
+//! - [`operator`] — the JSON-lines protocol between the public-room
 //!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
 //!   the server advertisements devices offer work with;
@@ -46,17 +46,17 @@ pub mod home_peer;
 pub mod live;
 pub mod mesh;
 pub mod metrics;
+pub mod operator;
 pub mod policy;
 pub mod process_lease;
 pub mod proxies;
 pub mod public_avatars;
 pub mod refusal;
 pub mod retention;
-pub mod room_operator;
-pub mod rooms;
 pub mod transport;
 pub mod voice;
 pub mod web;
+pub mod workspaces;
 
 /// Root-signed agent and bot delegations, defined in `tilo-workspace-join` so
 /// the admission core can verify them without linking the relay protocol.

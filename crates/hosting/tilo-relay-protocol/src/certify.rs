@@ -250,7 +250,8 @@ pub struct PendingConfirmation {
     /// sheet to state. An approver reads an unknown name as the gravest.
     pub risk: String,
     /// The room the agent acts in.
-    pub room: String,
+    #[serde(rename = "room")]
+    pub workspace: String,
     /// Unanswered by then, the question is a refusal; ns since the epoch.
     pub expires_at_ns: u64,
 }

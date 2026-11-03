@@ -94,10 +94,15 @@ pub struct RelayConfig {
     /// the public. `None` limits nobody.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_limits: Option<MemberLimitsConfig>,
-    /// Pre-admissions a governed room keeps, spent ones included. A public
-    /// room that pre-admits every visitor raises it. `None` keeps 1024.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_room_grants: Option<usize>,
+    /// Pre-admissions a governed workspace keeps, spent ones included. A
+    /// public workspace that pre-admits every visitor raises it. `None` keeps
+    /// 1024. It keeps the key `max_room_grants` in `relay.toml`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "max_room_grants"
+    )]
+    pub max_workspace_grants: Option<usize>,
 }
 
 fn default_device_role() -> DeviceRole {
@@ -143,7 +148,7 @@ impl Default for RelayConfig {
             services: default_services(),
             web_entry: None,
             member_limits: None,
-            max_room_grants: None,
+            max_workspace_grants: None,
         }
     }
 }
