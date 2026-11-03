@@ -1422,6 +1422,11 @@ inputs = [
   "crates/system/system-stats/src/protocol.rs",
   "crates/platform/tilo-render-protocol/src/broker.rs",
   "apps/*/tilo-app.toml",
+  # Every app's manifest and baseline the app-side ratchet reads: it lists
+  # what each app still does for itself (its own records, identity, sync) and
+  # fails if the list grows.
+  "apps/*/Cargo.toml",
+  "crates/session/session/tests/baselines/app-side-records.txt",
 ]
 readers = [
   "crates/session/session/src/channels/vault.rs",
@@ -1432,6 +1437,7 @@ readers = [
   "crates/session/session/tests/common/mod.rs",
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/session_package.rs",
+  "crates/session/session/tests/app_side_records.rs",
 ]
 
 [[cargo]]
