@@ -98,6 +98,10 @@ impl Binges {
 }
 
 /// The repository root: this test's manifest is `<root>/crates/session/session`.
+#[expect(
+    clippy::expect_used,
+    reason = "the manifest stands three levels under the root"
+)]
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
