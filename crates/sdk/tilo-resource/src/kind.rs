@@ -168,13 +168,13 @@ const fn app_eq(a: &str, b: &str) -> bool {
     true
 }
 
-/// [`Resource::LABEL`], for a kind declared from a type's name alone.
+/// [`Resource::label`], for a kind declared from a type's name alone.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "a kind names its records through a `Resource` method, whatever its state"
 )]
 fn naming<R: Resource>(_state: &dyn Any) -> Option<String> {
-    Some(R::LABEL.to_owned())
+    Some(R::label())
 }
 
 fn read<R: Resource>(doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
@@ -182,9 +182,7 @@ fn read<R: Resource>(doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
 }
 
 fn resource_label<R: Resource>(state: &dyn Any) -> Option<String> {
-    state
-        .downcast_ref::<R::State>()
-        .map(|_| R::LABEL.to_owned())
+    state.downcast_ref::<R::State>().map(|_| R::label())
 }
 
 fn publish<R: Resource>(

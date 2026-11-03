@@ -527,3 +527,20 @@ network-agent-risk-something = do something that cannot be undone
 network-device-unlock-title = Unlock { $device }?
 network-device-unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code above with the one on its boot screen.
 network-device-unlock-allow = Release its key
+
+## What each sheet's resource is called, keyed by its kind with separators
+## as dashes (`power.session` is `power-session`). The label a sheet declares
+## is the English text here, so a desktop in another language names the
+## resource it publishes in that language.
+power-session = Power
+lock-screen = Lock screen
+dictation-session = Dictation
+uninstall-question = Uninstall
+add-app-question = Add to apps
+file-chooser-request = File chooser
+shortcut-guide-guide = Keyboard shortcuts
+workspace-directory-listing = Public workspaces
+display-sheet-layouts = Displays
+display-confirm-question = Display change
+portal-sheet-question = System question
+workspace-settings-lens = Workspace settings

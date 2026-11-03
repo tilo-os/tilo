@@ -1468,6 +1468,10 @@ struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,
     local_generation: u64,
+    /// The language the snapshot's names were resolved in: a resource is
+    /// named when it is published, so an owner that keeps serving its record
+    /// is published again once the person changes language.
+    locale: u64,
     permissions: crate::permissions::DirectoryPermissionWitness,
     revisions: Vec<Option<String>>,
     /// The token the snapshot's forest was filtered under: kept while the
@@ -1554,6 +1558,7 @@ pub(crate) fn discover_cached_bound_resources(
                     revisions
                 })
                 .map_err(|error| format!("{error:?}"))?;
+            let locale = crate::i18n::I18nManager::revision();
             let cached = cache
                 .0
                 .borrow()
@@ -1562,6 +1567,7 @@ pub(crate) fn discover_cached_bound_resources(
                     entry.snapshot.binding.same_component(binding)
                         && generation == Some(entry.generation)
                         && entry.local_generation == local_generation
+                        && entry.locale == locale
                         && entry.permissions == permissions
                         && entry.revisions == revisions
                 })
@@ -1625,6 +1631,7 @@ pub(crate) fn discover_cached_bound_resources(
                         snapshot: snapshot.clone(),
                         generation,
                         local_generation,
+                        locale,
                         permissions,
                         revisions,
                         filter_token,

@@ -187,16 +187,20 @@ impl Doors {
     }
 
     /// Where everything offered now stands: equal revisions offer the
-    /// same. `None` when a surface cannot tell.
+    /// same. `None` when a surface cannot tell. Each surface's revision
+    /// stands beside the language the person reads it in: what a surface
+    /// publishes says it in that language, so one that stood still still
+    /// offers new words once the language moved.
     #[must_use]
-    pub fn revision(&self) -> Option<Vec<(usize, u64)>> {
+    pub fn revision(&self) -> Option<Vec<(usize, (u64, u64))>> {
+        let locale = ui::i18n::I18nManager::revision();
         self.offered()
             .into_iter()
             .map(|(place, surface)| {
                 surface
                     .borrow()
                     .revision()
-                    .map(|revision| (place, revision))
+                    .map(|revision| (place, (revision, locale)))
             })
             .collect()
     }

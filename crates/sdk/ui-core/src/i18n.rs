@@ -618,6 +618,15 @@ pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
     I18nManager::format(key, args)
 }
 
+/// A resource's name in the language this thread reads: the catalogue entry
+/// for its kind ([`tilo_resource::label::message_key`]) when one is loaded,
+/// and nothing when none is, so the resource keeps the name it declares.
+fn resource_label(key: &str) -> Option<String> {
+    manager_id()?;
+    let said = I18nManager::lookup(key, None);
+    (said != key).then_some(said)
+}
+
 impl I18nManager {
     /// Register shared widget labels in every bundled language without
     /// replacing an application's catalogs or its selected language. A host
@@ -660,6 +669,9 @@ impl I18nManager {
             *slot.borrow_mut() = Some(manager);
         });
         WIDGET_CATALOG.ensure();
+        // From here on every resource this thread publishes is named in the
+        // language it just selected, and named again when that moves.
+        tilo_resource::label::install(resource_label);
     }
 
     /// Whether a catalogue was added for `locale`, parsed or not.

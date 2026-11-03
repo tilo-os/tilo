@@ -527,3 +527,20 @@ network-agent-risk-something = etwas Unwiderrufliches tun
 network-device-unlock-title = { $device } entsperren?
 network-device-unlock-detail = Es startet gerade und bittet dich um die Hälfte seines Datenträgerschlüssels, die dieses Gerät für es hält, für { $slot }. Vergleiche den Code oben mit dem auf seinem Startbildschirm.
 network-device-unlock-allow = Schlüssel freigeben
+
+## Wie die Ressource jeder Karte heißt, nach ihrer Art benannt, mit
+## Bindestrichen statt Punkten (`power.session` ist `power-session`). Der
+## Name, den eine Karte deklariert, ist der englische Text dazu, sodass ein
+## Desktop in einer anderen Sprache die Ressource in dieser Sprache benennt.
+power-session = Ein/Aus
+lock-screen = Sperrbildschirm
+dictation-session = Diktat
+uninstall-question = Deinstallieren
+add-app-question = Zu den Apps hinzufügen
+file-chooser-request = Dateiauswahl
+shortcut-guide-guide = Tastenkürzel
+workspace-directory-listing = Öffentliche Arbeitsbereiche
+display-sheet-layouts = Anzeige
+display-confirm-question = Anzeigeänderung
+portal-sheet-question = Systemfrage
+workspace-settings-lens = Arbeitsbereich-Einstellungen

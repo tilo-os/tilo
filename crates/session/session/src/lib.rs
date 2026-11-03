@@ -401,7 +401,7 @@ struct Shared {
     session_actions: fn(SessionAction) -> Result<(), String>,
     /// Where everything the session publishes stood when search last read
     /// it.
-    observed: RefCell<Option<Vec<(usize, u64)>>>,
+    observed: RefCell<Option<Vec<(usize, (u64, u64))>>>,
     /// The second search last read who is here: people and the calls they are
     /// in change with the clock as well as with what arrives.
     here_at: Cell<u64>,

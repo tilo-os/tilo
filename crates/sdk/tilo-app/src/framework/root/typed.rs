@@ -421,7 +421,11 @@ impl<R: Resource> TypedRoot for Typed<R> {
     fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::ResourceSpec {
         match state_of::<R>(state) {
             Some(state) => tilo_resource::publish_head::<R>(id, label, state),
-            None => tilo_actions::ResourceSpec::new(id, R::KIND, label),
+            None => tilo_actions::ResourceSpec::new(
+                id,
+                R::KIND,
+                tilo_resource::label::published(R::KIND, label, R::LABEL),
+            ),
         }
     }
 

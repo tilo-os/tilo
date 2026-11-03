@@ -441,6 +441,10 @@ type ResolvedResourceInvocation<'a> = (
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResourceCacheKey {
     mutation_generation: u64,
+    /// The locale what was declared reads in: a resource's, an action's and
+    /// a row's labels are resolved when they are materialised, so a language
+    /// the person changes declares its resources again.
+    locale: u64,
 }
 
 struct ResourceCache {
