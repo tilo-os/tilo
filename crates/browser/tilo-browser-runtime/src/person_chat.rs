@@ -6,7 +6,7 @@
 //! each answer comes back through the toolkit's callbacks.
 
 use tilo_browser_peer::PeerHandle;
-use tilo_relay_protocol::rooms::private::{
+use tilo_relay_protocol::workspaces::private::{
     PrivateCall, PrivateOperation, PrivateReply, read_whole,
 };
 use ui::person_chat::{Answer, AnswerDone, Contact, Conversation, Message, Request, WatchDone};
@@ -72,7 +72,7 @@ impl PagePrivate {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.handle.private_then(
             PrivateCall {
-                room: self.workspace.clone(),
+                workspace: self.workspace.clone(),
                 operation,
             },
             Box::new(move |answer| {

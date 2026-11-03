@@ -68,7 +68,9 @@ impl Desktop {
                 Box::new(move |reply| {
                     // What the workspace permits beyond the person's role (an
                     // item shared with them to edit) reaches their windows.
-                    if let Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) = &reply {
+                    if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) =
+                        &reply
+                    {
                         permitted
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -101,23 +103,23 @@ fn node_request(
     workspace: &str,
     node: String,
     action: tilo_desktop_surface::session::NodeAction,
-) -> tilo_relay_protocol::rooms::RoomsRequest {
+) -> tilo_relay_protocol::workspaces::WorkspacesRequest {
     use tilo_desktop_surface::session::NodeAction;
-    use tilo_relay_protocol::rooms::RoomsRequest;
+    use tilo_relay_protocol::workspaces::WorkspacesRequest;
     let workspace = workspace.to_owned();
     match action {
-        NodeAction::Share { share, access } => RoomsRequest::Share {
-            room: workspace,
+        NodeAction::Share { share, access } => WorkspacesRequest::Share {
+            workspace: workspace,
             share,
             node,
             access,
         },
-        NodeAction::Unshare { share } => RoomsRequest::Unshare {
-            room: workspace,
+        NodeAction::Unshare { share } => WorkspacesRequest::Unshare {
+            workspace: workspace,
             share,
         },
-        NodeAction::Permits => RoomsRequest::Permits {
-            room: workspace,
+        NodeAction::Permits => WorkspacesRequest::Permits {
+            workspace: workspace,
             node,
         },
     }
@@ -125,13 +127,13 @@ fn node_request(
 
 /// A node ask's output from the workspace's reply.
 fn node_answer(
-    reply: Result<tilo_relay_protocol::rooms::RoomsReply, String>,
+    reply: Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>,
 ) -> Result<serde_json::Value, String> {
-    use tilo_relay_protocol::rooms::RoomsReply;
+    use tilo_relay_protocol::workspaces::WorkspacesReply;
     match reply? {
-        RoomsReply::Permits(may) => Ok(serde_json::json!({ "undoable": may })),
-        RoomsReply::Shared(count) => Ok(serde_json::json!({ "grants": count })),
-        RoomsReply::Refused(reason) => Err(reason),
+        WorkspacesReply::Permits(may) => Ok(serde_json::json!({ "undoable": may })),
+        WorkspacesReply::Shared(count) => Ok(serde_json::json!({ "grants": count })),
+        WorkspacesReply::Refused(reason) => Err(reason),
         other => Err(format!("the workspace answered something else: {other:?}")),
     }
 }
