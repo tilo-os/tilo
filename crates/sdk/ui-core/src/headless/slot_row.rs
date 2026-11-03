@@ -137,6 +137,30 @@ impl FrameHarness {
         self.slot_row.is_some()
     }
 
+    /// The frame is a window of its own on a desktop that leaves the frame
+    /// to the app ([`Self::host_window_slots`]): its row carries the
+    /// window's minimize, maximize and close in their pill at its trailing
+    /// end, as the native runner's row does, and a press on the row's empty
+    /// ground moves the window. A browser page's row carries none: the
+    /// browser has the window's own chrome.
+    pub fn host_window_controls(&mut self) {
+        let Some(hosted) = self.slot_row.as_mut() else {
+            return;
+        };
+        hosted.row.set_window_controls(true);
+        self.invalidate_local();
+        self.relayout();
+    }
+
+    /// Whether the frame's row carries the window's controls
+    /// ([`Self::host_window_controls`]).
+    #[must_use]
+    pub fn hosts_window_controls(&self) -> bool {
+        self.slot_row
+            .as_ref()
+            .is_some_and(|hosted| hosted.row.shows_window_controls())
+    }
+
     /// How far below the window's top the app's frame starts: the row's
     /// height while the frame hosts the slots.
     pub(super) fn slot_row_inset(&self) -> f64 {
@@ -260,8 +284,13 @@ impl FrameHarness {
             modifiers: &modifiers,
             platform: self.platform,
         };
-        let Some((took, redraw)) = self.with_slot_row(|row, lent| row.route(lent, event, &input))
-        else {
+        let Some((took, redraw)) = self.with_slot_row(|row, lent| {
+            let routed = row.route(lent, event, &input);
+            // The window the frame stands for takes the row's self actions
+            // (move, maximize, minimize, close) nowhere: there is no window.
+            let _ = row.take_window_actions();
+            routed
+        }) else {
             return false;
         };
         if took || redraw {
@@ -438,6 +467,34 @@ mod tests {
         assert!(
             slot(&harness, "window-search-open").is_some(),
             "the row ends with the window's search"
+        );
+    }
+
+    // A window of its own on a desktop that leaves the frame to the app is
+    // one bar tall: the app's frame starts under it, and the row's trailing
+    // end is the window's controls, not a second row above the app's.
+    #[test]
+    fn a_window_of_its_own_has_one_bar_with_the_windows_controls() {
+        let (mut harness, _) = call_app();
+        assert!(!harness.hosts_window_controls(), "a page hosts no controls");
+        harness.host_window_controls();
+        assert!(harness.hosts_window_controls());
+        let frame = Widget::get_rect(harness.root::<CallApp>());
+        assert!(
+            (frame.y0 - TOOLBAR_ROW_HEIGHT).abs() < f64::EPSILON,
+            "the window has one bar: the app starts under it, not under two: {frame:?}"
+        );
+        let row = harness
+            .inspection()
+            .root
+            .children
+            .into_iter()
+            .find(|node| node.path == WINDOW_SLOTS)
+            .expect("the row stands in the frame");
+        assert!(
+            (row.rect[3] - TOOLBAR_ROW_HEIGHT).abs() < 0.5,
+            "the row is one bar tall: {:?}",
+            row.rect
         );
     }
 

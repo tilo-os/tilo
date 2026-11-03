@@ -10,9 +10,9 @@
 //! window and which to what the window shows.
 //!
 //! A Tilo window has no minimized state — it is a tab in a group, and its
-//! group is what a person puts away — so the pill offers no minimize. A
-//! foreign native window that carries a minimize keeps it in its own
-//! header ([`crate::host_chrome`]).
+//! group is what a person puts away — so the pill offers no minimize there.
+//! A window of the app's own on a desktop that leaves decorations to it does
+//! have one ([`WindowControls::lay_out_own_window`]).
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -24,6 +24,7 @@ use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowControl {
+    Minimize,
     Maximize,
     Close,
 }
@@ -70,6 +71,9 @@ pub struct WindowControls {
     /// The glass pill around every control: the window's own, not a
     /// control's, so it never changes with hover, press or focus.
     pub pill: Rect,
+    /// The window of the app's own, on a desktop that leaves its frame to the
+    /// app, is the one control a Tilo window has no state for.
+    pub minimize: Rect,
     pub maximize: Rect,
     pub close: Rect,
 }
@@ -83,7 +87,7 @@ pub struct ControlsState {
     /// How far each control's hover ring has come in, by control
     /// ([`WindowControl::index`]): on the toolkit's spring, so a ring
     /// fades in and out rather than appearing and vanishing.
-    pub lifts: [f32; 2],
+    pub lifts: [f32; 3],
 }
 
 impl WindowControl {
@@ -93,6 +97,7 @@ impl WindowControl {
         match self {
             WindowControl::Maximize => 0,
             WindowControl::Close => 1,
+            WindowControl::Minimize => 2,
         }
     }
 }
@@ -102,6 +107,18 @@ impl WindowControls {
     /// line, inside one pill.
     #[must_use]
     pub fn lay_out(row: Rect) -> Self {
+        Self::place(row, false)
+    }
+
+    /// The controls of a window the app draws the frame of itself (a desktop
+    /// that leaves decorations to the client): minimize joins maximize and
+    /// close, in the order desktops put them.
+    #[must_use]
+    pub fn lay_out_own_window(row: Rect) -> Self {
+        Self::place(row, true)
+    }
+
+    fn place(row: Rect, minimize: bool) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
         }
@@ -113,14 +130,24 @@ impl WindowControls {
         let pill_x1 = row.x1 - EDGE_INSET;
         let close = square(pill_x1 - pad);
         let maximize = square(close.x0 - PILL_PAD);
-        let pill = Rect::new(
-            maximize.x0 - pad,
-            y0,
-            pill_x1.max(maximize.x1 + pad),
-            y0 + pill_h,
-        );
+        let minimize = if minimize {
+            let minimum = square(maximize.x0 - PILL_PAD);
+            if minimum.x0 < row.x0 {
+                return Self::default();
+            }
+            minimum
+        } else {
+            Rect::ZERO
+        };
+        let lead = if minimize.area() > 0.0 {
+            minimize.x0
+        } else {
+            maximize.x0
+        };
+        let pill = Rect::new(lead - pad, y0, pill_x1.max(maximize.x1 + pad), y0 + pill_h);
         Self {
             pill,
+            minimize,
             maximize,
             close,
         }
@@ -147,6 +174,7 @@ impl WindowControls {
                 maximize.x1 + pad,
                 self.pill.y1,
             ),
+            minimize: Rect::ZERO,
             maximize,
             close: Rect::ZERO,
         }
@@ -165,6 +193,7 @@ impl WindowControls {
 
     pub fn iter(&self) -> impl Iterator<Item = (WindowControl, Rect)> {
         [
+            (WindowControl::Minimize, self.minimize),
             (WindowControl::Maximize, self.maximize),
             (WindowControl::Close, self.close),
         ]
@@ -185,7 +214,12 @@ impl WindowControls {
     }
 
     pub fn offset(&mut self, shift: vello::kurbo::Vec2) {
-        for r in [&mut self.pill, &mut self.maximize, &mut self.close] {
+        for r in [
+            &mut self.pill,
+            &mut self.minimize,
+            &mut self.maximize,
+            &mut self.close,
+        ] {
             if r.area() > 0.0 {
                 *r = *r + shift;
             }
@@ -218,13 +252,16 @@ impl WindowControls {
             // has brought it — coming in, or going out from where it was.
             let ring = if pressed { 1.0 } else { lift };
             let glyph = match control {
+                WindowControl::Minimize => icons::Icon::Minus,
                 WindowControl::Maximize if state.maximized => icons::Icon::Minimize2,
                 WindowControl::Maximize => icons::Icon::Maximize2,
                 WindowControl::Close => icons::Icon::X,
             };
             let glyph_box = match control {
                 WindowControl::Close => square_at(rect.center(), CLOSE_GLYPH_PX),
-                WindowControl::Maximize => square_at(rect.center(), ACTION_GLYPH_PX),
+                WindowControl::Minimize | WindowControl::Maximize => {
+                    square_at(rect.center(), ACTION_GLYPH_PX)
+                }
             };
             let colour = match control {
                 WindowControl::Close => theme
@@ -233,7 +270,7 @@ impl WindowControls {
                     .semantic
                     .danger
                     .with_alpha(CLOSE_RING_ALPHA * crate::num::f32_of_f64(ring)),
-                WindowControl::Maximize => {
+                WindowControl::Minimize | WindowControl::Maximize => {
                     crate::tokens::Colors::hairline_on(ground, scale_alpha(HOVER_TINT_ALPHA, ring))
                 }
             };

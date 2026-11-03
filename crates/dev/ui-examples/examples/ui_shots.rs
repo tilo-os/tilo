@@ -33,6 +33,7 @@ registry::scenario_modules! {
     undo_controls_shots, "undo_controls_shots.rs", "undo and redo availability states";
     widget_states, "widget_states_shots.rs", "every widget in its states, dark and light, with overlays over content";
     window_chrome, "window_chrome_shots.rs", "modal, popover, status and over-media chrome, dark and light";
+    window_of_its_own, "window_of_its_own_shots.rs", "a window of its own: one bar with the app's slots and the window's controls";
 }
 
 fn main() {

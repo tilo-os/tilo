@@ -11,11 +11,13 @@
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
+#[cfg(target_os = "linux")]
+use winit::platform::wayland::WindowExtWayland;
 use winit::window::Window;
 
 use super::super::App;
 use crate::search::SearchRequest;
-use crate::slot_row::{RowInput, RowPlace, SlotRow, SlotRowHost};
+use crate::slot_row::{RowInput, RowPlace, SlotRow, SlotRowHost, WindowAction};
 use crate::widget::{HistoryControl, InPlace, Widget};
 use crate::window_toolbar::{SearchOpening, ToolbarEvent};
 
@@ -86,6 +88,8 @@ pub(super) struct SlotBar {
     row: SlotRow,
     /// The window's title, which names the row's toolbar.
     title: String,
+    /// The row's Close control asked for the window: the runner closes it.
+    close: bool,
 }
 
 impl SlotBar {
@@ -93,6 +97,7 @@ impl SlotBar {
         Self {
             row: SlotRow::new(),
             title: String::new(),
+            close: false,
         }
     }
 
@@ -111,6 +116,12 @@ impl SlotBar {
         // over another window, such as a sheet or the keyboard: it wears no
         // bar of its own, since everything it paints shows what is under it.
         let shown = standalone && window.fullscreen().is_none() && app.root_widget.paints_ground();
+        // Where the desktop leaves the frame to the app, the row is the whole
+        // bar: the window's minimize, maximize and close stand in their pill
+        // at its trailing end, under the hand that also drags by it.
+        self.row
+            .set_window_controls(shown && self.decorates_itself(app, window));
+        self.row.set_maximized(window.is_maximized());
         if standalone {
             if crate::window_toolbar::set_hosted(shown) {
                 app.needs_sync = true;
@@ -146,6 +157,33 @@ impl SlotBar {
                 self.row.mark_repaint();
             }
         }
+    }
+
+    /// Whether the app draws the window's frame itself: the one case the row
+    /// carries the window's controls, since the desktop draws none.
+    fn decorates_itself(&self, app: &App, window: &Window) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            crate::host_chrome::header_bar::app_draws_frame(
+                crate::host_chrome::HostChrome::current(app.input.platform),
+                window.server_side_decorations(),
+            ) == Some(true)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (app, window);
+            false
+        }
+    }
+
+    /// Whether the row stands across the top of the window.
+    pub(super) fn shows(&self) -> bool {
+        self.row.is_shown()
+    }
+
+    /// Whether the row's Close control asked to close the window.
+    pub(super) fn take_close(&mut self) -> bool {
+        std::mem::take(&mut self.close)
     }
 
     /// The input evidence of the window's search, beside the app's own
@@ -197,6 +235,16 @@ impl SlotBar {
             platform: app.input.platform,
         };
         let (took, redraw) = self.row.route(app, event, &input);
+        for action in self.row.take_window_actions() {
+            match action {
+                WindowAction::Move => {
+                    let _ = window.drag_window();
+                }
+                WindowAction::ToggleMaximize => window.set_maximized(!window.is_maximized()),
+                WindowAction::Minimize => window.set_minimized(true),
+                WindowAction::Close => self.close = true,
+            }
+        }
         if redraw {
             window.request_redraw();
         }

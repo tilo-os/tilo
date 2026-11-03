@@ -2501,9 +2501,12 @@ impl AppHandler {
             }
         }
         sync_safe_area(&mut self.app, window);
-        #[cfg(target_os = "linux")]
-        self.decorations.refresh(&mut self.app, window);
+        // The app's own row of slots, then the frame around it: where the row
+        // is the window's bar, the header draws no second one.
         self.slot_bar.refresh(&mut self.app, window);
+        #[cfg(target_os = "linux")]
+        self.decorations
+            .refresh(&mut self.app, window, self.slot_bar.shows());
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -4841,7 +4844,12 @@ impl AppHandler {
                 return;
             }
         }
-        if self.slot_bar.route(&mut self.app, window, &event) {
+        let slots_took = self.slot_bar.route(&mut self.app, window, &event);
+        if self.slot_bar.take_close() {
+            self.close_primary_window(window);
+            return;
+        }
+        if slots_took {
             return;
         }
         if self.dispatch_touch_pointer_events(window, &event) {
