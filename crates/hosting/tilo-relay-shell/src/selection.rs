@@ -200,7 +200,7 @@ impl Basis {
     fn set_workspace(&mut self, workspace: VerifiedWorkspace) -> Result<(), StoreError> {
         self.routes = workspace
             .coverages()
-            .map_err(|_| invalid("invalid verified room coverage"))?
+            .map_err(|_| invalid("invalid verified workspace coverage"))?
             .into_iter()
             .map(|(k, coverage)| {
                 (

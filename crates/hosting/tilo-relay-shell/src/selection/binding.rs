@@ -153,7 +153,7 @@ impl<S: ShellStore + ?Sized> ShellAuthority for S {
             authority.workspace(),
             self.workspace_id(),
         ) {
-            return Err(invalid("shell authority room/workspace mismatch"));
+            return Err(invalid("shell authority workspace mismatch"));
         }
         if self
             .shell_authority()
