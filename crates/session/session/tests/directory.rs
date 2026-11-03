@@ -947,7 +947,7 @@ impl LoungeHost {
         });
         Self {
             relay,
-            workspaces: workspaces,
+            workspaces,
             owner_key,
             host_cert,
             page_key,

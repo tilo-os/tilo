@@ -158,9 +158,8 @@ pub fn type_text(session: &mut Session, text: &str) {
         } else {
             ROWS.iter()
                 .find_map(|(row, first)| {
-                    row.chars()
-                        .position(|c| c == letter)
-                        .map(|at| first + u32::try_from(at).unwrap())
+                    let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
+                    first.checked_add(at)
                 })
                 .unwrap_or_else(|| panic!("no key types {letter:?}"))
         };

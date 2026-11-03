@@ -56,9 +56,9 @@ fn step(session: &mut Session) {
 /// finish. A step moves the session's clock on, not the machine's: the paste
 /// copies on its own thread, so what bounds the wait is the time the machine
 /// takes, never a count of turns a loaded machine would run through too fast.
-fn until(session: &mut Session, what: &str, mut done: impl FnMut() -> bool) {
+fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
     let started = Instant::now();
-    while !done() {
+    while !done(session) {
         assert!(
             started.elapsed() < WAIT,
             "{what} did not happen within {WAIT:?}"
@@ -185,8 +185,8 @@ fn copied_files_are_pasted_beside_the_ones_already_in_the_folder() {
     );
     paste_into(&mut session, &destination, None);
     let pasted = destination.join("notes (2).txt");
-    until(&mut session, "the paste finished", || pasted.exists());
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the paste finished", |_| pasted.exists());
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
 
@@ -216,10 +216,10 @@ fn a_cut_takes_its_sources_once_the_copies_stand_under_their_names() {
     let mut session = session();
     copy(&mut session, &paths, true);
     paste_into(&mut session, &destination, None);
-    until(&mut session, "the cut finished", || {
+    until(&mut session, "the cut finished", |_| {
         paths.iter().all(|path| !path.exists())
     });
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
 
@@ -249,10 +249,10 @@ fn replacing_sends_the_name_that_was_there_to_the_trash() {
     let mut session = session();
     copy(&mut session, &[source.join("note.txt")], false);
     paste_into(&mut session, &destination, Some("replace"));
-    until(&mut session, "the paste finished", || {
+    until(&mut session, "the paste finished", |_| {
         read(&destination.join("note.txt")) == b"the new one"
     });
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
 
@@ -288,12 +288,20 @@ fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
     let mut session = session();
     copy(&mut session, &[secret, source.join("fine.txt")], false);
     paste_into(&mut session, &destination, None);
-    until(&mut session, "the readable one landed", || {
+    until(&mut session, "the readable one landed", |_| {
         destination.join("fine.txt").exists()
     });
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
+    // The receipt goes before the worker says it is done, and the loop tells
+    // the person on the pass after that: the notice is waited on, not read
+    // from the receipt's going.
+    until(
+        &mut session,
+        "the notice saying what did not land",
+        |session| !session.notifications().log().active().is_empty(),
+    );
     assert_eq!(read(&destination.join("fine.txt")), b"open");
     assert!(
         !destination.join("secret.txt").exists(),
@@ -336,7 +344,7 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         turns.push(turn.elapsed());
     }
     let copied = started.elapsed();
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
     assert!(
@@ -482,7 +490,7 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
     );
     {
         let mut session = session();
-        until(&mut session, "the paste was undone", || {
+        until(&mut session, "the paste was undone", |_| {
             !receipt(&home).exists()
         });
     }
@@ -499,7 +507,7 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
     assert!(receipt(&home).exists(), "the second paste was written down");
     {
         let mut session = session();
-        until(&mut session, "the second paste was undone", || {
+        until(&mut session, "the second paste was undone", |_| {
             !receipt(&home).exists()
         });
     }

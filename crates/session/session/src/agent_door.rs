@@ -1284,8 +1284,9 @@ impl SessionDoors {
     }
 
     /// Answer what the connections asked since the last pass, from `doors`,
-    /// the `services` the session runs, and the one `search`; `person` is
-    /// whose calls are their own, not someone's for them.
+    /// the `services` the session runs, and the one `search`; `shows` names
+    /// the resources a place can show, as the arrangement holds them, and
+    /// `person` is whose calls are their own, not someone's for them.
     ///
     /// The services are borrowed briefly, one ask at a time: a change they carry out is the
     /// published action's own, so a run never needs the services held across a turn of the
@@ -1295,6 +1296,7 @@ impl SessionDoors {
         doors: &tilo_surface_host::Doors,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
+        shows: &dyn Fn(&str) -> bool,
         person: &str,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
@@ -1302,7 +1304,11 @@ impl SessionDoors {
             match ask {
                 DoorAsk::Resources(done) => done.complete(Offered::of(doors)),
                 DoorAsk::Find { needle, done } => {
-                    done.complete(crate::search::found_all(search.find(&needle)));
+                    done.complete(crate::search::found_all(
+                        &needle,
+                        search.find(&needle),
+                        shows,
+                    ));
                 }
                 DoorAsk::Invoke {
                     actor,

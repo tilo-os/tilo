@@ -662,8 +662,17 @@ impl Shared {
 
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
-        self.session_doors
-            .answer(&self.doors, &self.services, &self.search, &self.person);
+        // What a place can show, as the arrangement published it: an
+        // agent's `find` leads with the resource typing the text would
+        // place, so it reads the same catalogue the canvas places through.
+        let catalog = self.arrangement.borrow().targets();
+        self.session_doors.answer(
+            &self.doors,
+            &self.services,
+            &self.search,
+            &|resource| catalog.borrow().get(resource).is_some(),
+            &self.person,
+        );
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
