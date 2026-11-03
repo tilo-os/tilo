@@ -517,6 +517,20 @@ impl Shell {
         })
     }
 
+    /// The shell's own record (`root shell: Shell`, `root viewing: Viewing`, `root
+    /// arrangement: Arrangement`), as the shell's parts keep it: the document every part
+    /// commits into and draws from, shared by them. It exists as soon as the shell does, before
+    /// any display's part is made.
+    pub(crate) fn records(&self) -> Rc<RefCell<tilo_resource::Doc>> {
+        Rc::clone(&self.record)
+    }
+
+    /// The shell's package as the session runs it, its compiled module and description: what
+    /// its records are published by, the way an app's are.
+    pub(crate) fn package(&self) -> Option<tilolang_tilo::tilolang::Compiled> {
+        self.packages.last().cloned()
+    }
+
     /// Move every part to the bands the shell's chrome stands in: a bar at the top or bottom, a
     /// dock at the bottom or top. A change of the person's settings moves them on the next
     /// frame.

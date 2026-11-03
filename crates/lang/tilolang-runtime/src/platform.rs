@@ -1227,8 +1227,12 @@ impl Core {
         let target = &subject.target;
         let packages = self.registry.borrow().packages();
         let mut out = Vec::new();
-        // The subject's own.
-        let found = self.registry.borrow().type_info(&target.ty);
+        // The subject's own. Another app's resource names its type as `app#Type`, which
+        // resolves to the id its package declares before the package is looked up.
+        let found = self.registry.borrow().type_id(&target.ty).and_then(|id| {
+            let registry = self.registry.borrow();
+            registry.type_info(&id)
+        });
         if let Some((pkg, info)) = found {
             let mut own: Vec<&ActionMeta> = pkg
                 .meta

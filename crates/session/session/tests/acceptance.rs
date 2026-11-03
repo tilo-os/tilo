@@ -152,7 +152,6 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
 /// Step 3: the REPL switches the layout — strips, the framed canvas and the traditional desktop —
 /// and the screen changes with it.
 #[test]
-#[ignore = "step 3: the shell's preset is not published on the session's door — the session's package (`apps/tl/session/surface.toml`) declares no `show_preset`, and the shell's own record's actions reach no door, so a REPL can press the preset chips but cannot switch the desk itself (`E014 package `session` has no `show_preset`; did you mean `show_person`?`)"]
 fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
@@ -171,14 +170,20 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
 
     // The strips, through the shell's preset.
-    let (answer, failed) = repl.run(&mut session, "session.show_preset(shown: .strips)");
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_preset(shell.viewing, shown: shell.Preset.strips)",
+    );
     assert!(!failed, "the REPL switches the preset: {answer}");
     until(&mut session, "the strips", |session| {
         on_screen(session, "Typed").is_none() && on_screen(session, "Strips").is_some()
     });
 
     // The traditional desktop: no preset switch at all, its own top bar instead.
-    let (answer, failed) = repl.run(&mut session, "session.show_preset(shown: .desktop)");
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_preset(shell.viewing, shown: shell.Preset.desktop)",
+    );
     assert!(!failed, "the REPL switches to the desktop: {answer}");
     until(&mut session, "the traditional desktop", |session| {
         on_screen(session, "Strips").is_none()
@@ -395,7 +400,6 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
 /// focused window's actions. (A dock press already opens its item on the strips desk; what is
 /// missing is the traditional desk itself, which this test drives the same way.)
 #[test]
-#[ignore = "step 8: the traditional desktop cannot be entered — the shell's own record (`root shell: Shell`) is published nowhere on the session's door, so a program cannot run `apply(to: .windows_desktop)` (`E014 unknown name `shell``), and the preset switch offers the strips, the frames and the spaces only"]
 fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
@@ -404,7 +408,10 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     repl.opened(&mut session);
 
     // The traditional desktop, through the shell's own record.
-    let (answer, failed) = repl.run(&mut session, "shell.apply(to: .windows_desktop)");
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.apply(shell.shell, to: shell.Layout.windows_desktop)",
+    );
     assert!(!failed, "the desk is the traditional one: {answer}");
     until(&mut session, "the traditional desktop", |session| {
         on_screen(session, "Strips").is_none() && on_screen(session, "Dock").is_some()
@@ -418,8 +425,27 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
             .is_some_and(|desk| desk["here"] == json!("launcher"))
     });
 
-    // The top bar shows the focused window's own commands.
+    // The top bar shows the focused window's own commands. The seeded note starts pinned, so
+    // its pin control toggles; unpinning it through the note's own published action leaves a
+    // note whose bar offers "Pin", as one it would pin does.
     let note = seeded_note(&session, "Groceries");
+    fn offered(resources: &[tilo_actions::ResourceSpec], id: &str, label: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                resource
+                    .actions
+                    .iter()
+                    .find(|offered| offered.label == label)
+                    .map(|offered| offered.id.clone())
+            } else {
+                offered(&resource.children, id, label)
+            }
+        })
+    }
+    let pin = offered(&session.resources(), &note, "Pin").expect("the note offers its pin");
+    session
+        .invoke(&note, &pin, &Map::new())
+        .expect("the note unpins");
     session
         .invoke(
             "shell:arrangement",

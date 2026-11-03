@@ -546,7 +546,8 @@ impl Shared {
 
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
-        self.session_doors.answer(&self.doors, &self.person);
+        self.session_doors
+            .answer(&self.doors, &self.services, &self.person);
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
@@ -1434,6 +1435,22 @@ impl Session {
             service.seated(&options.person, &seat.earlier);
         }
         let services = mount_services(&mut doors, started);
+        // The shell's package the session runs, compiled: its own records are the person's,
+        // kept in every part's one document, and published through the same services and door
+        // as any app's, so a REPL or an agent reads and changes them by the shell's app.
+        if let Some(shell) = &shell {
+            if let Some(compiled) = shell.package() {
+                let records = shell.records();
+                let taken = services.borrow_mut().share(&tilo_service::Share {
+                    app: &compiled.meta.app,
+                    wasm: &compiled.wasm,
+                    records: &records,
+                });
+                if let Err(error) = taken {
+                    tracing::error!(%error, "the shell's records are not published");
+                }
+            }
+        }
         services
             .borrow_mut()
             .add(Box::new(tilo_agent_runs::Served::new(
@@ -2785,6 +2802,11 @@ impl Session {
         self.follow_fullscreen();
         self.follow_overlays();
         self.follow_setup();
+        // What the packages the session runs itself (the shell) wrote into the records their
+        // parts share, published with every app's before the door answers this pass.
+        if let Err(error) = self.shared.services.borrow_mut().follow_shared() {
+            tracing::error!(%error, "a package's records are not followed");
+        }
         {
             self.shared.feed_agent_runs();
             let mut services = self.shared.services.borrow_mut();

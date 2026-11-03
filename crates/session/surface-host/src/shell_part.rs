@@ -2634,7 +2634,20 @@ impl ShellPart {
     }
 
     fn due(&self) -> bool {
-        self.input || self.again || self.owes() || self.origin.borrow().due()
+        self.input || self.again || self.owes() || self.origin.borrow().due() || self.record_moved()
+    }
+
+    /// Whether the shell's record holds changes this part has not drawn: another part of the
+    /// shell committed them, or a connection the session admits (a REPL, an agent) changed the
+    /// record the shell's own actions are published on, and the part draws them next frame.
+    fn record_moved(&self) -> bool {
+        let record = self.record.borrow();
+        let heads: Vec<String> = record
+            .committed_heads()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        heads != self.seen_heads
     }
 }
 

@@ -43,6 +43,14 @@ pub struct RecordService {
     /// taken in anew, a document changed as a whole).
     moved: std::collections::BTreeSet<String>,
     moved_unsaid: bool,
+    /// The packages the session runs itself (the shell), whose records it keeps in
+    /// [`Self::record`] beside the apps': each its compiled module, its description embedded,
+    /// so a connection reads the package's records by its app as it reads any app's.
+    shared: std::collections::BTreeMap<String, std::sync::Arc<[u8]>>,
+    /// The document each of [`Self::shared`]'s packages' parts commit into, by the app: what
+    /// this service takes in to publish what they wrote.
+    shared_records:
+        std::collections::BTreeMap<String, std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>>,
 }
 
 impl RecordService {
@@ -64,7 +72,119 @@ impl RecordService {
             person: person.into(),
             moved: std::collections::BTreeSet::new(),
             moved_unsaid: false,
+            shared: std::collections::BTreeMap::new(),
+            shared_records: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Publish the package `meta`'s records, which the session runs the package itself for,
+    /// with the apps' this service keeps: its roots are made in the record, and whatever its
+    /// parts commit into `records` — the document they share, the one they draw from — is taken
+    /// in and published from then on. A REPL or an agent's task reads and changes them by the
+    /// package's app, as it does Notes'.
+    ///
+    /// The package's own record is where its views' roots read: the shell keeps the person's
+    /// arrangement and the shell's settings, and both are the person's, synced with their
+    /// devices, as an app's record is.
+    ///
+    /// # Errors
+    /// The package's roots cannot be made, or its record does not apply here.
+    pub fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
+        use tilo_automerge::ApplyIncoming as _;
+        let Some(meta) = crate::runtime::Meta::from_wasm(share.wasm) else {
+            return Err(format!("{} carries no description", share.app));
+        };
+        self.record
+            .merge_incoming(&mut share.records.borrow_mut())
+            .map_err(|error| error.to_string())?;
+        self.record.commit();
+        self.host.sync_from(&self.record);
+        // The package's own code runs here, over its record as any app's does: its roots are
+        // resources of the record, so a program reads and changes them by the app.
+        self.host
+            .load_module(share.wasm, meta.clone(), String::new())
+            .map_err(|error| format!("{}: {error}", meta.app))?;
+        for root in &meta.named_roots {
+            self.host
+                .root_record(&meta.app, &root.ty)
+                .map_err(|error| format!("{}'s root {}: {error}", meta.app, root.name))?;
+        }
+        // The roots are made: what that wrote goes where the package's parts read it, so the
+        // record they draw exists for them too.
+        for committed in self.host.take_committed() {
+            use tilo_actions::Action as _;
+            committed
+                .action
+                .apply(&mut self.record)
+                .map_err(|error| error.to_string())?;
+        }
+        self.record.commit();
+        self.host.sync_from(&self.record);
+        *share.records.borrow_mut() = self.record.clone();
+        self.shared
+            .insert(meta.app.clone(), std::sync::Arc::from(share.wasm));
+        self.shared_records
+            .insert(meta.app.clone(), std::rc::Rc::clone(share.records));
+        self.publications.settle(&self.host, &self.planner);
+        let _ = self.watch.take();
+        Ok(())
+    }
+
+    /// Take in what the parts of the packages `share`d wrote into the documents they share
+    /// since the last call, and publish it: the shell's own parts commit a setting or a place
+    /// into the record, and the door offers what it changed. Whether anything was taken in.
+    ///
+    /// # Errors
+    /// The changes do not apply to the record.
+    pub fn follow(&mut self) -> Result<bool, String> {
+        use tilo_automerge::ApplyIncoming as _;
+        let mut took = false;
+        for (app, records) in &self.shared_records {
+            let heads = self.record.committed_heads();
+            let theirs = records.borrow().committed_heads();
+            if heads == theirs {
+                continue;
+            }
+            let mut theirs = records.borrow_mut();
+            match self.record.merge_incoming(&mut theirs) {
+                Ok(merged) if merged.is_empty() => {}
+                Ok(_) => {
+                    took = true;
+                    // What the parts hold is the same record: the change this service makes
+                    // (by a connection's action) reaches them too.
+                    let _ = theirs.merge_incoming(&mut self.record.clone());
+                }
+                Err(error) => return Err(format!("{app}'s record: {error}")),
+            }
+        }
+        if !took {
+            return Ok(false);
+        }
+        self.record.commit();
+        self.host.sync_from(&self.record);
+        self.moved_unsaid = true;
+        Ok(true)
+    }
+
+    /// The record of the package `app` the session runs itself (`share`d here): its app's
+    /// committed document and the packages a reader of it loads (the package's and each it
+    /// uses), as a task's host reads it. `None` for any other app.
+    #[must_use]
+    pub fn service_record(&self, app: &str) -> Option<tilo_service::Record> {
+        let wasm = self.shared.get(app)?;
+        let meta = crate::runtime::Meta::from_wasm(wasm)?;
+        let mut packages = vec![std::sync::Arc::clone(wasm)];
+        for used in &meta.uses {
+            if let Some(package) = self.host.package(used) {
+                packages.push(std::sync::Arc::clone(&package.wasm));
+            }
+        }
+        Some(tilo_service::Record {
+            app: app.to_owned(),
+            id: crate::own_record(&meta, &self.person).unwrap_or_default(),
+            document: self.record.clone().save(),
+            packages,
+        })
     }
 
     /// The workspace record as it is here.
@@ -180,8 +300,13 @@ impl RecordService {
         )
     }
 
-    /// Commit `action` to the record as a step of the person seated here.
-    fn commit(&mut self, action: &DynAction) -> Result<(), String> {
+    /// Commit `action` to the record as a step of `invoker`: the person seated here, or an
+    /// agent acting for them.
+    fn commit(
+        &mut self,
+        action: &DynAction,
+        invoker: tilo_actions::ActionInvoker,
+    ) -> Result<(), String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
         let context = ActionContext::for_resource(
             // The workspace root's path, as a grant's tree path names it (`room/app:todo/**`),
@@ -190,23 +315,69 @@ impl RecordService {
             &action.kind,
             &action.kind,
         )
-        .with_invoker(tilo_actions::ActionInvoker::actor(self.person.clone()));
+        .with_invoker(invoker.clone());
+        let actor = invoker.actor.as_bytes();
         let record = &mut self.record;
-        let person = self.person.as_bytes();
         self.host
             .with_schemas(|| {
                 tilo_actions::apply_local_with_context(
                     record,
                     action,
                     encoded,
-                    Some(person),
+                    Some(actor),
                     context,
                 )
             })
             .map_err(|error| error.to_string())?;
         self.record.commit();
         self.host.sync_from(&self.record);
+        // The change belongs to every replica of a shared record once it is committed: the
+        // parts of a package the session runs itself (the shell) draw it on their next turn.
+        for records in self.shared_records.values() {
+            use tilo_automerge::ApplyIncoming as _;
+            let _ = records
+                .borrow_mut()
+                .merge_incoming(&mut self.record.clone());
+        }
         Ok(())
+    }
+
+    /// Run the published `action` of `resource` with `arguments`, planned on the record as it
+    /// is and committed as `invoker`'s step: the one path [`Service::invoke`] and
+    /// [`Service::invoke_as`] share.
+    fn run(
+        &mut self,
+        action: &str,
+        resource: &str,
+        arguments: &Map<String, Json>,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<Started, DoorError> {
+        let address = ActionAddress::new(resource, action);
+        let planned = if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
+            self.direct_edit(resource, action == EDIT_FLAG_ACTION, arguments)
+                .ok_or_else(|| DoorError::Unknown(address.clone()))?
+                .map_err(DoorError::InvalidArguments)?
+        } else {
+            let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
+            if encoded.type_id != ACTION_TYPE {
+                return Err(DoorError::Unknown(address));
+            }
+            serde_json::from_slice(&encoded.payload)
+                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?
+        };
+        self.commit(&planned, invoker.clone())
+            .map_err(DoorError::Failed)?;
+        // What it made is published before it is answered, so the caller's next invocation
+        // reaches it: a record changed as a whole is built now, not off the frame.
+        self.publications.settle(&self.host, &self.planner);
+        let made = self
+            .host
+            .take_returned(&planned.action_id)
+            .map(|made| resource_id(&planned.app, &made.id_string()));
+        Ok(Started::Done(ActionOutput {
+            value: None,
+            resources: made.into_iter().collect(),
+        }))
     }
 }
 
@@ -278,31 +449,21 @@ impl Service for RecordService {
         action: &str,
         arguments: &Map<String, Json>,
     ) -> Result<Started, DoorError> {
-        let address = ActionAddress::new(resource, action);
-        let planned = if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
-            self.direct_edit(resource, action == EDIT_FLAG_ACTION, arguments)
-                .ok_or_else(|| DoorError::Unknown(address.clone()))?
-                .map_err(DoorError::InvalidArguments)?
-        } else {
-            let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
-            if encoded.type_id != ACTION_TYPE {
-                return Err(DoorError::Unknown(address));
-            }
-            serde_json::from_slice(&encoded.payload)
-                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?
-        };
-        self.commit(&planned).map_err(DoorError::Failed)?;
-        // What it made is published before it is answered, so the caller's next invocation
-        // reaches it: a record changed as a whole is built now, not off the frame.
-        self.publications.settle(&self.host, &self.planner);
-        let made = self
-            .host
-            .take_returned(&planned.action_id)
-            .map(|made| resource_id(&planned.app, &made.id_string()));
-        Ok(Started::Done(ActionOutput {
-            value: None,
-            resources: made.into_iter().collect(),
-        }))
+        let invoker = tilo_actions::ActionInvoker::actor(self.person.clone());
+        self.run(action, resource, arguments, &invoker)
+    }
+
+    /// [`Service::invoke`] as `invoker` (an agent acting for its person): the change is
+    /// attributed to them, as an agent's is at its app's record origin, and the record is the
+    /// same one.
+    fn invoke_as(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Json>,
+    ) -> Result<Started, DoorError> {
+        self.run(action, resource, arguments, invoker)
     }
 
     fn poll(&mut self) -> bool {
@@ -319,8 +480,30 @@ impl Service for RecordService {
         Some(moved.into_iter().collect())
     }
 
+    fn record(&self, app: &str) -> Option<tilo_service::Record> {
+        self.service_record(app)
+    }
+
     fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
-        self.host.package(app).map(|package| package.wasm)
+        self.shared
+            .get(app)
+            .cloned()
+            .or_else(|| self.host.package(app).map(|package| package.wasm))
+    }
+
+    fn records(&self) -> Vec<tilo_service::Record> {
+        self.shared
+            .keys()
+            .filter_map(|app| self.service_record(app))
+            .collect()
+    }
+
+    fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
+        Self::share(self, share)
+    }
+
+    fn follow(&mut self) -> Result<bool, String> {
+        Self::follow(self)
     }
 
     fn settle(&mut self) {
