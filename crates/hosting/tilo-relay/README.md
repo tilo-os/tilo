@@ -109,7 +109,7 @@ the network learns the endpoint id. Invite addresses work without it.
 What a relay costs per active collaborator is measured, not estimated:
 
 - **Egress counters.** The daemon counts every byte it writes to a peer
-  session (`bytes_sent`), the live fan-out part of it (`bytes_sent_live`),
+  session (`bytes_sent`), the presence part of it (`bytes_sent_live`),
   both per room, and each connected session's total
   (`Metrics::session_egress`). `tilo-relay-admin status` prints them.
   They count framed bytes before QUIC; the load bench adds what the iroh
