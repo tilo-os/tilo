@@ -47,6 +47,10 @@ pub struct Apps {
     state: RefCell<State>,
 }
 
+/// What lets a package author its own records in the workspace it opens in,
+/// called with the workspace's id and the package's.
+type Authorship = Rc<dyn Fn(&str, &str)>;
+
 /// What starting an app needs besides the launch itself.
 struct State {
     environment: SessionEnvironment,
@@ -81,6 +85,10 @@ struct State {
     /// This session, while the doors are lent: a window that must start a
     /// process of its own starts it here.
     me: Weak<Apps>,
+    /// What lets a package author its own records in the workspace it opens
+    /// in, once it is lent: asked before the process is planned, so the app
+    /// starts with the authorship rather than waiting for a window to reopen.
+    authorship: Option<Authorship>,
     /// The door of each launch still running, by the launch's id: the end of
     /// the launch retires it, so the app's next window there starts a process
     /// again.
@@ -125,6 +133,7 @@ impl Apps {
                 launches: None,
                 doors: None,
                 me: Weak::new(),
+                authorship: None,
                 held: BTreeMap::new(),
                 tool_context: None,
             }),
@@ -175,6 +184,13 @@ impl Apps {
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
         state.doors = Some(doors);
+    }
+
+    /// What lets a package author its own records in the workspace it opens
+    /// in, once it is lent: called with the workspace's id and the package's,
+    /// before the launch is planned, so the process starts as an author.
+    pub fn lend_authorship(&self, authorship: Authorship) {
+        self.state.borrow_mut().authorship = Some(authorship);
     }
 
     /// The desktop the person works on, which the launches come from.
@@ -465,6 +481,32 @@ impl Apps {
         self.start_window(launch, workspace, true)
     }
 
+    /// `workspace` as this launch starts in it: when the launch opens a
+    /// package there, the workspace is asked to make that package an author
+    /// of its own records first, and read again with what it granted, so the
+    /// process starts with the authorship it writes by. A launch into no
+    /// workspace, and one whose app the workspace already makes an author,
+    /// are left as they are.
+    fn authored(&self, launch: &Launch, workspace: &Workspace) -> Workspace {
+        let Some(app) = launch.package() else {
+            return workspace.clone();
+        };
+        if !workspace.is_workspace() || workspace.grants.authors(app) {
+            return workspace.clone();
+        }
+        let authorship = self.state.borrow().authorship.clone();
+        let Some(authorship) = authorship else {
+            return workspace.clone();
+        };
+        authorship(&workspace.id, app);
+        let refreshed = self.workspace_named(&workspace.id);
+        if refreshed.grants.authors(app) {
+            refreshed
+        } else {
+            workspace.clone()
+        }
+    }
+
     /// Start `launch` in `workspace`: in the process the app already runs
     /// there when that one opens the app's windows, and otherwise in a process
     /// of its own, which holds the app's door for its workspace until it ends.
@@ -474,6 +516,8 @@ impl Apps {
         workspace: &Workspace,
         new_window: bool,
     ) -> Result<(), DoorError> {
+        let authored = self.authored(launch, workspace);
+        let workspace = &authored;
         let planned = {
             let state = self.state.borrow();
             let context = PlanContext {

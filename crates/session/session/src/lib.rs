@@ -1860,6 +1860,26 @@ impl Session {
             controller_keys,
             app_sheets,
         };
+        // A package the person opens authors its own records in the workspace
+        // it opens in, as the person there: the workspace's governance gives
+        // it before the process is planned, so the app starts able to keep
+        // what they do in it.
+        if let Some(launch) = &shared.launch {
+            let handle = shared.handle.clone();
+            let engine = shared.engine.clone();
+            launch.lend_authorship(Rc::new(move |workspace: &str, app: &str| {
+                if let Err(error) =
+                    crate::membership::authorship(engine.as_deref(), &handle, workspace, app)
+                {
+                    tracing::warn!(
+                        %workspace,
+                        app,
+                        %error,
+                        "an opening app was not let author its workspace"
+                    );
+                }
+            }));
+        }
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
         // copies itself, as a reading only a caller the workspace grants reads.
