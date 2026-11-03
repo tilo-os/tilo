@@ -2,7 +2,7 @@
 //! Private payloads never enter the room log; the trusted host reads plaintext.
 //! Variant order is append-only across independently updated devices.
 use serde::{Deserialize, Serialize};
-use tilo_relay_protocol::rooms::private::{
+use tilo_relay_protocol::workspaces::private::{
     MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PrivateOperation, PrivateReply,
 };
 use tilo_user_identity::DeviceCert;
@@ -15,7 +15,7 @@ pub struct PrivateRequest {
     /// Current device certificate.
     pub device_cert: DeviceCert,
     /// Exact workspace identifier.
-    pub room: String,
+    pub workspace: String,
     pub operation: PrivateOperation,
 }
 impl std::fmt::Debug for PrivateRequest {
@@ -43,7 +43,7 @@ impl PrivateClient {
     pub async fn send(
         &self,
         relay: iroh::EndpointAddr,
-        room: String,
+        workspace: String,
         operation: PrivateOperation,
     ) -> Result<PrivateReply, String> {
         if self.endpoint.id().as_bytes() != &self.device_cert.device_public_key {
@@ -51,7 +51,7 @@ impl PrivateClient {
         }
         let bytes = postcard::to_stdvec(&PrivateRequest {
             device_cert: self.device_cert.clone(),
-            room,
+            workspace,
             operation,
         })
         .map_err(|_| "private request encoding failed")?;

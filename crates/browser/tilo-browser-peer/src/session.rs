@@ -2093,8 +2093,8 @@ impl Task {
                     };
                     // Refused (not this person's host, a workspace governed
                     // elsewhere) or unanswered: the workspace's admission decides.
-                    let _ =
-                        tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
+                    let _ = tilo_relay_client::https::workspaces(http.as_ref(), &session, &request)
+                        .await;
                     placed();
                 });
             }
@@ -2321,7 +2321,8 @@ impl Task {
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
                     let reply =
-                        tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
+                        tilo_relay_client::https::workspaces(http.as_ref(), &session, &request)
+                            .await;
                     done(reply.map_err(|error| error.to_string()));
                 });
             }

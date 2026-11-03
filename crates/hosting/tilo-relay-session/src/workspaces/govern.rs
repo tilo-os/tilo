@@ -17,22 +17,22 @@ use tilo_actions::remote::{
 use crate::RelayClient;
 use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 
-/// A room as a device reaches it: its host's relay, the workspace that
+/// A workspace as a device reaches it: its host's relay, the shard that
 /// carries it there, and its id.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoomLink {
+pub struct WorkspaceLink {
     /// The host's relay endpoint.
     pub relay: iroh_base::EndpointId,
     /// Where the relay listens, when it is reached directly (a relay on
     /// this machine or network); otherwise found through discovery.
     pub direct: Option<std::net::SocketAddr>,
-    /// The workspace that carries the room on its relay.
+    /// The relay shard that carries the workspace: its transport topic.
     pub workspace_id: u64,
-    /// The room's id.
-    pub room: String,
+    /// The workspace's id.
+    pub workspace: String,
 }
 
-impl RoomLink {
+impl WorkspaceLink {
     /// The relay's address.
     #[must_use]
     pub fn relay_addr(&self) -> iroh_base::EndpointAddr {
@@ -44,18 +44,18 @@ impl RoomLink {
     }
 }
 
-impl std::fmt::Display for RoomLink {
+impl std::fmt::Display for WorkspaceLink {
     /// `tilo-room:<relay endpoint>[@<ip:port>]/<workspace>/<room>`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "tilo-room:{}", self.relay)?;
         if let Some(direct) = self.direct {
             write!(f, "@{direct}")?;
         }
-        write!(f, "/{}/{}", self.workspace_id, self.room)
+        write!(f, "/{}/{}", self.workspace_id, self.workspace)
     }
 }
 
-impl std::str::FromStr for RoomLink {
+impl std::str::FromStr for WorkspaceLink {
     type Err = String;
 
     fn from_str(link: &str) -> Result<Self, String> {
@@ -65,7 +65,7 @@ impl std::str::FromStr for RoomLink {
         let mut parts = rest.split('/');
         let (relay, workspace, room) =
             match (parts.next(), parts.next(), parts.next(), parts.next()) {
-                (Some(relay), Some(workspace), Some(room), None) if !room.is_empty() => {
+                (Some(relay), Some(workspace), Some(room), None) if !workspace.is_empty() => {
                     (relay, workspace, room)
                 }
                 _ => return Err(shape()),
@@ -89,7 +89,7 @@ impl std::str::FromStr for RoomLink {
             workspace_id: workspace
                 .parse()
                 .map_err(|_| format!("{workspace}: not a workspace id"))?,
-            room: room.to_owned(),
+            workspace: room.to_owned(),
         })
     }
 }
@@ -102,7 +102,7 @@ impl std::str::FromStr for RoomLink {
 /// The endpoint could not bind, or the host could not be reached or did
 /// not complete the handshake.
 pub async fn connect(
-    link: &RoomLink,
+    link: &WorkspaceLink,
     cert: tilo_user_identity::DeviceCert,
     key: ed25519_dalek::SigningKey,
 ) -> Result<RelayClient, String> {
@@ -141,12 +141,12 @@ pub async fn connect(
 pub async fn invoke(
     client: &RelayClient,
     workspace_id: u64,
-    room: &str,
+    workspace: &str,
     action: &str,
     argument: Map<String, Value>,
 ) -> Result<Value, String> {
     subscribe(client, workspace_id).await?;
-    call(client, workspace_id, room, action, argument).await
+    call(client, workspace_id, workspace, action, argument).await
 }
 
 /// The governance action that takes a piece of a package file.
@@ -164,7 +164,7 @@ const UPLOAD_PIECE: usize = 256 * 1024;
 pub async fn upload(
     client: &RelayClient,
     workspace_id: u64,
-    room: &str,
+    workspace: &str,
     file: &[u8],
 ) -> Result<String, String> {
     let hash = blake3::hash(file).to_hex().to_string();
@@ -177,7 +177,7 @@ pub async fn upload(
         argument.insert("offset".into(), Value::from(offset as u64));
         argument.insert("total".into(), Value::from(total));
         argument.insert("data".into(), Value::from(hex::encode(piece)));
-        call(client, workspace_id, room, UPLOAD_APP_FILE, argument).await?;
+        call(client, workspace_id, workspace, UPLOAD_APP_FILE, argument).await?;
         offset = offset.saturating_add(piece.len());
     }
     Ok(hash)
@@ -204,13 +204,13 @@ async fn subscribe(client: &RelayClient, workspace_id: u64) -> Result<(), String
 async fn call(
     client: &RelayClient,
     workspace_id: u64,
-    room: &str,
+    workspace: &str,
     action: &str,
     argument: Map<String, Value>,
 ) -> Result<Value, String> {
     let request = RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::workspace_governance(room, action),
+        target: RemoteActionTarget::workspace_governance(workspace, action),
         argument: if argument.is_empty() {
             InvokeArgument::None
         } else {
@@ -259,32 +259,32 @@ async fn call(
 
 #[cfg(test)]
 mod tests {
-    use super::RoomLink;
+    use super::WorkspaceLink;
 
     #[test]
     fn a_room_link_names_its_relay_workspace_and_room() {
         let relay = iroh::SecretKey::from_bytes(&[3; 32]).public();
-        let link = RoomLink {
+        let link = WorkspaceLink {
             relay,
             direct: Some("127.0.0.1:4433".parse().unwrap()),
             workspace_id: 42,
-            room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+            workspace: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
         };
         let text = link.to_string();
         assert!(text.starts_with("tilo-room:"), "{text}");
-        assert_eq!(text.parse::<RoomLink>().unwrap(), link);
-        let found = RoomLink {
+        assert_eq!(text.parse::<WorkspaceLink>().unwrap(), link);
+        let found = WorkspaceLink {
             direct: None,
             ..link
         };
-        assert_eq!(found.to_string().parse::<RoomLink>().unwrap(), found);
+        assert_eq!(found.to_string().parse::<WorkspaceLink>().unwrap(), found);
         for wrong in [
             "https://tilo.coffee/lounge".to_owned(),
             "tilo-room:nope/1/room".to_owned(),
             format!("tilo-room:{relay}/not-a-number/room"),
             format!("tilo-room:{relay}/42"),
         ] {
-            assert!(wrong.parse::<RoomLink>().is_err(), "{wrong}");
+            assert!(wrong.parse::<WorkspaceLink>().is_err(), "{wrong}");
         }
     }
 }

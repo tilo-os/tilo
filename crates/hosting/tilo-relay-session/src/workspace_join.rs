@@ -340,7 +340,7 @@ async fn spend_door_admission(
     complete: &tilo_workspace_join::JoinCompleteRequest,
     door: &DoorAdmission,
 ) -> Result<(), WorkspaceJoinError> {
-    use tilo_relay_protocol::rooms::{JoinReply, JoinStep};
+    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
     let transport =
         |error: tilo_relay_client::LinkError| WorkspaceJoinError::Transport(error.to_string());
     let challenge = postcard::to_stdvec(&complete.proof.challenge)

@@ -74,12 +74,12 @@ pub const HOST_ACTIONS_PROVIDER: &str = "tilo.host";
 pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
 /// Create a governed room. Arguments: `name`, and the terms of its first
 /// invitation when one is wanted (`invite_role`, `invite_recipient`,
-/// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedRoom`].
+/// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedWorkspace`].
 pub const CREATE_ROOM: &str = "room.create";
-/// Every room the host governs, each as a [`RoomListing`].
+/// Every room the host governs, each as a [`WorkspaceListing`].
 pub const LIST_ROOMS: &str = "room.list";
 /// Admit the calling device to `room` as one of its owner's. Answers an
-/// [`EnteredRoom`]: the invitation the device redeems to hold the room,
+/// [`EnteredWorkspace`]: the invitation the device redeems to hold the room,
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
 pub const ENTER_ROOM: &str = "room.enter";
@@ -88,7 +88,7 @@ pub const ENTER_ROOM: &str = "room.enter";
 /// asks: arguments `room`, `workspace_id`, `governor_hint` (the governor's
 /// signed address) and `bootstrap` (the room as a joining member gets it,
 /// the host's device admitted), each signed value postcard in hex. Only a
-/// certified host serves rooms this way. Answers a [`HostedRoom`].
+/// certified host serves rooms this way. Answers a [`HostedWorkspace`].
 pub const HOST_ROOM: &str = "room.host";
 /// Stop serving `room` for its governor. Answers `{"stopped": bool}`.
 pub const UNHOST_ROOM: &str = "room.unhost";
@@ -96,7 +96,7 @@ pub const UNHOST_ROOM: &str = "room.unhost";
 /// reachable at `host_addr` (an endpoint address), serve the room `room`
 /// governed here as well: admitted as one of the owner's devices, handed the
 /// room with [`HOST_ROOM`], and named among the room's hosts. Answers a
-/// [`HostedRoom`].
+/// [`HostedWorkspace`].
 pub const ATTACH_HOST: &str = "room.attach-host";
 /// Stop having the host `host` serve `room`: it is no longer named among the
 /// room's hosts, and is asked to stop at `host_addr` when given, else at the
@@ -106,16 +106,16 @@ pub const DETACH_HOST: &str = "room.detach-host";
 
 /// What [`HOST_ROOM`] and [`ATTACH_HOST`] answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRoom {
+pub struct HostedWorkspace {
     /// The serving host's own signed address for the room, postcard in hex.
     pub host_hint: String,
 }
 
 /// One room a relay governs, as its host actions answer it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoomListing {
+pub struct WorkspaceListing {
     /// The room's UUID.
-    pub room: String,
+    pub workspace: String,
     /// The relay workspace carrying the room.
     pub workspace_id: u64,
     /// The workspace's name.
@@ -158,9 +158,9 @@ impl ActionInvitation {
 
 /// What [`CREATE_ROOM`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreatedRoom {
+pub struct CreatedWorkspace {
     #[serde(flatten)]
-    pub room: RoomListing,
+    pub workspace: WorkspaceListing,
     /// Its first invitation, when one was asked for.
     #[serde(default)]
     pub invitation: Option<ActionInvitation>,
@@ -168,7 +168,7 @@ pub struct CreatedRoom {
 
 /// What [`ENTER_ROOM`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnteredRoom {
+pub struct EnteredWorkspace {
     /// Whether governance changed to admit the caller.
     pub changed: bool,
     /// The invitation the caller redeems to hold the room.
@@ -201,9 +201,9 @@ pub struct RemoveMemberRequest {
 
 /// A governed room as its administrators see it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoomSummary {
+pub struct WorkspaceSummary {
     /// The room's UUID.
-    pub room: String,
+    pub workspace: String,
     /// The relay workspace carrying the room.
     pub workspace_id: u64,
     /// The workspace's name.
