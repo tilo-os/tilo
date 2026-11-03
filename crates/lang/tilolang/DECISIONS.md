@@ -95,8 +95,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - `sort_by(x -> key)` compiles to a loop that collects the keys into a parallel list and one call of
   `list_sort_by_key(items, keys) -> list`: stable, ascending or `desc` (the same list reversed),
   keys Int, Float, Text or Bool (E020 otherwise), and a Date or Time, which sorts as its ISO text.
-  A key that may be absent sorts as no text at all, before every day, so a list grouped by a day
-  sorts by the same field. There is no `list_set`.
+  A key that may be absent sorts after every item that has one, whatever the direction, so the
+  items whose day is not known stand last and a list grouped by a day sorts by the same field.
+  A store that answers the sort from its index keeps that order and the list's own for the items
+  a key cannot tell apart. There is no `list_set`.
 - `try act(args)` (flows only, E044 elsewhere) invokes an action and gives a `Result<T, Text>`
   (`Result<(), Text>` for an action without a result): `.ok(result)`, or `.err(reason)` when the
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,
@@ -117,7 +119,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - `module_hash` is the SHA-256 of the module without the `tilolang.meta` section.
 - **A primitive that is a component is only that component's shorter name.** `text`,
   `rich_text`, `section`, `avatar`, `progress`, `toggle`, `checkbox`, `input`, `rich_input` and
-  `image` are `ui.Text`, `ui.RichText`, ... : `prims.rs` names the component (`Prim::component`)
+  `image` are `ui.Text`, `ui.BlockEditor`, ... : `prims.rs` names the component (`Prim::component`)
   and `checker::component::component_prim` checks and lowers the call as the component's own, so
   its props, slots, events and bindings are the description's and nothing is added. `button` (a
   declared action's button) and `facts` build `ui.Button` and `ui.PropertyList` (`Prim::builds`)
@@ -417,3 +419,10 @@ search.md, "What a type declares" and "Types, references and paths".
   no further declaration. `noun "…" "…"` and `primary <test>` were search lines for this and are
   removed: `noun` was used by no app, and `primary` repeated the word `primary action` already
   means for something else, to say what the root's default view already says.
+- **A document's running text is placed by its view.** `ui.BlockEditor` is a described
+  component like any other: it declares a binding to the document's `RichText` (its paragraphs)
+  and one to its Markdown `Text` (the same text round-tripped byte for byte), and edits the one
+  the view bound. `bind:` takes the binding whose type the bound place has, since a component
+  may declare several. So a body is `ui.BlockEditor(bind: doc.body, placeholder: "…")` where
+  the document's window draws it; a field marked `(body)` is the document's metadata and says
+  nothing about which control edits it, and neither the host nor the compiler places an editor.

@@ -11,32 +11,63 @@
 use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
+use tilolang_tilo::tilolang::{IdsLock, PackageSource, compile_package_source};
 
 /// Whether this build seeds the apps `--seed-apps` asks for: development builds only.
 pub const SEEDED_BY_THIS_BUILD: bool = cfg!(debug_assertions);
 
-/// Each app's source and the ids it was compiled with, by its id.
-const APPS: [(&str, &str, &str); 4] = [
-    (
-        "so.tilo.lang.notes",
-        include_str!("../../../../apps/tl/notes/app.tl"),
-        include_str!("../../../../apps/tl/notes/app.ids"),
-    ),
-    (
-        "so.tilo.lang.tasks",
-        include_str!("../../../../apps/tl/tasks/app.tl"),
-        include_str!("../../../../apps/tl/tasks/app.ids"),
-    ),
-    (
-        "so.tilo.lang.chat",
-        include_str!("../../../../apps/tl/chat/app.tl"),
-        include_str!("../../../../apps/tl/chat/app.ids"),
-    ),
-    (
-        "so.tilo.lang.mail",
-        include_str!("../../../../apps/tl/mail/app.tl"),
-        include_str!("../../../../apps/tl/mail/app.ids"),
-    ),
+/// An app started here: its id, its source, the ids it was compiled with, and the catalogues it
+/// ships its words in, as an installed app carries them in its module.
+struct Seed {
+    app: &'static str,
+    source: &'static str,
+    ids: &'static str,
+    locales: &'static [(&'static str, &'static str)],
+}
+
+const APPS: [Seed; 4] = [
+    Seed {
+        app: "so.tilo.lang.notes",
+        source: include_str!("../../../../apps/tl/notes/app.tl"),
+        ids: include_str!("../../../../apps/tl/notes/app.ids"),
+        locales: &[
+            (
+                "en-US",
+                include_str!("../../../../apps/tl/notes/locales/en-US.ftl"),
+            ),
+            (
+                "de-DE",
+                include_str!("../../../../apps/tl/notes/locales/de-DE.ftl"),
+            ),
+        ],
+    },
+    Seed {
+        app: "so.tilo.lang.tasks",
+        source: include_str!("../../../../apps/tl/tasks/app.tl"),
+        ids: include_str!("../../../../apps/tl/tasks/app.ids"),
+        locales: &[(
+            "en-US",
+            include_str!("../../../../apps/tl/tasks/locales/en-US.ftl"),
+        )],
+    },
+    Seed {
+        app: "so.tilo.lang.chat",
+        source: include_str!("../../../../apps/tl/chat/app.tl"),
+        ids: include_str!("../../../../apps/tl/chat/app.ids"),
+        locales: &[(
+            "en-US",
+            include_str!("../../../../apps/tl/chat/locales/en-US.ftl"),
+        )],
+    },
+    Seed {
+        app: "so.tilo.lang.mail",
+        source: include_str!("../../../../apps/tl/mail/app.tl"),
+        ids: include_str!("../../../../apps/tl/mail/app.ids"),
+        locales: &[(
+            "en-US",
+            include_str!("../../../../apps/tl/mail/locales/en-US.ftl"),
+        )],
+    },
 ];
 
 /// Notes, tasks, chat and mail in one workspace record of `person`'s, each app's root made and
@@ -47,12 +78,21 @@ const APPS: [(&str, &str, &str); 4] = [
 pub fn seeded(person: &str) -> Result<RecordService, String> {
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(person), || None).map_err(|e| e.to_string())?;
+    host.set_words(crate::i18n::PackageWords);
     let mut scenarios = Vec::new();
-    for (app, source, ids) in APPS {
+    for seed in &APPS {
+        let source = PackageSource::single(seed.source).with_locales(
+            seed.locales
+                .iter()
+                .map(|(locale, text)| ((*locale).to_owned(), (*text).to_owned())),
+        );
+        let ids = IdsLock::parse(seed.ids).map_err(|error| format!("{}: {error}", seed.app))?;
+        let compiled = compile_package_source(&source, &ids, &[])
+            .map_err(|diagnostics| format!("{}: {diagnostics:?}", seed.app))?;
         let package = host
-            .load_builtin(source, ids)
-            .map_err(|error| format!("{app}: {error}"))?;
-        scenarios.push((app, package.meta.scenarios.first().cloned()));
+            .load_compiled(&compiled)
+            .map_err(|error| format!("{}: {error}", seed.app))?;
+        scenarios.push((seed.app, package.meta.scenarios.first().cloned()));
     }
     for (app, scenario) in scenarios {
         host.root_of(app)

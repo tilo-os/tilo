@@ -111,13 +111,14 @@ fn a_host_that_needs_a_frame_now_shortens_the_loops_wait() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    assert!(
-        compositor.next_wait() >= Duration::from_millis(100),
-        "an idle loop waits for its own idle"
+    assert_eq!(
+        compositor.next_wait(),
+        None,
+        "an idle loop waits for an event, not for a poll interval"
     );
     compositor.add_host(Box::new(Animated));
     assert!(
-        compositor.next_wait() <= Duration::from_millis(1),
+        compositor.next_wait() <= Some(Duration::from_millis(1)),
         "a frame a host asks for now is drawn now"
     );
 }

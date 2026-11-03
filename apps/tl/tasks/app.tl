@@ -32,6 +32,8 @@ type Task {
     /// project's first lane.
     section: Option<Section> = .none
     priority: Priority = .none
+    /// The task it is a subtask of; none for a task of its own. Tasks nest to any depth.
+    parent: Option<Task> = .none
 
     search {
         filter "Inbox" = project == .none (icon: .inbox)
@@ -43,10 +45,11 @@ type Task {
         filter priority
         hide at
         hide section
+        hide parent
     }
 }
 
-/// One step of a task: a line of its checklist.
+/// One step of a task's checklist, from before a task's steps were tasks of their own.
 type Step {
     title: Text (title)
     done: Bool = false
@@ -75,9 +78,8 @@ type Tasks {
     /// Every task, in the order people put them.
     items: Collection<Task>
     projects: Collection<Project>
-    /// The steps of every task, each naming its task: a task's checklist is the run of its
-    /// steps, which the index answers without reading the others.
-    steps: Collection<Step>
+    /// The steps of every task, before a task's steps were tasks of their own.
+    steps: Collection<Step> (previously)
     /// The sections of every project, each naming its project, in the order its board shows
     /// them.
     sections: Collection<Section>
@@ -93,7 +95,26 @@ default view project_page for Project
 
 row view task_row for Task
 
-row view step_row for Step
+/// Gives each step of a task from before steps were tasks a task of its own, under the task it
+/// was a step of, in the order it was in. A step whose task was removed becomes a task of its
+/// own, keeping what it said: the step was reachable before, through nothing but its checklist.
+migration action adopt_steps(tasks: Tasks) {
+    for s in tasks.steps {
+        // The task it was a step of, read only when it is still there: a removed task's fields
+        // cannot be read.
+        if let own = tasks.items.find(x -> x == s.task) {
+            let made = tasks.items.insert(Task(title: s.title, done: s.done, parent: .some(own), project: own.project, section: own.section))
+            let siblings = tasks.items.filter(x -> x.parent == .some(own) and x != made)
+            if let last = siblings.last() {
+                tasks.items.move(made, after: last)
+            } else {
+                tasks.items.move(made, after: own)
+            }
+        } else {
+            tasks.items.insert(Task(title: s.title, done: s.done))
+        }
+    }
+}
 
 /// Adds a task with this title to the inbox.
 action add(tasks: Tasks, title: Text) -> Task {
@@ -176,32 +197,67 @@ action prioritize(t: Task, priority: Priority) (icon: .flag) {
     t.priority = priority
 }
 
-/// Adds a step to a task's checklist.
-action add_step(tasks: Tasks, t: Task, title: Text) {
+/// Adds a subtask under a task: a task of its own, in its project and section.
+action add_subtask(tasks: Tasks, t: Task, title: Text) {
     if title != "" {
-        tasks.steps.insert(Step(title: title, task: t))
+        tasks.items.insert(Task(title: title, parent: .some(t), project: t.project, section: t.section))
     }
 }
 
-/// Checks a step off, or opens it again.
-action check_step(s: Step, done: Bool = not s.done) (label: if done { "Complete" } else { "Reopen" }, icon: .check, on: s.done) {
-    s.done = done
+/// Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level
+/// for none), where `before` stands when it is given, or at the end of the top level. A task
+/// cannot go inside itself.
+action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) {
+    require not within(tasks.items, parent, moved) and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
+    if let b = before {
+        moved.parent = b.parent
+        tasks.items.move(moved, before: b)
+    } else {
+        moved.parent = parent
+        if let last = tasks.items.filter(x -> x.parent == parent and x != moved).last() {
+            tasks.items.move(moved, after: last)
+        } else if let p = parent {
+            tasks.items.move(moved, after: p)
+        }
+    }
 }
 
-/// Removes a step from a task's checklist.
-destructive action remove_step(tasks: Tasks, s: Step) (icon: .trash) {
-    tasks.steps.remove(s)
+/// Moves a task under the task just over it, as Tab does in an outline.
+action indent(t: Task) (label: "Indent", icon: .arrow_right) {
+    let siblings = tasks.items.filter(x -> x.parent == t.parent)
+    if let at = siblings.index_of(t) {
+        if at > 0 {
+            if let above = siblings.take(at).last() {
+                move_to(tasks, t, .some(above), .none)
+            }
+        }
+    }
 }
 
-/// Deletes a task.
+/// Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
+action outdent(t: Task) (label: "Outdent", icon: .arrow_left) {
+    if let p = t.parent {
+        t.parent = p.parent
+        tasks.items.move(t, after: p)
+    }
+}
+
+/// Deletes a task and its subtasks.
 destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
-    tasks.items.remove(t)
+    for x in tasks.items.filter(x -> x == t or under(tasks.items, x, t)) {
+        tasks.items.remove(x)
+    }
 }
 
-/// Deletes every task that is done.
+/// Deletes every finished task, and answers how many went: a task whose subtasks are still
+/// undone stays, so clearing never takes unfinished work with it.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
-    require tasks.items.any(.done) "Nothing is done yet"
-    tasks.items.remove_where(.done)
+    require tasks.items.any(x -> finished(tasks.items, x)) "Nothing is done yet"
+    let gone = tasks.items.filter(x -> finished(tasks.items, x))
+    for x in gone {
+        tasks.items.remove(x)
+    }
+    gone.len()
 }
 
 /// Deletes a project and its sections; its tasks go back to the inbox.
@@ -259,9 +315,35 @@ action rename(p: Project, name: Text) {
     p.name = name
 }
 
-/// The steps of a task, in order.
-fn steps_of(t: Task) -> List<Step> {
-    tasks.steps.filter(s -> s.task == t)
+/// Whether `top` is `x` or one of the tasks over it: the chain of parents, followed 64 deep —
+/// deeper than anyone nests a task, so a chain that loops still ends.
+fn under(items: List<Task>, x: Task, top: Task) -> Bool {
+    let cur: Option<Task> = .some(x)
+    let found = false
+    for n in items.take(64) {
+        if let at = cur {
+            if at == top {
+                found = true
+            }
+            cur = at.parent
+        }
+    }
+    found
+}
+
+/// Whether every task under `t` is done too: a done task whose steps are unfinished is not
+/// finished.
+fn finished(items: List<Task>, t: Task) -> Bool {
+    t.done and not items.any(x -> x != t and under(items, x, t) and not x.done)
+}
+
+/// Whether `place` is `top` or one of the tasks over it.
+fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
+    let here = false
+    if let p = place {
+        here = under(items, p, top)
+    }
+    here
 }
 
 /// The tasks of a project, in order.
@@ -275,9 +357,9 @@ fn sections_of(p: Project) -> List<Section> {
 }
 
 /// The open tasks of one lane of a project's board, in order: those of the section `s`, or of no
-/// section.
+/// section. A subtask is not a card of its own; it goes where the task it is under goes.
 fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
-    tasks.items.filter(t -> t.project == p and t.section == s and not t.done)
+    tasks.items.filter(t -> t.project == p and t.section == s and not t.done and t.parent == .none)
 }
 
 /// The tasks window: Inbox, Today, Upcoming and Done, each the tasks the filter of that name
@@ -439,13 +521,14 @@ view task_row(t: Task) {
     row(t.title, checkbox: t.done, secondary: t.project?.name, meta: t.due, mark: t.priority.icon(), avatar: t.assignee)
 }
 
-/// One step of a task's checklist: a checkbox for whether it is done, and what it is.
-view step_row(s: Step) {
-    row(s.title, checkbox: s.done)
+/// One task in an outline: the same, in the tree, which counts its done subtasks while it is
+/// folded.
+view task_outline_row(t: Task) {
+    ui.TreeViewRow(checkbox: t.done, icon: t.priority.icon(), secondary: t.project?.name, trailing: t.due)
 }
 
 /// A task's window: whether it is done and its title, when it is due, its project, how much it
-/// matters, who is doing it, its steps, its notes, and what happened to it.
+/// matters, who is doing it, its subtasks, its notes, and what happened to it.
 view task_page(t: Task) {
     lens step: Text
     std.document(t) {
@@ -490,22 +573,25 @@ view task_page(t: Task) {
                 }
             }
         }
-        section("Steps") {
-            let steps = steps_of(t)
-            if not steps.is_empty() {
-                ui.VirtualList {
-                    for s in steps {
-                        ui.ListItem(item: s) {
-                            step_row(s)
-                        }
-                    }
+        section("Subtasks") {
+            // A task with no subtasks puts no tree up, and a tree of one task's subtasks pays
+            // for that walk only.
+            let direct = tasks.items.filter(x -> x.parent == .some(t))
+            if not direct.is_empty() {
+                // Every task under this one, at any depth: the outline nests each under its
+                // parent.
+                let kids = tasks.items.filter(x -> x != t and under(tasks.items, x, t))
+                std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet",
+                    (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x),
+                    fill: false) { x ->
+                    task_outline_row(x)
                 }
             }
-            ui.TextInput(value: step, placeholder: "Add a step") {
-                on submit: add_step(tasks, t, step).then(set(step, ""))
+            ui.TextInput(value: step, placeholder: "Add a subtask") {
+                on submit: add_subtask(tasks, t, step).then(set(step, ""))
             }
         }
-        rich_input(bind: t.notes, placeholder: "Add notes")
+        ui.BlockEditor(bind: t.notes, placeholder: "Add notes")
         std.history(t)
     }
 }
@@ -526,9 +612,10 @@ scenario "a busy week" -> Task {
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
     tasks.items.insert(Task(title: "Pack the books", project: flat, done: true))
     let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
-    tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
-    tasks.steps.insert(Step(title: "First draft", task: copy))
-    tasks.steps.insert(Step(title: "Screenshots", task: copy))
+    let outline = tasks.items.insert(Task(title: "Outline", done: true, parent: .some(copy), project: launch))
+    tasks.items.insert(Task(title: "Collect the beta quotes", parent: .some(outline), project: launch))
+    tasks.items.insert(Task(title: "First draft", parent: .some(copy), project: launch))
+    tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
     tasks.items.insert(Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08))
     tasks.items.insert(Task(title: "Set up the redirects", project: launch, done: true))
     as mia at 2026-06-29T16:00Z {
@@ -537,13 +624,15 @@ scenario "a busy week" -> Task {
     call
 }
 
-/// A launch post half written: its window, with the steps it was broken into, one done.
-scenario "a task's steps" -> Task {
+/// A launch post half written: its window, with the subtasks it was broken into, one of them
+/// broken into its own.
+scenario "a task's subtasks" -> Task {
     let launch = tasks.projects.insert(Project(name: "Website launch"))
     let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
-    tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
-    tasks.steps.insert(Step(title: "First draft, with the quotes from the beta testers", task: copy))
-    tasks.steps.insert(Step(title: "Screenshots", task: copy))
+    let outline = tasks.items.insert(Task(title: "Outline", done: true, parent: .some(copy), project: launch))
+    tasks.items.insert(Task(title: "Collect the quotes from the beta testers", parent: .some(outline), project: launch))
+    tasks.items.insert(Task(title: "First draft, with the quotes from the beta testers", parent: .some(copy), project: launch))
+    tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
     copy
 }
 

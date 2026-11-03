@@ -238,6 +238,7 @@ pub fn desktop_with(
     // What the desk itself types into (its search, its notification centre)
     // takes the keys; everything else on it passes them on to the window the
     // person is in.
+    let waking_handle = handle.clone();
     let keyboard = Rc::new(move || handle.wants_keyboard());
     let desk = Rc::new(RefCell::new(Desk {
         policy,
@@ -249,6 +250,12 @@ pub fn desktop_with(
         monitors: Vec::new(),
         primary: None,
     }));
+    // What another surface commands of the desk — the chrome's own actions, an
+    // agent's — is queued on its handle and taken up by the desk's next pass:
+    // the handle asks for it, so a desk that draws nothing of its own still
+    // keeps its windows where the person put them.
+    let asked = desk.borrow().host.asking();
+    waking_handle.set_wake(Rc::new(move || asked.set(true)));
     (
         DesktopHost {
             desk: Rc::clone(&desk),
@@ -438,6 +445,10 @@ impl SurfaceHost for DesktopHost {
 
     fn prepare_frame(&mut self) -> bool {
         self.desk.borrow_mut().host.prepare_frame()
+    }
+
+    fn advance(&mut self) -> bool {
+        self.desk.borrow_mut().host.advance()
     }
 
     fn next_deadline(&self) -> Option<std::time::Instant> {

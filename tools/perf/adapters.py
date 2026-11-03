@@ -22,7 +22,7 @@ Each adapter reads what a benchmark already prints and emits records through
   sample of `footprint.runtime.<metric>.<arch>`: `bytes`, `relocation_bytes`,
   `relocated_bytes` (bytes) and `symbol_relocations` (count).
 - `workspace_switch`: the compositor's `WORKSPACE-SWITCH` session-log lines
-  (`crates/session/compositor/src/pacing.rs`), one per switch, become the
+  (`crates/session/frame-metrics/src/switch_latency.rs`), one per switch, become the
   caller's KPI ids' `first_frame` (chord to the first frame shown), `settled`
   (chord to the resting frame shown after the frame run) and `dropped_frames`
   (refresh intervals in the run that showed no new frame).

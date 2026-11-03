@@ -19,9 +19,32 @@ use tilo_actions::{
 use crate::action::DynAction;
 use crate::background::{Pending, Poll, Waker};
 use tilolang_runtime::meta::{ActionMeta, Meta};
+use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
 use crate::surface::{arguments, is_destructive, published_param};
+
+/// What the declaration `id` is called in the reader's language: `source`, its words in the
+/// package's own, when no catalogue of theirs holds it.
+fn label_of(words: &dyn Words, id: &str, source: &str) -> String {
+    words.word(&tilolang::messages::key_of(id), &[], source)
+}
+
+/// What a sentence of the declaration `id` says in the reader's language — its description
+/// (`doc`), or its `noun` for `count` — and `source` when no catalogue of theirs holds it.
+fn said_of(
+    words: &dyn Words,
+    id: &str,
+    attribute: &str,
+    count: Option<&str>,
+    source: &str,
+) -> String {
+    let key = format!("{}.{attribute}", tilolang::messages::key_of(id));
+    let args = count.map_or_else(Vec::new, |count| {
+        vec![("count".to_owned(), count.to_owned())]
+    });
+    words.word(&key, &args, source)
+}
 
 /// Who is invoking: what the door admitted of the caller, for the runtime's principal.
 ///
@@ -117,13 +140,15 @@ pub const HOST_RESOURCE: &str = "tl:host";
 
 /// The type of the typed action `action` on resources of kind `kind`, whose build runs
 /// `planner` on the subject its spec is bound to: the resource id it is published on, a
-/// [`String`] [`Target`], or none for an action that takes no resource.
+/// [`String`] [`Target`], or none for an action that takes no resource. What it is called and
+/// what it says read through `words` in the reader's language.
 #[must_use]
 pub fn action_type(
     meta: &Meta,
     kind: &str,
     action: &ActionMeta,
     planner: &Arc<dyn Planner>,
+    words: &dyn Words,
 ) -> Arc<ActionType> {
     let params: Vec<ActionParam> = arguments(meta, &action.params)
         .iter()
@@ -157,10 +182,11 @@ pub fn action_type(
     } else {
         action.label.clone()
     };
+    let label = label_of(words, &action.id, &label);
     let placeholder = if action.doc.is_empty() {
         label.clone()
     } else {
-        action.doc.clone()
+        said_of(words, &action.id, "doc", None, &action.doc)
     };
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
@@ -197,7 +223,7 @@ pub fn action_type(
     // icon, then whether it is destructive, which settles its confirmation.
     let mut spec = spec.of_kind(action_kind(action.class));
     if !action.doc.is_empty() {
-        spec = spec.with_description(action.doc.clone());
+        spec = spec.with_description(said_of(words, &action.id, "doc", None, &action.doc));
     }
     if let Some(icon) = &action.icon {
         spec = spec.with_icon(icon.clone());
@@ -219,6 +245,9 @@ pub fn action_type(
 pub struct ActionTypes {
     meta: Meta,
     planner: Arc<dyn Planner>,
+    /// The words the labels, descriptions and nouns below were read in
+    /// ([`Words::revision`]): another language publishes them again.
+    words: u64,
     /// Per type name, the action types of its resources.
     on_type: std::collections::BTreeMap<String, TypeActions>,
 }
@@ -245,9 +274,10 @@ impl ActionTypes {
         untitled(&self.meta, schema)
     }
 
-    /// The action types of the package `meta`, whose actions `planner` runs.
+    /// The action types of the package `meta`, whose actions `planner` runs, described in the
+    /// reader's language through `words`.
     #[must_use]
-    pub fn new(meta: &Meta, planner: &Arc<dyn Planner>) -> Self {
+    pub fn new(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> Self {
         let mut on_type = std::collections::BTreeMap::new();
         for declared in &meta.types {
             let kind = meta.kind_of(&declared.name);
@@ -257,16 +287,21 @@ impl ActionTypes {
                     meta.subject_of(&action.params)
                         .is_some_and(|subject| subject.name == declared.name)
                 })
-                .map(|action| action_type(meta, &kind, action, planner))
+                .map(|action| action_type(meta, &kind, action, planner, words))
                 .collect();
             on_type.insert(
                 declared.name.clone(),
                 TypeActions {
                     edits: edit_types(meta, &declared.name),
                     actions,
-                    views: views_of(meta, &declared.name),
+                    views: views_of(meta, &declared.name, words),
                     named: ResourceType {
-                        noun: Noun::new(declared.noun(), declared.plural()),
+                        // What one and several of the type are called, by count: the catalogue
+                        // refines a noun English cannot derive ("notebooks", not "noteses").
+                        noun: Noun::new(
+                            said_of(words, &declared.id, "noun", Some("1"), &declared.noun()),
+                            said_of(words, &declared.id, "noun", Some("2"), &declared.plural()),
+                        ),
                         app: Noun::new(
                             meta.title.clone(),
                             tilolang::meta::plural(&meta.title.to_lowercase()),
@@ -280,6 +315,7 @@ impl ActionTypes {
         Self {
             meta: meta.clone(),
             planner: Arc::clone(planner),
+            words: words.revision(),
             on_type,
         }
     }
@@ -290,12 +326,13 @@ impl ActionTypes {
         &self.meta
     }
 
-    /// Whether these are the types of the package as `meta` describes it now, run by
-    /// `planner`.
-    fn describe(&self, meta: &Meta, planner: &Arc<dyn Planner>) -> bool {
+    /// Whether these are the types of the package as `meta` describes it now, run by `planner`,
+    /// described in the words that read at `words`.
+    fn describe(&self, meta: &Meta, planner: &Arc<dyn Planner>, words: u64) -> bool {
         self.meta.app == meta.app
             && self.meta.module_hash == meta.module_hash
             && Arc::ptr_eq(&self.planner, planner)
+            && self.words == words
     }
 
     /// The record `id` of the type `type_name`, labelled `label`, carrying its `open`, the
@@ -336,7 +373,11 @@ impl ActionTypes {
 /// shows that view; every other view opens through an action of its own (`open-<view id>`, an
 /// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) bound to the resource and the
 /// view), answered for each resource by [`open_with_spec`].
-fn views_of(meta: &Meta, type_name: &str) -> Vec<(ResourceViewSpec, Option<Arc<ActionType>>)> {
+fn views_of(
+    meta: &Meta,
+    type_name: &str,
+    words: &dyn Words,
+) -> Vec<(ResourceViewSpec, Option<Arc<ActionType>>)> {
     let Some(declared) = meta.types.iter().find(|t| t.name == type_name) else {
         return Vec::new();
     };
@@ -356,13 +397,16 @@ fn views_of(meta: &Meta, type_name: &str) -> Vec<(ResourceViewSpec, Option<Arc<A
             } else {
                 view.name.clone()
             };
+            let label = label_of(words, &view.id, &label);
             let description = view
                 .doc
                 .lines()
                 .map(str::trim)
-                .find(|line| !line.is_empty());
+                .find(|line| !line.is_empty())
+                .map(|line| said_of(words, &view.id, "doc", None, line));
             let is_primary = primary == Some(view.id.as_str());
-            let opens = (!is_primary).then(|| open_with_type(&view.id, &label, description));
+            let opens =
+                (!is_primary).then(|| open_with_type(&view.id, &label, description.as_deref()));
             let open_action = opens.as_ref().map_or("open", |opens| opens.id.as_str());
             let mut spec = ResourceViewSpec::new(view.id.clone(), label, open_action);
             if let Some(line) = description {
@@ -508,6 +552,9 @@ pub struct Publications {
     wake: Option<Waker>,
     /// Per app, the action types its records offer.
     types: std::collections::BTreeMap<String, Arc<ActionTypes>>,
+    /// The words the trees above were published in ([`Words::revision`]): when they read in
+    /// another language, every record is published again in it.
+    words: u64,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -632,15 +679,23 @@ impl Publications {
             building: None,
             wake: None,
             types: std::collections::BTreeMap::new(),
+            words: host.runtime().words().revision(),
         }
     }
 
-    /// The action types of the package `meta`, built once per package and planner.
-    fn types_of(&mut self, meta: &Meta, planner: &Arc<dyn Planner>) -> Arc<ActionTypes> {
+    /// The action types of the package `meta`, built once per package and planner, described in
+    /// the words the host's words resolve at now.
+    fn types_of(
+        &mut self,
+        host: &crate::host::Host,
+        meta: &Meta,
+        planner: &Arc<dyn Planner>,
+    ) -> Arc<ActionTypes> {
+        let words = host.runtime().words();
         match self.types.get(&meta.app) {
-            Some(types) if types.describe(meta, planner) => Arc::clone(types),
+            Some(types) if types.describe(meta, planner, words.revision()) => Arc::clone(types),
             _ => {
-                let types = Arc::new(ActionTypes::new(meta, planner));
+                let types = Arc::new(ActionTypes::new(meta, planner, &*words));
                 self.types.insert(meta.app.clone(), Arc::clone(&types));
                 types
             }
@@ -667,7 +722,7 @@ impl Publications {
                     .clone();
                 Some(Whole {
                     doc,
-                    types: self.types_of(&package.meta, planner),
+                    types: self.types_of(host, &package.meta, planner),
                     type_name,
                     type_id,
                 })
@@ -822,6 +877,16 @@ impl Publications {
             }
         }
         let changes = self.watch.take();
+        // The words a package is published in read in another language now (the person chose
+        // one, or a catalogue of it was added): every record is read again, so its labels,
+        // descriptions and nouns say what they are now called.
+        let reworded = {
+            let words = host.runtime().words().revision();
+            std::mem::replace(&mut self.words, words) != words
+        };
+        if reworded {
+            self.types.clear();
+        }
         let mut whole_docs = Vec::new();
         let records = host.records();
         let now: BTreeSet<&str> = records.iter().map(|(_, _, doc)| doc.as_str()).collect();
@@ -847,14 +912,15 @@ impl Publications {
             else {
                 continue;
             };
-            let types = self.types_of(&package.meta, planner);
+            let types = self.types_of(host, &package.meta, planner);
             let at = Published {
                 store: host.store(),
                 types: &types,
                 schema,
                 doc,
             };
-            let whole = changes.everything
+            let whole = reworded
+                || changes.everything
                 || changes.whole.contains(doc)
                 || !self.trees.contains_key(doc)
                 || changes.docs.get(doc).is_some_and(|fields| {
@@ -1561,13 +1627,13 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
 
 /// The package's own resource, carrying the actions that take no record.
 #[must_use]
-pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> ResourceSpec {
+pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> ResourceSpec {
     let kind = meta.package_kind();
     let mut resource = ResourceSpec::new(package_resource_id(&meta.app), kind.clone(), &meta.title);
     for action in meta.offered_actions() {
         if meta.subject_of(&action.params).is_none() {
             resource = resource
-                .with_action(action_type(meta, &kind, action, planner).bind(Target::none()));
+                .with_action(action_type(meta, &kind, action, planner, words).bind(Target::none()));
         }
     }
     resource

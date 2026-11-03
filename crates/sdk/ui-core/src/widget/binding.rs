@@ -29,6 +29,11 @@ pub trait ValueBinding<T> {
     /// the next pull presents the result.
     fn publish(&mut self, _value: &T) {}
 
+    /// [`Self::publish`] when `equal` says the value differs from the one
+    /// the binding holds: a colour published from a picker's own floats is
+    /// the one it was given.
+    fn publish_by(&mut self, _value: &T, _equal: fn(&T, &T) -> bool) {}
+
     /// The document key this binding reads, reported to the action
     /// directory as the control's collaborative binding.
     fn document_key(&self) -> Option<&str> {
@@ -43,6 +48,10 @@ impl<T: Clone + PartialEq> ValueBinding<T> for crate::local_state::LocalBinding<
 
     fn publish(&mut self, value: &T) {
         Self::publish(self, value);
+    }
+
+    fn publish_by(&mut self, value: &T, equal: fn(&T, &T) -> bool) {
+        crate::local_state::LocalBinding::publish_by(self, value, equal);
     }
 }
 

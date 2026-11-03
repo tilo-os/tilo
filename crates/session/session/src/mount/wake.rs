@@ -118,6 +118,19 @@ impl Wake {
         self.tell(shared);
     }
 
+    /// When this device next reads its interfaces again, or a wake it is
+    /// watching needs a probe or runs out of time.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        let scan = self
+            .scanned
+            .borrow()
+            .and_then(|at| at.checked_add(ROUTE_SCAN_INTERVAL));
+        [scan, self.waker.borrow().next_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
     /// Answer the wake actions one of the person's other devices sent this
     /// one. Whether `envelope` was one of them.
     pub(crate) fn handle_action(

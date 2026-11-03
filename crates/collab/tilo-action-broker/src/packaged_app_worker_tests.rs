@@ -642,3 +642,61 @@ async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
         })
         .await;
 }
+
+/// A session that keeps its own journal still admits the app its launcher
+/// started to that app's own route: the launch is the app's durable
+/// admission, as a host-mounted worker's private descriptor is.
+#[tokio::test(flavor = "current_thread")]
+async fn a_journaled_session_admits_the_app_its_launcher_started() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            const APP_PEER: u64 = 907;
+            let env = Environment::new();
+            let mut services = env.membership.services();
+            services.launcher = Some(Arc::new(LaunchedHere {
+                app: env.route.app_id.clone(),
+                workspace: env.route.cluster_id.clone(),
+            }));
+            let journal = tempfile::tempdir().unwrap();
+            let config = crate::NativePeerBrokerConfig {
+                journal_root: journal.path().join("journal"),
+                certificate_authority: env.authority.clone(),
+            };
+            let rig = Rig::with_own_journal(&env, services, &config).await;
+            assert!(rig.state.durable_owner_required);
+            let (app, _server, _client) = launched_app_connection(
+                &rig.state,
+                &rig.directories,
+                APP_PEER,
+                &env.route.app_id,
+                &env.route.cluster_id,
+            );
+            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
+            let own = app
+                .join_channel(&env.route.channel_key(), &identity)
+                .await
+                .expect("the launched app joins its own route in a journaled session");
+            assert!(
+                rig.state
+                    .host_workers
+                    .lock()
+                    .unwrap()
+                    .get(APP_PEER, &env.route)
+                    .is_some_and(|worker| worker.worker_registration.is_some()),
+                "the launched app is the worker of its own route"
+            );
+
+            // Another app's route in the same workspace, which this app
+            // declares no read of: the launch vouches for nothing there.
+            let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
+            let refused = app
+                .join_channel(&other.channel_key(), &identity)
+                .await
+                .err()
+                .expect("another app's route is not this app's to join");
+            assert!(refused.to_string().contains("so.tilo.notes"), "{refused:?}");
+            drop((own, app));
+            rig.stop().await;
+        })
+        .await;
+}

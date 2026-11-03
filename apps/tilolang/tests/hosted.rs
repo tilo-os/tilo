@@ -10,6 +10,14 @@
     clippy::indexing_slicing,
     reason = "a test: a failure is a panic"
 )]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "pixels of a small frame: coordinates and counts are tiny, and the arithmetic is the \
+              comparison itself"
+)]
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -36,6 +44,8 @@ use ui::widget::Widget;
 const NOTES: &str = "so.tilo.lang.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
+/// The task list the person keeps.
+const TASKS: &str = "so.tilo.lang.tasks";
 const VIEWPORT: (u32, u32) = (1280, 800);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
@@ -224,6 +234,14 @@ impl Window {
         }
     }
 
+    /// Opens the window's own command palette on `request`, as its search key does.
+    fn open_search(&mut self, request: ui::search::SearchRequest) {
+        match self {
+            Self::Harness(window) => window.open_search(&request).expect("the palette opens"),
+            Self::Live(app) => app.open_search(request),
+        }
+    }
+
     /// The named key `key` pressed and released.
     fn press_key(&mut self, key: ui::winit::keyboard::NamedKey) {
         use ui::winit::event::ElementState;
@@ -298,9 +316,23 @@ struct Session {
 }
 
 impl Session {
+    /// A person at a Tasks window in the frame harness.
+    fn tasks() -> Self {
+        Self::new(TASKS, "../tl/tasks", "ada", |_| {})
+    }
+
     /// A person at a Notes window in the frame harness.
     fn notes() -> Self {
         Self::new(NOTES, "../tl/notes", "ada", |_| {})
+    }
+
+    /// A person at a Tasks window the live `App` runs.
+    fn live_tasks() -> Self {
+        Self::open(TASKS, "../tl/tasks", "ada", |hosted| {
+            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
+            app.init_layout();
+            Window::Live(Box::new(app))
+        })
     }
 
     /// A person at a Notes window the live `App` runs.
@@ -592,6 +624,60 @@ fn named(widget: &dyn Widget, label: &str, out: &mut Vec<ui::kurbo::Rect>) {
     for child in widget.children() {
         named(child, label, out);
     }
+}
+
+/// Every checkbox the window lays out on screen, with whether it is marked.
+fn boxes(widget: &dyn Widget, out: &mut Vec<(ui::kurbo::Rect, bool)>) {
+    if let Some(access) = widget.accessibility()
+        && access.role == ui::a11y::Role::Checkbox
+    {
+        let rect = widget.get_rect();
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            out.push((rect, access.state.checked == Some(true)));
+        }
+    }
+    for child in widget.children() {
+        boxes(child, out);
+    }
+}
+
+/// The pixels of `rect` in a frame the harness drew, at its scale of one.
+fn pixels_of(pixels: &[u8], rect: ui::kurbo::Rect) -> Vec<[u8; 4]> {
+    let width = VIEWPORT.0 as usize;
+    let x0 = rect.x0.round().max(0.0) as usize;
+    let y0 = rect.y0.round().max(0.0) as usize;
+    let x1 = (rect.x1.round() as usize).min(width);
+    let y1 = rect.y1.round().max(0.0) as usize;
+    let rows = pixels.len() / 4 / width.max(1);
+    let mut out = Vec::new();
+    for row in y0..y1.min(rows) {
+        for col in x0..x1 {
+            let at = (row * width + col) * 4;
+            out.push([pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]);
+        }
+    }
+    out
+}
+
+/// How far apart two pictures of the same space are, from 0 to 1.
+fn apart(one: &[[u8; 4]], other: &[[u8; 4]]) -> f64 {
+    let common = one.len().min(other.len());
+    if common == 0 {
+        return 0.0;
+    }
+    let total: f64 = one
+        .iter()
+        .zip(other)
+        .take(common)
+        .map(|(a, b)| {
+            (f64::from(a[0].abs_diff(b[0]))
+                + f64::from(a[1].abs_diff(b[1]))
+                + f64::from(a[2].abs_diff(b[2])))
+                / 3.0
+                / 255.0
+        })
+        .sum();
+    total / common as f64
 }
 
 /// After a first note made and titled as a person does, "+" and at once the next title, every
@@ -1312,9 +1398,8 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
     let (editor, rects) = session
         .window
         .harness()
-        .widget_mut::<tilo_ui_host::body::BodyEditor>()
-        .map(|body| {
-            let editor: &ui::widget::BlockEditor = ui::widget::Decorator::inner(body);
+        .widget_mut::<ui::widget::BlockEditor>()
+        .map(|editor| {
             let rects: Vec<ui::kurbo::Rect> = editor
                 .blocks()
                 .iter()
@@ -1423,5 +1508,295 @@ fn shots() {
             .window
             .harness()
             .render_png(&dir.join(format!("rich-body-{shade}.png")));
+    }
+}
+
+/// A task checked off through the host: the mark the window draws fills over frames on its way
+/// to marked, and the task ends checked. The frames are the window's own, the click is a
+/// person's, and the change comes back through the host's patch connection.
+#[test]
+fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
+    use ui::time::testing::with_monotonic_time;
+    use ui::winit::keyboard::NamedKey;
+
+    let mut session = Session::new(TASKS, "../tl/tasks", "ada", |_| {});
+    // A task, added through the entry the window shows.
+    let mut entries = Vec::new();
+    named(session.window.root(), "Draft", &mut entries);
+    let entry = *entries.first().expect("the inbox shows its entry");
+    session.window.click_at(entry.center().x, entry.center().y);
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+
+    // Opened: the task's own window has the box that stays checked, where a list row's closes
+    // the row out of the list.
+    let mut rows = Vec::new();
+    named(session.window.root(), "Water the plants", &mut rows);
+    let row = *rows.last().expect("the inbox shows the task");
+    session.window.click_at(row.center().x, row.center().y);
+    session.settle();
+
+    let mut found = Vec::new();
+    boxes(session.window.root(), &mut found);
+    let (boxed, marked) = *found.first().expect("the task's window shows its box");
+    assert!(!marked, "the task starts open");
+
+    let start = ui::time::Instant::now();
+    let rest = session.window.harness().render_rgba();
+    let was = pixels_of(&rest, boxed);
+
+    let pressed = start + ui::time::Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        session.window.click_at(boxed.center().x, boxed.center().y);
+    });
+    let mut series = Vec::new();
+    for step in 1..=40 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let pixels = with_monotonic_time(at, || {
+            session.host.turn();
+            session.window.frame();
+            session.window.harness().render_rgba()
+        });
+        series.push(apart(&pixels_of(&pixels, boxed), &was));
+        let moving = session
+            .window
+            .harness()
+            .frame_schedule()
+            .needs_animation_frame;
+        if series.len() > 2 && !moving {
+            break;
+        }
+    }
+
+    let mut after = Vec::new();
+    boxes(session.window.root(), &mut after);
+    assert_eq!(
+        after.first().map(|(_, marked)| *marked),
+        Some(true),
+        "the task is checked"
+    );
+
+    let settled = series.last().copied().unwrap_or_default();
+    assert!(settled > 0.02, "the box changed: the frames say {series:?}");
+    let between = series
+        .iter()
+        .filter(|at| **at > settled * 0.05 && **at < settled * 0.95)
+        .count();
+    assert!(
+        between >= 2,
+        "the mark fills over frames rather than landing at once: the frames say {series:?}"
+    );
+    assert!(
+        series
+            .iter()
+            .rev()
+            .take(3)
+            .all(|at| (*at - settled).abs() < settled * 0.05),
+        "it settles: the frames say {series:?}"
+    );
+}
+
+/// The actions the tasks app offers the person at this window, as the window's catalogue
+/// lists them.
+fn offered(session: &mut Session) -> Vec<(String, Option<String>)> {
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .actions()
+        .iter()
+        .map(|action| (action.action_label.clone(), action.state.shortcut.clone()))
+        .collect()
+}
+
+/// Whether a control the window shows is bound to `true` now: the box of a task the palette
+/// checked off.
+fn a_checked_control(session: &mut Session) -> bool {
+    /// The keys of the bound controls under `node`, each carrying its tree's `prefix`.
+    fn bound(node: &tilo_ui_host::UiNode, prefix: &str, out: &mut Vec<String>) {
+        if node.binding.is_some() {
+            out.push(format!("{prefix}{}", node.key));
+        }
+        for child in &node.children {
+            bound(child, prefix, out);
+        }
+    }
+    let view = session.hosted().view().expect("the window is connected");
+    let mut keys = Vec::new();
+    for (tree, prefix) in [
+        (view.root_tree(), ""),
+        (view.detail_tree(), tilo_ui_host::shell::DETAIL),
+    ] {
+        if let Some(tree) = tree {
+            bound(&tree, prefix, &mut keys);
+        }
+    }
+    let view = session.hosted().view().expect("the window is connected");
+    keys.iter()
+        .any(|key| matches!(view.bound_value(key), Some(tilo_ui_host::Value::Bool(true))))
+}
+
+/// Opens the window's own command palette on `query` and runs the row it leads with.
+fn choose(session: &mut Session, query: &str) {
+    session
+        .window
+        .open_search(ui::search::SearchRequest::this_app().with_query(query));
+    session.settle();
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+}
+
+#[test]
+fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::tasks();
+    // What the app publishes for this window is what the window offers: the labels people
+    // read, and the keys the app gives its actions.
+    let actions = offered(&mut session);
+    let labels: Vec<&str> = actions.iter().map(|(label, _)| label.as_str()).collect();
+    assert!(labels.contains(&"New task"), "{labels:?}");
+    let key = |label: &str| {
+        actions
+            .iter()
+            .find(|(offered, _)| offered == label)
+            .unwrap_or_else(|| panic!("{label} is offered"))
+            .1
+            .clone()
+    };
+    assert_eq!(key("New task").as_deref(), Some("Ctrl+n"));
+    assert_eq!(key("Remove").as_deref(), Some("delete"));
+
+    // The window's own palette lists them, as a native app window's does.
+    let listed: Vec<(String, Option<String>)> = session
+        .window
+        .harness()
+        .resources()
+        .into_iter()
+        .filter(|resource| resource.id.0.starts_with("tl:so.tilo.lang.tasks:"))
+        .flat_map(|resource| resource.actions)
+        .map(|action| (action.label.clone(), action.state.shortcut.clone()))
+        .collect();
+    assert!(
+        listed.contains(&("New task".to_owned(), Some("Ctrl+n".to_owned()))),
+        "{listed:?}"
+    );
+    // A session's palette builds each action row from that same published state, and paints a
+    // declared key as the platform's keycaps: the app's keys are caps, not free text.
+    let platform = ui::PlatformConventions::new(ui::Platform::Linux);
+    let mut row = |label: &str| {
+        let resources = session.window.harness().resources();
+        let (resource, action) = resources
+            .iter()
+            .filter(|resource| resource.id.0.starts_with("tl:so.tilo.lang.tasks:"))
+            .find_map(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.label == label)
+                    .map(|action| (resource, action))
+            })
+            .unwrap_or_else(|| panic!("{label} is published"));
+        ui::CommandEntry::from_flat_action(&ui::tilo_actions::FlatAction {
+            key: format!("{}\u{1f}{}", resource.id.as_str(), action.id),
+            resource_id: resource.id.clone(),
+            resource_kind: resource.kind.clone(),
+            resource_label: resource.label.clone(),
+            resource_presentation: None,
+            action,
+            depth: 0,
+        })
+    };
+    let new_task = row("New task");
+    assert_eq!(
+        new_task.keybinding_label(platform).as_deref(),
+        Some("Ctrl+N")
+    );
+    assert_eq!(
+        row("Remove").keybinding_label(platform).as_deref(),
+        Some("Delete")
+    );
+    session
+        .window
+        .open_search(ui::search::SearchRequest::this_app().with_query("New task"));
+    session.settle();
+    assert!(
+        session.window.harness().palette_shown(),
+        "the palette shows"
+    );
+    let shown: Vec<String> = session
+        .window
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect();
+    assert!(
+        shown.iter().any(|label| label.contains("New task")),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::live_tasks();
+    // Choosing the app's New task in the window's palette inserts a task at the app, which
+    // opens it, so its own actions reach the palette with their key.
+    choose(&mut session, "New task");
+    let actions = offered(&mut session);
+    let complete = actions
+        .iter()
+        .find(|(label, _)| label == "Complete")
+        .expect("the opened task offers Complete");
+    assert_eq!(complete.1.as_deref(), Some("Ctrl+enter"));
+
+    // Running it there checks the task off at the app: the box the window shows for it is
+    // checked, on the same record the palette wrote.
+    assert!(
+        !a_checked_control(&mut session),
+        "the task starts unchecked"
+    );
+    choose(&mut session, "Complete");
+    assert!(
+        a_checked_control(&mut session),
+        "the task the palette ran Complete on shows checked"
+    );
+}
+
+/// The window's command palette as captured, when shots are asked for with
+/// `TILO_PALETTE_SHOTS`: a relative directory is under the build's target directory, where a
+/// remote builder hands it back.
+#[test]
+fn palette_shots() {
+    let Some(dir) = std::env::var_os("TILO_PALETTE_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let dir = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(target) if dir.is_relative() => std::path::PathBuf::from(target).join(dir),
+        _ => dir,
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let _settled = ui::motion::testing::settled();
+    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        for (what, query) in [("palette", ""), ("palette-search", "New task")] {
+            let mut session = Session::tasks();
+            session.window.harness().set_theme(theme.clone());
+            let request = ui::search::SearchRequest::this_app();
+            let request = if query.is_empty() {
+                request
+            } else {
+                request.with_query(query)
+            };
+            session.window.open_search(request);
+            session.settle();
+            session
+                .window
+                .harness()
+                .render_png(&dir.join(format!("{what}-{shade}.png")));
+        }
     }
 }

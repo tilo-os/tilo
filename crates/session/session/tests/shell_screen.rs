@@ -6,9 +6,6 @@
 //! it there. The preset changes through the shell's own `show_preset`, which the preset switch
 //! over the arrangement runs. What stands on screen is read from what the shell lays out for
 //! assistive technology, never from pixels.
-//!
-//! With the shell mounted as a bar only, none of the arrangement stands on screen: no preset
-//! switch, and the note placed is nowhere.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -25,11 +22,10 @@ mod common;
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
-use tilo_surface_host::shell_part::ShellLayer;
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
-    HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press, reached, until,
+    HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press, until,
 };
 
 /// The framed canvas's entry, named for what it holds: the text typed to find what to place.
@@ -41,20 +37,20 @@ fn notebook() -> (RecordService, Vec<String>) {
     notes(&TITLES)
 }
 
-fn session(layer: ShellLayer) -> (Session, String) {
-    let (session, notes) = session_at(layer, WIDTH, HEIGHT);
+fn session() -> (Session, String) {
+    let (session, notes) = session_at(WIDTH, HEIGHT);
     (session, notes.into_iter().next().unwrap())
 }
 
-/// The session with the shell as `layer`, on one display `width` by `height`, and the notes
-/// [`notebook`] keeps.
-fn session_at(layer: ShellLayer, width: i32, height: i32) -> (Session, Vec<String>) {
+/// The session with the shell, on one display `width` by `height`, and the notes [`notebook`]
+/// keeps.
+fn session_at(width: i32, height: i32) -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(layer),
+            shell: true,
             collab: false,
             services: vec![Box::new(notebook)],
             ..Options::default()
@@ -103,13 +99,13 @@ fn place(session: &mut Session, resource: &str) -> u64 {
 #[test]
 fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     let _settled = ui::motion::testing::settled();
-    let (mut session, note) = session(ShellLayer::Screen);
+    let (mut session, note) = session();
 
     // The desk is up: its bar's controls stand on screen, over the whole output.
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let bars = session.shell_bars();
+    let bars = session.shell_parts();
     assert_eq!(
         bars.len(),
         1,
@@ -151,31 +147,13 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     );
 }
 
-/// With the shell as a bar only, the same action changes the record and nothing of the
-/// arrangement stands on screen: no preset switch, no strips, no place. What the screen adds.
-#[test]
-fn as_a_bar_the_shell_shows_none_of_the_arrangement() {
-    let _settled = ui::motion::testing::settled();
-    let (mut session, note) = session(ShellLayer::Bar);
-    until(&mut session, "the bar's controls", |session| {
-        on_screen(session, "Notifications").is_some()
-    });
-    let place = place(&mut session, &note).to_string();
-    assert!(
-        !reached(&mut session, |session| {
-            on_screen(session, "Frames").is_some() || on_screen(session, &place).is_some()
-        }),
-        "a bar shows none of the arrangement"
-    );
-}
-
 /// The overview, run as the touchpad's pinch, the overview's key and an agent run it (the
 /// chrome's published `overview`, through the door), is the shell's own on the shell's screen:
 /// its view stands in what the shell lays out, and the same action closes it again.
 #[test]
 fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
     let _settled = ui::motion::testing::settled();
-    let (mut session, _) = session(ShellLayer::Screen);
+    let (mut session, _) = session();
     until(&mut session, "the preset switch", |session| {
         on_screen(session, "Strips").is_some()
     });
@@ -207,6 +185,130 @@ fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
     });
 }
 
+/// What the chrome and the desk ask for shows on the shell: the bell, the status and the
+/// workspace menu are the shell's notice centre, quick settings and workspaces, and the desk's
+/// search is the shell's launcher — with what the person asked for, when a query comes with it.
+#[test]
+fn the_chromes_actions_show_the_shells_surfaces() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session();
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Strips").is_some()
+    });
+    for (action, surface, shown) in [
+        ("notifications", "centre", "Notifications"),
+        ("quick-settings", "quick-settings", "Quick settings"),
+        ("workspace-menu", "workspaces", "Workspaces"),
+    ] {
+        assert_eq!(here(&session), "none", "the desk is at rest");
+        session
+            .invoke(CHROME, action, &Map::new())
+            .unwrap_or_else(|error| panic!("{action} shows {surface}: {error:?}"));
+        until(&mut session, surface, |session| here(session) == surface);
+        assert!(
+            on_screen(&session, shown).is_some(),
+            "{action} draws the shell's {surface}: {:?}",
+            session.accessible_labels()
+        );
+        session
+            .invoke(CHROME, action, &Map::new())
+            .unwrap_or_else(|error| panic!("{action} closes {surface}: {error:?}"));
+        until(&mut session, "the desk at rest", |session| {
+            here(session) == "none"
+        });
+    }
+
+    // The desk's search is the shell's launcher.
+    session
+        .invoke(DESK_RESOURCE, "search", &Map::new())
+        .unwrap_or_else(|error| panic!("search shows the launcher: {error:?}"));
+    until(&mut session, "the launcher", |session| {
+        here(session) == "launcher"
+    });
+    // Searching from a chord: the launcher opens on what was asked for.
+    assert_eq!(here(&session), "launcher", "the launcher stays up");
+    session
+        .invoke(
+            DESK_RESOURCE,
+            "search",
+            json!({"query": NOTE_TITLE}).as_object().unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the search carries its query: {error:?}"));
+    // The launcher holds what was asked for: its search-everywhere button names it.
+    until(&mut session, "the launcher's query", |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == &format!("Search everywhere for {NOTE_TITLE}"))
+    });
+    assert_eq!(
+        here(&session),
+        "launcher",
+        "still the launcher, on the query"
+    );
+}
+
+/// The chrome's `switch-workspace` shows another workspace on the shell's screen: the one made,
+/// through the door, and back by a step; the windows' workspace changes under it.
+#[test]
+fn switching_workspace_through_the_door_shows_it_on_the_shell() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session();
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Strips").is_some()
+    });
+    let first = active_workspace(&session);
+    session
+        .invoke(CHROME, "new-workspace", &Map::new())
+        .unwrap_or_else(|error| panic!("a workspace is made: {error:?}"));
+    until(&mut session, "the workspace made", |session| {
+        session.handle().read(|tree| tree.workspaces.len()) == 2
+    });
+    let made = active_workspace(&session);
+    assert_ne!(made, first, "the workspace made stands in front");
+
+    session
+        .invoke(
+            CHROME,
+            "switch-workspace",
+            json!({"delta": -1}).as_object().unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the workspaces step back one: {error:?}"));
+    until(&mut session, "the first workspace again", |session| {
+        active_workspace(session) == first
+    });
+
+    // By its key, too: the one named, as the workspaces view names it.
+    let made_key = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .find(|workspace| workspace.name == made)
+            .map(|workspace| workspace.id.0.to_string())
+    });
+    let made_key = made_key.expect("the workspace made is held");
+    session
+        .invoke(
+            CHROME,
+            "switch-workspace",
+            json!({"workspace": made_key}).as_object().unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the workspace by its key: {error:?}"));
+    until(&mut session, "the workspace by its key", |session| {
+        active_workspace(session) == made
+    });
+}
+
+/// The name of the workspace in front, as the desk holds it.
+fn active_workspace(session: &Session) -> String {
+    session
+        .handle()
+        .read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
+        })
+        .expect("a workspace is in front")
+}
+
 /// On a laptop's display and a phone's, the switch between the presets and the strips under
 /// it stand apart, and every note placed on the desk, one strip each, stands on the display
 /// once placed: the desk shows what just arrived on it.
@@ -214,7 +316,7 @@ fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
 fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_screen() {
     for (width, height) in [(WIDTH, HEIGHT), (390, 844)] {
         let _settled = ui::motion::testing::settled();
-        let (mut session, notes) = session_at(ShellLayer::Screen, width, height);
+        let (mut session, notes) = session_at(width, height);
         until(&mut session, "the preset switch", |session| {
             within(session, "Strips", width, height).is_some()
         });
@@ -266,6 +368,22 @@ fn preset_switch(session: &Session) -> (f64, f64, f64, f64) {
 
 /// The chrome's published resource.
 const CHROME: &str = "desktop:chrome";
+/// The desk's published resource, which its actions are called on.
+const DESK_RESOURCE: &str = "desktop:desk";
+/// The desk's reading: the surface the shell shows now.
+const DESK: &str = "session:desk";
+
+/// The surface up now, as the desk's reading names it.
+fn here(session: &Session) -> String {
+    let reading: Value =
+        serde_json::from_value(session.read(DESK).expect("the session publishes its desk"))
+            .expect("the desk reads as its JSON");
+    reading
+        .get("here")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
 
 /// The overview's heading: the overview's own, which no other view of the desk shows.
 const OVERVIEW: &str = "Overview";
@@ -303,15 +421,15 @@ fn intersects(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
     a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
 }
 
-/// The session with the shell as `layer` on a device whose every id sits above `i64::MAX`: the
-/// salt is the top of an id's high bits, so no place, strip or row fits an integer.
-fn salted_session(layer: ShellLayer) -> (Session, Vec<String>) {
+/// The session with the shell on a device whose every id sits above `i64::MAX`: the salt is the
+/// top of an id's high bits, so no place, strip or row fits an integer.
+fn salted_session() -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(layer),
+            shell: true,
             collab: false,
             salt: 0x8000,
             services: vec![Box::new(notebook)],
@@ -431,7 +549,7 @@ fn keep(session: &mut Session, name: &str) {
 #[test]
 fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     let _settled = ui::motion::testing::settled();
-    let (mut session, notes) = salted_session(ShellLayer::Screen);
+    let (mut session, notes) = salted_session();
     let note = notes.first().expect("a note").clone();
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()

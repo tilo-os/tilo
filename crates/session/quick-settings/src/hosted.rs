@@ -335,6 +335,8 @@ pub struct KeptNotification {
     pub created_ms: u64,
     /// The sender's choices, as `(key, label)`.
     pub actions: Vec<(String, String)>,
+    /// The agent it can be handed to, where one is live.
+    pub agent: Option<String>,
     /// Choosing it opens something (its sender, or its app); otherwise it
     /// is read in full in the panel.
     pub opens: bool,
@@ -375,8 +377,7 @@ impl NotificationCentre {
                     ),
                     // A row shows at most the two the banner showed it.
                     actions: kept.actions.iter().take(2).cloned().collect(),
-                    // No agent is live on this desktop to hand one to.
-                    agent: None,
+                    agent: kept.agent.clone(),
                     opens: kept.opens,
                 })
                 .collect(),
@@ -500,6 +501,7 @@ mod tests {
                 .iter()
                 .map(|(key, label)| ((*key).to_owned(), (*label).to_owned()))
                 .collect(),
+            agent: None,
             opens: true,
         }
     }

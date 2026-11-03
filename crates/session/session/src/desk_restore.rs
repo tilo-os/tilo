@@ -109,6 +109,13 @@ impl Restore {
         }
     }
 
+    /// When the app asked for a saved window gives up and its tab says so.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.opening
+            .as_ref()
+            .and_then(|opening| opening.asked.checked_add(OPEN_DEADLINE))
+    }
+
     /// Ask for the next saved window when the one before has come, or say in
     /// its tab why it did not.
     pub(crate) fn follow(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {

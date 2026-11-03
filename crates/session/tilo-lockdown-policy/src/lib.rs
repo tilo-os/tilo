@@ -150,6 +150,16 @@ impl PolicyStore {
     pub fn policy(&self) -> LockdownPolicy {
         self.shared.policy.lock_recover().clone()
     }
+
+    /// Deliver the current policy to `listener`, then every later commit, in
+    /// order. Only a weak reference is kept: the caller holds the listener
+    /// alive for as long as it wants to follow the policy.
+    ///
+    /// # Errors
+    /// Called from inside an observer callback, or the policy cannot be read.
+    pub fn watch(&self, listener: &Arc<PolicyListener>) -> std::io::Result<()> {
+        watch_policy_at(self.path.clone(), listener)
+    }
     /// Durably commit `policy`, then deliver it to every observer in commit order.
     ///
     /// # Errors

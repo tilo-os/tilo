@@ -38,5 +38,9 @@ impl Shared {
         // The lines people typed in a run's conversation that ended since the last pass are
         // steps of that run: recorded here, where the runs are, and never on the door's thread.
         self.conversation.take_finished();
+        // Who a kept notification can be handed to: the agent live in the
+        // workspace in front, where there is one.
+        let taking = self.agent_runs.taking_agent();
+        self.notifications.borrow_mut().set_taking_agent(taking);
     }
 }

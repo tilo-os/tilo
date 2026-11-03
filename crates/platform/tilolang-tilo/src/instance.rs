@@ -127,6 +127,12 @@ pub trait Platform {
         let _ = catalogues;
     }
 
+    /// What the words resolve at now: it moves when the person's language, or a catalogue of
+    /// theirs, does, so a package's published labels and nouns are published again in it.
+    fn words_revision(&self) -> u64 {
+        0
+    }
+
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
@@ -160,6 +166,10 @@ impl crate::runtime::Words for PlatformWords {
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         let said = self.0.phrase(key, args);
         if said == key { source.to_owned() } else { said }
+    }
+
+    fn revision(&self) -> u64 {
+        self.0.words_revision()
     }
 }
 /// How an instance starts.
@@ -317,6 +327,9 @@ pub struct Instance {
     pending: Pending,
     /// The undos and redos the person asked for, in order, not yet taken.
     history: Vec<HistoryAsk>,
+    /// The actions the person chose from the window's command palette, in order, until the
+    /// host runs them as the person's own steps.
+    chosen: Vec<(ActionAddress, Option<String>)>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     /// Why the scenario a capture staged did not run whole, until the capture takes it: a
@@ -403,6 +416,7 @@ impl Instance {
             origins: Rc::default(),
             pending: Pending::default(),
             history: Vec::new(),
+            chosen: Vec::new(),
             staged: None,
             stage_failed: None,
             started: false,
@@ -639,6 +653,19 @@ impl Instance {
     /// on a notice, and the window's undo and redo.
     pub fn take_history(&mut self) -> Vec<HistoryAsk> {
         std::mem::take(&mut self.history)
+    }
+
+    /// The actions the person chose from the window's command palette since last asked, in the
+    /// order they chose them, with the argument the palette collected: the host runs each as
+    /// the person's own step, the way it runs any invocation of an action it publishes.
+    pub fn take_chosen(&mut self) -> Vec<(ActionAddress, Option<String>)> {
+        std::mem::take(&mut self.chosen)
+    }
+
+    /// Send the window `message` with this frame's batch: what the host knows of the actions it
+    /// publishes for the window's person, which the instance does not build itself.
+    pub fn say(&mut self, message: ToUi) {
+        self.out.push(message);
     }
 
     /// The bound control the window's keyboard focus is in, and whether an input method is
@@ -1250,9 +1277,9 @@ impl Instance {
         holds.then_some(&detail.target)
     }
 
-    /// The window shows what was typed into its bound control `key` of `lane` (the edit it
-    /// sent just applied): take it as what the window holds, so a later change from elsewhere
-    /// (the draft cleared once it was sent) differs from it and is sent.
+    /// Tell the window what the bound control `key` of `lane` holds now that the edit it sent
+    /// is applied: the value the app holds is what its next frame draws, and the control shows
+    /// it until then only as the person's own touch, which a frame from the app replaces.
     fn shown_by_window(&mut self, lane: Lane, key: &str) {
         let Some(value) = self
             .view(lane)
@@ -1261,9 +1288,20 @@ impl Instance {
             return;
         };
         let shown = plain(&NoNames).value(&value);
-        if let Some(view) = self.lane_mut(lane) {
-            view.bound.insert(key.to_owned(), shown);
+        let Some(view) = self.lane_mut(lane) else {
+            return;
+        };
+        if view.bound.get(key) == Some(&shown) {
+            return;
         }
+        view.bound.insert(key.to_owned(), shown.clone());
+        let acked = view.acked.get(key).copied().unwrap_or(0);
+        self.out.push(ToUi::Bound {
+            lane,
+            key: key.to_owned(),
+            value: shown,
+            acked,
+        });
     }
 
     /// Bring the lenses the views read up to date with presence: who else is at each resource
@@ -1402,6 +1440,13 @@ impl Instance {
     /// or the workspace refused the change for good): the window says so. Somebody else having changed
     /// the record since is never a failure: undo leaves their newer value and takes back the rest.
     pub fn history_failed(&mut self, why: String) {
+        self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        self.flush();
+    }
+
+    /// The action the person chose from the window's command palette did not run, for `why`
+    /// (the app refused it, or it was no longer offered): the window says so.
+    pub fn action_refused(&mut self, why: String) {
         self.notice(Words::Plain(why), ui::NoticeKind::Error);
         self.flush();
     }
@@ -1735,6 +1780,13 @@ impl Instance {
             | ToApp::Names { .. }
             | ToApp::Space { .. }) => {
                 self.window_told(told);
+                Ok(())
+            }
+            ToApp::Invoke { address, argument } => {
+                // The palette offered the person the actions the host publishes for this
+                // window; the host runs what they chose, so it holds the address and the
+                // argument until its next frame.
+                self.chosen.push((address, argument));
                 Ok(())
             }
         };

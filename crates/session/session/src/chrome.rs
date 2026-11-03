@@ -187,6 +187,10 @@ pub(crate) struct BarFeeds {
     /// the bar reads for itself and the chrome follows as the pointer, a key
     /// or a finger reaches for it.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
+    /// Settings' Identify as the session read it: each display's number and
+    /// the name Settings gives it, which the chrome says on that display for
+    /// a moment.
+    pub(crate) identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
 }
 
 /// What the chrome hands the session while it runs: the intents and asks its
@@ -200,8 +204,8 @@ pub(crate) struct ChromeWiring {
 /// What the snapshot revision was last bumped for: the tree's revision, the
 /// minute, the last wave heard, the ask on the person's avatar, the tray's
 /// revision, the displays a fullscreen window owns, who views the windows
-/// this session shares, and the notification count and silence the bell
-/// shows.
+/// this session shares, the notification count and silence the bell shows,
+/// and the Identify request the chrome answers.
 type Seen = (
     u64,
     i64,
@@ -212,6 +216,7 @@ type Seen = (
     Vec<(u64, u64, bool)>,
     u32,
     bool,
+    Option<u64>,
 );
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
@@ -248,6 +253,8 @@ pub(crate) struct SessionChrome {
     fullscreen: Rc<RefCell<Vec<String>>>,
     /// The windows this session shares, which the bar's sharing chip names.
     shares: Rc<RefCell<crate::window_share::WindowShares>>,
+    /// Settings' Identify as the session read it.
+    identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
     /// The [`Seen`] the snapshot revision was last bumped for.
     seen: RefCell<Seen>,
     revision: Cell<u64>,
@@ -270,6 +277,7 @@ impl SessionChrome {
             tray,
             fullscreen,
             shares,
+            identify,
             ..
         } = feeds;
         Self {
@@ -286,6 +294,7 @@ impl SessionChrome {
             notified: RefCell::new(None),
             fullscreen,
             shares,
+            identify,
             seen: RefCell::new((
                 u64::MAX,
                 0,
@@ -296,6 +305,7 @@ impl SessionChrome {
                 Vec::new(),
                 0,
                 false,
+                None,
             )),
             revision: Cell::new(0),
         }
@@ -320,6 +330,7 @@ impl DesktopChromeSource for SessionChrome {
         // or is put off change with it, so the revision moves for those as
         // it does for the tree.
         let exposures = self.shares.borrow().exposures();
+        let identify = self.identify.borrow().clone();
         let seen = (
             self.handle.revision(),
             clock.unix_seconds.div_euclid(60),
@@ -333,6 +344,7 @@ impl DesktopChromeSource for SessionChrome {
                 .collect(),
             self.signals.unread(),
             self.signals.quiet(),
+            identify.as_ref().map(|ask| ask.id),
         );
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
@@ -367,6 +379,7 @@ impl DesktopChromeSource for SessionChrome {
             // Who views the windows this session shares: the bar says the
             // share is live while anyone does.
             active_exposures: exposures,
+            identify,
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -576,13 +589,13 @@ pub(crate) fn host(
         bar,
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
-    )
-    .with_intents(intents)
-    .with_asks(asks)
-    .with_overview(overview.flight(), overview.open_flag())
-    .with_emoji(emoji.clone())
-    .with_overlays(overlays.clone())
-    .with_reveals(reveals);
+    );
+    chrome.set_intents(intents);
+    chrome.set_asks(asks);
+    chrome.set_overview(overview.flight(), overview.open_flag());
+    chrome.set_emoji(emoji.clone());
+    chrome.set_overlays(overlays.clone());
+    chrome.set_reveals(reveals);
     chrome.set_shortcuts(options.config.shortcuts.clone());
     // Keys come to the chrome while one of the surfaces it draws holds the
     // keyboard: the stack says which, and it says the window's again as soon

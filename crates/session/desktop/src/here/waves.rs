@@ -110,6 +110,19 @@ impl WaveOut {
             .collect()
     }
 
+    /// When the first row that shows a wave this device sent is drawn again
+    /// without one: the earliest of them stops showing then.
+    #[must_use]
+    pub fn waved_until(&self, now_ms: u64) -> Option<ui::time::Instant> {
+        let earliest = self
+            .waved_at
+            .values()
+            .filter(|at| now_ms.saturating_sub(**at) < WAVE_AGAIN_MS)
+            .min()?;
+        let left = WAVE_AGAIN_MS.saturating_sub(now_ms.saturating_sub(*earliest));
+        ui::time::now().checked_add(ui::time::Duration::from_millis(left))
+    }
+
     /// This device's latest wave, for its presence.
     #[must_use]
     pub fn sent(&self) -> Option<&Wave> {
@@ -168,6 +181,13 @@ impl HereState {
     /// Everyone this page waved at within [`WAVE_AGAIN_MS`].
     pub fn waved(&self, now_ms: u64) -> Vec<String> {
         self.waves.out.waved(now_ms)
+    }
+
+    /// When the first row that shows a wave this page sent is drawn again
+    /// without one.
+    #[must_use]
+    pub fn waved_until(&self, now_ms: u64) -> Option<ui::time::Instant> {
+        self.waves.out.waved_until(now_ms)
     }
 
     /// This page's latest wave, for its presence.

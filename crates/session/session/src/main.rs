@@ -1,5 +1,5 @@
 //! The native session: `tilo-session [--backend drm|headless|nested]
-//! [--size WxH] [--shell bar|screen] [--host-desktop]
+//! [--size WxH] [--shell screen] [--host-desktop]
 //! [--firstboot|--firstboot-only]
 //! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
@@ -9,10 +9,10 @@
 //! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
 //! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
 //! takes) and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to
-//! them; with a command, the session lasts as long as it does. `--shell`
-//! shows the tilolang shell (`apps/tl/shell`): its bar over the desktop
-//! (`bar`), or the whole screen (`screen`), its bar, dock and the person's
-//! arrangement as their preset shows it, every window in its place's well. The desktop services serve
+//! them; with a command, the session lasts as long as it does. `--shell
+//! screen` shows the tilolang shell (`apps/tl/shell`): the whole screen, its
+//! bar, dock and the person's arrangement as their preset shows it, every
+//! window in its place's well. The desktop services serve
 //! on the buses the environment names unless a flag names another (or none);
 //! a nested session, which runs in a window of a desktop it did not start,
 //! serves no bus unless a flag names one and exports nothing to that
@@ -69,6 +69,12 @@ static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
+
+    // The earliest point the process can measure itself from: what the
+    // session's own startup marks are read against.
+    tilo_startup_metrics::init();
+    let _startup_metrics = tilo_startup_metrics::ScopedDumper;
+    tilo_startup_metrics::mark("main-start");
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it
@@ -188,8 +194,8 @@ struct CommandLine {
     backend: Backend,
     size: (u16, u16),
     reach: Reach,
-    /// What the tilolang shell shows, when the command line asked for it.
-    shell: Option<tilo_surface_host::shell_part::ShellLayer>,
+    /// Whether the tilolang shell runs, when the command line asked for it.
+    shell: bool,
     /// The programs the person admits to act as them at the agent door
     /// (`--admit-repl PATH`, as often as they name one): their decision,
     /// made as they start the session.
@@ -238,11 +244,10 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         return None;
     };
     let shell = match value("--shell").map(String::as_str) {
-        None => None,
-        Some("bar") => Some(tilo_surface_host::shell_part::ShellLayer::Bar),
-        Some("screen") => Some(tilo_surface_host::shell_part::ShellLayer::Screen),
+        None => false,
+        Some("screen") => true,
         Some(other) => {
-            eprintln!("tilo-session: unknown shell {other} (bar, screen)");
+            eprintln!("tilo-session: unknown shell {other} (screen)");
             return None;
         }
     };
@@ -419,7 +424,7 @@ fn start(
     // A drive the person plugs in is announced like any other news, and the
     // eject the notice offers goes over the system bus the desktop services
     // already hold.
-    let drives = drives(backend, desktop.as_ref());
+    let drives = drives(backend, desktop.as_ref(), &wake);
     let mut options = Options {
         services,
         wake,
@@ -649,6 +654,7 @@ fn tell_the_person(
 fn drives(
     backend: Backend,
     desktop: Option<&std::rc::Rc<tilo_session::desktop_services::DesktopServices>>,
+    wake: &tilo_service::LoopWake,
 ) -> Option<std::rc::Rc<tilo_session::mount::drives::Drives>> {
     if backend != Backend::Drm {
         return None;
@@ -656,7 +662,7 @@ fn drives(
     let desktop = desktop?;
     let connection = desktop.system_bus()?.clone();
     Some(std::rc::Rc::new(tilo_session::mount::drives::Drives::new(
-        tilo_session::mount::drives::udisks(connection),
+        tilo_session::mount::drives::udisks(connection, wake.handle()),
         desktop.notifications().clone(),
     )))
 }

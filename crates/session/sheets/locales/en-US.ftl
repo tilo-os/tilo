@@ -184,6 +184,7 @@ directory-join = Join
 directory-open = Open
 directory-joining = Joining…
 directory-join-named = Join { $name }
+directory-joining-named = Joining { $name }
 directory-open-named = Open { $name }
 directory-try-again = Try again
 directory-community-tag = { $host }'s own
@@ -501,3 +502,9 @@ agent-door-declined = You didn’t let this program work here as an agent.
 agent-door-admission-person = Act as you in “{ $workspace }”
 agent-door-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a terminal.
 agent-door-session-reads-only = An agent reads the desktop’s own resources here; ask the person to do this.
+
+## The shortcut catalogue on the action door: every desktop shortcut with its
+## live and default chords, as the shortcut guide shows them.
+keyboard-shortcuts-resource = Keyboard shortcuts
+keyboard-shortcuts-list = List shortcuts
+keyboard-shortcuts-list-description = Every desktop shortcut with its current and default keys.

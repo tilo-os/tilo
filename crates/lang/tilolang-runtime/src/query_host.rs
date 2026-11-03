@@ -8,7 +8,7 @@ use tilolang::meta::{FilterKind, TypeMeta};
 use crate::core::{Core, HResult, trap};
 use crate::handles::FrameKind;
 use crate::query::{Clock, Query, Term, find, resolve};
-use crate::store::{FieldSpec, Lit, lit_of, order_cmp};
+use crate::store::{FieldSpec, Lit, lit_of, ordered_cmp};
 use crate::value::{RefValue, Value};
 
 impl Core {
@@ -124,27 +124,33 @@ impl Core {
         let Some(order) = order else {
             return Ok(Value::List(kept));
         };
-        let spec = FieldSpec {
-            id: order.field.clone(),
-            kind: order.kind,
-        };
+        let levels = order.levels();
         let mut keyed = Vec::with_capacity(kept.len());
         for item in kept {
-            let key = match &item {
-                Value::Ref(r) => lit_of(
-                    &spec.id,
-                    store.read(&r.target, &spec).map_err(|e| e.to_string())?,
-                    &Lit::Absent,
-                )
-                .map_err(|e| e.to_string())?,
-                _ => Lit::Absent,
-            };
-            keyed.push((key, item));
+            let mut keys = Vec::with_capacity(levels.len());
+            for level in &levels {
+                let key = match &item {
+                    Value::Ref(r) => lit_of(
+                        &level.field,
+                        store
+                            .read(
+                                &r.target,
+                                &FieldSpec {
+                                    id: level.field.clone(),
+                                    kind: level.kind,
+                                },
+                            )
+                            .map_err(|e| e.to_string())?,
+                        &Lit::Absent,
+                    )
+                    .map_err(|e| e.to_string())?,
+                    _ => Lit::Absent,
+                };
+                keys.push(key);
+            }
+            keyed.push((keys, item));
         }
-        keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
-        if order.descending {
-            keyed.reverse();
-        }
+        keyed.sort_by(|(a, _), (b, _)| ordered_cmp(order, a, b));
         Ok(Value::List(
             keyed.into_iter().map(|(_, item)| item).collect(),
         ))
@@ -186,18 +192,20 @@ impl Core {
         let Some(order) = order else {
             return Ok(Value::List(kept));
         };
+        let levels = order.levels();
         let mut keyed = Vec::with_capacity(kept.len());
         for item in kept {
-            let key = match &item {
-                Value::Ref(r) => lit(r, &order.field, &Lit::Absent)?,
-                _ => Lit::Absent,
-            };
-            keyed.push((key, item));
+            let mut keys = Vec::with_capacity(levels.len());
+            for level in &levels {
+                let key = match &item {
+                    Value::Ref(r) => lit(r, &level.field, &Lit::Absent)?,
+                    _ => Lit::Absent,
+                };
+                keys.push(key);
+            }
+            keyed.push((keys, item));
         }
-        keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
-        if order.descending {
-            keyed.reverse();
-        }
+        keyed.sort_by(|(a, _), (b, _)| ordered_cmp(order, a, b));
         Ok(Value::List(
             keyed.into_iter().map(|(_, item)| item).collect(),
         ))

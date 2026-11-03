@@ -236,7 +236,8 @@ impl Staged {
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         // A motion that lands even when reduced (a cross-fade) runs out on the toolkit's clock.
-        self.settle()
+        self.settle()?;
+        Ok(())
     }
 
     pub fn harness(&self) -> &FrameHarness {

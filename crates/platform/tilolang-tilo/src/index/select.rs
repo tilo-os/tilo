@@ -14,14 +14,14 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use tilolang_runtime::query::Order;
-use tilolang_runtime::store::{FieldRead, Listing, Lit, Pred, StoreError, lit_of, order_cmp};
+use tilolang_runtime::store::{FieldRead, Listing, Lit, Pred, StoreError, lit_of, ordered_cmp};
 
 use super::columns::{
     self, Access, after_value, reversed_list, scope_entry, scope_list, type_list, value_run,
 };
 use super::derive::{column_field, member_list};
 use super::lists::Pages;
-use super::merged::{Base, Filtered, Keep, Merged};
+use super::merged::{Base, Filtered, Keep, Merged, Partition};
 use super::view::{View, child, index_error};
 use super::{IndexError, Snapshot, TYPE};
 use crate::schema::{ColumnKind, TypeSchema};
@@ -154,7 +154,11 @@ impl View<'_> {
             .iter()
             .flat_map(|c| c.fields())
             .map(|f| f.spec.id.clone())
-            .chain(order.map(|o| o.field.clone()))
+            .chain(
+                order
+                    .into_iter()
+                    .flat_map(|o| o.levels().into_iter().map(|level| level.field.clone())),
+            )
             .collect();
         let named = self.overlay.touched_reading(
             &member,
@@ -187,33 +191,21 @@ impl View<'_> {
         if let Some(listing) = run {
             return Ok(listing);
         }
-        // Every item in an order a column keeps.
-        if conj.is_empty() {
-            let Some(order) = order else {
-                return self.listing(resource, field).map_err(index_error);
-            };
-            // The column's list, with the items the open writes moved in it moved.
-            if let Some(oc) = order_column.filter(|oc| !oc.many && ordered_or_text(oc.kind)) {
-                let list = scope_list(resource, field, &oc.name);
-                let pages = self.snapshot.pages(&list).map_err(index_error)?;
-                let end = pages.len();
-                let (added, removed) =
-                    self.moved_in_run((resource, field), schema, (&oc.name, None), &touched)?;
-                let locate = self.locate((resource, field), Some((&schema.id, &oc.name)));
-                return Ok(Listing::paged(Rc::new(
-                    Merged::new(
-                        Base::Slice {
-                            pages,
-                            start: 0,
-                            end,
-                            reversed: order.descending,
-                        },
-                        added,
-                        &removed,
-                    )
-                    .locating(locate),
-                )));
+        // Every item in an order the index's columns keep, read page by page.
+        if let Some(order) = order {
+            let answer = self.ordered_listing(
+                (resource, field),
+                schema,
+                (&conj, order),
+                chosen.as_ref(),
+                (&touched, evaluated),
+            )?;
+            if let Some(listing) = answer {
+                return Ok(listing);
             }
+        }
+        if conj.is_empty() && order.is_none() {
+            return self.listing(resource, field).map_err(index_error);
         }
         self.read_whole(
             (resource, field),
@@ -238,6 +230,11 @@ impl View<'_> {
     ) -> Result<Option<Listing>, StoreError> {
         let column = schema.column(&a.column);
         let descending = order.is_some_and(|o| o.descending);
+        // A run is read in one order; an order over another one, or one with the items without
+        // a value last, is not that order: [`Self::ordered_listing`] reads it instead.
+        if order.is_some_and(|o| o.then.is_some() || o.absent_last) {
+            return Ok(None);
+        }
         let in_order = match (order, order_column) {
             (None, _) => columns::is_value_run(run),
             (Some(_), Some(oc)) => column.is_some_and(|c| c.name == oc.name) && ordered(oc.kind),
@@ -288,6 +285,213 @@ impl View<'_> {
         Ok(Some(Listing::paged(Rc::new(
             Filtered::new(run, keep).locating(locate),
         ))))
+    }
+
+    /// [`Self::query`]'s order read from the index's columns: the key the order falls back to
+    /// read as its column's runs, in one part per run of the key before it, and the conjuncts
+    /// checked as the parts' pages fill ([`Filtered`], [`Partition`]).
+    ///
+    /// `None` when the last key has no column read in its order, when a key before it is not a
+    /// column an item stands in once (a counted one), when the items without a value in the
+    /// last key are to stand first, or when a write of the open ones may have moved an item
+    /// between the runs of a key before it: the caller reads the items whole.
+    fn ordered_listing(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        (conj, order): (&[&Pred], &Order),
+        chosen: Option<&(usize, Vec<Access>)>,
+        (touched, evaluated): (&std::collections::BTreeSet<String>, &Cell<u64>),
+    ) -> Result<Option<Listing>, StoreError> {
+        let levels = order.levels();
+        let Some((scan, outer)) = levels.split_last() else {
+            return Ok(None);
+        };
+        // The items with a value run from the first one that has one, those without one after
+        // them: one read that way does not also run from the last.
+        if scan.absent_last && scan.descending {
+            return Ok(None);
+        }
+        let Some(scan_column) = schema
+            .column_of(&scan.field)
+            .filter(|column| !column.many && ordered_or_text(column.kind))
+        else {
+            return Ok(None);
+        };
+        let before = match outer {
+            [] => None,
+            [one] => Some(*one),
+            _ => return Ok(None),
+        };
+        // A part per run of the key before it: a column an item stands in once, whose runs
+        // follow one another in its values' order.
+        let mut parts: Vec<Option<(crate::schema::ColumnSchema, String)>> = Vec::new();
+        if let Some(before) = before {
+            if !touched.is_empty() {
+                return Ok(None);
+            }
+            let Some(column) = schema
+                .column_of(&before.field)
+                .filter(|column| columns::counted(column))
+            else {
+                return Ok(None);
+            };
+            let list = scope_list(resource, field, &column.name);
+            let mut values: Vec<String> = self
+                .snapshot
+                .counts(&list)
+                .map_err(index_error)?
+                .into_iter()
+                .filter(|(_, count)| *count > 0)
+                .map(|(value, _)| value)
+                .collect();
+            if before.descending {
+                values.reverse();
+            }
+            parts.extend(
+                values
+                    .into_iter()
+                    .map(|value| Some((column.clone(), value))),
+            );
+        } else {
+            parts.push(None);
+        }
+        // The listing outlives this read: it holds the snapshot and the schema itself, as the
+        // check of a run does ([`Self::paged_run`]).
+        let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
+            return Ok(None);
+        };
+        // The most items the conjuncts can name: the run one exact conjunct answers is no
+        // longer than every item of the column.
+        let bound = self.run_count((resource, field), schema, conj, chosen)?;
+        let residual = rest(conj, None);
+        let mut reads: Vec<Filtered> = Vec::new();
+        let mut most = None;
+        for part in &parts {
+            let base = self.listed(
+                (resource, field),
+                scan_column,
+                (scan.absent_last, scan.descending),
+            )?;
+            let (added, removed) = self.moved_in_run(
+                (resource, field),
+                schema,
+                (&scan_column.name, None),
+                touched,
+            )?;
+            let run = Merged::new(base, added, &removed);
+            most.get_or_insert_with(|| run.len());
+            let keep = self.keeping(
+                resource,
+                keep_schema,
+                residual.as_ref(),
+                part.as_ref(),
+                evaluated,
+            );
+            let locate = self.locate((resource, field), Some((&schema.id, &scan_column.name)));
+            reads.push(Filtered::new(run, keep).locating(locate).bounded(bound));
+        }
+        if parts.len() == 1 {
+            let Some(one) = reads.pop() else {
+                return Ok(None);
+            };
+            return Ok(Some(Listing::paged(Rc::new(one))));
+        }
+        let most = bound.unwrap_or_else(|| most.unwrap_or(0));
+        Ok(Some(Listing::paged(Rc::new(Partition::new(reads, most)))))
+    }
+
+    /// The entries of the column `column` of the collection `field` of `resource` as a listing
+    /// reads them: in the column's order, the items without a value last when `absent_last`, and
+    /// from the last one when `descending`.
+    fn listed(
+        &self,
+        (resource, field): (&str, &str),
+        column: &crate::schema::ColumnSchema,
+        (absent_last, descending): (bool, bool),
+    ) -> Result<Base, StoreError> {
+        let list = scope_list(resource, field, &column.name);
+        let pages = self.snapshot.pages(&list).map_err(index_error)?;
+        if absent_last {
+            let absent = pages.absent_run();
+            return Ok(Base::Presence { pages, absent });
+        }
+        let end = pages.len();
+        Ok(Base::Slice {
+            pages,
+            start: 0,
+            end,
+            reversed: descending,
+        })
+    }
+
+    /// The check a listing makes as its pages fill: the item stands in the run `part` names, and
+    /// the conjuncts `residual` left hold of it. It reads the item's fields then, the open writes
+    /// among them, so it holds the schema and the snapshot itself.
+    fn keeping(
+        &self,
+        resource: &str,
+        schema: &'static TypeSchema,
+        residual: Option<&Pred>,
+        part: Option<&(crate::schema::ColumnSchema, String)>,
+        evaluated: &Cell<u64>,
+    ) -> Keep {
+        let evaluated = evaluated.clone();
+        let resource = resource.to_owned();
+        let residual = residual.cloned();
+        let part = part.cloned();
+        let snapshot = std::sync::Arc::clone(self.snapshot);
+        let overlay = std::sync::Arc::clone(self.overlay);
+        Box::new(move |id: &str| {
+            evaluated.set(evaluated.get().saturating_add(1));
+            let view = View {
+                snapshot: &snapshot,
+                overlay: &overlay,
+            };
+            let path = child(&resource, id);
+            if let Some((column, value)) = &part
+                && !view
+                    .column_values(&path, schema, column)
+                    .is_ok_and(|values| values.iter().any(|held| held == value))
+            {
+                return false;
+            }
+            match &residual {
+                Some(pred) => view.holds(&path, schema, pred).unwrap_or(false),
+                None => true,
+            }
+        })
+    }
+
+    /// The length of the run one exact conjunct of `conj` answers, when `chosen` is that one: no
+    /// more items than that can hold of every conjunct.
+    fn run_count(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        conj: &[&Pred],
+        chosen: Option<&(usize, Vec<Access>)>,
+    ) -> Result<Option<usize>, StoreError> {
+        let Some((at, access)) = chosen else {
+            return Ok(None);
+        };
+        let [a] = access.as_slice() else {
+            return Ok(None);
+        };
+        let [run] = a.runs.as_slice() else {
+            return Ok(None);
+        };
+        if !a.exact
+            || (a.repeats && !membership(conj.get(*at).copied().unwrap_or(&Pred::Const(false))))
+        {
+            return Ok(None);
+        }
+        let list = scope_list(resource, field, &a.column);
+        let pages = self.snapshot.pages(&list).map_err(index_error)?;
+        let column = schema.column(&a.column);
+        let (start, end) =
+            run_bounds(self.snapshot, (&list, &pages), column, run).map_err(index_error)?;
+        Ok(Some(end.saturating_sub(start)))
     }
 
     /// [`Self::query`] read whole: the candidates the chosen access reads (every item when
@@ -405,40 +609,50 @@ impl View<'_> {
         Ok(out)
     }
 
-    /// `items` (id and path) in `order`, by the field's value as the index holds it.
+    /// `items` (id and path) in `order`, by the fields' values as the index holds them: each key
+    /// after the one before it, and the order the items came in for those it cannot tell apart.
     fn ordered<T: Clone>(
         &self,
         items: impl Iterator<Item = (T, String)>,
         schema: &TypeSchema,
         order: &Order,
     ) -> Result<Vec<T>, StoreError> {
-        let field = schema
-            .field(&order.field)
-            .or_else(|| super::reflect::field(&order.field));
+        let levels = order.levels();
         let mut keyed = Vec::new();
         for (item, path) in items {
-            let value = match field {
-                Some(f) if super::reflect::is_reflected(&f.id) => self
-                    .field(&path, &f.id)
-                    .map_err(index_error)?
-                    .map_or(Lit::Absent, |held| super::reflect::at_lit(&held)),
-                Some(f) => {
-                    let held = self.field(&path, &f.id).map_err(index_error)?;
-                    lit_of(
-                        &f.id,
-                        held.unwrap_or_else(|| crate::reads::default_value(f)),
-                        &Lit::Absent,
-                    )?
-                }
-                None => Lit::Absent,
-            };
-            keyed.push((value, item));
+            let mut keys = Vec::with_capacity(levels.len());
+            for level in &levels {
+                keys.push(self.lit_of_field(&path, schema, &level.field)?);
+            }
+            keyed.push((keys, item));
         }
-        keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
-        if order.descending {
-            keyed.reverse();
-        }
+        keyed.sort_by(|(a, _), (b, _)| ordered_cmp(order, a, b));
         Ok(keyed.into_iter().map(|(_, item)| item).collect())
+    }
+
+    /// The value of the field `field` at `path`, of the type `schema`, as the index holds it, as
+    /// an [`Order`] compares items by it; absent when the type has no such field.
+    fn lit_of_field(
+        &self,
+        path: &str,
+        schema: &TypeSchema,
+        field: &str,
+    ) -> Result<Lit, StoreError> {
+        let Some(f) = schema.field(field).or_else(|| super::reflect::field(field)) else {
+            return Ok(Lit::Absent);
+        };
+        if super::reflect::is_reflected(&f.id) {
+            return Ok(self
+                .field(path, &f.id)
+                .map_err(index_error)?
+                .map_or(Lit::Absent, |held| super::reflect::at_lit(&held)));
+        }
+        let held = self.field(path, &f.id).map_err(index_error)?;
+        lit_of(
+            &f.id,
+            held.unwrap_or_else(|| crate::reads::default_value(f)),
+            &Lit::Absent,
+        )
     }
 
     /// The entries the open writes take out of a run of the column `column` (the items they

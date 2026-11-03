@@ -3587,10 +3587,11 @@ impl RecordStore {
             actions.commit_for_save(&mut local);
             let before = local.get_heads();
             let mut candidate;
-            let observed = match mutation {
+            // The heads the payload names: a snapshot re-delivered unchanged
+            // still tells the route that these are the sender's own.
+            let delivered = match &mutation {
                 collab_types::DocumentMutation::Snapshot(bytes) => {
-                    let mut incoming =
-                        AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                    let mut incoming = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
                     // The host's empty document for a record a member is
                     // creating carries nothing to merge, and no identity.
                     if incoming.get_heads().is_empty() {
@@ -3633,20 +3634,29 @@ impl RecordStore {
                 }
                 collab_types::DocumentMutation::Incremental(bytes) => {
                     candidate = local.clone();
-                    crate::history_mode::routes::load_incremental(&mut candidate, &bytes)
+                    crate::history_mode::routes::load_incremental(&mut candidate, bytes)
                         .map_err(|error| error.to_string())?;
-                    // The new heads stand for every change the payload added:
-                    // listing each one re-encodes them all, which costs as
-                    // much as applying them on a long history.
-                    candidate
-                        .get_heads()
-                        .into_iter()
-                        .filter(|head| !before.contains(head))
-                        .collect()
+                    Vec::new()
                 }
             };
             identity.validate(&candidate)?;
             let changed = candidate.get_heads() != before;
+            // What the route delivered. A head stands for all of its
+            // ancestors only in an ancestry frontier; this one names each
+            // delivered change, so the merge's applied changes are listed,
+            // and so are the ones still waiting for history this replica
+            // lacks. Neither is ever sent back on the route that brought it.
+            let mut observed = candidate
+                .get_changes(&before)
+                .into_iter()
+                .map(|change| change.hash())
+                .collect::<Vec<_>>();
+            observed.extend(delivered);
+            if let collab_types::DocumentMutation::Incremental(bytes) = &mutation {
+                observed.extend(crate::state::changes_beyond(&mut candidate, bytes));
+            }
+            let mut seen = std::collections::HashSet::new();
+            observed.retain(|hash| seen.insert(*hash));
             if changed {
                 // Finish the local span against LOCAL heads, never the merged
                 // heads: undoing it must leave the remote author's edits intact.
@@ -3863,7 +3873,7 @@ impl RecordStore {
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
-            let (delta, heads) = frontier.pending_delta(doc);
+            let (delta, heads) = frontier.pending_mirror_delta(doc);
             if delta.is_empty() {
                 actions.notices.replicating();
             } else {

@@ -1,5 +1,6 @@
-//! References in the block editor's text, and the editor as the described component that shows
-//! rich text (`ui.RichText`, tilolang's `rich_text(value)`).
+//! References in the block editor's text, and the editor as the described component
+//! (`ui.BlockEditor`): rich text shown read-only (tilolang's `rich_text(value)`), and a
+//! document's body edited through the field a view binds it to (its [`body`](super::block_editor_body)).
 //!
 //! A reference is a run marked `mention` (`tilo_reference::embed`). The text a component is
 //! given says how each reference reads for the person reading ([`InlineView`]); the editor
@@ -15,8 +16,9 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::BlockEditor;
-use crate::component::{Component, Described, Event, PropType, Type, Value};
+use crate::component::{Bound, Component, Described, Event, PropType, Type, Value};
 use crate::theme::Theme;
+use crate::widget::block_editor_body::BodyBinding;
 use crate::widget::marks::{Mark, MentionColors, MentionPaint};
 
 /// The event a component fires when a reference in its text is activated, carrying the
@@ -37,15 +39,26 @@ impl PropType for RichText {
     }
 }
 
-/// Rich text, shown: its paragraphs with their formatting, and each reference in it as the
-/// reader's own inline view of what it refers to (a person with their name, a channel, a task
-/// with its number), resolved under their permissions. Activating a reference opens it.
+/// A document: its paragraphs with their formatting, and each reference in it as the reader's
+/// own inline view of what it refers to (a person with their name, a channel, a task with its
+/// number), resolved under their permissions. Bound to a document's field it edits it, each
+/// edit written back as the value now reads and a change from elsewhere shown when the person
+/// is not typing there; given a value it shows that, read-only, and activating a reference
+/// opens it.
 #[derive(Component, Default)]
-#[component(name = "RichText", role = "Document")]
-pub struct RichTextProps {
-    /// The text it shows.
-    #[component(required, positional)]
-    pub value: RichText,
+#[component(name = "BlockEditor", role = "Document")]
+pub struct BlockEditorProps {
+    /// The document it edits, as its paragraphs (a `RichText` field).
+    #[component(bind(merge = "rich"))]
+    pub rich: Bound<RichText>,
+    /// The document it edits, as Markdown (a `Text` field), the same text round-tripped.
+    #[component(bind(merge = "splice"))]
+    pub markdown: Bound<String>,
+    /// Rich text it shows read-only, when it binds nothing.
+    #[component(positional)]
+    pub value: Option<RichText>,
+    /// What to type, shown while the editor is empty.
+    pub placeholder: Option<String>,
     /// A reference in the text was activated, carrying the reference. Without one, the
     /// reference is opened.
     #[component(event(value = String))]
@@ -244,30 +257,53 @@ fn theme_fingerprint(theme: &Theme) -> u64 {
 }
 
 impl Described for BlockEditor {
-    type Props = RichTextProps;
+    type Props = BlockEditorProps;
 
-    fn from_props(key: &str, props: RichTextProps) -> Self {
+    fn from_props(key: &str, props: BlockEditorProps) -> Self {
+        if !BodyBinding::bound(&props.rich, &props.markdown) {
+            // Rich text shown, not edited: painted as it reads, taking no input.
+            let mut editor = Self::new()
+                .with_wrap_lines(true)
+                .with_compact_paragraph_spacing(true)
+                .with_block_handles(false)
+                .with_flush_text()
+                .with_read_only(true);
+            editor.set_props(props);
+            return editor;
+        }
+        // As native Notes edits a note: lines wrap at the column, paragraphs sit close.
         let mut editor = Self::new()
+            .with_id(key)
             .with_wrap_lines(true)
-            .with_compact_paragraph_spacing(true)
-            .with_block_handles(false)
-            .with_flush_text()
-            .with_read_only(true);
-        let _ = key;
-        editor.set_props(props);
+            .with_compact_paragraph_spacing(true);
+        let (body, placeholder) = BodyBinding::of(props.rich, props.markdown, props.placeholder);
+        editor.set_empty_hint(&placeholder);
+        editor.show_body(&body);
+        editor.body = Some(body);
         editor
     }
 
-    fn set_props(&mut self, props: RichTextProps) -> bool {
-        let RichTextProps {
+    fn set_props(&mut self, props: BlockEditorProps) -> bool {
+        let editing = BodyBinding::bound(&props.rich, &props.markdown);
+        if editing != self.body.is_some() {
+            // Editing and showing take different input and different layout: build it again.
+            return false;
+        }
+        let BlockEditorProps {
+            rich,
+            markdown,
             value,
+            placeholder,
             open_reference,
         } = props;
-        self.show_rich_text(&value);
-        self.on_open_reference(move |reference| {
-            open_reference.fire(Some(Value::Text(reference.to_owned())));
-        });
-        true
+        if self.body.is_none() {
+            self.show_rich_text(&value.unwrap_or_default());
+            self.on_open_reference(move |reference| {
+                open_reference.fire(Some(Value::Text(reference.to_owned())));
+            });
+            return true;
+        }
+        self.rebind_body(rich, markdown, &placeholder.unwrap_or_default())
     }
 }
 
@@ -367,8 +403,8 @@ mod tests {
     #[test]
     fn each_reference_reads_as_the_readers_inline_view_and_a_click_opens_it() {
         let queue = crate::Intents::<Fired>::default();
-        let props = RichTextProps {
-            value: text(vec![
+        let props = BlockEditorProps {
+            value: Some(text(vec![
                 (
                     "u-ada",
                     InlineView::Person {
@@ -385,8 +421,9 @@ mod tests {
                     },
                 ),
                 (SECRET, InlineView::Unreadable),
-            ]),
+            ])),
             open_reference: Event::View(Intent::new(&queue, "post", OPEN_REFERENCE)),
+            ..BlockEditorProps::default()
         };
         let mut editor = BlockEditor::from_props("post", props);
         assert!(editor.is_read_only());
@@ -445,9 +482,10 @@ mod tests {
     fn a_reference_with_no_reading_reads_as_its_run() {
         let mut editor = BlockEditor::from_props(
             "post",
-            RichTextProps {
-                value: text(vec![(TASK, InlineView::Elsewhere)]),
+            BlockEditorProps {
+                value: Some(text(vec![(TASK, InlineView::Elsewhere)])),
                 open_reference: Event::None,
+                ..BlockEditorProps::default()
             },
         );
         assert_eq!(
@@ -524,9 +562,10 @@ mod tests {
 
     #[test]
     fn a_shown_body_starts_at_its_edge_as_what_stands_beside_it_does() {
-        let props = RichTextProps {
-            value: text(Vec::new()),
+        let props = BlockEditorProps {
+            value: Some(text(Vec::new())),
             open_reference: Event::default(),
+            ..BlockEditorProps::default()
         };
         let mut editor = BlockEditor::from_props("post", props);
         let mut renderer = TextRenderer::new();
@@ -541,5 +580,80 @@ mod tests {
             editable.text_inset(&Theme::light()) > 0.0,
             "a document keeps its inset"
         );
+    }
+
+    /// `state` bound by a view, as the adapter hands it: the binding the view named carries
+    /// the edit it reports.
+    fn bound<T: Default + 'static>(
+        fired: &crate::Intents<Fired>,
+        state: crate::LocalState<T>,
+    ) -> Bound<T> {
+        Bound {
+            state,
+            edits: Some(Intent::new(fired, "b", "value")),
+            name: String::new(),
+            path: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_value_from_elsewhere_shows_and_the_shown_markdown_follows_it() {
+        let fired = crate::Intents::<Fired>::default();
+        let value = crate::LocalState::new("First line".to_owned());
+        let props = BlockEditorProps {
+            markdown: bound(&fired, value.clone()),
+            ..BlockEditorProps::default()
+        };
+        let mut editor = BlockEditor::from_props("b", props);
+        assert_eq!(editor.to_markdown().trim(), "First line");
+        value.set("Changed by a collaborator".to_owned());
+        assert!(editor.follow_body());
+        assert_eq!(editor.to_markdown().trim(), "Changed by a collaborator");
+    }
+
+    #[test]
+    fn a_rich_document_shows_as_its_blocks() {
+        let fired = crate::Intents::<Fired>::default();
+        let rich = RichText {
+            blocks: vec![
+                Block {
+                    kind: "heading".into(),
+                    text: "Plan".into(),
+                    attrs: [("level".to_owned(), Attr::Int(2))].into(),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "list_item".into(),
+                    text: "ship it".into(),
+                    ..Block::default()
+                },
+            ],
+            embeds: Vec::new(),
+        };
+        let value = crate::LocalState::new(rich.clone());
+        let props = BlockEditorProps {
+            rich: bound(&fired, value.clone()),
+            ..BlockEditorProps::default()
+        };
+        let mut editor = BlockEditor::from_props("b", props);
+        let kinds: Vec<_> = editor
+            .blocks()
+            .iter()
+            .map(|block| block.kind.clone())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::widget::BlockKind::Heading(2),
+                crate::widget::BlockKind::Bullet { indent: 0 }
+            ]
+        );
+
+        // A document from elsewhere replaces what the editor shows.
+        let mut changed = rich;
+        changed.blocks[1].text = "shipped".into();
+        value.set(changed);
+        assert!(editor.follow_body());
+        assert_eq!(editor.blocks()[1].content().text, "shipped");
     }
 }

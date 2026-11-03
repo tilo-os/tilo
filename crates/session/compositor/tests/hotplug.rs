@@ -444,3 +444,74 @@ fn a_display_turned_off_is_never_the_primary_one() {
     assert!(compositor.output_lit("HEADLESS-2"));
     assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
 }
+
+/// The scale an output that nobody arranged comes up at follows its panel's
+/// density: a 14" 2880x1800 laptop panel at 2x, a 24" 1080p monitor at 1.
+#[test]
+fn a_panel_plugged_in_comes_up_at_the_scale_its_density_argues_for() {
+    let told = Rc::new(RefCell::new(Told::default()));
+    let mut compositor =
+        Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).expect("headless");
+    // 14" 2880x1800 (16:10): 302 by 189 millimetres.
+    compositor
+        .add_output(&OutputConfig::new("eDP-1", 2880, 1800).panel((302, 189)))
+        .expect("panel");
+
+    assert_eq!(
+        rects(&compositor),
+        [("eDP-1".to_owned(), Some((0, 0, 1440, 900)))],
+        "a dense 4K panel runs at 200%, so the desk gets a 1440x900 desktop \
+         rather than a 2880x1800 one with tiny text"
+    );
+    assert_eq!(
+        told_monitors(&told),
+        [((0, 0, 1440, 900), "eDP-1".to_owned())],
+        "the desk is told the logical size the person works in"
+    );
+
+    // A 24" 1080p monitor beside it: ~92 dpi stays at 100%, so a monitor that
+    // was readable before is not zoomed.
+    compositor
+        .add_output(&OutputConfig::new("HDMI-A-1", 1920, 1080).panel((527, 296)))
+        .expect("monitor");
+    assert_eq!(
+        rects(&compositor),
+        [
+            ("eDP-1".to_owned(), Some((0, 0, 1440, 900))),
+            ("HDMI-A-1".to_owned(), Some((1440, 0, 1920, 1080))),
+        ],
+        "a desktop monitor stays at 100% beside the scaled panel"
+    );
+
+    // A connector that does not say how big it is runs at 100%, not at a guess.
+    compositor
+        .add_output(&OutputConfig::new("DP-2", 1920, 1080))
+        .expect("virtual output");
+    assert_eq!(
+        rects(&compositor).last(),
+        Some(&("DP-2".to_owned(), Some((3360, 0, 1920, 1080)))),
+        "no physical size, no derivation"
+    );
+}
+
+/// A scale the person chose wins over the panel's density.
+#[test]
+fn a_scale_the_person_chose_wins_over_the_panels_density() {
+    let told = Rc::new(RefCell::new(Told::default()));
+    let mut compositor =
+        Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).expect("headless");
+    compositor
+        .add_output(&OutputConfig::new("eDP-1", 2880, 1800).panel((302, 189)))
+        .expect("panel");
+    compositor
+        .set_display_config(&tilo_compositor::DisplayConfig {
+            scales: std::collections::HashMap::from([("eDP-1".to_owned(), 1.25)]),
+            ..tilo_compositor::DisplayConfig::default()
+        })
+        .expect("a scale");
+    assert_eq!(
+        rects(&compositor),
+        [("eDP-1".to_owned(), Some((0, 0, 2304, 1440)))],
+        "the person chose 125%, which wins over the 200% the panel argues for"
+    );
+}

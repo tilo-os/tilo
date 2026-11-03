@@ -295,6 +295,8 @@ pub struct DisclosureRow {
     dirty: bool,
     /// The motion the person allows, from the last layout.
     motion: EffectiveMotion,
+    /// The pace its reveal plays at, when it says something other than the theme's.
+    feel: crate::motion::Feel,
 }
 
 impl DisclosureRow {
@@ -324,6 +326,7 @@ impl DisclosureRow {
             body_display: taffy::Display::default(),
             dirty: true,
             motion: EffectiveMotion::default(),
+            feel: crate::motion::Feel::Standard,
         }
     }
 
@@ -644,6 +647,18 @@ impl DisclosureRow {
         }
     }
 
+    /// Play the row's reveal at `feel` rather than the theme's pace.
+    #[must_use]
+    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// [`Self::with_feel`] on a row already built.
+    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+        self.feel = feel;
+    }
+
     /// The rule under the row, from its text's edge to its end, like a list
     /// row's.
     fn paint_separator(&self, ctx: &mut PaintCtx<'_>) {
@@ -675,7 +690,7 @@ impl Widget for DisclosureRow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.motion = theme.motion();
+        self.motion = self.feel.over(theme.motion());
         self.state.set_motion(self.motion);
         self.follow_group();
         let icon = f64::from(theme.tokens.metrics.icon_control);

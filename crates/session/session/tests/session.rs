@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
@@ -767,6 +767,11 @@ impl tilo_session::displays::Backlights for Dials {
     }
 
     fn show_only(&self, _connectors: &[String]) {}
+
+    fn software_levels(&self) -> Vec<(String, f32)> {
+        // Every display here dims its own light.
+        Vec::new()
+    }
 }
 
 /// The connectivity service as the session reaches it: a device with a Wi-Fi
@@ -1780,6 +1785,8 @@ mod portal_capture;
 #[path = "session/secret_captures.rs"]
 mod secret_captures;
 
+#[path = "session/first_ask.rs"]
+mod first_ask;
 #[path = "session/idle_frames.rs"]
 mod idle_frames;
 #[path = "session/window_warmth.rs"]
@@ -2028,6 +2035,16 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
 fn settle(session: &mut Session, frames: u32) {
     for _ in 0..frames {
         session.step(Duration::from_millis(1)).expect("step");
+    }
+}
+
+/// How long the session's loop waits with nothing of its own to do, as
+/// [`Session::run`] asks: whatever is due first, or for the person.
+fn wait_for(session: &mut Session) -> Option<Duration> {
+    let now = Instant::now();
+    match (session.compositor().next_wait(), session.next_deadline()) {
+        (Some(frame), Some(due)) => Some(frame.min(due.saturating_duration_since(now))),
+        (frame, due) => frame.or_else(|| due.map(|due| due.saturating_duration_since(now))),
     }
 }
 

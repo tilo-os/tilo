@@ -32,7 +32,9 @@ pub(super) fn lambda_of(e: &ast::Expr) -> Option<(ast::Ident, ast::Expr)> {
             };
             Some((item, body))
         }
-        ExprKind::Lambda { param, body } => Some((param.clone(), (**body).clone())),
+        ExprKind::Lambda { params, body } if params.len() == 1 => {
+            Some((params.first()?.clone(), (**body).clone()))
+        }
         ExprKind::Variant { name, args: None } => {
             let item = ast::Ident {
                 name: KEY_ITEM.to_owned(),

@@ -28,6 +28,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
+use crate::widget::binding::{BoxedBinding, Pulled};
 #[path = "date_picker_component.rs"]
 mod component;
 use crate::widget::Widget;
@@ -53,7 +54,7 @@ pub struct DatePicker {
     /// Choosing a day, published as the picker's view action `select`
     /// ([`DatePicker::on_view`]).
     choice: Option<DateChoice>,
-    local_state: Option<crate::local_state::LocalBinding<NaiveDate>>,
+    local_state: Option<BoxedBinding<NaiveDate>>,
     rect: Rect,
     day_rects: Vec<(NaiveDate, Rect)>,
     prev_button_rect: Rect,
@@ -189,7 +190,19 @@ impl DatePicker {
     /// through any clone update the selected date and visible month on the
     /// next synchronization pass.
     pub fn from_state(state: &crate::LocalState<NaiveDate>) -> Self {
-        let (selected, binding) = crate::local_state::LocalBinding::new(state);
+        let (selected, binding) = crate::widget::binding::local(state);
+        Self {
+            local_state: Some(binding),
+            ..Self::new(selected)
+        }
+    }
+
+    /// Create a date picker following a day held as its ISO text (`"2026-06-30"`): one set
+    /// there is shown, today when the text names no day.
+    pub fn from_text_state(state: &crate::LocalState<String>) -> Self {
+        let (selected, binding) = crate::widget::binding::derived(state, |text| {
+            crate::component::moment_day(text).unwrap_or_else(crate::clock::today)
+        });
         Self {
             local_state: Some(binding),
             ..Self::new(selected)
@@ -418,11 +431,9 @@ impl Widget for DatePicker {
         dyn crate::widget::ResourceOperations
     );
 
-    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        if let Some(date) = self
-            .local_state
-            .as_mut()
-            .and_then(crate::local_state::LocalBinding::poll)
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if let Some(binding) = &mut self.local_state
+            && let Pulled::Value(date) = binding.pull(state, path)
         {
             self.selected = date;
             self.month_view = (date.year(), date.month());
@@ -1339,5 +1350,23 @@ mod tests {
             (200, 600),
         );
         let _ = app.targets();
+    }
+
+    #[test]
+    fn a_bound_text_day_is_shown_and_followed() {
+        let state = crate::LocalState::new("2026-06-30".to_owned());
+        let mut picker = DatePicker::from_text_state(&state);
+        assert_eq!(
+            picker.selected(),
+            NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
+            "the day the binding holds is shown"
+        );
+        state.set("2026-07-04".to_owned());
+        picker.sync(&(), &());
+        assert_eq!(
+            picker.selected(),
+            NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+            "a day set elsewhere shows in place"
+        );
     }
 }

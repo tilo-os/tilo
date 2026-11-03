@@ -33,25 +33,6 @@ impl Default for TimePickerProps {
     }
 }
 
-/// The time of day `at` is, when it names one: its instant, or the time of the day it names.
-fn time_of(at: &str) -> Option<TimeValue> {
-    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
-        let time = instant.time();
-        return Some(TimeValue {
-            hours: time.hour().try_into().ok()?,
-            minutes: time.minute().try_into().ok()?,
-            seconds: Some(time.second().try_into().ok()?),
-        });
-    }
-    let clock = at.get(11..19)?;
-    let part = |range: std::ops::Range<usize>| -> Option<u8> { clock.get(range)?.parse().ok() };
-    Some(TimeValue {
-        hours: part(0..2)?,
-        minutes: part(3..5)?,
-        seconds: part(6..8),
-    })
-}
-
 /// Today at `time`, as the instant a bound moment holds.
 fn instant_today(time: TimeValue) -> String {
     let day = crate::clock::today();
@@ -73,8 +54,7 @@ impl Described for TimePicker {
     fn from_props(key: &str, props: TimePickerProps) -> Self {
         let TimePickerProps { value, label, .. } = props;
         let shown = value.clone();
-        let time = time_of(&value.state.get()).unwrap_or_else(|| TimeValue::new(9, 0));
-        let mut picker = Self::new(time.hours, time.minutes)
+        let mut picker = Self::from_text_state(&value.state)
             .on_change(move |hours, minutes, seconds| {
                 let time = TimeValue {
                     hours: hours.min(23),
@@ -84,7 +64,7 @@ impl Described for TimePicker {
                 shown.edited(crate::component::Value::Text(instant_today(time)));
             })
             .with_id(key);
-        if let Some(seconds) = time.seconds {
+        if let Some(seconds) = picker.value().seconds {
             picker = picker.with_seconds(seconds);
         }
         if let Some(label) = label {
@@ -94,12 +74,8 @@ impl Described for TimePicker {
     }
 
     /// The time changes in place.
-    fn set_props(&mut self, props: TimePickerProps) -> bool {
-        if let Some(time) = time_of(&props.value.state.get())
-            && time != self.value()
-        {
-            self.set_value(time);
-        }
+    fn set_props(&mut self, _props: TimePickerProps) -> bool {
+        // A time set elsewhere shows in place through the binding.
         true
     }
 }

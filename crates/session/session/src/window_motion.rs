@@ -44,6 +44,11 @@ impl WindowMotions {
         }
     }
 
+    /// Whether a window is still opening or closing: the desk is moving.
+    pub(crate) fn animating(&self) -> bool {
+        self.known.values().any(Option::is_some) || !self.closing.is_empty()
+    }
+
     /// Draw each opening and closing window as far as it has come at `now`,
     /// and let go of the last frame of each that finished closing.
     pub(crate) fn step(&mut self, compositor: &mut Compositor, now: Instant) {

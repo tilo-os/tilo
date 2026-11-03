@@ -316,6 +316,12 @@ impl DesktopNotifications {
         self.log.badges.borrow().get(app_id).copied().unwrap_or(0)
     }
 
+    /// When the desk's notifications next change with nobody asking: a
+    /// banner's dwell running out, or the Clear all undo closing.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.log.log.borrow().next_deadline()
+    }
+
     /// Retire banners whose dwell ran out and forget a lapsed Clear all.
     /// Returns whether anything changed.
     pub fn expire(&self, now: Instant) -> bool {

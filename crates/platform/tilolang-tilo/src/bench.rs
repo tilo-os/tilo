@@ -2028,7 +2028,9 @@ fn index_everything(sized: &Sized<'_>, workspace: &Workspace) -> [Record; 2] {
         for (package, type_name, doc) in workspace.host.records() {
             let label = workspace.host.label_of(&doc);
             if let Ok(record) = workspace.host.store().record(&doc) {
-                let types = crate::publish::ActionTypes::new(&package.meta, &workspace.planner);
+                let words = workspace.host.runtime().words();
+                let types =
+                    crate::publish::ActionTypes::new(&package.meta, &workspace.planner, &*words);
                 std::hint::black_box(crate::publish::publish_tree(
                     &types, &record, &type_name, &doc, &label,
                 ));

@@ -24,15 +24,16 @@ use tokio::sync::watch;
 
 use channel_crypto::{ChannelGroup, MemberKey};
 use tilo_browser_peer::ChannelContentKeys;
-use tilo_browser_peer::live::{LiveError, LiveSession, UNSUPPORTED};
+use tilo_browser_peer::live::{LiveError, UNSUPPORTED};
 use tilo_call_lane::{Opener, Roster, Sealer, Stream, TrackName};
 use tilo_live::admit::{Connected, OriginTask, origin_config};
 use tilo_live::live::{Namespace, Track};
+use tilo_live::plane::{Plane, PlaneError};
 use tilo_live::relay::{
     Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
 };
 use tilo_live::scope::Scope;
-use tilo_live::voice::VoiceObject;
+use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_relay_protocol::web::LiveGrant;
 
 /// The workspace the participants share.
@@ -157,12 +158,12 @@ fn certificate(relay: &LoopbackRelay) -> String {
 }
 
 /// A page that joins the relay's listener as its own device.
-async fn page(relay: &LoopbackRelay, keys: ChannelContentKeys, roster: Roster) -> LiveSession {
+async fn page(relay: &LoopbackRelay, keys: ChannelContentKeys, roster: Roster) -> Plane {
     let origin = relay
         .endpoint
         .strip_suffix(tilo_live::preface::PATH)
         .expect("the loopback relay serves the carrier's path");
-    LiveSession::open(
+    tilo_browser_peer::live::join(
         origin,
         &certificate(relay),
         page_grant(PAGE),
@@ -172,6 +173,20 @@ async fn page(relay: &LoopbackRelay, keys: ChannelContentKeys, roster: Roster) -
         roster,
     )
     .await
+    .unwrap()
+}
+
+/// Publish one 20 ms Opus frame `opus` as voice object `sequence`, as a page
+/// builds it before its plane seals the payload.
+fn voice_object(opus: &[u8], sequence: u32) -> Vec<u8> {
+    let timestamp = u64::from(sequence).saturating_mul(u64::from(FRAME_SAMPLES));
+    VoiceObject {
+        sequence: u64::from(sequence),
+        timestamp,
+        duration: FRAME_SAMPLES,
+        payload: opus.to_vec(),
+    }
+    .encode()
     .unwrap()
 }
 
@@ -425,22 +440,25 @@ async fn a_page_and_a_native_device_exchange_sealed_presence_and_audio_through_a
     let page = page(&relay, keys, roster).await;
 
     // Presence the native device seals opens as that device, in the page.
+    let mut presence_sequence = 0_u32;
     let opened = published_until(
         "the native device's presence never reached the page",
         || native.publish_presence(b"role=member"),
         || {
-            page.next()
-                .filter(|opened| opened.sender == NATIVE && opened.track == Track::Presence)
+            page.try_recv()
+                .filter(|heard| heard.sender == NATIVE && heard.track == Track::Presence)
         },
     )
     .await;
-    assert_eq!(opened.payload, b"role=member");
+    assert_eq!(opened.body, b"role=member");
 
     // Presence the page seals opens as the page's own device, natively: the
     // page does its own sealing, never a bridging device's.
     let from_page = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            page.publish_presence(b"role=member").unwrap();
+            page.publish(Track::Presence, presence_sequence, b"role=member")
+                .unwrap();
+            presence_sequence = presence_sequence.wrapping_add(1);
             if let Ok(presence) =
                 tokio::time::timeout(Duration::from_millis(100), native.presence_from_page()).await
             {
@@ -459,7 +477,8 @@ async fn a_page_and_a_native_device_exchange_sealed_presence_and_audio_through_a
     let heard = tokio::time::timeout(Duration::from_secs(10), async {
         let mut sequence = 0_u32;
         loop {
-            page.publish_audio(&tone, sequence).unwrap();
+            let object = voice_object(&tone, sequence);
+            page.publish(Track::Audio, sequence, &object).unwrap();
             sequence = sequence.wrapping_add(1);
             if let Ok(opened) =
                 tokio::time::timeout(Duration::from_millis(100), native.audio_from_page(1)).await
@@ -482,12 +501,107 @@ async fn a_page_and_a_native_device_exchange_sealed_presence_and_audio_through_a
             sequence = sequence.wrapping_add(1);
         },
         || {
-            page.next()
-                .filter(|opened| opened.sender == NATIVE && opened.track == Track::Audio)
+            page.try_recv()
+                .filter(|heard| heard.sender == NATIVE && heard.track == Track::Audio)
         },
     )
     .await;
-    assert_eq!(opened.payload, voiced);
+    // A heard audio object is the voice object with its payload opened, so
+    // the reader decodes it as one and gets the opus frame back.
+    let object = VoiceObject::decode(&opened.body).unwrap();
+    assert_eq!(object.payload, voiced);
+}
+
+/// A page's presence reaches a device across one relay hop, sealed and
+/// opened on the way, inside the budget a pointer needs to feel immediate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pages_presence_reaches_a_device_inside_the_interactive_budget() {
+    let roster = Roster::new([PAGE, NATIVE]);
+    let keys = keys();
+    let relay = LoopbackRelay::start(Arc::new(Admits {
+        scope: Scope::workspace(WORKSPACE),
+        roster: roster.clone(),
+        admission: Admission::new(),
+    }))
+    .unwrap();
+    let native = Native::join(&relay, keys.clone(), roster.clone()).await;
+    let page = page(&relay, keys, roster).await;
+
+    // The device's reader stays subscribed to the page's presence, as a
+    // device's plane keeps one open for the whole session.
+    let address = Namespace::new(&Scope::workspace(WORKSPACE), PAGE);
+    let broadcast = tokio::time::timeout(
+        Duration::from_secs(10),
+        native.reading.routed_broadcast(address.path().as_str()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let track = broadcast.track("presence").unwrap();
+    let mut subscriber = tokio::time::timeout(
+        Duration::from_secs(10),
+        track.subscribe(
+            moq_net::track::Subscription::default().with_max_age(Duration::from_secs(30)),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let mut sequence = 0_u32;
+
+    // The relay's copy subscribes to a publisher's track after its first
+    // write, and a new subscriber starts from what the relay already holds:
+    // both are warmed past before anything is measured.
+    for _ in 0..20 {
+        page.publish(Track::Presence, sequence, b"role=member")
+            .unwrap();
+        sequence = sequence.wrapping_add(1);
+        let mut group = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_group())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), group.read_frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    let mut latencies = Vec::new();
+    for _ in 0..200 {
+        let sent = std::time::Instant::now();
+        page.publish(Track::Presence, sequence, b"role=member")
+            .unwrap();
+        sequence = sequence.wrapping_add(1);
+        let mut group = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_group())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), group.read_frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!frame.payload.is_empty(), "a sealed presence object");
+        latencies.push(sent.elapsed());
+    }
+    latencies.sort_unstable();
+    let p95 = latencies
+        .get(latencies.len().saturating_mul(95) / 100)
+        .copied()
+        .unwrap();
+    eprintln!(
+        "page to device presence: p50 {:?}, p95 {p95:?} over {} objects",
+        latencies.get(latencies.len() / 2).copied().unwrap(),
+        latencies.len()
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "page to device presence p95 {p95:?} is outside the interactive budget"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -501,20 +615,20 @@ async fn a_page_whose_device_is_removed_is_cut_and_publishes_nothing_more() {
     }))
     .unwrap();
     let page = page(&relay, keys(), roster).await;
-    page.publish_presence(b"role=member").unwrap();
+    page.publish(Track::Presence, 0, b"role=member").unwrap();
 
     // The roster change reports itself; the relay re-observes and cuts.
     admission.revoke();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !page.is_closed() && std::time::Instant::now() < deadline {
+    while !page.ended() && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert!(page.is_closed(), "the removed page's session stayed open");
+    assert!(page.ended(), "the removed page's session stayed open");
     assert_eq!(
-        page.publish_presence(b"role=member"),
-        Err(LiveError::Denied)
+        page.publish(Track::Presence, 1, b"role=member"),
+        Err(PlaneError::Ended)
     );
-    assert_eq!(page.publish_audio(&[1], 0), Err(LiveError::Denied));
+    assert_eq!(page.publish(Track::Audio, 0, &[1]), Err(PlaneError::Ended));
 }
 
 #[tokio::test]
@@ -523,7 +637,7 @@ async fn a_browser_without_webtransport_is_told_so_and_offers_no_fallback() {
     assert_eq!(UNSUPPORTED, "this browser cannot join live");
     // No fallback: an origin that cannot be opened is reported, not retried
     // over any other transport.
-    let refused = LiveSession::open(
+    let refused = tilo_browser_peer::live::join(
         "not-a-webtransport-origin",
         &certificate_of(&[7; 32]),
         page_grant(PAGE),
@@ -533,7 +647,10 @@ async fn a_browser_without_webtransport_is_told_so_and_offers_no_fallback() {
         Roster::new([PAGE]),
     )
     .await;
-    assert_eq!(refused.err(), Some(LiveError::Unavailable));
+    assert_eq!(
+        refused.err(),
+        Some(LiveError::Plane(PlaneError::Unavailable))
+    );
 }
 
 /// The base64 form of a pinned certificate digest.

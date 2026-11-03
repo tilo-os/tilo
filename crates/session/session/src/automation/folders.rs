@@ -87,6 +87,15 @@ impl FolderWatch {
         self.changes_at(Instant::now())
     }
 
+    /// When the oldest change held back has settled, so the next pass
+    /// reports it.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.settling
+            .values()
+            .filter_map(|last_seen| last_seen.checked_add(SETTLE))
+            .min()
+    }
+
     /// [`Self::changes`], with `now` deciding which files have settled.
     pub fn changes_at(&mut self, now: Instant) -> Vec<FolderChange> {
         let mut seen = Vec::new();

@@ -632,7 +632,7 @@ fn shown_nodes(
         "rich" => push_node(
             vs,
             Made {
-                kind: "ui.RichText",
+                kind: "ui.BlockEditor",
                 key: key.to_owned(),
                 props: vec![("value", value)],
                 children: Vec::new(),

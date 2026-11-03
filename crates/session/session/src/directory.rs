@@ -435,9 +435,17 @@ pub(crate) struct Store {
     joined: std::cell::RefCell<Vec<Joined>>,
     asks: std::cell::RefCell<Option<mpsc::Sender<Ask>>>,
     answers: std::cell::RefCell<Option<mpsc::Receiver<Answer>>>,
+    /// What wakes the session's loop as the worker answers, so a directory
+    /// being read or a join shown is shown as it lands.
+    wake: std::cell::RefCell<Option<tilo_service::Wake>>,
 }
 
 impl Store {
+    /// Wake the session's loop `wake` as the worker answers.
+    pub(crate) fn waking(&self, wake: tilo_service::Wake) {
+        *self.wake.borrow_mut() = Some(wake);
+    }
+
     /// The worker, started the first time anything is asked of it: one
     /// thread reads the sites and asks their doors, in turn.
     fn worker(&self) -> Option<mpsc::Sender<Ask>> {
@@ -447,9 +455,10 @@ impl Store {
         }
         let (asks, waiting) = mpsc::channel();
         let (answers, read) = mpsc::channel();
+        let wake = self.wake.borrow().clone();
         if let Err(error) = std::thread::Builder::new()
             .name("tilo-directory".into())
-            .spawn(move || work(&waiting, &answers))
+            .spawn(move || work(&waiting, &answers, wake.as_ref()))
         {
             tracing::warn!(%error, "the workspace directory is not read");
             return None;
@@ -657,7 +666,11 @@ impl Store {
 
 /// The worker: read what is asked, join where it is asked, and answer with
 /// what the sites said.
-fn work(asks: &mpsc::Receiver<Ask>, answers: &mpsc::Sender<Answer>) {
+fn work(
+    asks: &mpsc::Receiver<Ask>,
+    answers: &mpsc::Sender<Answer>,
+    wake: Option<&tilo_service::Wake>,
+) {
     while let Ok(ask) = asks.recv() {
         let answer = match ask {
             Ask::Read { site } => Answer::Read(read(site.as_deref())),
@@ -682,6 +695,9 @@ fn work(asks: &mpsc::Receiver<Ask>, answers: &mpsc::Sender<Answer>) {
         };
         if answers.send(answer).is_err() {
             return;
+        }
+        if let Some(wake) = &wake {
+            wake();
         }
     }
 }

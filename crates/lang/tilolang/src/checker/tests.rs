@@ -341,6 +341,51 @@ fn asked(f: &Func) -> Vec<String> {
     out
 }
 
+/// The predicate of a filter handed to the store with the values the code holds.
+fn asked_with(f: &Func) -> Vec<String> {
+    let mut out = Vec::new();
+    visit(f, &mut |e| {
+        if let Ek::Host(Imp::CollWhereWith, args) = &e.kind
+            && let Some(pred) = args.get(1).and_then(text)
+        {
+            out.push(pred.to_owned());
+        }
+    });
+    out
+}
+
+#[test]
+fn an_option_compares_with_the_value_it_holds() {
+    let (m, ids) = lower(
+        "type Note {\n    title: Text\n    parent: Option<Note>\n    owner: Option<Text>\n}\n\
+type Book {\n    notes: Collection<Note>\n}\n\
+fn children(b: Book, p: Note) -> List<Note> {\n    return b.notes.filter(n -> n.parent == .some(p))\n}\n\
+fn owned(b: Book, who: Text) -> List<Note> {\n    return b.notes.filter(n -> n.owner == .some(who))\n}\n\
+fn unowned(b: Book) -> List<Note> {\n    return b.notes.filter(n -> n.owner == .none)\n}",
+    );
+    let field = |name: &str| ids.get(&format!("Note.{name}")).expect("id").to_string();
+    let parent = asked_with(func(&m, "children"));
+    assert_eq!(parent.len(), 1, "{parent:?}");
+    let pred: crate::pred::Pred<String> = serde_json::from_str(&parent[0]).expect("a predicate");
+    assert_eq!(pred.fields(), [&field("parent")]);
+    assert_eq!(
+        pred,
+        crate::pred::Pred::Cmp(
+            crate::pred::CmpOp::Eq,
+            crate::pred::Operand::Field(field("parent")),
+            crate::pred::Operand::Arg(0),
+        ),
+        "the value the option holds, bound when it is asked"
+    );
+    assert_eq!(asked_with(func(&m, "owned")).len(), 1);
+    let unowned = asked(func(&m, "unowned"));
+    assert_eq!(unowned.len(), 1, "{unowned:?}");
+    assert_eq!(
+        serde_json::from_str::<crate::pred::Pred<String>>(&unowned[0]).expect("a predicate"),
+        crate::pred::Pred::Not(Box::new(crate::pred::Pred::Present(field("owner"))))
+    );
+}
+
 #[test]
 fn a_filter_or_count_over_item_fields_asks_the_store_beside_its_loop() {
     let (m, ids) = lower(
@@ -508,11 +553,11 @@ fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
 }
 
 #[test]
-fn a_body_held_as_rich_text_is_told_it_binds_the_documents_body() {
-    // A body is a text field or a rich text one: bound by an input, either is the document's
-    // running text, and the window draws it as the block editor.
+fn a_body_held_as_rich_text_binds_like_any_field() {
+    // A body is a rich text field a view places as the block editor and binds: the editor
+    // carries the binding, and the document's shell draws the title field as its title.
     let (m, _) = lower(
-        "type Note {\n    title: Text (title)\n    body: RichText (body)\n}\nroot Note\ndefault view note for Note\nview note(n: Note) {\n    std.document(n) {\n        ui.TextInput(value: n.title)\n        rich_input(bind: n.body, placeholder: \"Write\")\n    }\n}",
+        "type Note {\n    title: Text (title)\n    body: RichText (body)\n}\nroot Note\ndefault view note for Note\nview note(n: Note) {\n    std.document(n) {\n        ui.TextInput(value: n.title)\n        ui.BlockEditor(bind: n.body, placeholder: \"Write\")\n    }\n}",
     );
     let calls = ui_calls(func(&m, "note"));
     let at = |want: &str| {
@@ -521,20 +566,20 @@ fn a_body_held_as_rich_text_is_told_it_binds_the_documents_body() {
             .position(|call| call == want)
             .unwrap_or_else(|| panic!("{want} in {calls:#?}"))
     };
-    let roles: Vec<usize> = calls
-        .iter()
-        .enumerate()
-        .filter(|(_, call)| *call == "prop field_role")
-        .map(|(at, _)| at)
-        .collect();
-    assert_eq!(roles.len(), 2, "the title's and the body's: {calls:#?}");
+    let from =
+        |after: usize, want: &str| match calls.iter().skip(after).position(|call| call == want) {
+            Some(at) => at.saturating_add(after),
+            None => panic!("{want} after {after} in {calls:#?}"),
+        };
+    let input = at("node ui.TextInput");
+    let block = at("node ui.BlockEditor");
     assert!(
-        at("node ui.TextInput") < roles[0] && roles[0] < at("node ui.RichInput"),
-        "the title field is told it is the title: {calls:#?}"
+        from(input, "prop title") < block,
+        "the title field is drawn as the title: {calls:#?}"
     );
     assert!(
-        at("node ui.RichInput") < roles[1],
-        "the rich field is told it is the body: {calls:#?}"
+        from(block, "bind") < from(block, "prop placeholder"),
+        "the body binds to the field: {calls:#?}"
     );
 }
 
@@ -557,7 +602,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
         "node ui.Toggle",
         "node ui.Card",
         "node ui.Avatar",
-        "prop field_role",
+        "prop title",
     ] {
         assert!(has(&calls, want), "{want} in {calls:#?}");
     }

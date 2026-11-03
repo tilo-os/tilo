@@ -138,6 +138,45 @@ impl Ramp {
             }
         }
     }
+
+    /// `self` with the panel dimmed to `light` of its linear light on top:
+    /// what a display engine holding a second lookup table would show. A
+    /// monitor without a backlight or DDC/CI is dimmed this way
+    /// ([`tilo_color_pipeline::software_dim`]), under any tint it is already
+    /// given.
+    #[must_use]
+    pub fn dimmed(&self, light: f32) -> Self {
+        use tilo_color_pipeline::software_dim::{Transfer, dims, gamma_lut};
+
+        if !dims(light) {
+            return self.clone();
+        }
+        let size = self.size();
+        let table = gamma_lut(size, light, Transfer::Srgb);
+        if table.len() != size {
+            return self.clone();
+        }
+        // What the tint sends for a signal, mapped through the dimming: one
+        // lookup table does both.
+        let last = size.saturating_sub(1);
+        let across = |ramp: &[u16]| -> Vec<u16> {
+            ramp.iter()
+                .map(|entry| {
+                    let index = usize::from(*entry)
+                        .saturating_mul(last)
+                        .checked_div(usize::from(u16::MAX))
+                        .unwrap_or(0)
+                        .min(last);
+                    table.get(index).copied().unwrap_or(*entry)
+                })
+                .collect()
+        };
+        Self {
+            red: across(&self.red),
+            green: across(&self.green),
+            blue: across(&self.blue),
+        }
+    }
 }
 
 /// Who wants which ramp on which output, and what the backend holds.
@@ -151,6 +190,10 @@ pub(crate) struct Gamma {
     set: BTreeMap<String, Ramp>,
     /// Night light's colour temperature, while it is on.
     night_light: Option<u32>,
+    /// How much of its linear light each output dimmed in software shows,
+    /// by connector, as the brightness service asked (`1.0` or absent:
+    /// not dimmed).
+    software_dim: BTreeMap<String, f32>,
     /// What the backend was last told per output (`None`: no ramp);
     /// absent when unknown (new, or after another session had the device),
     /// so it is written.
@@ -185,15 +228,46 @@ impl Gamma {
         self.night_light
     }
 
+    /// Dim the outputs named in `dims` in software to their linear light
+    /// (`1.0`: not dimmed), as the brightness service asks for the monitors
+    /// with neither a backlight nor DDC/CI. Outputs not named are left
+    /// undimmed.
+    pub(crate) fn set_software_dim(&mut self, dims: &[(String, f32)]) {
+        self.software_dim.clear();
+        for (name, light) in dims {
+            if tilo_color_pipeline::software_dim::dims(*light) {
+                self.software_dim.insert(name.clone(), *light);
+            }
+        }
+    }
+
     /// The ramp `name` should show: a tool's, else night light's, else
-    /// none.
+    /// none, dimmed in software where the brightness service asked for it.
     pub(crate) fn wanted(&self, name: &str) -> Option<Ramp> {
+        let light = self.software_dim.get(name).copied().unwrap_or(1.0);
         if let Some(ramp) = self.set.get(name) {
-            return Some(ramp.clone());
+            return Some(ramp.dimmed(light));
         }
         let size = *self.sizes.get(name)?;
-        self.night_light
+        match self
+            .night_light
             .map(|kelvin| Ramp::night_light(size, kelvin))
+        {
+            Some(ramp) => Some(ramp.dimmed(light)),
+            None if tilo_color_pipeline::software_dim::dims(light) => {
+                Some(Ramp::identity(size).dimmed(light))
+            }
+            None => None,
+        }
+    }
+
+    /// How much of its linear light each output is dimmed to in software,
+    /// by connector: the ones that are.
+    pub(crate) fn software_dim(&self) -> Vec<(String, f32)> {
+        self.software_dim
+            .iter()
+            .map(|(name, light)| (name.clone(), *light))
+            .collect()
     }
 
     /// The ramps the backend has to write so the outputs named in

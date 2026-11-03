@@ -157,7 +157,7 @@ view action_run(name: Text, offered: List<host.Action>, room: BarRoom) {
     let loose = offered.filter(c -> c.group == .none and (room != .roomy or not c.frequent))
     row(gap: .tight, align: .center) {
         if room == .one {
-            ui.MenuButton(name, icon: .app_window, icon_only: space.width < 18.0, role: .bar) {
+            ui.MenuButton(name, icon: .app_window, icon_only: true, role: .bar) {
                 for c in offered {
                     ui.MenuItem(c.label, icon: c.icon, destructive: c.destructive, checked: c.on) {
                         on choose: c.run
@@ -257,7 +257,7 @@ fn placed_resource(record: Text) -> Option<host.Resource> {
 /// name, moving it to another row, and closing it. On the narrowest bar the menu is named by the
 /// window's icon alone, as an app's window's one menu is.
 view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
-    ui.MenuButton(place_title(p), icon: .app_window, icon_only: room == .one and space.width < 18.0, role: .bar) {
+    ui.MenuButton(place_title(p), icon: .app_window, icon_only: room == .one, role: .bar) {
         for r in a.rows {
             if r.key != strip_row(a, p.strip) {
                 ui.MenuItem(r.name, icon: .navigation) {

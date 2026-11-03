@@ -63,9 +63,9 @@ action pin(n: Note, pinned: Bool = not n.pinned) (icon: .pin, on: n.pinned) {
 Those lines give collaborative, synced, searchable, undoable notes with a native default UI,
 which people, agents and automations can find, read and pin.
 
-A field marked `(body)` is the resource's document body: a `rich_input` bound to it is the
-document editor, whether the field holds `Text` (the body kept as Markdown) or `RichText` (its
-paragraphs, lists, quotes, tables and code kept as such).
+A field marked `(body)` is the resource's document body: the document's own view places the
+editor for it, `ui.BlockEditor(bind: note.body)`, whether the field holds `Text` (the body kept
+as Markdown) or `RichText` (its paragraphs, lists, quotes, tables and code kept as such).
 
 ## How it runs
 

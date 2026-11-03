@@ -44,6 +44,8 @@ set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/build-lib.sh"
 cd "$repo_root"
 . os/dev/guest-disks.sh
+# The kernel an action installs from: the pinned one, unless the run names another.
+. os/image/kernel-env.sh
 
 # The RFC 8032 test-vector key: public and non-production, accepted only for development and
 # validation images (as tools/ci/publish/os-image.sh).
@@ -177,6 +179,7 @@ build_env() {
   . os/base-snapshot.env
   export BASE_REF
   rpms_snapshot
+  kernel_env
   # One clock for every layer: the newest of the base's and the snapshot's creation, never
   # the commit's, so builds of different commits make the same bytes of the same inputs.
   if [[ -n $RPMS_CREATED ]]; then

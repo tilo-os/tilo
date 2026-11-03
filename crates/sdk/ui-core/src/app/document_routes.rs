@@ -246,7 +246,7 @@ impl App {
         self.state.advance_outbound(Vec::new());
         self.actions.bound_record_sync = None;
         for owner in &mut self.document_routes.owners {
-            owner.sent_heads.clear();
+            owner.sent = crate::state::DocumentFrontier::default();
             owner.needs_snapshot = true;
         }
     }
@@ -699,7 +699,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
             }
             let publication = owner.prepare_publication(
                 outer,
-                &entry.sent_heads,
+                &mut entry.sent,
                 entry.needs_snapshot,
                 entry.pending.failure.is_some(),
             );
@@ -756,7 +756,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
             // Only an accepted change moves the route's frontier; a refused
             // one is offered again on the next publication.
             if result.is_ok() {
-                entry.sent_heads = heads;
+                entry.sent.advance(heads);
                 entry.needs_snapshot = false;
             }
             if let Some(failure) = failure
@@ -785,21 +785,8 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 continue;
             }
             while let Some(mutation) = entry.pending.front() {
-                // Remote history is already held by its sender and the owner;
-                // republishing it as our Incremental is a pure echo. When every
-                // local change had already been queued before this merge, the
-                // merged frontier counts as published. Otherwise unsent local
-                // changes interleave and the next publication keeps them.
                 use automerge::transaction::Transactable as _;
                 let (store, checkout) = owner.store_checkout();
-                let fully_sent = !entry.needs_snapshot
-                    && store
-                        .read_checked(&checkout.id, |doc| {
-                            doc.pending_ops() == 0
-                                && crate::history_mode::sorted_heads(doc.base_heads())
-                                    == entry.sent_heads
-                        })
-                        .unwrap_or(false);
                 // A peer's whole document that this replica merges and is
                 // still ahead of: the sender lacks something only we hold.
                 let sender_heads = match mutation {
@@ -811,7 +798,14 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                     _ => None,
                 };
                 match owner.merge_remote(mutation) {
-                    Ok(Some(applied)) => {
+                    Ok(merged) => {
+                        // The route delivered these changes, so they are never
+                        // published back on it; this app's own unsent changes
+                        // stay unsent and go out on the next publication.
+                        entry.sent.observe(merged.observed);
+                        let Some(applied) = merged.changed else {
+                            break;
+                        };
                         entry.pending.pop_applied();
                         changed |= applied;
                         if let Some(sender_heads) = sender_heads
@@ -823,20 +817,12 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                         {
                             entry.needs_snapshot = true;
                         }
-                        if applied {
-                            if let Err(error) = store.schedule_committed_history(&checkout.id) {
-                                tracing::error!(%error, "an applied remote change was not saved");
-                            }
-                            if fully_sent
-                                && let Ok(heads) = store.read_checked(&checkout.id, |doc| {
-                                    crate::history_mode::sorted_heads(doc.base_heads())
-                                })
-                            {
-                                entry.sent_heads = heads;
-                            }
+                        if applied
+                            && let Err(error) = store.schedule_committed_history(&checkout.id)
+                        {
+                            tracing::error!(%error, "an applied remote change was not saved");
                         }
                     }
-                    Ok(None) => break,
                     Err(error) => {
                         let reason = format!(
                             "Remote document could not be applied: {error}. Synchronization needs recovery."

@@ -54,6 +54,13 @@ terse views make agent answers cheaper and more reliable.
    (`let heading: Option<Date> = if let g = group { g(x) } else { .none }`).
 6. **Date and time literals:** `2026-06-29`, `2026-06-29T07:02Z`, `2026-08`, matching search's
    literals. Duration literals (`15m`) already exist.
+7. **Lambdas take the values a parameter takes:** `(moved, parent, before) -> move_to(tasks,
+   moved, parent, before)` for a parameter typed `(T, Option<T>, Option<T>) -> Action`. One
+   value stays `x -> ...`, and a key path stays `.field`.
+8. **A template's item block fills a described component's part:** `std.outline(...) { x ->
+   task_row(x) }` gives the `row: (T) -> View` parameter a block that the tree draws once per
+   node it shows, so a view written in `std` names the item's parts without the caller
+   repeating them.
 
 Values present themselves: a `Time`, a person or an amount passed to a component renders in the
 platform's format (relative times, avatar and name, localized money), never formatted by hand.
@@ -62,3 +69,5 @@ platform's format (relative times, avatar and name, localized money), never form
 
 - `remove_where(predicate) -> Int` and similar collection functions in `std`, instead of loops
   with counters.
+- `index_of(item) -> Option<Int>`: where an item stands among the items, or none when it is not
+  one of them — a sibling's place, a lane's first card.

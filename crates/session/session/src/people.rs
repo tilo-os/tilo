@@ -53,6 +53,9 @@ struct Shown {
     /// Who else's pointer is over which tab, as the last frame drew them:
     /// their name and where they are.
     pointers: Vec<(String, String)>,
+    /// Where each other person's pointer was drawn on this desk, as the last
+    /// frame drew it: their name and the point, in the surface's coordinates.
+    cursors: Vec<(String, (f64, f64))>,
     /// Where the desk is drawn, as the surface last laid out.
     area: Rect,
 }
@@ -115,6 +118,12 @@ impl People {
     /// Draw in the person's theme, as their settings now have it.
     pub(crate) fn set_theme(&self, theme: ui::Theme) {
         self.host.borrow_mut().set_theme(theme);
+    }
+
+    /// The other people's pointers as the last frame drew them: their name
+    /// and the point, in the surface's coordinates.
+    pub(crate) fn drawn_pointers(&self) -> Vec<(String, (f64, f64))> {
+        self.shown.borrow().cursors.clone()
     }
 }
 
@@ -266,6 +275,7 @@ pub(crate) fn mount(
         shown: Rc::clone(&shown),
         open: Rc::clone(&open),
         handle: handle.clone(),
+        drawn: Cell::new(0),
         sync,
     };
     let placement = Placement {
@@ -398,6 +408,10 @@ struct Panel {
     shown: Rc<RefCell<Shown>>,
     open: Rc<Cell<bool>>,
     handle: DesktopHandle,
+    /// The presence revision this panel last drew: another person's pointer
+    /// moving, arriving or leaving moves it, and a desk where nothing moved
+    /// asks for no frame.
+    drawn: Cell<u64>,
     sync: Option<Rc<crate::sync::Client>>,
 }
 
@@ -474,6 +488,13 @@ impl Panel {
         }
     }
 
+    /// How many times what the desk's people say of themselves changed.
+    fn presence_revision(&self) -> u64 {
+        self.sync
+            .as_ref()
+            .map_or(0, |sync| sync.presence_revision())
+    }
+
     /// Open this workspace's activity at what `author` changed.
     fn open_activity(&self, author: &str) {
         let workspace = self.handle.read(|tree| {
@@ -547,6 +568,7 @@ impl Widget for Panel {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
+        let revision = self.presence_revision();
         let mut shown = self.shown.borrow_mut();
         let open = self.open.get();
         // Where everyone else's pointer is now, from the plane: it names the
@@ -602,6 +624,11 @@ impl Widget for Panel {
                 .map(|(id, _)| id.clone())
                 .into_iter()
                 .collect::<Vec<_>>();
+            let waved_until = shown
+                .waved
+                .as_ref()
+                .filter(|(_, at)| at.elapsed() < WAVE_SHOWN)
+                .and_then(|(_, at)| at.checked_add(WAVE_SHOWN));
             let model = CollaboratorsModel {
                 host: shown.area,
                 workspace: &workspace,
@@ -618,6 +645,7 @@ impl Widget for Panel {
                 expanded_id: expanded.as_deref(),
                 watching: 0,
                 waved: &waved,
+                waved_until,
                 spectating: false,
             };
             let cursor = shown.cursor;
@@ -628,10 +656,15 @@ impl Widget for Panel {
         // Everyone else's pointer, over the tile of the tab they are on.
         let (cursors, places) = peer_cursors(&self.handle, &shown.rows, &over);
         shown.pointers = places;
+        shown.cursors = cursors
+            .iter()
+            .map(|cursor| (cursor.label.clone(), cursor.pos))
+            .collect();
         if !cursors.is_empty() {
             let area = shown.area;
             ui::presence::draw_peer_cursors(scene, transform, area, text, theme, &cursors);
         }
+        self.drawn.set(revision);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -646,12 +679,12 @@ impl Widget for Panel {
         self.follow(hit, &mut shown);
     }
 
-    /// The roster and the pointers of people working on this desk change
-    /// without an event reaching the panel: while either shows, every frame
-    /// reads them again. Closed with nobody's pointer on the desk, it shows
-    /// nothing and asks for no frame.
+    /// Whether the panel owes a frame: while it is open, because its rows
+    /// move with the people on the desk; closed, only once somebody else's
+    /// pointer has moved or left since the last frame. A desk where a remote
+    /// pointer rests where it was drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
-        self.open.get() || !self.shown.borrow().pointers.is_empty()
+        self.open.get() || self.presence_revision() != self.drawn.get()
     }
 
     fn name(&self) -> &'static str {
@@ -675,7 +708,10 @@ fn peer_cursors(
     if over.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let tab_rects: HashMap<u64, Rect> = handle.shown_tabs().into_iter().collect();
+    // A window this device has open but has not laid its content out for
+    // still has its tile where it stands: the pointer over it is drawn there.
+    let tiles = handle.shown_tiles();
+    let tab_rects: HashMap<u64, Rect> = tiles.into_iter().collect();
     let titles: HashMap<u64, String> = handle.read(|tree| {
         tree.active_workspace()
             .into_iter()

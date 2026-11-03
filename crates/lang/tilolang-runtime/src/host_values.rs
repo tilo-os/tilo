@@ -115,6 +115,28 @@ impl Core {
         self.ret_h(Value::List(sorted_by_keys(&items, &keys)?))
     }
 
+    /// Where an item stands: in a list as it stands, or in a collection's items.
+    fn index_of(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let want = self.val_whole(a.h(1)?)?;
+        let at = self.with_val(a.h(0)?, |v| match v {
+            Value::List(items) => Ok(Some(items.iter().position(|item| same_value(item, &want)))),
+            Value::Coll(_) => Ok(None),
+            other => trap(format!("expected a list, got {}", other.kind_name())),
+        })?;
+        // A collection's items are the store's to order, so it is read through its items.
+        let at = match at {
+            Some(at) => at,
+            None => self
+                .items_of(self.val(a.h(0)?)?, "index_of")?
+                .iter()
+                .position(|item| same_value(item, &want)),
+        };
+        let at = at.map_or_else(Value::none, |at| {
+            Value::some(Value::Int(i64::try_from(at).unwrap_or(i64::MAX)))
+        });
+        self.ret_h(at)
+    }
+
     pub(crate) fn aggregate_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ListNew => self.ret_h(Value::List(Vec::new())),
@@ -164,6 +186,7 @@ impl Core {
                 };
                 self.ret_h(end)
             }
+            Imp::ListIndexOf => self.index_of(a),
             Imp::ListReverse | Imp::ListSortByKey => self.ordered(imp, a),
             Imp::TupleNew => {
                 let n = index(i64::from(a.h(0)?), "tuple size")?;

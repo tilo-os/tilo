@@ -109,6 +109,14 @@ impl Namespace {
     }
 }
 
+/// Exact-path patterns, or `None` when a name cannot be spelled as a path.
+pub(crate) fn exact(names: &[&str]) -> Option<moq_net::Patterns> {
+    names
+        .iter()
+        .map(|name| moq_net::Pattern::literal(name).ok())
+        .collect()
+}
+
 /// The subtree under which every participant of `scope` publishes.
 #[must_use]
 pub fn participants(scope: &crate::scope::Scope) -> String {

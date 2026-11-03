@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use zbus::interface;
 
-pub use tilo_lockdown_policy::LockdownPolicy;
 use tilo_lockdown_policy::PolicyStore;
+pub use tilo_lockdown_policy::{LockdownPolicy, PolicyListener};
 
 #[derive(Clone)]
 pub struct LockdownBackend {
@@ -35,6 +35,18 @@ impl LockdownBackend {
         self.state
             .set_policy(policy)
             .map_err(|error| failed(&error.to_string()))
+    }
+
+    /// Follow every policy committed here: `listener` hears the current one
+    /// first and then each change in order, so a service that must act on
+    /// the policy while it runs — stop the microphone, silence output —
+    /// keeps up with what the person chose. Nothing is remembered about the
+    /// listener beyond this session, so it must hold it alive itself.
+    ///
+    /// # Errors
+    /// The policy file cannot be watched.
+    pub fn watch(&self, listener: &std::sync::Arc<PolicyListener>) -> std::io::Result<()> {
+        self.state.watch(listener)
     }
 }
 

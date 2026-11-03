@@ -396,6 +396,12 @@ impl Backend for DrmBackend {
         "drm-kms"
     }
 
+    fn presents_async(&self) -> bool {
+        // A frame is on the panel when its page flip retires, which the
+        // vertical blank reports.
+        true
+    }
+
     fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
         let inner = self.inner.borrow();
         let profiles = color::color_profiles();
@@ -950,7 +956,7 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
             }
             let presentation = state.frame_drawn(&lit.output, Some(states));
             if frame.is_empty {
-                presentation.shown(Shown::Host);
+                presentation.shown(state, Shown::Host);
             } else {
                 match lit.surface.queue_frame(Some(presentation)) {
                     Ok(()) => {
@@ -973,7 +979,9 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
         }
         Err(error) => {
             tracing::warn!(?error, output = lit.output.name(), "frame not rendered");
-            state.frame_drawn(&lit.output, None).shown(Shown::Host);
+            state
+                .frame_drawn(&lit.output, None)
+                .shown(state, Shown::Host);
         }
     }
 }
@@ -994,7 +1002,7 @@ fn vblank(
         return;
     };
     match lit.surface.frame_submitted() {
-        Ok(Some(Some(presentation))) => presentation.shown(vblank_shown(metadata)),
+        Ok(Some(Some(presentation))) => presentation.shown(state, vblank_shown(metadata)),
         Ok(_) => {}
         Err(error) => tracing::warn!(?error, output = lit.output.name(), "page flip not retired"),
     }
@@ -1451,6 +1459,9 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
+                // A frame drawn when a display's vertical blank arrives starts
+                // and ends the visual alert as the session's own frames do.
+                crate::a11y::begin_frame(&mut data.state, Instant::now());
                 render_ready(&vblank_inner, &mut data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
@@ -1618,7 +1629,13 @@ fn scan_gpu(
             ));
             continue;
         };
-        let scale = config.scales.get(&name).copied().unwrap_or(1.0);
+        // The person's scale for this connector, else the one its panel's
+        // density argues for: a monitor nobody has arranged yet comes up
+        // readable instead of at 100% with tiny text.
+        let (width, height) = mode.size();
+        let scale = config.scales.get(&name).copied().unwrap_or_else(|| {
+            crate::output::panel_scale((u32::from(width), u32::from(height)), info.size())
+        });
         let lit = light(
             gpu,
             renderers,

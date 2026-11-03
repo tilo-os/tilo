@@ -305,24 +305,25 @@ offscreen GPU fence nor a queue submission proves a physical page flip.
 The image sets `kernel.yama.ptrace_scope = 3` and
 `kernel.perf_event_paranoid = 3` (`os/usr/lib/sysctl.d/60-tilo-hardening.conf`),
 so neither `perf` nor a debugger can attach to the compositor, and that stays
-so. Instead the device admin asks the compositor to profile itself, without a
-restart or an environment variable, through the owner-only `session-diagnostics`
-actions on the admin control socket:
+so. Instead the session profiles itself, without a restart or an environment
+variable, through the `session-diagnostics` actions it publishes beside its
+other resources:
 
 ```bash
 sock="$XDG_RUNTIME_DIR/tilo-session/admin-control.sock"
-tilo-control --socket "$sock" actions invoke session-diagnostics profile-start@session-diagnostics --args-json '{"seconds":30}'
+tilo-control --socket "$sock" actions invoke so.tilo.session 'session-diagnostics\x1fprofile-start' --args-json '{"seconds":30}'
 # ... reproduce the problem ...
-tilo-control --socket "$sock" actions invoke session-diagnostics profile-stop@session-diagnostics
-tilo-control --socket "$sock" actions invoke session-diagnostics inspect@session-diagnostics   # "profile": state and last path
+tilo-control --socket "$sock" actions invoke so.tilo.session 'session-diagnostics\x1fprofile-stop'
+tilo-control --socket "$sock" actions invoke so.tilo.session 'session-diagnostics\x1fprofile-status'   # the profiler's state and last path, and the heap trims owed and run
+tilo-control --socket "$sock" raw '{"op":"process_memory"}'   # where the session's memory is
 ```
 
 `seconds` defaults to 30 and may be 1 to 600; the profile ends by itself then,
-or earlier at `profile-stop`. Only one records at a time. Like the other session
-diagnostics, these actions answer only on the device admin's own unlocked
-session socket: the development test-control socket, the agent socket, a
-sandboxed or launched app, another account and an agent acting over the admin
-socket are refused with `not_permitted`.
+or earlier at `profile-stop`. Only one records at a time. The resource holds
+nothing personal — frame timings, mapping classes, thread names — so it is
+published like the session's other readings; the memory report also answers
+`process_memory` on the owner's control socket. `tilo-control actions list
+session-diagnostics` shows the same three verbs the door offers.
 
 Each profile is a private (0700/0600) directory
 `$XDG_STATE_HOME/tilo/profiles/compositor-<unix-seconds>/`; the newest eight are

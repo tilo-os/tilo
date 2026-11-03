@@ -133,6 +133,15 @@ pub(crate) struct PendingReadout {
     pub(crate) at: Instant,
 }
 
+/// When the readouts a device has not answered yet stop waiting for what it
+/// answers: after that, what one showed stands as it is.
+pub(crate) fn next_readout_deadline(waiting: &[PendingReadout]) -> Option<Instant> {
+    waiting
+        .iter()
+        .filter_map(|pending| pending.at.checked_add(READOUT_SETTLE))
+        .min()
+}
+
 /// A hardware key: the action it runs, whether holding it repeats it, and
 /// whether it works on the lock screen (it changes a level and reveals
 /// nothing behind the lock).

@@ -430,6 +430,19 @@ impl CaptureStudio {
         }
     }
 
+    /// When the recorder next takes a frame: only a buffer that runs and is
+    /// not paused feeds itself.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        let feeding = self.feeding.as_ref().filter(|feeding| !feeding.paused)?;
+        let now = Instant::now();
+        Some(
+            feeding
+                .last
+                .and_then(|last| last.checked_add(FRAME_INTERVAL))
+                .unwrap_or(now),
+        )
+    }
+
     /// Take one frame into the recorder when it is due.
     fn feed(&mut self, compositor: &mut Compositor) {
         let place = self.presentation().place();

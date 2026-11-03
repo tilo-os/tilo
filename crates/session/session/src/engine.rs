@@ -540,8 +540,8 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
         Ok(self.identity.device_signing_key.clone())
     }
 
-    /// Without a plane, what the owner committed stays in its custody until
-    /// a plane runs and the workspace's session publishes it.
+    /// Send the owner's outgoing custody of `workspace` to its peers soon:
+    /// what was just committed leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace_id: RoomId) {
         if let Some(link) = self.link() {
             link.publish_custody(workspace_id);

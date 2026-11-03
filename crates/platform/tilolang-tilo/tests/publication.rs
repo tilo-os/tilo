@@ -8,6 +8,7 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Pick, Target};
 use tilo_resource::{JsonSchema, Model, Replica as Record, resource};
+use tilolang_runtime::SourceWords;
 use tilolang_runtime::meta::Meta;
 use tilolang_tilo::OpenEffect;
 use tilolang_tilo::action::DynAction;
@@ -139,7 +140,8 @@ fn tilolang_spec(meta: &Meta, name: &str) -> ActionSpec {
         .find(|action| action.name == name)
         .unwrap();
     let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
-    action_type(meta, &meta.kind_of("Shelf"), action, &planner).bind(Target::new("s".to_owned()))
+    action_type(meta, &meta.kind_of("Shelf"), action, &planner, &SourceWords)
+        .bind(Target::new("s".to_owned()))
 }
 
 fn native_spec(id: &str) -> ActionSpec {
@@ -293,7 +295,7 @@ fn the_planner_takes_the_arguments_as_published() {
 fn a_resource_lists_the_views_that_show_it() {
     let meta = shapes();
     let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
-    let types = ActionTypes::new(&meta, &planner);
+    let types = ActionTypes::new(&meta, &planner, &SourceWords);
     let shelf = publish_record(&types, "Shelf", "s", "My shelf");
     let id = |name: &str| {
         meta.views

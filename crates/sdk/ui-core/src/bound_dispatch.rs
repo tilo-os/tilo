@@ -5109,8 +5109,9 @@ pub(crate) fn merge_remote_owned_document(
     store: &RecordStore,
     checkout: &RecordCheckout,
     mutation: &collab_types::DocumentMutation,
-) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
-    use crate::history_mode::routes::RemoteApplyError;
+) -> Result<crate::history_mode::routes::MergedRemote, crate::history_mode::routes::RemoteApplyError>
+{
+    use crate::history_mode::routes::{MergedRemote, RemoteApplyError};
     store
         .open_existing_record_checked(checkout)
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
@@ -5124,7 +5125,7 @@ pub(crate) fn merge_remote_owned_document(
                     !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
                 })
             {
-                return Ok(None);
+                return Ok(MergedRemote::deferred());
             }
             let next = state
                 .generation
@@ -5133,30 +5134,27 @@ pub(crate) fn merge_remote_owned_document(
                     RemoteApplyError::Unavailable("document generation exhausted".into())
                 })?;
             let mut candidate = doc.clone();
-            let observed_before = state
-                .invocation_provenance
-                .borrow()
-                .is_required()
-                .then(|| doc.base_heads());
+            let before = doc.base_heads();
             let changed =
                 crate::history_mode::routes::merge_committed_into_copy(&mut candidate, mutation)?;
             identity
                 .validate(&candidate)
                 .map_err(RemoteApplyError::InvalidMutation)?;
+            let mut observed = Vec::new();
             if changed {
-                if let Some(before) = observed_before {
-                    let applied = candidate
-                        .get_changes(&before)
-                        .into_iter()
-                        .map(|change| change.hash())
-                        .collect::<Vec<_>>();
-                    // Observe only the actual newly merged range. Existing
-                    // unscoped local edits cannot acquire another caller or
-                    // become trusted merely because remote data arrived.
+                observed = candidate
+                    .get_changes(&before)
+                    .into_iter()
+                    .map(|change| change.hash())
+                    .collect::<Vec<_>>();
+                // Observe only the actual newly merged range. Existing
+                // unscoped local edits cannot acquire another caller or
+                // become trusted merely because remote data arrived.
+                if state.invocation_provenance.borrow().is_required() {
                     state
                         .invocation_provenance
                         .borrow_mut()
-                        .observe_admitted(&applied);
+                        .observe_admitted(&observed);
                 }
                 *doc = candidate;
                 // A clean continuation marker is not unfinished typing. Retire it
@@ -5166,7 +5164,15 @@ pub(crate) fn merge_remote_owned_document(
                 state.statuses.clear();
                 state.generation = Some(next);
             }
-            Ok(Some(changed))
+            if let collab_types::DocumentMutation::Incremental(bytes) = mutation {
+                // A change whose history this replica lacks waits for it, but
+                // this route delivered it, so it is never sent back.
+                observed.extend(crate::state::changes_beyond(doc, bytes));
+            }
+            Ok(MergedRemote {
+                changed: Some(changed),
+                observed,
+            })
         })
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?
 }

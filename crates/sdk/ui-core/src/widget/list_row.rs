@@ -400,57 +400,9 @@ pub struct ListRowFace<'a> {
     /// rows (48 for a finger, as a button's face grows to its target), so a finger never lands
     /// on the row beside it.
     min_target: f64,
-}
-
-/// Where `line` has one of `words`: at the start of a word of it, compared
-/// letter by letter whatever their case. Byte ranges into `line`, in order.
-fn found_spans(line: &str, words: &[&str]) -> Vec<std::ops::Range<usize>> {
-    let mut spans = Vec::new();
-    let mut previous: Option<char> = None;
-    for (at, c) in line.char_indices() {
-        let starts_word = c.is_alphanumeric() && !previous.is_some_and(char::is_alphanumeric);
-        previous = Some(c);
-        if !starts_word {
-            continue;
-        }
-        let Some(rest) = line.get(at..) else {
-            continue;
-        };
-        let longest = words
-            .iter()
-            .filter_map(|word| matched_len(rest, word))
-            .max();
-        if let Some(len) = longest
-            && spans
-                .last()
-                .is_none_or(|last: &std::ops::Range<usize>| last.end <= at)
-        {
-            spans.push(at..at + len);
-        }
-    }
-    spans
-}
-
-/// How many bytes of the start of `text` are `word`, letter for letter
-/// whatever their case; `None` when it does not start with it.
-fn matched_len(text: &str, word: &str) -> Option<usize> {
-    if word.is_empty() {
-        return None;
-    }
-    let mut wanted = word.chars().flat_map(char::to_lowercase).peekable();
-    let mut len = 0;
-    for c in text.chars() {
-        if wanted.peek().is_none() {
-            break;
-        }
-        for lower in c.to_lowercase() {
-            if wanted.next() != Some(lower) {
-                return None;
-            }
-        }
-        len += c.len_utf8();
-    }
-    wanted.peek().is_none().then_some(len)
+    /// Where the leading checkbox is on its way at this frame, from the row's
+    /// [`crate::widget::checkbox::CheckMotion`]; at rest on its value when unset.
+    check_pose: Option<crate::widget::checkbox::CheckPose>,
 }
 
 impl<'a> ListRowFace<'a> {
@@ -493,7 +445,16 @@ impl<'a> ListRowFace<'a> {
             interaction: Interaction::default(),
             frame: None,
             min_target: 0.0,
+            check_pose: None,
         }
+    }
+
+    /// Draw the leading checkbox where its motion is this frame rather than at rest on its
+    /// value ([`crate::widget::checkbox::CheckMotion::pose`]).
+    #[must_use]
+    pub fn check_pose(mut self, pose: crate::widget::checkbox::CheckPose) -> Self {
+        self.check_pose = Some(pose);
+        self
     }
 
     /// Mark `words`, what a search found the row by, where the title has
@@ -1664,12 +1625,11 @@ impl<'a> ListRowFace<'a> {
             }
             RowLeading::Checkbox { checked } => {
                 let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
-                crate::widget::Checkbox::paint(
-                    ctx.scene,
-                    ctx.transform,
-                    theme,
-                    &crate::widget::checkbox::CheckboxFace::new(r, checked),
-                );
+                let mut face = crate::widget::checkbox::CheckboxFace::new(r, checked);
+                if let Some(pose) = self.check_pose {
+                    face = face.pose(pose);
+                }
+                crate::widget::Checkbox::paint(ctx.scene, ctx.transform, theme, &face);
             }
             RowLeading::Swatch(colour) => {
                 let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
@@ -1808,49 +1768,6 @@ impl<'a> ListRowFace<'a> {
         }
         node
     }
-}
-
-fn paint_badge(ctx: &mut PaintCtx<'_>, _m: &RowMetrics, column: Rect, badge: &str) {
-    paint_code_badge(ctx.scene, ctx.transform, ctx.text, ctx.theme, column, badge);
-}
-
-/// A short classifying code (`GET`, `.rs`) on its quiet pill at the leading
-/// edge of `column`, centred on the column's line: the one badge a list
-/// row and a navigation row share.
-pub(crate) fn paint_code_badge(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    column: Rect,
-    badge: &str,
-) {
-    let style = RowMetrics::new(theme).badge;
-    let (width, height) = text.measure_style(badge, None, &style);
-    let pad = f64::from(theme.tokens.spacing.s1);
-    let pill = Rect::from_origin_size(
-        (
-            column.x0,
-            column.center().y - f64::from(height) / 2.0 - pad / 2.0,
-        ),
-        (f64::from(width) + 2.0 * pad, f64::from(height) + pad),
-    );
-    let raised = theme.tokens.colors.surfaces.raised;
-    crate::surface::card(
-        scene,
-        transform,
-        pill,
-        f64::from(theme.tokens.radii.detail),
-        raised,
-    );
-    text.draw_style(
-        scene,
-        badge,
-        theme.text_dim,
-        transform.pre_translate(vello::kurbo::Vec2::new(pill.x0 + pad, pill.y0 + pad / 2.0)),
-        None,
-        &style,
-    );
 }
 
 /// Owned form of [`RowLeading`] for the retained row.
@@ -2067,6 +1984,16 @@ pub struct ListRow {
     theme: Option<Theme>,
     rect: Rect,
     dirty: bool,
+    /// The pace the row's own motion plays at (its mark, its coming and going in a list).
+    feel: crate::motion::Feel,
+    /// How far the leading checkbox's fill and mark have come: a row's checkbox is painted in
+    /// the row, so the row keeps the motion ([`crate::widget::checkbox::CheckMotion`]).
+    check: crate::widget::checkbox::CheckMotion,
+    /// Where that motion is this frame, for the face it draws.
+    check_pose: Option<crate::widget::checkbox::CheckPose>,
+    /// A host that builds the row anew for what it shows now: the one built
+    /// in its place goes on from its mark (`motion::keep`).
+    hand_on: crate::motion::HandOn<KeptRow>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2135,6 +2062,10 @@ impl ListRow {
             theme: None,
             rect: Rect::ZERO,
             dirty: true,
+            feel: crate::motion::Feel::Standard,
+            check: crate::widget::checkbox::CheckMotion::default(),
+            check_pose: None,
+            hand_on: crate::motion::HandOn::default(),
         }
     }
 
@@ -2368,6 +2299,22 @@ impl ListRow {
             on_toggle: Box::new(on_toggle),
         });
         self
+    }
+
+    /// Play the row's own motion — its mark, its coming and going in a list — at `feel` rather
+    /// than the theme's pace.
+    #[must_use]
+    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// [`Self::with_feel`] on a row already built.
+    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+        if self.feel != feel {
+            self.feel = feel;
+            self.dirty = true;
+        }
     }
 
     /// [`Self::checkbox`] published as the row's view action `check`: a
@@ -2905,6 +2852,9 @@ impl ListRow {
         if self.answers_pointer() {
             face.min_target = f64::from(self.environment.minimum_collection_row());
         }
+        if let Some(pose) = self.check_pose {
+            face = face.check_pose(pose);
+        }
         if self.two_line_title {
             face = face.two_line_title();
         }
@@ -3216,6 +3166,9 @@ impl Widget for ListRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.laid_out = true;
+        if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
+            self.take_up(kept);
+        }
         let metrics = RowMetrics::new(theme);
         let column_gap = metrics.column_gap;
         let pad_y = metrics.pad_y;
@@ -3366,6 +3319,9 @@ impl Widget for ListRow {
             self.dirty = true;
         }
         self.rect = rect;
+        if let Some(kept) = self.hand_on.place(rect) {
+            self.take_up(kept);
+        }
         let Some(trailing) = &mut self.trailing else {
             return;
         };
@@ -3428,6 +3384,20 @@ impl Widget for ListRow {
             return;
         }
         let band = self.text_band();
+        let checked = match &self.leading {
+            Some(Leading::Checkbox { checked, .. }) => Some(*checked),
+            _ => None,
+        };
+        if let Some(checked) = checked {
+            let now = crate::motion::frame_now();
+            self.check.follow_input(
+                checked,
+                crate::widget::checkbox::CheckGlyph::Check,
+                self.feel.over(theme.motion()),
+                now,
+            );
+            self.check_pose = Some(self.check.pose(now));
+        }
         self.title_elided = self.with_face(|face| {
             face.paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -3655,10 +3625,17 @@ impl Widget for ListRow {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
+            || self.check.is_moving(crate::motion::frame_now())
             || self
                 .trailing
                 .as_ref()
                 .is_some_and(|t| t.element.needs_redraw())
+    }
+
+    /// Frames only while its leading checkbox is on its way.
+    fn needs_animation_frame(&self) -> bool {
+        self.check.is_moving(crate::motion::frame_now())
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     fn mark_drawn(&mut self) {
@@ -3939,6 +3916,16 @@ mod keys;
 #[path = "list_row_shape.rs"]
 mod shape;
 pub use shape::{RowLeadingShape, RowShape};
+
+mod kept;
+use kept::KeptRow;
+
+mod paint;
+use paint::paint_badge;
+pub(crate) use paint::paint_code_badge;
+
+mod spans;
+use spans::found_spans;
 
 #[cfg(test)]
 #[path = "list_row_tests.rs"]

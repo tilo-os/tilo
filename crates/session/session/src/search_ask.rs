@@ -69,13 +69,17 @@ pub(crate) struct Ask {
     state: Shared,
     /// The workspace the setup row opens Settings in.
     workspace: String,
+    /// What wakes the session's loop as the answer is written, so the row
+    /// shows it as it lands.
+    wake: Option<tilo_service::Wake>,
 }
 
 impl Ask {
-    pub(crate) fn new(state: Shared, workspace: &str) -> Self {
+    pub(crate) fn new(state: Shared, workspace: &str, wake: Option<tilo_service::Wake>) -> Self {
         Self {
             state,
             workspace: workspace.to_owned(),
+            wake,
         }
     }
 
@@ -104,7 +108,8 @@ impl Ask {
         };
         drop(state);
         let needle = needle.to_owned();
-        std::thread::spawn(move || answer(needle, &sender));
+        let wake = self.wake.clone();
+        std::thread::spawn(move || answer(needle, &sender, wake.as_ref()));
     }
 
     fn row(&self, needle: &str) -> Hit {
@@ -186,22 +191,40 @@ fn chosen() -> Option<(String, String)> {
 
 /// Ask `question` through the session's model gateway, on this thread (the
 /// ask is started on one of its own), sending what comes as it is written.
-fn answer(question: String, deltas: &Sender<Chunk>) {
+fn answer(question: String, deltas: &Sender<Chunk>, wake: Option<&tilo_service::Wake>) {
     let Some(models) = crate::activity_models::models() else {
-        let _ = deltas.send(Chunk::Failed(tilo_desktop_search::i18n::t(
-            "search-ask-no-gateway",
-        )));
+        land(
+            deltas,
+            wake,
+            Chunk::Failed(tilo_desktop_search::i18n::t("search-ask-no-gateway")),
+        );
         return;
     };
-    answer_with(&models, question, deltas);
+    answer_with(&models, question, deltas, wake);
+}
+
+/// What the answering thread wrote back, waking the loop so the row shows it.
+fn land(deltas: &Sender<Chunk>, wake: Option<&tilo_service::Wake>, chunk: Chunk) {
+    if deltas.send(chunk).is_ok()
+        && let Some(wake) = wake
+    {
+        wake();
+    }
 }
 
 /// [`answer`] against a model capability, wherever it comes from.
-fn answer_with(models: &ui::models::Models, question: String, deltas: &Sender<Chunk>) {
+fn answer_with(
+    models: &ui::models::Models,
+    question: String,
+    deltas: &Sender<Chunk>,
+    wake: Option<&tilo_service::Wake>,
+) {
     let Ok(runtime) = tilo_rt::try_app() else {
-        let _ = deltas.send(Chunk::Failed(tilo_desktop_search::i18n::t(
-            "search-ask-no-gateway",
-        )));
+        land(
+            deltas,
+            wake,
+            Chunk::Failed(tilo_desktop_search::i18n::t("search-ask-no-gateway")),
+        );
         return;
     };
     let request = ModelRequest {
@@ -222,22 +245,19 @@ fn answer_with(models: &ui::models::Models, question: String, deltas: &Sender<Ch
         max_output_tokens: 700,
     };
     let writing = deltas.clone();
+    let waking = wake.cloned();
     let outcome = runtime.block_on(async move {
         let sink: agent_provider_config::protocol::StreamSink<'_> = Box::new(move |event| {
             if let StreamEvent::TextDelta { text } = event {
-                let _ = writing.send(Chunk::Text(text));
+                land(&writing, waking.as_ref(), Chunk::Text(text));
             }
         });
         models.stream(&request, sink).await
     });
     match outcome {
         Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            let _ = deltas.send(Chunk::Failed(error.message));
-        }
-        Err(error) => {
-            let _ = deltas.send(Chunk::Failed(error.to_string()));
-        }
+        Ok(Err(error)) => land(deltas, wake, Chunk::Failed(error.message)),
+        Err(error) => land(deltas, wake, Chunk::Failed(error.to_string())),
     }
 }
 
@@ -313,7 +333,7 @@ mod tests {
     use super::*;
 
     fn setup(workspace: &str) -> Ask {
-        Ask::new(Shared::default(), workspace)
+        Ask::new(Shared::default(), workspace, None)
     }
 
     /// A question with nothing set up leads to the place that sets it up:
@@ -434,7 +454,7 @@ mod tests {
             "A conflict-free ",
             "replicated data type.",
         ])));
-        answer_with(&models, "what is a CRDT?".into(), &sender);
+        answer_with(&models, "what is a CRDT?".into(), &sender, None);
         // The gateway returns, so nothing more comes: the thread that would
         // have written more is gone with its end of the channel.
         drop(sender);

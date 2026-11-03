@@ -684,6 +684,16 @@ impl Lower<'_> {
         {
             return Ok((Operand::Len(field.id.clone()), Ty::Int));
         }
+        // `.some(v)`: an option holding a value compares as the value it holds. An item whose
+        // field holds none equals none and equals no value, so `x.parent == .some(t)` keeps the
+        // items whose parent is `t`, and the field's column answers it like `x.parent == t`.
+        if let ExprKind::Variant { name, args } = &e.kind
+            && name.name == "some"
+            && let Some([arg]) = args.as_deref()
+        {
+            let inner = want.map(held);
+            return self.operand(&arg.value, inner.as_ref());
+        }
         // A value the asking code holds, compared as it is when the predicate is asked.
         if let (ExprKind::Ident(name), Fields::Param(param), Some(outer)) =
             (&e.kind, self.fields, self.outer)

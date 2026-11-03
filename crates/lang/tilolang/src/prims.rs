@@ -69,7 +69,7 @@ pub const PRIMS: &[Prim] = &[
     // The toolkit's components, under the names a view writes most: each is that component's
     // call and nothing more.
     shorthand("text", "Text"),
-    shorthand("rich_text", "RichText"),
+    shorthand("rich_text", "BlockEditor"),
     shorthand("section", "Section"),
     shorthand("avatar", "Avatar"),
     shorthand("progress", "ProgressBar"),
@@ -77,8 +77,8 @@ pub const PRIMS: &[Prim] = &[
     shorthand("checkbox", "Checkbox"),
     shorthand("input", "TextInput"),
     // Rich text typed, bound to a `RichText`: what a completion picks goes in as a reference
-    // (`ui.RichInput`). Bound to the field marked `(body)`, the document editor draws it: its
-    // paragraphs, lists, quotes and tables, with what is typed as Markdown becoming them.
+    // (`ui.RichInput`). A document's own running text is `ui.BlockEditor`, which a view places
+    // and binds to the field itself.
     shorthand("rich_input", "RichInput"),
     shorthand("image", "Image"),
     // A list of resources in the content (a window's own list is `std.list`), and a page:

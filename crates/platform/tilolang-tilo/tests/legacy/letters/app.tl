@@ -71,7 +71,7 @@ view editor(d: Draft) {
             input(bind: d.to, placeholder: "name@example.org")
         }
         input(bind: d.subject, placeholder: "Subject")
-        input(bind: d.body, placeholder: "Write your letter", lines: 10)
+        ui.BlockEditor(bind: d.body, placeholder: "Write your letter")
     }
 }
 

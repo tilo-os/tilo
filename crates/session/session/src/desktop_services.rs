@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
 use tilo_network_secret_agent::store::{RoamingWifiSlot, VaultStore};
+use tilo_portal::capture_broker::CaptureKind;
 use tilo_portal::{Portal, PortalAuthenticator, PortalCaller, Requesters, settings};
 use tilo_service::{Questions, Service};
 
@@ -71,6 +72,10 @@ pub struct DesktopServices {
     /// session asks the machine goes through: one connection, not one per
     /// service.
     system: Option<zbus::Connection>,
+    /// The observer that keeps the person's lockdown policy applied while the
+    /// session runs: dropping it stops the policy reaching the services, so
+    /// it is kept, never read.
+    _lockdown: Option<Arc<tilo_portal::lockdown::PolicyListener>>,
 }
 
 impl DesktopServices {
@@ -132,6 +137,7 @@ impl DesktopServices {
                 roaming.clone(),
             ));
         }
+        let lockdown = follow_lockdown(portal.as_ref());
         Ok(Self {
             runtime,
             questions,
@@ -143,6 +149,7 @@ impl DesktopServices {
             tray,
             running,
             system,
+            _lockdown: lockdown,
         })
     }
 
@@ -313,6 +320,34 @@ impl DesktopServices {
     #[must_use]
     pub fn system_bus(&self) -> Option<&zbus::Connection> {
         self.system.as_ref()
+    }
+}
+
+/// Follow the person's lockdown policy while the services run: turning a
+/// switch on stops what is already happening, not only what starts next.
+/// Sound output is silenced at every player's next write and opens nothing
+/// new; the camera and the microphone stop being handed out, and the streams
+/// already handed out are revoked with their portal sessions.
+///
+/// `None` where the policy cannot be followed: what the portal checks at
+/// each request still enforces what the person chose, and an app that was
+/// already capturing keeps its stream until it is stopped.
+fn follow_lockdown(portal: Option<&Portal>) -> Option<Arc<tilo_portal::lockdown::PolicyListener>> {
+    let captures = portal.map(|portal| portal.captures().clone());
+    let listener: Arc<tilo_portal::lockdown::PolicyListener> = Arc::new(move |policy| {
+        media::audio_output::set_disabled(policy.disable_sound_output);
+        let Some(captures) = &captures else {
+            return;
+        };
+        captures.set_lockdown(CaptureKind::Camera, policy.disable_camera);
+        captures.set_lockdown(CaptureKind::Microphone, policy.disable_microphone);
+    });
+    match tilo_portal::lockdown::LockdownBackend::for_session().watch(&listener) {
+        Ok(()) => Some(listener),
+        Err(error) => {
+            tracing::warn!(%error, "the lockdown policy is not followed while the session runs");
+            None
+        }
     }
 }
 

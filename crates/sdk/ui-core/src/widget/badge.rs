@@ -319,6 +319,8 @@ pub struct Badge {
     laid_out_leaving: bool,
     /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
+    /// The pace its count changing plays at, when it says something other than the theme's.
+    feel: crate::motion::Feel,
     /// A view that builds the badge anew on each change: the one built in
     /// its place goes on from it (`motion::keep`), as if its count had
     /// been set.
@@ -359,6 +361,7 @@ impl Badge {
             laid_out: false,
             laid_out_leaving: false,
             motion: None,
+            feel: crate::motion::Feel::Standard,
             hand_on: crate::motion::HandOn::default(),
         }
     }
@@ -463,7 +466,7 @@ impl Badge {
         now: crate::time::Instant,
     ) {
         let content = self.drawn_content();
-        let motion = theme.motion();
+        let motion = self.feel.over(theme.motion());
         let pose =
             crate::motion::Appear::pose(self.presence.progress(now), self.rect.center(), motion);
         let modified = matches!(content, BadgeContent::Modified);
@@ -531,6 +534,18 @@ impl Badge {
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
         self
+    }
+
+    /// Play its count changing at `feel` rather than the theme's pace.
+    #[must_use]
+    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// [`Self::with_feel`] on a badge already built.
+    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+        self.feel = feel;
     }
 
     /// `None` when no text should be drawn (the dot variant, or the
@@ -720,7 +735,7 @@ impl Widget for Badge {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let now = crate::motion::frame_now();
-        self.motion = Some(theme.motion());
+        self.motion = Some(self.feel.over(theme.motion()));
         if self.leaving.is_some() && !self.presence.is_visible(now) {
             self.leaving = None;
         }

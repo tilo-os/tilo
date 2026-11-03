@@ -43,7 +43,7 @@ use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
 use tilo_app_launch::routing;
 use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
-use tilo_compositor::Compositor;
+use tilo_compositor::{Compositor, ReadableWatch};
 use tilo_desktop_policy::DesktopPolicy;
 use tilo_surface_host::DesktopHost;
 use ui::Theme;
@@ -253,6 +253,16 @@ impl AppTabs {
             host_shell: HostShellAsks::default(),
             socket,
         })
+    }
+
+    /// End the loop's wait when an app connects, so its window's first ask is
+    /// answered on the pass that follows.
+    ///
+    /// # Errors
+    /// The loop took no more sources.
+    pub(crate) fn wake_on(&mut self, compositor: &mut Compositor) -> std::io::Result<()> {
+        self.socket.watch = Some(crate::sockets::watch(compositor, &self.socket.listener)?);
+        Ok(())
     }
 
     /// Answer what the apps asked since the last pass: each ask is a desk
@@ -751,6 +761,8 @@ fn target_open(app: &str, target: &str) -> Option<Open> {
 /// would never be woken at all.
 struct Socket {
     listener: UnixListener,
+    /// What ends the loop's wait while an app connects or writes.
+    watch: Option<ReadableWatch>,
     path: PathBuf,
     /// The socket standing at `path` when it was bound: a session that takes
     /// the path later binds one of its own, which this one leaves standing.
@@ -778,6 +790,7 @@ impl Socket {
         Ok(Self {
             standing: standing(&path),
             listener,
+            watch: None,
             path,
             next: AtomicU64::new(1),
             launches,
@@ -1081,14 +1094,8 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let (second, _second_answers) = socket_at(&path);
         // Nothing connects to the socket the first one bound: ending it
-        // returns all the same.
-        let (ended, done) = mpsc::channel();
-        std::thread::spawn(move || {
-            drop(first);
-            let _ = ended.send(());
-        });
-        done.recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the session ends without a connection to wake it");
+        // returns all the same, on the thread that serves it.
+        drop(first);
         assert!(path.exists(), "the second session's socket stands");
         drop(second);
         assert!(

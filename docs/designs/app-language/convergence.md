@@ -184,6 +184,14 @@ it stands with `delivery(r)`: `.none` until the resource's actions queued one, e
     (the placement records it). Should that place be in a cycle too, the item is in no
     collection until someone moves it. A single action that would move an item into itself is
     refused.
+  - An item's own field can point at another item, as a task's `parent` names the task it is a
+    subtask of, and a tree shows the items it reaches. Two people moving items into each
+    other's subtree at the same moment can close a loop; the tree does not follow the link of
+    the item that comes last in the collection's order, so the loop is broken the same way on
+    every device and every item shows exactly once. An item whose parent is not in the tree
+    stands at the top. Moving an item in an outline — a drag, `Tab`, Shift-Tab — sets its new
+    parent and its place among the new siblings in one action, recorded by the neighbour it
+    goes before, so two moves at once leave the item in one place and under one parent.
 - **Records written before items were flat** held each item inside the collection it was
   inserted into. They are read where they are: each nested item by its id, placed in the
   collection and at the order key it has, until a move or removal writes its placement into its

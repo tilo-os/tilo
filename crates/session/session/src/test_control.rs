@@ -17,11 +17,12 @@
 //! The owner's door serves what a person's own scripts need to drive their desktop through
 //! the model it publishes — the action model (`actions_enumerate`, `actions_invoke`,
 //! `actions_status` and `actions_cancel`), the state it shows (`state_dump`, `watch` and
-//! `windows`) — and refuses every other op with `not_permitted` ([`Op::owner_serves`],
-//! [`served`]). Injected input, screenshots of the person's screen, hosted surfaces'
-//! controls, fixtures and the test identity live on a development session's socket only.
-//! Nothing is invoked there while the screen is locked, and the state it shows carries
-//! nothing the lock hides.
+//! `windows`) — and the session's own diagnostics (`process_memory`, and the profiler's
+//! `profile_start`, `profile_status` and `profile_stop`) — and refuses every other op with
+//! `not_permitted` ([`Op::owner_serves`], [`served`]). Injected input, screenshots of the
+//! person's screen, hosted surfaces' controls, fixtures and the test identity live on a
+//! development session's socket only. Nothing is invoked there while the screen is locked,
+//! and the state it shows carries nothing the lock hides.
 //!
 //! What it answers, as the tools that drive a desktop need it:
 //!
@@ -49,7 +50,11 @@
 //!   action: a listing is a catalogue page, and an invocation the action model's own request;
 //! - `watch`: the desk's state as it changes, streamed off the session's own change signal — no
 //!   polling, and nothing is dumped while nobody watches;
-//! - `state_dump` and `windows`: the desk as it is now, and one row per open window.
+//! - `state_dump` and `windows`: the desk as it is now, and one row per open window;
+//! - `process_memory`: the session's own memory by kind of mapping, read with `mincore` as
+//!   Tilo's kernel has no `smaps`, and `profile_start`/`profile_status`/`profile_stop`: the
+//!   session profiled with its own instruments, frames, phases and threads, for a length the
+//!   owner asks for.
 //!
 //! Each connection is read on a thread of its own. What a request asks of the compositor, the
 //! desk or the hosted surfaces is answered on the loop's pass, the only place that may touch
@@ -226,23 +231,24 @@ pub fn owner_decision(
 
 /// What the session is, for the answers that read it: the doors every hosted surface's actions
 /// go through, the desk's tree, what stands over it, the workspaces this computer holds, whether
-/// the person locked the screen, and whether the lock screen's own frame is on it.
+/// the person locked the screen, whether the lock screen's own frame is on it, and the agents
+/// seated at the person's door.
 #[derive(Clone, Copy)]
 pub(crate) struct Desk<'a> {
     pub(crate) doors: &'a Doors,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
     pub(crate) engine: Option<&'a Engine>,
+    /// The agents the person admitted at its door, as the desk's bar shows them.
+    pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
 }
 
 /// Answer what `control`, when there is one, was asked since the last pass, and publish the
 /// state its watchers read.
-pub(crate) fn serve(control: Option<&Control>, compositor: &mut Compositor, desk: Desk<'_>) {
-    if let Some(control) = control {
-        control.serve(compositor, &desk);
-    }
+pub(crate) fn serve(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
+    control.serve(compositor, &desk);
 }
 
 /// One request a connection sent the loop, and where its answer goes.
@@ -250,8 +256,9 @@ struct Asked {
     /// The op it asks, which the socket it came in on serves.
     op: Op,
     request: Json,
-    /// The socket it came in on: the owner's door answers some ops differently.
-    gate: Gate,
+    /// What it acts as: the socket it came in on, and the app and workspace
+    /// it was admitted for.
+    ctx: Context,
     answer: Sender<Json>,
 }
 
@@ -272,6 +279,8 @@ pub(crate) struct Control {
 /// One socket: where it listens, whose it is, and what its connections answer from.
 struct Socket {
     listener: UnixListener,
+    /// What ends the loop's wait while a client connects.
+    watch: Option<tilo_compositor::ReadableWatch>,
     path: PathBuf,
     gate: Gate,
     door: Arc<Door>,
@@ -284,6 +293,31 @@ enum Gate {
     Dev,
     /// The owner's door: this account's own programs, and only theirs.
     Owner,
+    /// A program inside an app this session started: it acts in that app's
+    /// workspace, with the app's own permissions, never the owner's.
+    App,
+}
+
+/// The workspace a connection of the app door acts in, and the app it acts as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Scope {
+    app: String,
+    workspace: String,
+}
+
+/// What a connection is: the socket it came in on, and, at the app door, the
+/// app and workspace it was admitted for.
+#[derive(Clone)]
+struct Context {
+    gate: Gate,
+    scope: Option<Arc<Scope>>,
+}
+
+impl Context {
+    /// A connection of the socket `gate` serves: no app narrower than it.
+    const fn at(gate: Gate) -> Self {
+        Self { gate, scope: None }
+    }
 }
 
 /// One op of the control protocol, as a request's `op` names it.
@@ -307,7 +341,11 @@ enum Op {
     Pinch,
     PointerButton,
     PointerMove,
+    ProfileStart,
+    ProfileStatus,
+    ProfileStop,
     ProvisionTestIdentity,
+    ProcessMemory,
     Scroll,
     SearchRows,
     Snapshot,
@@ -320,7 +358,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 24] = [
+    const ALL: [Self; 28] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
@@ -336,6 +374,10 @@ impl Op {
         Self::Pinch,
         Self::PointerButton,
         Self::PointerMove,
+        Self::ProcessMemory,
+        Self::ProfileStart,
+        Self::ProfileStatus,
+        Self::ProfileStop,
         Self::ProvisionTestIdentity,
         Self::Scroll,
         Self::SearchRows,
@@ -365,6 +407,10 @@ impl Op {
             "pinch" => Self::Pinch,
             "pointer_button" => Self::PointerButton,
             "pointer_move" => Self::PointerMove,
+            "process_memory" => Self::ProcessMemory,
+            "profile_start" => Self::ProfileStart,
+            "profile_status" => Self::ProfileStatus,
+            "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
@@ -396,6 +442,10 @@ impl Op {
             Self::Pinch => "pinch",
             Self::PointerButton => "pointer_button",
             Self::PointerMove => "pointer_move",
+            Self::ProcessMemory => "process_memory",
+            Self::ProfileStart => "profile_start",
+            Self::ProfileStatus => "profile_status",
+            Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
@@ -419,6 +469,10 @@ impl Op {
                 | Self::ActionsEnumerate
                 | Self::ActionsInvoke
                 | Self::ActionsStatus
+                | Self::ProcessMemory
+                | Self::ProfileStart
+                | Self::ProfileStatus
+                | Self::ProfileStop
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
@@ -431,7 +485,7 @@ impl Op {
 fn served(gate: Gate, op: Op) -> bool {
     match gate {
         Gate::Dev => true,
-        Gate::Owner => op.owner_serves(),
+        Gate::Owner | Gate::App => op.owner_serves(),
     }
 }
 
@@ -440,10 +494,12 @@ fn not_this_doors(op: Op) -> Json {
     refusal(
         "not_permitted",
         &format!(
-            "the owner's control door serves the action model and the state it shows \
-             (`actions_cancel`, `actions_enumerate`, `actions_invoke`, `actions_status`, \
-             `state_dump`, `watch` and `windows`), not `{}`; synthetic input and screenshots \
-             exist only on a development session's test-control socket",
+            "this control door serves the action model, the state it shows and the \
+             session's own diagnostics (`actions_cancel`, `actions_enumerate`, \
+             `actions_invoke`, `actions_status`, `process_memory`, `profile_start`, \
+             `profile_status`, `profile_stop`, `state_dump`, `watch` and `windows`), not \
+             `{}`; synthetic input and screenshots exist only on a development session's \
+             test-control socket",
             op.name()
         ),
     )
@@ -451,10 +507,10 @@ fn not_this_doors(op: Op) -> Json {
 
 /// The answer for an `op` the protocol does not answer at all, naming the ones the socket
 /// `gate` serves.
-fn unsupported(gate: Gate, request: &Json) -> Json {
+fn unsupported(ctx: &Context, request: &Json) -> Json {
     let answers = Op::ALL
         .iter()
-        .filter(|op| served(gate, **op))
+        .filter(|op| served(ctx.gate, **op))
         .map(|op| format!("`{}`", op.name()))
         .collect::<Vec<_>>()
         .join(", ");
@@ -469,7 +525,7 @@ fn unsupported(gate: Gate, request: &Json) -> Json {
 
 /// What a connection asks on: the loop's queue and its wake, and the actions and change signal
 /// it may read without the loop.
-struct Door {
+pub(crate) struct Door {
     asks: Mutex<Sender<Asked>>,
     wake: Wake,
     actions: Arc<Actions>,
@@ -477,8 +533,9 @@ struct Door {
 }
 
 impl Control {
-    /// The sockets `options` name, opened; `None`, saying why, when none opens.
-    pub(crate) fn open(options: &crate::Options, host: Arc<agent_door::Host>) -> Option<Self> {
+    /// The sockets `options` name, opened. The actions and the change signal exist whether or
+    /// not one does: the app door answers the programs it admits through them too.
+    pub(crate) fn open(options: &crate::Options, host: Arc<agent_door::Host>) -> Self {
         let (asks, asked) = channel();
         let changes = Arc::new(Changes::new(options.wake.handle()));
         let actions = Arc::new(Actions {
@@ -513,14 +570,31 @@ impl Control {
                 }
             }
         }
-        (!sockets.is_empty()).then_some(Self {
+        Self {
             sockets,
             door,
             asked,
             held: RefCell::new(BTreeSet::new()),
             published: std::cell::Cell::new(None),
             changes,
-        })
+        }
+    }
+
+    /// The door a program inside an app this session started is served at.
+    pub(crate) fn door(&self) -> Arc<Door> {
+        Arc::clone(&self.door)
+    }
+
+    /// End the loop's wait when a client connects on any of its sockets, so what it asks is
+    /// answered on the pass that follows.
+    ///
+    /// # Errors
+    /// The loop took no more sources.
+    pub(crate) fn wake_on(&mut self, compositor: &mut Compositor) -> std::io::Result<()> {
+        for socket in &mut self.sockets {
+            socket.watch = Some(crate::sockets::watch(compositor, &socket.listener)?);
+        }
+        Ok(())
     }
 
     /// Take the connections waiting, publish the state its watchers read, and answer what was
@@ -538,12 +612,12 @@ impl Control {
         while let Ok(Asked {
             op,
             request,
-            gate,
+            ctx,
             answer,
         }) = self.asked.try_recv()
         {
             let _ = answer.send(loop_answer(
-                op, &request, gate, compositor, desk, &self.held,
+                op, &request, &ctx, compositor, desk, &self.held,
             ));
         }
     }
@@ -575,6 +649,7 @@ impl Socket {
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
+            watch: None,
             path: path.to_path_buf(),
             gate,
             door,
@@ -601,10 +676,10 @@ impl Socket {
                 continue;
             }
             let door = Arc::clone(&self.door);
-            let gate = self.gate;
+            let ctx = Context::at(self.gate);
             let spawned = std::thread::Builder::new()
                 .name("tilo-control".into())
-                .spawn(move || serve_connection(stream, gate, &door));
+                .spawn(move || serve_connection(stream, &ctx, &door, None));
             if let Err(error) = spawned {
                 tracing::warn!(%error, "control: a connection could not be served");
             }
@@ -647,6 +722,23 @@ fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
     let _ = stream.write_all(format!("{reply}\n").as_bytes());
 }
 
+/// Serve one connection of a program inside an app this session started: the control protocol,
+/// as that app, in the workspace the session started it into. `first` is the line the agent
+/// door already read.
+pub(crate) fn serve_app(
+    stream: UnixStream,
+    first: String,
+    app: String,
+    workspace: String,
+    door: &Door,
+) {
+    let ctx = Context {
+        gate: Gate::App,
+        scope: Some(Arc::new(Scope { app, workspace })),
+    };
+    serve_connection(stream, &ctx, door, Some(first));
+}
+
 /// A connection's writer: shared with the thread that streams the desk's state, so a state line
 /// and an answer never interleave.
 type Writer = Arc<Mutex<UnixStream>>;
@@ -654,7 +746,7 @@ type Writer = Arc<Mutex<UnixStream>>;
 /// Read `stream`'s requests one line at a time, answer each, and write its answer, until the
 /// client closes it or the session ends. `gate` is the socket it came in on: an op that socket
 /// does not serve is refused here, before it reaches anything ([`served`]).
-fn serve_connection(stream: UnixStream, gate: Gate, door: &Door) {
+fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Option<String>) {
     if let Err(error) = stream.set_nonblocking(false) {
         tracing::debug!(%error, "control: a connection cannot block");
         return;
@@ -664,7 +756,16 @@ fn serve_connection(stream: UnixStream, gate: Gate, door: &Door) {
     };
     let writer: Writer = Arc::new(Mutex::new(writer));
     let mut watching: Option<Watching> = None;
-    for line in BufReader::new(stream).lines() {
+    // The app door reads a client's first line to know what it asks before it
+    // hands the connection over.
+    let reader: Box<dyn io::BufRead + Send> = match first {
+        Some(first) => Box::new(BufReader::new(io::Read::chain(
+            io::Cursor::new(format!("{first}\n").into_bytes()),
+            stream,
+        ))),
+        None => Box::new(BufReader::new(stream)),
+    };
+    for line in reader.lines() {
         let Ok(line) = line else {
             break;
         };
@@ -674,13 +775,13 @@ fn serve_connection(stream: UnixStream, gate: Gate, door: &Door) {
         let answer = match serde_json::from_str::<Json>(&line) {
             Err(error) => refusal("parse_error", &error.to_string()),
             Ok(request) => match Op::of(&request) {
-                None => unsupported(gate, &request),
-                Some(op) if !served(gate, op) => not_this_doors(op),
-                Some(op) => match asked_here(op, &request, &writer, &mut watching, gate, door) {
+                None => unsupported(ctx, &request),
+                Some(op) if !served(ctx.gate, op) => not_this_doors(op),
+                Some(op) => match asked_here(op, &request, &writer, &mut watching, ctx, door) {
                     Some(answer) => answer,
                     // The loop answers every request it takes; a session that ends drops it
                     // unanswered.
-                    None => match ask_loop(op, &request, gate, door) {
+                    None => match ask_loop(op, &request, ctx, door) {
                         Some(answer) => answer,
                         None => return,
                     },
@@ -697,7 +798,7 @@ fn serve_connection(stream: UnixStream, gate: Gate, door: &Door) {
 }
 
 /// Hand `request` to the loop and wait for its answer; `None` when the session ended.
-fn ask_loop(op: Op, request: &Json, gate: Gate, door: &Door) -> Option<Json> {
+fn ask_loop(op: Op, request: &Json, ctx: &Context, door: &Door) -> Option<Json> {
     let (answer, answered) = channel();
     door.asks
         .lock()
@@ -705,7 +806,7 @@ fn ask_loop(op: Op, request: &Json, gate: Gate, door: &Door) -> Option<Json> {
         .send(Asked {
             op,
             request: request.clone(),
-            gate,
+            ctx: ctx.clone(),
             answer,
         })
         .ok()?;
@@ -732,9 +833,9 @@ impl Watching {
 }
 
 /// Stream the desk's state to `writer` until it stops watching, off the change signal the loop
-/// publishes on: nothing here polls, and a change wakes the wait. What `gate` may see of it is
-/// what it is sent ([`owner_shown`]).
-fn stream_state(writer: &Writer, gate: Gate, door: &Door) -> Watching {
+/// publishes on: nothing here polls, and a change wakes the wait. What the connection may see of
+/// it is what it is sent ([`shown`]).
+fn stream_state(writer: &Writer, ctx: &Context, door: &Door) -> Watching {
     let changes = Arc::clone(&door.changes);
     // Read before attaching: the state attached for is published after this.
     let mut seen = changes.generation();
@@ -743,6 +844,7 @@ fn stream_state(writer: &Writer, gate: Gate, door: &Door) -> Watching {
     let stopped = Arc::clone(&stop);
     let writer = Arc::clone(writer);
     let watched = Arc::clone(&changes);
+    let ctx = ctx.clone();
     let spawned = std::thread::Builder::new()
         .name("tilo-control-watch".into())
         .spawn(move || {
@@ -751,7 +853,7 @@ fn stream_state(writer: &Writer, gate: Gate, door: &Door) -> Watching {
                 let Some(dump) = dump else {
                     continue;
                 };
-                if talk(&writer, &owner_shown(gate, dump).to_string()).is_err() {
+                if talk(&writer, &shown(&ctx, dump).to_string()).is_err() {
                     break;
                 }
             }
@@ -772,15 +874,15 @@ fn asked_here(
     request: &Json,
     writer: &Writer,
     watching: &mut Option<Watching>,
-    gate: Gate,
+    ctx: &Context,
     door: &Door,
 ) -> Option<Json> {
     Some(match op {
-        Op::ActionsEnumerate => actions_enumerate(request, &door.actions, &door.changes),
-        Op::ActionsInvoke => actions_invoke(request, &door.actions, gate),
-        Op::ActionsStatus => actions_status(request, &door.actions),
-        Op::ActionsCancel => actions_cancel(request, &door.actions),
-        Op::Watch => watch(request, writer, watching, gate, door),
+        Op::ActionsEnumerate => actions_enumerate(request, &door.actions, &door.changes, ctx),
+        Op::ActionsInvoke => actions_invoke(request, &door.actions, ctx),
+        Op::ActionsStatus => actions_status(request, &door.actions, ctx),
+        Op::ActionsCancel => actions_cancel(request, &door.actions, ctx),
+        Op::Watch => watch(request, writer, watching, ctx, door),
         _ => return None,
     })
 }
@@ -790,7 +892,7 @@ fn watch(
     request: &Json,
     writer: &Writer,
     watching: &mut Option<Watching>,
-    gate: Gate,
+    ctx: &Context,
     door: &Door,
 ) -> Json {
     let wanted = request
@@ -804,7 +906,7 @@ fn watch(
         return json!({"ok": {}});
     }
     if watching.is_none() {
-        *watching = Some(stream_state(writer, gate, door));
+        *watching = Some(stream_state(writer, ctx, door));
     }
     json!({"ok": {}})
 }
@@ -814,12 +916,12 @@ fn watch(
 fn loop_answer(
     op: Op,
     request: &Json,
-    gate: Gate,
+    ctx: &Context,
     compositor: &mut Compositor,
     desk: &Desk<'_>,
     held: &RefCell<BTreeSet<u32>>,
 ) -> Json {
-    if let Some(answer) = asked_of_desk(gate, op, request, compositor, desk) {
+    if let Some(answer) = asked_of_desk(ctx, op, request, compositor, desk) {
         return answer;
     }
     if let Some(answer) = asked_of_pointer(op, request, compositor) {
@@ -840,7 +942,7 @@ fn loop_answer(
 
 /// The answer to what `op` asks of the desk and its hosted surfaces, when it asks of them.
 fn asked_of_desk(
-    gate: Gate,
+    ctx: &Context,
     op: Op,
     request: &Json,
     compositor: &mut Compositor,
@@ -891,18 +993,62 @@ fn asked_of_desk(
                 .collect();
             json!({"answer": {"query": query, "rows": rows}})
         }
-        Op::StateDump => owner_shown(gate, desk.handle.read(|tree| state_dump(tree, desk))),
+        Op::ProcessMemory => json!({"answer": tilo_compositor::memory_report::report()}),
+        Op::ProfileStart => profile_start(request),
+        Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
+        Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
+        Op::StateDump => shown(ctx, desk.handle.read(|tree| state_dump(tree, desk))),
         Op::Windows => {
             // Nothing shows a window while the screen is locked.
-            let rows = if gate == Gate::Owner && desk.locked {
+            let rows = if ctx.gate != Gate::Dev && desk.locked {
                 Vec::new()
             } else {
-                desk.handle.read(window_rows)
+                match &ctx.scope {
+                    None => desk.handle.read(window_rows),
+                    Some(scope) => desk.handle.read(|tree| window_rows(&within(tree, scope))),
+                }
             };
             json!({"answer": {"windows": rows}})
         }
         _ => return None,
     })
+}
+
+/// Start profiling the session for `seconds` (default [`profile::DEFAULT_SECONDS`], at most
+/// [`profile::MAX_SECONDS`]) into the session's profile directory: the loop records its own
+/// frame rows, phases and threads there, and the summary is written last.
+fn profile_start(request: &Json) -> Json {
+    use tilo_frame_metrics::profile;
+    let Some(root) = profile::default_root() else {
+        return refusal(
+            "unavailable",
+            "there is no state directory to keep the profile in",
+        );
+    };
+    let seconds = match request.get("seconds").map(Json::as_u64) {
+        None => profile::DEFAULT_SECONDS,
+        Some(Some(seconds)) if (1..=profile::MAX_SECONDS).contains(&seconds) => seconds,
+        Some(_) => {
+            return refusal(
+                "invalid_arguments",
+                &format!(
+                    "`profile_start` takes `seconds` from 1 to {}",
+                    profile::MAX_SECONDS
+                ),
+            );
+        }
+    };
+    match profile::start(&root, std::time::Duration::from_secs(seconds)) {
+        Ok(status) => json!({"answer": {"profile": status}}),
+        Err(profile::StartError::AlreadyRecording(path)) => refusal(
+            "action_failed",
+            &format!("a profile is already recording into {}", path.display()),
+        ),
+        Err(profile::StartError::Io(error)) => refusal(
+            "action_failed",
+            &format!("the profile directory could not be created: {error}"),
+        ),
+    }
 }
 
 /// The answer to what `op` asks of the pointer, when it asks of it.
@@ -1210,8 +1356,12 @@ const MAX_WAIT: Duration = Duration::from_secs(30);
 const SETTLE_WAIT: Duration = Duration::from_secs(35);
 
 impl Actions {
-    /// Who a request here is made as: the person at this desktop, in the workspace in front.
-    fn caller(&self) -> Caller {
+    /// Who a request here is made as: the person at this desktop, in the workspace in front,
+    /// or the app a program inside it runs as, in the workspace the session started it into.
+    fn caller(&self, ctx: &Context) -> Caller {
+        if let Some(scope) = &ctx.scope {
+            return Caller::local_app(scope.app.clone()).in_workspace(scope.workspace.clone());
+        }
         let workspace = self.workspace.lock_recover().clone();
         let caller = self.caller.clone();
         if workspace.is_empty() {
@@ -1257,7 +1407,12 @@ impl Actions {
 /// The answer to `actions_enumerate`: the rows the actions answer with now, in the shape the
 /// tools that drive a desktop read, held until they move past `after_revision` or the listing is
 /// complete.
-fn actions_enumerate(request: &Json, actions: &Actions, changes: &Arc<Changes>) -> Json {
+fn actions_enumerate(
+    request: &Json,
+    actions: &Actions,
+    changes: &Arc<Changes>,
+    ctx: &Context,
+) -> Json {
     let compact = request.get("detail").and_then(Json::as_str) == Some("compact");
     let kinds: Vec<String> = request
         .get("kinds")
@@ -1295,7 +1450,7 @@ fn actions_enumerate(request: &Json, actions: &Actions, changes: &Arc<Changes>) 
     let deadline = wait_deadline(wait_ms);
     let mut seen = changes.generation();
     loop {
-        let page = match catalogue_page(request, actions, &words) {
+        let page = match catalogue_page(request, actions, &words, ctx) {
             Ok(page) => page,
             Err(answer) => return answer,
         };
@@ -1323,6 +1478,7 @@ fn catalogue_page(
     request: &Json,
     actions: &Actions,
     words: &[String],
+    ctx: &Context,
 ) -> Result<CataloguePage, Json> {
     let limit = request.get("limit").and_then(Json::as_u64);
     let mut query = CatalogueQuery {
@@ -1348,7 +1504,7 @@ fn catalogue_page(
         query.revision = Some(revision);
         query.cursor = cursor;
     }
-    let caller = actions.caller();
+    let caller = actions.caller(ctx);
     match actions.host.query(&caller, query).wait_timeout(HOST_WAIT) {
         Ok(Some(Ok(page))) => Ok(page),
         Ok(Some(Err(error))) => Err(action_refusal(&error)),
@@ -1564,8 +1720,8 @@ fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
 /// The answer to `actions_invoke`: the receipt, by a number the tools follow it with. The
 /// owner's door invokes nothing while the screen is locked: what a person's own scripts run is
 /// what the person at the device could run, and a locked desktop runs nothing.
-fn actions_invoke(request: &Json, actions: &Actions, gate: Gate) -> Json {
-    if gate == Gate::Owner && actions.locked() {
+fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
+    if ctx.gate != Gate::Dev && actions.locked() {
         return refusal(
             "locked",
             "the session is locked; unlock it at the device, then invoke again",
@@ -1601,7 +1757,7 @@ fn actions_invoke(request: &Json, actions: &Actions, gate: Gate) -> Json {
         }
     };
     let invocation = InvocationId::new();
-    let caller = actions.caller();
+    let caller = actions.caller(ctx);
     let invoke = InvokeRequest {
         invocation,
         target,
@@ -1613,11 +1769,13 @@ fn actions_invoke(request: &Json, actions: &Actions, gate: Gate) -> Json {
         wait_ms: None,
         appearance: None,
     };
-    let receipt = match actions
-        .host
-        .invoke_at_seat(&caller, invoke)
-        .wait_timeout(HOST_WAIT)
-    {
+    // The person's own actions are the seat's; a program inside an app acts
+    // as that app, and the broker's per-action permissions decide for it.
+    let started = match ctx.scope {
+        Some(_) => actions.host.invoke(&caller, invoke),
+        None => actions.host.invoke_at_seat(&caller, invoke),
+    };
+    let receipt = match started.wait_timeout(HOST_WAIT) {
         Ok(Some(Ok(receipt))) => receipt,
         Ok(Some(Err(error))) => return action_refusal(&error),
         Ok(None) | Err(_) => return refusal("unavailable", "the action did not start"),
@@ -1631,7 +1789,7 @@ fn actions_invoke(request: &Json, actions: &Actions, gate: Gate) -> Json {
 }
 
 /// The answer to `actions_status`: where an invocation a tool started stands now.
-fn actions_status(request: &Json, actions: &Actions) -> Json {
+fn actions_status(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
         return refusal("parse_error", "`actions_status` takes `invocation_id`");
     };
@@ -1641,7 +1799,7 @@ fn actions_status(request: &Json, actions: &Actions) -> Json {
             &format!("no invocation {number} is known here"),
         );
     };
-    let caller = actions.caller();
+    let caller = actions.caller(ctx);
     let current = actions
         .host
         .observe(&caller, &invocation)
@@ -1662,7 +1820,7 @@ fn actions_status(request: &Json, actions: &Actions) -> Json {
 }
 
 /// The answer to `actions_cancel`: the invocation asked to stop.
-fn actions_cancel(request: &Json, actions: &Actions) -> Json {
+fn actions_cancel(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
         return refusal("parse_error", "`actions_cancel` takes `invocation_id`");
     };
@@ -1672,7 +1830,7 @@ fn actions_cancel(request: &Json, actions: &Actions) -> Json {
             &format!("no invocation {number} is known here"),
         );
     };
-    let caller = actions.caller();
+    let caller = actions.caller(ctx);
     match actions
         .host
         .cancel(&caller, &invocation)
@@ -1967,6 +2125,47 @@ fn owner_shown(gate: Gate, dump: Json) -> Json {
     dump
 }
 
+/// The desk's state as `ctx` may read it: an app's own workspace only, and
+/// nothing of the desk while the screen is locked.
+fn shown(ctx: &Context, dump: Json) -> Json {
+    match &ctx.scope {
+        None => owner_shown(ctx.gate, dump),
+        Some(scope) => owner_shown(ctx.gate, only_workspace(dump, scope)),
+    }
+}
+
+/// `dump` with every workspace but the one `scope` holds left out.
+fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
+    let Some(state) = dump.get_mut("state").and_then(Json::as_object_mut) else {
+        return dump;
+    };
+    if let Some(tree) = state.get_mut("workspace_tree")
+        && let Some(workspaces) = tree.get_mut("workspaces").and_then(Json::as_array_mut)
+    {
+        workspaces.retain(|workspace| in_scope(workspace, scope));
+    }
+    if let Some(held) = state
+        .get_mut("held_workspaces")
+        .and_then(Json::as_array_mut)
+    {
+        held.retain(|workspace| in_scope(workspace, scope));
+    }
+    dump
+}
+
+/// Whether a row naming its workspace's room is the one `scope` holds.
+fn in_scope(row: &Json, scope: &Scope) -> bool {
+    row.get("room").and_then(Json::as_str) == Some(scope.workspace.as_str())
+}
+
+/// `tree` with every workspace but the one `scope` holds left out.
+fn within(tree: &DesktopTree, scope: &Scope) -> DesktopTree {
+    let mut tree = tree.clone();
+    tree.workspaces
+        .retain(|workspace| workspace.room().to_string() == scope.workspace);
+    tree
+}
+
 /// Whether a state dump says the screen is locked.
 fn locked_in(dump: &Json) -> bool {
     dump.get("state")
@@ -2007,9 +2206,23 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
     }
     let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
         .unwrap_or(Json::Null);
+    let agents: Vec<Json> = desk
+        .seats
+        .readings()
+        .iter()
+        .map(|agent| {
+            json!({
+                "key": agent.key,
+                "name": agent.name,
+                "doing": agent.doing,
+                "seat": agent.seat,
+            })
+        })
+        .collect();
     json!({"state": {
         "workspace_tree": tree,
         "held_workspaces": held_workspaces,
+        "agents": agents,
         "chrome": {
             "session_locked": desk.locked,
             // The lock screen's own frame is what the outputs show, not the
@@ -2017,6 +2230,12 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
             "lock_screen_drawn": desk.lock_screen_drawn,
             "in_transition": false,
             "overlays": open,
+            // Whether freed heap is still to be handed back to the kernel
+            // (a close asked for a trim), and how many trims have run.
+            "heap_trim": {
+                "pending": tilo_compositor::heap_trim::close_trim_pending(),
+                "trims": tilo_compositor::heap_trim::trims_completed(),
+            },
         },
         "peers": Json::Null,
         "sharing": Json::Null,
@@ -2351,6 +2570,10 @@ mod tests {
             Op::ActionsEnumerate,
             Op::ActionsInvoke,
             Op::ActionsStatus,
+            Op::ProcessMemory,
+            Op::ProfileStart,
+            Op::ProfileStatus,
+            Op::ProfileStop,
             Op::StateDump,
             Op::Watch,
             Op::Windows,
@@ -2372,7 +2595,7 @@ mod tests {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 24, "the protocol's ops");
+        assert_eq!(names.len(), 28, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");

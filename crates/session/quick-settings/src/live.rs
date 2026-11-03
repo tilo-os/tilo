@@ -152,11 +152,9 @@ impl Live {
                 }
             }
             QsEffect::SetNightLight { on } => {
+                // The session turns the screen warm and keeps the switch; the
+                // panel shows what its reading says, before and after.
                 readings.update(|state| state.night_light = *on);
-                let origin = settings_store::ChangeOrigin::local("qs.night-light");
-                if let Err(error) = settings_store::hardware::NIGHT_LIGHT.set_by(*on, &origin) {
-                    tracing::warn!(%error, "night light preference save failed");
-                }
             }
             QsEffect::SetRotationLock { locked } => {
                 readings.update(|state| state.rotation_lock = *locked);

@@ -318,8 +318,14 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
             None => format!(".{}", name.name),
             Some(args) => format!(".{}({})", name.name, args_text(args, level)),
         },
-        ExprKind::Lambda { param, body } => {
-            format!("{} -> {}", param.name, expr_text(body, 0, level))
+        ExprKind::Lambda { params, body } => {
+            let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
+            let body = expr_text(body, 0, level);
+            if names.len() == 1 {
+                format!("{} -> {body}", names[0])
+            } else {
+                format!("({}) -> {body}", names.join(", "))
+            }
         }
         ExprKind::Unary {
             op: UnOp::Neg,

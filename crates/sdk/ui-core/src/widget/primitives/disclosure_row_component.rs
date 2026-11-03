@@ -36,6 +36,9 @@ pub struct DisclosureRowProps {
     pub trailing: Option<Element>,
     /// Whether the row is open. Unless given, the row keeps it.
     pub expanded: Option<bool>,
+    /// The pace its body unfolds at, and the pace a view's open or close takes: the theme's
+    /// unless it says otherwise.
+    pub motion: Option<crate::motion::Feel>,
     /// The row was opened or closed; carries whether it is open now.
     #[component(event(value = bool))]
     pub toggle: Event,
@@ -83,6 +86,7 @@ impl Described for DisclosureRow {
             body,
             trailing,
             expanded,
+            motion,
             toggle,
         } = props;
         let column = body.into_iter().fold(
@@ -106,7 +110,7 @@ impl Described for DisclosureRow {
         if expanded == Some(true) {
             row = row.opened();
         }
-        row
+        row.with_feel(motion.unwrap_or(crate::motion::Feel::Standard))
     }
 
     /// Its lines take their new text in place, and a changed `expanded` opens or closes it on
@@ -122,8 +126,10 @@ impl Described for DisclosureRow {
             body: _,
             trailing: _,
             expanded,
+            motion,
             toggle: _,
         } = props;
+        self.set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
         self.title = title;
         self.secondary = secondary.unwrap_or_default();
         self.side = side.unwrap_or_default();

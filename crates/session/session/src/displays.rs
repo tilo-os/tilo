@@ -12,20 +12,22 @@
 //!
 //! What the arrangements are carried out with is the compositor, which only
 //! the session's loop reaches: those verbs queue a [`SessionCommand`] the loop
-//! takes up on the same pass. Brightness needs no compositor — it is the
-//! machine's own hardware, reached through [`Backlights`] — so it is set here
-//! at once, and the reading says so.
+//! takes up on the same pass. Brightness is the machine's own hardware,
+//! reached through [`Backlights`], so it is set here at once and the reading
+//! says so; a display with neither a backlight nor DDC/CI is dimmed by the
+//! compositor darkening what it shows, its ramps written on the loop
+//! ([`Displays::dim`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use os_actions::brightness::{BrightnessService, MonitorLevel, SessionDisplays};
-use os_actions::{BrightnessKind, step_together};
+use os_actions::{BrightnessKind, software_luminance, step_together};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
-use tilo_compositor::{OutputChange, OutputInfo};
+use tilo_compositor::{Compositor, OutputChange, OutputInfo};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
@@ -265,6 +267,25 @@ pub trait Backlights {
     /// The displays the session shows: one it shows nothing on gets no
     /// brightness control.
     fn show_only(&self, connectors: &[String]);
+
+    /// Every display this machine dims in software, by connector, and how
+    /// dark it is on its slider (`0.0..=1.0`): the ones with neither a
+    /// backlight nor DDC/CI, which the compositor darkens instead.
+    fn software_levels(&self) -> Vec<(String, f32)>;
+
+    /// Bumped whenever the software-dimmed levels or the displays they are
+    /// of change; equal values mean [`Self::software_levels`] answers the
+    /// same, so a pass that sees no change skips it. Controls that cannot
+    /// tell answer `0` and are asked every pass.
+    fn generation(&self) -> u64 {
+        0
+    }
+
+    /// Wake `wake` when a level or the displays it controls change, for
+    /// controls that report changes made elsewhere (a brightness key another
+    /// program handled, a slider on another desktop): the software dimming
+    /// follows on the next pass.
+    fn watch(&self, _wake: &tilo_service::Wake) {}
 }
 
 /// The screens of this machine, as the OS brightness service reaches them: the
@@ -284,10 +305,23 @@ impl Backlights for Screens {
     fn show_only(&self, connectors: &[String]) {
         BrightnessService::global().show_only(SessionDisplays {
             connectors: connectors.to_vec(),
-            // This compositor dims nothing in software: a display with neither
-            // a backlight nor DDC/CI has no brightness control here.
-            software_dim: false,
+            // A display with neither a backlight nor DDC/CI is dimmed by the
+            // compositor darkening what it shows, so it keeps a control.
+            software_dim: true,
         });
+    }
+
+    fn software_levels(&self) -> Vec<(String, f32)> {
+        BrightnessService::global().software_levels()
+    }
+
+    fn generation(&self) -> u64 {
+        BrightnessService::global().generation()
+    }
+
+    fn watch(&self, wake: &tilo_service::Wake) {
+        let woken = std::sync::Arc::clone(wake);
+        BrightnessService::global().on_change(std::sync::Arc::new(move || woken()));
     }
 }
 
@@ -368,6 +402,13 @@ struct Inner {
     focused: Option<String>,
     /// The connectors the brightness controls were last told of.
     told: Vec<String>,
+    /// The connector and the light each display the compositor dims in
+    /// software was last told to show, so an unchanged level is not written
+    /// again on every pass.
+    dimmed: Vec<(String, f32)>,
+    /// The software-dimmed generation `dimmed` was worked out from, when the
+    /// controls can tell.
+    dim_generation: Option<u64>,
 }
 
 /// One display the compositor shows.
@@ -490,9 +531,61 @@ impl Displays {
                 backlights.show_only(&connectors);
             }
             inner.told = connectors;
+            // Which displays the dimming is worked out for moved.
+            inner.dim_generation = None;
         }
         inner.shown = shown;
         inner.focused = focused;
+    }
+
+    /// Wake the session's loop whenever the brightness controls report a
+    /// change, so a level set anywhere — the brightness keys, a slider, a
+    /// script — reaches the software dimming on the next pass.
+    pub fn watch(&self, wake: &tilo_service::Wake) {
+        if let Some(backlights) = &self.inner.borrow().backlights {
+            backlights.watch(wake);
+        }
+    }
+
+    /// Darken the displays the brightness controls dim in software — the
+    /// ones with neither a backlight nor DDC/CI — to the light their slider
+    /// asks for, and leave every other display alone: its brightness is its
+    /// own hardware. Nothing is written when the levels stand.
+    ///
+    /// # Errors
+    /// The compositor could not write the ramps.
+    pub fn dim(&self, compositor: &mut Compositor) -> Result<(), tilo_compositor::Error> {
+        let (dims, generation, changed) = {
+            let inner = self.inner.borrow();
+            let Some(backlights) = &inner.backlights else {
+                return Ok(());
+            };
+            let generation = backlights.generation();
+            if inner.dim_generation == Some(generation) {
+                return Ok(());
+            }
+            let mut dims: Vec<(String, f32)> = backlights
+                .software_levels()
+                .into_iter()
+                .filter(|(connector, _)| {
+                    inner
+                        .shown
+                        .iter()
+                        .any(|shown| &shown.connector == connector)
+                })
+                .map(|(connector, level)| (connector, software_luminance(level)))
+                .collect();
+            dims.sort_by(|one, other| one.0.cmp(&other.0));
+            let changed = inner.dimmed != dims;
+            (dims, generation, changed)
+        };
+        if changed {
+            compositor.set_software_dim(&dims)?;
+        }
+        let mut inner = self.inner.borrow_mut();
+        inner.dimmed = dims;
+        inner.dim_generation = Some(generation);
+        Ok(())
     }
 
     /// The colour of the display on `monitor`: what a picture shown there
@@ -744,6 +837,8 @@ mod tests {
         shown: Vec<String>,
         /// Every connector set, and to what, in order.
         set: Vec<(String, f32)>,
+        /// Bumped on every change, as the OS brightness service does.
+        generation: u64,
     }
 
     impl Dials {
@@ -758,6 +853,30 @@ mod tests {
                 })
                 .collect();
             dials
+        }
+
+        /// The same, with `levels` dimmed in software instead of by their own
+        /// hardware: the displays the compositor darkens.
+        fn software(levels: &[(&str, f32)]) -> Self {
+            let dials = Self::with(levels);
+            for level in &mut dials.0.borrow_mut().levels {
+                level.kind = BrightnessKind::Software;
+            }
+            dials
+        }
+
+        /// A level a display was set to by something other than this session
+        /// (a key another program handled, a slider elsewhere).
+        fn changed_elsewhere(&self, connector: &str, level: f32) {
+            let mut inner = self.0.borrow_mut();
+            if let Some(entry) = inner
+                .levels
+                .iter_mut()
+                .find(|entry| entry.connector == connector)
+            {
+                entry.level = level;
+            }
+            inner.generation = inner.generation.saturating_add(1);
         }
 
         /// What each display is at now, by connector.
@@ -787,11 +906,26 @@ mod tests {
             };
             level.level = percent / 100.0;
             inner.set.push((connector.to_owned(), percent));
+            inner.generation = inner.generation.saturating_add(1);
             true
         }
 
         fn show_only(&self, connectors: &[String]) {
             self.0.borrow_mut().shown = connectors.to_vec();
+        }
+
+        fn software_levels(&self) -> Vec<(String, f32)> {
+            self.0
+                .borrow()
+                .levels
+                .iter()
+                .filter(|entry| entry.kind == BrightnessKind::Software)
+                .map(|entry| (entry.connector.clone(), entry.level))
+                .collect()
+        }
+
+        fn generation(&self) -> u64 {
+            self.0.borrow().generation
         }
     }
 
@@ -981,6 +1115,88 @@ mod tests {
             "the display the person does not work on stays put"
         );
         assert_eq!(reading(&service).brightness(), dials.at("HDMI-A-1"));
+    }
+
+    /// A compositor showing `names` at 1280x800.
+    fn compositor(names: &[&str]) -> Compositor {
+        let mut compositor =
+            Compositor::headless(Box::new(tilo_compositor::StackPolicy)).expect("compositor");
+        for name in names {
+            compositor
+                .add_output(&tilo_compositor::OutputConfig::new(*name, 1280, 800))
+                .expect("an output");
+        }
+        compositor
+    }
+
+    /// How much of its light `connector` shows, when the compositor dims it.
+    fn dim_of(compositor: &Compositor, connector: &str) -> Option<f32> {
+        compositor
+            .software_dim()
+            .into_iter()
+            .find(|(name, _)| name == connector)
+            .map(|(_, light)| light)
+    }
+
+    #[test]
+    fn a_display_that_cannot_dim_its_own_light_is_darkened_by_the_compositor() {
+        let dials = Dials::software(&[("eDP-1", 0.5), ("DP-9", 0.2)]);
+        let displays = showing(
+            Some(dials.clone()),
+            &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")],
+        );
+        let mut compositor = compositor(&["eDP-1", "HDMI-A-1"]);
+        displays.dim(&mut compositor).expect("the dim lands");
+        let light = dim_of(&compositor, "eDP-1").expect("the panel is dimmed in software");
+        assert!(
+            (light - software_luminance(0.5)).abs() < 0.001,
+            "half on the slider dims to half its linear light, got {light}"
+        );
+        assert_eq!(
+            dim_of(&compositor, "DP-9"),
+            None,
+            "a display the session shows nothing on is not dimmed"
+        );
+        assert_eq!(
+            dim_of(&compositor, "HDMI-A-1"),
+            None,
+            "a display with a backlight of its own is not dimmed in software, and one at full is not written"
+        );
+        let shown = reading(&displays);
+        assert!(close(shown.displays[0].brightness, 0.5));
+        assert!(
+            !shown.displays[0].backlight,
+            "the reading says the compositor darkens it, not its own hardware"
+        );
+
+        // A level set elsewhere reaches the compositor, and leaving it alone
+        // writes nothing again.
+        dials.changed_elsewhere("eDP-1", 0.25);
+        displays.dim(&mut compositor).expect("the dim lands");
+        let light = dim_of(&compositor, "eDP-1").expect("still dimmed");
+        assert!(
+            (light - software_luminance(0.25)).abs() < 0.001,
+            "the new level darkens it further, got {light}"
+        );
+        // Back to full: no ramp is left lowering its light.
+        dials.changed_elsewhere("eDP-1", 1.0);
+        displays.dim(&mut compositor).expect("the dim lands");
+        assert_eq!(dim_of(&compositor, "eDP-1"), None);
+    }
+
+    #[test]
+    fn a_machine_that_dims_nothing_by_software_leaves_every_display_alone() {
+        let displays = showing(
+            Some(Dials::with(&[("eDP-1", 0.3)])),
+            &[("eDP-1", "Built-in")],
+        );
+        let mut compositor = compositor(&["eDP-1"]);
+        displays.dim(&mut compositor).expect("nothing to do");
+        assert_eq!(
+            dim_of(&compositor, "eDP-1"),
+            None,
+            "a backlight is dimmed where it is, not by the compositor"
+        );
     }
 
     #[test]

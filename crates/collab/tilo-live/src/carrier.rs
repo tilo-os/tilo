@@ -64,8 +64,8 @@ use crate::admit::{closed, read_exact, write_all};
 pub(crate) use crate::admit::close;
 
 pub use crate::admit::{
-    AdmissionError, Admitted, Carrier, Connected, Dial, OriginTask, SETUP_BUDGET, Wire, WireStats,
-    origin_config, present, start, version, wire,
+    AdmissionError, Admitted, Carrier, Connected, Dial, Dialling, OriginTask, SETUP_BUDGET, Wire,
+    WireStats, origin_config, present, start, version, wire,
 };
 
 /// The WebTransport subprotocol and `moq-lite` draft every Tilo `MoQ` route
@@ -232,9 +232,7 @@ impl Dial for WebTransport {
         publish: Option<moq_net::origin::Consumer>,
         subscribe: Option<moq_net::origin::Producer>,
         timeout: Duration,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Connected, AdmissionError>> + Send + 'a>,
-    > {
+    ) -> Dialling<'a> {
         Box::pin(connect(
             &self.url,
             &self.trust,

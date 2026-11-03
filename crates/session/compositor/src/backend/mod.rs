@@ -25,6 +25,12 @@ pub trait Backend {
     /// it was shown.
     fn render(&mut self, state: &mut State) -> Result<(), BackendError>;
 
+    /// Whether a drawn frame is shown only when its page flip retires, so
+    /// its present latency ends at the flip and not at the queue.
+    fn presents_async(&self) -> bool {
+        false
+    }
+
     /// When the backend next wants [`Backend::render`] called with no event
     /// to bring it: an output with something new to show that cannot take a
     /// frame yet. Nothing owed, nothing due: the compositor sleeps.

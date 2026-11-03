@@ -42,7 +42,7 @@ use moq_net::web_transport_trait as wt;
 use moq_net::web_transport_trait::poll;
 use tilo_lock::MutexRecover as _;
 
-use crate::carrier::{self, AdmissionError, Connected, PROTOCOL};
+use crate::carrier::{self, AdmissionError, PROTOCOL};
 
 /// The ALPN every carrier connection negotiates: the `moq-lite` draft name,
 /// which is also the WebTransport subprotocol.
@@ -468,7 +468,7 @@ impl carrier::Dial for Iroh {
         publish: Option<moq_net::origin::Consumer>,
         subscribe: Option<moq_net::origin::Producer>,
         timeout: Duration,
-    ) -> Pin<Box<dyn Future<Output = Result<Connected, AdmissionError>> + Send + 'a>> {
+    ) -> carrier::Dialling<'a> {
         Box::pin(async move {
             tokio::time::timeout(timeout, async {
                 let connection = self

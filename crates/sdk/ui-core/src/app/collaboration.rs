@@ -319,24 +319,33 @@ impl App {
             return;
         }
         if self.collaboration.manager.is_connected() {
-            match self.pending_primary_document_delta() {
-                Ok((delta, heads)) if !delta.is_empty() => {
+            match self.pending_primary_document() {
+                Ok(Some((mutation, heads))) => {
                     tracing::debug!(
                         target: "tilo.state",
                         event = "document_send",
-                        kind = "incremental",
-                        bytes = delta.len(),
+                        kind = match mutation {
+                            collab_types::DocumentMutation::Snapshot(_) => "snapshot",
+                            collab_types::DocumentMutation::Incremental(_) => "incremental",
+                        },
+                        bytes = mutation.data().len(),
                         heads = heads.len(),
                         "queueing document mutation"
                     );
-                    let result = self.collaboration.manager.try_send(
-                        crate::collaboration::CollabRequest::document_incremental(delta),
-                    );
+                    let request = match mutation {
+                        collab_types::DocumentMutation::Snapshot(bytes) => {
+                            crate::collaboration::CollabRequest::document_snapshot(bytes)
+                        }
+                        collab_types::DocumentMutation::Incremental(bytes) => {
+                            crate::collaboration::CollabRequest::document_incremental(bytes)
+                        }
+                    };
+                    let result = self.collaboration.manager.try_send(request);
                     if self.note_document_send(&result) {
                         self.advance_primary_document(heads);
                     }
                 }
-                Ok(_) => {}
+                Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(%error, "collab: primary document is unavailable");
                 }

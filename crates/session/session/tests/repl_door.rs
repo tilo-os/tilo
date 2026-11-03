@@ -26,12 +26,11 @@ use tilo_compositor::OutputConfig;
 use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
-use tilo_surface_host::shell_part::ShellLayer;
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
-    HEIGHT, MAIL, NOTE_TITLE, PERSON, Repl, SUBJECT, WIDTH, control, on_screen, place_the_inbox,
-    placed, press, press_sheet, private_home, repl_session, seeded_session, until,
+    HEIGHT, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, WIDTH, control, on_screen,
+    place_the_inbox, placed, press, press_sheet, private_home, repl_session, seeded_session, until,
 };
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -269,7 +268,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             questions: Some(questions),
@@ -325,6 +324,117 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         found.lines().any(|line| line.contains(NOTE_TITLE)),
         "the note is found by its title: {found}"
     );
+}
+
+/// The resources `session` publishes, at any depth, as its action model holds them.
+fn everything(session: &Session) -> Vec<tilo_actions::ResourceSpec> {
+    fn walk(resources: &[tilo_actions::ResourceSpec], found: &mut Vec<tilo_actions::ResourceSpec>) {
+        for resource in resources {
+            found.push(resource.clone());
+            walk(&resource.children, found);
+        }
+    }
+    let mut found = Vec::new();
+    walk(&session.resources(), &mut found);
+    found
+}
+
+/// The resources `session` publishes under `label`, at any depth, as its action model holds them.
+fn labelled(session: &Session, label: &str) -> Vec<tilo_actions::ResourceSpec> {
+    everything(session)
+        .into_iter()
+        .filter(|resource| resource.label == label)
+        .collect()
+}
+
+/// A seeded app's catalogue is the app's words on the desk: with the interface in German, the
+/// session labels the notes app's notebook and its actions in German, and its search matches the
+/// German word for what it holds.
+#[test]
+fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    home.env()
+        .set("LC_ALL", "de_DE.UTF-8")
+        .set("LANG", "de_DE.UTF-8")
+        .set("LANGUAGE", "de_DE");
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    until(&mut session, "the notebook's German label", |session| {
+        !labelled(session, "Notizen").is_empty()
+    });
+    let nouns: Vec<tilo_actions::Noun> = everything(&session)
+        .into_iter()
+        .filter_map(|resource| resource.resource_type.map(|kind| kind.noun))
+        .collect();
+    for noun in [
+        tilo_actions::Noun::new("Notizbuch", "Notizbücher"),
+        tilo_actions::Noun::new("Notiz", "Notizen"),
+    ] {
+        assert!(
+            nouns.contains(&noun),
+            "the notebook's nouns are the catalogue's, in the reader's language: {nouns:?}"
+        );
+    }
+    let offered: Vec<String> = everything(&session)
+        .into_iter()
+        .flat_map(|resource| {
+            resource
+                .actions
+                .into_iter()
+                .map(|action| action.label.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        offered.iter().any(|label| label == "Neue Notiz"),
+        "the notes app's actions say what they do in German: {offered:?}"
+    );
+
+    // Search matches the reader's words: the German plural finds the notebook on the desk, and
+    // the English one finds nothing, because the desk's words are German.
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let (answer, failed) = repl.call(
+        &mut session,
+        "tilo",
+        &json!({"program": "session.place_found(text: \"notizbücher\", view: .none, x: .some(80), y: .some(60))"}),
+    );
+    assert!(!failed, "the program ran: {answer}");
+    until(
+        &mut session,
+        "the notebook placed by its German name",
+        |session| {
+            session
+                .arrangement()
+                .borrow()
+                .strips()
+                .places()
+                .any(|place| place.record.contains(NOTES))
+        },
+    );
+    let placed_by_german = noted(&session);
+    let (answer, _) = repl.call(
+        &mut session,
+        "tilo",
+        &json!({"program": "session.place_found(text: \"notebooks\", view: .none, x: .some(80), y: .some(60))"}),
+    );
+    assert!(
+        answer.contains("nothing matches"),
+        "the English word finds nothing on a German desk: {answer}"
+    );
+    assert_eq!(noted(&session), placed_by_german, "and places nothing");
+}
+
+/// How many of the seeded notes app's resources stand on the arrangement.
+fn noted(session: &Session) -> usize {
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .places()
+        .filter(|place| place.record.contains(NOTES))
+        .count()
 }
 
 /// The overview shown from the REPL is the shell's own on its screen, and showing it is no step:
@@ -418,7 +528,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             questions: Some(questions),
@@ -500,7 +610,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             questions: Some(questions),
@@ -728,28 +838,45 @@ fn a_change_to_one_thread_rereads_only_that_threads_reading() {
     );
 }
 
+/// The start of the minute the test runs in, as the session's clock reads it: what a test
+/// watching a session at rest holds the wall clock at, so the bar's time cannot turn over
+/// inside the window it watches.
+fn this_minute() -> ui::time::SystemTime {
+    ui::time::wall()
+        .checked_sub(Duration::from_secs(
+            u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
+                .expect("a second of the minute"),
+        ))
+        .expect("the minute the test runs in")
+}
+
 /// A placed inbox settles: once its conversations are drawn, a session left alone runs the
 /// shell's views no more and draws no frame. A list's rows asked of the shell's own runtime go
 /// out on the turn they are asked, rather than the list taking frames until they would.
 #[test]
 fn a_placed_inbox_settles_and_draws_nothing_while_idle() {
     let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = seeded_session(root.path());
-    place_the_inbox(&mut session, root.path());
-    for _ in 0..200 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    let settled = session.shell_work().expect("the shell runs");
-    for _ in 0..200 {
-        session.step(Duration::from_millis(5)).expect("step");
-    }
-    let idle = session.shell_work().expect("the shell runs");
-    assert_eq!(
-        (idle.turns, idle.drawn),
-        (settled.turns, settled.drawn),
-        "an idle session runs and draws nothing"
-    );
+    // The bar draws the time, and a minute turning over is a change, not idle work: the test
+    // holds the clock at the minute it runs in, as a capture does, so what it watches at rest
+    // is the shell and nothing else.
+    ui::time::testing::with_wall(this_minute(), || {
+        let root = private_home();
+        let mut session = seeded_session(root.path());
+        place_the_inbox(&mut session, root.path());
+        for _ in 0..200 {
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+        let settled = session.shell_work().expect("the shell runs");
+        for _ in 0..200 {
+            session.step(Duration::from_millis(5)).expect("step");
+        }
+        let idle = session.shell_work().expect("the shell runs");
+        assert_eq!(
+            (idle.turns, idle.drawn),
+            (settled.turns, settled.drawn),
+            "an idle session runs and draws nothing"
+        );
+    });
 }
 
 /// The inbox's conversations come in together: the session reads what one run of the views
@@ -881,7 +1008,7 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(Withholding {
                 inner: apps,

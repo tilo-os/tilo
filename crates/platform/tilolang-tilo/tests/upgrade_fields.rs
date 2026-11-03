@@ -202,7 +202,7 @@ fn an_edit_after_the_upgrade_lands_as_a_rich_splice() {
     }
     assert_eq!(later.host.migrate(), 0, "committed, the upgrade is done");
 
-    // The note's window edits its body the way the shared rich input does: the whole value,
+    // The note's window edits its body the way the shared block editor does: the whole value,
     // written as the splices and marks of the paragraphs that differ.
     let (_, at) = rich_body(&later, &notes[0]);
     let view = later
@@ -213,16 +213,16 @@ fn an_edit_after_the_upgrade_lands_as_a_rich_splice() {
     walk(view.tree(), &mut all);
     let input = all
         .into_iter()
-        .find(|node| node.kind == "ui.RichInput")
+        .find(|node| node.kind == "ui.BlockEditor")
         .map(|node| node.key.clone())
-        .expect("the note's window has a rich input");
+        .expect("the note's window has a block editor");
     let (FieldValue::Rich(before), _) = rich_body(&later, &notes[0]) else {
         panic!("the body reads as rich text");
     };
     let mut typed = before.clone();
     typed.push_text(" and more");
     view.edit(&input, &tilolang_runtime::value::Value::Rich(typed.clone()))
-        .expect("the shared rich input edits the body");
+        .expect("the shared block editor edits the body");
     later.commit();
 
     let (FieldValue::Rich(after), _) = rich_body(&later, &notes[0]) else {

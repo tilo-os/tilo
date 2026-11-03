@@ -17,6 +17,8 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use chrono::Timelike;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -84,6 +86,25 @@ impl TimeValue {
 /// `(hours, minutes, seconds)`.
 type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
+/// The time of day `at` is, when it names one: its instant, or the time of the day it names.
+fn time_of(at: &str) -> Option<TimeValue> {
+    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
+        let time = instant.time();
+        return Some(TimeValue {
+            hours: time.hour().try_into().ok()?,
+            minutes: time.minute().try_into().ok()?,
+            seconds: Some(time.second().try_into().ok()?),
+        });
+    }
+    let clock = at.get(11..19)?;
+    let part = |range: std::ops::Range<usize>| -> Option<u8> { clock.get(range)?.parse().ok() };
+    Some(TimeValue {
+        hours: part(0..2)?,
+        minutes: part(3..5)?,
+        seconds: part(6..8),
+    })
+}
+
 /// Three-spinner time picker. See module docs.
 pub struct TimePicker {
     /// Stable semantic/action id. Callers rendering more than one picker in a
@@ -95,7 +116,7 @@ pub struct TimePicker {
     minutes: u8,         // 0..=59
     seconds: Option<u8>, // Some(0..=59) only when explicitly enabled
     on_change: Option<TimeChange>,
-    local_state: Option<crate::local_state::LocalBinding<TimeValue>>,
+    local_state: Option<crate::widget::binding::BoxedBinding<TimeValue>>,
     rect: Rect,
     hour_rect: Rect, // populated in apply_layout
     minute_rect: Rect,
@@ -147,12 +168,25 @@ impl TimePicker {
     /// mutations through any clone update this picker on the next
     /// synchronization pass.
     pub fn from_state(state: &crate::LocalState<TimeValue>) -> Self {
-        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let (value, binding) = crate::widget::binding::local(state);
         let value = value.normalized();
         let mut picker = Self::new(value.hours, value.minutes);
         picker.seconds = value.seconds;
         picker.local_state = Some(binding);
         picker.publish_local_state();
+        picker
+    }
+
+    /// Create a time picker following a moment held as its ISO text (`"2026-06-30T09:30:00Z"`):
+    /// the time of the day it names, 9:00 when the text names none.
+    pub fn from_text_state(state: &crate::LocalState<String>) -> Self {
+        let (time, binding) = crate::widget::binding::derived(state, |text| {
+            time_of(text).unwrap_or_else(|| TimeValue::new(9, 0))
+        });
+        let time = time.normalized();
+        let mut picker = Self::new(time.hours, time.minutes);
+        picker.seconds = time.seconds;
+        picker.local_state = Some(binding);
         picker
     }
 
@@ -464,11 +498,9 @@ impl TimePicker {
 impl Widget for TimePicker {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        if let Some(value) = self
-            .local_state
-            .as_mut()
-            .and_then(crate::local_state::LocalBinding::poll)
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if let Some(binding) = &mut self.local_state
+            && let crate::widget::binding::Pulled::Value(value) = binding.pull(state, path)
         {
             self.apply_value(value.normalized());
         }
@@ -1147,5 +1179,23 @@ mod tests {
             ));
             assert_eq!(state.with(|value| *value), expected);
         }
+    }
+
+    #[test]
+    fn a_bound_text_time_is_shown_and_followed() {
+        let state = crate::LocalState::new("2026-06-30T09:30:00Z".to_owned());
+        let mut picker = TimePicker::from_text_state(&state);
+        assert_eq!(
+            (picker.value().hours, picker.value().minutes),
+            (9, 30),
+            "the time is shown"
+        );
+        state.set("2026-06-30T17:45:00Z".to_owned());
+        picker.sync(&(), &());
+        assert_eq!(
+            (picker.value().hours, picker.value().minutes),
+            (17, 45),
+            "a time set elsewhere shows in place"
+        );
     }
 }

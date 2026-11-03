@@ -196,6 +196,21 @@ impl ScreenShare {
                 .is_none_or(|(drawn, ..)| now.saturating_duration_since(*drawn) >= SCREEN_EVERY)
     }
 
+    /// When the next frame of a shared screen is due; `None` while nothing is
+    /// shared, or a locked desktop withholds its picture.
+    #[must_use]
+    pub fn next_frame(&self, now: Instant) -> Option<Instant> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (state.sharing && !state.withheld).then(|| {
+            state.frame.as_ref().map_or(now, |(drawn, ..)| {
+                drawn.checked_add(SCREEN_EVERY).unwrap_or(now)
+            })
+        })
+    }
+
     /// Hand on the desktop as the render pass just drew it.
     pub fn publish_rgba(&self, width: u32, height: u32, rgba: Vec<u8>) {
         let mut state = self

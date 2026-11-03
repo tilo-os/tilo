@@ -316,6 +316,16 @@ mod cases {
     }
 
     /// Choose the place `name` of a window's filter, in its sidebar.
+    /// The keys of the controls a letter's editor takes text in, in the order it draws them:
+    /// its one-line fields and the block editor its body is.
+    fn letter_fields(view: &ViewInstance) -> Vec<String> {
+        let tree = view.tree();
+        let fields = of_kind(tree, "ui.TextInput")
+            .into_iter()
+            .chain(of_kind(tree, "ui.BlockEditor"));
+        fields.map(|field| field.key.clone()).collect()
+    }
+
     fn choose(view: &ViewInstance, name: &str) {
         let place = node_with(view.tree(), "ui.NavItem", "key", name)
             .key
@@ -610,10 +620,7 @@ mod cases {
         let desk = w.create("Desk");
         let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let mut editor = w.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs: Vec<String> = of_kind(editor.tree(), "ui.TextInput")
-            .iter()
-            .map(|i| i.key.clone())
-            .collect();
+        let inputs = letter_fields(&editor);
         for (key, text) in inputs
             .iter()
             .zip(["bo@example.org", "Plans", "See you at nine."])
@@ -892,10 +899,7 @@ mod cases {
         let desk = wa.create("Desk");
         let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let editor = wa.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs: Vec<String> = of_kind(editor.tree(), "ui.TextInput")
-            .iter()
-            .map(|i| i.key.clone())
-            .collect();
+        let inputs = letter_fields(&editor);
         for (key, text) in inputs.iter().zip(["bo@example.org", "Plans", "Nine."]) {
             editor.edit(key, &Value::text(text)).unwrap();
         }
@@ -1122,8 +1126,9 @@ mod cases {
             }
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // It starts on the inbox: what is in no project, done or not.
-        assert_eq!(row_titles(v.tree()), ["milk", "eggs"]);
+        // It starts on the inbox: what is in no project, done or not, and the task done with
+        // stands last of the two, under the heading the list folds away.
+        assert_eq!(row_titles(v.tree()), ["eggs", "milk"]);
         let before = w.rt.history(&list.doc).unwrap().len();
         choose(&v, "is:done");
         v.poll_patches().unwrap();
@@ -1372,13 +1377,12 @@ mod cases {
         assert_eq!(
             asked,
             [
-                apps.todo.action("remove"),
-                apps.todo.action("remove"),
+                apps.todo.action("clear_done"),
                 apps.notes.action("new_note"),
                 apps.notes.action("retitle"),
                 apps.notes.action("tag"),
             ],
-            "one question per foreign action, in flow order"
+            "one question for the clear, then one per note action, in flow order"
         );
         assert_eq!(items(&m.w, &m.list, "items").len(), 1);
         let notes = items(&m.w, &m.notebook, "items");
@@ -1388,14 +1392,65 @@ mod cases {
             m.w.rt.read(&notes[0], "tags").unwrap(),
             Value::List(vec![Value::text("morning")])
         );
-        let removes =
+        let clears =
             m.w.rt
                 .history(&m.list.doc)
                 .unwrap()
                 .iter()
-                .filter(|n| n.action == apps.todo.action("remove"))
+                .filter(|n| n.action == apps.todo.action("clear_done"))
                 .count();
-        assert_eq!(removes, 2);
+        assert_eq!(clears, 1, "the clear ran once for the whole list");
+    }
+
+    #[test]
+    fn the_morning_cleanup_with_nothing_finished_files_a_zero_and_does_not_ask_for_a_clear() {
+        let apps = apps();
+        let m = morning(&apps);
+        add_todo(&m, &apps, "a", false);
+        add_todo(&m, &apps, "b", false);
+        // A done task with an unfinished step is not finished either.
+        let parent =
+            returned_ref(m.w.call(&apps.todo, "add", vec![res(&m.list), Value::text("c")]));
+        m.w.call(&apps.todo, "check", vec![res(&parent)]);
+        m.w.call(
+            &apps.todo,
+            "add_subtask",
+            vec![res(&m.list), res(&parent), Value::text("c.1")],
+        );
+
+        let flow = apps.today.flow("morning_cleanup");
+        let mut out =
+            m.w.rt
+                .run_flow(&me(), &flow, vec![res(&m.list), res(&m.notebook)])
+                .unwrap();
+        let mut asked = Vec::new();
+        let finished = loop {
+            match out {
+                FlowOutcome::Suspended(s) => {
+                    asked.push(s.action.clone());
+                    out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
+                }
+                FlowOutcome::Done(v) => break v,
+            }
+        };
+        assert_eq!(finished, Value::Int(0), "nothing was finished");
+        assert_eq!(
+            asked,
+            [
+                apps.notes.action("new_note"),
+                apps.notes.action("retitle"),
+                apps.notes.action("tag"),
+            ],
+            "no question for a clear that would do nothing"
+        );
+        assert_eq!(
+            items(&m.w, &m.list, "items").len(),
+            4,
+            "nothing went: the done task keeps its open step"
+        );
+        let notes = items(&m.w, &m.notebook, "items");
+        assert_eq!(notes.len(), 1, "the note still says how the morning went");
+        assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 0 done");
     }
 
     #[test]
@@ -1536,6 +1591,40 @@ mod cases {
         assert!(
             labels(&v).contains(&"Clear done".to_owned()),
             "once an item is done, Clear done is offered: {:?}",
+            labels(&v)
+        );
+        // A step left open under a done task is unfinished work: a clear would take nothing,
+        // so it is not offered.
+        w.call(
+            &apps.todo,
+            "add_subtask",
+            vec![res(&list), res(&item), Value::text("milk the cow")],
+        );
+        let step = items(&w, &list, "items")
+            .into_iter()
+            .find(|i| text_of(&w, i, "title") == "milk the cow")
+            .expect("the step went under the task");
+        v.poll_patches().unwrap();
+        assert!(
+            !labels(&v).contains(&"Clear done".to_owned()),
+            "a done task with an open step is not finished: {:?}",
+            labels(&v)
+        );
+        let refused =
+            w.rt.invoke_action(
+                &me(),
+                (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
+            )
+            .expect_err("clear_done is refused while nothing is finished");
+        assert!(
+            refused.to_string().contains("Nothing is done yet"),
+            "{refused}"
+        );
+        w.call(&apps.todo, "check", vec![res(&step)]);
+        v.poll_patches().unwrap();
+        assert!(
+            labels(&v).contains(&"Clear done".to_owned()),
+            "with the step done too, Clear done is offered again: {:?}",
             labels(&v)
         );
     }

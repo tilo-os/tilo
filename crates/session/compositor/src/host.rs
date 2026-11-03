@@ -305,6 +305,15 @@ pub trait SurfaceHost {
         true
     }
 
+    /// Keep what it holds in step without drawing any of it: what a surface the
+    /// shell stands in front of still does every frame, so the changes the
+    /// person and the session ask of it take effect even though nothing of it
+    /// shows. Whether any of it moved, so the frame it stands under is drawn
+    /// again.
+    fn advance(&mut self) -> bool {
+        false
+    }
+
     /// When this surface next needs a frame with no input to bring one: now
     /// while what it shows moves or a wake it took has not drawn yet, else
     /// the earliest deadline its content sets (a banner's exit, a caret's

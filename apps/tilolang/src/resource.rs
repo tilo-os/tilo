@@ -73,8 +73,9 @@ impl Published {
                 .values()
                 .map(|tree| (**tree).clone()),
         );
+        let words = self.host.runtime().words();
         for package in self.host.packages() {
-            let resource = publish_package(&package.meta, &self.planner);
+            let resource = publish_package(&package.meta, &self.planner, &*words);
             if !resource.actions.is_empty() {
                 out.push(resource);
             }

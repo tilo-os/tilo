@@ -60,9 +60,10 @@ stmt       = "let" ident [ ":" type ] "=" expr
            | expr ;
 place      = ident { "." ident } ;
 
-expr       = ident "->" expr                                       (* lambda: only as a method argument *)
-           | [ or ] ".." [ or ]                                    (* range: a..b, a.., ..b *)
-           | or ;
+expr       = lambda | range | or ;
+lambda     = ident "->" expr                                       (* one value *)
+           | "(" ident { "," ident } ")" "->" expr                 (* the values a parameter of a function type takes *)
+range      = [ or ] ".." [ or ]                                    (* a..b, a.., ..b *)
 or         = and { ( "or" | "??" ) and } ;                        (* `??`: an Option's value or a fallback *)
 and        = not { "and" not } ;
 not        = "not" not | cmp ;

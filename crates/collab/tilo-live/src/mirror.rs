@@ -94,7 +94,7 @@ impl Mirror {
     }
 }
 
-async fn watch(
+pub(crate) async fn watch(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
     downlink: Option<Arc<Downlink>>,

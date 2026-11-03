@@ -43,6 +43,9 @@ dev-overrides = []
 # The surface apps' sockets are handed to their children as descriptors.
 libc.workspace = true
 tilo-compositor = { path = "../compositor" }
+# The session's own profiler: what its frame went on, recorded on the owner's
+# request and read from the same door.
+tilo-frame-metrics = { path = "../frame-metrics" }
 # Each display's colour, as the compositor reads it from the sink.
 tilo-color-pipeline = { path = "../color-pipeline" }
 image = { workspace = true, features = ["png"] }
@@ -52,6 +55,8 @@ tilo-surface-host = { path = "../surface-host" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the desk's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+# The toolkit's words, which what a package the session runs publishes reads through.
+tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }

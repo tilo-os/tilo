@@ -1077,11 +1077,23 @@ impl InvocationProvenance {
             return Err("publication has unfinished changes".into());
         }
         self.validate_existing(document)?;
-        let exported = document
-            .get_changes(from)
-            .into_iter()
-            .map(|change| change.hash())
-            .collect::<BTreeSet<_>>();
+        // The changes the exact body carries, not an ancestry range: what
+        // arrived from the route is left out of the publication, and the
+        // authorization names what went out with it.
+        let exported = match mutation {
+            collab_types::DocumentMutation::Snapshot(_) => document
+                .get_changes(&[])
+                .into_iter()
+                .map(|change| change.hash())
+                .collect(),
+            collab_types::DocumentMutation::Incremental(bytes) => {
+                collab_types::parse_changes(bytes)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|change| change.hash())
+                    .collect()
+            }
+        };
         let mut contributions: Vec<Contribution> = vec![];
         #[cfg(feature = "broker-transport")]
         let mut acknowledgements = vec![];

@@ -67,6 +67,19 @@ impl Continuation {
         })
     }
 
+    /// End the loop's wait when an importer asks, so it is answered on the
+    /// pass that follows.
+    ///
+    /// # Errors
+    /// The loop took no more sources.
+    pub(crate) fn wake_on(
+        &mut self,
+        compositor: &mut tilo_compositor::Compositor,
+    ) -> io::Result<()> {
+        self.readiness.watch = Some(crate::sockets::watch(compositor, &self.readiness.listener)?);
+        Ok(())
+    }
+
     /// Answer every importer waiting since the last pass, and say whether the
     /// saved review opens now: once the person's first use is over, and once
     /// in this login. A client that does not read cannot stall a frame.
@@ -83,6 +96,8 @@ impl Continuation {
 /// The readiness socket of this session, answered on the session's own loop.
 struct Readiness {
     listener: UnixListener,
+    /// What ends the loop's wait while an importer asks.
+    watch: Option<tilo_compositor::ReadableWatch>,
     path: PathBuf,
     /// The socket this instance bound: stopping a session never removes the
     /// socket of another one that bound the path after it.
@@ -130,6 +145,7 @@ impl Readiness {
         let bound = fs::symlink_metadata(&path)?;
         Ok(Self {
             listener,
+            watch: None,
             path,
             bound: (bound.dev(), bound.ino()),
             account: bound.uid(),
