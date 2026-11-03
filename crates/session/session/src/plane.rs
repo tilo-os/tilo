@@ -735,14 +735,24 @@ fn seams(
             .map(|state| state.join("actions").join("launchable.json"))
     });
     Seams {
+        // No approved-check runner is installed with this session: a check a
+        // project's app asks for has nothing to run it.
         approved_checks: Seam::unserved(
-            "this session hosts no project's checks: no project enforces any here",
+            "no project's approved check runs here: this session installs no check service",
         ),
+        // Resources an app asks to look at are published by the app that
+        // holds them and reached through the action door's own catalogue; the
+        // session reads none of them on an app's behalf.
         resource_views: Seam::unserved(
-            "this session reads no other app's existing resources: search lists them instead",
+            "an app reads another app's resources through the action door's catalogue, over \
+             the holding app's own route",
         ),
+        // A record is held on the collaboration plane of the app that owns
+        // it, in everyone's copy at once; the session keeps no documents of
+        // its own to read one from.
         committed_documents: Seam::unserved(
-            "this session reads no committed document on an app's behalf",
+            "records are read and changed on the collaboration plane each app holds, \
+             not through this session's documents",
         ),
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
@@ -757,7 +767,13 @@ fn seams(
         // What people ask this session's agents to do: a run is the broker's
         // to deliver, and its reports come back to the run.
         tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
-        person_chat: Seam::unserved("this session keeps no chat service for apps"),
+        // Private texts are this session's own `messages` resource, sent
+        // between the two people's devices; the action door's chat channel is
+        // not wired to it, so an app asking there is answered nothing.
+        person_chat: Seam::unserved(
+            "private texts live on this session's messages resource, and the action door \
+             serves no per-app chat channel over them",
+        ),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -768,16 +784,26 @@ fn seams(
             std::sync::Arc::new(tilo_identity_authority::NativeLocalPerson)
                 as std::sync::Arc<dyn tilo_action_broker::services::LocalPersonServices>,
         ),
+        // A record's own origin is its app's collaboration plane route, and a
+        // task's change reaches it as the app's action; the session applies
+        // no record change of its own for the door to ask.
         record_changes: Seam::unserved(
-            "no workspace origin here applies an agent's task change to a record",
+            "an agent's change to a record goes through the record's own app, not through \
+             a record origin this session keeps",
         ),
+        // The desk's own migration is the one reader of what an older
+        // session journaled, and it imports it once into this session's
+        // workspaces.
         legacy_workspace: Seam::unserved(
-            "the desk's workspaces are read where they are shown, not through a projection",
+            "older workspaces are imported once by the desk's migration, and no app feeds \
+             their journal through this session",
         ),
         launcher: Seam::served(launches),
         // The resources this session's services publish, which the apps it
         // admits read, watch and invoke.
         published: Seam::served(link),
+        // A workspace's grants are the desk's: the person gives them on its
+        // sheets, and the broker decides against the desk it was started with.
         workspace_governance: Seam::unserved(
             "workspace grants are given in the desk's own sheets, not by an app",
         ),
@@ -788,8 +814,11 @@ fn seams(
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
         keyboard_shortcuts: Seam::served(crate::keyboard_shortcuts::servable()),
+        // What an app had open is its window's on the desk, restored where
+        // the desk shows it; the door keeps no continuation of its own.
         continuations: Seam::unserved(
-            "this session offers no app's unfinished work to another app",
+            "an app's unfinished work stays with its window on the desk, and this session \
+             records no continuation for another app to pick up",
         ),
         // What an app publishes of its own content is found whether or not
         // it runs, once it is closed and after a restart.
@@ -828,15 +857,30 @@ fn seams(
         // Every app shows its live activity (a running timer, a stopwatch)
         // outside its windows on this one board.
         live_activities: Seam::served(live_activities),
-        wifi_continuity: Seam::unserved("this session serves no wifi continuity"),
-        browser_service_sessions: Seam::unserved(
-            "this session serves no browser's service sessions",
+        // The network the person is on is the session's own service; an app
+        // reaching for its handoff is answered nothing here.
+        wifi_continuity: Seam::unserved(
+            "Wi-Fi handoff belongs to this session's network service, not to an app's \
+             action door",
         ),
-        nearby_transfer: Seam::unserved("nearby transfer is not served by this session's app door"),
+        // The Browser app resolves and keeps its own service sessions in its
+        // record, beside its windows.
+        browser_service_sessions: Seam::unserved(
+            "the Browser app keeps its service sessions itself, in its own record",
+        ),
+        // Handing a window, a file or a call to another of the person's
+        // devices is the device fabric's, reached from the desk.
+        nearby_transfer: Seam::unserved(
+            "a window, a file or a call reaches another of the person's devices through \
+             the device fabric, not an app's action door",
+        ),
         file_clipboard: Seam::unserved(
             "the clipboard belongs to the compositor, which serves it to windows itself",
         ),
         app_action_access: Seam::served(app_action_access),
+        // A grant for an app to take another app's action is kept in a
+        // workspace's own record, which this session's engine commits; the
+        // host records none of them for the door to ask.
         app_action_grants: Seam::unserved(
             "an app's grant for another app's actions is recorded in the workspace's own \
              governance, which no app reaches here",

@@ -623,7 +623,14 @@ impl Loop {
             .name("tilo-agent-door".into())
             .spawn(move || {
                 serve_connection(
-                    stream, pid, broker, session, &requests, &launches, &wake, &control, &seats,
+                    Opened { stream, pid },
+                    broker,
+                    &session,
+                    &requests,
+                    &launches,
+                    &wake,
+                    &control,
+                    &seats,
                 );
                 served.fetch_sub(1, Ordering::Relaxed);
                 // A question for a client that is gone is withdrawn on the
@@ -1843,22 +1850,28 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
     }
 }
 
+/// A client the door accepted: its socket, and the pid that opened it, which
+/// is how the door knows whether it is a program inside an app.
+struct Opened {
+    stream: UnixStream,
+    pid: u32,
+}
+
 /// Serve one connection of this account, on its own thread: read what it
 /// opens with, ask the person, and only once they admit it answer what it
 /// asked. A refusal answers its `initialize` with a JSON-RPC error and
 /// closes.
 fn serve_connection(
-    stream: UnixStream,
-    pid: u32,
+    opened: Opened,
     broker: Option<Arc<AppBrokerState>>,
-    session: Arc<SessionDoors>,
+    session: &Arc<SessionDoors>,
     requests: &Sender<Request>,
     launches: &Launches,
     wake: &Wake,
     control: &crate::test_control::Door,
     seats: &Seats,
 ) {
-    let mut stream = stream;
+    let Opened { mut stream, pid } = opened;
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => {
@@ -1896,7 +1909,7 @@ fn serve_connection(
     let tasks = Arc::new(TaskHosts::new(
         &session.person,
         std::sync::Arc::clone(&session.runs),
-        Arc::clone(&session),
+        Arc::clone(session),
     ));
     let admitted = Arc::clone(&tasks);
     let seat = seats.joining();
@@ -1904,7 +1917,7 @@ fn serve_connection(
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
-        || Ok(Host::new(Some(broker), Arc::clone(&session))),
+        || Ok(Host::new(Some(broker), Arc::clone(session))),
         Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
         |hello, connected| {
             let consent = ask(requests, wake, facts, hello, connected, seat);

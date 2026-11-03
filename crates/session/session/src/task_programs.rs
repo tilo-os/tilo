@@ -160,17 +160,17 @@ fn unavailable(message: String) -> HostStepOutcome {
     }))
 }
 
-fn outcome(ran: tilo_runtime::mcp::TaskProgram) -> HostStepOutcome {
+fn outcome(ran: tilo_runtime::mcp::TaskProgram) -> tilo_actions::ActionOutput {
     let answer = wire::ProgramAnswer {
         text: ran.text,
         failed: ran.failed,
         answer: ran.answer,
         refs: ran.refs,
     };
-    Ok(tilo_actions::ActionOutput {
+    tilo_actions::ActionOutput {
         value: Some(serde_json::to_value(answer).unwrap_or_default()),
         resources: Vec::new(),
-    })
+    }
 }
 
 impl HostStepServices for TaskPrograms {
@@ -244,7 +244,7 @@ impl HostStepServices for TaskPrograms {
                         confirm,
                         this.as_deref(),
                     )) {
-                        Ok(ran) => outcome(ran),
+                        Ok(ran) => Ok(outcome(ran)),
                         Err(error) => unavailable(error.to_string()),
                     },
                     Err(error) => unavailable(error.to_string()),

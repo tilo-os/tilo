@@ -321,8 +321,6 @@ pub(crate) fn start_action_plane(
             // Files' waits for the drive and app lists to change, which the
             // tools service answers.
             tools,
-            // An agent's task writes its programs, and this session's door runs
-            // them as steps of the run the task is in.
             task_programs,
         },
     )?;
