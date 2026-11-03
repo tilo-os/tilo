@@ -327,6 +327,9 @@ pub struct Instance {
     pending: Pending,
     /// The undos and redos the person asked for, in order, not yet taken.
     history: Vec<HistoryAsk>,
+    /// The actions the person chose from the window's command palette, in order, until the
+    /// host runs them as the person's own steps.
+    chosen: Vec<(ActionAddress, Option<String>)>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     /// Why the scenario a capture staged did not run whole, until the capture takes it: a
@@ -413,6 +416,7 @@ impl Instance {
             origins: Rc::default(),
             pending: Pending::default(),
             history: Vec::new(),
+            chosen: Vec::new(),
             staged: None,
             stage_failed: None,
             started: false,
@@ -649,6 +653,19 @@ impl Instance {
     /// on a notice, and the window's undo and redo.
     pub fn take_history(&mut self) -> Vec<HistoryAsk> {
         std::mem::take(&mut self.history)
+    }
+
+    /// The actions the person chose from the window's command palette since last asked, in the
+    /// order they chose them, with the argument the palette collected: the host runs each as
+    /// the person's own step, the way it runs any invocation of an action it publishes.
+    pub fn take_chosen(&mut self) -> Vec<(ActionAddress, Option<String>)> {
+        std::mem::take(&mut self.chosen)
+    }
+
+    /// Send the window `message` with this frame's batch: what the host knows of the actions it
+    /// publishes for the window's person, which the instance does not build itself.
+    pub fn say(&mut self, message: ToUi) {
+        self.out.push(message);
     }
 
     /// The bound control the window's keyboard focus is in, and whether an input method is
@@ -1427,6 +1444,13 @@ impl Instance {
         self.flush();
     }
 
+    /// The action the person chose from the window's command palette did not run, for `why`
+    /// (the app refused it, or it was no longer offered): the window says so.
+    pub fn action_refused(&mut self, why: String) {
+        self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        self.flush();
+    }
+
     fn take_door_work(&mut self) -> bool {
         if !self.door_work.take() {
             return false;
@@ -1756,6 +1780,13 @@ impl Instance {
             | ToApp::Names { .. }
             | ToApp::Space { .. }) => {
                 self.window_told(told);
+                Ok(())
+            }
+            ToApp::Invoke { address, argument } => {
+                // The palette offered the person the actions the host publishes for this
+                // window; the host runs what they chose, so it holds the address and the
+                // argument until its next frame.
+                self.chosen.push((address, argument));
                 Ok(())
             }
         };

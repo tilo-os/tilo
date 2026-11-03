@@ -272,6 +272,9 @@ pub struct AppWindow {
     shape: Shape,
     /// What the app said a part has no window to show, until its embedder takes it.
     notices: Vec<(wire::NoticeKind, String)>,
+    /// The actions the app offers the person at this window, as their command palette lists
+    /// them ([`ToUi::Actions`]).
+    actions: Vec<tilo_actions::ActionDescriptor>,
 }
 
 impl AppWindow {
@@ -367,6 +370,7 @@ impl AppWindow {
             detail_space: None,
             shape: Shape::Window,
             notices: Vec::new(),
+            actions: Vec::new(),
         }
     }
 
@@ -374,6 +378,25 @@ impl AppWindow {
     /// window is a part with no shell to toast in.
     pub fn take_notices(&mut self) -> Vec<(wire::NoticeKind, String)> {
         std::mem::take(&mut self.notices)
+    }
+
+    /// The actions the app offers the person at this window, as its command palette lists
+    /// them ([`ToUi::Actions`]): labels, keys, icons and what they act on, for the window to
+    /// offer them the way it offers its own.
+    #[must_use]
+    pub fn actions(&self) -> &[tilo_actions::ActionDescriptor] {
+        &self.actions
+    }
+
+    /// The person chose `address` from the window's command palette with `argument`: the app
+    /// runs it as their own step. `argument` is the palette's collected text or canonical JSON
+    /// arguments, as a prompt or typed form encodes them.
+    pub fn invoke_action(
+        &mut self,
+        address: tilo_actions::ActionAddress,
+        argument: Option<String>,
+    ) {
+        self.tell(ToApp::Invoke { address, argument });
     }
 
     /// Whether the app asked for the window to come forward since this was last asked
@@ -519,6 +542,7 @@ impl AppWindow {
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
                 ToUi::Form(form) => self.show_form(form.as_deref()),
+                ToUi::Actions(catalogue) => self.take_actions(catalogue)?,
                 ToUi::Took { fired } => {
                     self.took = self.took.max(fired);
                     // What was typed after the presses it ran goes to what they opened, before
@@ -542,6 +566,35 @@ impl AppWindow {
                 wire::Front::Input => by_input(),
                 wire::Front::Action => MotionSource::Action,
             });
+        }
+        Ok(())
+    }
+
+    /// What the app offers the person at the window now: every action, or the actions of the
+    /// resources whose labels moved, which replace theirs where they sit.
+    fn take_actions(&mut self, catalogue: wire::ActionCatalogue) -> Result<(), String> {
+        match catalogue {
+            wire::ActionCatalogue::All(actions) => self.actions = crate::catalogue::read(&actions)?,
+            wire::ActionCatalogue::Relabeled(actions) => {
+                for action in crate::catalogue::read(&actions)? {
+                    if let Some(held) = self
+                        .actions
+                        .iter_mut()
+                        .find(|held| held.address == action.address)
+                    {
+                        *held = action;
+                    } else {
+                        // An action the window does not hold yet: it takes its place after
+                        // those it knows of its resource.
+                        let at = self
+                            .actions
+                            .iter()
+                            .rposition(|held| held.address.resource == action.address.resource)
+                            .map_or(self.actions.len(), |last| last.saturating_add(1));
+                        self.actions.insert(at, action);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -2080,6 +2133,14 @@ impl AppWindow {
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
 
+    // The window is the publisher of the app's actions and the one that answers choosing one
+    // ([`crate::catalogue`]); everything else is the body's and forwarded to it.
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::host_operation::ResourceOperations;
+        inner = body
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
@@ -2588,6 +2649,61 @@ mod tests {
         assert!(window.composed().is_none(), "nothing of it was built");
         app.send(b"scribbles".to_vec()).expect("sends");
         assert!(window.receive(), "a scribble is refused, not a panic");
+    }
+
+    /// What the app published for the window: a resource with one action, as the catalogue
+    /// carries it.
+    fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
+        use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
+        let mut spec = ActionSpec::operation(
+            "new",
+            label,
+            OperationKind::Effect,
+            "test.create",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        spec.type_mut().state.shortcut = shortcut.map(str::to_owned);
+        let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
+        serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes")
+    }
+
+    /// The window offers the actions its app publishes, and a catalogue of labels that moved
+    /// replaces the action it holds where it sits, with the key the app gives it now.
+    #[test]
+    fn a_published_catalogue_is_what_the_windows_palette_offers() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(
+            &mut app,
+            &[ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
+                "New task",
+                Some("Ctrl+n"),
+            )))],
+        );
+        window.receive();
+        assert_eq!(
+            window.actions().first().map(|action| (
+                action.action_label.as_str(),
+                action.state.shortcut.as_deref()
+            )),
+            Some(("New task", Some("Ctrl+n")))
+        );
+        send(
+            &mut app,
+            &[ToUi::Actions(wire::ActionCatalogue::Relabeled(
+                catalogue_of("Create task", Some("Ctrl+enter")),
+            ))],
+        );
+        window.receive();
+        assert_eq!(
+            window.actions().first().map(|action| (
+                action.action_label.as_str(),
+                action.state.shortcut.as_deref()
+            )),
+            Some(("Create task", Some("Ctrl+enter"))),
+            "one action, relabeled in place"
+        );
     }
 
     /// A view whose header offers `Archive` as a button declaring `key`, as `std.header` builds

@@ -30,6 +30,7 @@
 //! A connection is one window of one app: a patch can only name nodes of the trees that
 //! window's app sent.
 
+use tilo_actions::ActionAddress;
 /// Rich text as a window shows it ([`Value::Rich`]).
 pub use tilo_ui_graph::rich;
 
@@ -480,6 +481,18 @@ pub struct Form {
     pub tree: Node,
 }
 
+/// The actions an app offers the person at its window, as its action directory lists them:
+/// what the window's command palette shows. They travel as the descriptor JSON the directory
+/// carries, one array per message.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ActionCatalogue {
+    /// Every action the app offers the window, in the order it offers them.
+    All(Vec<u8>),
+    /// The actions of the resources whose labels moved: they replace those resources' actions
+    /// in the window, at the cost of what changed rather than of the whole surface.
+    Relabeled(Vec<u8>),
+}
+
 /// What an app sends its window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToUi {
@@ -545,6 +558,9 @@ pub enum ToUi {
     /// they opened before this. What the person typed after a press goes to the app once it
     /// ran it, into the field focused then.
     Took { fired: u64 },
+    /// The actions the app offers the person at this window, as their command palette lists
+    /// them: the app's published actions, with the keys, icons and labels it gives them.
+    Actions(ActionCatalogue),
 }
 
 /// What the person did, as the window tells its app.
@@ -663,6 +679,12 @@ pub enum ToApp {
     /// The person asked to bring back what their last undo took back: the window's redo
     /// (Ctrl+Shift+Z, Edit › Redo). The mirror of [`ToApp::Undo`].
     Redo,
+    /// The person chose the action `address` from the window's command palette, with the
+    /// argument the palette collected: the app runs it as the person's own step.
+    Invoke {
+        address: ActionAddress,
+        argument: Option<String>,
+    },
 }
 
 /// Largest batch either side sends or accepts.
