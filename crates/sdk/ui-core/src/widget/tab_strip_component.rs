@@ -300,6 +300,63 @@ impl crate::widget::decorator::concrete::Decorator for TabStrip {
     fn inner_mut(&mut self) -> &mut TabBar {
         &mut self.bar
     }
+
+    // The bar marks what the person did with its pills as the input arrives, and the view
+    // hears it only when the strip reports: every way input reaches the bar reports in the
+    // same pass, so a press, a drop or a key is the view's event in that frame.
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        crate::widget::Widget::handle_event(&mut self.bar, event, ctx);
+        self.report();
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        let handled =
+            crate::widget::Widget::perform_action(&mut self.bar, action, key_path, state, path);
+        self.report();
+        handled
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        let handled = crate::widget::Widget::perform_semantic_action(
+            &mut self.bar,
+            target,
+            action,
+            state,
+            path,
+        );
+        self.report();
+        handled
+    }
+
+    /// A host that keeps its tree in step each frame hears what the pills reported since the
+    /// last one, as one that only takes events does from [`Self::handle_event`].
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        crate::widget::Widget::sync(&mut self.bar, state, path);
+        self.report();
+    }
+
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        let changed = crate::widget::Widget::update(&mut self.bar, state, path);
+        self.report();
+        changed
+    }
 }
 
 /// The strip's props again: what its view last said, its events left out.
