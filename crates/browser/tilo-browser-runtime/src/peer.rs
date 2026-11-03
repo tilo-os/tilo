@@ -1609,7 +1609,9 @@ pub fn verify_agent_delegation(
         label: delegation.label,
         color: tilo_relay_protocol::agents::color_hex(delegation.color),
         device: hex::encode(delegation.device_public_key),
-        workspaces: delegation.scope.workspaces,
+        // The page calls a delegation's workspaces what its own API does; the
+        // protocol spells the scope's as rooms.
+        workspaces: delegation.scope.rooms,
         apps: delegation.scope.apps,
         expires_at_ns: delegation.expires_at_ns,
     })

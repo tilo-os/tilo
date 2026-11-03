@@ -164,6 +164,13 @@ impl PagePrivate {
                 }
                 self.whole(&public_key).await
             }
+            // What a page's door carries is a conversation, through its
+            // workspace's private door. The pair the two people share is the
+            // workspace's own record, read and changed from the host, and a
+            // page's session opens no operation for one.
+            Request::Announce { .. } | Request::Pairs | Request::Import { .. } => {
+                Err("the page's door keeps no pair records".into())
+            }
         }
     }
 }

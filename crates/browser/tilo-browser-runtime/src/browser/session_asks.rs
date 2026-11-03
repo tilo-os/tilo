@@ -109,19 +109,13 @@ fn node_request(
     let workspace = workspace.to_owned();
     match action {
         NodeAction::Share { share, access } => WorkspacesRequest::Share {
-            workspace: workspace,
+            workspace,
             share,
             node,
             access,
         },
-        NodeAction::Unshare { share } => WorkspacesRequest::Unshare {
-            workspace: workspace,
-            share,
-        },
-        NodeAction::Permits => WorkspacesRequest::Permits {
-            workspace: workspace,
-            node,
-        },
+        NodeAction::Unshare { share } => WorkspacesRequest::Unshare { workspace, share },
+        NodeAction::Permits => WorkspacesRequest::Permits { workspace, node },
     }
 }
 
