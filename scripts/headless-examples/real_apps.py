@@ -150,10 +150,17 @@ class Session:
             argv += ["--install-tapp", str(tapp)]
         print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
         log = open(out / f"session-{tag}.log", "w")
+        # The session script makes its own private runtime directory inside
+        # `XDG_RUNTIME_DIR`, which a container leaves unset: give it one of
+        # the state's own, so nothing here needs a logged-in seat.
+        host_runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or self.state / "host-runtime")
+        if not host_runtime.is_dir():
+            host_runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.proc = subprocess.Popen(
             argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-            env={**os.environ, "RUST_LOG": os.environ.get(
-                "RUST_LOG", "warn,tilo::launch_latency=info"), **(env or {})},
+            env={**os.environ, "XDG_RUNTIME_DIR": str(host_runtime),
+                 "RUST_LOG": os.environ.get(
+                     "RUST_LOG", "warn,tilo::launch_latency=info"), **(env or {})},
         )
         until("the session to start",
               lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
