@@ -80,7 +80,9 @@ pub enum Refusal {
 }
 
 /// Which of a call's two lanes a frame travels on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Lane {
     /// Voice. Frames are 20 ms Opus pictures carried as datagrams, dropped
     /// rather than delayed.
