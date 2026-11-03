@@ -1,9 +1,12 @@
-//! The loop's pass: when it may sleep, and what the login's first frame
-//! closes.
+//! The loop's pass: the turn it takes, when it may sleep, and what the login's
+//! first frame closes.
 //!
-//! [`Session::step`] is the loop's turn; what this file holds is what that
-//! turn answers apart from drawing — the shortest wait its own clocks ask
-//! for, and the end of the startup measure.
+//! [`Session::run`] is the loop and [`Session::step`] one turn of it: wait for
+//! clients, devices and the session's own due work, then carry out what the
+//! desk asked and draw. What this file holds is what a turn answers apart from
+//! drawing — the shortest wait its own clocks ask for, the session's share of
+//! the frame's timings, the runs and services it fed, and the end of the
+//! startup measure.
 
 use std::time::{Duration, Instant};
 
