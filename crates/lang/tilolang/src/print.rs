@@ -5,6 +5,7 @@ use crate::ast::{
     SearchBlock, SearchEntryKind, Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind, UiCall, UiKind,
     UiStmt, UnOp,
 };
+use crate::diag::Span;
 use crate::lexer::Comment;
 
 /// A block of one expression whose text is at most this long prints on one line: `{ x }`.
@@ -20,8 +21,8 @@ pub fn print_module(m: &Module) -> String {
 ///
 /// `comments` are the file's plain `//` comments ([`crate::lexer::plain_comments`]): each prints
 /// just above the declaration, field, statement or match arm it was written over, after that
-/// node's `///` lines. A comment written inside a declaration's head or an expression has no line
-/// of its own to keep, so it prints above the next statement.
+/// node's `///` lines, inside an expression's blocks and match arms too. A comment written inside
+/// a declaration's head has no line of its own to keep, so it prints above the next statement.
 pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Comment]) -> String {
     let mut p = Printer {
         out: String::new(),
@@ -75,33 +76,73 @@ fn indent(level: usize) -> String {
     "    ".repeat(level)
 }
 
+/// Writes into `out` the plain `//` comments written above the node that starts at `start`,
+/// each on a line of its own indented to `level`; `seen` moves past them.
+fn comments_into(
+    out: &mut String,
+    level: usize,
+    comments: &[Comment],
+    seen: &mut usize,
+    start: usize,
+) {
+    while let Some(text) = comments
+        .get(*seen)
+        .filter(|c| c.span.start < start)
+        .map(|c| c.text.clone())
+    {
+        *seen += 1;
+        out.push_str(&indent(level));
+        if text.is_empty() {
+            out.push_str("//\n");
+        } else {
+            out.push_str("// ");
+            out.push_str(&text);
+            out.push('\n');
+        }
+    }
+}
+
+/// Whether a comment still to print is written inside `span`.
+fn holds_comment(comments: &[Comment], seen: usize, span: Span) -> bool {
+    comments
+        .get(seen..)
+        .unwrap_or_default()
+        .iter()
+        .any(|c| c.span.start >= span.start && c.span.start < span.end)
+}
+
 /// A block as text: on one line when it is one short expression, otherwise one statement per
-/// line, indented one level deeper than `level`.
-fn block_text(b: &Block, level: usize) -> String {
+/// line, indented one level deeper than `level`. A block whose statements carry a `//` comment
+/// prints on several lines, so the comment has a line of its own.
+fn block_text(b: &Block, level: usize, comments: &[Comment], seen: &mut usize) -> String {
+    if b.stmts.is_empty() && !holds_comment(comments, *seen, b.span) {
+        return "{}".to_owned();
+    }
     if let [
         Stmt {
             kind: StmtKind::Expr(e),
             ..
         },
     ] = b.stmts.as_slice()
+        && !holds_comment(comments, *seen, b.span)
     {
         let one = expr_text(e, 0, level);
         if !one.contains('\n') && one.len() <= INLINE_BLOCK {
             return format!("{{ {one} }}");
         }
     }
-    if b.stmts.is_empty() {
-        return "{}".to_owned();
-    }
     let mut sub = Printer {
         out: String::new(),
         level: level + 1,
-        comments: &[],
-        seen: 0,
+        comments,
+        seen: *seen,
     };
     for s in &b.stmts {
         sub.stmt(s);
     }
+    // A comment after the last statement is the block's, not the next one's.
+    sub.comments_before(b.span.end);
+    *seen = sub.seen;
     format!("{{\n{}{}}}", sub.out, indent(level))
 }
 
@@ -117,12 +158,15 @@ fn pattern_text(p: &Pattern) -> String {
     }
 }
 
-fn args_text(args: &[Arg], level: usize) -> String {
+fn args_text(args: &[Arg], level: usize, comments: &[Comment], seen: &mut usize) -> String {
     let inner: Vec<String> = args
         .iter()
-        .map(|a| match &a.name {
-            Some(n) => format!("{}: {}", n.name, expr_text(&a.value, 0, level)),
-            None => expr_text(&a.value, 0, level),
+        .map(|a| {
+            let value = expr_with(&a.value, 0, level, comments, seen);
+            match &a.name {
+                Some(n) => format!("{}: {value}", n.name),
+                None => value,
+            }
         })
         .collect();
     inner.join(", ")
@@ -199,10 +243,18 @@ fn prec_of(e: &Expr) -> u8 {
 }
 
 /// `let a = x, b = y` of an `if let`.
-fn binds_text(binds: &[crate::ast::LetBind], level: usize) -> String {
+fn binds_text(
+    binds: &[crate::ast::LetBind],
+    level: usize,
+    comments: &[Comment],
+    seen: &mut usize,
+) -> String {
     let parts: Vec<String> = binds
         .iter()
-        .map(|b| format!("{} = {}", b.name.name, expr_text(&b.value, 0, level)))
+        .map(|b| {
+            let value = expr_with(&b.value, 0, level, comments, seen);
+            format!("{} = {value}", b.name.name)
+        })
         .collect();
     format!("let {}", parts.join(", "))
 }
@@ -222,6 +274,13 @@ pub(crate) fn expr_source(e: &Expr) -> String {
 }
 
 fn expr_text(e: &Expr, min: u8, level: usize) -> String {
+    let mut seen = 0;
+    expr_with(e, min, level, &[], &mut seen)
+}
+
+/// An expression in its canonical text, printing the `//` comments inside its blocks and match
+/// arms above the statement or arm they were written over, as the printer does for statements.
+fn expr_with(e: &Expr, min: u8, level: usize, comments: &[Comment], seen: &mut usize) -> String {
     let body = match &e.kind {
         ExprKind::Int(v) => v.to_string(),
         ExprKind::Float(v) => float_text(*v),
@@ -229,9 +288,9 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
         ExprKind::Duration(v, u) => format!("{v}{u}"),
         ExprKind::Calendar(text) => calendar_text(text),
         ExprKind::Range { lo, hi } => {
-            let end = |x: &Option<Box<Expr>>| {
+            let mut end = |x: &Option<Box<Expr>>| {
                 x.as_deref()
-                    .map(|x| expr_text(x, 1, level))
+                    .map(|x| expr_with(x, 1, level, comments, seen))
                     .unwrap_or_default()
             };
             format!("{}..{}", end(lo), end(hi))
@@ -244,7 +303,7 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
                     StrPart::Lit(s) => escape_into(s, &mut out),
                     StrPart::Interp(x) => {
                         out.push('{');
-                        out.push_str(&expr_text(x, 0, level));
+                        out.push_str(&expr_with(x, 0, level, comments, seen));
                         out.push('}');
                     }
                 }
@@ -267,50 +326,66 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
         }
         ExprKind::Ident(n) => n.clone(),
         ExprKind::Tuple(items) => {
-            let inner: Vec<String> = items.iter().map(|x| expr_text(x, 0, level)).collect();
+            let inner: Vec<String> = items
+                .iter()
+                .map(|x| expr_with(x, 0, level, comments, seen))
+                .collect();
             format!("({})", inner.join(", "))
         }
         ExprKind::List(items) => {
-            let inner: Vec<String> = items.iter().map(|x| expr_text(x, 0, level)).collect();
+            let inner: Vec<String> = items
+                .iter()
+                .map(|x| expr_with(x, 0, level, comments, seen))
+                .collect();
             format!("[{}]", inner.join(", "))
         }
         ExprKind::If { cond, then, els } => {
             let mut out = format!(
                 "if {} {}",
-                expr_text(cond, 0, level),
-                block_text(then, level)
+                expr_with(cond, 0, level, comments, seen),
+                block_text(then, level, comments, seen)
             );
             match els.as_deref() {
                 None => {}
                 Some(Expr {
                     kind: ExprKind::Block(b),
                     ..
-                }) => out.push_str(&format!(" else {}", block_text(b, level))),
-                Some(other) => out.push_str(&format!(" else {}", expr_text(other, 0, level))),
+                }) => out.push_str(&format!(" else {}", block_text(b, level, comments, seen))),
+                Some(other) => out.push_str(&format!(
+                    " else {}",
+                    expr_with(other, 0, level, comments, seen)
+                )),
             }
             out
         }
         ExprKind::IfLet { binds, then, els } => {
             let mut out = format!(
                 "if {} {}",
-                binds_text(binds, level),
-                block_text(then, level)
+                binds_text(binds, level, comments, seen),
+                block_text(then, level, comments, seen)
             );
             match els.as_deref() {
                 None => {}
                 Some(Expr {
                     kind: ExprKind::Block(b),
                     ..
-                }) => out.push_str(&format!(" else {}", block_text(b, level))),
-                Some(other) => out.push_str(&format!(" else {}", expr_text(other, 0, level))),
+                }) => out.push_str(&format!(" else {}", block_text(b, level, comments, seen))),
+                Some(other) => out.push_str(&format!(
+                    " else {}",
+                    expr_with(other, 0, level, comments, seen)
+                )),
             }
             out
         }
-        ExprKind::Block(b) => block_text(b, level),
+        ExprKind::Block(b) => block_text(b, level, comments, seen),
         ExprKind::Match { scrutinee, arms } => {
-            let mut out = format!("match {} {{\n", expr_text(scrutinee, 0, level));
+            let mut out = format!(
+                "match {} {{\n",
+                expr_with(scrutinee, 0, level, comments, seen)
+            );
             for arm in arms {
-                let body = expr_text(&arm.body, 0, level + 1);
+                comments_into(&mut out, level + 1, comments, seen, arm.pattern.span.start);
+                let body = expr_with(&arm.body, 0, level + 1, comments, seen);
                 let comma = if matches!(arm.body.kind, ExprKind::Block(_)) {
                     ""
                 } else {
@@ -322,17 +397,19 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
                     pattern_text(&arm.pattern)
                 ));
             }
+            // A comment after the last arm is the match's, not the next statement's.
+            comments_into(&mut out, level + 1, comments, seen, e.span.end);
             out.push_str(&indent(level));
             out.push('}');
             out
         }
         ExprKind::Variant { name, args } => match args {
             None => format!(".{}", name.name),
-            Some(args) => format!(".{}({})", name.name, args_text(args, level)),
+            Some(args) => format!(".{}({})", name.name, args_text(args, level, comments, seen)),
         },
         ExprKind::Lambda { params, body } => {
             let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
-            let body = expr_text(body, 0, level);
+            let body = expr_with(body, 0, level, comments, seen);
             if names.len() == 1 {
                 format!("{} -> {body}", names[0])
             } else {
@@ -342,38 +419,46 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
         ExprKind::Unary {
             op: UnOp::Neg,
             operand,
-        } => format!("-{}", expr_text(operand, 7, level)),
+        } => format!("-{}", expr_with(operand, 7, level, comments, seen)),
         ExprKind::Unary {
             op: UnOp::Not,
             operand,
-        } => format!("not {}", expr_text(operand, 3, level)),
+        } => format!("not {}", expr_with(operand, 3, level, comments, seen)),
         ExprKind::Binary { op, lhs, rhs } => {
             let p = op.prec();
             // Comparisons do not chain: both sides must bind tighter.
             let left_min = if p == 4 { 5 } else { p };
             format!(
                 "{} {} {}",
-                expr_text(lhs, left_min, level),
+                expr_with(lhs, left_min, level, comments, seen),
                 op.text(),
-                expr_text(rhs, p.saturating_add(1), level)
+                expr_with(rhs, p.saturating_add(1), level, comments, seen)
             )
         }
-        ExprKind::Field { base, name } => format!("{}.{}", expr_text(base, 8, level), name.name),
+        ExprKind::Field { base, name } => format!(
+            "{}.{}",
+            expr_with(base, 8, level, comments, seen),
+            name.name
+        ),
         ExprKind::OptChain { base, name, args } => {
             let call = args
                 .as_ref()
-                .map(|a| format!("({})", args_text(a, level)))
+                .map(|a| format!("({})", args_text(a, level, comments, seen)))
                 .unwrap_or_default();
-            format!("{}?.{}{call}", expr_text(base, 8, level), name.name)
+            format!(
+                "{}?.{}{call}",
+                expr_with(base, 8, level, comments, seen),
+                name.name
+            )
         }
         ExprKind::Call { callee, args } => {
             format!(
                 "{}({})",
-                expr_text(callee, 8, level),
-                args_text(args, level)
+                expr_with(callee, 8, level, comments, seen),
+                args_text(args, level, comments, seen)
             )
         }
-        ExprKind::Try(x) => format!("try {}", expr_text(x, 7, level)),
+        ExprKind::Try(x) => format!("try {}", expr_with(x, 7, level, comments, seen)),
         ExprKind::Root(t) => format!("root {}", print_type(t)),
     };
     if prec_of(e) < min {
@@ -394,9 +479,9 @@ struct Printer<'a> {
 }
 
 impl Printer<'_> {
-    /// An expression printed at this printer's level.
-    fn ex(&self, e: &Expr) -> String {
-        expr_text(e, 0, self.level)
+    /// An expression printed at this printer's level, its comments placed as they are written.
+    fn ex(&mut self, e: &Expr) -> String {
+        expr_with(e, 0, self.level, self.comments, &mut self.seen)
     }
 
     fn line(&mut self, text: &str) {
@@ -419,19 +504,13 @@ impl Printer<'_> {
 
     /// The plain `//` comments written above the node that starts at `start`.
     fn comments_before(&mut self, start: usize) {
-        while let Some(text) = self
-            .comments
-            .get(self.seen)
-            .filter(|c| c.span.start < start)
-            .map(|c| c.text.clone())
-        {
-            self.seen += 1;
-            if text.is_empty() {
-                self.line("//");
-            } else {
-                self.line(&format!("// {text}"));
-            }
-        }
+        comments_into(
+            &mut self.out,
+            self.level,
+            self.comments,
+            &mut self.seen,
+            start,
+        );
     }
 
     fn params(params: &[Param]) -> String {
@@ -594,7 +673,7 @@ impl Printer<'_> {
     }
 
     /// ` (icon: .x, label: "y")`, or nothing without options.
-    fn opts(&self, opts: &[ActionOpt]) -> String {
+    fn opts(&mut self, opts: &[ActionOpt]) -> String {
         if opts.is_empty() {
             return String::new();
         }
@@ -818,7 +897,11 @@ impl Printer<'_> {
     fn ui_if(&mut self, s: &UiStmt, lead: &str) {
         let (c, then, els) = match &s.kind {
             UiKind::If { cond, then, els } => (self.ex(cond), then, els),
-            UiKind::IfLet { binds, then, els } => (binds_text(binds, self.level), then, els),
+            UiKind::IfLet { binds, then, els } => (
+                binds_text(binds, self.level, self.comments, &mut self.seen),
+                then,
+                els,
+            ),
             _ => return,
         };
         self.line(&format!("{lead} {c} {{"));

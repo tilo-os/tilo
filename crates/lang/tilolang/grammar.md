@@ -117,3 +117,4 @@ Tokens:
 - `//` starts a comment to the end of the line; the canonical form keeps it above the
   declaration, field, statement or match arm it was written over. `///` is a doc comment: it
   belongs to the declaration that follows, is kept in the metadata, and is what agents read.
+  A blank line between two `///` lines is a paragraph break, kept as a `///` line.

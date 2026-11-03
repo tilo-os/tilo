@@ -3,7 +3,7 @@
 /// same language any app has (action reflection, lenses, resource metadata, enum cases and
 /// events that carry their value), so an app that wants something else composes `ui.*`
 /// itself and loses nothing native.
-
+///
 /// A window that lists resources: the header holds its owner's actions, the primary one as
 /// the Primary button; each item is a row whose actions are on its context menu and its swipe,
 /// a destructive one undone rather than confirmed; with no items it says `empty` and offers
@@ -14,15 +14,7 @@
 /// items is called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view state is
 /// the header's sort menu. Items whose type has a window of
 /// their own open in the next column; the list follows which one is open.
-view list<R, T, S>(
-    of: R,
-    items: List<T>,
-    sort: Option<State<S>> = .none,
-    place: Text = "",
-    everything: Text = phrase("tilolang-all", kind: meta(T).plural),
-    empty: Text = phrase("tilolang-empty"),
-    row: (T) -> View
-) {
+view list<R, T, S>(of: R, items: List<T>, sort: Option<State<S>> = .none, place: Text = "", everything: Text = phrase("tilolang-all", kind: meta(T).plural), empty: Text = phrase("tilolang-empty"), row: (T) -> View) {
     window query: Text = place
     let kind = meta(T)
     let offered = actions(of)
@@ -32,14 +24,7 @@ view list<R, T, S>(
     // An empty list offers the primary action while nothing was made yet: on the place a
     // window starts on, or on all of the items. One another filter emptied says only that.
     let primary = if query == "" or query == place { offered.find(a -> a.primary) } else { .none }
-    ui.NavShell(
-        content_kind: if kind.opens { .document } else { .list },
-        sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) },
-        overview_title: if kind.opens { .some(title) } else { .none },
-        overview_count: if kind.opens { .some(shown.len()) } else { .none },
-        title: if kind.opens { .none } else { .some(title) },
-        count: if kind.opens { .none } else { .some(shown.len()) }
-    ) {
+    ui.NavShell(content_kind: if kind.opens { .document } else { .list }, sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) }, overview_title: if kind.opens { .some(title) } else { .none }, overview_count: if kind.opens { .some(shown.len()) } else { .none }, title: if kind.opens { .none } else { .some(title) }, count: if kind.opens { .none } else { .some(shown.len()) }) {
         sidebar: {
             if not places.is_empty() {
                 ui.NavList(selected: if query == "" { "all" } else { query }) {
@@ -66,14 +51,18 @@ view list<R, T, S>(
         }
         overview: {
             if kind.opens {
-                std.rows(shown, empty, primary, kind.icon) { x -> row(x) }
+                std.rows(shown, empty, primary, kind.icon) { x ->
+                    row(x)
+                }
             }
         }
         content: {
             if kind.opens {
                 ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
             } else {
-                std.rows(shown, empty, primary, kind.icon) { x -> row(x) }
+                std.rows(shown, empty, primary, kind.icon) { x ->
+                    row(x)
+                }
             }
         }
     }
@@ -84,16 +73,7 @@ view list<R, T, S>(
 /// at the top while the person scrolls it (each item's day, written the platform's way); give
 /// `closed` and the items it is true of stand last, under `closed_title`, folded away until the
 /// person opens them.
-view rows<T>(
-    items: List<T>,
-    empty: Text,
-    primary: Option<host.Action>,
-    icon: Option<Text>,
-    group: Option<(T) -> Option<Date>> = .none,
-    closed: Option<(T) -> Bool> = .none,
-    closed_title: Text = phrase("tilolang-done"),
-    row: (T) -> View
-) {
+view rows<T>(items: List<T>, empty: Text, primary: Option<host.Action>, icon: Option<Text>, group: Option<(T) -> Option<Date>> = .none, closed: Option<(T) -> Bool> = .none, closed_title: Text = phrase("tilolang-done"), row: (T) -> View) {
     if items.is_empty() {
         if let a = primary {
             ui.EmptyState(empty, icon: icon, action: a.label) {
@@ -149,18 +129,7 @@ view rows<T>(
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. An item whose
 /// parent is not among `items` stands at the top, so a deleted parent never hides what was
 /// inside it.
-view outline<T>(
-    name: Text,
-    items: List<T>,
-    parent: (T) -> Option<T>,
-    label: (T) -> Text,
-    empty: Text,
-    place: (T, Option<T>, Option<T>) -> Action,
-    toggled: (T) -> Action,
-    icon: Option<Text> = .none,
-    fill: Bool = true,
-    row: (T) -> View
-) {
+view outline<T>(name: Text, items: List<T>, parent: (T) -> Option<T>, label: (T) -> Text, empty: Text, place: (T, Option<T>, Option<T>) -> Action, toggled: (T) -> Action, icon: Option<Text> = .none, fill: Bool = true, row: (T) -> View) {
     if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
     } else {
@@ -196,11 +165,7 @@ view outline<T>(
 /// do. The window's header lays them out: what does not fit gives way to where the system
 /// lists the window's actions (the desktop bar's window menu), else behind the header's own
 /// door, so every action stays reachable at every width.
-view header<S>(
-    offered: List<host.Action>,
-    sort: Option<State<S>> = .none,
-    extra: View
-) {
+view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra: View) {
     if let s = sort {
         ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
             for c in cases(S) {
@@ -378,7 +343,9 @@ view history<R>(of: R) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
                 let single = s.versions.len() == 1
-                let what = if let run = s.task { run.title } else if let v = s.versions.last() { if v.description == "" { v.what } else { v.description } } else { "" }
+                let what = if let run = s.task { run.title } else if let v = s.versions.last() {
+                    if v.description == "" { v.what } else { v.description }
+                } else { "" }
                 stack(gap: .related) {
                     row(gap: .related, align: .center) {
                         avatar(s.who)

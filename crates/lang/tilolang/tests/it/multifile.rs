@@ -235,6 +235,66 @@ fn fmt_keeps_plain_comments_above_what_they_explain() {
 }
 
 #[test]
+fn fmt_keeps_a_paragraph_break_in_a_doc_comment() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n///\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n"
+    );
+    // Canonical text formats to itself.
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
+fn fmt_places_comments_inside_expression_blocks_above_their_statement() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else {\n        text(\"none\")\n    }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else { text(\"none\") }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n"
+    );
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
+fn fmt_places_comments_inside_a_plain_match_above_its_arm() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        },\n        // after the last arm\n    }\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        }\n        // after the last arm\n    }\n}\n"
+    );
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
+fn the_std_package_is_in_canonical_form() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let source = PackageSource::read_dir(&dir).unwrap();
+    let out = format_package(&source).unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
+    assert!(!out.files.is_empty());
+    for (path, old, new) in &out.files {
+        assert_eq!(old, new, "{path} is not in canonical form");
+    }
+}
+
+#[test]
 fn the_example_packages_are_in_canonical_form() {
     for dir in example_dirs() {
         let source = PackageSource::read_dir(&dir).unwrap();

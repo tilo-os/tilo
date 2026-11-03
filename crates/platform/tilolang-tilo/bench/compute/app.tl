@@ -15,15 +15,13 @@ fn mix(x: Int) -> Int {
     let a = x * 6364136223846793005 + 1442695040888963407
     let b = a * 6364136223846793005 + 1442695040888963407
     let c = b * 6364136223846793005 + 1442695040888963407
-    (c / 65536) % 1000003
+    c / 65536 % 1000003
 }
 
 /// The sum of `mix` over every index in [lo, hi), halving the range down to single indices:
 /// guest calls and arithmetic only, no host call.
 fn sweep(lo: Int, hi: Int) -> Int {
-    if hi - lo == 1 {
-        mix(lo)
-    } else {
+    if hi - lo == 1 { mix(lo) } else {
         let mid = (lo + hi) / 2
         sweep(lo, mid) + sweep(mid, hi)
     }

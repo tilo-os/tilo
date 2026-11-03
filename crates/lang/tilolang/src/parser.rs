@@ -710,7 +710,25 @@ impl<'a> Parser<'a> {
 
     fn docs(&mut self) -> Vec<String> {
         let mut out = Vec::new();
+        let mut prev_end = None;
         while let Tok::Doc(text) = self.peek().clone() {
+            let span = self.span();
+            // A blank line between two `///` lines is a paragraph break: the canonical form
+            // writes it as a `///` line of its own, since a doc comment is prose.
+            if let Some(end) = prev_end {
+                let between = self
+                    .src
+                    .get(end - self.base..span.start - self.base)
+                    .unwrap_or_default();
+                let blank = between.matches('\n').count() > 1
+                    && between
+                        .chars()
+                        .all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+                if blank && !out.last().is_some_and(|line: &String| line.is_empty()) {
+                    out.push(String::new());
+                }
+            }
+            prev_end = Some(span.end);
             self.bump();
             out.push(text);
             self.skip_nl();

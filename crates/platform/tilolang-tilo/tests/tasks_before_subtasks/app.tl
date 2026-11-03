@@ -105,13 +105,7 @@ action add(tasks: Tasks, title: Text) -> Task {
 /// title; without, a task added `today` is due today. An empty entry adds nothing.
 action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) {
     let said = dated(entry, now)
-    let due: Option<Date> = if let day = said.day {
-        .some(day)
-    } else if today {
-        dated("today", now).day
-    } else {
-        .none
-    }
+    let due: Option<Date> = if let day = said.day { .some(day) } else if today { dated("today", now).day } else { .none }
     if said.text != "" {
         tasks.items.insert(Task(title: said.text, due: due, at: said.at, project: p))
     }

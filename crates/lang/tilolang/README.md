@@ -508,8 +508,10 @@ whenever a `.tl` file of the package or its imports changes. Exit status: 0 fine
 the sources, 2 anything else (a missing directory, a bad option).
 
 `fmt` prints the one canonical text projection. It keeps `///` doc comments, and plain `//`
-comments above the declaration, field, statement or match arm they were written over; one
-written inside a declaration's head or an expression prints above the next statement.
+comments above the declaration, field, statement or match arm they were written over, inside
+expression blocks and match arms as well; one written inside a declaration's head prints above
+the next statement. A blank line between two `///` lines is a paragraph break, kept as a `///`
+line.
 
 ## Packages are apps
 

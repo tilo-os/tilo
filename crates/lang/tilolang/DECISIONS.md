@@ -189,8 +189,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   refused.
 - **`fmt` keeps what people wrote.** Plain `//` comments are not part of the tree, but `fmt`
   keeps them: each prints above the declaration, field, statement or match arm it was written
-  over, at that line's indentation. One written inside a declaration's head or an expression
-  has no line of its own to keep, so it prints above the next statement.
+  over, at that line's indentation, inside an expression's blocks and its match arms too. One
+  written inside a declaration's head has no line of its own to keep, so it prints above the
+  next statement. `///` is prose: a blank line between two `///` lines is a paragraph break,
+  and the canonical form writes it as a `///` line.
 - **The command line is a library module** (`cli::main`), so the host app's binary can run the
   same commands and add `run`, which needs the platform. The names: `tilolang` is the full build
   tool (the host binary, with `run`); the compiler crate's own binary is `tilolangc`, also
