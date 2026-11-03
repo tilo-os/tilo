@@ -807,6 +807,7 @@ mod tests {
                 candidates: Vec::new(),
                 declared: std::collections::BTreeMap::new(),
                 launchable: Vec::new(),
+                tools: Vec::new(),
             }
         }
     }

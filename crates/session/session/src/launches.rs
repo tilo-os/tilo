@@ -17,6 +17,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::mpsc::SyncSender;
+use std::time::Duration;
 
 use tilo_action_broker::services::{
     AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
@@ -24,6 +26,14 @@ use tilo_action_broker::services::{
 use tilo_app_launch::doors::ancestry;
 use tilo_desktop_model::Workspace;
 use tilo_lock::MutexRecover as _;
+
+/// How long a service, an app or an agent waits for the session's loop to
+/// answer a launch it asked for.
+const LAUNCH_ANSWER_WAIT: Duration = Duration::from_secs(10);
+/// The most launches one pass may find waiting: more than any person's apps
+/// ask for at once, and enough to keep a runaway asker from growing the
+/// queue without bound.
+const MAX_WAITING_LAUNCHES: usize = 64;
 
 /// One launch the session made: which app it started, in which workspace,
 /// the process that runs it, and whether the launch bound the documents store
@@ -50,6 +60,33 @@ struct Window {
     launch: Option<u32>,
 }
 
+/// A launch a service, an app or an agent asked this session for, waiting for
+/// the pass that starts it: only the loop starts processes, so whoever asks
+/// hands the launch over here and is told how it went.
+pub(crate) struct LaunchRequest {
+    /// What to start: a package or a host application, at the place it is
+    /// shown and with what it opens.
+    pub launch: tilo_app_launch::Launch,
+    /// The workspace it belongs to, as the asker named it; empty for a launch
+    /// into no workspace.
+    pub workspace: String,
+    /// Whether the app's window already showing is raised, or a new one
+    /// opens beside it.
+    pub place: LaunchPlace,
+    /// What a tool was asked to show, for the tool the launch opens
+    /// (`TILO_TOOL_CONTEXT`): a terminal at a folder, a settings route.
+    pub context: Option<String>,
+    /// Told once the launch was made, or why it was not.
+    reply: SyncSender<Result<(), String>>,
+}
+
+impl LaunchRequest {
+    /// Tell the asker how the launch went.
+    pub(crate) fn answer(self, result: Result<(), String>) {
+        let _ = self.reply.send(result);
+    }
+}
+
 /// The launches this session made, and the window connections it is making
 /// for them.
 #[derive(Default)]
@@ -63,9 +100,75 @@ pub struct Launches {
     /// This device's apps, as the session's lists last read them: what a
     /// service asking the launcher is told of every app it could open.
     applications: Mutex<Option<crate::lists::Lists>>,
+    /// The launches asked for since the last pass of the session's loop: the
+    /// one path everything that is not the desk itself starts apps through.
+    waiting: Mutex<Vec<LaunchRequest>>,
+    /// What wakes that loop when a launch is waiting for it.
+    wake: Mutex<Option<tilo_service::Wake>>,
 }
 
 impl Launches {
+    /// Wake the session's loop with `wake` when a launch is waiting for it:
+    /// the loop is the only thread that starts a process.
+    pub fn waking(&self, wake: tilo_service::Wake) {
+        *self.wake.lock_recover() = Some(wake);
+    }
+
+    /// Ask the session's loop to make `launch` in `workspace` at `place`,
+    /// opening the tool `context` names when the launch opens one, and wait
+    /// for it: the answer is the same one the desk's own launches get.
+    ///
+    /// # Errors
+    /// The loop did not answer in time, more launches are waiting than a
+    /// person's apps ask for, or the launch did not start.
+    pub fn ask(
+        &self,
+        launch: tilo_app_launch::Launch,
+        workspace: &str,
+        place: LaunchPlace,
+        context: Option<String>,
+    ) -> Result<(), String> {
+        let (reply, answered) = std::sync::mpsc::sync_channel(1);
+        {
+            let mut waiting = self.waiting.lock_recover();
+            if waiting.len() >= MAX_WAITING_LAUNCHES {
+                return Err("too many launches are waiting for this session".into());
+            }
+            waiting.push(LaunchRequest {
+                launch,
+                workspace: workspace.to_owned(),
+                place,
+                context,
+                reply,
+            });
+        }
+        let wake = self.wake.lock_recover().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+        match answered.recv_timeout(LAUNCH_ANSWER_WAIT) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err("the session did not answer the launch in time".into())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err("the session gave the launch up".into())
+            }
+        }
+    }
+
+    /// The launches waiting for this pass, oldest first: taken once, by the
+    /// loop that starts them.
+    pub(crate) fn take_waiting(&self) -> Vec<LaunchRequest> {
+        std::mem::take(&mut *self.waiting.lock_recover())
+    }
+
+    /// Whether a launch waits for the loop: what a pass that starts nothing
+    /// else still has to settle.
+    pub(crate) fn waiting(&self) -> bool {
+        !self.waiting.lock_recover().is_empty()
+    }
+
     /// The apps this device has, as `lists` last read them: what a service
     /// asking the launcher is told of every app it could open — its name,
     /// what it offers while it is not running, and the capabilities its
@@ -268,17 +371,38 @@ impl LauncherServices for Launches {
             .unwrap_or_default()
     }
 
-    /// This session starts apps from its desktop, not on a service's behalf:
-    /// what a service can open is listed, and opening one is not yet asked of
-    /// this door.
+    /// Start `app` in `workspace` at `place`, opening `record` of it when the
+    /// broker named one: the launch is made by the session's loop, on the
+    /// same path the desk's own launches take, and the answer here is that
+    /// pass's.
+    ///
+    /// # Errors
+    /// `app` names nothing this session starts, or the launch did not start.
     fn launch(
         &self,
-        _app: &str,
-        _workspace: &Workspace,
-        _record: Option<&str>,
-        _place: &LaunchPlace,
+        app: &str,
+        workspace: &Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
     ) -> Result<(), String> {
-        Err("this session starts no app on a service's behalf".into())
+        let launch = if let Some(record) = record {
+            tilo_app_launch::Launch::Record {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            }
+        } else {
+            match tilo_app_launch::Launch::parse(app) {
+                Some(launch) => launch,
+                None => return Err(format!("{app} is not an application")),
+            }
+        };
+        if matches!(
+            launch,
+            tilo_app_launch::Launch::Window { .. } | tilo_app_launch::Launch::Crashed { .. }
+        ) {
+            return Err(format!("{app} starts no process"));
+        }
+        self.ask(launch, &workspace.room().to_string(), place.clone(), None)
     }
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {

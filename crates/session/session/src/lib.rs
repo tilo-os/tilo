@@ -1478,6 +1478,10 @@ impl Session {
         if let Some(apps) = &options.launch {
             apps.lend_launches(std::sync::Arc::clone(&options.launches));
         }
+        // A launch a service, an app or an agent asks the session for waits
+        // for the pass that starts it: the same path the desk's own launches
+        // take.
+        options.launches.waking(options.wake.handle());
 
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the desk this device shows,
@@ -1495,6 +1499,13 @@ impl Session {
         // workspaces the engine holds: the broker's decisions and the
         // automation's arming both refuse a device its workspace revoked.
         let revocations = engine::revocations_of(engine.as_ref());
+        // The typed opens an app asks this session for: one service, made
+        // here so the broker below serves Files' waits for its lists'
+        // changes, and started from the doors table.
+        let tools = mount::tools::Handle::new(
+            std::sync::Arc::clone(&options.launches),
+            options.wake.handle(),
+        );
         let action_plane = start_action_plane(
             &options,
             &live_activities,
@@ -1502,6 +1513,7 @@ impl Session {
             std::sync::Arc::new(shortcut_library),
             &activity,
             std::sync::Arc::clone(&agent_runs),
+            Some(tools.clone()),
             mount::services::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
@@ -1542,6 +1554,7 @@ impl Session {
                 .as_ref()
                 .and_then(|desktop| desktop.consents())
                 .cloned(),
+            tools: Some(tools),
             wake: options.wake.handle(),
         });
         let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
@@ -2488,6 +2501,18 @@ impl Session {
             if let Some(launch) = &self.shared.launch {
                 launch.follow();
             }
+            // What the tools service has to know of this pass — the media
+            // attached and the person's apps — and the sheets it left for the
+            // loop, which only a pass can put up.
+            if let Some(tools) = self.shared.table.tools() {
+                let media = self
+                    .shared
+                    .drives
+                    .as_ref()
+                    .map(|drives| drives.live())
+                    .unwrap_or_default();
+                self.shared.follow_tools(tools, media);
+            }
             // The windows this device left open, one at a time, each into the
             // tab it was in.
             self.shared.follow_restore();
@@ -2502,7 +2527,11 @@ impl Session {
             for command in commands {
                 self.command(command)?;
             }
-            if !ran && !commanded && self.shared.asks.borrow().is_empty() {
+            if !ran
+                && !commanded
+                && self.shared.asks.borrow().is_empty()
+                && !self.launches.waiting()
+            {
                 break;
             }
             // What ran may have queued desktop commands on the shared

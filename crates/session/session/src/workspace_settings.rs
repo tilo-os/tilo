@@ -88,6 +88,44 @@ pub(crate) fn open(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding<'_
     seat.presentation().open(false);
 }
 
+/// Open the sheet on the workspace `workspace` asks for, on `route`'s tab:
+/// what an app naming a route asks of the person's own settings.
+///
+/// # Errors
+/// The person is looking at another workspace — a request never switches
+/// what they see — or this session shows no workspace settings.
+pub(crate) fn open_route(
+    seat: Option<&sheet::WorkspaceSettingsSeat>,
+    fed: &Feeding<'_>,
+    workspace: &str,
+    route: runtime_portal::tools::WorkspaceSettingsRoute,
+) -> Result<(), String> {
+    let seat = seat.ok_or("this session shows no workspace settings")?;
+    let front = fed.handle.read(|tree| {
+        tree.active_workspace()
+            .map(|front| front.room().to_string())
+    });
+    if front.as_deref() != Some(workspace) {
+        return Err("workspace settings opens for the workspace in front".to_owned());
+    }
+    show(seat, fed, tab_of(route), None);
+    seat.reset();
+    seat.presentation().open(false);
+    Ok(())
+}
+
+/// The tab a route names, as the sheet's own tabs are keyed.
+fn tab_of(route: runtime_portal::tools::WorkspaceSettingsRoute) -> sheet::Tab {
+    use runtime_portal::tools::WorkspaceSettingsRoute;
+    match route {
+        WorkspaceSettingsRoute::General => sheet::Tab::General,
+        WorkspaceSettingsRoute::Members => sheet::Tab::People,
+        WorkspaceSettingsRoute::PrivacySecurity => sheet::Tab::Permissions,
+        WorkspaceSettingsRoute::AppsFiles => sheet::Tab::Apps,
+        WorkspaceSettingsRoute::Emoji => sheet::Tab::Emoji,
+    }
+}
+
 /// Keep the sheet's panes current while it is up: the workspace changes
 /// while the sheet is open (a role set, a grant given), and so does what
 /// other people do in it — the workspace's emoji among them.

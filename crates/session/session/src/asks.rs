@@ -148,6 +148,41 @@ impl Shared {
         );
     }
 
+    /// Keep the tools service's lists current with this pass, and put up the
+    /// sheets it left for the loop: workspace settings on a route's tab, and
+    /// an app the person asked to uninstall.
+    pub(crate) fn follow_tools(
+        &self,
+        tools: &mount::tools::Handle,
+        media: Vec<mount::drives::Medium>,
+    ) {
+        tools.saw_apps(&self.app_lists().tools);
+        tools.saw_media(media);
+        for ask in tools.take_asks() {
+            let answered = match &ask {
+                mount::tools::Ask::WorkspaceSettings {
+                    workspace, route, ..
+                } => workspace_settings::open_route(
+                    self.workspace_settings.as_ref(),
+                    &self.workspace_settings_feed(),
+                    workspace,
+                    *route,
+                ),
+                mount::tools::Ask::Uninstall { app, .. } => self.ask_uninstall(app),
+            };
+            ask.answer(answered);
+        }
+    }
+
+    /// Leave `app` for the uninstall sheet, when this session shows one.
+    fn ask_uninstall(&self, app: &str) -> Result<(), String> {
+        if self.app_sheets.uninstall().is_none() {
+            return Err("this session shows no uninstall question".to_owned());
+        }
+        self.app_sheets.ask_uninstall(app);
+        Ok(())
+    }
+
     /// What workspace settings feeds its panes from.
     pub(crate) fn workspace_settings_feed(&self) -> workspace_settings::Feeding<'_> {
         workspace_settings::Feeding::new(

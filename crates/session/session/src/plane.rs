@@ -26,10 +26,11 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    Caller, ContentStoreServices, DisplayControlServices, Granted, HostServices, HostStepServices,
-    PublishedResources, Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest,
-    ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices, WorkspaceAuthority,
-    WorkspaceAuthorityHandle, WorkspaceMemberships,
+    ApplicationServices, Caller, ContentStoreServices, DisplayControlServices, DriveServices,
+    Granted, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
+    SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
+    SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
+    WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -348,6 +349,9 @@ pub struct Hosted {
     /// The apps this device has, as search last read them: what the broker
     /// admits an app's declared actions against, by its signed manifest.
     pub lists: Lists,
+    /// The session's tools service, while it serves one: what Files' waits
+    /// for its drive and app lists' changes are answered from.
+    pub tools: Option<crate::mount::tools::Handle>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -696,6 +700,7 @@ fn seams(
         action_offload,
         journal_root,
         lists,
+        tools,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // The certificate checks this session's broker decides a join and a
@@ -801,10 +806,18 @@ fn seams(
         speakers: Seam::when(fabric.map(|fabric| {
             std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
         })),
-        drives: Seam::unserved(
-            "no drive list is told to Files from here: the session's own sheet shows them",
+        // Files waits on the tools service for both lists to change, and asks
+        // it for the lists themselves: the drive list and the app list are
+        // that service's, in this session as in the launcher's.
+        drives: Seam::when(
+            tools
+                .clone()
+                .map(|tools| std::sync::Arc::new(tools) as std::sync::Arc<dyn DriveServices>),
         ),
-        applications: Seam::unserved("no app list is told to Files from here"),
+        applications: Seam::when(
+            tools
+                .map(|tools| std::sync::Arc::new(tools) as std::sync::Arc<dyn ApplicationServices>),
+        ),
         settings: Seam::when(settings),
         display_control: Seam::when(display_control),
         // Every app shows its live activity (a running timer, a stopwatch)
@@ -1105,6 +1118,7 @@ mod tests {
             action_offload: None,
             journal_root: None,
             lists,
+            tools: None,
         }
     }
 

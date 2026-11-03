@@ -200,6 +200,7 @@ pub(crate) fn start_action_plane(
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    tools: Option<crate::mount::tools::Handle>,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<Plane>, Error> {
     let Collaboration {
@@ -314,6 +315,9 @@ pub(crate) fn start_action_plane(
             // What each installed app declares it may do on the action door,
             // read by search's own worker off the session's thread.
             lists: options.search.lists.clone(),
+            // Files' waits for the drive and app lists to change, which the
+            // tools service answers.
+            tools,
         },
     )?;
     // What arrives on this device's action plane is answered by the broker

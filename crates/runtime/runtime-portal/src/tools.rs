@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 pub const TOOL_PROTOCOL_VERSION: u32 = crate::RUNTIME_INTERFACE_VERSION;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
-const MAX_WIRE_BYTES: usize = 4 * 1024;
+/// The most one request or one tool's context takes on the wire: what a
+/// server reads before it refuses a line.
+pub const MAX_WIRE_BYTES: usize = 4 * 1024;
 /// A reply may carry the drive list or the app list, so it gets more room
 /// than a request: the most apps one reply lists, each at its largest.
 pub const MAX_REPLY_BYTES: usize = MAX_LISTED_APPS * MAX_APP_ENTRY_BYTES + 16 * 1024;
