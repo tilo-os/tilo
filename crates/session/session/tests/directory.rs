@@ -357,6 +357,25 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
 
 /// Press the sheet's button for joining the listing `key`.
 fn ask_to_join(session: &mut Session, key: &str) {
+    // The row is drawn from what the sites list, and other runtimes answer
+    // that: a busy machine takes as long at it as the suite allows. Press a
+    // row that is there, so a press that cannot be carried out says why
+    // instead of waiting out the suite's bound for a join never asked for.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let standing = session
+            .workspace_directory()
+            .expect("the session hosts the workspace directory")
+            .directory();
+        if standing.listings.iter().any(|listing| listing.key == key) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the sheet lists the workspace to join: {standing:?}"
+        );
+        session.step(Duration::from_millis(10)).unwrap();
+    }
     let sheet = publisher(session, "join").expect("the directory sheet publishes joining");
     assert_eq!(
         sheet, "workspace-directory.listing",
@@ -1732,7 +1751,11 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the lounge's workspace is held here: held {held:?}, people {people:?}"
+            "the lounge's workspace is held here: held {held:?}, people {people:?}, \
+             directory {:?}",
+            session
+                .workspace_directory()
+                .map(tilo_sheets::directory::DirectorySeat::directory)
         );
     }
 }
