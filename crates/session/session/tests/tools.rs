@@ -325,7 +325,7 @@ fn files_lists_the_drives_and_the_apps_it_may_open() {
     ));
     let (mut session, launches) = session(&home, &launcher, Some(drives));
     session.step(Duration::from_millis(1)).unwrap();
-    let workspace = front(&session).room().to_string();
+    let workspace = front(&session).id().to_string();
     launch_as(&launches, FILES, &workspace);
 
     let listed = ask(&home, &workspace, ToolIntent::Drives);
@@ -369,7 +369,7 @@ fn open_in_terminal_starts_a_terminal_at_the_folder() {
     let launcher = launcher(&mut home, &records);
     let (mut session, launches) = session(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
-    let workspace = front(&session).room().to_string();
+    let workspace = front(&session).id().to_string();
     launch_as(&launches, FILES, &workspace);
     let folder = home.home().join("Documents");
     fs::create_dir_all(&folder).unwrap();
