@@ -86,12 +86,14 @@ pub struct OpenSearch<'a> {
 }
 
 /// The desk's resource: its own verbs, with each tab of `tabs`
-/// (`(tab, title)`) a resource of its own that can be focused and closed,
+/// (`(tab, title)`) a resource of its own that can be focused and closed —
+/// and, for each tab of `not_responding`, waited for or force quit —
 /// across several displays each of `displays` (in reading order) one that
 /// can be focused, and the open search (its query and rows), when open.
 #[must_use]
 pub fn desk_resource(
     tabs: &[(u64, String)],
+    not_responding: &[u64],
     displays: &[u32],
     search: Option<OpenSearch<'_>>,
 ) -> ResourceSpec {
@@ -118,7 +120,7 @@ pub fn desk_resource(
     // next row.
     let windows = tabs.iter().map(|(id, title)| {
         let names_the_window = &[("window", title.as_str().into())];
-        ResourceSpec::new(tab_resource_id(*id), WINDOW_KIND, title.clone())
+        let window = ResourceSpec::new(tab_resource_id(*id), WINDOW_KIND, title.clone())
             .with_action(bound(
                 &DeskEffect::Focus {
                     tab: id.to_string(),
@@ -130,6 +132,24 @@ pub fn desk_resource(
                     tab: id.to_string(),
                 },
                 Some(t_args("desk-close-window", names_the_window)),
+            ));
+        // Only a window whose app stopped answering offers the two ways out
+        // of it: quitting a healthy app is nobody's accident to make.
+        if !not_responding.contains(id) {
+            return window;
+        }
+        window
+            .with_action(bound(
+                &DeskEffect::WaitWindow {
+                    tab: id.to_string(),
+                },
+                Some(t_args("desk-wait-window", names_the_window)),
+            ))
+            .with_action(bound(
+                &DeskEffect::ForceQuitApp {
+                    tab: id.to_string(),
+                },
+                Some(t_args("desk-force-quit-window", names_the_window)),
             ))
     });
     let search = search.map(search_resource);

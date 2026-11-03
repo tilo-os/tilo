@@ -273,6 +273,9 @@ d-a5fwclo5 = Focused
 
 d-tb2jierp = Preview
 
+d-4agha6k5 = Not responding
+    .doc = Whether its app stopped answering: its card says so, and offers to keep waiting for the app or to quit it.
+
 d-labby3mp = Agent
     .doc = An agent here for the person, or that acted for them.
     .noun = { $count ->
@@ -1067,6 +1070,11 @@ d-z4hw2mcw = Key hints switcher
     .w-go-there = Go there
     .w-esc = Esc
     .w-stay = Stay
+
+d-fehlcpo5 = Hung window
+    .w-not-responding = Not responding
+    .w-wait = Wait
+    .w-force-quit = Force quit
 
 d-uhzjvuan = People button
     .w-people = People

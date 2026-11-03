@@ -33,6 +33,7 @@ mod activity_provider;
 pub mod agent_door;
 mod ambient_brightness;
 mod app_icons;
+mod app_liveness;
 mod app_names;
 mod app_sheets;
 pub mod arrangement;
@@ -2648,6 +2649,9 @@ impl Session {
         );
         self.place_sheets();
         self.settle_asks()?;
+        // Which apps stopped answering reaches the desk, and the person's
+        // Wait or Force quit reaches the compositor.
+        self.follow_app_liveness();
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();

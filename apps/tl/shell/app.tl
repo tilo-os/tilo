@@ -170,6 +170,9 @@ type Win (origin: session.window) {
     recency: Int
     focused: Bool
     preview: Text merge register
+    /// Whether its app stopped answering: its card says so, and offers to keep waiting for the
+    /// app or to quit it.
+    not_responding: Bool
 }
 
 /// An agent here for the person, or that acted for them.

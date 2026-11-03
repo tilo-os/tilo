@@ -45,6 +45,9 @@ pub(crate) struct DeskKey {
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
     /// revision of its own to say so.
     revealed: bool,
+    /// The windows whose app stopped answering
+    /// ([`DesktopHandle::unresponsive_revision`]).
+    not_responding: u64,
 }
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
@@ -349,6 +352,12 @@ fn window_reading(
         recency: 0,
         focused: at.focused,
         preview: preview.to_owned(),
+        // Its app is the compositor's to judge: the window it holds there is the
+        // one the pings went to.
+        not_responding: match &tab.tile {
+            TileContent::Foreign { surface_id, .. } => handle.is_unresponsive(*surface_id),
+            _ => false,
+        },
     }
 }
 
@@ -517,6 +526,9 @@ impl Desk {
             ),
             agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
+            // Which apps stopped answering is the compositor's, published through the handle
+            // beside the tree: it changes without the tree moving.
+            not_responding: self.handle.unresponsive_revision(),
         }
     }
 
@@ -1191,6 +1203,46 @@ impl Service for Desk {
 mod tests {
     use super::*;
     use crate::overlays::Overlay;
+
+    /// A window whose app stopped answering says so in the reading every view of the
+    /// desk reads, and only for that window.
+    #[test]
+    fn a_window_whose_app_stopped_answering_says_so_in_the_reading() {
+        struct Blank;
+
+        impl tilo_desktop_surface::TileSource for Blank {
+            fn tile(
+                &mut self,
+                _: &tilo_desktop_model::Workspace,
+                tab: &tilo_desktop_model::Tab,
+            ) -> ui::widget::TileHost {
+                ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail: String::new(),
+                })
+            }
+        }
+
+        let mut minter = tilo_desktop_model::IdMinter::new(5);
+        let tab = tilo_desktop_model::Tab {
+            id: minter.mint(),
+            title: "Notes".to_owned(),
+            tile: tilo_desktop_model::TileContent::Foreign {
+                app_id: "so.tilo.notes".to_owned(),
+                surface_id: 77,
+            },
+            app_title: None,
+        };
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![tab]);
+        let (_surface, handle) =
+            tilo_desktop_surface::DesktopSurface::new(tree.clone(), 5, Box::new(Blank));
+        assert!(!windows(&tree, &handle)[0].not_responding);
+        assert!(handle.set_unresponsive_windows(vec![77]));
+        assert!(windows(&tree, &handle)[0].not_responding);
+        // Another window's silence is not this one's.
+        assert!(handle.set_unresponsive_windows(vec![78]));
+        assert!(!windows(&tree, &handle)[0].not_responding);
+    }
 
     fn surfaces(status_panel: bool, shell: bool) -> Surfaces {
         Surfaces {

@@ -30,6 +30,7 @@ fn published() -> Vec<ResourceSpec> {
         chrome_resource(),
         desk_resource(
             &tabs,
+            &[8],
             &[1],
             Some(OpenSearch {
                 query: "scr",

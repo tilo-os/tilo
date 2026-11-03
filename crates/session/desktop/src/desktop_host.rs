@@ -134,6 +134,11 @@ pub enum DesktopAsk {
     /// The person pressed one of the music widget's controls: the host
     /// steers the player it shows.
     Music(MusicAction),
+    /// The person chose Wait on a window that says it stopped responding:
+    /// its app gets another period to answer.
+    WaitWindow(TabId),
+    /// The person chose Force quit on such a window: the host ends its app.
+    ForceQuitApp(TabId),
 }
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's
@@ -450,6 +455,18 @@ impl DeskLayer {
                 self.handle
                     .move_focused_to_display(i32::try_from(*steps).unwrap_or_default());
             }
+            DeskEffect::WaitWindow { tab } => {
+                let Ok(tab) = tab.parse() else {
+                    return false;
+                };
+                self.asks.borrow_mut().push(DesktopAsk::WaitWindow(tab));
+            }
+            DeskEffect::ForceQuitApp { tab } => {
+                let Ok(tab) = tab.parse() else {
+                    return false;
+                };
+                self.asks.borrow_mut().push(DesktopAsk::ForceQuitApp(tab));
+            }
         }
         true
     }
@@ -478,7 +495,8 @@ impl ui::resources::PublishesResources for DeskLayer {
             rows: rows.as_slice(),
             searching: self.handle.search_searching(),
         });
-        let mut resources = vec![desk_resource(&tabs, &self.handle.displays(), search)];
+        let hung = self.handle.unresponsive_tabs();
+        let mut resources = vec![desk_resource(&tabs, &hung, &self.handle.displays(), search)];
         if self.handle.read(desk_is_empty) {
             resources.push(launchpad_resource());
         }

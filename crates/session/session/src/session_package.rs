@@ -40,6 +40,8 @@ const LEFT_OUT: &[(&str, &str)] = &[
     ),
     (tilo_desktop::desk_verbs::DESK_RESOURCE, "focus"),
     (tilo_desktop::desk_verbs::DESK_RESOURCE, "close-tab"),
+    (tilo_desktop::desk_verbs::DESK_RESOURCE, "wait-window"),
+    (tilo_desktop::desk_verbs::DESK_RESOURCE, "force-quit-app"),
 ];
 
 /// The declaration of a resource's action, by its id: where the type of a parameter its wire
@@ -71,7 +73,7 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
             Some(<ChromeEffect as Effect>::declaration),
         ),
         (
-            tilo_desktop::desk_verbs::desk_resource(&[], &[], None),
+            tilo_desktop::desk_verbs::desk_resource(&[], &[], &[], None),
             Some(<DeskEffect as Effect>::declaration),
         ),
         (crate::arrangement::resources().swap_remove(0), None),
@@ -91,10 +93,11 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     let mut out: Vec<(ResourceSpec, Option<Declared>)> = Vec::new();
     // The desk describes each window as a resource of its own; a desk that
     // names none leaves the kind out rather than failing the description.
-    if let Some(window) = tilo_desktop::desk_verbs::desk_resource(&[(0, String::new())], &[], None)
-        .children
-        .into_iter()
-        .find(|child| child.kind == tilo_desktop::desk_verbs::WINDOW_KIND)
+    if let Some(window) =
+        tilo_desktop::desk_verbs::desk_resource(&[(0, String::new())], &[0], &[], None)
+            .children
+            .into_iter()
+            .find(|child| child.kind == tilo_desktop::desk_verbs::WINDOW_KIND)
     {
         out.push((window, Some(<DeskEffect as Effect>::declaration)));
     }

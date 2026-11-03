@@ -95,6 +95,9 @@ view window_card(w: Win) {
                 window_names(w)
             }
         }
+        if w.not_responding {
+            hung_window(w)
+        }
         on activate: session.focus(window(w))
     }
 }

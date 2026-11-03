@@ -54,7 +54,9 @@ mod artwork;
 mod close_motion_tests;
 mod displays;
 mod history;
+mod hung;
 mod live_shares;
+mod liveness;
 mod notices;
 #[cfg(test)]
 mod open_motion_tests;
@@ -77,6 +79,7 @@ pub mod window_menu;
 mod window_move;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
+pub use liveness::LivenessChoice;
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
 pub use search::{
@@ -259,6 +262,16 @@ struct Shared {
     /// The apps whose windows keep what they show to themselves
     /// ([`DesktopHandle::set_withheld_apps`]).
     withheld: std::collections::BTreeSet<String>,
+    /// The windows whose app stopped answering
+    /// ([`DesktopHandle::set_unresponsive_windows`]), by the compositor's id
+    /// for them.
+    unresponsive: std::collections::BTreeSet<u64>,
+    /// Bumped whenever `unresponsive` changes, so a reading made from it is
+    /// published again.
+    unresponsive_revision: u64,
+    /// What the person chose on a window that stopped answering, for the
+    /// host to carry out ([`DesktopHandle::take_liveness_choices`]).
+    liveness: Vec<(TabId, LivenessChoice)>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
     /// The windows other devices share with this one, each decoded into its
@@ -761,6 +774,9 @@ pub struct DesktopSurface {
     acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
     /// "Kim opened Notes": windows others opened out of sight.
     arrival_hints: arrivals::ArrivalHints,
+    /// "Not responding": the windows whose app stopped answering, each with
+    /// its Wait and its Force quit.
+    hung_apps: hung::HungApps,
     /// Where the host collects what controls emit, once it has bound this
     /// surface. A tab built after that (a launch, a record that arrived, a
     /// rebuilt row) is bound to it as it is built, or its registered
@@ -849,6 +865,9 @@ impl DesktopSurface {
             presented: 0,
             artwork: std::collections::BTreeMap::new(),
             withheld: std::collections::BTreeSet::new(),
+            unresponsive: std::collections::BTreeSet::new(),
+            unresponsive_revision: 0,
+            liveness: Vec::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             #[cfg(not(target_arch = "wasm32"))]
             peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
@@ -890,6 +909,7 @@ impl DesktopSurface {
             notices: None,
             acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
             arrival_hints: arrivals::ArrivalHints::default(),
+            hung_apps: hung::HungApps::default(),
             controls: None,
             keyboard_tab: None,
             activation: None,
@@ -2366,6 +2386,10 @@ impl Widget for DesktopSurface {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        // Which apps stopped answering is the host's to report; a new report
+        // is a layout of its own, so their cards are placed this frame.
+        let unresponsive = self.shared.borrow().unresponsive_revision;
+        self.hung_apps.follow(unresponsive);
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.borrow().is_open();
         self.end_idle_swipe(ui::time::now());
@@ -2449,15 +2473,17 @@ impl Widget for DesktopSurface {
             .as_mut()
             .map(|layer| layer.build_layout(taffy, theme, node_map));
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
+        let hung = self.hung_apps.build_layout(taffy, theme, node_map);
         let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
         // The row, when shown, is always the first child, then the
-        // notifications, when present, and the arrival hints and the
-        // acknowledgement last. Search is drawn over the windows, by the
-        // host above them, not in this tree.
+        // notifications, when present, the arrival hints and the cards of
+        // apps that stopped answering, and the acknowledgement last. Search
+        // is drawn over the windows, by the host above them, not in this
+        // tree.
         let children: Vec<NodeId> = row
             .into_iter()
             .chain(notices)
-            .chain([arrivals, acknowledgement])
+            .chain([arrivals, hung, acknowledgement])
             .collect();
         let style = Style {
             display: ui::taffy::Display::Flex,
@@ -2487,8 +2513,9 @@ impl Widget for DesktopSurface {
         {
             layer.apply_layout(taffy, notices, inner);
         }
-        if let [.., arrivals, acknowledgement] = nodes[..] {
+        if let [.., arrivals, hung, acknowledgement] = nodes[..] {
             self.arrival_hints.apply_layout(taffy, arrivals, inner);
+            self.hung_apps.apply_layout(taffy, hung, inner);
             self.acknowledgement
                 .apply_layout(taffy, acknowledgement, inner);
         }
@@ -2536,6 +2563,8 @@ impl Widget for DesktopSurface {
             layer.set_clear_top(content_top);
         }
         self.place_arrival_hints(content_top);
+        self.place_hung_apps();
+        self.drain_liveness_choices();
         let focused_presence = {
             let shared = self.shared.borrow();
             navigation::active_route(&shared.tree)
@@ -2592,7 +2621,16 @@ impl Widget for DesktopSurface {
             return;
         }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        if let [.., arrivals, _] = children[..] {
+        if let [.., _, hung, _] = children[..] {
+            let path = ctx.path.clone();
+            self.hung_apps
+                .handle_event(event, &mut ctx.reborrow(&path, hung));
+            if *ctx.handled {
+                self.drain_liveness_choices();
+                return;
+            }
+        }
+        if let [.., arrivals, _, _] = children[..] {
             let path = ctx.path.clone();
             self.arrival_hints
                 .handle_event(event, &mut ctx.reborrow(&path, arrivals));
@@ -2696,6 +2734,7 @@ impl Widget for DesktopSurface {
             .chain(notices)
             .chain([
                 &self.arrival_hints as &dyn Widget,
+                &self.hung_apps as &dyn Widget,
                 &self.acknowledgement as &dyn Widget,
             ])
             .collect()
@@ -2721,10 +2760,11 @@ impl Widget for DesktopSurface {
             .map(|row| row as &mut (dyn Widget + '_));
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
+        let hung = &mut self.hung_apps as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         row.into_iter()
             .chain(notices)
-            .chain([arrivals, acknowledgement])
+            .chain([arrivals, hung, acknowledgement])
             .collect()
     }
 
@@ -2861,8 +2901,8 @@ impl Widget for DesktopSurface {
 }
 
 impl DesktopSurface {
-    /// The arrival hints, the banners and the centre over everything the
-    /// desk draws.
+    /// The arrival hints, the cards of apps that stopped answering, the
+    /// banners and the centre over everything the desk draws.
     fn draw_overlays(
         &mut self,
         scene: &mut Scene,
@@ -2873,6 +2913,7 @@ impl DesktopSurface {
     ) {
         self.arrival_hints
             .draw(scene, transform, text, theme, presence);
+        self.hung_apps.draw(scene, transform, text, theme, presence);
         if let Some(layer) = self.notices.as_mut() {
             layer.draw(scene, transform, text, theme, presence);
         }

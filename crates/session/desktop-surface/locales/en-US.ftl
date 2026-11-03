@@ -1481,3 +1481,12 @@ desk-monitor-temperature = Temperature
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
 desk-widget-resize = Resize { $widget }
+
+# A window whose app stopped answering its pings: what happened, and the two
+# ways out of it.
+hung-app-title = Not responding
+hung-app-card = { $window } is not responding
+hung-app-wait = Wait
+hung-app-force-quit = Force quit
+desk-wait-window = Keep waiting for { $window }
+desk-force-quit-window = Force quit { $window }

@@ -117,6 +117,9 @@ view window_place(d: Desk, w: Win, weight: Float) {
                 window_menu(d, w)
             }
         }
+        if w.not_responding {
+            hung_window(w)
+        }
         on activate: session.focus(window(w))
     }
 }

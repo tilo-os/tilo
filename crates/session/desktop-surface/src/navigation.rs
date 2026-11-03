@@ -222,6 +222,28 @@ pub enum DeskEffect {
         #[param("The card's slug, or \"apps\" for the applications")]
         card: String,
     },
+
+    /// Keep waiting for its app
+    ///
+    /// Give the app of a window that stopped answering its pings another
+    /// period to answer before the window says so again.
+    #[effect(own_device, idempotent)]
+    WaitWindow {
+        /// The tab's id.
+        #[param(decimal, "The tab whose app to keep waiting for")]
+        tab: String,
+    },
+
+    /// Force quit its app
+    ///
+    /// End the app of a window that stopped answering. Only that app's
+    /// processes go; everything else stays as it was.
+    #[effect(own_device)]
+    ForceQuitApp {
+        /// The tab's id.
+        #[param(decimal, "The tab whose app to end")]
+        tab: String,
+    },
 }
 
 /// What the surfaces over the desk can be asked to do: open and show apps,
@@ -954,7 +976,9 @@ fn admit_desk(verb: &DeskEffect, tree: &DesktopTree) -> Result<Admitted, String>
         | DeskEffect::FocusDisplay { .. }
         | DeskEffect::MoveToDisplay { .. }
         | DeskEffect::ChooseSearchRow { .. }
-        | DeskEffect::Launchpad { .. } => Err("The desk carries this out itself".into()),
+        | DeskEffect::Launchpad { .. }
+        | DeskEffect::WaitWindow { .. }
+        | DeskEffect::ForceQuitApp { .. } => Err("The desk carries this out itself".into()),
     }
 }
 

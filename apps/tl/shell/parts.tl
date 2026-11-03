@@ -20,3 +20,21 @@ view key_hints_switcher(this_app: Text) {
         ui.KeyHint(["Esc"], "Stay")
     }
 }
+
+/// A window whose app stopped answering says so, with the two ways out: keep waiting for it, or
+/// quit it. Wait gives the app another period to answer and takes the card away; Force quit ends
+/// the app, and the window with it. Both are the window's own published actions, so a script or an
+/// agent takes them the same way.
+view hung_window(w: Win) {
+    stack(gap: .tight) {
+        ui.Badge("Not responding", tone: .warning)
+        row(gap: .tight, align: .center, wrap: true) {
+            ui.Button("Wait") {
+                on press: session.wait_window(window(w))
+            }
+            ui.Button("Force quit", role: .destructive) {
+                on press: session.force_quit_app(window(w))
+            }
+        }
+    }
+}

@@ -307,6 +307,10 @@ pub struct WindowReading {
     pub focused: bool,
     /// Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.
     pub preview: String,
+    /// Whether its app stopped answering the compositor's pings: its window says so, and
+    /// offers to wait for the app or quit it.
+    #[serde(default)]
+    pub not_responding: bool,
 }
 
 /// An agent here for the person, or that acted for them, as the desk's reading names it.
@@ -1113,6 +1117,7 @@ impl SessionOrigin {
                         ("recency", Value::Int(w.recency)),
                         ("focused", Value::Bool(w.focused)),
                         ("preview", text(&w.preview)),
+                        ("not_responding", Value::Bool(w.not_responding)),
                     ]
                 },
             ));
