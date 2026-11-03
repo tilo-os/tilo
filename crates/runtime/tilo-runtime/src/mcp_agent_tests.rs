@@ -765,16 +765,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
                             .contains(owner.resource.id.rsplit(':').next().unwrap_or_default())
                 })
         };
-        eprintln!("DBGROWS {} words={:?}", rows.len(), words);
         for row in rows.iter().filter(|row| !owned(row)) {
-            if row.resource.kind == "tilo.rich-text" {
-                eprintln!(
-                    "DBGBODY {:?} {:?} score={}",
-                    row.resource.label,
-                    row.action.as_ref().map(|a| a.address.action.clone()),
-                    page::word_score(row, &words)
-                );
-            }
             // Every word, as the one search reads a query: not the rows
             // matching the most of it.
             let score = page::word_score(row, &words);
@@ -1810,7 +1801,6 @@ fn a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is() {
     run(async {
         let query = |app: &str| json!({"query": "append paragraph", "app": app});
         let (by_name, failed) = tool(&agent(&host), "tilo_find", query("notes")).await;
-        eprintln!("DBG {by_name}");
         assert!(!failed, "{by_name}");
         assert!(
             by_name

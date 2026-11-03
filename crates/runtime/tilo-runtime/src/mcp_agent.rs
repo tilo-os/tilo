@@ -2743,29 +2743,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             ));
         }
         for (name, provider) in providers {
-            let Some(candidates) = self.listed(&provider, found).await else {
+            let Some((path, kind)) = self.ls_path(&provider, found).await else {
                 continue;
             };
-            // The path is the one `tilo_ls` resolves to this very resource:
-            // there is one path model, so a search row is named exactly as a
-            // listing names it, and the first candidate that reads back as
-            // the resource is the one written.
-            eprintln!("LOCATE {:?} candidates={:?}", found.resource, candidates);
-            for (path, kind) in candidates {
-                let written = format!("{name}/{path}");
-                let Ok(parsed) = parse_path(&written) else {
-                    continue;
-                };
-                let Ok(Ok(held)) = self.resolve(&parsed).await else {
-                    continue;
-                };
-                let Some(node) = &held.node else {
-                    continue;
-                };
-                if self.same_resource(node, found) {
-                    return Some((written, kind));
-                }
-            }
+            return Some((format!("{name}/{path}"), kind));
         }
         None
     }
@@ -2775,97 +2756,221 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// the search's id may name no node the directory answers now).
     fn same_resource(&self, node: &Node, found: &Found) -> bool {
         // A bound id names its resource by the logical key at its end, which
-        // is the key the directory publishes it under.
-        let id_matches = node.id == found.resource
-            || bound_key(&found.resource).is_some_and(|key| key == node.key);
-        id_matches
+        // is the key the directory publishes it under. A bound field's row
+        // is never another row that shares its name (a note's body is called
+        // what the note is), so nothing else decides it.
+        if bound_key(&found.resource).is_some() {
+            return bound_key(&found.resource).is_some_and(|key| key == node.key);
+        }
+        node.id == found.resource
             || (node.label.trim().eq_ignore_ascii_case(found.label.trim())
                 && (node.kind == found.kind || !found.kind.contains('.')))
     }
 
-    /// The paths the app's directories list the resource `found` names at,
-    /// as `tilo_ls` writes them, best first: the app's own level, then each
-    /// container's. `None` when no directory lists it.
-    async fn listed(&self, provider: &str, found: &Found) -> Option<Vec<(String, String)>> {
+    /// The path `tilo_ls` takes from the app's root down to the resource
+    /// `found` names, and what it is. It is built upward: each directory row
+    /// says the id of the resource that holds it, so the chain from the hit
+    /// to the app is followed a level at a time, and each name is the one
+    /// `ls` writes at that level. The cost is the resource's depth, never
+    /// how many siblings a container holds.
+    async fn ls_path(&self, provider: &str, found: &Found) -> Option<(String, String)> {
         let mut levels = Levels::new();
-        let Ok(top) = self.level(provider, "", &mut levels).await else {
+        let node = self.find_node(provider, found, &mut levels).await?;
+        let kind = node.kind.clone();
+        let seen_id = node.id.clone();
+        let seen_parent = node.parent.clone();
+        // The name of each step from the hit up, best last.
+        let mut names: Vec<String> = Vec::new();
+        let mut here = node;
+        for _ in 0..DEEP_READS {
+            let parent = here.parent.clone();
+            if parent.is_empty() {
+                // At the app's root: the top level names it there. A row the
+                // top level does not list (a body published beside its note)
+                // hangs under the container that feeds it, found by the key
+                // its own key extends.
+                let Ok(top) = self.level(provider, "", &mut levels).await else {
+                    return None;
+                };
+                if top.children.iter().any(|node| node.id == here.id) {
+                    names.push(here.name(&top.children));
+                    break;
+                }
+                // A field published beside its record (a note's body) hangs
+                // under the record that publishes it: the note is asked for
+                // the field's own name, one lookup.
+                let field = here.key.rsplit('/').next().unwrap_or_default().to_owned();
+                let mut under: Option<(Node, Level)> = None;
+                for container in top
+                    .children
+                    .iter()
+                    .filter(|node| node.container)
+                    .take(ROOT_PEEK)
+                {
+                    let got = self.named(provider, &container.id, &field).await;
+                    let Ok(Some(at)) = got else {
+                        continue;
+                    };
+                    if let Some(note) = at.children.iter().find(|node| node.container) {
+                        under = Some((note.clone(), at));
+                        break;
+                    }
+                }
+                let Some((note, at)) = under else {
+                    names.push(here.name(&top.children));
+                    break;
+                };
+                names.push(here.name(&at.children));
+                here = note;
+                continue;
+            }
+            // Asked by the name the row goes by: the rows holding it, not
+            // the whole level, whose size the container's contents decide.
+            let Ok(level) = self
+                .level_named(provider, &parent, here.label.trim(), &mut levels)
+                .await
+            else {
+                return None;
+            };
+            // The row the parent names, by its id or by the key that id
+            // carries: a container is published under one id at the app's
+            // root and names another beneath it.
+            let key = bound_key(&parent);
+            let holder = level
+                .children
+                .iter()
+                .find(|node| node.id == parent)
+                .or_else(|| {
+                    level.children.iter().find(|node| {
+                        node.container
+                            && (node.key == parent
+                                || key.as_ref().is_some_and(|key| node.key == *key))
+                    })
+                })
+                .cloned()
+                // A container the level read does not list is at the app's
+                // root instead, which is one more lookup.
+                .or_else(|| None);
+            let Some(holder) = holder else {
+                // Not a row of this level: the top level lists it, and
+                // names `here` in the level the parent read.
+                let Ok(top) = self.level(provider, "", &mut levels).await else {
+                    return None;
+                };
+                let top_holder = top.children.iter().find(|node| node.id == parent).cloned();
+                // A body published beside its note: the note is in the
+                // notebook's level, not the body's, and is found by its id
+                // there, one container read.
+                let top_holder = match top_holder {
+                    Some(owner) => Some(owner),
+                    None => self
+                        .deep(provider, &parent, None, &mut levels)
+                        .await
+                        .ok()
+                        .flatten(),
+                };
+                names.push(here.name(&level.children));
+                match top_holder {
+                    Some(owner) => {
+                        here = owner;
+                        continue;
+                    }
+                    None => break,
+                }
+            };
+            names.push(here.name(&level.children));
+            here = holder;
+        }
+        names.reverse();
+        Some((names.join("/"), kind))
+    }
+
+    /// One level, asked by the name a row goes by where the app answers
+    /// that way, and listed where it cannot: a search that names a result
+    /// costs the rows naming it, not a page of every sibling.
+    async fn level_named(
+        &self,
+        provider: &str,
+        parent: &str,
+        name: &str,
+        levels: &mut Levels,
+    ) -> Result<Level, String> {
+        if let Ok(Some(named)) = self.named(provider, parent, name).await {
+            return Ok(named);
+        }
+        self.level(provider, parent, levels).await
+    }
+
+    /// The directory row `found` names: the row whose id it carries, or the
+    /// row whose key is the logical key a bound id ends in (a note's body,
+    /// which the note's own level lists).
+    async fn find_node(&self, provider: &str, found: &Found, levels: &mut Levels) -> Option<Node> {
+        let mut own = Levels::new();
+        let levels = if levels.is_empty() { &mut own } else { levels };
+        let Ok(top) = self.level(provider, "", levels).await else {
             return None;
         };
-        let mut paths: Vec<(String, String)> = Vec::new();
-        let mut push = |path: String, node: &Node| {
-            if !paths.iter().any(|(seen, _)| *seen == path) {
-                paths.push((path, node.kind.clone()));
-            }
-        };
+        let key = bound_key(&found.resource);
+        let asked = key
+            .as_ref()
+            .and_then(|key| key.rsplit('/').next())
+            .or_else(|| found.resource.rsplit(['/', ':']).next())
+            .map(str::to_owned)?;
         for node in &top.children {
             if self.same_resource(node, found) {
-                push(node.name(&top.children), node);
+                return Some(node.clone());
             }
         }
-        // A row about a body is named by the body, not by the note whose
-        // title the search also matched: asked by the name the row is of.
-        let asked = found
-            .resource
-            .rsplit(['/', ':'])
-            .next()
-            .unwrap_or_default()
-            .to_owned();
         for container in top
             .children
             .iter()
             .filter(|node| node.container)
             .take(ROOT_PEEK)
         {
-            // A level read once names the resource among its siblings; one
-            // the open app cannot answer by name is read whole instead.
-            let Ok(shown) = self.level(provider, &container.id, &mut levels).await else {
-                continue;
-            };
-            let mut here = shown.children;
-            if let Ok(Some(inside)) = self.named(provider, &container.id, &asked).await {
-                for child in inside.children {
-                    if !here.iter().any(|seen| seen.id == child.id) {
-                        here.push(child);
-                    }
+            // Asked by the name the search gave it: the resource's own
+            // label names it where its id does not (an id a publication
+            // minted is never a name the app knows).
+            for asked in [&asked, &found.label] {
+                let Ok(Some(inside)) = self.named(provider, &container.id, asked).await else {
+                    continue;
+                };
+                if let Some(node) = inside
+                    .children
+                    .iter()
+                    .find(|node| self.same_resource(node, found))
+                {
+                    return Some(node.clone());
                 }
             }
-
-            let above = container.name(&top.children);
-            // One level further, where a note keeps its body: the path `ls`
-            // lists a body at is under the note holding it.
-            for node in here.clone() {
-                if self.same_resource(&node, found) {
-                    push(format!("{above}/{}", node.name(&here)), &node);
+            // A bound field's row is a child of the container itself, named
+            // by the key the bound id spells. Asked only for a bound id: a
+            // plain resource names a row the level above already listed.
+            // Only a bound id, whose key the directory lists inside the
+            // container: a plain resource is a row the level above named.
+            if found.resource.starts_with(BOUND_PREFIX)
+                && let Some(key) = &key
+                && let Ok(level) = self.level(provider, &container.id, levels).await
+                && let Some(node) = level.children.iter().find(|node| node.key == *key)
+            {
+                let mut node = node.clone();
+                // A field's row names no parent of its own: the record that
+                // publishes it is the one whose level lists it, and its key
+                // is the record's name with the field's after it.
+                if node.parent.is_empty()
+                    && let Some(record) = node.key.rsplit_once('/').map(|(record, _)| record)
+                {
+                    let Ok(Some(at)) = self.named(provider, &container.id, record).await else {
+                        return Some(node);
+                    };
+                    let Some(owner) = at.children.iter().find(|held| held.container) else {
+                        return Some(node);
+                    };
+                    node.parent.clone_from(&owner.id);
                 }
-                if !node.container {
-                    continue;
-                }
-                // A note's body is asked for by its own name: the note's
-                // level lists its actions, and the body it publishes.
-                let Ok(named_inside) = self.named(provider, &node.id, "body").await else {
-                    continue;
-                };
-                let Some(inside) = named_inside else {
-                    eprintln!("NOBODY for {}", node.key);
-                    continue;
-                };
-                let mut inside = inside;
-                if let Ok(level) = self.level(provider, &node.id, &mut levels).await {
-                    for child in level.children {
-                        if !inside.children.iter().any(|seen| seen.id == child.id) {
-                            inside.children.push(child);
-                        }
-                    }
-                }
-                for child in &inside.children {
-                    if self.same_resource(child, found) {
-                        let body = child.name(&inside.children);
-                        push(format!("{above}/{}/{body}", node.name(&here)), child);
-                    }
-                }
+                return Some(node);
             }
         }
-        (!paths.is_empty()).then_some(paths)
+        None
     }
 }
 
