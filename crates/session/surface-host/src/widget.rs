@@ -328,6 +328,14 @@ impl WidgetHost {
         )
     }
 
+    /// Give the keyboard up: no widget of the tree holds it. What a host asks
+    /// of a field it drew when the person went elsewhere (a press in another
+    /// surface, a window brought forward), so the field stops taking keys.
+    pub fn clear_focus(&mut self) {
+        self.host.clear_focus();
+        self.owe();
+    }
+
     fn input(&mut self, event: &WindowEvent) {
         self.host.send(event);
         self.owe();

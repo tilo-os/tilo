@@ -34,7 +34,7 @@ use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use common::{
     HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, press, press_sheet,
-    private_home, seeded_session, seeded_session_with, until,
+    private_home, seeded_session, seeded_session_with, type_text, until,
 };
 
 /// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the
@@ -548,4 +548,21 @@ fn title_field(session: &Session, value: &str) -> Option<(usize, ui::accesskit::
         }
     }
     None
+}
+
+/// What the person types in the canvas's entry stands in it as they type: the entry keeps its
+/// words while the shell's record moves under it.
+#[test]
+fn typing_in_the_canvas_entry_shows_what_is_typed() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    until(&mut session, "the canvas entry", |session| {
+        on_screen(session, "Typed").is_some()
+    });
+    press(&mut session, "Typed");
+    type_text(&mut session, "groceries");
+    until(&mut session, "the typed words in the entry", |session| {
+        session.shell_says("groceries")
+    });
 }
