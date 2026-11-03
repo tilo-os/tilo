@@ -1810,41 +1810,60 @@ fn palette_shots() {
     }
 }
 
+type Shown = (String, Option<ui::icons::Icon>, Option<Vec<String>>);
+
+/// What the window's own palette reads for `query`, row by row: the title it
+/// shows, the picture it paints and the chord it names.
+fn palette_rows(session: &mut Session, query: &str) -> Vec<Shown> {
+    if session.window.harness().palette_shown() {
+        session
+            .window
+            .press_key(ui::winit::keyboard::NamedKey::Escape);
+        session.settle();
+    }
+    session
+        .window
+        .open_search(ui::search::SearchRequest::this_app().with_query(query));
+    session.settle();
+    session
+        .window
+        .harness()
+        .palette_rows()
+        .into_iter()
+        .map(|row| {
+            let keycaps = match &row.row {
+                Some(ui::search::SearchRow::Command(command)) => command.keycaps.clone(),
+                _ => None,
+            };
+            (row.title, row.icon, keycaps)
+        })
+        .collect()
+}
+
+/// The modifier a command chord is written with.
+fn command_modifier(conventions: ui::PlatformConventions) -> String {
+    ui::HostShortcut::Search
+        .shortcut(conventions)
+        .keycap_labels(conventions)
+        .first()
+        .cloned()
+        .expect("the command modifier has a name")
+}
+
 #[test]
 fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
-    // What the window's own palette reads, row by row: the title it shows, the
-    // picture it paints and the chord it names.
-    type Shown = (String, Option<ui::icons::Icon>, Option<Vec<String>>);
     let _settled = ui::motion::testing::settled();
     let mut session = Session::tasks();
     session.settle();
     let conventions = ui::PlatformConventions::default();
-    let rows = |session: &mut Session, query: &str| -> Vec<Shown> {
-        if session.window.harness().palette_shown() {
-            session
-                .window
-                .press_key(ui::winit::keyboard::NamedKey::Escape);
-            session.settle();
-        }
-        session
-            .window
-            .open_search(ui::search::SearchRequest::this_app().with_query(query));
-        session.settle();
-        session
-            .window
-            .harness()
-            .palette_rows()
-            .into_iter()
-            .map(|row| {
-                let keycaps = match &row.row {
-                    Some(ui::search::SearchRow::Command(command)) => command.keycaps.clone(),
-                    _ => None,
-                };
-                (row.title, row.icon, keycaps)
-            })
-            .collect()
-    };
+    an_empty_windows_palette_lists_what_a_person_can_do_now(&mut session, conventions);
+    an_open_tasks_palette_lists_what_the_task_lets_a_person_do(&mut session, conventions);
+}
 
+fn an_empty_windows_palette_lists_what_a_person_can_do_now(
+    session: &mut Session,
+    conventions: ui::PlatformConventions,
+) {
     // Unasked, an empty window lists the app itself once and each command a
     // person can take now, drawn from what the action declares. An action that
     // asks for a pick a row cannot collect (Open, Remove, Move to, Delete
@@ -1860,14 +1879,8 @@ fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
             .shortcut(conventions)
             .keycap_labels(conventions),
     );
-    // The modifier a command chord is written with, from the same table.
-    let command = ui::HostShortcut::Search
-        .shortcut(conventions)
-        .keycap_labels(conventions)
-        .first()
-        .cloned()
-        .expect("the command modifier has a name");
-    let empty = rows(&mut session, "");
+    let command = command_modifier(conventions);
+    let empty = palette_rows(session, "");
     assert_eq!(
         empty,
         vec![
@@ -1875,7 +1888,7 @@ fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
             (
                 "New task".to_owned(),
                 Some(ui::icons::Icon::Plus),
-                Some(vec![command.clone(), "N".to_owned()]),
+                Some(vec![command, "N".to_owned()]),
             ),
             (
                 "New project".to_owned(),
@@ -1919,7 +1932,7 @@ fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
         );
     }
     // Typed, only what it names.
-    let new: Vec<String> = rows(&mut session, "new")
+    let new: Vec<String> = palette_rows(session, "new")
         .into_iter()
         .map(|(title, ..)| title)
         .collect();
@@ -1928,7 +1941,13 @@ fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
         ["New task", "New project"],
         "the query narrows the list to what it names"
     );
+}
 
+fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
+    session: &mut Session,
+    conventions: ui::PlatformConventions,
+) {
+    let command = command_modifier(conventions);
     // With a task open, the palette lists what that task lets a person do, once
     // each: the task and the app it belongs to, then the actions bound to it.
     // Picks a row cannot collect (Assign to…, Move to, Open) stay where they
@@ -1943,7 +1962,7 @@ fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
     let (x, y) = (rect.center().x, rect.center().y);
     session.window.click_at(x, y);
     session.settle();
-    let open = rows(&mut session, "");
+    let open = palette_rows(session, "");
     let titles: Vec<&str> = open.iter().map(|(title, ..)| title.as_str()).collect();
     assert_eq!(
         titles,
