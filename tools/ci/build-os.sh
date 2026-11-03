@@ -15,6 +15,12 @@
 #                image, into DIR/publish/os-board/BOARD, and its flashable disk, which needs loop
 #                devices
 #
+# --kernel-ref REF and --kernel-trust signed|unsigned hand every layer the kernel to install from
+# and how far to trust it, instead of letting the layers resolve the pinned one
+# (os/kernel-snapshot.env): a local build of os/kernel/Containerfile, published as an OCI layout
+# by tools/ci/publish/kernel.sh build, is a localhost/tilo-kernel:<tag> image loaded into the
+# assembler's store and taken unsigned (TILO_KERNEL_TRUST=unsigned, as a local RPM snapshot is).
+#
 # Run it from a committed checkout of the commit to build: the medium and the images name their
 # commit. DIR holds what the steps share and keep between runs (the pods' stores, the compiles'
 # build directories and compiler cache, the images); give each checkout one of its own, and
@@ -58,11 +64,13 @@ set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 usage() { sed -n '6p' "$0" | sed 's/^# \?//' >&2; exit 2; }
-target='' jobs='' dry_run=0 wanted=()
+target='' jobs='' dry_run=0 kernel_ref='' kernel_trust='' kernel_layout='' wanted=()
 while (($#)); do
   case $1 in
     --target) target=${2:?}; shift 2 ;;
     --jobs) jobs=${2:?}; shift 2 ;;
+    --kernel-ref) kernel_ref=${2:?}; shift 2 ;;
+    --kernel-trust) kernel_trust=${2:?}; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     image | tilo-vm | medium | dev-image) wanted+=("$1"); shift ;;
     board) wanted+=("board:${2:?board names a board}"); shift 2 ;;
@@ -71,6 +79,27 @@ while (($#)); do
 done
 [[ -n $target && ${#wanted[@]} -gt 0 ]] || usage
 [[ -z $jobs || $jobs =~ ^[1-9][0-9]*$ ]] || { echo "--jobs takes a count" >&2; exit 2; }
+case $kernel_trust in ''|signed|unsigned) ;; *) echo "--kernel-trust is signed or unsigned" >&2; exit 2 ;; esac
+# A kernel out of this machine (an OCI layout from tools/ci/publish/kernel.sh build) has no
+# registry signature or provenance: it is taken unsigned, as a local RPM snapshot is, and the
+# image is labelled so it cannot pass for a signed one. A registry tilo-kernel is verified by
+# digest, as the layers verify the pinned one.
+if [[ -z $kernel_ref ]]; then
+  :
+elif [[ $kernel_ref =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]; then
+  [[ -z $kernel_trust || $kernel_trust == signed ]] \
+    || { echo "a registry tilo-kernel by digest is verified, not --kernel-trust $kernel_trust" >&2; exit 2; }
+  kernel_trust=signed
+elif [[ -f $kernel_ref/image.oci.tar ]]; then
+  [[ -z $kernel_trust || $kernel_trust == unsigned ]] \
+    || { echo "a local kernel is taken unsigned, not --kernel-trust $kernel_trust" >&2; exit 2; }
+  kernel_layout=$(realpath "$kernel_ref")
+  kernel_ref=localhost/tilo-kernel:local
+  kernel_trust=unsigned
+else
+  echo "--kernel-ref names neither a registry tilo-kernel@sha256: digest nor an OCI layout with image.oci.tar: $kernel_ref" >&2
+  exit 2
+fi
 for tool in python3 git $( ((dry_run)) || echo podman); do
   command -v "$tool" >/dev/null || { echo "build-os needs $tool" >&2; exit 2; }
 done
@@ -153,11 +182,28 @@ container() {
 
 # A step of the OS in the assembler image (os/image/assembler.sh), as its layer actions run: the
 # store it builds and loads images in below DIR, which podman takes its mount options from
-# storage_conf.
+# storage_conf. A local kernel (--kernel-ref) is loaded into that same store as
+# localhost/tilo-kernel:local before the step, and TILO_KERNEL_REF tells the layer actions
+# inside it to install from it (os/image/build-layer.sh kernel_env) instead of resolving the
+# pin; a kernel built here has no signature or provenance, so they take it unsigned.
 assembler() {
-  container "oci:$os/assembler/oci:tilo" "$1" \
+  local kernel_args=() kernel_prep=''
+  if [[ -n $kernel_ref ]]; then
+    kernel_args=(-e "TILO_KERNEL_REF=$kernel_ref" -e "TILO_KERNEL_TRUST=$kernel_trust")
+    if [[ $kernel_ref == registry.tilo.so/tilo/tilo-kernel@sha256:* ]]; then
+      kernel_prep="podman pull -q '$kernel_ref' >/dev/null
+"
+    else
+      [[ $kernel_ref == localhost/tilo-kernel:local ]] || { echo "unexpected kernel ref $kernel_ref" >&2; return 1; }
+      kernel_args+=(-v "$kernel_layout:/run/tilo-kernel:ro")
+      kernel_prep="podman tag \"\$(podman pull -q 'oci-archive:/run/tilo-kernel/image.oci.tar')\" '$kernel_ref'
+"
+    fi
+  fi
+  container "oci:$os/assembler/oci:tilo" "$kernel_prep$1" \
     -v "$target/podman-store:/var/lib/containers" \
-    -v "$storage_conf:/run/tilo/storage.conf:ro" -e CONTAINERS_STORAGE_CONF=/run/tilo/storage.conf
+    -v "$storage_conf:/run/tilo/storage.conf:ro" -e CONTAINERS_STORAGE_CONF=/run/tilo/storage.conf \
+    "${kernel_args[@]}"
 }
 
 # A step in a mirrored image (buildah, skopeo): its store and scratch in DIR, not in the

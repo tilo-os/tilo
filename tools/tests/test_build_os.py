@@ -108,6 +108,71 @@ class BuildOsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(f"the {other} image builds on", result.stderr)
 
+    def test_a_local_kernel_reaches_every_layer_that_installs_one(self):
+        board = board_for(ARCH)
+        if board is None:
+            self.skipTest(f"no board on {ARCH}")
+        with tempfile.TemporaryDirectory() as layout, \
+                tempfile.TemporaryDirectory() as target:
+            (Path(layout) / "image.oci.tar").write_bytes(b"")
+            result = subprocess.run(
+                ["bash", "tools/ci/build-os.sh", "--target", target, "--dry-run",
+                 "--kernel-ref", layout, "board", board],
+                cwd=ROOT, capture_output=True, text=True, check=True,
+            )
+        # The assembler steps load it into the one store the layers inside them read and say to
+        # install it unsigned; os/image/build-layer.sh kernel_env turns that into KERNEL_RPMS_REF
+        # and TILO_KERNEL_TRUST for build-image.sh, which is what the layers really read.
+        self.assertIn("oci-archive:/run/tilo-kernel/image.oci.tar", result.stderr)
+        self.assertIn(f"-v {layout}:/run/tilo-kernel:ro", result.stderr)
+        kernel_steps = result.stderr.count("-e TILO_KERNEL_REF=localhost/tilo-kernel:local")
+        self.assertGreaterEqual(kernel_steps, 2, result.stderr)
+        self.assertEqual(kernel_steps, result.stderr.count("oci-archive:/run/tilo-kernel/image.oci.tar"),
+                         "every step given the local kernel loads it the same way")
+        self.assertEqual(kernel_steps,
+                         result.stderr.count("-e TILO_KERNEL_TRUST=unsigned"),
+                         "every step given the local kernel installs it unsigned")
+        # A kernel no registry serves is unsigned, never silently taken for a signed one.
+        with tempfile.TemporaryDirectory() as layout, \
+                tempfile.TemporaryDirectory() as target:
+            (Path(layout) / "image.oci.tar").write_bytes(b"")
+            refused = subprocess.run(
+                ["bash", "tools/ci/build-os.sh", "--target", target, "--dry-run", "--kernel-trust",
+                 "signed", "--kernel-ref", layout, "board", board],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("a local kernel is taken unsigned", refused.stderr)
+
+    def test_a_named_kernel_is_what_the_layers_install(self):
+        # The value build-os.sh passes (TILO_KERNEL_REF) must be the one build-image.sh reads
+        # (KERNEL_RPMS_REF): a run that named a kernel but installed the pin would boot-check
+        # something other than what it built, and its log would still say it succeeded.
+        digest = "sha256:" + "a" * 64
+        cases = {
+            "": "",
+            "localhost/tilo-kernel:local": "localhost/tilo-kernel:local unsigned",
+            f"registry.tilo.so/tilo/tilo-kernel@{digest}": f"registry.tilo.so/tilo/tilo-kernel@{digest} signed",
+        }
+        for named, want in cases.items():
+            result = subprocess.run(
+                ["bash", "-c", 'unset KERNEL_RPMS_REF TILO_KERNEL_TRUST; . os/image/kernel-env.sh; '
+                 f'TILO_KERNEL_REF={named}; kernel_env; '
+                 'printf "%s %s\\n" "${KERNEL_RPMS_REF:-}" "${TILO_KERNEL_TRUST:-}"'],
+                cwd=ROOT, capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(result.stdout.strip(), want, f"TILO_KERNEL_REF={named!r}")
+
+    def test_a_kernel_ref_that_is_no_layout_or_digest_is_refused(self):
+        with tempfile.TemporaryDirectory() as target:
+            result = subprocess.run(
+                ["bash", "tools/ci/build-os.sh", "--target", target, "--dry-run",
+                 "--kernel-ref", "/nonexistent", "image"],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("neither a registry tilo-kernel@sha256: digest", result.stderr)
+
     def test_signin_e2e_takes_the_image_and_medium_from_build_os(self):
         with tempfile.TemporaryDirectory() as out:
             output = dry_run("signin-e2e-builder.sh", "--out", out)
