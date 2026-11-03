@@ -239,6 +239,11 @@ struct Builder {
     trees: Vec<OwnedFd>,
     /// Overlays mounted so far, for their layers' staging directories.
     overlays: usize,
+    /// The job's mount namespace is made from another than the caller's
+    /// ([`crate::job::Launch::mount_ns`]): every bind is a tree taken here,
+    /// never a path looked up in the job's, where a mount the caller has
+    /// isn't (an overlay's layers too).
+    trees_only: bool,
 }
 
 impl Builder {
@@ -325,6 +330,22 @@ impl Builder {
                     Err(_) => {}
                 }
             }
+        }
+        if self.trees_only {
+            // As the caller has it, owners and all: looked up by its path in
+            // the job's namespace it is what that one has there.
+            let tree = super::idmap::plain_tree(real).map_err(|e| {
+                SpawnError::Setup(format!(
+                    "binding {} into a job made from another mount namespace: {e}",
+                    real.display()
+                ))
+            })?;
+            self.ops.push(Op::Attach {
+                tree: self.trees.len(),
+                dst,
+            });
+            self.trees.push(tree);
+            return Ok(());
         }
         self.ops.push(Op::Mount {
             src: Some(under(OLD, real)?),
@@ -718,7 +739,7 @@ impl Builder {
             Some((upper, work)) => Some((real(upper)?, real(work)?)),
             None => None,
         };
-        let (lowers, writes) = if self.userns.is_some() {
+        let (lowers, writes) = if self.userns.is_some() || self.trees_only {
             self.idmapped_layers(&lowers, writes, owners)?
         } else {
             let old = |p: &Path| PathBuf::from(format!("{OLD}{}", p.display()));
@@ -754,9 +775,11 @@ impl Builder {
         Ok(opts)
     }
 
-    /// The layers bound idmapped under `/layers/<n>` in the staging root,
-    /// named as the overlay sees them there. The upper and work directories
-    /// must share a mount, so their common parent is the one idmapped.
+    /// The layers bound idmapped under `/layers/<n>` in the staging root
+    /// (as trees taken here, plain where they can't be: a job made from
+    /// another mount namespace), named as the overlay sees them there. The
+    /// upper and work directories must share a mount, so their common parent
+    /// is the one bound.
     fn idmapped_layers(
         &mut self,
         lowers: &[PathBuf],
@@ -927,7 +950,7 @@ fn stage_dir() -> &'static str {
 /// idmapped trees the operations attach.
 type Filesystem = (Vec<Op>, Vec<Rule>, Vec<OwnedFd>, Vec<PathBuf>);
 
-fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
+fn filesystem(spec: &JobSpec, trees_only: bool) -> Result<Filesystem, SpawnError> {
     let userns = match spec.ids.block {
         Some(_) => Some(super::idmap::namespace(&spec.ids).map_err(|e| {
             SpawnError::Setup(format!(
@@ -963,6 +986,7 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
         unmapped: Vec::new(),
         trees: Vec::new(),
         overlays: 0,
+        trees_only,
     };
     b.root(&spec.root)?;
     let root_dir = match &spec.root {
@@ -1068,7 +1092,9 @@ fn landlock_mode(spec: &JobSpec) -> Landlock {
 }
 
 impl Plan {
-    pub fn new(spec: &JobSpec) -> Result<Self, SpawnError> {
+    /// `trees_only`: the job's mount namespace is made from another than
+    /// the caller's, so every bind is a tree taken here.
+    pub fn new(spec: &JobSpec, trees_only: bool) -> Result<Self, SpawnError> {
         let cwd = normal(&spec.cwd, "working directory")?;
         let become_ids = match spec.ids.block {
             Some(block) => {
@@ -1082,7 +1108,7 @@ impl Plan {
             }
             None => None,
         };
-        let (ops, rules, trees, unmapped) = filesystem(spec)?;
+        let (ops, rules, trees, unmapped) = filesystem(spec, trees_only)?;
         let stage = stage_dir();
         let (landlock, rules) = landlock(landlock_mode(spec), rules)?.unzip();
         let cap_last = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")

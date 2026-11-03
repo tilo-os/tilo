@@ -62,7 +62,7 @@ pub fn spawn(h: Helper<'_>) -> Result<libc::pid_t, SpawnError> {
     spec.seccomp = Seccomp::Off;
     spec.landlock = Landlock::Off;
     spec.cgroup_view = false;
-    let mut plan = Plan::new(&spec)?;
+    let mut plan = Plan::new(&spec, false)?;
     plan.helper = true;
     plan.own_net = false;
     plan.nofile_max = h.nofile_max;
