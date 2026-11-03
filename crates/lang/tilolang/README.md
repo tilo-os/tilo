@@ -90,7 +90,10 @@ opens through the type's default view (`default view counter for Counter`).
 
 `use other.app as other` imports another package. Imports are found among the package's sibling
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
-package directory, or a directory of packages, to look in.
+package directory, or a directory of packages, to look in. Another package's `fn` is called
+through the alias, `todo.finished(list, t)`, and runs as that package's own code: a `fn` changes
+nothing, so a call is as free as reading that package's resources, and the rule lives where it is
+written. Another package's actions are applied or invoked, never called.
 
 A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
 resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,

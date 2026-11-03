@@ -75,6 +75,10 @@ fn main() -> std::process::ExitCode {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
+    // Everything this process reports, and the panic that would end it, goes
+    // through the one log from here on — including the render service, which
+    // is this binary in its own mode.
+    tilo_session::logging::install();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it
@@ -371,7 +375,6 @@ fn start(
         seed_apps,
     } = line;
     let buses = reach.buses.clone();
-    record_panics(backend);
     // Who sits here, read now and kept current by workers: nothing the loop
     // asks of the identity directory waits on the disk.
     tilo_session::identity::install();
@@ -459,6 +462,19 @@ fn start(
     // what it holds as it does when it ends on its own.
     if let Err(error) = tilo_session::termination::install(options.wake.handle()) {
         eprintln!("tilo-session: a signal ends this session without its cleanup: {error}");
+    }
+    // The lock record is the login's, kept by the session that owns the
+    // machine: one in a window of another desktop, or a headless one, keeps no
+    // record of its host's login. A record that cannot be armed stops the
+    // login rather than start one that a crash would leave unlocked.
+    if backend == Backend::Drm {
+        match tilo_session::recovery::Recovery::from_environment() {
+            Ok(recovery) => options.recovery = recovery,
+            Err(error) => {
+                eprintln!("tilo-session: cannot establish the login's lock recovery: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
     }
     let agent_door = options.agent_door.clone();
     let test_control = options.test_control.clone();
@@ -618,16 +634,6 @@ fn run(
             eprintln!("tilo-session: {error}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// A session that ends without a word leaves the person at the login screen
-/// with no idea why: the one that owns the machine leaves a record of every
-/// panic, which its next start tells them about.
-#[cfg(target_os = "linux")]
-fn record_panics(backend: Backend) {
-    if backend == Backend::Drm {
-        tilo_crash_records::install(tilo_crash_records::PANIC_TITLE);
     }
 }
 

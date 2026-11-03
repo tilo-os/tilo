@@ -22,7 +22,7 @@ use std::time::SystemTime;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::join::{self, MemberRole};
 use tilo_peer_state::owner::NativeWorkspaceOwner;
@@ -104,7 +104,7 @@ fn text(doc: Option<Vec<u8>>, key: &str) -> Option<String> {
 struct Native {
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     scope: Arc<Scope>,
     session: RelayCoeditSession,
     presence: Vec<[u8; 32]>,
@@ -139,7 +139,7 @@ impl Native {
         .await
         .unwrap();
         owner.install(&enrollment, SystemTime::now()).unwrap();
-        let workspace = RoomId::parse(&enrollment.bootstrap().room).unwrap();
+        let workspace = WorkspaceId::parse(&enrollment.bootstrap().room).unwrap();
         let connect = Connect::new(owner.clone(), workspace).unwrap();
         let (hint, device, revocations, continuity) = connect.material(&identity).unwrap();
         let session = tilo_peer_state::owner::session::dial(

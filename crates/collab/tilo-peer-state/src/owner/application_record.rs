@@ -1,7 +1,7 @@
 //! Host-owned empty application records, before an authenticated creator joins.
 //! Neither an app document write nor an arbitrary reader can create ownership.
 
-use crate::owner::{NativeWorkspaceOwner, RoomId, publication};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId, publication};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
@@ -77,7 +77,7 @@ impl NativeWorkspaceOwner {
     /// failed publication.
     pub fn initialize_application_record_as_member(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         creator: &DeviceCert,
         key: &SigningKey,
         initialization: ApplicationInitialization<'_>,
@@ -147,7 +147,7 @@ impl NativeWorkspaceOwner {
     /// commit the candidate.
     pub fn prepare_application_record(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         creator: &DeviceCert,
         key: &SigningKey,
         route: &ApplicationRecord,

@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
 use tilo_peer_state::join::{
@@ -138,7 +138,11 @@ fn enroll(
 }
 
 /// What `owner` publishes for its workspace now.
-fn outgoing(owner: &NativeWorkspaceOwner, workspace: RoomId, now: SystemTime) -> Vec<NeighbourMsg> {
+fn outgoing(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    now: SystemTime,
+) -> Vec<NeighbourMsg> {
     owner
         .with_outgoing(workspace, now, |_, outgoing| {
             Ok(outgoing
@@ -152,7 +156,7 @@ fn outgoing(owner: &NativeWorkspaceOwner, workspace: RoomId, now: SystemTime) ->
 /// Whether `owner`'s workspace still holds `certificate` as a member device.
 fn is_member(
     owner: &NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     certificate: &DeviceCert,
     now: SystemTime,
 ) -> bool {
@@ -175,7 +179,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
     let (_root_a, key_a, cert_a) = device(91, 92, "A's desktop");
     let (_root_b, key_b, cert_b) = device(73, 74, "B's desktop");
     let (_root_c, key_c, cert_c) = device(75, 76, "C's desktop");
-    let workspace = RoomId::parse(WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
 
     // A's device is the workspace's host: it made the workspace.
     let mut governor =
@@ -421,7 +425,7 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
     let directory = tempfile::tempdir().unwrap();
     let (_root_a, key_a, cert_a) = device(61, 62, "A's desktop");
     let (_root_b, key_b, cert_b) = device(63, 64, "B's desktop");
-    let workspace = RoomId::parse(WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
     let now = SystemTime::now();
 
     // A's device made the workspace; B is a member of it on their own device.

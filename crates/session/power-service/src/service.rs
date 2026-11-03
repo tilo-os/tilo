@@ -219,6 +219,10 @@ impl Service for SessionPower {
                 }
                 Ok(Started::Done(ActionOutput::default()))
             }
+            SleepAction::Sleep => {
+                self.link.act(tilo_power_mgmt::PowerAction::Suspend);
+                Ok(done(Some("suspend")))
+            }
             SleepAction::PowerKey => {
                 let resolved = self.link.power_key().map(|action| self.link.act(action));
                 Ok(done(resolved))

@@ -177,7 +177,7 @@ pub fn spawn_with_agent_grants(
     };
     let mut workspace = tilo_action_broker::test_support::Workspace::in_workspace(
         tilo_action_broker::test_support::WorkspaceSlot(1),
-        tilo_action_broker::test_support::RoomId::parse(&TEST_WORKSPACE.to_string()).unwrap(),
+        tilo_action_broker::test_support::WorkspaceId::parse(&TEST_WORKSPACE.to_string()).unwrap(),
         "Agent integration workspace",
     );
     workspace.set_owner(principal.clone());

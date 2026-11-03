@@ -6,7 +6,7 @@ use tilo_user_identity::DeviceCert;
 #[test]
 fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs() {
     let mut fixture = fixture();
-    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("member.json");
     let member = enroll_remote_history_member(&mut fixture, &path);
@@ -79,7 +79,7 @@ fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs(
 #[test]
 fn the_owner_that_committed_a_receipt_publishes_it_without_reopening() {
     let mut fixture = fixture();
-    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("member.json");
     let member = enroll_remote_history_member(&mut fixture, &path);
@@ -223,7 +223,7 @@ fn enroll_remote_history_member(
 )]
 fn effect_archived_signed_history_admits_and_reopens_remote_member_without_governor_blobs() {
     let mut fixture = fixture();
-    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
     for _ in 0..130 {
         commit(
             &fixture,
@@ -393,7 +393,7 @@ fn effect_terminal_is_durable_exact_retry_and_signed_workspace_publication() {
         assert_eq!(retry.generation, receipt.generation);
         assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let frames = reopened
             .with_outgoing(workspace, fixture.now, |_, outgoing| {
                 Ok(outgoing
@@ -450,7 +450,7 @@ fn effect_wrong_key_and_failed_publish_never_ack_or_mutate() {
     fixture
         .owner
         .with_current(
-            RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
+            WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
             |view| {
                 assert!(view.record.effect_receipts.is_empty());
                 assert_eq!(view.generation(), 1);
@@ -546,7 +546,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     reopened
         .with_current(
-            RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
+            WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
             |view| {
                 assert_eq!(view.record.effect_receipts.len(), 128);
                 assert_eq!(
@@ -595,7 +595,7 @@ fn relay_to_governor_and_compare_roots(
     fixture: &mut Fixture,
     owner: &crate::owner::NativeWorkspaceOwner,
 ) {
-    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
     let frames = owner
         .with_outgoing(workspace, fixture.now, |_, outgoing| {
             Ok(outgoing
@@ -688,7 +688,7 @@ fn missing_or_corrupt_effect_history_is_not_unknown_uuid_or_successful_restore()
         )
         .unwrap();
     }
-    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
     let hash = fixture
         .owner
         .with_current(workspace, |view| {

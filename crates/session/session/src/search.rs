@@ -24,7 +24,8 @@ use crate::records::Records;
 use tilo_actions::DoorError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
-    RemoteActionTarget, application_action_target, application_open_target,
+    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_action_target,
+    application_open_target,
 };
 use tilo_app_launch::downloaded as registry;
 use tilo_desktop_search::content_index::AppContentIndex;
@@ -724,6 +725,145 @@ impl SearchHost for SessionSearch {
     }
 }
 
+/// The desktop's one search as a host that holds it offers it
+/// ([`ResourceSearch`]): the same [`SessionSearch::find`] the palette and
+/// text typed on the canvas run, so an agent's `find` answers what those do,
+/// in their order.
+impl ResourceSearch for SearchThrough {
+    fn find(
+        &self,
+        _caller: &Caller,
+        needle: &str,
+    ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionHostError>> {
+        let (done, answer) = tilo_actions::remote::pending();
+        self.ask(needle.trim().to_owned(), done);
+        answer.map(Ok)
+    }
+}
+
+/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as
+/// the session's own doors are asked: the session's search is not `Send`, and
+/// every call of it runs on the loop's pass.
+pub(crate) struct SearchThrough(std::sync::Arc<dyn Fn(String, FoundSearch) + Send + Sync>);
+
+/// Where the session's answer to a search goes.
+pub(crate) type FoundSearch = tilo_actions::remote::Completer<Vec<Found>>;
+
+impl SearchThrough {
+    pub(crate) fn new(ask: std::sync::Arc<dyn Fn(String, FoundSearch) + Send + Sync>) -> Self {
+        Self(ask)
+    }
+
+    fn ask(&self, needle: String, done: FoundSearch) {
+        (self.0)(needle, done);
+    }
+}
+
+/// The search hits `found` names, as a caller who addresses resources reads
+/// them: the resource each is about, best first, and never below the one
+/// `place_found` places. The canvas takes the first hit that names a
+/// resource; `find` leads with that same hit, so an agent asked for a text
+/// answers with what typing it would place, then with what else the search
+/// found under it. Without it (a file, a command, a window's focus), the
+/// resources the search does name stand on their own.
+pub(crate) fn found_all(hits: Vec<tilo_desktop_search::Hit>) -> Vec<Found> {
+    let lead = hits
+        .iter()
+        .position(|hit| crate::arrangement::names_a_resource(hit));
+    let mut out: Vec<Found> = Vec::new();
+    for (at, hit) in hits.into_iter().enumerate() {
+        let Some(found) = found_of(hit) else {
+            continue;
+        };
+        // Above the lead, only the lead's own resource stands: a row the
+        // canvas would step past is a row the query did not name.
+        if lead.is_some_and(|lead| at < lead) {
+            continue;
+        }
+        if !out.iter().any(|seen| seen.resource == found.resource) {
+            out.push(found);
+        }
+    }
+    out
+}
+
+/// The resource a search hit is about, as an agent addresses it (`None` for
+/// a hit that names no resource an app publishes: a setting's page, a file,
+/// the machine's own app).
+fn found_of(hit: tilo_desktop_search::Hit) -> Option<Found> {
+    let (resource, open, arguments) = match &hit.target {
+        Target::Invoke(invoke) => (
+            invoke.address.resource.as_str().to_owned(),
+            Some(invoke.address.action.clone()),
+            invoke.arguments.clone(),
+        ),
+        Target::Action(action) => (
+            action.resource.as_str().to_owned(),
+            Some(action.spec.id.clone()),
+            action
+                .preset
+                .as_ref()
+                .map(|(name, value)| {
+                    let mut arguments = serde_json::Map::new();
+                    arguments.insert(name.clone(), value.clone().into());
+                    arguments
+                })
+                .unwrap_or_default(),
+        ),
+        // Everything else (an app to launch, a window, a command, a
+        // worked-out answer, a file to open, a job to stop) is not a
+        // resource of an app's that a path names: it is left out, as the
+        // palette's own rows are for a caller that places what it finds.
+        Target::Launch { .. }
+        | Target::Window { .. }
+        | Target::Command { .. }
+        | Target::Copy { .. }
+        | Target::Open { .. }
+        | Target::Cancel { .. }
+        | Target::Prefer { .. } => return None,
+    };
+    // The app a caller names the resource by: the provider that published
+    // the row, unless that is the desktop publishing on an app's behalf.
+    // A workspace's record carries its app in the id it published it under
+    // (`tl:<app>:…`), which a caller lists the app's directory by.
+    let app = match &hit.target {
+        Target::Invoke(invoke) if invoke.app != DESKTOP_APP => Some(invoke.app.clone()),
+        _ => None,
+    }
+    .or_else(|| {
+        resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(app, _)| app.to_owned())
+    });
+    // The kind a caller reads is the resource's own when the row says so,
+    // else the palette's word for the row ("Actions"), which names nothing
+    // an agent can act on.
+    let named_kind = hit.kind.label();
+    let (kind, label) = if named_kind.contains('.') {
+        (named_kind.to_owned(), hit.title.clone())
+    } else {
+        match &hit.target {
+            Target::Action(action) => {
+                (action.resource_kind.clone(), action.resource_label.clone())
+            }
+            Target::Invoke(invoke) => match &invoke.descriptor {
+                Some(action) => (action.resource_kind.clone(), action.resource_label.clone()),
+                None => (named_kind.to_owned(), hit.title.clone()),
+            },
+            _ => (named_kind.to_owned(), hit.title.clone()),
+        }
+    };
+    Some(Found {
+        resource,
+        kind,
+        label,
+        open,
+        arguments,
+        app,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -807,6 +947,7 @@ mod tests {
                 candidates: Vec::new(),
                 declared: std::collections::BTreeMap::new(),
                 launchable: Vec::new(),
+                tools: Vec::new(),
             }
         }
     }

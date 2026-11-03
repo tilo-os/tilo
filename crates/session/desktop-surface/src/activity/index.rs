@@ -17,7 +17,7 @@ use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore, home};
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
 use super::ActivityTree;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 
 /// Hard ceilings keep a corrupt index or a workspace with thousands of references
 /// from turning opening History into an unbounded allocation.
@@ -46,7 +46,7 @@ pub trait PersistedRecordHistory {
     /// (Notes keeps its notebook there), as this device holds them: they
     /// are part of the workspace's history as much as its records are. None by
     /// default.
-    fn workspace_documents(&self, _workspace: RoomId) -> Vec<RecordCheckout> {
+    fn workspace_documents(&self, _workspace: WorkspaceId) -> Vec<RecordCheckout> {
         Vec::new()
     }
 }
@@ -259,10 +259,10 @@ impl WorkspaceHistoryEntry {
 pub struct WorkspaceHistoryQuery {
     /// `Some` includes only records held by, or originally minted in, this
     /// workspace. `None` defers scope to `workspaces`.
-    pub workspace: Option<RoomId>,
+    pub workspace: Option<WorkspaceId>,
     /// When set, restrict a multi-workspace query to this exact union instead
     /// of treating `workspace: None` as unrestricted device history.
-    pub workspaces: Option<Vec<RoomId>>,
+    pub workspaces: Option<Vec<WorkspaceId>>,
     pub limit: usize,
 }
 
@@ -277,14 +277,14 @@ impl Default for WorkspaceHistoryQuery {
 }
 
 impl WorkspaceHistoryQuery {
-    pub fn for_room(workspace: RoomId) -> Self {
+    pub fn for_room(workspace: WorkspaceId) -> Self {
         Self {
             workspace: Some(workspace),
             ..Self::default()
         }
     }
 
-    pub fn for_rooms(workspaces: impl IntoIterator<Item = RoomId>) -> Self {
+    pub fn for_rooms(workspaces: impl IntoIterator<Item = WorkspaceId>) -> Self {
         let mut workspaces: Vec<_> = workspaces.into_iter().collect();
         workspaces.compact_sort();
         workspaces.dedup();
@@ -1113,7 +1113,10 @@ fn insert_rows(
     }
 }
 
-fn referenced_records(tree: &impl ActivityTree, workspace: Option<RoomId>) -> Vec<RecordCheckout> {
+fn referenced_records(
+    tree: &impl ActivityTree,
+    workspace: Option<WorkspaceId>,
+) -> Vec<RecordCheckout> {
     let Some(workspace) = workspace else {
         return Vec::new();
     };

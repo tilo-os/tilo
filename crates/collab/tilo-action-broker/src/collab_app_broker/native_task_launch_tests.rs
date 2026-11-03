@@ -32,7 +32,7 @@ impl LauncherServices for Launcher {
         record: Option<&str>,
         _place: &LaunchPlace,
     ) -> Result<(), String> {
-        if workspace.room() != workspace_id()
+        if workspace.id() != workspace_id()
             || app != WRITER
             || !(record.is_none() || record == Some("main"))
         {

@@ -127,11 +127,7 @@ impl Surface {
     fn inputs(&self) -> SurfaceInputs {
         (
             self.publications.borrow().revision(),
-            self.host
-                .packages()
-                .into_iter()
-                .map(|package| package.id)
-                .collect(),
+            self.host.package_ids(),
         )
     }
 
@@ -171,6 +167,14 @@ impl Publication for Held {
 
     fn pending(&self) -> bool {
         self.0.publications.borrow().is_building()
+    }
+
+    fn visited(&self) -> u64 {
+        self.0.publications.borrow().visited()
+    }
+
+    fn sweeps(&self) -> u64 {
+        self.0.publications.borrow().sweeps()
     }
 }
 

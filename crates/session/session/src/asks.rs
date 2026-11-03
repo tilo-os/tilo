@@ -81,7 +81,7 @@ impl Shared {
         }
         let workspace = self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| held.room().to_string())
+                .map(|held| held.id().to_string())
                 .unwrap_or_default()
         });
         for choice in choices {
@@ -136,7 +136,75 @@ impl Shared {
                 &self.directory_store,
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
-            choice => identity::answered(choice),
+            choice => {
+                // A device another of the person's devices found asks here
+                // to act as them: the banner's own buttons are its answer.
+                if let Some(fabric) = &self.fabric
+                    && crate::certification::host_action(fabric, choice)
+                {
+                    return;
+                }
+                identity::answered(choice);
+            }
+        }
+    }
+
+    /// The device another of the person's devices found asks here to act as
+    /// them. Each ask is put to the person once, on a banner whose two
+    /// answers are its host actions
+    /// ([`crate::certification::host_action`]); an ask that went — answered
+    /// elsewhere, or expired — is taken back from them.
+    pub(crate) fn follow_device_asks(&self) {
+        use tilo_desktop_surface::i18n::{t, t_args};
+        use tilo_desktop_surface::notifications::{
+            Addressed, Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
+        };
+
+        let Some(fabric) = self.fabric.as_ref() else {
+            return;
+        };
+        let (fresh, gone) = crate::certification::newly_asking(fabric.as_ref());
+        let answer = |digest: [u8; 32], approve: bool| {
+            tilo_desktop_surface::host_action_key(&crate::certification::answer_key(
+                digest, approve,
+            ))
+        };
+        for digest in gone {
+            for approve in [true, false] {
+                self.notices.withdraw_host_action(&answer(digest, approve));
+            }
+        }
+        for asking in fresh {
+            let found = if asking.via.is_empty() {
+                String::new()
+            } else {
+                t_args("pairing-asks-via", &[("device", asking.via.clone().into())])
+            };
+            let secs_ago = tilo_clock::unix_now_ms().saturating_sub(asking.asked_at_ms) / 1000;
+            let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
+            let body = t_args(
+                "pairing-asks-body",
+                &[
+                    ("device", asking.label.clone().into()),
+                    ("from", found.into()),
+                    ("when", when.into()),
+                    ("code", asking.code.clone().into()),
+                ],
+            );
+            let mut notice = Notification::new(t("pairing-asks-title"), body);
+            notice.actions = vec![
+                (
+                    answer(asking.digest, true),
+                    t_args("pairing-approve", &[("code", asking.code.clone().into())]),
+                ),
+                (answer(asking.digest, false), t("pairing-decline")),
+            ];
+            notice.app_name = Some(t("host-action-source-devices"));
+            notice.icon_kind = NotificationIconKind::Permission;
+            notice.severity = NotificationSeverity::Info;
+            notice.addressed = Some(Addressed::Ask);
+            notice.dismiss_after = PERSISTENT_DISMISS;
+            self.notices.post(notice);
         }
     }
 
@@ -146,6 +214,41 @@ impl Shared {
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),
         );
+    }
+
+    /// Keep the tools service's lists current with this pass, and put up the
+    /// sheets it left for the loop: workspace settings on a route's tab, and
+    /// an app the person asked to uninstall.
+    pub(crate) fn follow_tools(
+        &self,
+        tools: &mount::tools::Handle,
+        media: Vec<mount::drives::Medium>,
+    ) {
+        tools.saw_apps(&self.app_lists().tools);
+        tools.saw_media(media);
+        for ask in tools.take_asks() {
+            let answered = match &ask {
+                mount::tools::Ask::WorkspaceSettings {
+                    workspace, route, ..
+                } => workspace_settings::open_route(
+                    self.workspace_settings.as_ref(),
+                    &self.workspace_settings_feed(),
+                    workspace,
+                    *route,
+                ),
+                mount::tools::Ask::Uninstall { app, .. } => self.ask_uninstall(app),
+            };
+            ask.answer(answered);
+        }
+    }
+
+    /// Leave `app` for the uninstall sheet, when this session shows one.
+    fn ask_uninstall(&self, app: &str) -> Result<(), String> {
+        if self.app_sheets.uninstall().is_none() {
+            return Err("this session shows no uninstall question".to_owned());
+        }
+        self.app_sheets.ask_uninstall(app);
+        Ok(())
     }
 
     /// What workspace settings feeds its panes from.

@@ -14,7 +14,11 @@ In production Rust under `crates/session/` and `apps/` this refuses:
 - glyph-icon: a string literal that uses a unicode symbol as an icon (an
   arrow, a check mark, a cross, a dot, a star) instead of `ui::icons::Icon`;
 - raw-colour: a colour literal (`Color::from_rgb8`, `Color::from_rgba8`,
-  `Color::new([...])`, `Color::WHITE`/`BLACK`) instead of a theme token.
+  `Color::new([...])`, `Color::WHITE`/`BLACK`) instead of a theme token. A
+  colour read from a field is neither picked nor written out — it is the
+  theme's (`theme.text_primary`) or data the frame arrived with (a client's
+  base colour, a backdrop's ground) — so only a written-out colour counts,
+  by the provenance test the scrim rule (`MEDIA_FILL`) goes by.
 
 Text an agent's model reads is not interface: the agent's tool schemas,
 tool descriptions and operation summaries (`MODEL_TEXT`) are prompts, in the
@@ -58,7 +62,12 @@ NOT_UI = re.compile(
     r"|\.(?:expect|context|with_context|map_err)\b|\breason\s*=)[^;{}]*$"
 )
 RAW_COLOUR = re.compile(
-    r"\bColor::(?:from_rgb8|from_rgba8|from_rgb|from_rgba|new)\s*\("
+    # Written out: channels, an array, a value this line names, or a named
+    # constant (in a path, or read from one). A colour read from a field is the
+    # theme's or a frame's, never the author's.
+    r"\bColor::(?:from_rgb8|from_rgba8|from_rgb|from_rgba)\s*\(\s*[-0-9.]"
+    r"|\bColor::new\s*\(\s*(?:\[|vec!|[-0-9.]|[A-Za-z_][A-Za-z0-9_]*\s*(?:::|,|\)))"
+    r"|\bColor::(?:from_rgb8|from_rgba8|from_rgb|from_rgba)\s*\(\s*[A-Z][A-Z0-9_]*\b"
     r"|\bColor::(?:WHITE|BLACK)\b"
 )
 ROUNDED_FILL = re.compile(r"RoundedRect::(?:from_rect|new)")

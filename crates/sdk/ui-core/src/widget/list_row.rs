@@ -1979,6 +1979,9 @@ pub struct ListRow {
     /// The leading checkbox's own state, published as the row's view action
     /// `check` ([`ListRow::checkbox_view`]) and answered by the row.
     check_verb: Option<super::control_verb::ControlVerb<bool>>,
+    /// The value a described row's leading checkbox is bound to, followed so
+    /// a check made elsewhere shows in the row.
+    check_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
     environment: crate::interaction::InteractionEnvironment,
     metrics: Option<RowMetrics>,
     theme: Option<Theme>,
@@ -2057,6 +2060,7 @@ impl ListRow {
             trailing: None,
             activation: Activation::new(id),
             check_verb: None,
+            check_binding: None,
             environment: crate::interaction::InteractionEnvironment::default(),
             metrics: None,
             theme: None,
@@ -3137,6 +3141,14 @@ impl Widget for ListRow {
     }
 
     fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        if let Some(binding) = &mut self.check_binding
+            && let crate::widget::binding::Pulled::Value(checked) = binding.pull(state, path)
+            && let Some(Leading::Checkbox { checked: shown, .. }) = &mut self.leading
+            && *shown != checked
+        {
+            *shown = checked;
+            self.dirty = true;
+        }
         if let Some(Leading::Media {
             source: MediaSource::Url { store, url },
             loaded,

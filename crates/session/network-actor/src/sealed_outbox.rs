@@ -26,7 +26,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use neighbour_wire::Retention;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_session::CoeditPayload;
 
@@ -180,15 +180,15 @@ pub(super) struct RecordKeeper {
 }
 
 enum Keep {
-    Hold(u64, RoomId, HeldWrite),
+    Hold(u64, WorkspaceId, HeldWrite),
     /// Hosts kept these writes; with nothing held any more (`true`), the
     /// workspace's log goes.
-    Kept(u64, RoomId, Vec<[u8; 16]>, bool),
+    Kept(u64, WorkspaceId, Vec<[u8; 16]>, bool),
     Retry,
 }
 
 impl Keep {
-    fn workspace(&self) -> Option<(u64, RoomId)> {
+    fn workspace(&self) -> Option<(u64, WorkspaceId)> {
         match self {
             Self::Hold(ws, workspace, _) | Self::Kept(ws, workspace, _, _) => {
                 Some((*ws, *workspace))
@@ -242,13 +242,13 @@ impl RecordKeeper {
     }
 
     /// Hold `write` in the log of `workspace`, on topic `ws`.
-    pub(super) fn hold(&self, ws: u64, workspace: RoomId, write: HeldWrite) {
+    pub(super) fn hold(&self, ws: u64, workspace: WorkspaceId, write: HeldWrite) {
         self.send(Keep::Hold(ws, workspace, write));
     }
 
     /// A host keeps `op`: let it out of `workspace`'s log; `empty` when nothing
     /// is held for the workspace any more.
-    pub(super) fn kept(&self, ws: u64, workspace: RoomId, op: [u8; 16], empty: bool) {
+    pub(super) fn kept(&self, ws: u64, workspace: WorkspaceId, op: [u8; 16], empty: bool) {
         self.send(Keep::Kept(ws, workspace, vec![op], empty));
     }
 
@@ -273,7 +273,7 @@ struct Waiting {
     entries: VecDeque<Keep>,
     stalled: HashSet<u64>,
     /// Workspaces whose log was repaired since the keeper started.
-    repaired: HashSet<RoomId>,
+    repaired: HashSet<WorkspaceId>,
 }
 
 impl Waiting {
@@ -474,7 +474,7 @@ mod tests {
         // Where the logs go is taken: the disk takes nothing.
         std::fs::write(&logs, b"in the way").unwrap();
         let log = HeldLog::new(logs.clone());
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let write = |index: u8| HeldWrite {
             op: [index; 16],
             channel: [2; 32],

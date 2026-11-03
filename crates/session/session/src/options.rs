@@ -83,6 +83,10 @@ pub struct Options {
     pub user: String,
     /// Whether a password unlocks the session; without one nothing does.
     pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
+    /// The login's lock record, when a session wrapper started this session:
+    /// the lock a crashed session left in force comes back with it, and the
+    /// state this one ends in is published for the next.
+    pub recovery: Option<crate::recovery::Recovery>,
     /// What the services were handed to wake the session's loop when
     /// something lands: the session binds it to its loop once started.
     pub wake: tilo_service::LoopWake,
@@ -284,6 +288,7 @@ pub(crate) fn start_collaboration(
         sync::configured_hosts(),
         media,
         options.wake.handle(),
+        options.questions.clone(),
         beside,
     ) {
         Ok(sync) => Some(Rc::new(sync)),
@@ -304,8 +309,8 @@ pub(crate) fn open_engine(
     let workspaces: Vec<_> = handle.read(|tree| {
         tree.workspaces
             .iter()
-            .filter(|workspace| !workspace.room().is_nil())
-            .map(|workspace| (workspace.slot, workspace.room()))
+            .filter(|workspace| !workspace.id().is_nil())
+            .map(|workspace| (workspace.slot, workspace.id()))
             .collect()
     });
     match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
@@ -339,6 +344,7 @@ impl Default for Options {
             session_actions: no_session_actions,
             user: String::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
+            recovery: None,
             wake: tilo_service::LoopWake::default(),
             captures: None,
             projector: None,

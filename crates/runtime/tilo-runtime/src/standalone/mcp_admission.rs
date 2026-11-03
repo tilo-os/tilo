@@ -1,6 +1,6 @@
 //! Exact selected-workspace material for a single runtime MCP execution.
 //! Uses existing custody and enrollment; never enrolls, provisions or grants.
-use super::{Arc, Connect, Joined, RoomId, workspace_topic};
+use super::{Arc, Connect, Joined, WorkspaceId, workspace_topic};
 use ed25519_dalek::Signer as _;
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
@@ -59,7 +59,7 @@ impl std::error::Error for Refusal {}
 
 pub(in crate::standalone) struct SessionAdmission {
     caller: Caller,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     certificate: DeviceCert,
     enrollment: (tilo_peer_state::join::TransportHint, u64),
     presentation: Vec<u8>,
@@ -118,7 +118,7 @@ impl SessionAdmission {
 impl Joined {
     fn mcp_material(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
     ) -> Result<(DeviceCert, (tilo_peer_state::join::TransportHint, u64)), String> {
         // Read apart, so a custody that no longer matches the enrollment is
         // a confirmed change rather than a read that failed.
@@ -136,7 +136,7 @@ impl Joined {
         workspace: &str,
         actor: &str,
     ) -> Result<Arc<SessionAdmission>, String> {
-        let selected = RoomId::parse(workspace).ok_or("invalid exact MCP workspace")?;
+        let selected = WorkspaceId::parse(workspace).ok_or("invalid exact MCP workspace")?;
         if selected.is_nil() || selected.to_string() != workspace {
             return Err("noncanonical MCP workspace".into());
         }
@@ -197,7 +197,7 @@ impl Joined {
 
     pub(in crate::standalone) fn recheck_mcp_executions(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
     ) -> Result<(), String> {
         // Baselines come only from host-admitted sessions, never a presented
         // certificate. Release the registry lock before material reads.

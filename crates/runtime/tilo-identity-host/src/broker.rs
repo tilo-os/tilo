@@ -22,7 +22,7 @@ use tilo_action_policy::{ActionKind, Answer, TreePath};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
-use tilo_desktop_model::{RoomId, Workspace};
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_lock::MutexRecover as _;
 
 /// The legacy resource for app device-signature grants. Ordinary app
@@ -32,7 +32,7 @@ pub const DEVICE_SIGNATURE_RESOURCE: &str = "identity.device-signature";
 /// The committed workspaces the broker authorizes each request against.
 pub trait WorkspaceMembership: Send + Sync + 'static {
     /// Run `read` over the workspace with this id, when this host has it.
-    fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace));
+    fn with_workspace(&self, workspace: &WorkspaceId, read: &mut dyn FnMut(&Workspace));
 }
 
 /// A route's access, generation and content keys, as [`ChannelKeySource`]
@@ -52,7 +52,7 @@ pub trait ChannelKeySource: Send + Sync + 'static {
     /// Returns a message when ready keys cannot be encoded.
     fn access(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         route: &collab_types::ChannelRoute,
         known_generation: u64,
     ) -> Option<Result<ChannelKeys, String>>;
@@ -90,7 +90,7 @@ impl PersonRecordKinds for () {
 impl ChannelKeySource for () {
     fn access(
         &self,
-        _workspace: RoomId,
+        _workspace: WorkspaceId,
         _route: &collab_types::ChannelRoute,
         _known_generation: u64,
     ) -> Option<Result<ChannelKeys, String>> {
@@ -101,7 +101,7 @@ impl ChannelKeySource for () {
 /// `read` over `workspace`, or `None` when this host has none.
 fn read_workspace<T>(
     membership: &dyn WorkspaceMembership,
-    workspace: &RoomId,
+    workspace: &WorkspaceId,
     read: impl FnOnce(&Workspace) -> T,
 ) -> Option<T> {
     let mut read = Some(read);
@@ -121,7 +121,7 @@ fn read_workspace<T>(
 /// of; the person's own cluster has no roster and is theirs.
 fn identity_in(
     tree: &dyn WorkspaceMembership,
-    workspace: &RoomId,
+    workspace: &WorkspaceId,
 ) -> Result<crate::registry::IdentityProfile, String> {
     let profile = match crate::registry::identity_for_workspace(&workspace.to_string()) {
         Ok(Some(profile)) => profile,
@@ -289,7 +289,7 @@ fn serve(
     if let Some(surface) = &handshake.surface {
         person.attached(&handshake.app_id, surface.as_bytes());
     }
-    let Some(workspace) = RoomId::parse(&handshake.workspace_id) else {
+    let Some(workspace) = WorkspaceId::parse(&handshake.workspace_id) else {
         let _ = write_action_frame(
             &mut stream,
             &Response::Denied("invalid workspace identity".into()),
@@ -360,7 +360,7 @@ fn serve(
 
 fn metadata_response(
     tree: &dyn WorkspaceMembership,
-    workspace: &RoomId,
+    workspace: &WorkspaceId,
     presentation: bool,
 ) -> Response {
     let profile = match identity_in(tree, workspace) {
@@ -421,7 +421,7 @@ pub fn device_signature_node(workspace: &TreePath, app: &str, action: &str) -> T
 /// What a client's launch bound it to: its workspace and app, and the
 /// records of the person's that app declares.
 struct Bound<'a> {
-    workspace: &'a RoomId,
+    workspace: &'a WorkspaceId,
     app_id: &'a str,
     person: &'a dyn PersonRecordKinds,
 }
@@ -704,7 +704,7 @@ fn channel_keys(
     }
     // Only the workspace's canonical form: the channel is the hash of the route
     // in it, which a participant checks the route against.
-    let Some(workspace) = RoomId::parse(route.workspace_id)
+    let Some(workspace) = WorkspaceId::parse(route.workspace_id)
         .filter(|workspace| workspace.to_string() == route.workspace_id)
     else {
         return Response::Denied("channel keys requested for an invalid workspace".into());
@@ -816,7 +816,7 @@ pub struct LocalDeviceIdentity {
 /// Rejects an invalid or unminted workspace, one this device has no identity
 /// for, and a missing, mismatched, unenrolled or revoked device certificate.
 pub fn trusted_current_device_public(workspace: &str) -> io::Result<LocalDeviceIdentity> {
-    let workspace = RoomId::parse(workspace)
+    let workspace = WorkspaceId::parse(workspace)
         .filter(|workspace| !workspace.is_nil())
         .ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid minted workspace id")
@@ -867,7 +867,7 @@ mod tests {
 
     /// What the client's launch binds it to, for an app that keeps none of
     /// the person's records.
-    fn bound<'a>(workspace: &'a RoomId, app_id: &'a str) -> Bound<'a> {
+    fn bound<'a>(workspace: &'a WorkspaceId, app_id: &'a str) -> Bound<'a> {
         Bound {
             workspace,
             app_id,
@@ -943,13 +943,13 @@ mod tests {
         }
     }
     impl WorkspaceMembership for SharedTree {
-        fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
+        fn with_workspace(&self, workspace: &WorkspaceId, read: &mut dyn FnMut(&Workspace)) {
             if let Some(committed) = self
                 .read()
                 .desktop
                 .workspaces
                 .iter()
-                .find(|committed| &committed.room() == workspace)
+                .find(|committed| &committed.id() == workspace)
             {
                 read(committed);
             }
@@ -1006,7 +1006,7 @@ mod tests {
             .set(crate::provisioning::FILE_SECRETS_ENV, "1");
         let identity_dir = xdg.join("tilo/identity");
         let paths = tilo_user_identity::IdentityPaths::under(&system_root);
-        let workspace = RoomId::new().to_string();
+        let workspace = WorkspaceId::new().to_string();
         let operation = registry_types::ExternalModerationOperation {
             destination: registry_types::ModerationDestination {
                 base_url: "https://registry.example".into(),
@@ -1071,7 +1071,7 @@ mod tests {
         let paths = tilo_user_identity::IdentityPaths::under(&system_root);
         ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let workspace_id = workspace.to_string();
         let app_id = "so.tilo.notes";
         let record_id = "meeting-notes";
@@ -1348,7 +1348,7 @@ params = []
         let paths = tilo_user_identity::IdentityPaths::under(&system_root);
         ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let workspace_id = workspace.to_string();
         let launched = "so.tilo.notes";
         let owner = collab_types::WORKSPACE_RECORDS[0];
@@ -1419,7 +1419,7 @@ params = []
         let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
         runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
             .unwrap();
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let profile = crate::registry::identity_for_workspace(&workspace.to_string())
             .unwrap()
             .unwrap();
@@ -1525,7 +1525,7 @@ params = []
         let paths = tilo_user_identity::IdentityPaths::under(system_root);
         ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let workspace_id = workspace.to_string();
         let profile = crate::registry::identity_for_workspace(&workspace_id)
             .expect("registry")
@@ -1620,7 +1620,7 @@ params = []
             .expect("workspace-scoped device proof");
         assert!(
             identity
-                .sign_collaboration_join(&RoomId::new().to_string())
+                .sign_collaboration_join(&WorkspaceId::new().to_string())
                 .is_err(),
             "the identity broker must not sign a join for another workspace"
         );
@@ -1738,7 +1738,7 @@ params = []
         write_frame(
             &mut client,
             &Handshake {
-                workspace_id: RoomId::new().to_string(),
+                workspace_id: WorkspaceId::new().to_string(),
                 app_id: "so.tilo.file-explorer".into(),
                 surface: None,
             },
@@ -1774,7 +1774,7 @@ params = []
     impl ChannelKeySource for ReadyChannels {
         fn access(
             &self,
-            _workspace: RoomId,
+            _workspace: WorkspaceId,
             _route: &collab_types::ChannelRoute,
             _known_generation: u64,
         ) -> Option<Result<ChannelKeys, String>> {
@@ -1792,9 +1792,10 @@ params = []
     #[test]
     fn an_app_opened_in_the_persons_own_cluster_gets_the_keys_of_their_records() {
         let fixture = crate::join_proof::tests::Fixture::new();
-        let own_cluster =
-            RoomId::parse(&collab_types::personal_cluster(&fixture.user_public_key).to_string())
-                .expect("the person's store");
+        let own_cluster = WorkspaceId::parse(
+            &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
+        )
+        .expect("the person's store");
         let own = own_cluster.to_string();
         let app_id = "so.tilo.notes";
         let watched = collab_types::person_record_id("notes.watched");
@@ -1825,7 +1826,7 @@ params = []
     #[test]
     fn channel_keys_trust_check_reads_identity_files_once_and_sees_revocation() {
         let fixture = crate::join_proof::tests::Fixture::new();
-        let workspace = RoomId::parse(&fixture.workspace).expect("workspace");
+        let workspace = WorkspaceId::parse(&fixture.workspace).expect("workspace");
         let app_id = "so.tilo.notes";
         let profile = crate::registry::identity_for_workspace(&fixture.workspace)
             .expect("registry")
@@ -1898,7 +1899,7 @@ params = []
         let paths = tilo_user_identity::IdentityPaths::under(&system_root);
         ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let workspace_id = workspace.to_string();
         let app_id = "so.tilo.notes";
         let record_id = "meeting-notes";

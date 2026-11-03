@@ -22,7 +22,9 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
-use tilo_desktop_model::{DesktopTree, RoomId, Strip, StripId, TabId, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{
+    DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId, WorkspaceSlot,
+};
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect, Destination};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use tilo_resource::Effect;
@@ -1502,13 +1504,13 @@ impl DesktopChrome {
         let mut tree = self.handle.read(Clone::clone);
         let name = Self::name_of(name, tree.workspaces.len());
         let mut workspace = if let Some(id) = join {
-            let Some(joined) = RoomId::parse(id) else {
+            let Some(joined) = WorkspaceId::parse(id) else {
                 self.handle.acknowledge(tilo_desktop_surface::i18n::t(
                     "desktop-joined-workspace-unknown",
                 ));
                 return;
             };
-            if let Some(held) = tree.workspaces.iter().find(|held| held.room() == joined) {
+            if let Some(held) = tree.workspaces.iter().find(|held| held.id() == joined) {
                 // Already held, here or from another device: go there rather
                 // than make a second workspace of one workspace.
                 let held = held.slot;

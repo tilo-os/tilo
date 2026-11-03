@@ -13,8 +13,8 @@ use std::rc::Rc;
 use tilo_sheets::{Presentation, Seat};
 use ui::vello::kurbo::Rect;
 use ui::widget::{
-    CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor, ScreenshotKept,
-    ScreenshotSendDevice, SourceMode,
+    AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor,
+    ScreenshotKept, ScreenshotSendDevice, SourceMode,
 };
 
 /// How a capture is made: what of the desktop, and which parts of it.
@@ -33,6 +33,9 @@ pub struct Take {
     pub targets: Vec<String>,
     /// Whether the pointer is drawn into what is captured.
     pub include_pointer: bool,
+    /// Which sound is recorded with it: the machine's own, a microphone, or
+    /// both. A screenshot takes none.
+    pub audio: AudioCaptureMode,
     /// Where what is captured goes: a file, the clipboard, or both.
     pub destination: CaptureDestination,
 }
@@ -45,6 +48,7 @@ impl Default for Take {
             anchors: Vec::new(),
             targets: Vec::new(),
             include_pointer: false,
+            audio: AudioCaptureMode::None,
             destination: CaptureDestination::File,
         }
     }
@@ -203,6 +207,9 @@ pub struct Scene {
     pub recording: Option<Recording>,
     /// Seconds of the last half minute kept ready to clip, while that runs.
     pub replay: Option<u8>,
+    /// Which sound that buffer records, so the bar says what a clip will
+    /// carry.
+    pub replay_audio: AudioCaptureMode,
     /// How many clips the replay buffer gave: each one is a receipt.
     pub replay_saves: u64,
     /// Changes with every scene the session publishes: a studio reads the

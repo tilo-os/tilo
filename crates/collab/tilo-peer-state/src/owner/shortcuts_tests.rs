@@ -31,7 +31,7 @@ fn request(fixture: &Fixture, change: &ShortcutChange) -> OwnerCommitRequest {
 fn saved(owner: &NativeWorkspaceOwner) -> Vec<Shortcut> {
     owner
         .with_current(
-            RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
+            WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
             |view| {
                 Ok(tilo_automation::decode_saved(
                     &tilo_desktop_model::projection::workspace_shortcuts_of(

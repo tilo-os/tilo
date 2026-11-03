@@ -383,7 +383,7 @@ fn render_at(
     let target = LinkTarget {
         scope: Scope::Room {
             host,
-            room: workspace,
+            id: workspace,
             slug: None,
         },
         app: Some(minting.app.clone()),

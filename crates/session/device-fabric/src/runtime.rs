@@ -331,6 +331,27 @@ impl FabricRuntime {
         self.revise()
     }
 
+    /// Take what this device publishes about disk unlock: its enrolments,
+    /// one per slot, and the auto-approvals the person made here. Returns
+    /// whether this device's record changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the state does not make a valid record.
+    pub fn set_unlock(
+        &mut self,
+        unlock: crate::unlock::UnlockFabricState,
+    ) -> Result<bool, FabricError> {
+        let Some(local) = &mut self.local else {
+            return Ok(false);
+        };
+        if local.snapshot.unlock == unlock {
+            return Ok(false);
+        }
+        local.snapshot.unlock = unlock;
+        self.revise()
+    }
+
     /// Take the displays this device shows now, replacing what it showed
     /// before: where each connector's output stands, how big the plane they
     /// make is, and what the hardware behind each one says. A display that

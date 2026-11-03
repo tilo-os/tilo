@@ -463,7 +463,7 @@ impl Checker<'_> {
                     .into_iter()
                     .map(|s| s.unwrap_or_else(Ex::error))
                     .collect();
-                self.call_own(c, bound, span, "fn")
+                self.call_fn(c, bound, span)
             }
             (CKind::Action, Ctx::Fn) => {
                 self.err("E043", span, format!("a fn computes values and cannot use actions; `{}` is an action. Move this into an action or a flow", c.name));
@@ -520,6 +520,34 @@ impl Checker<'_> {
                 self.err("E081", span, format!("calling the {what} `{}` of another package is not supported in v1: the host ABI has no cross-module call. Only actions of other packages can be applied", c.name));
                 Ex::error()
             }
+        }
+    }
+
+    /// A `fn`: the module's own is a call, another package's one runs there, as that package's
+    /// own code, over the values it is given. A fn changes nothing — it cannot use actions
+    /// (E043) or change fields (E040) — so a call of one asks nobody, as reading that
+    /// package's resources asks nobody. The host boxes a scalar result like an action's, so it
+    /// unboxes as one.
+    fn call_fn(&mut self, c: &Callable, bound: Vec<Ex>, span: Span) -> Ex {
+        if c.own {
+            return match c.func {
+                Some(f) => Ex::new(Ek::Call(f, bound), c.result.clone()),
+                None => {
+                    self.err("E081", span, format!("`{}` has no code to call", c.name));
+                    Ex::error()
+                }
+            };
+        }
+        let call = Ex::host(
+            Imp::CallFn,
+            vec![Ex::str(&c.id), self.arg_list(bound)],
+            Ty::Text,
+        );
+        match &c.result {
+            Ty::Unit => call.typed(Ty::Unit),
+            Ty::Error => Ex::error(),
+            t if t.is_scalar() => Self::unwrap_opt(call, t),
+            t => call.typed(t.clone()),
         }
     }
 

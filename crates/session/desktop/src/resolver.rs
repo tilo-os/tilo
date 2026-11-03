@@ -1,5 +1,5 @@
 //! Exact application identity and checked mounting. Hosts supply admitted records/services.
-use tilo_desktop_model::{RoomId, Tab};
+use tilo_desktop_model::{Tab, WorkspaceId};
 use ui::application::{
     AppComponent, ApplicationCatalog, ApplicationDefinition, HostContext, LaunchTarget,
     RestoreInput,
@@ -11,7 +11,7 @@ use ui::widget::{AppWidget, TileHost};
 pub struct TileRequest<'a> {
     /// The workspace the tile is resolved in. The field keeps its name: hosts
     /// outside this crate (the apps and the session) build requests by it.
-    pub room: RoomId,
+    pub room: WorkspaceId,
     pub tab: &'a Tab,
 }
 #[expect(

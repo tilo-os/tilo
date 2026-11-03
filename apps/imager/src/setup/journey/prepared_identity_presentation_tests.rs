@@ -5,7 +5,7 @@ struct NoSigningWorkspace;
 impl tilo_identity_host::broker::WorkspaceMembership for NoSigningWorkspace {
     fn with_workspace(
         &self,
-        _room: &tilo_desktop_model::RoomId,
+        _room: &tilo_desktop_model::WorkspaceId,
         _read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
     ) {
     }
@@ -48,7 +48,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         Some(photo.clone()),
     )
     .unwrap();
-    let room = tilo_desktop_model::RoomId::new();
+    let room = tilo_desktop_model::WorkspaceId::new();
     let socket = temp.path().join("identity.sock");
     let _broker = tilo_identity_host::broker::spawn(
         socket.clone(),

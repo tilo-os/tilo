@@ -45,7 +45,7 @@ view conversation(r: Run) {
 view conversation_entry(r: Run) {
     lens line: Text = ""
     ui.TextInput(value: line, placeholder: "Type a program, or say what to do") {
-        on submit: session.conversation(line: line, run: r.key)
+        on submit: session.conversation(line: line, run: r.key).then(set(line, ""))
     }
 }
 

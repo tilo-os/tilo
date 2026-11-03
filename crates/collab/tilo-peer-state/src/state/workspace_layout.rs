@@ -100,7 +100,8 @@ mod tests {
     use tilo_desktop_model::shared_record::{self, device};
     use tilo_desktop_model::width::WindowWidth;
     use tilo_desktop_model::{
-        GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceSlot,
+        GroupId, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+        WorkspaceSlot,
     };
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -152,7 +153,7 @@ mod tests {
             .clone();
         let before = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
-        let workspace = RoomId::parse(peer.workspace_id()).ok_or("workspace id")?;
+        let workspace = WorkspaceId::parse(peer.workspace_id()).ok_or("workspace id")?;
         let mut desktop = Workspace::in_workspace(
             WorkspaceSlot::of_workspace(workspace),
             workspace,

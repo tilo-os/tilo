@@ -573,7 +573,7 @@ impl JoinedChannel {
             Report::SearchIndex(_) => None,
             _ => Some(self.continuation_instance().map_err(BrokerError::failed)?),
         };
-        let workspace = tilo_desktop_model::RoomId::parse(&route.cluster_id)
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
             .ok_or_else(|| BrokerError::failed(format!("{verb} route has no durable workspace")))?;
         let services = &self.state.services;
         let continuations = |unsupported: &str| {

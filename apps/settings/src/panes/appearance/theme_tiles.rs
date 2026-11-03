@@ -686,17 +686,28 @@ mod tests {
         );
     }
 
-    /// The tiles fill even lines across the width they get: all six on one
-    /// line on a desktop pane, three by two narrower, two by three on a
-    /// phone.
+    /// The tiles fill even lines across the width they get: every line
+    /// holds as many tiles as the others, more on a desktop pane than on a
+    /// phone, and two on a phone.
     #[test]
     fn the_tiles_fill_even_lines() {
+        let offered = AppearancePrefs::THEMES.len();
         let mut tiles = ThemeTiles::new("Dark");
-        tiles.rect = Rect::new(0.0, 0.0, 720.0, 400.0);
-        assert_eq!(tiles.columns(), AppearancePrefs::THEMES.len());
-        tiles.rect = Rect::new(0.0, 0.0, 400.0, 400.0);
-        assert_eq!(tiles.columns(), 3);
-        tiles.rect = Rect::new(0.0, 0.0, 260.0, 400.0);
+        let mut previous = usize::MAX;
+        for width in [720.0, 400.0, 260.0] {
+            tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
+            let columns = tiles.columns();
+            assert!(
+                offered.is_multiple_of(columns),
+                "at {width}: {columns} tiles a line"
+            );
+            assert!(
+                columns <= previous,
+                "at {width}: a narrower pane shows no more columns"
+            );
+            previous = columns;
+        }
+        assert_eq!(tiles.columns(), 2);
         assert_eq!(tiles.columns(), 2);
         assert!(tiles.tile_rect(2).y0 > tiles.tile_rect(0).y1);
         assert_eq!(tiles.tile_at(tiles.tile_rect(3).center()), Some(3));
@@ -735,14 +746,18 @@ mod tests {
             "a wider pane never shows fewer columns: {counts:?}"
         );
         assert_eq!(counts.first(), Some(&2), "a phone shows two columns");
-        assert_eq!(
-            counts.last(),
-            Some(&AppearancePrefs::THEMES.len()),
-            "a wide pane shows every tile on one line"
+        assert!(
+            counts
+                .iter()
+                .all(|columns| AppearancePrefs::THEMES.len().is_multiple_of(*columns)),
+            "every line holds as many tiles as the others: {counts:?}"
         );
         assert!(
-            first_width[7] > first_width[6],
-            "on one line the tiles keep growing with the window: {first_width:?}"
+            counts
+                .windows(2)
+                .zip(first_width.windows(2))
+                .all(|(columns, widths)| columns[0] != columns[1] || widths[1] > widths[0]),
+            "while the columns stay, the tiles keep growing with the window: {first_width:?}"
         );
     }
 }

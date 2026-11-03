@@ -102,22 +102,25 @@ pub(crate) fn mount_controls(
     // The press that falls outside a surface the session placed closes it,
     // which only the input path knows the place of.
     crate::press_outside::mount(compositor, &overlays);
-    compositor.add_host(Box::new(SessionKeys::new(
-        shortcuts,
-        Presses {
-            invocations: Rc::clone(&invocations),
-            triggered: Rc::clone(&triggered),
-        },
-        portal,
-        guide,
-        DeskKeys::new(fold, overlays),
-        displays,
-        ControllerKeys {
-            last: controller,
-            own: controller_keys,
-        },
-        reveals,
-    )));
+    compositor.add_host(Box::new(
+        SessionKeys::new(
+            shortcuts,
+            Presses {
+                invocations: Rc::clone(&invocations),
+                triggered: Rc::clone(&triggered),
+            },
+            portal,
+            guide,
+            DeskKeys::new(fold, overlays),
+            displays,
+            ControllerKeys {
+                last: controller,
+                own: controller_keys,
+            },
+            reveals,
+        )
+        .with_commands(Rc::clone(&commands)),
+    ));
     (
         commands,
         controls_reading,

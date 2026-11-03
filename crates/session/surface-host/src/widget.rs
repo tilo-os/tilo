@@ -328,6 +328,14 @@ impl WidgetHost {
         )
     }
 
+    /// Give the keyboard up: no widget of the tree holds it. What a host asks
+    /// of a field it drew when the person went elsewhere (a press in another
+    /// surface, a window brought forward), so the field stops taking keys.
+    pub fn clear_focus(&mut self) {
+        self.host.clear_focus();
+        self.owe();
+    }
+
     fn input(&mut self, event: &WindowEvent) {
         self.host.send(event);
         self.owe();
@@ -401,6 +409,10 @@ impl crate::Published for WidgetHost {
             shown.insert(name, self.logical(rect));
         }
         for (_, node) in self.host.a11y_nodes() {
+            // A hidden node stands nowhere the person can reach.
+            if node.is_hidden() {
+                continue;
+            }
             let (Some(name), Some(bounds)) = (node.label(), node.bounds()) else {
                 continue;
             };

@@ -10,7 +10,7 @@ pub use hold::{Holder, Link, hold};
 pub use reach::{OwnHost, Reach};
 
 use super::publication::SealRecord;
-use crate::owner::{NativeWorkspaceOwner, RoomId};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::{Reseal, TransportOrigin, join::TransportHint};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -26,7 +26,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 #[derive(Clone)]
 pub struct Connect {
     owner: NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
 }
 impl std::fmt::Debug for Connect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -38,12 +38,12 @@ impl std::fmt::Debug for Connect {
 impl Connect {
     /// # Errors
     /// `workspace` has no committed enrollment.
-    pub fn new(owner: NativeWorkspaceOwner, workspace: RoomId) -> Result<Self, String> {
+    pub fn new(owner: NativeWorkspaceOwner, workspace: WorkspaceId) -> Result<Self, String> {
         owner.with_current(workspace, |_| Ok(()))?;
         Ok(Self { owner, workspace })
     }
     #[must_use]
-    pub fn workspace(&self) -> RoomId {
+    pub fn workspace(&self) -> WorkspaceId {
         self.workspace
     }
     /// What a session for this workspace must be pinned to now: the host hint,
@@ -205,7 +205,7 @@ impl Scope {
         }
     }
     #[must_use]
-    pub fn workspace(&self) -> RoomId {
+    pub fn workspace(&self) -> WorkspaceId {
         self.connect.workspace
     }
     /// Whether this session is still pinned to this material: the same host
@@ -479,7 +479,7 @@ impl std::fmt::Debug for Input {
 }
 impl Input {
     #[must_use]
-    pub fn workspace(&self) -> RoomId {
+    pub fn workspace(&self) -> WorkspaceId {
         self.scope.connect.workspace
     }
     #[must_use]

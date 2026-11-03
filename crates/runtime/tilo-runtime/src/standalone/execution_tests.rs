@@ -1,6 +1,6 @@
 use super::*;
 
-fn caller(workspace: RoomId) -> Caller {
+fn caller(workspace: WorkspaceId) -> Caller {
     Caller::authenticated([4; 32], [5; 32])
         .in_workspace(workspace.to_string())
         .in_new_execution()
@@ -13,9 +13,9 @@ fn runtime_execution_fence_closes_retained_callers_synchronously_and_only_in_its
         tilo_peer_state::owner::open_file(&directory.path().join("workspaces.json")).unwrap();
     let executions = ExecutionPins::new(&owner);
     let workspace =
-        tilo_desktop_model::RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        tilo_desktop_model::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let other_workspace =
-        tilo_desktop_model::RoomId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        tilo_desktop_model::WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let a = caller(workspace);
     let b = caller(other_workspace);
     let first = executions
@@ -45,7 +45,7 @@ fn runtime_execution_subscription_precedes_recheck_and_failure_cannot_refresh_th
         tilo_peer_state::owner::open_file(&directory.path().join("workspaces.json")).unwrap();
     let executions = ExecutionPins::new(&owner);
     let workspace =
-        tilo_desktop_model::RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        tilo_desktop_model::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let old = caller(workspace);
     let result = executions.register_checked(workspace, &old, || {
         owner.invalidate_identity(workspace);
@@ -68,7 +68,7 @@ fn runtime_execution_registration_capacity_and_owner_drop_are_fail_closed() {
         tilo_peer_state::owner::open_file(&directory.path().join("workspaces.json")).unwrap();
     let executions = ExecutionPins::new(&owner);
     let workspace =
-        tilo_desktop_model::RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        tilo_desktop_model::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let pins = executions;
     let mut held = Vec::new();
     for _ in 0..MAX_EXECUTIONS {

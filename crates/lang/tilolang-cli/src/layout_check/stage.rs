@@ -240,6 +240,12 @@ impl Staged {
         Ok(())
     }
 
+    /// Press `key` (`Tab`, `Down`, `Space`: a key as [`FrameHarness::key`] names it) on the
+    /// window, as a person at the keyboard does.
+    pub fn key(&mut self, key: &str) {
+        self.harness.key(key);
+    }
+
     pub fn harness(&self) -> &FrameHarness {
         &self.harness
     }

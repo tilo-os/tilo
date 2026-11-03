@@ -448,7 +448,7 @@ pub(crate) mod tests {
     }
 
     fn uuid_like_workspace() -> String {
-        tilo_desktop_model::RoomId::new().to_string()
+        tilo_desktop_model::WorkspaceId::new().to_string()
     }
 
     /// Date `path` back past the filesystem clock's granularity.

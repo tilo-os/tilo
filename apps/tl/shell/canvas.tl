@@ -113,7 +113,7 @@ fn pin_height(s: ArrangementStrip) -> Int {
 view canvas_entry(a: Arrangement) {
     lens typed: Text = ""
     ui.TextInput(value: typed, placeholder: "Find something, or ask") {
-        on submit: session.conversation(line: typed, x: here_x(a), y: here_y(a))
+        on submit: session.conversation(line: typed, x: here_x(a), y: here_y(a)).then(set(typed, ""))
     }
 }
 

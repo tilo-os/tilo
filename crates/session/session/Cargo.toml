@@ -42,6 +42,9 @@ dev-overrides = []
 [target.'cfg(target_os = "linux")'.dependencies]
 # The surface apps' sockets are handed to their children as descriptors.
 libc.workspace = true
+# The certificate a device was approved with, kept where the identity helper
+# reads it once and taken away after.
+tempfile.workspace = true
 tilo-compositor = { path = "../compositor" }
 # The session's own profiler: what its frame went on, recorded on the owner's
 # request and read from the same door.
@@ -79,6 +82,9 @@ tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 app-cli = { path = "../../packaging/app-cli" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# The login's own password check, when the machine's unlock helper is not
+# installed: the conversation greetd admitted this session through.
+greetd-client = { path = "../greetd-client" }
 # The host's own filesystem moves a paste depends on: a rename that never
 # overwrites a name, and the Trash a replaced name goes to.
 host-fs = { path = "../../system/host-fs" }
@@ -148,6 +154,9 @@ ed25519-dalek.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The workspace join exchange, over the endpoint the invitation's host names.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# A host's own questions to a member, asked on the collaboration endpoint:
+# what an agent asks before it acts on a workspace, answered by the person.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # The web grammar of a workspace link, which says what a pasted link joins.
 tilo-reference = { path = "../../collab/reference" }
 # This device's relays wait in the collaboration endpoint until a workspace
@@ -258,6 +267,12 @@ tilo-network-secret-agent = { path = "../network-secret-agent" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }
+# A sibling device's half of this device's disk key: the unlock exchange an
+# early-boot client speaks, and the sealed halves each device holds of the
+# other.
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+# The sealed envelope a sibling half is carried in.
+tilo-seal = { path = "../../system/tilo-seal" }
 # What a screenshot sent to another device is staged into: the same private
 # spool, and the same resumable transfer, Files uses.
 tilo-nearby-service = { path = "../nearby-service" }
@@ -301,6 +316,8 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 pollster.workspace = true
 tracing.workspace = true
+# The session's own log: the filter `RUST_LOG` sets, written to its stderr.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
@@ -335,8 +352,10 @@ tilo-nm = { path = "../../system/tilo-nm" }
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true
-tempfile.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
+# The threshold signature material a test identity key is made of, as the
+# identity host's key holds it.
+threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-audio-service = { path = "../audio-service" }
 tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.

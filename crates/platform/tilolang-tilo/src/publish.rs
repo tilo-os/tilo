@@ -555,6 +555,17 @@ pub struct Publications {
     /// The words the trees above were published in ([`Words::revision`]): when they read in
     /// another language, every record is published again in it.
     words: u64,
+    /// The packages loaded when the trees were published: a record whose type none of them
+    /// declares any more, or one a package that loaded since declares, is found by publishing
+    /// every record again.
+    packages: Vec<tilolang_runtime::PackageId>,
+    /// Whether nothing is published yet: the first update publishes every record.
+    fresh: bool,
+    /// How many records the updates have looked at, one per record per turn.
+    visited: u64,
+    /// How many times the updates read every record in full: only the first update, and a turn
+    /// that changed what every record is published as.
+    sweeps: u64,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -680,26 +691,86 @@ impl Publications {
             wake: None,
             types: std::collections::BTreeMap::new(),
             words: host.runtime().words().revision(),
+            packages: host.package_ids(),
+            fresh: true,
+            visited: 0,
+            sweeps: 0,
         }
     }
 
-    /// The action types of the package `meta`, built once per package and planner, described in
+    /// The action types of the package `app`, built once per package and planner, described in
     /// the words the host's words resolve at now.
     fn types_of(
         &mut self,
         host: &crate::host::Host,
-        meta: &Meta,
+        app: &str,
         planner: &Arc<dyn Planner>,
-    ) -> Arc<ActionTypes> {
+    ) -> Option<Arc<ActionTypes>> {
         let words = host.runtime().words();
-        match self.types.get(&meta.app) {
-            Some(types) if types.describe(meta, planner, words.revision()) => Arc::clone(types),
-            _ => {
-                let types = Arc::new(ActionTypes::new(meta, planner, &*words));
-                self.types.insert(meta.app.clone(), Arc::clone(&types));
-                types
+        if let Some(types) = self.types.get(app) {
+            let describes = host.find_in_packages(|package| {
+                (package.meta.app == app)
+                    .then(|| types.describe(&package.meta, planner, words.revision()))
+            });
+            if describes == Some(true) {
+                return Some(Arc::clone(types));
             }
         }
+        let types = host.find_in_packages(|package| {
+            (package.meta.app == app)
+                .then(|| Arc::new(ActionTypes::new(&package.meta, planner, &*words)))
+        })?;
+        self.types.insert(app.to_owned(), Arc::clone(&types));
+        Some(types)
+    }
+
+    /// The app, the name of the type and its id of the record `doc`, as the loaded packages
+    /// declare them; `None` when the store holds no such resource or no package declares its
+    /// type.
+    fn declared(host: &crate::host::Host, doc: &str) -> Option<(String, String, String)> {
+        let (app, type_id) = host.store().resource_of(doc)?;
+        host.find_in_packages(|package| {
+            if package.meta.app != app {
+                return None;
+            }
+            package
+                .meta
+                .types
+                .iter()
+                .find(|t| t.id == type_id)
+                .map(|t| (app.clone(), t.name.clone(), type_id.clone()))
+        })
+    }
+
+    /// The action types and schema of the record `doc`, as the loaded packages declare it;
+    /// `None` when none declares its type or the type is not registered.
+    fn record_types(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        doc: &str,
+    ) -> Option<(Arc<ActionTypes>, &'static crate::schema::TypeSchema)> {
+        let (app, _, type_id) = Self::declared(host, doc)?;
+        let schema = crate::schema::lookup(&type_id)?;
+        Some((self.types_of(host, &app, planner)?, schema))
+    }
+
+    /// The record `doc` to build whole, as the host has it now: `None` when the store holds no
+    /// such resource, no loaded package declares its type, or the type is not registered.
+    fn whole_of(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        doc: &str,
+    ) -> Option<Whole> {
+        let (app, type_name, type_id) = Self::declared(host, doc)?;
+        crate::schema::lookup(&type_id)?;
+        Some(Whole {
+            doc: doc.to_owned(),
+            types: self.types_of(host, &app, planner)?,
+            type_name,
+            type_id,
+        })
     }
 
     /// The records among `docs` to build whole, as the host has them now.
@@ -709,24 +780,8 @@ impl Publications {
         planner: &Arc<dyn Planner>,
         docs: &[String],
     ) -> Vec<Whole> {
-        host.records()
-            .into_iter()
-            .filter(|(_, _, doc)| docs.contains(doc))
-            .filter_map(|(package, type_name, doc)| {
-                let type_id = package
-                    .meta
-                    .types
-                    .iter()
-                    .find(|t| t.name == type_name)?
-                    .id
-                    .clone();
-                Some(Whole {
-                    doc,
-                    types: self.types_of(host, &package.meta, planner),
-                    type_name,
-                    type_id,
-                })
-            })
+        docs.iter()
+            .filter_map(|doc| self.whole_of(host, planner, doc))
             .collect()
     }
 
@@ -786,7 +841,22 @@ impl Publications {
             touched.push(doc);
             self.revision = self.revision.wrapping_add(1);
             self.structural = self.revision;
+            self.visited = self.visited.saturating_add(1);
         }
+    }
+
+    /// How many records the updates so far have looked at, one per record per turn: what
+    /// publishing a change costs, whatever the workspace holds.
+    #[must_use]
+    pub fn visited(&self) -> u64 {
+        self.visited
+    }
+
+    /// How many times the updates so far have read every record in full: what publishing a
+    /// change must never cost, whatever the workspace holds.
+    #[must_use]
+    pub fn sweeps(&self) -> u64 {
+        self.sweeps
     }
 
     /// The published records, by document id. A record whose tree did not change since an
@@ -859,10 +929,6 @@ impl Publications {
         planner: &Arc<dyn Planner>,
         relabels: &mut Option<Vec<(String, String)>>,
     ) -> Vec<String> {
-        use std::collections::BTreeSet;
-
-        use tilolang_runtime::store::ANY_FIELD;
-
         let mut touched = Vec::new();
         if let Some((docs, building)) = self.building.take() {
             match building.poll() {
@@ -887,7 +953,109 @@ impl Publications {
         if reworded {
             self.types.clear();
         }
+        // A package loaded or replaced: the records of a type none declares any more go, and
+        // those of a type one declares now are published.
+        let reloaded = std::mem::replace(&mut self.packages, host.package_ids()) != self.packages;
+        let all = std::mem::take(&mut self.fresh) || reworded || reloaded || changes.everything;
+        if all {
+            self.publish_everything(host, planner, relabels, &mut touched);
+        } else {
+            // Nothing changed: no record is looked at, whether the workspace holds one or ten
+            // thousand.
+            self.publish_changed(host, planner, &changes, relabels, &mut touched);
+        }
+        touched
+    }
+
+    /// Publish the records the turn changed, and no others: what the store's watch says moved,
+    /// answered from its change set, whatever else the workspace holds.
+    fn publish_changed(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        changes: &crate::store::Changes,
+        relabels: &mut Option<Vec<(String, String)>>,
+        touched: &mut Vec<String>,
+    ) {
+        use std::collections::BTreeSet;
+
+        use tilolang_runtime::store::ANY_FIELD;
+
         let mut whole_docs = Vec::new();
+        let mut docs: BTreeSet<&str> = changes.docs.keys().map(String::as_str).collect();
+        docs.extend(changes.whole.iter().map(String::as_str));
+        self.visited = self.visited.saturating_add(docs.len() as u64);
+        for doc in docs {
+            if !host.store().contains(doc) {
+                // The resource is gone: so is everything published of it.
+                if self.trees.remove(doc).is_some() {
+                    *relabels = None;
+                    touched.push(doc.to_owned());
+                }
+                self.named_by.remove(doc);
+                continue;
+            }
+            let fields = changes.docs.get(doc);
+            let whole = changes.whole.contains(doc)
+                || !self.trees.contains_key(doc)
+                || fields.is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|key| key.resource == doc && key.field == ANY_FIELD)
+                });
+            if whole {
+                whole_docs.extend(self.whole_of(host, planner, doc));
+                continue;
+            }
+            let (Some(fields), Some((types, schema))) =
+                (fields, self.record_types(host, planner, doc))
+            else {
+                continue;
+            };
+            let Some(tree) = self.trees.get_mut(doc) else {
+                continue;
+            };
+            let at = Published {
+                store: host.store(),
+                types: &types,
+                schema,
+                doc,
+            };
+            match at.republish(
+                tree,
+                (fields, changes),
+                self.named_by.entry(doc.to_owned()).or_default(),
+            ) {
+                Republished::Unchanged => {}
+                Republished::Relabeled(labels) => {
+                    if let Some(gathered) = relabels.as_mut() {
+                        gathered.extend(labels);
+                    }
+                    touched.push(doc.to_owned());
+                }
+                Republished::Rebuilt => {
+                    *relabels = None;
+                    touched.push(doc.to_owned());
+                }
+            }
+        }
+        if !whole_docs.is_empty() {
+            self.build_off_frame(host, whole_docs);
+        }
+    }
+
+    /// Publish every record in full: the first update, and a turn that changed what every
+    /// record is published as (the words, or the packages loaded).
+    fn publish_everything(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        relabels: &mut Option<Vec<(String, String)>>,
+        touched: &mut Vec<String>,
+    ) {
+        use std::collections::BTreeSet;
+
+        self.sweeps = self.sweeps.saturating_add(1);
         let records = host.records();
         let now: BTreeSet<&str> = records.iter().map(|(_, _, doc)| doc.as_str()).collect();
         let gone: Vec<String> = self
@@ -896,73 +1064,23 @@ impl Publications {
             .filter(|doc| !now.contains(doc.as_str()))
             .cloned()
             .collect();
+        self.visited = self
+            .visited
+            .saturating_add(records.len() as u64)
+            .saturating_add(gone.len() as u64);
         for doc in gone {
             self.trees.remove(&doc);
             self.named_by.remove(&doc);
             touched.push(doc);
             *relabels = None;
         }
-        for (package, type_name, doc) in &records {
-            let Some(schema) = package
-                .meta
-                .types
-                .iter()
-                .find(|t| &t.name == type_name)
-                .and_then(|t| crate::schema::lookup(&t.id))
-            else {
-                continue;
-            };
-            let types = self.types_of(host, &package.meta, planner);
-            let at = Published {
-                store: host.store(),
-                types: &types,
-                schema,
-                doc,
-            };
-            let whole = reworded
-                || changes.everything
-                || changes.whole.contains(doc)
-                || !self.trees.contains_key(doc)
-                || changes.docs.get(doc).is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|key| key.resource == *doc && key.field == ANY_FIELD)
-                });
-            if whole {
-                whole_docs.push(Whole {
-                    doc: doc.clone(),
-                    types: Arc::clone(&types),
-                    type_name: type_name.clone(),
-                    type_id: schema.id.clone(),
-                });
-                continue;
-            }
-            let (Some(fields), Some(tree)) = (changes.docs.get(doc), self.trees.get_mut(doc))
-            else {
-                continue;
-            };
-            match at.republish(
-                tree,
-                (fields, &changes),
-                self.named_by.entry(doc.clone()).or_default(),
-            ) {
-                Republished::Unchanged => {}
-                Republished::Relabeled(labels) => {
-                    if let Some(gathered) = relabels.as_mut() {
-                        gathered.extend(labels);
-                    }
-                    touched.push(doc.clone());
-                }
-                Republished::Rebuilt => {
-                    *relabels = None;
-                    touched.push(doc.clone());
-                }
-            }
-        }
+        let whole_docs: Vec<Whole> = records
+            .iter()
+            .filter_map(|(_, _, doc)| self.whole_of(host, planner, doc))
+            .collect();
         if !whole_docs.is_empty() {
             self.build_off_frame(host, whole_docs);
         }
-        touched
     }
 
     /// Build `whole_docs` off the frame; changes from now on stay in the watch until they are

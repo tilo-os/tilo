@@ -21,6 +21,7 @@ search-web-subtitle = Web
 search-unlock-app = Unlock { $app } to search for “{ $query }”
 search-unlock-app-detail = { $app } is locked
 search-kind-settings = Settings
+search-kind-store = Store
 search-kind-people = People
 search-kind-happening = Happening now
 search-launcher-all-apps = All apps

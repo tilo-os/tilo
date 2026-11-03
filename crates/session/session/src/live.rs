@@ -33,7 +33,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use collab_types::scope::Scope;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_call_lane::Roster;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
@@ -58,7 +58,7 @@ fn route() -> collab_types::ChannelRoute {
 }
 
 /// The scope one workspace's live plane carries.
-fn scope_of(workspace: RoomId) -> Scope {
+fn scope_of(workspace: WorkspaceId) -> Scope {
     Scope::workspace(workspace.to_string())
 }
 
@@ -98,7 +98,7 @@ fn now_ns() -> u64 {
 /// What one granted preface asked for, once its certificate is bound to the
 /// handshake and to the workspace's roster.
 struct Request {
-    workspace: RoomId,
+    workspace: WorkspaceId,
     device: [u8; 32],
 }
 
@@ -121,7 +121,7 @@ fn bind(
     let Peer::Native(device) = peer else {
         return Err(Denied);
     };
-    let workspace = RoomId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
+    let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
     // One scope per workspace today: the workspace itself.
     if grant.scope != scope_of(workspace).id() {
         return Err(Denied);
@@ -151,7 +151,7 @@ struct Permit {
     engine: Arc<Engine>,
     changed: tokio::sync::watch::Receiver<u64>,
     device: [u8; 32],
-    workspace: RoomId,
+    workspace: WorkspaceId,
     workspace_name: String,
     scope: String,
     publication: String,
@@ -221,19 +221,19 @@ struct Shared {
     device: [u8; 32],
     /// The newest content-key epoch seen in each workspace: a grant that
     /// predates a rotation this device already applied is refused.
-    epochs: Mutex<BTreeMap<RoomId, u64>>,
+    epochs: Mutex<BTreeMap<WorkspaceId, u64>>,
     /// The devices each workspace admitted when this device last read it: a
     /// member the workspace removed is a change the open sessions re-observe,
     /// so its session is cut on the removal and not on its next request.
-    rosters: Mutex<BTreeMap<RoomId, BTreeSet<[u8; 32]>>>,
+    rosters: Mutex<BTreeMap<WorkspaceId, BTreeSet<[u8; 32]>>>,
     /// Told when a workspace's membership or keys moved.
     changed: tokio::sync::watch::Sender<u64>,
-    planes: Mutex<BTreeMap<RoomId, Joined>>,
+    planes: Mutex<BTreeMap<WorkspaceId, Joined>>,
     /// The other relays of each workspace this device relays, by device.
-    bridged: Mutex<BTreeMap<(RoomId, [u8; 32]), Bridged>>,
+    bridged: Mutex<BTreeMap<(WorkspaceId, [u8; 32]), Bridged>>,
     /// Told when a plane ended, so the workspace is settled again through
     /// whichever relay it reaches next.
-    rejoin: tokio::sync::mpsc::UnboundedSender<RoomId>,
+    rejoin: tokio::sync::mpsc::UnboundedSender<WorkspaceId>,
     wake: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -243,7 +243,7 @@ impl RelayAuthority for Shared {
             return Err(Denied);
         };
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
-        let workspace = RoomId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
+        let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
         let members = channels::members_of(&self.engine, workspace).map_err(|_| Denied)?;
         let request = bind(peer, &grant, &members, self.device, now_ns())?;
         // A device that sealed under an epoch this relay already moved past
@@ -301,7 +301,7 @@ impl Shared {
     /// or leave when the workspace names no relay any more.
     async fn settle(
         self: &Arc<Self>,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         endpoint: &Endpoint,
         relay: Option<&Relay>,
     ) {
@@ -413,7 +413,7 @@ impl Shared {
     /// The grant this device presents to be admitted into `workspace`'s scope:
     /// its certificate, the workspace's uuid bytes and the epoch it seals
     /// under.
-    fn grant(&self, workspace: RoomId, scope: &Scope, epoch: u64) -> Result<Vec<u8>, String> {
+    fn grant(&self, workspace: WorkspaceId, scope: &Scope, epoch: u64) -> Result<Vec<u8>, String> {
         let certificate = serde_json::to_vec(&self.engine.identity().device_cert)
             .map_err(|error| error.to_string())?;
         grant::Native::new(
@@ -427,7 +427,7 @@ impl Shared {
 
     /// Note that `workspace` seals under `epoch` from now on, and tell the
     /// sessions open on this relay.
-    fn observe(&self, workspace: RoomId, epoch: u64) {
+    fn observe(&self, workspace: WorkspaceId, epoch: u64) {
         let mut epochs = self.epochs.lock_recover();
         let newest = epochs.get(&workspace).copied().unwrap_or(0);
         if epoch <= newest {
@@ -440,7 +440,7 @@ impl Shared {
 
     /// Note who `workspace` admits now, and tell the sessions open on this
     /// relay when that moved.
-    fn observe_roster(&self, workspace: RoomId, members: &[Member]) {
+    fn observe_roster(&self, workspace: WorkspaceId, members: &[Member]) {
         let devices: BTreeSet<[u8; 32]> = members.iter().map(|member| member.device).collect();
         let moved = {
             let mut rosters = self.rosters.lock_recover();
@@ -455,7 +455,7 @@ impl Shared {
     }
 
     /// Stop carrying `workspace`: the plane is closed and its sessions cut.
-    fn withdraw(&self, workspace: RoomId) {
+    fn withdraw(&self, workspace: WorkspaceId) {
         self.rosters.lock_recover().remove(&workspace);
         self.bridged
             .lock_recover()
@@ -468,7 +468,7 @@ impl Shared {
 
     /// A plane of `workspace` ended: settle the workspace again, through the
     /// first relay it reaches now.
-    fn ended(&self, workspace: RoomId) {
+    fn ended(&self, workspace: WorkspaceId) {
         self.planes.lock_recover().remove(&workspace);
         let _ = self.rejoin.send(workspace);
     }
@@ -479,7 +479,7 @@ impl Shared {
     /// bridge.
     async fn bridge(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         endpoint: &Endpoint,
         relay: Option<&Relay>,
         scope: &Scope,
@@ -551,7 +551,7 @@ pub struct Live {
     /// Whether this device may relay: its certificate says so.
     appetite: bool,
     /// A workspace whose plane ended, to be settled again.
-    rejoin: tokio::sync::mpsc::UnboundedReceiver<RoomId>,
+    rejoin: tokio::sync::mpsc::UnboundedReceiver<WorkspaceId>,
 }
 
 impl std::fmt::Debug for Live {
@@ -653,7 +653,7 @@ impl Live {
     /// live plane.
     pub fn publish(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         track: Track,
         sequence: u32,
         body: &[u8],
@@ -666,7 +666,7 @@ impl Live {
 
     /// The next object heard in `workspace`'s live plane, or `None`.
     #[must_use]
-    pub fn try_recv(&self, workspace: RoomId) -> Option<Heard> {
+    pub fn try_recv(&self, workspace: WorkspaceId) -> Option<Heard> {
         self.shared
             .planes
             .lock_recover()
@@ -676,7 +676,7 @@ impl Live {
 
     /// The device relaying `workspace`, while this session has a plane there.
     #[must_use]
-    pub fn relay(&self, workspace: RoomId) -> Option<[u8; 32]> {
+    pub fn relay(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
         self.shared
             .planes
             .lock_recover()
@@ -684,7 +684,7 @@ impl Live {
             .map(|joined| joined.relay)
     }
 
-    fn plane(&self, workspace: RoomId) -> Result<Arc<Plane>, String> {
+    fn plane(&self, workspace: WorkspaceId) -> Result<Arc<Plane>, String> {
         self.shared
             .planes
             .lock_recover()
@@ -727,7 +727,7 @@ fn run(
     shared: Arc<Shared>,
     endpoint: Endpoint,
     relayed: tokio::sync::watch::Sender<Option<Arc<Relay>>>,
-    mut rejoined: tokio::sync::mpsc::UnboundedReceiver<RoomId>,
+    mut rejoined: tokio::sync::mpsc::UnboundedReceiver<WorkspaceId>,
     mut stopped: tokio::sync::mpsc::UnboundedReceiver<()>,
 ) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -781,7 +781,7 @@ fn adopt(
     shared: &Arc<Shared>,
     endpoint: &Endpoint,
     relay: Option<&Arc<Relay>>,
-    known: &mut BTreeSet<RoomId>,
+    known: &mut BTreeSet<WorkspaceId>,
 ) {
     for workspace in shared.engine.workspaces() {
         if known.insert(workspace) {
@@ -816,7 +816,7 @@ async fn announced(shared: &Shared) {
 /// event that moved them and never on a timer.
 async fn reconcile(
     shared: Arc<Shared>,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     endpoint: Endpoint,
     relay: Option<Arc<Relay>>,
 ) {
@@ -920,7 +920,7 @@ mod tests {
         assert!(relays_of(&members, 10).is_empty());
     }
 
-    fn grant(workspace: RoomId, device: &DeviceCert) -> grant::Native {
+    fn grant(workspace: WorkspaceId, device: &DeviceCert) -> grant::Native {
         grant::Native::new(
             *workspace.as_uuid().as_bytes(),
             &scope_of(workspace).id(),
@@ -932,7 +932,7 @@ mod tests {
 
     #[test]
     fn a_grant_is_admitted_only_for_the_handshakes_own_device() {
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let mine = cert([1; 32], true, None);
         let other = cert([2; 32], false, None);
         let members = vec![
@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn a_grant_must_name_a_relay_of_this_workspace_and_this_scope() {
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let mine = cert([2; 32], true, None);
         let lower = cert([1; 32], true, None);
         let members = vec![
@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn an_expired_certificate_is_refused_at_the_preface() {
-        let workspace = RoomId::new();
+        let workspace = WorkspaceId::new();
         let expired = cert([1; 32], true, Some(5));
         let members = vec![Member {
             device: [1; 32],

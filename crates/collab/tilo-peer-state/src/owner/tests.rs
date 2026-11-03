@@ -1,6 +1,8 @@
 use crate::TransportOrigin;
 use crate::owner::testing::{APP, WORKSPACE, raw_fixture};
-use crate::owner::{DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, RoomId, open_file};
+use crate::owner::{
+    DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, WorkspaceId, open_file,
+};
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -30,7 +32,7 @@ struct Enrolled {
     _directory: tempfile::TempDir,
     path: PathBuf,
     owner: NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     now: SystemTime,
     replay: NeighbourMsg,
 }
@@ -44,7 +46,7 @@ fn enrolled() -> Enrolled {
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
-    let workspace = RoomId::parse(WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
     let replay = messages
         .iter()
         .rev()
@@ -75,13 +77,17 @@ fn member() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
 }
 
-fn edit(owner: &NativeWorkspaceOwner, workspace: RoomId, now: SystemTime) -> OwnerCommitRequest {
+fn edit(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    now: SystemTime,
+) -> OwnerCommitRequest {
     edit_with(owner, workspace, now, "written while joined")
 }
 
 fn edit_with(
     owner: &NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     now: SystemTime,
     topic: &str,
 ) -> OwnerCommitRequest {
@@ -666,7 +672,7 @@ fn commit_sealed_as(
     *envelope
 }
 
-fn sent(owner: &NativeWorkspaceOwner, workspace: RoomId, now: SystemTime) -> Vec<Vec<u8>> {
+fn sent(owner: &NativeWorkspaceOwner, workspace: WorkspaceId, now: SystemTime) -> Vec<Vec<u8>> {
     owner
         .with_outgoing(workspace, now, |_, outgoing| {
             Ok(outgoing
@@ -1029,7 +1035,7 @@ fn an_owner_file_written_while_the_map_was_named_for_workspaces_restores() {
 
 #[test]
 fn a_pending_enrollment_handle_is_written_under_the_stored_key() {
-    let id = PendingEnrollmentId::new(RoomId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
+    let id = PendingEnrollmentId::new(WorkspaceId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
     let value = serde_json::to_value(&id).unwrap();
     let object = value.as_object().expect("a handle object");
     assert!(
@@ -1045,7 +1051,7 @@ fn a_pending_enrollment_handle_is_written_under_the_stored_key() {
 
 #[test]
 fn a_pending_enrollment_handle_written_under_the_workspace_key_reads() {
-    let id = PendingEnrollmentId::new(RoomId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
+    let id = PendingEnrollmentId::new(WorkspaceId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
     let mut value = serde_json::to_value(&id).unwrap();
     let object = value.as_object_mut().expect("a handle object");
     let workspace = object

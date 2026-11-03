@@ -187,8 +187,12 @@ impl ListRow {
         self.mark = mark;
         self.selected = selected;
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        self.check_binding = None;
         self.leading = if let Some(bound) = checkbox {
-            let checked = bound.state.get();
+            // The box follows the value it is bound to: one set elsewhere (another device, an
+            // agent, an undo) shows in the row rather than only in the state behind it.
+            let (checked, binding) = crate::widget::binding::local(&bound.state);
+            self.check_binding = Some(binding);
             Some(Leading::Checkbox {
                 checked,
                 on_toggle: Box::new(move |checked| {

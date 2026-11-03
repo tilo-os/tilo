@@ -159,6 +159,16 @@ pub struct QuickSettingsState {
     pub refusal: Option<String>,
 }
 
+/// Whether the night light shows now: the person's switch, or the day/night
+/// phase when it follows the Appearance schedule.
+fn night_light_shows() -> bool {
+    if !settings_store::hardware::NIGHT_LIGHT_SCHEDULE.get() {
+        return settings_store::hardware::NIGHT_LIGHT.get();
+    }
+    settings_store::day_schedule::Scheduled::from_settings(&settings_store::load())
+        .is_night(ui::theme::local_moment())
+}
+
 impl Default for QuickSettingsState {
     fn default() -> Self {
         Self {
@@ -172,7 +182,7 @@ impl Default for QuickSettingsState {
             volume_available: true,
             status: crate::status::SystemStatus::default(),
             firmware_updates: None,
-            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
+            night_light: night_light_shows(),
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],

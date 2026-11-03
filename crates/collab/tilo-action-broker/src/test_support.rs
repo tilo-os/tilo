@@ -2,7 +2,7 @@
 use crate::services::{LegacyWorkspaceProjection, WorkspaceAuthority};
 use std::sync::Arc;
 pub use tilo_action_policy::{Answer, GrantId, KindSet, Level, Role, Subject, TreePath};
-pub use tilo_desktop_model::{RoomId, Workspace, WorkspaceSlot};
+pub use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 
 /// The grants fixtures give, in the workspace's own terms.
 pub trait Grants {
@@ -141,7 +141,7 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|w| w.room().to_string() == workspace)
+            .find(|w| w.id().to_string() == workspace)
             .ok_or("workspace missing")?;
         if !workspace
             .effect_receipts

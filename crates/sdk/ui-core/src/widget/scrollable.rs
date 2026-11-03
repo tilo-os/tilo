@@ -249,6 +249,9 @@ pub struct Scrollable {
     /// nothing else is offered to the host as a copy
     /// ([`crate::scroll_copy::offer`]).
     shown: crate::scroll_copy::ShownFrames<Shown>,
+    /// The layout scale the offset was last taken to ([`Scrollable::land_offsets`]),
+    /// or `None` before the content was first placed.
+    placed_scale: Option<f32>,
     /// See [`Scrollable::following_end`].
     follow_end: bool,
 }
@@ -359,6 +362,7 @@ impl Scrollable {
             semantic_key: None,
             label: None,
             shown: crate::scroll_copy::ShownFrames::default(),
+            placed_scale: None,
             follow_end: false,
         }
     }
@@ -736,14 +740,39 @@ impl Scrollable {
         )
     }
 
-    /// Where the content's origin lands on screen, as drawn. It stands on a device pixel, as a
-    /// hand's scroll and a reveal leave it: an offset kept across a display whose scale changed
-    /// (a window dragged to another screen) lands whole too, rather than smearing every edge.
+    /// Where the content's origin lands on screen, as drawn: exactly where
+    /// [`Self::drawn_offset`] puts it. A scroll that moves the content by
+    /// part of a pixel moves it by exactly that much, because the copy it
+    /// offers ([`crate::scroll_copy`]) moves the pixels it was shown at by
+    /// the same delta: content placed on any coarser grid than the offsets
+    /// it is scrolled by would sit a pixel away from the pixels a host
+    /// copied, and every edge in the content would jump. An offset carried
+    /// from a display of another scale is taken to this display's pixels
+    /// where the layout scale changes ([`Self::land_offsets`]), not here.
     fn content_origin(&self) -> Point {
         let (x, y) = self.drawn_offset();
-        let scale = f64::from(super::layout::device_scale()).max(f64::MIN_POSITIVE);
-        let on_grid = |at: f64| (at * scale).floor() / scale;
-        Point::new(on_grid(self.rect.x0 - x), on_grid(self.rect.y0 - y))
+        Point::new(self.rect.x0 - x, self.rect.y0 - y)
+    }
+
+    /// Take the offset to this display's device pixels when the layout scale
+    /// changed since the content was placed: an offset kept across a display
+    /// whose scale changed (a window dragged to another screen, one restored
+    /// on a display unlike the one it was saved on) lands whole rather than
+    /// between pixels. A scroll keeps its fraction, which the copy path
+    /// needs.
+    fn land_offsets(&mut self) {
+        let scale = super::layout::device_scale().max(f32::MIN_POSITIVE);
+        if self
+            .placed_scale
+            .is_some_and(|placed| placed.to_bits() == scale.to_bits())
+        {
+            return;
+        }
+        self.placed_scale = Some(scale);
+        let grid = f64::from(scale);
+        let on_grid = |at: f32| f32_of_f64((f64::from(at) * grid).floor() / grid);
+        self.offset_x = on_grid(self.offset_x);
+        self.offset_y = on_grid(self.offset_y);
     }
 
     /// Whether the give moved since the content was placed with it.
@@ -900,8 +929,8 @@ impl Scrollable {
             f32_of_f64(rect.width()),
             f32_of_f64(rect.height()),
         );
-        // The content lands on a device pixel, as a hand's scroll leaves it: the offset it
-        // reached, the content's end at most, taken down to the pixel.
+        // A reveal lands on a display's pixel, so the content it brings to view stands on
+        // it: the offset it reached, the content's end at most, taken down to the pixel.
         let scale = f64::from(super::layout::device_scale()).max(f64::MIN_POSITIVE);
         let snap = |offset: f32| f32_of_f64((f64::from(offset) * scale).floor() / scale);
         self.glide.stop();
@@ -1335,6 +1364,9 @@ impl Widget for Scrollable {
         self.lanes_needed = (false, false);
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = crate::widget::placed(&l, origin);
+        // An offset carried from a display of another scale lands whole here
+        // before anything places or measures against it.
+        self.land_offsets();
         // At the end before this layout: a transcript that follows its end stays there.
         let at_end = self.follow_end && self.max_offset_y() - self.offset_y <= FIT_EPS;
         self.viewport_w = l.size.width;

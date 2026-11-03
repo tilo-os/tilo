@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, RoomId, Strip, StripId, WindowGroup, WindowWidth, Workspace,
+    DesktopTree, GroupId, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     WorkspaceSlot,
 };
 
@@ -25,7 +25,7 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
             focus_history: Vec::new(),
         })
         .collect();
-    let mut ws = Workspace::in_workspace(slot, RoomId::new(), "Test");
+    let mut ws = Workspace::in_workspace(slot, WorkspaceId::new(), "Test");
     ws.strips.push(strip);
     let mut active_strip = HashMap::new();
     active_strip.insert(slot, strip_id);

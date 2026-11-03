@@ -122,7 +122,7 @@ mod workspace_record_custody {
                     (
                         CrdtRoute::record(
                             emoji().app,
-                            tilo_desktop_model::RoomId::new().to_string(),
+                            tilo_desktop_model::WorkspaceId::new().to_string(),
                             &record,
                         ),
                         "the workspace record of another workspace",
@@ -210,7 +210,7 @@ mod workspace_record_custody {
 
     #[test]
     fn a_workspace_record_route_is_joined_as_its_own_kind() {
-        let workspace = tilo_desktop_model::RoomId::new().to_string();
+        let workspace = tilo_desktop_model::WorkspaceId::new().to_string();
         let record = collab_types::workspace_record_id(emoji().kind);
         let route = CrdtRoute::record(emoji().app, &workspace, &record);
         assert_eq!(

@@ -54,9 +54,6 @@ pub struct Lock {
     gone: Rc<Cell<bool>>,
     /// The screen was told it may go: it is asked once, not every frame.
     told: Rc<Cell<bool>>,
-    /// The session could not start the screen, and says so once instead of
-    /// every pass.
-    start_failed: Rc<Cell<bool>>,
 }
 
 impl Lock {
@@ -83,17 +80,6 @@ impl Lock {
         });
     }
 
-    /// Whether the session already failed to start the lock screen.
-    #[must_use]
-    pub fn start_failed(&self) -> bool {
-        self.start_failed.get()
-    }
-
-    /// The session could not start the lock screen: it says so once.
-    pub fn start_failed_now(&self) {
-        self.start_failed.set(true);
-    }
-
     /// The lock is lifted: forget what was typed and what was said.
     pub fn lifted(&self) {
         if let Ok(mut typed) = self.typed.try_borrow_mut() {
@@ -102,7 +88,6 @@ impl Lock {
         self.dissolving.set(None);
         self.gone.set(false);
         self.told.set(false);
-        self.start_failed.set(false);
         self.show(Shown {
             error: None,
             checking: false,
@@ -151,8 +136,10 @@ impl Lock {
     }
 
     /// Take in what the screen asked: the password it typed, or the attempt
-    /// to unlock with what is in its field.
-    fn take_in(&self, effect: &LockEffect) {
+    /// to unlock with what is in its field. The lock screen's app asks through
+    /// the resource and the session's own view through its channel; both land
+    /// here, so both are checked the same way.
+    pub(crate) fn take_in(&self, effect: &LockEffect) {
         match effect {
             LockEffect::TypePassword { password } => {
                 if let Ok(mut typed) = self.typed.try_borrow_mut() {

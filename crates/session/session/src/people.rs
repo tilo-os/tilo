@@ -583,7 +583,7 @@ impl Widget for Panel {
                     .flat_map(|group| &group.tabs)
                     .map(|tab| tab.id)
                     .collect();
-                Some((workspace.room().to_string(), tabs))
+                Some((workspace.id().to_string(), tabs))
             }) else {
                 return Vec::new();
             };

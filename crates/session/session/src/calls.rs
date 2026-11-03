@@ -30,7 +30,7 @@ use runtime_collab::native_media::{
     Input, Issue, Picture, PictureLayer, PictureSource, Roster, Shown, State,
 };
 use tilo_call_lane::video as pictures;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_native_media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters, ScreenShare};
 
@@ -409,7 +409,7 @@ async fn open(
         // No transport, no lane: nothing could carry the call.
         return Err(Issue::Unavailable);
     };
-    let workspace_id = RoomId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
+    let workspace_id = WorkspaceId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
     let channel = collab_types::document_channel_id(&target.app, &target.workspace, &target.record);
     // The call is one channel of one workspace: that scope's keys seal its
     // tracks, and its id names them.
@@ -519,7 +519,7 @@ fn hello(
 /// no keys for at all leaves it uncarried.
 fn call_keys(
     sources: &Sources,
-    workspace_id: RoomId,
+    workspace_id: WorkspaceId,
     channel: collab_types::ChannelId,
 ) -> Result<
     (
@@ -675,7 +675,7 @@ struct Shared {
     /// Where the channel's keys come from when its membership moves.
     access: tilo_action_broker::channel_encryption::ChannelKeyAccess,
     /// The workspace id the channel's keys and governance are read by.
-    workspace_id: RoomId,
+    workspace_id: WorkspaceId,
     channel: collab_types::ChannelId,
     /// The channel's scope: what its tracks are sealed under and named as.
     scope: collab_types::scope::Scope,
@@ -1408,7 +1408,7 @@ mod tests {
     };
     use tilo_action_broker::collab_core::BrokerChannels;
     use tilo_compositor::OutputConfig;
-    use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
     use tilo_network_actor::{HostIdentity, NetEvent, workspace_topic_id};
 
     use super::*;
@@ -1459,8 +1459,8 @@ mod tests {
         ed25519_dalek::SigningKey::from_bytes(&[21; 32])
     }
 
-    fn workspace_id() -> RoomId {
-        RoomId::parse(WORKSPACE).expect("a workspace id")
+    fn workspace_id() -> WorkspaceId {
+        WorkspaceId::parse(WORKSPACE).expect("a workspace id")
     }
 
     fn target() -> CallTarget {
@@ -1524,6 +1524,7 @@ mod tests {
             Vec::new(),
             MediaContinuity::default(),
             Arc::new(|| {}),
+            None,
             Vec::new(),
         )
         .expect("a loopback endpoint binds")
@@ -1537,12 +1538,12 @@ mod tests {
     }
 
     impl ChannelDirectory for Directory {
-        fn governor_of(&self, _workspace: RoomId) -> Option<Ed25519PublicKey> {
+        fn governor_of(&self, _workspace: WorkspaceId) -> Option<Ed25519PublicKey> {
             Some(self.governor)
         }
         fn allowed_devices(
             &self,
-            _workspace: RoomId,
+            _workspace: WorkspaceId,
             _channel: collab_types::ChannelId,
             _route: Option<&ChannelRoute>,
             _now: u64,

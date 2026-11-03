@@ -594,9 +594,9 @@ fn every_kind_of_trigger_prints_the_same_program_back() {
             app_id: "so.tilo.notes".into(),
         },
         TriggerSpec::WorkspaceJoined {
-            room: Some("Studio".into()),
+            workspace: Some("Studio".into()),
         },
-        TriggerSpec::WorkspaceJoined { room: None },
+        TriggerSpec::WorkspaceJoined { workspace: None },
         TriggerSpec::FileChanged {
             capability: "notes".into(),
         },

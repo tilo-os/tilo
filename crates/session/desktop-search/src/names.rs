@@ -30,7 +30,7 @@ pub fn window_name(app_id: &str, title: &str) -> String {
     if is_apps_own_name(app_id, title) {
         return app;
     }
-    named_window(&app, title)
+    ui::window_name::named(&app, title)
 }
 
 /// Whether `said` is a name of the app rather than a place in it: the name
@@ -45,19 +45,6 @@ pub fn is_apps_own_name(app_id: &str, said: &str) -> bool {
         && (said == ui::search::fold_search_text(&app_name(app_id))
             || said == ui::search::fold_search_text(&humanized(app_id))
             || said == ui::search::fold_search_text(package_id(app_id)))
-}
-
-/// [`window_name`] for a caller that already has the app's name.
-#[must_use]
-pub fn named_window(app: &str, title: &str) -> String {
-    let title = title.trim();
-    if title.is_empty() || title == app {
-        app.to_owned()
-    } else if app.is_empty() {
-        title.to_owned()
-    } else {
-        format!("{title} — {app}")
-    }
 }
 
 /// The package an id names: a host app's desktop entry (`host:` and

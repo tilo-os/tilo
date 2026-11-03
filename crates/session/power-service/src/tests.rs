@@ -2,6 +2,7 @@
 //! takes them through. No bus: what logind and `UPower` say is the service
 //! crate's tests' business.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -61,6 +62,50 @@ fn the_reading_is_the_policy_and_what_holds_the_machine_awake() {
     assert!(!link.release(ticket), "a ticket is released once");
 }
 
+/// The windows whose video asks the screen to stay on are holds in the same
+/// registry a download takes, named for the person, and each is released as
+/// its own window stops asking.
+#[test]
+fn the_windows_holding_the_screen_on_are_named_holds() {
+    let link = PowerLink::new(quiet());
+    let mut named = BTreeMap::new();
+    named.insert(7, "A film — Player".to_owned());
+    link.set_idle_inhibitors(&named);
+    assert!(link.idle_held());
+    assert_eq!(link.hold_reasons(), vec!["A film — Player".to_owned()]);
+
+    // The person switches to another tab of the same window: the hold says
+    // what they are watching now.
+    named.insert(7, "Another film — Player".to_owned());
+    link.set_idle_inhibitors(&named);
+    assert_eq!(
+        link.hold_reasons(),
+        vec!["Another film — Player".to_owned()]
+    );
+
+    named.insert(9, "Slides — Show".to_owned());
+    link.set_idle_inhibitors(&named);
+    assert_eq!(
+        link.hold_reasons(),
+        vec![
+            "Another film — Player".to_owned(),
+            "Slides — Show".to_owned()
+        ]
+    );
+
+    // One window goes away; the other still holds.
+    named.remove(&7);
+    link.set_idle_inhibitors(&named);
+    assert!(link.idle_held());
+    assert_eq!(link.hold_reasons(), vec!["Slides — Show".to_owned()]);
+
+    // The last one stops asking: nothing holds the machine any more.
+    named.clear();
+    link.set_idle_inhibitors(&named);
+    assert!(!link.idle_held());
+    assert!(link.hold_reasons().is_empty());
+}
+
 #[test]
 fn a_hold_taken_until_a_moment_stops_counting_then() {
     let link = PowerLink::new(quiet());
@@ -114,7 +159,7 @@ fn the_published_resource_holds_the_machine_awake_and_releases_it() {
         .iter()
         .find(|resource| resource.id.as_str() == SLEEP)
         .expect("the sleep resource");
-    for action in ["keep-awake", "release", "power-key", "lid"] {
+    for action in ["keep-awake", "release", "power-key", "lid", "sleep"] {
         assert!(
             sleep.actions.iter().any(|spec| spec.id == action),
             "{action} is offered: {:?}",

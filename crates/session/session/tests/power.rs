@@ -620,29 +620,30 @@ fn the_power_key_follows_its_policy() {
     until(&mut session, |_| machine.suspends() == 1);
 }
 
-/// A pack at the critical charge locks the session and publishes the notice
-/// a banner and the bar read.
+/// A pack at the critical charge locks the session and tells the person, on
+/// every display, what the machine does about it.
 #[test]
-fn a_critical_battery_locks_the_session_and_publishes_its_notice() {
+fn a_critical_battery_locks_the_session_and_tells_the_person() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let (machine, service) = Machine::start(quiet());
     let (_plane, mut session) = lockable(&machine, service);
     machine.charge(3.0);
     until(&mut session, |session| session.compositor().locked());
-    let reading = session.read(BATTERY).expect("the battery reading");
-    let notice = reading.get("notice").cloned().unwrap_or_default();
-    assert_eq!(
-        notice.get("critical").and_then(serde_json::Value::as_bool),
-        Some(true),
-        "{reading}"
-    );
-    assert!(
-        notice
-            .get("body")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|body| !body.is_empty()),
-        "{reading}"
-    );
+    until(&mut session, |session| {
+        session
+            .notifications()
+            .log()
+            .active()
+            .iter()
+            .any(|notification| notification.title == "Battery critically low")
+    });
+    let live = session.notifications().log().active().to_vec();
+    let critical = live
+        .iter()
+        .find(|notification| notification.title == "Battery critically low")
+        .expect("the critical warning");
+    assert!(critical.body.contains("3%"), "{}", critical.body);
+    assert!(critical.machine_wide, "every display shows it");
 }
 
 /// logind's own sleep: the session locks and says the frame is drawn, the
@@ -687,8 +688,53 @@ fn a_failed_sleep_lifts_the_lock_it_installed() {
     until(&mut session, |session| !session.compositor().locked());
 }
 
-/// A battery notice the service posts is what a banner shows, and what a
-/// hold reads of the machine does not change because of it.
+/// The battery notices the service posts reach the person as notifications:
+/// a heads-up at low charge, and one that stays and names what the machine
+/// does at critical charge.
+#[test]
+fn a_battery_notice_reaches_the_person_as_a_notification() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let (machine, service) = Machine::start(quiet());
+    let mut session = session(&machine, service);
+    machine
+        .link
+        .bridge()
+        .push_signal(PowerSignal::Notify(PowerNotification {
+            percent: 15,
+            critical: false,
+            suspending: false,
+        }));
+    until(&mut session, |session| {
+        !session.notifications().log().active().is_empty()
+    });
+    let up = session.notifications().log().active().to_vec();
+    assert_eq!(up[0].title, "Battery low");
+    assert!(up[0].body.contains("15%"), "{}", up[0].body);
+    assert!(
+        !up[0].machine_wide,
+        "the heads-up is for the display in use"
+    );
+
+    machine
+        .link
+        .bridge()
+        .push_signal(PowerSignal::Notify(PowerNotification {
+            percent: 4,
+            critical: true,
+            suspending: false,
+        }));
+    until(&mut session, |session| {
+        session.notifications().log().active().len() == 2
+    });
+    let up = session.notifications().log().active().to_vec();
+    assert_eq!(up[1].title, "Battery critically low");
+    assert!(up[1].body.contains("plug in"), "{}", up[1].body);
+    assert!(up[1].machine_wide, "every display shows it");
+}
+
+/// The same notice lies in the battery's own reading, in the session's words,
+/// for the surfaces that draw the pack's state: pressing later notices over
+/// the one a surface has not shown yet.
 #[test]
 fn a_battery_notice_reaches_the_sessions_reading() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -698,9 +744,9 @@ fn a_battery_notice_reaches_the_sessions_reading() {
         .link
         .bridge()
         .push_signal(PowerSignal::Notify(PowerNotification {
-            summary: "Battery low".into(),
-            body: "15% remaining".into(),
+            percent: 15,
             critical: false,
+            suspending: false,
         }));
     until(&mut session, |session| {
         session.read(BATTERY).is_some_and(|reading| {
@@ -713,5 +759,46 @@ fn a_battery_notice_reaches_the_sessions_reading() {
     assert_eq!(
         reading["notice"]["summary"],
         serde_json::json!("Battery low")
+    );
+    assert!(
+        reading["notice"]["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("15%")),
+        "{reading}"
+    );
+    assert_eq!(
+        reading["notice"]["critical"],
+        serde_json::json!(false),
+        "{reading}"
+    );
+}
+
+/// A pack at the critical charge locks the session and publishes the notice
+/// a banner and the bar read, naming what the machine does about it.
+#[test]
+fn a_critical_battery_locks_the_session_and_publishes_its_notice() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let (machine, service) = Machine::start(quiet());
+    let (_plane, mut session) = lockable(&machine, service);
+    machine.charge(3.0);
+    until(&mut session, |session| session.compositor().locked());
+    until(&mut session, |session| {
+        session.read(BATTERY).is_some_and(|reading| {
+            reading
+                .get("notice")
+                .is_some_and(|notice| !notice.is_null())
+        })
+    });
+    let reading = session.read(BATTERY).expect("the battery reading");
+    assert_eq!(
+        reading["notice"]["critical"],
+        serde_json::json!(true),
+        "{reading}"
+    );
+    assert!(
+        reading["notice"]["body"]
+            .as_str()
+            .is_some_and(|body| !body.is_empty()),
+        "{reading}"
     );
 }

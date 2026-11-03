@@ -1858,7 +1858,7 @@ impl WorkspaceActivityPane {
         }
         let workspace = tree
             .active_workspace()
-            .map(|workspace| workspace.room().to_string())
+            .map(|workspace| workspace.id().to_string())
             .unwrap_or_default();
         if self.workspace != workspace || self.morning_workspace != tree.active.raw() {
             self.morning_command_message = None;
@@ -2101,7 +2101,7 @@ impl WorkspaceActivityPane {
             .set_authors(self.source.authors().clone());
         let query = tree
             .active_workspace()
-            .map(|w| WorkspaceHistoryQuery::for_room(w.room()))
+            .map(|w| WorkspaceHistoryQuery::for_room(w.id()))
             .unwrap_or_default();
         let changed =
             self.history_index
@@ -2173,12 +2173,12 @@ impl WorkspaceActivityPane {
         let query = match self.scope {
             WorkspaceScope::ThisWorkspace => tree
                 .active_workspace()
-                .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room()))
+                .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.id()))
                 .unwrap_or_default(),
             WorkspaceScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
                 tree.workspaces
                     .iter()
-                    .map(tilo_desktop_model::Workspace::room),
+                    .map(tilo_desktop_model::Workspace::id),
             ),
         };
         let changed = if let Some(local) = local {
@@ -2205,7 +2205,7 @@ impl WorkspaceActivityPane {
                 tree.workspaces
                     .iter()
                     .fold(HashMap::new(), |mut labels, workspace| {
-                        if let Some(records) = tree.workspace_records_held.get(&workspace.room()) {
+                        if let Some(records) = tree.workspace_records_held.get(&workspace.id()) {
                             for id in records.keys() {
                                 labels
                                     .entry(id.clone())
@@ -2309,12 +2309,12 @@ impl WorkspaceActivityPane {
         let workspaces: HashSet<_> = match self.scope {
             WorkspaceScope::ThisWorkspace => tree
                 .active_workspace()
-                .map(|workspace| [workspace.room()].into_iter().collect())
+                .map(|workspace| [workspace.id()].into_iter().collect())
                 .unwrap_or_default(),
             WorkspaceScope::AllWorkspaces => tree
                 .workspaces
                 .iter()
-                .map(tilo_desktop_model::Workspace::room)
+                .map(tilo_desktop_model::Workspace::id)
                 .collect(),
         };
         let record_ids: BTreeSet<RecordId> = workspaces

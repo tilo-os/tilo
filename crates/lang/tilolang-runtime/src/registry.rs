@@ -7,8 +7,8 @@ use serde_json::Value as Json;
 
 use crate::ids::{ActionId, FlowId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
-    ActionMeta, EnumMeta, FieldKind, FlowMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
-    field_kind, parse_ty,
+    ActionMeta, EnumMeta, FieldKind, FlowMeta, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta,
+    ViewMeta, field_kind, parse_ty,
 };
 use crate::store::{FieldSpec, NewRecord};
 
@@ -140,6 +140,10 @@ impl Package {
     pub fn flow(&self, id: &str) -> Option<&FlowMeta> {
         self.meta.flows.iter().find(|f| f.id == id)
     }
+
+    pub fn fn_(&self, id: &str) -> Option<&FnMeta> {
+        self.meta.fns.iter().find(|f| f.id == id)
+    }
 }
 
 fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
@@ -174,6 +178,7 @@ pub struct Registry {
     actions: HashMap<ActionId, ModuleHash>,
     views: HashMap<ViewId, ModuleHash>,
     flows: HashMap<FlowId, ModuleHash>,
+    fns: HashMap<String, ModuleHash>,
 }
 
 impl Registry {
@@ -198,6 +203,9 @@ impl Registry {
         }
         for f in &pkg.meta.flows {
             Self::claim(&mut self.flows, &f.id, &hash, "flow")?;
+        }
+        for f in &pkg.meta.fns {
+            Self::claim(&mut self.fns, &f.id, &hash, "fn")?;
         }
         let rc = Rc::new(pkg);
         self.packages.insert(hash.clone(), Rc::clone(&rc));
@@ -232,6 +240,7 @@ impl Registry {
             self.actions.clone(),
             self.views.clone(),
             self.flows.clone(),
+            self.fns.clone(),
         );
         for hash in &old {
             self.packages.remove(hash);
@@ -241,6 +250,7 @@ impl Registry {
                 &mut self.actions,
                 &mut self.views,
                 &mut self.flows,
+                &mut self.fns,
             ] {
                 map.retain(|_, owner| owner != hash);
             }
@@ -253,6 +263,7 @@ impl Registry {
                 self.actions,
                 self.views,
                 self.flows,
+                self.fns,
             ) = saved;
         })
     }
@@ -278,6 +289,7 @@ impl Registry {
                 &mut self.actions,
                 &mut self.views,
                 &mut self.flows,
+                &mut self.fns,
             ] {
                 map.retain(|_, owner| owner != hash);
             }
@@ -333,6 +345,10 @@ impl Registry {
 
     pub fn flow_package(&self, id: &str) -> Option<Rc<Package>> {
         self.package(self.flows.get(id)?)
+    }
+
+    pub fn fn_package(&self, id: &str) -> Option<Rc<Package>> {
+        self.package(self.fns.get(id)?)
     }
 
     /// The id of the record type `key` names: declared by the most recently loaded package of

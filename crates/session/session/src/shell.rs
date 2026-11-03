@@ -1030,7 +1030,7 @@ impl crate::Session {
         let search = &self.shared.search;
         let workspace = self.shared.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
                 .unwrap_or_default()
         });
         let resources = doors.resources();

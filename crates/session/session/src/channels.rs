@@ -40,7 +40,7 @@ use tilo_action_broker::channel_encryption::{
     GovernanceTransport, InboundChannelGovernance,
 };
 use tilo_action_broker::collab_core::BrokerChannels;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RosterDevice, WorkspaceId, workspace_topic_id};
@@ -131,7 +131,7 @@ pub struct ChannelLink {
     inbound: Mutex<Vec<InboundChannelGovernance>>,
     /// The workspaces whose state moved since it was last read: their channels
     /// and their rosters are read again.
-    changed: Mutex<BTreeSet<RoomId>>,
+    changed: Mutex<BTreeSet<ModelWorkspaceId>>,
     /// The records this device asked a workspace's hosts for, by workspace
     /// topic and channel: a read asks once, and the plane asks a host session
     /// that starts later itself.
@@ -203,19 +203,19 @@ impl ChannelLink {
 
     /// Workspace `workspace`'s state moved here: the devices it admits and
     /// the channels its records are may differ from what was last read.
-    pub(crate) fn workspace_changed(&self, workspace: RoomId) {
+    pub(crate) fn workspace_changed(&self, workspace: ModelWorkspaceId) {
         self.changed.lock_recover().insert(workspace);
         self.park.poke();
     }
 
     /// Read `workspace` again on a later pass, without waking the pump to it:
     /// a roster that was not told stays untold until it is.
-    fn changed_again(&self, workspace: RoomId) {
+    fn changed_again(&self, workspace: ModelWorkspaceId) {
         self.changed.lock_recover().insert(workspace);
     }
 
     /// The workspaces that moved since the last call, in a stable order.
-    pub(crate) fn take_changed(&self) -> Vec<RoomId> {
+    pub(crate) fn take_changed(&self) -> Vec<ModelWorkspaceId> {
         let mut changed = self.changed.lock_recover();
         let workspaces = changed.iter().copied().collect();
         changed.clear();
@@ -226,7 +226,7 @@ impl ChannelLink {
     /// local reader reads it (an on-demand record, or a part of a chain behind
     /// its head): its history then arrives as the workspace's other documents
     /// do, and later reads ask nobody.
-    pub(crate) fn ask_record(&self, workspace: RoomId, channel: [u8; 32]) {
+    pub(crate) fn ask_record(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) {
         let ws = workspace_topic_id(workspace);
         let outgoing = self.outgoing.lock_recover().clone();
         let Some(outgoing) = outgoing else {
@@ -246,7 +246,7 @@ impl ChannelLink {
     /// Ask the host of `workspace` to replay what it retains: a message the
     /// workspace held back waited on something the host sends of its own accord
     /// too, and the replay decides it again.
-    pub(crate) fn ask_replay(&self, workspace: RoomId) {
+    pub(crate) fn ask_replay(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
             let _ = outgoing.send(Outgoing::Replay(workspace_topic_id(workspace)));
@@ -257,7 +257,7 @@ impl ChannelLink {
     /// peers: what the owner committed leaves this device on the plane's
     /// session with the workspace's host, as every other change of the
     /// workspace does.
-    pub(crate) fn publish_custody(&self, workspace: RoomId) {
+    pub(crate) fn publish_custody(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
             let _ = outgoing.send(Outgoing::PublishCustody(workspace_topic_id(workspace)));
@@ -277,8 +277,10 @@ impl GovernanceTransport for ChannelLink {
     fn publish(&self, message: NeighbourMsg) -> bool {
         let workspace = match &message {
             NeighbourMsg::MlsGovernance { workspace, .. }
-            | NeighbourMsg::MlsAccessRequest { workspace, .. } => RoomId::parse(workspace),
-            NeighbourMsg::MlsRoutedAccessRequest { room, .. } => RoomId::parse(room),
+            | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
+                ModelWorkspaceId::parse(workspace)
+            }
+            NeighbourMsg::MlsRoutedAccessRequest { room, .. } => ModelWorkspaceId::parse(room),
             _ => None,
         };
         let Some(workspace) = workspace else {
@@ -346,7 +348,7 @@ impl Rosters {
     /// Tell the plane the workspace's `roster`, and remember it as told only
     /// when the plane took it: one it did not take is read again on a later
     /// pass.
-    fn tell(&mut self, link: &ChannelLink, workspace: RoomId, roster: Roster) {
+    fn tell(&mut self, link: &ChannelLink, workspace: ModelWorkspaceId, roster: Roster) {
         let ws = workspace_topic_id(workspace);
         if !self.moved(ws, &roster) {
             return;
@@ -367,7 +369,7 @@ struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, workspace: RoomId) -> Option<Ed25519PublicKey> {
+    fn governor_of(&self, workspace: ModelWorkspaceId) -> Option<Ed25519PublicKey> {
         self.engine
             .owner()
             .with_current(workspace, |view| {
@@ -383,7 +385,7 @@ impl ChannelDirectory for Directory {
     /// read the record that channel carries.
     fn allowed_devices(
         &self,
-        workspace: RoomId,
+        workspace: ModelWorkspaceId,
         channel: ChannelId,
         route: Option<&ChannelRoute>,
         now: u64,
@@ -419,7 +421,7 @@ impl ChannelDirectory for Directory {
     /// The first second after `now` at which the workspace's channels can
     /// answer differently with nothing written: a capability or a device
     /// certificate expiring.
-    fn next_policy_change(&self, workspace: RoomId, now: u64) -> Option<u64> {
+    fn next_policy_change(&self, workspace: ModelWorkspaceId, now: u64) -> Option<u64> {
         let second = tilo_action_broker::policy_schedule::second_at_or_after;
         let (certificates, capabilities) = self
             .engine
@@ -572,7 +574,10 @@ pub(crate) struct Member {
 /// the certificate it holds of each. A device the workspace removed, or whose
 /// certificate ran out, is not one, and what it sent or would receive is
 /// refused from then on.
-pub(crate) fn members_of(engine: &Engine, workspace: RoomId) -> Result<Vec<Member>, String> {
+pub(crate) fn members_of(
+    engine: &Engine,
+    workspace: ModelWorkspaceId,
+) -> Result<Vec<Member>, String> {
     let now = SystemTime::now();
     engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
@@ -611,7 +616,7 @@ pub(crate) fn members_of(engine: &Engine, workspace: RoomId) -> Result<Vec<Membe
 
 /// The roster of `workspace`, as [`members_of`] reads it: the devices whose
 /// window streams carry between.
-pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, String> {
+pub(crate) fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster, String> {
     members_of(engine, workspace)?
         .into_iter()
         .map(|member| {
@@ -640,7 +645,7 @@ mod tests {
             link.take_inbound().is_empty(),
             "an identity hello is the plane's own, not the channels'"
         );
-        let workspace = RoomId::new();
+        let workspace = ModelWorkspaceId::new();
         link.heard(&NeighbourMsg::MlsGovernance {
             workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
@@ -666,7 +671,7 @@ mod tests {
     /// its devices changing is told nothing.
     #[test]
     fn a_roster_moves_only_when_its_devices_do() {
-        let workspace = workspace_topic_id(RoomId::new());
+        let workspace = workspace_topic_id(ModelWorkspaceId::new());
         let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
         let mut rosters = Rosters::default();
@@ -692,7 +697,7 @@ mod tests {
     #[test]
     fn a_roster_the_plane_did_not_take_is_told_again() {
         let link = ChannelLink::new();
-        let workspace = RoomId::new();
+        let workspace = ModelWorkspaceId::new();
         let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let mut rosters = Rosters::default();
         rosters.tell(&link, workspace, vec![(device, None)]);

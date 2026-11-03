@@ -356,11 +356,12 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     );
 }
 
-/// A session with no lock screen installed never locks: the screen is the only
-/// thing that takes the password that lifts the lock, so locking without one
-/// would leave the person with a desktop they cannot come back to.
+/// A session whose lock screen's app is not installed still locks, and its
+/// own view of the lock is what shows it: locking without one would leave the
+/// person with a desktop they cannot come back to, so the session draws the
+/// lock itself, and only the right password lifts it.
 #[test]
-fn a_session_with_no_lock_screen_never_locks() {
+fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
     const DISPLAY: &str = "HEADLESS-1";
     let _settled = ui::motion::testing::settled();
     let home = private_home();
@@ -378,43 +379,53 @@ fn a_session_with_no_lock_screen_never_locks() {
     )
     .expect("session");
     let _client = mapped(&mut session, "org.example.Terminal");
+    let desk = pictures(&mut session, &[DISPLAY]);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    for _ in 0..60 {
-        session.step(REFRESH).expect("a turn of the session");
-    }
-    assert!(
-        !session.compositor().locked(),
-        "a session that nothing could unlock stays unlocked"
-    );
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().locked()
+    });
     assert!(
         !session.surfaces().running("lock"),
-        "no screen was started: {:?}",
+        "no screen's app is installed: {:?}",
         session.surfaces().names()
     );
     assert!(
+        publisher(&session, "overview").is_none(),
+        "the locked session withholds the desktop's actions"
+    );
+    // What shows the lock is the session's own view of it, over the desk.
+    until_drawn(&mut session, &[DISPLAY], &desk);
+    assert!(
+        session.compositor().locked(),
+        "the lock holds while the session's own view shows it"
+    );
+
+    // A wrong password keeps it locked and says so; the right one lifts it.
+    type_and_enter(&mut session, "wrong");
+    pump(&mut session, &mut [], |session, _| {
+        let reading = session.read(LOCK).expect("the session publishes the lock");
+        assert!(
+            !reading.to_string().contains("wrong"),
+            "the password the person typed is in no reading the session publishes: {reading}"
+        );
+        reading["error"].as_str() == Some(tilo_sheets::lock::wrong_password().as_str())
+    });
+    assert!(
+        session.compositor().locked(),
+        "a wrong password keeps the session locked"
+    );
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+    let after = until_back(&mut session, &[DISPLAY], &desk);
+    assert!(
+        apart(&after[0], &desk[0]) < 24.0,
+        "unlocking clears the lock and shows the desk again"
+    );
+    assert!(
         publisher(&session, "overview").is_some(),
-        "the desk is still the person's to use"
-    );
-    assert!(
-        !session
-            .power_menu()
-            .expect("power menu")
-            .offers()
-            .offers(tilo_sheets::power::PowerEffect::Lock),
-        "the power menu does not offer a lock nothing could lift"
-    );
-    // A lock the session cannot refuse — an idle timer's, once it is due — is
-    // lifted again rather than left with nothing to show it.
-    session
-        .compositor()
-        .lock_now()
-        .expect("a lock the session did not ask for");
-    for _ in 0..60 {
-        session.step(REFRESH).expect("a turn of the session");
-    }
-    assert!(
-        !session.compositor().locked(),
-        "the lock nothing could show is lifted again"
+        "the unlocked session publishes the desktop's actions again"
     );
 }
 

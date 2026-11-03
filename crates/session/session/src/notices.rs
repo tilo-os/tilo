@@ -1,14 +1,14 @@
 //! What the session itself tells the person, through their notifications.
 //!
-//! Six things the desktop knows and the person should: that storage is
-//! running out, that the media codecs they asked for finished or failed, that
-//! the session or the computer stopped and started again, that an update
-//! waits for a restart, that the machine's graphics stopped and every frame is
-//! drawn in software from now on, and that a drive they plugged in is ready to
-//! open or eject. Each becomes an ordinary notification
-//! ([`tilo_notifications_service::Notification`]) published by the
-//! notifications service: the banners and the centre read it from the same
-//! resource any app's notification is read from, the person closes or
+//! Seven things the desktop knows and the person should: that storage is
+//! running out, that the battery is too, that the media codecs they asked for
+//! finished or failed, that the session or the computer stopped and started
+//! again, that an update waits for a restart, that the machine's graphics
+//! stopped and every frame is drawn in software from now on, and that a drive
+//! they plugged in is ready to open or eject. Each becomes an ordinary
+//! notification ([`tilo_notifications_service::Notification`]) published by
+//! the notifications service: the banners and the centre read it from the
+//! same resource any app's notification is read from, the person closes or
 //! acts on it as they would on any other, and nothing here draws.
 //!
 //! They are the whole machine's news, so they are shown on every display
@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
+use settings_store::system_sounds::SystemSoundEvent;
 use tilo_desktop_surface::DesktopNotifications;
 use tilo_desktop_surface::notifications::{
     Notification as DeskNotification, NotificationSeverity, PERSISTENT_DISMISS,
@@ -89,6 +90,14 @@ pub struct Notice {
     /// How long it stays on screen; `None` leaves that to the person's own
     /// notification settings.
     pub expires_after: Option<Duration>,
+    /// Whether every display shows it: the whole machine's news, or, for a
+    /// heads-up about the pack, the display the person is using.
+    pub machine_wide: bool,
+    /// The event sound the notice makes, played by the session itself: a
+    /// sender's category never reaches the one an app may not ask for
+    /// ([`SystemSoundEvent::LowBattery`]), so the notice that needs it plays
+    /// it here and tells the service no sound is owed.
+    pub sound: Option<SystemSoundEvent>,
 }
 
 impl Notice {
@@ -101,6 +110,8 @@ impl Notice {
             body,
             actions: Vec::new(),
             expires_after: None,
+            machine_wide: true,
+            sound: None,
         }
     }
 
@@ -116,7 +127,8 @@ impl Notice {
                 i32::try_from(after.as_millis()).unwrap_or(i32::MAX)
             }),
             urgency: self.urgency,
-            machine_wide: true,
+            machine_wide: self.machine_wide,
+            suppress_sound: self.sound.is_some(),
             ..Notification::new(0)
         }
     }
@@ -135,12 +147,21 @@ impl Notice {
             1 => NotificationSeverity::Warning,
             _ => NotificationSeverity::Error,
         };
-        desk.post(
-            DeskNotification::new(self.title, self.body)
-                .with_app_name(self.app)
-                .with_severity(severity)
-                .with_dismiss_after(PERSISTENT_DISMISS),
-        );
+        // The notice's own timing, as the notifications service would apply
+        // it: nothing asks to stay, or asks for no time at all, stays.
+        let dismiss_after = self
+            .expires_after
+            .filter(|after| !after.is_zero())
+            .unwrap_or(PERSISTENT_DISMISS);
+        let desk_notice = DeskNotification::new(self.title, self.body)
+            .with_app_name(self.app)
+            .with_severity(severity)
+            .with_dismiss_after(dismiss_after);
+        desk.post(if self.machine_wide {
+            desk_notice.machine_wide()
+        } else {
+            desk_notice
+        });
     }
 
     /// Show it to the person, and say which notification went out: a producer
@@ -226,6 +247,37 @@ pub fn storage_notice(volume: Volume, before: Level, after: Level, room: Room) -
             t_args("storage-full-body", &args),
         ),
     })
+}
+
+/// The notice that the battery is running out: a heads-up at low charge, and
+/// at critical charge one that stays until the person acts and, when the
+/// policy sleeps the machine for it, says so.
+#[must_use]
+pub fn battery_notice(percent: u8, critical: bool, suspending: bool) -> Notice {
+    let percent = percent.to_string();
+    let args = [("percent", percent.as_str().into())];
+    let (urgency, title, body) = if critical {
+        let body = if suspending {
+            t_args("battery-critical-suspend-body", &args)
+        } else {
+            t_args("battery-critical-plug-body", &args)
+        };
+        (2, t("battery-critical-title"), body)
+    } else {
+        (1, t("battery-low-title"), t_args("battery-low-body", &args))
+    };
+    Notice {
+        app: t("battery-app-name"),
+        urgency,
+        title,
+        body,
+        actions: Vec::new(),
+        // The critical warning stays until the person lets it go; the
+        // heads-up leaves on the person's own notification timing.
+        expires_after: critical.then_some(Duration::ZERO),
+        machine_wide: critical,
+        sound: Some(SystemSoundEvent::LowBattery),
+    }
 }
 
 /// The notice for the medium a person just plugged in: what it is called and
@@ -539,6 +591,8 @@ fn update_notice() -> Notice {
         // It waits in the notification centre; the banner goes after the
         // person has had time to read it.
         expires_after: Some(Duration::from_secs(30)),
+        machine_wide: true,
+        sound: None,
     }
 }
 
@@ -807,6 +861,53 @@ mod tests {
         assert!(storage_notice(Volume::System, Level::Full, Level::Full, full).is_none());
         assert!(storage_notice(Volume::System, Level::Full, Level::Plenty, full).is_none());
         assert!(storage_notice(Volume::Home, Level::Low, Level::Low, full).is_none());
+    }
+
+    /// The battery running out reaches the person as an ordinary
+    /// notification: an early heads-up, then one that names what happens if
+    /// the machine sleeps for it and stays until they act.
+    #[test]
+    fn a_battery_running_out_reaches_the_person_as_a_notification() {
+        let notifications = Notifications::new();
+        battery_notice(15, false, false).tell(&notifications);
+        battery_notice(5, true, true).tell(&notifications);
+        let live = notifications.live();
+        assert_eq!(live.len(), 2);
+        let low = live
+            .iter()
+            .find(|notification| notification.summary == "Battery low")
+            .expect("the heads-up");
+        assert!(low.body.starts_with("15%"), "{}", low.body);
+        assert_eq!(low.urgency, 1);
+        assert_eq!(
+            low.expire_timeout, -1,
+            "the heads-up leaves with the person's own notification timing"
+        );
+        assert!(
+            low.suppress_sound,
+            "the session plays the low-battery sound itself"
+        );
+        assert!(!low.machine_wide, "the heads-up is for the display in use");
+        assert_eq!(low.app_name, "Power");
+
+        let critical = live
+            .iter()
+            .find(|notification| notification.summary == "Battery critically low")
+            .expect("the critical warning");
+        assert!(critical.body.contains("Suspending"), "{}", critical.body);
+        assert_eq!(critical.urgency, 2);
+        assert_eq!(
+            critical.expire_timeout, 0,
+            "the critical warning stays until the person acts"
+        );
+        assert!(critical.machine_wide, "the whole machine's news");
+
+        let plug_in = battery_notice(3, true, false);
+        assert!(
+            plug_in.body.contains("plug in"),
+            "a policy that does not sleep says so instead: {}",
+            plug_in.body
+        );
     }
 
     /// A full filesystem reaches the person as an ordinary notification: it is

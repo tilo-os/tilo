@@ -1,5 +1,5 @@
 use super::*;
-use tilo_desktop_model::{RoomId, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 
 /// Three workspaces with the middle one open, so both moves and Delete
 /// are live.
@@ -31,7 +31,7 @@ fn archived() -> Vec<ArchivedWorkspace> {
     ["Old project", "Trip"]
         .iter()
         .map(|name| ArchivedWorkspace {
-            room: RoomId::new(),
+            room: WorkspaceId::new(),
             name: (*name).to_owned(),
         })
         .collect()

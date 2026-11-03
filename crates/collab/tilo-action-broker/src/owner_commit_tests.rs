@@ -31,7 +31,7 @@ mod owner_commit_tests {
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceSlot(5), "Durability boundary");
             workspace.set_owner(&principal);
-            let route = CrdtRoute::record("so.tilo.word-processor", workspace.room().to_string(), "tab:0000000000000001");
+            let route = CrdtRoute::record("so.tilo.word-processor", workspace.id().to_string(), "tab:0000000000000001");
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let membership = tree.shared();
@@ -110,7 +110,7 @@ mod owner_commit_tests {
                 workspace.set_owner(&principal);
                 let route = CrdtRoute::record(
                     "so.tilo.word-processor",
-                    workspace.room().to_string(),
+                    workspace.id().to_string(),
                     "tab:0000000000000001",
                 );
                 let mut tree = WorkspaceTree::default();
@@ -1352,7 +1352,7 @@ mod owner_commit_tests {
             workspace.set_owner(principal_id_for_root(cert.user_public_key));
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
-                workspace.room().to_string(),
+                workspace.id().to_string(),
                 "document-1",
             );
             let mut tree = WorkspaceTree::default();

@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 use std::time::SystemTime;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_store_node::Access;
 
@@ -39,7 +39,7 @@ impl MembershipAccess {
 
     /// The workspace of `owner`'s a store names by `workspace`.
     #[must_use]
-    pub fn held(&self, workspace: u64) -> Option<RoomId> {
+    pub fn held(&self, workspace: u64) -> Option<WorkspaceId> {
         held_workspace(&self.owner, workspace)
     }
 }
@@ -67,7 +67,7 @@ impl Access for MembershipAccess {
 /// ([`workspace_of`](crate::workspace_of)), which is one way: the workspaces
 /// the engine holds are the ones to compare against.
 #[must_use]
-pub fn held_workspace(owner: &NativeWorkspaceOwner, workspace: u64) -> Option<RoomId> {
+pub fn held_workspace(owner: &NativeWorkspaceOwner, workspace: u64) -> Option<WorkspaceId> {
     owner
         .workspaces()
         .into_iter()

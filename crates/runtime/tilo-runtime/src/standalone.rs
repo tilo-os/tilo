@@ -54,7 +54,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending,
 };
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
@@ -765,7 +765,8 @@ impl Certificates {
             .joined
             .upgrade()
             .ok_or("runtime custody owner unavailable")?;
-        let workspace = RoomId::parse(&workspace.to_string()).ok_or("invalid exact workspace")?;
+        let workspace =
+            WorkspaceId::parse(&workspace.to_string()).ok_or("invalid exact workspace")?;
         joined.recheck_mcp_executions(workspace)
     }
 }
@@ -966,7 +967,7 @@ fn place_own_workspace(
 ) -> io::Result<()> {
     let workspace_id = workspace.workspace();
     let (key, cert) = tilo_identity_host::broker::trusted_current_device(&workspace_id)?;
-    let workspace_id = RoomId::parse(&workspace_id)
+    let workspace_id = WorkspaceId::parse(&workspace_id)
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
     let host = tilo_rt::app()
         .handle()
@@ -1017,7 +1018,8 @@ fn joined_workspaces_and_keys(
     let joined = joined_workspaces(profile, (workspace, governs), custody.clone(), broker)?;
     let keys = channels::open(
         profile,
-        RoomId::parse(workspace).ok_or_else(|| io::Error::other("invalid runtime workspace"))?,
+        WorkspaceId::parse(workspace)
+            .ok_or_else(|| io::Error::other("invalid runtime workspace"))?,
         storage,
         custody.0,
         Arc::clone(&joined),
@@ -1035,7 +1037,7 @@ fn workspace_store(
     joined: &Joined,
     workspace: &ProfileWorkspace,
 ) -> io::Result<Option<StoreService>> {
-    let own = RoomId::parse(&workspace.workspace())
+    let own = WorkspaceId::parse(&workspace.workspace())
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
     joined
         .store(&root.join(STORE), own, workspace.governs())
@@ -1069,7 +1071,7 @@ fn joined_workspaces(
         .map_err(io::Error::other)?;
     let mut refused = joined::desktop_enrolled(profile)?;
     if !governs {
-        refused.extend(RoomId::parse(workspace));
+        refused.extend(WorkspaceId::parse(workspace));
     }
     Joined::open(profile, custody, endpoint, refused, broker)
 }

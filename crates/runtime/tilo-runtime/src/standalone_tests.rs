@@ -12,7 +12,7 @@ use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::broker::WorkspaceMembership;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -43,14 +43,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         return;
     }
 
-    let placed = RoomId::new();
+    let placed = WorkspaceId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
     let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let mut workspace = Workspace::in_workspace(WorkspaceSlot(41), placed, "Execution isolation");
     workspace.set_owner(actor.clone());
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
         ..WorkspaceTree::default()
@@ -366,7 +366,7 @@ const WRITTEN: &str = "written by an SDK app";
 /// profile's own workspace, opened with the channel's keys.
 fn written(session: &Standalone) -> Option<String> {
     use automerge::ReadDoc as _;
-    let workspace = RoomId::parse(session.workspace())?;
+    let workspace = WorkspaceId::parse(session.workspace())?;
     let record = ui::record::RecordId::for_file_record(uuid::Uuid::parse_str(WRITER_RECORD).ok()?);
     let bytes = session
         .joined
@@ -544,7 +544,7 @@ fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
 
 fn listed_workspace(root: &Path) -> String {
     let tree = read_tree(&root.join(STANDALONE_WORKSPACE)).unwrap();
-    tree.workspaces[0].room().to_string()
+    tree.workspaces[0].id().to_string()
 }
 
 const PERSONAL_STORE_TEST: &str =
@@ -613,11 +613,11 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         Some("person-1")
     );
     let mut seen = None;
-    WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].room(), &mut |workspace| {
+    WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].id(), &mut |workspace| {
         seen = Some(workspace.name.clone());
     });
     assert_eq!(seen.as_deref(), Some("Home"));
-    WorkspaceMembership::with_workspace(&reopened, &RoomId::new(), &mut |_| {
+    WorkspaceMembership::with_workspace(&reopened, &WorkspaceId::new(), &mut |_| {
         panic!("no such workspace");
     });
 }
@@ -626,7 +626,7 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
 fn effect_records_persist_in_the_profile() {
     let temp = tempfile::tempdir().unwrap();
     let tree = bootstrap();
-    let workspace_id = tree.workspaces[0].room().to_string();
+    let workspace_id = tree.workspaces[0].id().to_string();
     std::fs::write(
         temp.path().join(STANDALONE_WORKSPACE),
         serde_json::to_vec_pretty(&tree).unwrap(),
@@ -655,7 +655,13 @@ fn effect_records_persist_in_the_profile() {
     }
     assert!(
         workspace
-            .record_effect(&RoomId::new().to_string(), invocation, "a", context, status)
+            .record_effect(
+                &WorkspaceId::new().to_string(),
+                invocation,
+                "a",
+                context,
+                status
+            )
             .is_err()
     );
 
@@ -677,7 +683,7 @@ fn the_desktop_sessions_workspace_refuses_records() {
     let temp = tempfile::tempdir().unwrap();
     let mut tree = bootstrap();
     tree.workspaces[0].set_owner("desktop-owner".to_owned());
-    let workspace_id = tree.workspaces[0].room().to_string();
+    let workspace_id = tree.workspaces[0].id().to_string();
     let bytes = serde_json::to_vec_pretty(&tree).unwrap();
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();
@@ -715,7 +721,7 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-    assert_eq!(workspace.workspace(), tree.workspaces[0].room().to_string());
+    assert_eq!(workspace.workspace(), tree.workspaces[0].id().to_string());
     workspace.adopt("someone-else").unwrap();
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
@@ -800,7 +806,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
 
     assert!(grants.may_grant(&workspace_id, "owner"));
     assert!(!grants.may_grant(&workspace_id, "stranger"));
-    assert!(!grants.may_grant(&RoomId::new().to_string(), "owner"));
+    assert!(!grants.may_grant(&WorkspaceId::new().to_string(), "owner"));
     let recorded = |person: &str| {
         tilo_rt::app()
             .block_on(grants.record(
@@ -848,7 +854,7 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
     let temp = tempfile::tempdir().unwrap();
     let mut tree = bootstrap();
     tree.workspaces[0].set_owner("owner".to_owned());
-    let workspace_id = tree.workspaces[0].room().to_string();
+    let workspace_id = tree.workspaces[0].id().to_string();
     let bytes = serde_json::to_vec_pretty(&tree).unwrap();
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();

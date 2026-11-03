@@ -106,7 +106,7 @@ fn fixture() -> Fixture {
     let home = tempfile::tempdir().unwrap();
     let mut workspace = Workspace::new(WorkspaceSlot(61), "Content puts");
     workspace.set_owner(owner_id());
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.notes", KindSet::ALL);
     workspace.admit_agent("porter", KindSet::READ);

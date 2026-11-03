@@ -1,4 +1,4 @@
-/// Sentinel cluster id: `tilo_desktop_model::RoomId::nil` rendered as
+/// Sentinel cluster id: `tilo_desktop_model::WorkspaceId::nil` rendered as
 /// a string. A workspace announces this when its durable workspace identity
 /// has not been minted yet; never delivered to or from — see
 /// [`CrdtRoute::is_addressable`].

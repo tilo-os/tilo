@@ -1519,7 +1519,7 @@ pub fn snapshot_with(
             .map(|w| WorkspaceEntry {
                 id: w.slot.0.to_string(),
                 label: w.name.clone(),
-                workspace: w.room().to_string(),
+                workspace: w.id().to_string(),
                 owner: w.owner().cloned(),
                 strips: w
                     .strips

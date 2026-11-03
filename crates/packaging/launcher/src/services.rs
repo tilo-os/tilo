@@ -1056,24 +1056,33 @@ mod image_interface_tests {
             );
         }
 
+        // The examples are copied into new apps (`tilo-app new --from-example`),
+        // so they must fit the image they are scaffolded on as well.
         let mut checked = 0;
-        for entry in std::fs::read_dir(repo.join("apps")).expect("apps/ readable") {
-            let path = entry.expect("dir entry").path().join("tilo-app.toml");
-            let Ok(raw) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let manifest = tilo_app_package::Manifest::from_toml_str(&raw)
-                .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display()));
-            let unmet = provided.unmet(&manifest.interface_versions());
-            assert!(
-                unmet.is_empty(),
-                "{} requires {}",
-                path.display(),
-                tilo_app_package::interfaces::describe_unmet(&unmet)
-            );
-            checked += 1;
+        for root in ["apps", "examples/apps"] {
+            let mut in_root = 0;
+            for entry in std::fs::read_dir(repo.join(root))
+                .unwrap_or_else(|e| panic!("{root}/ is readable: {e}"))
+            {
+                let path = entry.expect("dir entry").path().join("tilo-app.toml");
+                let Ok(raw) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let manifest = tilo_app_package::Manifest::from_toml_str(&raw)
+                    .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display()));
+                let unmet = provided.unmet(&manifest.interface_versions());
+                assert!(
+                    unmet.is_empty(),
+                    "{} requires {}",
+                    path.display(),
+                    tilo_app_package::interfaces::describe_unmet(&unmet)
+                );
+                in_root += 1;
+            }
+            assert!(in_root > 0, "no app manifests found under {root}/");
+            checked += in_root;
         }
-        assert!(checked > 40, "only {checked} app manifests found");
+        assert!(checked > 50, "only {checked} app manifests found");
 
         let settings = tilo_app_package::Manifest::from_toml_str(
             &std::fs::read_to_string(repo.join("apps/settings/tilo-app.toml")).unwrap(),

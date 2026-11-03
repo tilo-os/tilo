@@ -118,6 +118,7 @@ reply_all = 72f72tm7
 reply_all_to = ym62maet
 reply_to = h5fphq56
 scenario "a busy inbox" = jjchy27c
+scenario "a mailbox on its own" = f3gdn7bt
 scenario "a reply being written" = yzfawxd2
 scenario "no account yet" = 6t5kuylv
 send = qcfc2rhb

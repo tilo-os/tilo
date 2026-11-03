@@ -45,7 +45,7 @@ use tilo_action_broker::collab_broker::AppActionBroker;
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::RecordEvent;
 use tilo_automation::{RunId, ScheduleClaim, TriggerSpec};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
@@ -347,7 +347,7 @@ impl Automation {
             let workspaces: BTreeMap<String, String> = self.handle.read(|tree| {
                 tree.workspaces
                     .iter()
-                    .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
+                    .map(|workspace| (workspace.id().to_string(), workspace.name.clone()))
                     .collect()
             });
             firings.extend(
@@ -419,13 +419,13 @@ impl Automation {
         self.handle.read(|tree| {
             armed(
                 &tree.workspaces,
-                |workspace| self.person_in(&workspace.room().to_string()),
+                |workspace| self.person_in(&workspace.id().to_string()),
                 // A workspace this device holds arms against what its
                 // governance revokes. One it does not hold is a workspace on
                 // the desk whose records live elsewhere: nothing of it is
                 // known here, and the run it starts is refused by the broker
                 // unless the workspace it holds says otherwise.
-                |workspace| Some(revocations(&workspace.room().to_string()).unwrap_or_default()),
+                |workspace| Some(revocations(&workspace.id().to_string()).unwrap_or_default()),
                 now_ns,
             )
         })
@@ -552,7 +552,7 @@ impl Automation {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|held| held.room().to_string() == workspace)
+            .find(|held| held.id().to_string() == workspace)
             .ok_or("this device holds no such workspace")?;
         match change {
             tilo_automation::ShortcutChange::Save(shortcut) => {
@@ -584,14 +584,14 @@ impl Automation {
     /// Record `claim` in `workspace`: the fire time this device took, which
     /// its other devices read back and leave alone.
     fn claim(&self, workspace: &str, claim: &ScheduleClaim) {
-        let Some(workspace_id) = RoomId::parse(workspace) else {
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
         };
         let mut tree = self.handle.read(Clone::clone);
         let Some(workspace) = tree
             .workspaces
             .iter_mut()
-            .find(|held| held.room() == workspace_id)
+            .find(|held| held.id() == workspace_id)
         else {
             return;
         };

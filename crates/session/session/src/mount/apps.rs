@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
+use tilo_action_broker::services::LaunchPlace;
 use tilo_actions::DoorError;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, RemoteActionTarget, provider_workspace,
@@ -75,6 +76,10 @@ struct State {
     /// the launch retires it, so the app's next window there starts a process
     /// again.
     held: BTreeMap<u64, HeldDoor>,
+    /// What the tool a launch opens was asked to show, for the one launch
+    /// being planned (`TILO_TOOL_CONTEXT`): set only while a launch a service
+    /// asked for is being started, and read where it is planned.
+    tool_context: Option<String>,
 }
 
 impl Apps {
@@ -109,6 +114,7 @@ impl Apps {
                 doors: None,
                 me: Weak::new(),
                 held: BTreeMap::new(),
+                tool_context: None,
             }),
         }
     }
@@ -163,11 +169,62 @@ impl Apps {
         self.state.borrow().spawner.end_running();
     }
 
-    /// Start what the desktop queued since the last pass, and show what
-    /// stopped: called once per pass of the session's loop.
+    /// Start what the desktop queued since the last pass, show what
+    /// stopped, and start what a service, an app or an agent asked for: called
+    /// once per pass of the session's loop.
     pub fn follow(&self) {
         self.start_asked();
+        self.start_asked_of_services();
         self.follow_ended();
+    }
+
+    /// The launches services, apps and agents asked the session for: each is
+    /// started on the path the desk's own launches take, in the workspace the
+    /// asker named, and the asker is told how it went.
+    fn start_asked_of_services(&self) {
+        let Some(launches) = self.state.borrow().launches.clone() else {
+            return;
+        };
+        for request in launches.take_waiting() {
+            let workspace = if request.workspace.is_empty() {
+                self.active_workspace()
+            } else {
+                self.workspace_named(&request.workspace)
+            };
+            let context = request.context.clone();
+            let started = self.starting_tool(context.as_deref(), || {
+                if matches!(request.place, LaunchPlace::Beside { .. }) {
+                    self.start_beside(&request.launch, &workspace)
+                } else {
+                    self.start(&request.launch, &workspace)
+                }
+            });
+            if let Err(error) = &started {
+                tracing::warn!(
+                    app = %request.launch.id(),
+                    workspace = %workspace.id,
+                    %error,
+                    "an app a service asked for did not start"
+                );
+            }
+            request.answer(started.map_err(|error| error.to_string()));
+        }
+    }
+
+    /// Start what `start` launches with the tool `context` it opens: what the
+    /// service that asked for the launch told the tool to show.
+    fn starting_tool(
+        &self,
+        context: Option<&str>,
+        start: impl FnOnce() -> Result<(), DoorError>,
+    ) -> Result<(), DoorError> {
+        let previous = std::mem::replace(
+            &mut self.state.borrow_mut().tool_context,
+            context.map(str::to_owned),
+        );
+        let started = start();
+        self.state.borrow_mut().tool_context = previous;
+        started
     }
 
     /// The launches the desktop queued: each named app is planned against
@@ -299,7 +356,7 @@ impl Apps {
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         handle.read(|tree| match tree.active_workspace() {
             Some(shown) => {
-                let mut launched = Workspace::under(&runtime_dir(), shown.room().to_string());
+                let mut launched = Workspace::under(&runtime_dir(), shown.id().to_string());
                 launched.grants = shown.launch_grants(unix_seconds());
                 launched
             }
@@ -320,7 +377,7 @@ impl Apps {
                     let held = tree
                         .workspaces
                         .iter()
-                        .find(|held| held.room().to_string() == workspace);
+                        .find(|held| held.id().to_string() == workspace);
                     let mut launched = Workspace::under(&runtime_dir(), workspace.to_owned());
                     if let Some(workspace) = held {
                         launched.grants = workspace.launch_grants(unix_seconds());
@@ -374,8 +431,17 @@ impl Apps {
             };
             Planned::of(launch, &context)
         };
-        let planned =
+        let mut planned =
             planned.map_err(|error| DoorError::Failed(format!("{}: {error}", launch.id())))?;
+        // The tool this launch opens is told what to show: only a package is
+        // given it, as only a package is spliced through the launcher.
+        if let (Some(context), Kind::Package) =
+            (self.state.borrow().tool_context.clone(), planned.kind)
+        {
+            planned
+                .env
+                .insert(runtime_portal::tools::TOOL_CONTEXT_ENV.to_owned(), context);
+        }
         let asked = launch.id();
         let Some(doors) = self.state.borrow().doors.clone() else {
             return self.spawn(&planned, &asked, &workspace.id, None);

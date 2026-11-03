@@ -66,7 +66,7 @@ pub(crate) fn list(
         // Signed membership is a separate projection from Files access: who
         // the workspace's policy lets read it, per relay shard.
         workspace_members.insert(
-            tilo_network_actor::workspace_topic_id(workspace.room()).to_string(),
+            tilo_network_actor::workspace_topic_id(workspace.id()).to_string(),
             workspace
                 .workspace_readers_at(now)
                 .iter()
@@ -473,7 +473,7 @@ mod tests {
         let published = list(&tree, PERSON, None, 0);
         let readers = published
             .workspace_members
-            .get(&tilo_network_actor::workspace_topic_id(tree.workspaces[0].room()).to_string())
+            .get(&tilo_network_actor::workspace_topic_id(tree.workspaces[0].id()).to_string())
             .expect("the workspace's topic");
         assert!(
             readers

@@ -336,7 +336,7 @@ mod tests {
 
     fn agent_task_fixture() -> (WorkspaceTree, RecordStore, WorkspaceActivityPane, RecordId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let workspace = tree.desktop.active_workspace().expect("workspace").room();
+        let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn an_apps_workspace_document_is_part_of_the_workspace_history() {
         struct WorkspaceDocuments {
-            workspace: tilo_desktop_model::RoomId,
+            workspace: tilo_desktop_model::WorkspaceId,
             id: RecordId,
             document: Vec<u8>,
         }
@@ -443,7 +443,7 @@ mod tests {
             }
             fn workspace_documents(
                 &self,
-                workspace: tilo_desktop_model::RoomId,
+                workspace: tilo_desktop_model::WorkspaceId,
             ) -> Vec<ui::RecordCheckout> {
                 if workspace == self.workspace {
                     vec![ui::RecordCheckout::new(
@@ -457,7 +457,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let workspace = tree.desktop.active_workspace().expect("workspace").room();
+        let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "body", "Hallo").unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
@@ -513,7 +513,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let workspace = tree.desktop.active_workspace().expect("workspace").room();
+        let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let kind = ui::RecordKind::new("document");
         let agent = ActorId::from(b"writing-agent".as_slice());
@@ -928,7 +928,7 @@ mod tests {
     fn catch_up_persists_only_what_the_app_showed() {
         let (mut tree, workspace, _) = peers_busy_workspace();
         let records = RecordStore::in_memory();
-        let identity = tree.active_workspace().expect("workspace").room();
+        let identity = tree.active_workspace().expect("workspace").id();
         let identity_text = identity.to_string();
         for n in 0..12 {
             let id = RecordId::for_file(format!("result-{n}.note"));
@@ -2671,7 +2671,7 @@ mod tasks_link_tests {
         assert_eq!(undo.task_id, "task:1");
         assert_eq!(
             undo.workspace,
-            tree.active_workspace().unwrap().room().to_string()
+            tree.active_workspace().unwrap().id().to_string()
         );
         assert_eq!(
             undo.steps,
@@ -3026,7 +3026,7 @@ mod morning_source_tests {
         assert_eq!(pane.chosen_morning_sources().len(), 1);
         assert_eq!(pane.seen_frontiers, before);
         let key = pane.chosen_morning_sources()[0].key();
-        let workspace = tree.workspaces[0].room();
+        let workspace = tree.workspaces[0].id();
         let mut restarted = WorkspaceActivityPane::new();
         restarted.set_host(host.clone());
         restarted.load_frontiers();
@@ -3038,7 +3038,8 @@ mod morning_source_tests {
             None,
         );
         assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
-        tree.workspaces[0] = same_id_in(&tree.workspaces[0], tilo_desktop_model::RoomId::new());
+        tree.workspaces[0] =
+            same_id_in(&tree.workspaces[0], tilo_desktop_model::WorkspaceId::new());
         restarted.refresh(&mut tree);
         assert!(
             restarted.chosen_morning_sources().is_empty(),
@@ -3378,7 +3379,7 @@ mod reader_tests {
 /// (a workspace id never changes its workspace).
 fn same_id_in(
     workspace: &tilo_desktop_model::Workspace,
-    other_workspace: tilo_desktop_model::RoomId,
+    other_workspace: tilo_desktop_model::WorkspaceId,
 ) -> tilo_desktop_model::Workspace {
     let mut other = tilo_desktop_model::Workspace::in_workspace(
         workspace.slot,
