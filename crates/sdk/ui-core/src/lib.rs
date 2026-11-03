@@ -436,7 +436,9 @@ pub use local_state::{
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
-pub use platform::{DialogActionOrder, Platform, PlatformConventions, Shortcut, spell_shortcut};
+pub use platform::{
+    DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
+};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,

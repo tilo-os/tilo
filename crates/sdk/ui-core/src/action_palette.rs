@@ -42,7 +42,6 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::search::system::{ResourceKind, icon_for_kind};
 use crate::search::{
     Facet, FacetFilter, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchCursor,
     SearchProvider, SearchQuery, SearchResult,
@@ -153,7 +152,7 @@ const VIEW_OPEN_SUFFIX: &str = "#open";
 const PER_GROUP_CAP: usize = 12;
 
 mod row_text;
-pub(crate) use row_text::{found_by, merged_facets, scope_token_label, shows_a_hit, without_token};
+pub(crate) use row_text::{found_by, lists_a_row, merged_facets, scope_token_label, without_token};
 /// Maximum number of provider hits materialised for one keystroke. Providers
 /// may emit several groups, so leave room for each while keeping work bounded.
 const PROVIDER_HIT_BUDGET: usize = 32;
@@ -2308,13 +2307,7 @@ impl ActionPalette {
             .into_iter()
             // Programmatic actions are for agents and scripts, never a row;
             // a scoped palette offers the actions of that part of the app.
-            .filter(|fa| {
-                fa.action.contract.availability.is_available()
-                    && fa.action.reaches_people()
-                    && tilo_actions::listed_for_people(&fa.resource_kind, &fa.resource_label)
-                    && !shows_a_hit(fa.action)
-                    && parsed.in_scope(fa.resource_id.as_str())
-            })
+            .filter(|fa| lists_a_row(fa) && parsed.in_scope(fa.resource_id.as_str()))
             .collect();
         // Two open documents offering the same action read alike: name the
         // document under each, so the person can tell which one it acts on.
@@ -2339,10 +2332,7 @@ impl ActionPalette {
             let found = found_by(&row, &fa.resource_label);
             // The same row the app's own search shows: its picture, and its
             // shortcut as the keys it names.
-            let mut entry = CommandEntry::from_flat_action_shown(fa, row);
-            if entry.icon.is_none() {
-                entry.icon = Some(icon_for_kind(&ResourceKind::Action));
-            }
+            let entry = CommandEntry::of_action(fa, row, self.platform);
             let mut r = entry.result(ACTIONS_KIND, self.platform);
             if let Some(preview) = fa
                 .resource_presentation
@@ -2366,11 +2356,7 @@ impl ActionPalette {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {
-                    if !fa.action.contract.availability.is_available()
-                        || !fa.action.reaches_people()
-                        || !tilo_actions::listed_for_people(&fa.resource_kind, &fa.resource_label)
-                        || shows_a_hit(fa.action)
-                    {
+                    if !lists_a_row(&fa) {
                         continue;
                     }
                     // The same row as any other action: never the component
@@ -2393,10 +2379,7 @@ impl ActionPalette {
                         continue;
                     }
                     let found = found_by(&row, &fa.resource_label);
-                    let mut entry = CommandEntry::from_flat_action_shown(&fa, row);
-                    if entry.icon.is_none() {
-                        entry.icon = Some(icon_for_kind(&ResourceKind::Action));
-                    }
+                    let mut entry = CommandEntry::of_action(&fa, row, self.platform);
                     entry.id = key;
                     candidates.push((
                         entry.result(ACTIONS_KIND, self.platform),
@@ -2480,13 +2463,31 @@ impl ActionPalette {
         // The hits of the query: what an action row acts on, where that is a row of this same
         // list. An action's secondary line that only says the name of the hit under it is that
         // hit's own title, shown twice, and is left off.
-        let hit_titles: std::collections::HashSet<&str> = self
+        let hits: Vec<&SearchResult> = self
             .provider_rows
             .iter()
-            .filter(|row| self.provider_row_is_current(&row.action_id) && row.kind != ACTIONS_KIND)
+            .filter(|row| self.provider_row_is_current(&row.action_id))
+            .collect();
+        // A hit that invokes an action stands for it: the same command as an
+        // action's own row, so the list shows the one place that runs it.
+        let taken: std::collections::HashSet<tilo_actions::ActionAddress> = hits
+            .iter()
+            .filter(|row| row.kind != ACTIONS_KIND)
+            .filter_map(|row| match self.provider_index.get(&row.action_id) {
+                Some(RowResolution::Address(address)) => Some(address.clone()),
+                Some(RowResolution::Navigate(..) | RowResolution::Bound(_)) | None => None,
+            })
+            .collect();
+        let hit_titles: std::collections::HashSet<&str> = hits
+            .iter()
+            .filter(|row| row.kind != ACTIONS_KIND)
             .map(|row| row.title.trim())
             .collect();
         let mut rows = self.action_rows.clone();
+        rows.retain(|row| match self.base_index.get(&row.action_id) {
+            Some(RowResolution::Address(address)) => !taken.contains(address),
+            _ => true,
+        });
         for row in &mut rows {
             let restates_a_hit = row
                 .subtitle
@@ -2496,12 +2497,7 @@ impl ActionPalette {
                 row.subtitle = None;
             }
         }
-        rows.extend(
-            self.provider_rows
-                .iter()
-                .filter(|row| self.provider_row_is_current(&row.action_id))
-                .cloned(),
-        );
+        rows.extend(hits.into_iter().cloned());
         let groups = rank_and_group(&self.search_query, rows);
         let mut index = self.base_index.clone();
         for row in groups.iter().flat_map(|group| &group.results) {

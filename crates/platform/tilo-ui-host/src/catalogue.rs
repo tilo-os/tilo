@@ -89,12 +89,15 @@ impl AppWindow {
 /// of it, and the operation that hands its address to the app when the person chooses it.
 fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     let address = descriptor.address.clone();
-    // The app says what an invocation of its action takes. One that takes nothing runs from
-    // the palette at once, and the app supplies whatever it defaults; one that takes words is
-    // asked them in the app's own words, and they are handed over under the parameter the app
-    // named them by.
+    // The app says what an invocation of its action takes, and the window lists and collects it
+    // by that same declaration: one that takes nothing runs from the palette at once, and one
+    // that takes words is asked them in the app's own words and handed over under the parameter
+    // the app named them by.
     let (params, placeholder) = match &descriptor.input {
         InputSpec::None => (Vec::new(), String::new()),
+        InputSpec::Text { placeholder, .. } if !descriptor.params.is_empty() => {
+            (descriptor.params.clone(), placeholder.clone())
+        }
         InputSpec::Text {
             prompt,
             placeholder,
@@ -148,6 +151,11 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     }
     ty.keywords.clone_from(&descriptor.keywords);
     ty.icon.clone_from(&descriptor.icon);
+    // Whether it can run now, as the app says: an action whose precondition does not hold is
+    // not offered, so the window does not offer it either.
+    ty.contract
+        .availability
+        .clone_from(&descriptor.contract.availability);
     // The window offers the app's actions to whoever the app offers them to: one it keeps for
     // agents stays out of what a person is shown here, as it is everywhere else.
     ty.contract.set_audience(descriptor.contract.audience());

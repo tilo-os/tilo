@@ -468,6 +468,54 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
     );
 }
 
+/// The window declares each published action as the app declared it — what it takes, and
+/// whether it can run now — because that is what its palette lists by.
+#[test]
+fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
+    use tilo_actions::{ActionParam, ActionSpec, ExecutionLocus, ParamType, Pick, ResourceSpec};
+    let spec = ActionSpec::typed(
+        "remove",
+        "Remove",
+        "Remove",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("task", ParamType::Object, "task: Task").picking(
+                Pick::Resource {
+                    kind: "test.tasks.Task".to_owned(),
+                },
+            ),
+        ],
+        |_args| tilo_actions::EncodedAction {
+            type_id: "test.create".to_owned(),
+            payload: Vec::new(),
+        },
+    )
+    .unavailable("nothing_selected", "Choose a task first");
+    let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
+    let published = serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes");
+
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(
+        &mut app,
+        &[ToUi::Actions(wire::ActionCatalogue::All(published))],
+    );
+    window.receive();
+    let catalogue = window.catalogue();
+    let action = &catalogue
+        .first()
+        .and_then(|resource| resource.actions.first())
+        .expect("the app's action is declared for the window");
+    assert!(
+        !action.takes_a_row_answer(),
+        "a task is picked where tasks are, not typed into a row"
+    );
+    assert!(
+        !action.contract.availability.is_available(),
+        "and the app says it cannot run now"
+    );
+}
+
 /// A view whose header offers `Archive` as a button declaring `key`, as `std.header` builds
 /// it for an action with that shortcut: the `key` prop and the button's `press`.
 fn keyed_menu(key: &str) -> Vec<ToUi> {

@@ -34,13 +34,12 @@ use crate::rank;
 /// The provider id of the window's actions.
 pub const ACTIONS: &str = "window-actions";
 
-/// Whether a person may pick `spec` from a palette now: offered to people,
-/// available, asking at most what a row can collect, and not the opening of
-/// a search hit (which a hit of the app's own search stands for).
+/// Whether a person may pick `spec` from a palette now: what a row can take
+/// ([`ui::search::system::a_row_a_person_can_take`], the rule an app's own
+/// palette lists by), and not the opening of a search hit (which a hit of the
+/// app's own search stands for).
 fn offered(spec: &ActionSpec) -> bool {
-    spec.reaches_people()
-        && spec.contract.availability.is_available()
-        && spec.takes_a_row_answer()
+    ui::search::system::a_row_a_person_can_take(spec)
         && spec.operation_type.as_deref() != Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
 }
 

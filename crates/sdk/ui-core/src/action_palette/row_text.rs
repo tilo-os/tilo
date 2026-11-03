@@ -62,3 +62,13 @@ pub(crate) fn found_by(row: &tilo_actions::ListedRow, resource: &str) -> Option<
 pub(crate) fn shows_a_hit(action: &tilo_actions::ActionSpec) -> bool {
     action.operation_type.as_deref() == Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
 }
+
+/// Whether the palette lists this action of `fa`'s resource as a row: what a
+/// person can take now
+/// ([`a_row_a_person_can_take`](crate::search::system::a_row_a_person_can_take)),
+/// listed for people, and no second row for a search hit's own open.
+pub(crate) fn lists_a_row(fa: &tilo_actions::FlatAction<'_>) -> bool {
+    crate::search::system::a_row_a_person_can_take(fa.action)
+        && tilo_actions::listed_for_people(&fa.resource_kind, &fa.resource_label)
+        && !shows_a_hit(fa.action)
+}

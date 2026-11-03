@@ -139,3 +139,145 @@ fn a_list_that_fits_the_card_is_told_apart_from_one_that_does_not() {
         "one row more would be cut at the card's edge"
     );
 }
+
+/// A message with `action` published on it, the item a person found and can
+/// act on.
+fn message_with(action: ActionSpec) -> ResourceSpec {
+    ResourceSpec::new(
+        "tl:so.tilo.chat:root/messages/m1",
+        "chat.workspace.messages",
+        "The onboarding notes",
+    )
+    .with_action(action)
+}
+
+/// The published action `spec` of a chat message, so a test states only what
+/// it is about.
+fn an_action(
+    id: &str,
+    label: &str,
+    params: Vec<tilo_actions::ActionParam>,
+) -> tilo_actions::ActionSpec {
+    ActionSpec::typed(
+        id,
+        label,
+        label,
+        ExecutionLocus::ClientLocal,
+        params,
+        |_args| EncodedAction {
+            type_id: "test.note".into(),
+            payload: Vec::new(),
+        },
+    )
+}
+
+/// What a row cannot take, the palette does not offer: a value picked where it
+/// lives, and an action nobody can run now. What it does offer keeps the
+/// picture and the chord the toolkit knows it by.
+#[test]
+fn the_palette_offers_only_what_a_row_can_take_now_with_its_own_picture_and_key() {
+    use tilo_actions::{ActionParam, ParamType, Pick};
+
+    let mut message = message_with(an_action(
+        "assign",
+        "Assign to…",
+        vec![ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Subject)],
+    ));
+    message = message.with_action(an_action(
+        "remove",
+        "Remove",
+        vec![
+            ActionParam::required("message", ParamType::Object, "Message").picking(
+                Pick::Resource {
+                    kind: "chat.workspace.messages".into(),
+                },
+            ),
+        ],
+    ));
+    message = message.with_action(
+        an_action("snooze", "Snooze", Vec::new())
+            .unavailable("nothing_selected", "Choose a message first"),
+    );
+    // The toolkit's own command: no picture and no chord of its own.
+    message = message.with_action(an_action("undo", "Undo", Vec::new()));
+    let resources = vec![
+        ResourceSpec::new("tl:so.tilo.chat:root", "chat.workspace", "Chat").with_child(message),
+    ];
+
+    let palette = search_palette(&resources, Box::new(OneHit("The onboarding notes")));
+    let rows = palette.result_rows();
+    let labels: Vec<&str> = rows.iter().map(|(title, _)| title.as_str()).collect();
+    for row in ["Assign to…", "Remove", "Snooze"] {
+        assert!(
+            !labels.contains(&row),
+            "a row is listed only when a person can take it now: {rows:?}"
+        );
+    }
+    assert!(labels.contains(&"Undo"), "{rows:?}");
+
+    let rows = palette.result_hits();
+    let undo = rows
+        .iter()
+        .find(|row| row.title == "Undo")
+        .expect("Undo is a row");
+    assert_eq!(
+        undo.icon,
+        Some(crate::icons::Icon::Undo2),
+        "a host command is drawn as the toolkit draws it"
+    );
+    let platform = crate::platform::PlatformConventions::default();
+    let Some(crate::search::SearchRow::Command(command)) = &undo.row else {
+        panic!("a command row is painted from its command: {undo:?}");
+    };
+    assert_eq!(
+        command.keycaps,
+        Some(
+            crate::platform::HostShortcut::Undo
+                .shortcut(platform)
+                .keycap_labels(platform)
+        ),
+        "and shows the chord the press means, from the one shortcut table"
+    );
+}
+
+/// A hit that runs an action stands for it: the action's own row would run the
+/// same thing twice, so the list keeps the one place that runs it.
+#[test]
+fn a_hit_that_runs_an_action_is_its_row() {
+    let resources = vec![
+        ResourceSpec::new("tl:so.tilo.chat:root", "chat.workspace", "Chat")
+            .with_action(
+                ActionSpec::operation(
+                    "open",
+                    "Open",
+                    tilo_actions::OperationKind::View,
+                    "test.note",
+                    &(),
+                )
+                .unwrap(),
+            )
+            .with_action(an_action("pin", "Pin", Vec::new())),
+    ];
+    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        SearchField::with_language("en_US")
+    });
+    palette.load_open_resources(&resources);
+    palette.set_providers(vec![Box::new(crate::search::OpenResourceSearch::new(
+        &resources,
+    ))]);
+    palette.open();
+    while palette.advance_search_page().pending {}
+
+    let rows = palette.result_rows();
+    let labels: Vec<&str> = rows.iter().map(|(title, _)| title.as_str()).collect();
+    assert_eq!(
+        labels.iter().filter(|label| **label == "Chat").count(),
+        1,
+        "the app's own row names it once: {rows:?}"
+    );
+    assert!(
+        !labels.contains(&"Open"),
+        "its row opens it, so no second row does: {rows:?}"
+    );
+    assert!(labels.contains(&"Pin"), "{rows:?}");
+}

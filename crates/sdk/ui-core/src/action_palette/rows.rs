@@ -9,7 +9,8 @@
 //! ([`ActionPalette::take_outcome`](crate::ActionPalette::take_outcome)).
 
 use crate::icons::{self, Icon};
-use crate::platform::{PlatformConventions, Shortcut};
+use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
+use crate::search::system::{ResourceKind, icon_for_kind};
 pub use crate::search::{ActivationModifier, Alternate, RowFace};
 use crate::search::{CommandRow, SearchResult, SearchRow};
 use tilo_actions::{ActionDescriptor, ActionInput, ActionState, FlatAction, InputSpec, ListedRow};
@@ -319,6 +320,30 @@ impl CommandEntry {
         }
         entry.icon = fa.action.icon.as_deref().and_then(Icon::from_name);
         entry.show_state(&fa.action.state);
+        entry
+    }
+
+    /// The row the palette lists for a published action: what the action says
+    /// of itself, the picture it declares (or, when it declares none, the one
+    /// its host command or its kind is listed by), and the host's own chord
+    /// where the action is one of the toolkit's commands
+    /// ([`HostShortcut::of_action`]) — the one shortcut table, so the row shows
+    /// the keys the press means.
+    #[must_use]
+    pub(crate) fn of_action(
+        fa: &FlatAction<'_>,
+        row: ListedRow,
+        platform: PlatformConventions,
+    ) -> Self {
+        let mut entry = Self::from_flat_action_shown(fa, row);
+        let host = HostShortcut::of_action(&fa.action.id);
+        if entry.icon.is_none() {
+            entry.icon =
+                Some(host.map_or_else(|| icon_for_kind(&ResourceKind::Action), HostShortcut::icon));
+        }
+        if entry.shortcut.is_none() && entry.keybinding.is_none() {
+            entry.shortcut = host.map(|host| host.shortcut(platform));
+        }
         entry
     }
 
