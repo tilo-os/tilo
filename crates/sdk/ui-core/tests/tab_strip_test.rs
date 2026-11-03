@@ -153,10 +153,19 @@ fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
         tilo_ui::Theme::light(),
     );
     harness.relayout();
-    let pill = *harness
-        .targets()
-        .get("tab:B")
-        .expect("the second pill is a target");
+    let pill = {
+        let strip = harness.root_widget().children()[0];
+        let mut names = Vec::new();
+        let found = strip
+            .test_rects()
+            .into_iter()
+            .find(|(name, rect)| {
+                names.push(name.clone());
+                name == "tab:B" && rect.area() > 0.0
+            })
+            .map(|(_, rect)| rect);
+        found.unwrap_or_else(|| panic!("the second pill is a target; the bar answers to {names:?}"))
+    };
     let device_id = tilo_ui::winit::event::DeviceId::dummy();
     harness.send_host_event(&tilo_ui::winit::event::WindowEvent::CursorMoved {
         device_id,
