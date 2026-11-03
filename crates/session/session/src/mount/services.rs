@@ -107,6 +107,8 @@ pub(crate) struct Collaboration<'a> {
     pub sealed: Sealed,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
+    /// The programs agents write in this session's tasks, run by its door.
+    pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
 }
 
 /// Where this session's apps reach its services, when it serves them: the
@@ -209,6 +211,7 @@ pub(crate) fn start_action_plane(
         engine,
         sealed,
         content,
+        task_programs,
     } = collaboration;
     let Some(path) = action_plane_path(options)? else {
         return Ok(None);
@@ -318,6 +321,9 @@ pub(crate) fn start_action_plane(
             // Files' waits for the drive and app lists to change, which the
             // tools service answers.
             tools,
+            // An agent's task writes its programs, and this session's door runs
+            // them as steps of the run the task is in.
+            task_programs,
         },
     )?;
     // What arrives on this device's action plane is answered by the broker

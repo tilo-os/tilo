@@ -1235,6 +1235,17 @@ fn unanswered() -> ActionHostError {
 }
 
 impl SessionDoors {
+    /// Who sits here: the person a program typed in a conversation, or one an agent writes in
+    /// its task, runs as.
+    pub(crate) fn person(&self) -> &str {
+        &self.person
+    }
+
+    /// The runs' program hosts, which a task's host is kept in beside a conversation's.
+    pub(crate) fn runs(&self) -> crate::run_programs::Shared {
+        std::sync::Arc::clone(&self.runs)
+    }
+
     /// The seam `wake` wakes the loop on, shared by every connection that
     /// asks the session's own doors, and the runs' program hosts (`runs`)
     /// whose person is `person`.

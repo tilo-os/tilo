@@ -143,6 +143,7 @@ mod status;
 pub mod surfaces;
 pub mod sync;
 mod system_sounds;
+mod task_programs;
 pub mod termination;
 pub mod test_control;
 pub mod unlock;
@@ -1354,6 +1355,16 @@ impl Session {
         // shows each run's conversation.
         let agent_runs = std::sync::Arc::clone(&the_runs);
         let run_programs = std::sync::Arc::clone(&the_programs);
+        // The seam the agent door's connections ask this session's own doors on, and where a
+        // task's programs are kept: made before the plane starts, which serves the programs.
+        let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
+            options.wake.handle(),
+            std::sync::Arc::clone(&run_programs),
+            &options.person,
+        ));
+        let task_programs = Some(std::sync::Arc::new(task_programs::TaskPrograms::new(
+            std::sync::Arc::clone(&session_doors),
+        )));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
         let desk = || desk_resource::Desk {
@@ -1531,6 +1542,7 @@ impl Session {
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
                 content: Some(record_content),
+                task_programs,
             },
         )?;
         // The agent door: a program of this login asks here to work in a
@@ -1565,11 +1577,6 @@ impl Session {
             tools: Some(tools),
             wake: options.wake.handle(),
         });
-        let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
-            options.wake.handle(),
-            std::sync::Arc::clone(&run_programs),
-            &options.person,
-        ));
         // The control door `tilo-control` reaches: the development socket and
         // the device admin's, both answered over the broker this session's
         // plane starts. It exists whether or not a socket opens, because a

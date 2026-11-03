@@ -352,6 +352,9 @@ pub struct Hosted {
     /// The session's tools service, while it serves one: what Files' waits
     /// for its drive and app lists' changes are answered from.
     pub tools: Option<crate::mount::tools::Handle>,
+    /// The programs the agents working this session's tasks write, which this
+    /// session's door runs as steps of their runs.
+    pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -698,6 +701,7 @@ fn seams(
         journal_root,
         lists,
         tools,
+        task_programs,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // The desk decides who may administer a workspace's identity, and the
@@ -860,18 +864,29 @@ fn seams(
         // workspace's activity the Activity app reads, pairing a nearby
         // device, and administering their identities and the devices trusted
         // under them, whose secret stays here.
-        host_steps: Seam::served(vec![
-            activity as std::sync::Arc<dyn HostStepServices>,
-            std::sync::Arc::new(crate::pairing::BrokerDoor {
-                desk: std::sync::Arc::clone(&desk_authority),
-                fabric: steps_fabric,
-                pairing: crate::pairing::Pairing::session(),
-            }),
-            std::sync::Arc::new(crate::identity_admin::BrokerDoor {
-                desk: desk_authority,
-                admin: crate::identity_admin::IdentityAdmin::session(),
-            }),
-        ]),
+        host_steps: Seam::served(
+            [
+                vec![
+                    activity as std::sync::Arc<dyn HostStepServices>,
+                    std::sync::Arc::new(crate::pairing::BrokerDoor {
+                        desk: std::sync::Arc::clone(&desk_authority),
+                        fabric: steps_fabric,
+                        pairing: crate::pairing::Pairing::session(),
+                    }),
+                    std::sync::Arc::new(crate::identity_admin::BrokerDoor {
+                        desk: desk_authority,
+                        admin: crate::identity_admin::IdentityAdmin::session(),
+                    }),
+                ],
+                // An agent's task writes its programs; this session's door runs them as the
+                // steps of the run the task is in.
+                task_programs
+                    .map(|programs| programs as std::sync::Arc<dyn HostStepServices>)
+                    .into_iter()
+                    .collect(),
+            ]
+            .concat(),
+        ),
     }
 }
 
@@ -1133,6 +1148,7 @@ mod tests {
             journal_root: None,
             lists,
             tools: None,
+            task_programs: None,
         }
     }
 

@@ -228,3 +228,9 @@ session-messages-send = Private Nachricht senden
 
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
 session-lock-screen = Sperrbildschirm
+
+## Was die Programme eines Agenten sind, wie sie die Aktionspforte anbietet:
+## ein Aufgaben-Agent schreibt jeweils ein Programm als Schritt seines Laufs.
+task-programs-resource = Aufgabenprogramme
+task-programs-run = Ein Programm ausführen
+task-programs-run-detail = Führt ein tilolang-Programm als Schritt des Laufs der Aufgabe aus, als der Agent, der an der Aufgabe arbeitet, und antwortet, was es gelesen oder geändert hat.
