@@ -193,7 +193,6 @@ struct DestinationBinding {
     peer_id: u64,
     channel: String,
     grant: PathBuf,
-    label: String,
     expires_at: Instant,
 }
 
@@ -284,7 +283,6 @@ impl State {
         peer_id: u64,
         channel: &str,
         grant: &Path,
-        label: &str,
         now: Instant,
     ) -> NearbyDestinationHandle {
         if let Some((handle, binding)) = self.destinations.iter_mut().find(|(_, binding)| {
@@ -301,7 +299,6 @@ impl State {
                 peer_id,
                 channel: channel.to_owned(),
                 grant: grant.to_path_buf(),
-                label: label.to_owned(),
                 expires_at: expires(now),
             },
         );
@@ -323,15 +320,14 @@ impl State {
             binding.expires_at = expires(now);
             return *handle;
         }
-        if self.transfers.len() >= MAX_TRANSFER_HANDLES {
-            if let Some(oldest) = self
+        if self.transfers.len() >= MAX_TRANSFER_HANDLES
+            && let Some(oldest) = self
                 .transfers
                 .iter()
                 .min_by_key(|(_, binding)| binding.expires_at)
                 .map(|(handle, _)| *handle)
-            {
-                self.transfers.remove(&oldest);
-            }
+        {
+            self.transfers.remove(&oldest);
         }
         let handle =
             NearbyTransferHandle::from_issued_bytes(tilo_device_fabric::random::nonzero::<16>());
@@ -744,7 +740,7 @@ impl NearbyTransfer {
         shown.sort_by_key(|(path, _)| usize::from(remembered.as_deref() != Some(path.as_path())));
         for (grant, label) in shown.into_iter().take(MAX_NEARBY_TRANSFER_DESTINATIONS) {
             let remembered_for_session = remembered.as_deref() == Some(grant.as_path());
-            let handle = state.bind_destination(peer_id, &channel, &grant, &label, now);
+            let handle = state.bind_destination(peer_id, &channel, &grant, now);
             snapshot.destinations.push(NearbyTransferDestination {
                 handle,
                 label: clamp(&label, MAX_NEARBY_TRANSFER_LABEL_BYTES),
@@ -770,6 +766,7 @@ impl NearbyTransfer {
                 total_bytes: row.total_bytes,
             });
         }
+        drop(state);
         snapshot
     }
 
@@ -789,12 +786,14 @@ impl NearbyTransfer {
             if binding.peer_id != context.peer_id() || binding.channel != context.channel() {
                 return Err(NOT_YOURS.to_owned());
             }
-            binding.target.clone()
+            let device = binding.target.clone();
+            drop(state);
+            device
         };
         let requested = PathBuf::from(std::ffi::OsStr::from_bytes(path));
         let source =
             source_from_grants(&requested, &self.inner.files_grants(context.workspace_id()))?;
-        let bytes = source.metadata().map_err(|error| error.to_string())?.len();
+        let bytes = source.metadata()?.len();
         if bytes == 0 {
             return Err("an empty file is not one Nearby Send carries".to_owned());
         }
@@ -851,7 +850,9 @@ impl NearbyTransfer {
             if binding.peer_id != context.peer_id() || binding.channel != context.channel() {
                 return Err(NOT_YOURS.to_owned());
             }
-            binding.grant.clone()
+            let grant = binding.grant.clone();
+            drop(state);
+            grant
         };
         let secured = SecureNearbyDestination::open_beneath(&grant, &grant)?;
         {
@@ -934,7 +935,9 @@ impl NearbyTransfer {
         if binding.peer_id != context.peer_id() || binding.channel != context.channel() {
             return Err(NOT_YOURS.to_owned());
         }
-        Ok(binding.transfer_id)
+        let transfer_id = binding.transfer_id;
+        drop(state);
+        Ok(transfer_id)
     }
 }
 
@@ -1091,6 +1094,10 @@ fn rows(state: &State) -> Vec<Row> {
 }
 
 /// Take every job the session hands over, keeping the spool on this thread.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the worker owns its end of the channel for the life of the thread"
+)]
 fn work(inner: &Arc<Inner>, jobs: Receiver<Job>) {
     let mut store: Option<NearbyTransferStore> = None;
     while let Ok(job) = jobs.recv() {
@@ -1576,19 +1583,22 @@ fn accept(
 ) -> Result<(), String> {
     let link = link_of(inner)?.clone();
     let store = open_store(inner, store)?;
-    let (committed_offset, prefix_hash) =
-        store.accept_incoming_offer(manifest.clone(), tilo_clock::unix_now_ms())?;
     let source = DeviceId::new(manifest.source.clone()).map_err(|error| error.to_string())?;
+    let request_id = manifest.request_id;
+    let (committed_offset, prefix_hash) =
+        store.accept_incoming_offer(manifest, tilo_clock::unix_now_ms())?;
     let ready = PersonalFabricAction::NearbyTransferReady {
-        request_id: manifest.request_id,
+        request_id,
         transfer_id,
         committed_offset,
         prefix_hash,
     };
     link.send_personal_fabric_action(&source, ready)?;
-    let mut state = inner.state.lock_recover();
-    state.offers.remove(&transfer_id);
-    state.installing.insert(transfer_id, destination);
+    {
+        let mut state = inner.state.lock_recover();
+        state.offers.remove(&transfer_id);
+        state.installing.insert(transfer_id, destination);
+    }
     Ok(())
 }
 
@@ -1632,10 +1642,10 @@ fn cancel_incoming(inner: &Inner, store: &mut Option<NearbyTransferStore>, trans
     if let Err(error) = link.send_personal_fabric_action(&source, declined) {
         tracing::debug!(%error, "a device was not told a nearby transfer was dropped");
     }
-    if entry.is_some() {
-        if let Err(error) = store.cancel_incoming(transfer_id) {
-            tracing::warn!(%error, "a received transfer was not removed");
-        }
+    if entry.is_some()
+        && let Err(error) = store.cancel_incoming(transfer_id)
+    {
+        tracing::warn!(%error, "a received transfer was not removed");
     }
     let name = offer
         .map(|offer| (offer.name, offer.total_bytes))
@@ -1830,10 +1840,10 @@ fn settled(
         .iter()
         .find(|entry| entry.id == transfer_id)
         .cloned();
-    if let Some(entry) = &entry {
-        if entry.target != source.as_str() {
-            return;
-        }
+    if let Some(entry) = &entry
+        && entry.target != source.as_str()
+    {
+        return;
     }
     // The receiving device either installed the file or refused it: either
     // way this device no longer needs the staged copy.
@@ -1905,7 +1915,8 @@ fn studio(
 impl Inner {
     /// Hand `job` to the thread that owns the spool.
     fn send(&self, job: Job) -> bool {
-        match self.jobs.lock_recover().send(job) {
+        let sent = self.jobs.lock_recover().send(job);
+        match sent {
             Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%error, "the nearby transfer worker stopped");
@@ -2034,15 +2045,20 @@ impl Inner {
         let now = Instant::now();
         let expired: Vec<([u8; 16], Offer)> = {
             let mut state = self.state.lock_recover();
-            let ids: Vec<[u8; 16]> = state
+            let due: Vec<[u8; 16]> = state
                 .offers
                 .iter()
                 .filter(|(_, offer)| now.saturating_duration_since(offer.seen) >= CONSENT_TIMEOUT)
                 .map(|(transfer_id, _)| *transfer_id)
                 .collect();
-            ids.into_iter()
-                .filter_map(|id| state.offers.remove(&id).map(|offer| (id, offer)))
-                .collect()
+            let mut expired = Vec::new();
+            for id in due {
+                if let Some(offer) = state.offers.remove(&id) {
+                    expired.push((id, offer));
+                }
+            }
+            drop(state);
+            expired
         };
         if expired.is_empty() {
             return;
@@ -2157,6 +2173,7 @@ impl Inner {
         for (channel, grant) in &state.remembered {
             (channel, grant).hash(&mut hasher);
         }
+        drop(state);
         hasher.finish()
     }
 }
