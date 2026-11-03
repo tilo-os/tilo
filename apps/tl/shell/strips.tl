@@ -99,13 +99,15 @@ view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
         .some(p) => place_title(p),
         .none => "Empty strip",
     }
-    ui.Card(title: name, selected: in_front, min: if not (space.width_class == .expanded or space.width_class == .wide) { 12rem } else if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }) {
+    ui.Card(title: name, selected: in_front, min: if space.width < 16.0 { 8rem } else if not (space.width_class == .expanded or space.width_class == .wide) { 12rem } else if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }) {
         on activate: focus_strip(v, s.key)
         strip_controls(a, s, shown)
         if placed.len() > 1 {
-            row(gap: .tight, align: .center, wrap: true) {
-                for p in placed {
-                    tab_chip(p, p.key == current)
+            scroll(axis: .horizontal) {
+                row(gap: .tight, align: .center) {
+                    for p in placed {
+                        tab_chip(p, p.key == current)
+                    }
                 }
             }
         }
@@ -168,10 +170,10 @@ view place_view(p: ArrangementPlace) {
         if p.shown_as != "" or meta(r).opens {
             show(r, view: p.shown_as, fill)
         } else {
-            ui.WindowWell(place: p.key, min: 12rem, fill)
+            ui.WindowWell(place: p.key, fill)
         }
     } else {
-        ui.WindowWell(place: p.key, min: 12rem, fill)
+        ui.WindowWell(place: p.key, fill)
     }
 }
 
