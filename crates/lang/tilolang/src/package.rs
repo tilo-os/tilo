@@ -235,8 +235,22 @@ pub fn compile_package_source_with(
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze_package(source, ids, imports, rng)?;
     let mut compiled = emit_package(a);
-    crate::meta::append_locales(&mut compiled.wasm, &source.locales);
+    crate::meta::append_locales(&mut compiled.wasm, &locales_of(source, &compiled.meta));
     Ok(compiled)
+}
+
+/// The catalogues a module built from `source` carries: the source language's written from the
+/// compiled sources, so the words a module shows are never older than the code that shows them,
+/// and every other language as its catalogue beside the sources says.
+fn locales_of(source: &PackageSource, meta: &PackageMeta) -> Vec<(String, String)> {
+    let mut locales = source.locales.clone();
+    if let Some((_, text)) = locales
+        .iter_mut()
+        .find(|(locale, _)| locale == crate::messages::SOURCE_LOCALE)
+    {
+        *text = crate::messages::source_catalogue_keeping(meta, text);
+    }
+    locales
 }
 
 /// Reports every error of a package of one or more files, or an empty list when it is fine.

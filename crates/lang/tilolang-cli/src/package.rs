@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::Manifest;
 use tilo_app_package::pack::SigningIdentity;
-use tilolang::source::write_ids;
+use tilolang::source::{write_catalogue, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
@@ -259,18 +259,22 @@ fn deliver(
     })
 }
 
-/// Compile the packages of `options` in dependency order, writing each one's ids lock when it
-/// changed: what every delivery starts from.
+/// Compile the packages of `options` in dependency order, writing each one's ids lock and source
+/// catalogue when it changed: what every delivery starts from, so a build leaves the package's
+/// words where its sources say they are.
 ///
 /// # Errors
-/// A package does not compile (the message lists the errors by file), or an ids lock cannot be
-/// written.
+/// A package does not compile (the message lists the errors by file), or an ids lock or a
+/// catalogue cannot be written.
 fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage>, String> {
     let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
         .map_err(|e| e.to_string())?;
     for package in &built {
         if write_ids(package)? {
             eprintln!("{}: ids lock updated", package.dir.display());
+        }
+        if write_catalogue(package)? {
+            eprintln!("{}: the source catalogue updated", package.dir.display());
         }
     }
     Ok(built)

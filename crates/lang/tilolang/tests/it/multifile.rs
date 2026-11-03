@@ -4,7 +4,10 @@
 use std::path::{Path, PathBuf};
 
 use tilolang::cli::format_package;
-use tilolang::source::{BuildError, Stamp, compile_dirs, dependency_order};
+use tilolang::source::{
+    BuildError, Stamp, catalogue_current, compile_dirs, compile_package, dependency_order,
+    ids_current, search_of,
+};
 use tilolang::{Compiled, Diagnostic, IdsLock, PackageSource, SeededEntropy};
 
 use crate::common::fixture;
@@ -303,6 +306,53 @@ fn the_example_packages_are_in_canonical_form() {
             assert_eq!(old, new, "{path} is not in canonical form");
         }
     }
+}
+
+/// The packages written against a native app's published types (`use so.tilo.session as
+/// session`): the compiler alone has none to compile against. `tilolang check`, which finds
+/// them, checks these.
+const NEEDS_PUBLISHED_APPS: &[&str] = &["shell"];
+
+/// The files a package's sources derive — its ids lock and its source catalogue — are what the
+/// ones committed beside them say. A change to how they are derived (a description's first
+/// sentence, a name in words, the words a view shows) changes every package that has them, so
+/// it fails here, in the crate the derivation lives in, and not on main once it has landed.
+#[test]
+fn the_example_packages_hold_the_files_their_sources_write() {
+    let dirs = example_dirs();
+    let mut checked = Vec::new();
+    for dir in &dirs {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        if NEEDS_PUBLISHED_APPS.contains(&name.as_str()) {
+            continue;
+        }
+        let built = compile_package(dir, &search_of(dir, &[]), &[], &mut SeededEntropy(0))
+            .unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+        assert_eq!(
+            built.last().map(|b| &b.dir),
+            Some(dir),
+            "the root compiles last"
+        );
+        for package in &built {
+            let package_dir = package.dir.display();
+            assert!(
+                ids_current(package),
+                "{package_dir}/app.ids is not what its sources write; write it with \
+                 `tilolang check --write-ids {package_dir}` and commit it with them"
+            );
+            assert!(
+                catalogue_current(package),
+                "{package_dir}/locales/en-US.ftl is not what its sources write; write it with \
+                 `tilolang check --write-ids {package_dir}` and commit it with them"
+            );
+        }
+        checked.push(name);
+    }
+    assert_eq!(
+        checked.len() + NEEDS_PUBLISHED_APPS.len(),
+        dirs.len(),
+        "every package is checked or named above: {checked:?}"
+    );
 }
 
 // ---- package directories --------------------------------------------------------------------
