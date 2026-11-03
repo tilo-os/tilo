@@ -577,5 +577,12 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
         "the joiner drew nothing of the presence said before it joined, in {:?}: {drawn:?}",
         joined.elapsed()
     );
+    // Exactly the one frame its author sent: the joiner subscribed where the
+    // relay held it, not to what came next.
+    let from_a = drawn.iter().filter(|object| object.sender == a_key).count();
+    assert_eq!(
+        from_a, 1,
+        "the joiner drew {from_a} frames of a presence its author said once: {drawn:?}"
+    );
     drop(b);
 }
