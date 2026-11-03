@@ -102,6 +102,7 @@ pub struct Launch<'a> {
     setup: Option<SetupHook<'a>>,
     status: Option<OwnedFd>,
     netns: Option<BorrowedFd<'a>>,
+    mount_ns: Option<BorrowedFd<'a>>,
 }
 
 impl<'a> Launch<'a> {
@@ -117,6 +118,7 @@ impl<'a> Launch<'a> {
             setup: None,
             status: None,
             netns: None,
+            mount_ns: None,
         }
     }
 
@@ -160,6 +162,21 @@ impl<'a> Launch<'a> {
     #[must_use]
     pub fn netns(mut self, ns: BorrowedFd<'a>) -> Self {
         self.netns = Some(ns);
+        self
+    }
+
+    /// Make the job's mount namespace a copy of `ns` (a mount namespace's
+    /// descriptor) rather than of the caller's. A new mount namespace copies
+    /// every mount of the one it is made from, under the kernel's lock on
+    /// all mount namespaces: from a caller holding a mount for each of
+    /// hundreds of running jobs, each start copied them all and, starts
+    /// coming together, waited on each other (20-35 ms a copy of 840 mounts
+    /// against 3-4 ms of 13, on a CI node). Every path the job's mounts name
+    /// is looked up in `ns`; what the plan takes as a tree (an idmapped bind)
+    /// is taken from the caller's, before the job's namespace is made.
+    #[must_use]
+    pub fn mount_ns(mut self, ns: BorrowedFd<'a>) -> Self {
+        self.mount_ns = Some(ns);
         self
     }
 
@@ -210,6 +227,7 @@ impl<'a> Launch<'a> {
         let mode = linux::runner::Mode {
             status: self.status,
             netns: self.netns,
+            mount_ns: self.mount_ns,
         };
         linux::runner::spawn(&plan, self.spec.ids, fds, self.cgroup, hook, mode)
     }
@@ -228,6 +246,7 @@ impl<'a> Launch<'a> {
             self.setup,
             self.status,
             self.netns,
+            self.mount_ns,
         );
         Err(SpawnError::Unsupported(format!(
             "jobs run only on Linux; this is {}",
