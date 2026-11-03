@@ -668,7 +668,11 @@ itself.
 A gate that runs inside the pull-request test shard shares the runner with
 other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
 counts only voluntary switches, one per wakeup, together with a CPU bound that
-catches a thread spinning without blocking.
+catches a thread spinning without blocking. `assert_stays_asleep` counts the
+times the thread was scheduled in, not its context switches: a switch is
+counted a moment after the kernel marks the thread asleep, so a settle on the
+switch count can catch a park that is still being counted and report it
+inside the window.
 
 ## Idle memory
 
