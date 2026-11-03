@@ -322,11 +322,9 @@ view bar_part(d: Desk, part: BarPart) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
                 on press: session.tilo_menu()
             }
-            // The switch between the presets keeps the bar's seat where it has the room; a
-            // phone's desk carries it in the row under the bar instead.
-            if space.width_class == .expanded or space.width_class == .wide {
-                preset_menu(viewing)
-            }
+            // The switch between the presets, in the bar's own seat: a phone's bar keeps it
+            // too, as the icon its room allows, so nothing stands between a window and the bar.
+            preset_menu(viewing)
         }
     } else if part.slot == .workspace {
         workspace_menu(d)
