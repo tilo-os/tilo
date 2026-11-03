@@ -22,14 +22,17 @@ use tilo_network_actor::PersonalFabricPayload;
 
 use crate::sync::Outgoing;
 
-/// Whether the person lets what they play here go on playing on their other
-/// devices: the `media` switch of their `continuity` settings, under the
-/// master switch, each on unless they turned it off. The session's settings
-/// watch keeps it current ([`MediaContinuity::read`]).
+/// What the person lets of this device continue on their other devices: each
+/// facet's switch of their `continuity` settings, under the master switch,
+/// each on unless they turned it off. The session's settings watch keeps them
+/// current ([`Continuity::read`]).
 #[derive(Clone, Debug, Default)]
-pub struct MediaContinuity(Arc<AtomicBool>);
+pub struct Continuity {
+    media: Arc<AtomicBool>,
+    wifi_settings: Arc<AtomicBool>,
+}
 
-impl MediaContinuity {
+impl Continuity {
     /// Take the switches from a settings document, as Settings writes it.
     pub(crate) fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
         let section = document.get("continuity");
@@ -42,12 +45,18 @@ impl MediaContinuity {
                 }),
             Some(_) => false,
         };
-        self.0
-            .store(on("enabled") && on("media"), Ordering::Relaxed);
+        let enabled = on("enabled");
+        self.media.store(enabled && on("media"), Ordering::Relaxed);
+        self.wifi_settings
+            .store(enabled && on("wifi_settings"), Ordering::Relaxed);
     }
 
-    fn permitted(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+    fn media_permitted(&self) -> bool {
+        self.media.load(Ordering::Relaxed)
+    }
+
+    fn wifi_settings_permitted(&self) -> bool {
+        self.wifi_settings.load(Ordering::Relaxed)
     }
 }
 
@@ -59,7 +68,10 @@ pub(crate) struct SessionFabric {
     /// The person's root key: a frame goes only to the devices that proved a
     /// certificate of it.
     user_public_key: [u8; 32],
-    media: MediaContinuity,
+    /// This device's key: what a credential one of the person's devices
+    /// sealed for it opens with.
+    device_signing_key: ed25519_dalek::SigningKey,
+    continuity: Continuity,
 }
 
 impl std::fmt::Debug for SessionFabric {
@@ -75,13 +87,15 @@ impl SessionFabric {
         runtime: FabricRuntime,
         outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
         user_public_key: [u8; 32],
-        media: MediaContinuity,
+        device_signing_key: ed25519_dalek::SigningKey,
+        continuity: Continuity,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime: Arc::new(Mutex::new(runtime)),
             outgoing,
             user_public_key,
-            media,
+            device_signing_key,
+            continuity,
         })
     }
 
@@ -300,10 +314,53 @@ impl FabricLink for SessionFabric {
     }
 
     fn require_media(&self) -> Result<(), String> {
-        self.media
-            .permitted()
+        self.continuity
+            .media_permitted()
             .then_some(())
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
+    }
+
+    fn require_wifi_settings(&self) -> Result<(), String> {
+        self.continuity
+            .wifi_settings_permitted()
+            .then_some(())
+            .ok_or_else(|| "Wi-Fi continuity is turned off in this device's settings".to_owned())
+    }
+
+    fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
+        if self.require_wifi_settings().is_err() || !security.supports_portable_passphrase() {
+            return None;
+        }
+        let fabric = self.runtime.lock_recover().device_fabric().clone();
+        fabric
+            .merged_wifi()
+            .into_values()
+            .filter(|credential| credential.ssid == ssid && credential.security == security)
+            .find_map(|credential| {
+                tilo_device_fabric::secrets::open_wifi_credential(
+                    &credential,
+                    &self.device_signing_key,
+                )
+                .ok()
+            })
+    }
+
+    fn share_wifi_password(
+        &self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+        password: &str,
+    ) -> Result<(), String> {
+        self.require_wifi_settings()?;
+        let shared = self
+            .runtime
+            .lock_recover()
+            .share_wifi_password(ssid, security, password)
+            .map_err(|error| error.to_string())?;
+        if !shared {
+            return Err("this session is no certified device of the person's".to_owned());
+        }
+        Ok(())
     }
 
     fn share_wake_routes(&self, routes: Vec<tilo_device_fabric::WakeRoute>) {

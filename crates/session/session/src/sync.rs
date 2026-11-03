@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::fabric::{MediaContinuity, SessionFabric};
+use crate::fabric::{Continuity, SessionFabric};
 use collab_types::presence::{Availability, PointerSpace, PresenceKey};
 use collab_types::{PeerPresence, PeerPresencePayload};
 use iroh::{EndpointAddr, EndpointId};
@@ -797,9 +797,8 @@ impl Client {
     /// person is here. Without one — a test, a stand-in session — the
     /// session is a device nobody certified and stays anonymous in workspaces.
     ///
-    /// `media` is what the person's settings say about what they play
-    /// continuing on their other devices, kept current by the session's
-    /// settings watch.
+    /// `continuity` is what the person's settings say may continue on their
+    /// other devices, kept current by the session's settings watch.
     ///
     /// The session's channels, when `engine` keeps them, hear the workspaces'
     /// governance on this plane and tell it which devices each workspace admits:
@@ -817,7 +816,7 @@ impl Client {
         engine: Option<Arc<Engine>>,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
-        media: MediaContinuity,
+        continuity: Continuity,
         wake: Arc<dyn Fn() + Send + Sync>,
         questions: Option<tilo_service::Questions>,
         beside: tilo_network_actor::local_host::Protocols,
@@ -829,7 +828,7 @@ impl Client {
         let user = identity
             .as_ref()
             .map(|identity| identity.device_cert.user_public_key);
-        let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), media);
+        let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), continuity);
         // What the actor serves for the session is installed before it starts:
         // every actor built from here on answers those doors.
         crate::network::install(fabric.as_ref(), questions);
@@ -2023,7 +2022,7 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
 fn restored_fabric(
     identity: Option<&HostIdentity>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
-    media: MediaContinuity,
+    continuity: Continuity,
 ) -> Option<Arc<SessionFabric>> {
     let identity = identity?;
     let device = (
@@ -2035,7 +2034,8 @@ fn restored_fabric(
         runtime,
         outgoing,
         identity.device_cert.user_public_key,
-        media,
+        identity.device_signing_key.clone(),
+        continuity,
     ))
 }
 

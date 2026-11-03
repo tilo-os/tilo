@@ -29,7 +29,7 @@ use tilo_device_fabric::{
     PersonalFabricActionEnvelope,
 };
 use tilo_network_actor::HostIdentity;
-use tilo_session::fabric::MediaContinuity;
+use tilo_session::fabric::Continuity;
 use tilo_session::sync::{Client, OwnPresence};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -83,7 +83,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
         None,
         OwnPresence::default(),
         Vec::new(),
-        MediaContinuity::default(),
+        Continuity::default(),
         Arc::new(|| {}),
         None,
         Vec::new(),

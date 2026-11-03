@@ -29,8 +29,8 @@ use tilo_action_broker::services::{
     ApplicationServices, Caller, ContentStoreServices, DisplayControlServices, DriveServices,
     Granted, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
     SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
-    SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
-    WorkspaceMemberships,
+    SpeakerChange, SpeakerServices, WifiContinuityServices, WorkspaceAuthority,
+    WorkspaceAuthorityHandle, WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -837,7 +837,7 @@ fn seams(
         ),
         realtime: Seam::unserved("this session serves no realtime continuity"),
         // The speaker groups of the fabric this session runs on.
-        speakers: Seam::when(fabric.map(|fabric| {
+        speakers: Seam::when(fabric.clone().map(|fabric| {
             std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
         })),
         // Files waits on the tools service for both lists to change, and asks
@@ -857,12 +857,14 @@ fn seams(
         // Every app shows its live activity (a running timer, a stopwatch)
         // outside its windows on this one board.
         live_activities: Seam::served(live_activities),
-        // The network the person is on is the session's own service; an app
-        // reaching for its handoff is answered nothing here.
-        wifi_continuity: Seam::unserved(
-            "Wi-Fi handoff belongs to this session's network service, not to an app's \
-             action door",
-        ),
+        // The network the person is on is the session's own service: Settings
+        // reads where this device can be woken, and shares a passphrase it
+        // learned with the person's other devices — or joins with one they
+        // shared — through the fabric this session runs on.
+        wifi_continuity: Seam::when(fabric.map(|fabric| {
+            std::sync::Arc::new(crate::wifi_continuity::WifiContinuity::new(fabric))
+                as std::sync::Arc<dyn WifiContinuityServices>
+        })),
         // The Browser app resolves and keeps its own service sessions in its
         // record, beside its windows.
         browser_service_sessions: Seam::unserved(

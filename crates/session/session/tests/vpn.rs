@@ -54,7 +54,7 @@ use tilo_device_fabric::{
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
 };
 use tilo_nm::{ActiveState, ActiveVpn, VpnReading, VpnWatch};
-use tilo_session::fabric::MediaContinuity;
+use tilo_session::fabric::Continuity;
 use tilo_session::sync::{Client, OwnPresence};
 use tilo_session::{Options, Session, Vpn};
 use tilo_settings_service::SettingsService;
@@ -568,7 +568,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
         None,
         OwnPresence::default(),
         Vec::new(),
-        MediaContinuity::default(),
+        Continuity::default(),
         Arc::new(|| {}),
         None,
         Vec::new(),
@@ -738,7 +738,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
         OwnPresence::default(),
         Vec::new(),
-        MediaContinuity::default(),
+        Continuity::default(),
         Arc::new(|| {}),
         None,
         desk_vpn.served(),
@@ -752,7 +752,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
         OwnPresence::default(),
         Vec::new(),
-        MediaContinuity::default(),
+        Continuity::default(),
         Arc::new(|| {}),
         None,
         Vec::new(),

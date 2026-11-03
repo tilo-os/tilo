@@ -1396,7 +1396,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use crate::fabric::MediaContinuity;
+    use crate::fabric::Continuity;
     use channel_crypto::VaultKey;
     use collab_types::presence::{Availability, PresenceKey};
     use collab_types::{ChannelRoute, Ed25519PublicKey, PeerPresence};
@@ -1522,7 +1522,7 @@ mod tests {
             None,
             OwnPresence::default(),
             Vec::new(),
-            MediaContinuity::default(),
+            Continuity::default(),
             Arc::new(|| {}),
             None,
             Vec::new(),

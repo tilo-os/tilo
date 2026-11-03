@@ -35,7 +35,7 @@ use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::HostIdentity;
 use tilo_service::Questions;
-use tilo_session::fabric::MediaContinuity;
+use tilo_session::fabric::Continuity;
 use tilo_session::sync::{Client, OwnPresence};
 use tilo_session::{Options, Session};
 use tilo_unlock_protocol::{
@@ -178,7 +178,7 @@ fn a_boot_receives_the_half_the_person_allowed() {
         None,
         OwnPresence::default(),
         Vec::new(),
-        MediaContinuity::default(),
+        Continuity::default(),
         Arc::new(|| {}),
         Some(questions.clone()),
         Vec::new(),
@@ -200,7 +200,7 @@ fn a_boot_receives_the_half_the_person_allowed() {
         None,
         OwnPresence::default(),
         Vec::new(),
-        MediaContinuity::default(),
+        Continuity::default(),
         Arc::new(|| {}),
         None,
         Vec::new(),

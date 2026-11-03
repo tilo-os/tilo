@@ -188,6 +188,18 @@ fn attach_remote_use(actions: &crate::device_actions::DeviceActions, options: &O
     }
 }
 
+/// The device fabric this session acts on: the one its collaboration endpoint
+/// runs, or a stand-in a test handed its options.
+fn acting_fabric(
+    options: &Options,
+    sync: Option<&crate::sync::Client>,
+) -> Option<tilo_device_fabric::link::SharedLink> {
+    options
+        .fabric
+        .clone()
+        .or_else(|| sync.and_then(crate::sync::Client::fabric))
+}
+
 /// The plane the apps read and invoke this session's services on, when it
 /// serves one: the socket the launcher hands its apps, and the link the loop
 /// answers their calls through.
@@ -289,11 +301,13 @@ pub(crate) fn start_action_plane(
     // sooner: the round asks them over that same plane, and what the device
     // that wins produced is kept in the content this session keeps.
     let action_offload = offload_route(actions.as_ref(), content.as_ref());
+    // The fabric this session acts on, and what its services offer on it.
+    let fabric = acting_fabric(options, sync);
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
-        options.fabric.clone(),
+        fabric,
         plane::Hosted {
             live_activities: std::sync::Arc::clone(live_activities),
             native_media: calls_service.clone(),

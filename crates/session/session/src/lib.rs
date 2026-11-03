@@ -148,6 +148,7 @@ pub mod termination;
 pub mod test_control;
 pub mod unlock;
 mod wallpapers;
+mod wifi_continuity;
 mod window_motion;
 mod window_share;
 mod window_warmth;
@@ -974,11 +975,12 @@ impl Session {
         // The desk widgets' choices, kept current by the same watch.
         let widget_prefs = desk::prefs();
         let watched_widgets = std::sync::Arc::clone(&widget_prefs);
-        // Whether what the person plays here may go on playing on their other
-        // devices, read from the same settings document on the same watch.
-        let media = fabric::MediaContinuity::default();
-        media.read(&settings_store::load());
-        let watched_media = media.clone();
+        // What may continue on the person's other devices — what they play
+        // here, the Wi-Fi passphrases they share — read from the same settings
+        // document on the same watch.
+        let continuity = fabric::Continuity::default();
+        continuity.read(&settings_store::load());
+        let watched_continuity = continuity.clone();
         // The bar's own setting, read on the same watch: it changes what the
         // desk's band takes and when the bars show.
         let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
@@ -1001,7 +1003,7 @@ impl Session {
                 settings_store::notification_policy::NotificationPolicy::from_document(&document);
             watched_wallpapers.follow(&document);
             desk::follow_prefs(&watched_widgets, &document);
-            watched_media.read(&document);
+            watched_continuity.read(&document);
             watched_night_light.read(&document);
             ambient_brightness::read(&watched_auto, &document);
             watched_hide.store(
@@ -1241,7 +1243,7 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        let sync = start_collaboration(&options, media, engine.clone(), beside);
+        let sync = start_collaboration(&options, continuity, engine.clone(), beside);
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
