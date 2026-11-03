@@ -149,13 +149,14 @@ view controls(c: Controls) {
 
 /// The controls group, with a report a week from starting.
 scenario "controls" {
+    let mia = person("Mia")
     let g = root Gallery
     g.controls.insert(
         Controls(
             title: "Controls",
             starts: 2026-11-03,
             clock: 2026-11-03T09:30Z,
-            owner: .some(invoker),
+            owner: .some(mia),
         ),
     )
 }
