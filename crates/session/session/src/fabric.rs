@@ -30,11 +30,12 @@ use crate::sync::Outgoing;
 pub struct Continuity {
     media: Arc<AtomicBool>,
     wifi_settings: Arc<AtomicBool>,
+    file_transfer: Arc<AtomicBool>,
 }
 
 impl Continuity {
     /// Take the switches from a settings document, as Settings writes it.
-    pub(crate) fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
+    pub fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
         let section = document.get("continuity");
         let on = |name: &str| match section {
             None => settings_store::continuity_privacy::ON_UNLESS_SET,
@@ -49,6 +50,8 @@ impl Continuity {
         self.media.store(enabled && on("media"), Ordering::Relaxed);
         self.wifi_settings
             .store(enabled && on("wifi_settings"), Ordering::Relaxed);
+        self.file_transfer
+            .store(enabled && on("file_transfer"), Ordering::Relaxed);
     }
 
     fn media_permitted(&self) -> bool {
@@ -57,6 +60,11 @@ impl Continuity {
 
     fn wifi_settings_permitted(&self) -> bool {
         self.wifi_settings.load(Ordering::Relaxed)
+    }
+
+    /// Whether the person lets files they send move to their other devices.
+    pub(crate) fn file_transfer_permitted(&self) -> bool {
+        self.file_transfer.load(Ordering::Relaxed)
     }
 }
 
@@ -72,6 +80,9 @@ pub(crate) struct SessionFabric {
     /// sealed for it opens with.
     device_signing_key: ed25519_dalek::SigningKey,
     continuity: Continuity,
+    /// This session's Nearby Send, once the session made it: where the bytes
+    /// of a transfer one of the person's devices offers or streams come in.
+    nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
 }
 
 impl std::fmt::Debug for SessionFabric {
@@ -96,7 +107,14 @@ impl SessionFabric {
             user_public_key,
             device_signing_key,
             continuity,
+            nearby: Mutex::new(None),
         })
+    }
+
+    /// This session's Nearby Send takes what the person's devices offer and
+    /// stream here.
+    pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
+        *self.nearby.lock_recover() = Some(nearby);
     }
 
     /// One of the person's devices proved itself on its session with this
@@ -172,12 +190,20 @@ impl SessionFabric {
                     tracing::debug!(%error, %peer, "a device's output facts are not taken");
                 }
             }
+            // The bytes of a Nearby Send this device took: the transfer
+            // engine holds them for the device that proved itself here.
+            PersonalFabricPayload::NearbyTransfer(frame) => {
+                let nearby = self.nearby.lock_recover().clone();
+                let device = self.runtime.lock_recover().device_behind(peer);
+                if let (Some(nearby), Some(device)) = (nearby, device) {
+                    nearby.frame(&device, frame);
+                }
+            }
             // What the person's devices carry for each other beyond the
-            // fabric state this session keeps — file bytes, records — belongs
-            // to the shell's runtime; this session routes none of it and
-            // drops it rather than half-handling it.
-            PersonalFabricPayload::NearbyTransfer(_)
-            | PersonalFabricPayload::Document { .. }
+            // fabric state this session keeps — records — belongs to their
+            // own planes; this session routes none of it and drops it rather
+            // than half-handling it.
+            PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::RecordContentWant { .. }
             | PersonalFabricPayload::RecordContentPiece { .. }
             | PersonalFabricPayload::RecordContentLacks { .. } => {}
@@ -320,6 +346,30 @@ impl FabricLink for SessionFabric {
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
     }
 
+    fn share_nearby_spool(
+        &self,
+        target: &DeviceId,
+        offer: tilo_device_fabric::link::NearbySpoolOffer,
+    ) -> Result<(), PersonalFabricSendError> {
+        let endpoint = self
+            .runtime
+            .lock_recover()
+            .endpoint_of(target)
+            .ok_or_else(|| {
+                PersonalFabricSendError::Rejected("that device has no session with this one".into())
+            })?;
+        self.outgoing
+            .send(Outgoing::NearbySpool {
+                user_public_key: self.user_public_key,
+                target: endpoint,
+                checkpoint: offer.checkpoint,
+                file: offer.file,
+            })
+            .map_err(|_| {
+                PersonalFabricSendError::Rejected("this session's transport stopped".into())
+            })
+    }
+
     fn require_wifi_settings(&self) -> Result<(), String> {
         self.continuity
             .wifi_settings_permitted()
@@ -424,10 +474,6 @@ impl crate::Session {
     /// one. The speaker services take their own; a session another device
     /// offers becomes the now-playing card's offer, which this device
     /// continues from.
-    #[allow(
-        clippy::unused_self,
-        reason = "the actions are the session's to route, as the rest of its pass is"
-    )]
     pub(crate) fn route_fabric_action(
         &self,
         fabric: &tilo_device_fabric::link::SharedLink,
@@ -476,6 +522,9 @@ impl crate::Session {
             | PersonalFabricAction::SpatialInputSequenced { .. }
             | PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
+            // A Nearby Send reaches no session here: the client that carries
+            // one hands its offer, checkpoint, withdrawal and ending to its
+            // own engine, so what is left is a session running none.
             | PersonalFabricAction::NearbyTransferOffer { .. }
             | PersonalFabricAction::NearbyTransferReady { .. }
             | PersonalFabricAction::NearbyTransferCancel { .. }

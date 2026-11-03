@@ -355,6 +355,10 @@ pub struct Hosted {
     /// The programs the agents working this session's tasks write, which this
     /// session's door runs as steps of their runs.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
+    /// This session's Nearby Send: the person's other devices, and the spool
+    /// a file reaches them from. `None` on a session that runs none, where
+    /// Files' send has no route at all.
+    pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -702,6 +706,7 @@ fn seams(
         lists,
         tools,
         task_programs,
+        nearby,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // The desk decides who may administer a workspace's identity, and the
@@ -871,14 +876,13 @@ fn seams(
         browser_service_sessions: Seam::unserved(
             "the Browser app keeps its service sessions itself, in its own record",
         ),
-        // Files offers a file to the person's other devices through the
-        // device fabric; this session gives an app no route into the fabric's
-        // nearby sends, so Files' offer there is refused.
-        nearby_transfer: Seam::unserved(
-            "Files offers a file to the person's other devices through the device fabric, and \
-             this session gives an app no route into it: Files' send to a nearby device is \
-             refused",
-        ),
+        // Files offers a file to the person's other devices over the same
+        // device fabric this session already runs: one Nearby Send stages a
+        // screenshot and a file alike, and the receiving device's person
+        // chooses where it lands there.
+        nearby_transfer: Seam::when(nearby.map(|nearby| {
+            nearby as std::sync::Arc<dyn tilo_action_broker::services::NearbyTransferServices>
+        })),
         // Files reads and opens what a person selected through the portal's
         // selection; this session gives an app no route to that selection.
         file_clipboard: Seam::unserved(
@@ -1195,6 +1199,7 @@ mod tests {
                 keys: None,
             },
             own_device: None,
+            nearby: None,
             engine: None,
             record_content: None,
             action_offload: None,

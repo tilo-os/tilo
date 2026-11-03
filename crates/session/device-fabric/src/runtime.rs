@@ -194,7 +194,7 @@ impl FabricRuntime {
         if records.next().is_some() {
             return Err(FabricError::ForeignAuthorship);
         }
-        let Some(source) = self.device_on(peer) else {
+        let Some(source) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         if snapshot.owner != source {
@@ -232,7 +232,7 @@ impl FabricRuntime {
         if !trailing.is_empty() {
             return Err(FabricError::InvalidAction);
         }
-        let Some(source) = self.device_on(peer) else {
+        let Some(source) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         let Some(local) = self.local.as_ref().map(|local| local.device.clone()) else {
@@ -494,7 +494,7 @@ impl FabricRuntime {
         stamp: &FabricStamp,
         outputs: Vec<crate::DisplayConnectorPlacement>,
     ) -> Result<bool, FabricError> {
-        let Some(owner) = self.device_on(peer) else {
+        let Some(owner) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         self.fabric
@@ -514,7 +514,7 @@ impl FabricRuntime {
         stamp: &FabricStamp,
         outputs: Vec<crate::DisplayOutputObservation>,
     ) -> Result<bool, FabricError> {
-        let Some(owner) = self.device_on(peer) else {
+        let Some(owner) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         self.fabric.observe_display_outputs(&owner, stamp, outputs)
@@ -565,7 +565,8 @@ impl FabricRuntime {
     }
 
     /// The device behind `peer`, from the certificate it proved.
-    fn device_on(&self, peer: EndpointId) -> Option<DeviceId> {
+    #[must_use]
+    pub fn device_behind(&self, peer: EndpointId) -> Option<DeviceId> {
         self.siblings
             .iter()
             .find(|(_, sibling)| sibling.endpoint == peer)

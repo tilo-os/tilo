@@ -109,6 +109,9 @@ pub(crate) struct Collaboration<'a> {
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
     /// The programs agents write in this session's tasks, run by its door.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
+    /// This session's Nearby Send: the fabric it reaches the person's other
+    /// devices on, and the spool a file leaves from.
+    pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
 }
 
 /// Where this session's apps reach its services, when it serves them: the
@@ -224,6 +227,7 @@ pub(crate) fn start_action_plane(
         sealed,
         content,
         task_programs,
+        nearby,
     } = collaboration;
     let Some(path) = action_plane_path(options)? else {
         return Ok(None);
@@ -285,6 +289,7 @@ pub(crate) fn start_action_plane(
             // tools service answers.
             tools,
             task_programs,
+            nearby,
         },
     )?;
     // What arrives on this device's action plane is answered by the broker

@@ -101,6 +101,7 @@ pub mod logging;
 mod membership;
 pub mod messages;
 pub mod mount;
+pub mod nearby_transfer;
 mod network;
 pub mod night_light;
 pub mod notices;
@@ -1245,7 +1246,7 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        let sync = start_collaboration(&options, continuity, engine.clone(), beside);
+        let sync = start_collaboration(&options, continuity.clone(), engine.clone(), beside);
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
@@ -1282,6 +1283,25 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
+        // Nearby Send: one engine for every file that leaves this device for
+        // another of the person's, whether a screenshot the studio sends or a
+        // file Files hands over. It stages into this machine's own spool, and
+        // the session's pass turns when a hand-over moves.
+        let nearby = match nearby_transfer::NearbyTransfer::open(
+            fabric.clone(),
+            nearby_transfer::spool_root(),
+            continuity,
+            options.wake.handle(),
+        ) {
+            Ok(nearby) => Some(nearby),
+            Err(error) => {
+                tracing::warn!(%error, "no thread takes what is sent nearby");
+                None
+            }
+        };
+        if let (Some(sync), Some(nearby)) = (&sync, &nearby) {
+            sync.attach_nearby(std::sync::Arc::clone(nearby));
+        }
         // The machine's status, which the bar's status cluster shows as the
         // battery, network and volume glyphs, the lock screen shows under its
         // card and the desk reads: every part of it is read off the services
@@ -1438,7 +1458,7 @@ impl Session {
 
         // The capture studio, over everything it captures.
         let capture_studio =
-            capture_studio::mount(&mut compositor, &mut doors, &options, fabric.as_ref());
+            capture_studio::mount(&mut compositor, &mut doors, &options, nearby.as_ref());
 
         // One table for the keys the session answers and the guide that
         // explains them: a chord that works is a chord the guide shows.
@@ -1550,8 +1570,16 @@ impl Session {
                 },
                 content: Some(record_content),
                 task_programs,
+                nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
+        // What Files may read, and where a received file may land, is what
+        // this session's workspaces grant it: read off the desk the broker
+        // decides against.
+        if let (Some(nearby), Some(plane)) = (&nearby, &action_plane) {
+            nearby.attach_authority(std::sync::Arc::clone(&plane.desk)
+                as std::sync::Arc<dyn tilo_action_broker::services::WorkspaceAuthority>);
+        }
         // The agent door: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
         // binds first, and is served from the broker the plane starts, which

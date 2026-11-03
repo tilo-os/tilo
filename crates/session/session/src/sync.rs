@@ -635,6 +635,14 @@ pub(crate) enum Outgoing {
         target: Option<EndpointId>,
         payload: PersonalFabricPayload,
     },
+    /// Stream one staged spool object to one of the person's devices from the
+    /// checkpoint it confirmed: the bytes of a Nearby Send it was offered.
+    NearbySpool {
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        checkpoint: tilo_network_actor::NearbyTransferCheckpoint,
+        file: std::fs::File,
+    },
     /// Ask for the lane this device's private texts travel on.
     PrivateMessages(tokio::sync::oneshot::Sender<tilo_network_actor::private_messages::Transport>),
     /// Ask `ws`'s hosts for the record on `channel`, which they replay a
@@ -741,6 +749,10 @@ pub struct Client {
     /// This device's fabric, when it is a certified device of the person's:
     /// `None` on a session that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
+    /// This session's Nearby Send, once the session made it: what a transfer
+    /// one of the person's devices offers, streams or finishes means for what
+    /// Files shows.
+    nearby: RefCell<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
     /// Where this device's actions are served, and how an app here reaches
     /// the person's other devices: `None` until the endpoint has bound.
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
@@ -916,6 +928,7 @@ impl Client {
             endpoint_handle,
             lane,
             fabric,
+            nearby: RefCell::new(None),
             device_actions,
             reachability,
             beside: served,
@@ -1117,6 +1130,12 @@ impl Client {
         // device, a device that is gone: the person's other devices hear so
         // on the same pass.
         self.announce_fabric();
+        // What no device acknowledged of a send this device made is offered
+        // again, and what the person's devices offered here waits for their
+        // answer.
+        if let Some(nearby) = self.nearby() {
+            nearby.pump();
+        }
         if self.said_at.get().elapsed() >= PRESENCE_AGAIN {
             self.say_again();
         }
@@ -1165,6 +1184,28 @@ impl Client {
                 }
                 _ => {}
             }
+        }
+        // What a device coming or going means for what Files may offer, and
+        // how far a stream this device is sending got: the Nearby Send engine
+        // keeps both.
+        match &event {
+            NetEvent::Sibling { .. } | NetEvent::SiblingLeft { .. } => {
+                if let Some(nearby) = self.nearby() {
+                    nearby.devices_changed();
+                }
+            }
+            NetEvent::NearbyTransferProgress {
+                transfer_id,
+                sent_bytes,
+                total_bytes,
+                status,
+                ..
+            } => {
+                if let Some(nearby) = self.nearby() {
+                    nearby.progress(*transfer_id, *sent_bytes, *total_bytes, *status);
+                }
+            }
+            _ => {}
         }
         // A window's stream is not presence: it goes to the shares, which
         // read it on the pass ([`Self::take_surfaces`]).
@@ -1474,6 +1515,22 @@ impl Client {
             .map(|fabric| Arc::clone(fabric) as tilo_device_fabric::link::SharedLink)
     }
 
+    /// This session's Nearby Send, when the session made one.
+    #[must_use]
+    pub(crate) fn nearby(&self) -> Option<Arc<crate::nearby_transfer::NearbyTransfer>> {
+        self.nearby.borrow().clone()
+    }
+
+    /// Give this session's Nearby Send the fabric it runs on: what the
+    /// person's devices offer and stream here, and what they say of a
+    /// transfer's progress, reaches it.
+    pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
+        if let Some(fabric) = &self.fabric {
+            fabric.attach_nearby(Arc::clone(&nearby));
+        }
+        self.nearby.replace(Some(nearby));
+    }
+
     /// Where this device's actions are served, and how an app here runs its
     /// actions on the person's other devices: `None` on a session that takes
     /// part as nobody, which has no key of its own to ask with.
@@ -1496,13 +1553,29 @@ impl Client {
     }
 
     /// The actions one of the person's devices sent this one since the last
-    /// call, for the session's pass to carry out.
+    /// call, for the session's pass to carry out. A Nearby Send is carried
+    /// out here instead, by this client's own transfer engine: the offer, the
+    /// checkpoint, the withdrawal and the ending of a transfer are the
+    /// engine's to take, whether or not a session runs on this client.
     #[must_use]
     pub fn fabric_actions(&self) -> Vec<tilo_device_fabric::PersonalFabricActionEnvelope> {
-        self.fabric
+        let actions = self
+            .fabric
             .as_ref()
             .map(|fabric| fabric.take_actions())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let Some(nearby) = self.nearby() else {
+            return actions;
+        };
+        let mut rest = Vec::with_capacity(actions.len());
+        for envelope in actions {
+            if crate::nearby_transfer::carried_by_engine(&envelope.action) {
+                nearby.action(&envelope.source, envelope.request_id, &envelope.action);
+            } else {
+                rest.push(envelope);
+            }
+        }
+        rest
     }
 
     /// Where other devices reach this one: the endpoint it bound, with the
@@ -1933,6 +2006,7 @@ impl Client {
                 endpoint_handle: Arc::new(std::sync::OnceLock::new()),
                 lane: crate::calls::LaneSlot::default(),
                 fabric: None,
+                nearby: RefCell::new(None),
                 device_actions: Arc::new(std::sync::OnceLock::new()),
                 reachability,
                 beside: Vec::new(),
@@ -2272,6 +2346,22 @@ async fn carry_out(
             };
             plane.send(command).await.is_ok()
         }
+        // A staged object's bytes go to the one device that asked for them,
+        // from the checkpoint it confirmed it holds.
+        Outgoing::NearbySpool {
+            user_public_key,
+            target,
+            checkpoint,
+            file,
+        } => plane
+            .send(NetCmd::PublishNearbyTransfer {
+                user_public_key,
+                target,
+                transfer: checkpoint,
+                file,
+            })
+            .await
+            .is_ok(),
         Outgoing::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
         Outgoing::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
         Outgoing::OpenRecord { ws, channel } => {
