@@ -504,8 +504,16 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let Ok(producer) = broadcast.track(name.as_str()) else {
         return;
     };
+    // A reader that attaches late starts at the newest group the track holds:
+    // the presence a peer said before it joined is what it draws, instead of
+    // waiting out the heartbeat.
+    let newest = producer.latest();
     let Ok(mut subscriber) = producer
-        .subscribe(moq_net::track::Subscription::default().with_max_age(retain(track)))
+        .subscribe(
+            moq_net::track::Subscription::default()
+                .with_max_age(retain(track))
+                .with_start(newest.map(moq_net::track::Position::group)),
+        )
         .await
     else {
         return;
