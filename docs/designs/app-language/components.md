@@ -42,8 +42,15 @@ view contact_row(c: Contact) {
 - Bindings are the description's, so `bind:` works on any component that declares one
   (`ui.TextInput(bind: t.title)`, `ui.Checkbox(bind: t.done)`, `ui.DatePicker(bind: t.due)`,
   `ui.RichInput(bind: t.notes)`), with the type and the merge it declares; no widget has binding
-  code of its own. A primitive that is a component (`text`, `input`, `checkbox`, ...) is its
-  shorter name and nothing else.
+  code of its own. A component may declare several bindings, and `bind:` takes the one whose
+  type the bound place has. A primitive that is a component (`text`, `input`, `checkbox`, ...)
+  is its shorter name and nothing else.
+- A document's running text is placed like any other component:
+  `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
+  a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
+  text round-tripped), and edits the one the view bound; a change from elsewhere shows when the
+  person is not typing there. Nothing about a field marked `(body)` changes what a control
+  draws: the role is the document's metadata, and the view places the editor.
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or

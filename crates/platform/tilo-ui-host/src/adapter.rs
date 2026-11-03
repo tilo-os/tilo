@@ -785,7 +785,7 @@ mod tests {
             }],
             embeds: Vec::new(),
         };
-        let body = node("RichText", "body", &[("value", Value::Rich(rich))]);
+        let body = node("BlockEditor", "body", &[("value", Value::Rich(rich))]);
         let widget = reconciler.build(&body);
         assert_eq!(
             widget.name(),

@@ -93,7 +93,7 @@ fn said(view: &mut ViewInstance) -> Vec<String> {
         .iter()
         .map(|row| {
             let mut out = Vec::new();
-            find_all(row, "ui.RichText", &mut out);
+            find_all(row, "ui.BlockEditor", &mut out);
             let mut text = Vec::new();
             for node in out {
                 texts(node, &mut text);

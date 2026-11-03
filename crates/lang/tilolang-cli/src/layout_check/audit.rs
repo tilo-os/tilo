@@ -117,10 +117,11 @@ fn scrolls(node: &InspectionNode) -> Scrolls {
     }
 }
 
-/// Whether a widget hangs part of itself outside the column it is in by design: the body
-/// editor's handle gutter sits in the margin, so its text lines up with the title above it.
+/// Whether a widget hangs part of itself outside the column it is in by design: a document's
+/// block editor hangs its handle gutter in the margin, so its text lines up with the title
+/// above it.
 fn hangs(widget: &str) -> bool {
-    matches!(widget, "TilolangBody")
+    matches!(widget, "BlockEditor")
 }
 
 /// Whether a widget floats over the content it belongs to, shown only on hover or focus (a

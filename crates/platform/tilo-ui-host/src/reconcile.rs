@@ -27,7 +27,6 @@ use ui::widget::{
 };
 
 use crate::adapter::{Adapter, NodeSource};
-use crate::body::BodyEditor;
 use crate::pane::Pane;
 use ui::presence::PathSegment;
 
@@ -699,22 +698,6 @@ impl Reconciler {
             self.note_broken(node, &ui::component::Error::unknown(&node.kind));
             return self.text_of(node, "", TextRole::Caption);
         };
-        // In a document, a body is the block editor native Notes edits a note in.
-        if is_body(node) {
-            let field = if node.kind == crate::adapter::kind("RichInput") {
-                crate::body::Stored::Rich(self.rich_state(&node.key))
-            } else {
-                crate::body::Stored::Markdown(self.text_state(&node.key))
-            };
-            let placeholder = crate::date::shown(node, "placeholder").unwrap_or_default();
-            return Box::new(BodyEditor::new(
-                &node.key,
-                field,
-                &self.sink,
-                presence_path(node),
-                &placeholder,
-            ));
-        }
         let built = {
             let mut source = NodeSource::new(node, description, self);
             ui::component::build(&description.name, &mut source)
@@ -735,9 +718,6 @@ impl Reconciler {
         new_node: &UiNode,
         description: &'static ui::component::Description,
     ) -> Option<Element> {
-        if is_body(new_node) {
-            return (!same_shell(old_node, new_node)).then(|| self.build(new_node));
-        }
         if !crate::adapter::same_data(old_node, new_node, description) {
             let taken = {
                 let mut source = NodeSource::in_place(new_node, description, self);
@@ -1538,15 +1518,6 @@ fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
         row.props.remove("avatar_space");
     }
     row
-}
-
-/// Whether `node` is a document's body: a field the window shows as the block editor native
-/// Notes edits a note in — the one that holds Markdown as text, and the one that holds the
-/// document's paragraphs.
-fn is_body(node: &UiNode) -> bool {
-    (node.kind == crate::adapter::kind("TextInput")
-        || node.kind == crate::adapter::kind("RichInput"))
-        && token(node, "field_role") == Some("body")
 }
 
 /// The card that arrived under `new_node` since `old_node`, by its key: the last of `new_node`'s

@@ -3172,9 +3172,10 @@ pub mod markdown_input;
 pub mod rich_text_line;
 pub use rich_text_line::{DeclaredLine, LineSignal, RichTextLine, RichTextLineProps};
 pub mod block_editor;
+mod block_editor_body;
 pub mod paint_damage;
 pub mod rich_doc;
-pub use block_editor::references::{OPEN_REFERENCE, RichTextProps};
+pub use block_editor::references::{BlockEditorProps, OPEN_REFERENCE};
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
     DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, SlashRequest,

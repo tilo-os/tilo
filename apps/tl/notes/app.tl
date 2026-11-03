@@ -96,7 +96,7 @@ view note_editor(n: Note) {
                 }
             }
         }
-        rich_input(bind: n.body, placeholder: "Write something")
+        ui.BlockEditor(bind: n.body, placeholder: "Write something")
         std.history(n)
     }
 }

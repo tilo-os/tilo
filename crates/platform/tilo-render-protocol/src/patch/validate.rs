@@ -426,8 +426,6 @@ impl<'a> Validator<'a> {
                 None if name.strip_suffix(":as").is_some_and(|prop| {
                     description.prop(prop).is_some() || description.state(prop).is_some()
                 }) => {}
-                // A text field that is a document's body.
-                None if name == "field_role" && !description.bindings.is_empty() => {}
                 None => {
                     return Err(Refused::invalid("a prop its component does not declare"));
                 }

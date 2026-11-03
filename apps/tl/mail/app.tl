@@ -841,7 +841,7 @@ view editor(d: Draft) {
             input(bind: d.cc)
         }
         input(bind: d.subject, placeholder: "Subject")
-        input(bind: d.body, placeholder: "Write your message", lines: 12)
+        ui.BlockEditor(bind: d.body, placeholder: "Write your message")
     }
 }
 

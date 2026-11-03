@@ -41,7 +41,7 @@ view note_row(n: Note) {
 view note_editor(n: Note) {
     std.document(n) {
         ui.TextInput(value: n.title, placeholder: "Untitled")
-        rich_input(bind: n.body, placeholder: "Write something")
+        ui.BlockEditor(bind: n.body, placeholder: "Write something")
         std.history(n)
     }
 }

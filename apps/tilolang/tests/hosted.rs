@@ -1374,9 +1374,8 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
     let (editor, rects) = session
         .window
         .harness()
-        .widget_mut::<tilo_ui_host::body::BodyEditor>()
-        .map(|body| {
-            let editor: &ui::widget::BlockEditor = ui::widget::Decorator::inner(body);
+        .widget_mut::<ui::widget::BlockEditor>()
+        .map(|editor| {
             let rects: Vec<ui::kurbo::Rect> = editor
                 .blocks()
                 .iter()

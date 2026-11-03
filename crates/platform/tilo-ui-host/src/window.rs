@@ -1821,9 +1821,18 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
         }
     }
     let text_input = crate::adapter::kind("TextInput");
+    // A bound control whose binding is text takes typing, whatever component it is: the
+    // document's body is a block editor, and a field after the title moves to it all the same.
     let takes_typing = |node: &UiNode| {
         node.binding.is_some()
-            && (node.kind == text_input || node.kind == crate::adapter::kind("RichInput"))
+            && crate::adapter::description_of(node).is_some_and(|description| {
+                description.bindings.iter().any(|binding| {
+                    matches!(
+                        binding.ty,
+                        ui::component::Type::Text | ui::component::Type::RichText
+                    )
+                })
+            })
     };
     let mut nodes = Vec::new();
     in_order(tree, &mut nodes);

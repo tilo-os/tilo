@@ -303,15 +303,23 @@
       }
     },
     {
-      "name": "RichText",
-      "doc": "Rich text, shown: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Activating a reference opens it.",
+      "name": "BlockEditor",
+      "doc": "A document: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Bound to a document's field it edits it, each edit written back as the value now reads and a change from elsewhere shown when the person is not typing there; given a value it shows that, read-only, and activating a reference opens it.",
       "props": [
         {
           "name": "value",
-          "doc": "The text it shows.",
-          "type": "rich_text",
-          "required": true,
+          "doc": "Rich text it shows read-only, when it binds nothing.",
+          "type": {
+            "option": "rich_text"
+          },
           "positional": true
+        },
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while the editor is empty.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -319,6 +327,20 @@
           "name": "open_reference",
           "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
           "value": "text"
+        }
+      ],
+      "bindings": [
+        {
+          "name": "rich",
+          "doc": "The document it edits, as its paragraphs (a `RichText` field).",
+          "type": "rich_text",
+          "merge": "rich"
+        },
+        {
+          "name": "markdown",
+          "doc": "The document it edits, as Markdown (a `Text` field), the same text round-tripped.",
+          "type": "text",
+          "merge": "splice"
         }
       ],
       "semantics": {

@@ -590,7 +590,7 @@ view task_page(t: Task) {
                 on submit: add_subtask(tasks, t, step).then(set(step, ""))
             }
         }
-        rich_input(bind: t.notes, placeholder: "Add notes")
+        ui.BlockEditor(bind: t.notes, placeholder: "Add notes")
         std.history(t)
     }
 }

@@ -508,11 +508,11 @@ fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
 }
 
 #[test]
-fn a_body_held_as_rich_text_is_told_it_binds_the_documents_body() {
-    // A body is a text field or a rich text one: bound by an input, either is the document's
-    // running text, and the window draws it as the block editor.
+fn a_body_held_as_rich_text_binds_like_any_field() {
+    // A body is a text field or a rich text one, and a view places it as the block editor and
+    // binds it: the field's role is the document's, not the control's to be told.
     let (m, _) = lower(
-        "type Note {\n    title: Text (title)\n    body: RichText (body)\n}\nroot Note\ndefault view note for Note\nview note(n: Note) {\n    std.document(n) {\n        ui.TextInput(value: n.title)\n        rich_input(bind: n.body, placeholder: \"Write\")\n    }\n}",
+        "type Note {\n    title: Text (title)\n    body: RichText (body)\n}\nroot Note\ndefault view note for Note\nview note(n: Note) {\n    std.document(n) {\n        ui.TextInput(value: n.title)\n        ui.BlockEditor(bind: n.body, placeholder: \"Write\")\n    }\n}",
     );
     let calls = ui_calls(func(&m, "note"));
     let at = |want: &str| {
@@ -521,20 +521,24 @@ fn a_body_held_as_rich_text_is_told_it_binds_the_documents_body() {
             .position(|call| call == want)
             .unwrap_or_else(|| panic!("{want} in {calls:#?}"))
     };
-    let roles: Vec<usize> = calls
-        .iter()
-        .enumerate()
-        .filter(|(_, call)| *call == "prop field_role")
-        .map(|(at, _)| at)
-        .collect();
-    assert_eq!(roles.len(), 2, "the title's and the body's: {calls:#?}");
+    let from =
+        |after: usize, want: &str| match calls.iter().skip(after).position(|call| call == want) {
+            Some(at) => at.saturating_add(after),
+            None => panic!("{want} after {after} in {calls:#?}"),
+        };
+    let input = at("node ui.TextInput");
+    let block = at("node ui.BlockEditor");
     assert!(
-        at("node ui.TextInput") < roles[0] && roles[0] < at("node ui.RichInput"),
-        "the title field is told it is the title: {calls:#?}"
+        from(input, "prop title") < block,
+        "the title field is drawn as the title: {calls:#?}"
     );
     assert!(
-        at("node ui.RichInput") < roles[1],
-        "the rich field is told it is the body: {calls:#?}"
+        from(block, "bind") < from(block, "prop placeholder"),
+        "the body binds to the field: {calls:#?}"
+    );
+    assert!(
+        !has(&calls, "prop field_role"),
+        "the role is the field's, not a prop: {calls:#?}"
     );
 }
 
@@ -557,7 +561,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
         "node ui.Toggle",
         "node ui.Card",
         "node ui.Avatar",
-        "prop field_role",
+        "prop title",
     ] {
         assert!(has(&calls, want), "{want} in {calls:#?}");
     }
