@@ -8424,10 +8424,16 @@ impl BlockEditor {
             // prose read like separate form fields. Keep that padding for
             // richer controls and use the text line-height for compact prose.
             // A list item is prose too: its rows sit as close as a
-            // paragraph's, and its marker follows its first row.
+            // paragraph's, and its marker follows its first row. A quote
+            // line is prose, so a quote split across blocks reads as one run.
+            // A code row is a row of its fence, whose painted ground holds
+            // the space around it: field padding would double-space the fence
+            // whether the document's prose is compact or not.
             b.line.set_compact_wrapped(
-                self.compact_paragraph_spacing
-                    && (matches!(b.kind, BlockKind::Paragraph) || b.kind.supports_indent()),
+                matches!(b.kind, BlockKind::CodeBlock { .. })
+                    || (self.compact_paragraph_spacing
+                        && (matches!(b.kind, BlockKind::Paragraph | BlockKind::Quote)
+                            || b.kind.supports_indent())),
             );
             let header_height = code_headers[i] as f32;
             b.line.set_layout_header_height(header_height);
@@ -8439,13 +8445,12 @@ impl BlockEditor {
                 min: row_height,
             };
             if header_height > 0.0 {
-                let height = (b.kind.font_size() * theme.text_scale * 1.5)
-                    .max(20.0 * theme.text_scale)
-                    + header_height;
-                if !self.wrap_lines {
-                    stack_box.fixed = Some(height);
+                // The band stands above the line's own row: a fixed row adds
+                // it here, and a measured line adds it to its measure.
+                if let Some(fixed) = stack_box.fixed.as_mut() {
+                    *fixed += header_height;
                 }
-                stack_box.min = height;
+                stack_box.min += header_height;
             }
             // Per-block top margin (not a uniform gap) so it can be zeroed
             // for soft-break continuations, the first block, and consecutive
