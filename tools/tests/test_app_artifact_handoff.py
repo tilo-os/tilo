@@ -35,6 +35,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/collect-runtime-dependencies.py",
             "os/scripts/verify-runtime-bundle-closure.sh",
             "os/scripts/stamp-runtime.sh", "tools/apps/stage_sdk_services.py",
+            "os/usr/share/tilo/system-interfaces.toml",
             "tools/apps/pack-runtime-package.sh", "tools/apps/language_packs.py",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
@@ -170,7 +171,7 @@ if a[0] == 'pack':
     else:
         assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
         assert manifest['package']['runtime'] == runtime, manifest
-        assert manifest['sandbox']['services']['identity'] == 'optional@{}'.format(tomllib.loads((ROOT / 'os/usr/share/tilo/system-interfaces.toml').read_text())['interfaces']['runtime']), manifest
+        assert manifest['sandbox']['services']['identity'] == 'optional@{}'.format(tomllib.loads(pathlib.Path('os/usr/share/tilo/system-interfaces.toml').read_text())['interfaces']['runtime']), manifest
         payload = pathlib.Path(a[a.index('--payload')+1])
         output = pathlib.Path(a[a.index('--output')+1])
         output.write_bytes((payload/'bin/calculator').read_bytes())
