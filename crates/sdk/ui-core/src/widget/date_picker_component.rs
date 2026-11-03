@@ -34,11 +34,6 @@ impl Default for DatePickerProps {
     }
 }
 
-/// A day given as its ISO text.
-fn day_of(text: &str) -> Option<chrono::NaiveDate> {
-    chrono::NaiveDate::parse_from_str(text.get(..10)?, "%Y-%m-%d").ok()
-}
-
 impl Described for DatePicker {
     type Props = DatePickerProps;
 
@@ -50,14 +45,17 @@ impl Described for DatePicker {
             ..
         } = props;
         let shown = value.clone();
-        let selected = day_of(&value.state.get()).unwrap_or_else(crate::clock::today);
-        let mut picker = Self::new(selected)
+        let mut picker = Self::from_text_state(&value.state)
             .on_change(move |day| {
                 shown.edited(crate::component::Value::Text(
                     day.format("%Y-%m-%d").to_string(),
                 ));
             })
-            .marked(marked.iter().filter_map(|day| day_of(day)));
+            .marked(
+                marked
+                    .iter()
+                    .filter_map(|day| crate::component::moment_day(day)),
+            );
         if let Some(label) = label {
             picker = picker.with_accessible_name(&label);
         }
@@ -66,14 +64,7 @@ impl Described for DatePicker {
 
     /// The day chosen changes in place; its marked days are built again.
     fn set_props(&mut self, props: DatePickerProps) -> bool {
-        if !props.marked.is_empty() || self.has_marked() {
-            return false;
-        }
-        if let Some(day) = day_of(&props.value.state.get())
-            && day != self.selected()
-        {
-            self.set_selected(day);
-        }
-        true
+        // A day set elsewhere shows in place through the binding.
+        props.marked.is_empty() && !self.has_marked()
     }
 }

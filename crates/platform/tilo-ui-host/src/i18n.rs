@@ -7,6 +7,49 @@ pub fn ensure() {
     CATALOG.ensure();
 }
 
+/// A package's catalogues join the person's words, so what it declares reads in their language
+/// (docs/designs/app-language/i18n.md): each `(locale, Fluent text)` the module carries is a
+/// catalogue the toolkit falls back through, in the language selected here.
+pub fn add_catalogues(catalogues: &[(String, String)]) {
+    // Before the host has read a word of its own there is no manager to take them, and they
+    // would be dropped: a package's words are read before the first widget draws.
+    ensure();
+    for (locale, text) in catalogues {
+        ui::i18n::I18nManager::add_resource(locale, text.clone());
+    }
+}
+
+/// The word `key` with `args` in the person's language — a declaration's label, its `noun` by
+/// `count`, or the platform's phrase — and `source` when no catalogue of theirs holds it.
+/// A count reaches a plural rule as a number.
+#[must_use]
+pub fn word(key: &str, args: &[(String, String)], source: &str) -> String {
+    ensure();
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (name.as_str(), value_of(value)))
+        .collect();
+    let said = t_args(key, &args);
+    if said == key { source.to_owned() } else { said }
+}
+
+/// An argument as Fluent takes it: a number where it is one, so a plural rule selects by it.
+#[must_use]
+pub fn value_of(value: &str) -> ui::i18n::ArgValue {
+    match value.parse::<f64>() {
+        Ok(number) => number.into(),
+        Err(_) => value.into(),
+    }
+}
+
+/// What the words resolve at now: it moves when the person's language, or a catalogue of theirs,
+/// does ([`ui::i18n::I18nManager::revision`]). A package published in one language is published
+/// again when it moves.
+#[must_use]
+pub fn revision() -> u64 {
+    ui::i18n::I18nManager::revision()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

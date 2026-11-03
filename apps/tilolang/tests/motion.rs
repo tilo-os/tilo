@@ -1,0 +1,589 @@
+//! The motion a person sees in the Tasks package with no view asking for any: checking a task
+//! off fills its box over frames, and a row a person adds or clears arrives and leaves through
+//! the list's own motion, at the pace the theme gives. The views say what a row is; the
+//! platform plays the change.
+//!
+//! The frames are read one at a time: each frame the harness draws is rasterised, and a band of
+//! it compared with the frame before, so a motion is a series of values rather than a single
+//! before and after. `the_frames_a_person_sees` writes those frames as PNGs; it is ignored by
+//! default because it is there to look at, not to gate.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test assertions"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "pixels of a small frame: coordinates and counts are tiny, and the arithmetic is the \
+              comparison itself"
+)]
+
+mod support;
+
+use tilolang_app::app::TlApp;
+use ui::framework::testing::TestApp;
+use ui::headless::InspectionNode;
+use ui::time::testing::with_monotonic_time;
+
+const DESKTOP: (u32, u32) = (1280, 800);
+
+fn staged(scenario: &str) -> TestApp<TlApp> {
+    support::installed("tasks");
+    let mut app =
+        TestApp::<TlApp>::capture_at(Some(scenario), DESKTOP).expect("the scenario stages");
+    settle(&mut app);
+    app
+}
+
+/// Run frames until the window settles on the toolkit's clock: what a capture shows.
+fn settle(app: &mut TestApp<TlApp>) {
+    for _ in 0..8 {
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_millis(300));
+        app.harness().relayout();
+    }
+}
+
+/// Run the frame due at `at` and draw it: whether the window wanted a frame, and what it drew.
+fn frame_at(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (bool, Vec<u8>) {
+    with_monotonic_time(at, || {
+        let drew = app.harness().poll_frame().expect("a frame");
+        let pixels = app.harness().render_rgba();
+        (drew, pixels)
+    })
+}
+
+fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
+    out.push(node);
+    for child in &node.children {
+        walk(child, out);
+    }
+}
+
+/// The rows the list shows, by the name each says, and where each is.
+fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
+        .filter_map(|node| {
+            let name = node.semantics.as_ref()?.name.clone()?;
+            Some((name, node.rect))
+        })
+        .collect()
+}
+
+/// The space the leading checkbox of the row titled `title` takes: the start of the row, as
+/// tall as its box.
+fn row_box(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
+    let [x, y, _, h] = rows(app)
+        .into_iter()
+        .find(|(name, _)| name == title)
+        .unwrap_or_else(|| panic!("the list shows {title}"))
+        .1;
+    let size = 22.0;
+    [x + 4.0, y + (h - size) / 2.0, size, size]
+}
+
+/// The space the list of rows takes: from the first row's top to the last one's bottom, as
+/// wide as the widest row, and one row taller, since a row a person adds arrives under the
+/// last one.
+fn list_band(app: &mut TestApp<TlApp>) -> [f64; 4] {
+    let rows = rows(app);
+    let first = rows.first().expect("the list shows rows").1;
+    let mut bottom = first[1] + first[3];
+    let mut right = first[0] + first[2];
+    for (_, rect) in &rows {
+        bottom = bottom.max(rect[1] + rect[3]);
+        right = right.max(rect[0] + rect[2]);
+    }
+    [
+        first[0],
+        first[1],
+        right - first[0],
+        bottom - first[1] + first[3],
+    ]
+}
+
+/// Whether the window still has motion to play.
+fn moving(app: &mut TestApp<TlApp>) -> bool {
+    app.harness().frame_schedule().needs_animation_frame
+}
+
+/// The rect of the widget the window shows under the semantics name `name`: a control on
+/// screen, not a menu item the window keeps for a menu that is closed.
+fn named(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
+    let snapshot = app.harness().inspection();
+    let viewport = snapshot.viewport;
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let named: Vec<&InspectionNode> = all
+        .into_iter()
+        .filter(|node| {
+            node.semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.as_deref())
+                == Some(name)
+        })
+        .collect();
+    named
+        .iter()
+        .copied()
+        .find(|node| {
+            node.widget == "Button"
+                && node.rect[2] > 0.0
+                && node.rect[3] > 0.0
+                && node.rect[0] >= 0.0
+                && node.rect[1] >= 0.0
+                && node.rect[0] < f64::from(viewport[0])
+                && node.rect[1] < f64::from(viewport[1])
+        })
+        .or_else(|| named.first().copied())
+        .unwrap_or_else(|| panic!("the window shows {name}"))
+        .rect
+}
+
+/// Whether the row titled `title` is drawn marked.
+fn marked(app: &mut TestApp<TlApp>, title: &str) -> bool {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.iter()
+        .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
+        .filter(|node| {
+            node.semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.as_deref())
+                == Some(title)
+        })
+        .any(|node| {
+            node.semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.state.checked == Some(true))
+        })
+}
+
+/// The pixels of `rect` in the frame `pixels`, which the harness draws in device pixels.
+fn pixels_in(app: &mut TestApp<TlApp>, pixels: &[u8], rect: [f64; 4]) -> Vec<[u8; 4]> {
+    let root = app.harness().inspection().root.rect;
+    let width_px = app.harness().inspection().viewport[0];
+    let scale = f64::from(width_px) / root[2];
+    let width = width_px as usize;
+    let [x, y, w, h] = rect;
+    let x0 = ((x - root[0]) * scale).round().max(0.0) as usize;
+    let y0 = ((y - root[1]) * scale).round().max(0.0) as usize;
+    let x1 = (((x - root[0] + w) * scale).round() as usize).min(width);
+    let y1 = ((y - root[1] + h) * scale).round() as usize;
+    let mut out = Vec::new();
+    for row in y0..y1.min(pixels.len() / 4 / width.max(1)) {
+        for col in x0..x1 {
+            let at = (row * width + col) * 4;
+            out.push([pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]);
+        }
+    }
+    out
+}
+
+/// How far the pixels of `rect` in `pixels` are from the ones in `settled`: the mean of the
+/// distances between the colours, 0 for the same frame.
+fn difference(app: &mut TestApp<TlApp>, pixels: &[u8], settled: &[[u8; 4]], rect: [f64; 4]) -> f64 {
+    let now = pixels_in(app, pixels, rect);
+    let common = now.len().min(settled.len());
+    if common == 0 {
+        return 0.0;
+    }
+    let total: f64 = now
+        .iter()
+        .zip(settled)
+        .take(common)
+        .map(|(a, b)| {
+            (f64::from(a[0].abs_diff(b[0]))
+                + f64::from(a[1].abs_diff(b[1]))
+                + f64::from(a[2].abs_diff(b[2])))
+                / 3.0
+        })
+        .sum();
+    total / common as f64
+}
+
+/// How many frames of the series show the change part way: neither all but started nor all
+/// but finished.
+fn partway(series: &[f64]) -> usize {
+    let Some(settled) = series.last().copied() else {
+        return 0;
+    };
+    series
+        .iter()
+        .filter(|at| **at > settled * 0.05 && **at < settled * 0.95)
+        .count()
+}
+
+/// How many frames of the series show a change under way: not yet at rest, and enough above
+/// where it ends for the difference to be the change rather than the list it left.
+fn in_flight(series: &[f64]) -> usize {
+    let Some(settled) = series.last().copied() else {
+        return 0;
+    };
+    let Some(peak) = series.iter().copied().reduce(f64::max) else {
+        return 0;
+    };
+    let span = (peak - settled).abs();
+    if span < 0.5 {
+        return 0;
+    }
+    series
+        .iter()
+        .filter(|at| (**at - settled).abs() > span * 0.05)
+        .count()
+}
+
+/// Whether the last frames of the series hold still: the motion has ended.
+fn settles(series: &[f64]) -> bool {
+    let Some(settled) = series.last().copied() else {
+        return false;
+    };
+    series[series.len().saturating_sub(3)..]
+        .iter()
+        .all(|at| (*at - settled).abs() < 1.0)
+}
+
+/// Open the task titled `title` from the inbox: its own window's box is the one a check-off
+/// stays on, where a list row's closes the row out of the list.
+fn open_task(app: &mut TestApp<TlApp>, title: &str) {
+    let [x, y, w, h] = rows(app)
+        .into_iter()
+        .find(|(name, _)| name == title)
+        .unwrap_or_else(|| panic!("the list shows {title}"))
+        .1;
+    with_monotonic_time(ui::time::Instant::now(), || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+    settle(app);
+}
+
+/// The box of the task a person opened: the window's own checkbox, which the list's rows do
+/// not have (a row draws its box), and whether it holds.
+fn page_box(app: &mut TestApp<TlApp>) -> ([f64; 4], bool) {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.iter()
+        .filter(|node| node.widget == "Checkbox")
+        .filter(|node| node.rect[2] > 0.0 && node.rect[3] > 0.0)
+        .find_map(|node| {
+            let state = node.semantics.as_ref()?.state.checked?;
+            Some((node.rect, state))
+        })
+        .expect("the task's window shows its box")
+}
+
+#[test]
+fn checking_a_task_off_fills_its_box_over_frames() {
+    let mut app = staged("a busy week");
+    let title = "Buy oat milk and eggs";
+    assert!(!marked(&mut app, title), "the task starts open");
+    open_task(&mut app, title);
+    let (band, held) = page_box(&mut app);
+    assert!(!held, "the task's box starts open");
+
+    let start = ui::time::Instant::now();
+    let (_, rest) = frame_at(&mut app, start);
+    let before = pixels_in(&mut app, &rest, band);
+
+    let pressed = start + ui::time::Duration::from_millis(100);
+    let (x, y) = (band[0] + band[2] / 2.0, band[1] + band[3] / 2.0);
+    with_monotonic_time(pressed, || app.harness().click_at(x, y));
+
+    let mut series = Vec::new();
+    for step in 1..=14 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let (_, pixels) = frame_at(&mut app, at);
+        series.push(difference(&mut app, &pixels, &before, band));
+    }
+    println!("check-off frames: {series:?}");
+
+    let settled = *series.last().expect("frames were read");
+    assert!(
+        settled > 6.0,
+        "the box a person checked is drawn filled: {series:?}"
+    );
+    assert!(
+        partway(&series) >= 3,
+        "the mark arrives over frames rather than at once: {series:?}"
+    );
+    assert!(
+        settles(&series),
+        "the mark settles instead of going on: {series:?}"
+    );
+
+    settle(&mut app);
+    assert!(
+        page_box(&mut app).1,
+        "the task stays checked once the app holds it"
+    );
+    assert!(
+        !moving(&mut app),
+        "nothing is still playing once the mark settled"
+    );
+}
+
+#[test]
+fn a_task_a_person_adds_lands_in_the_list() {
+    // A list moves for a change a person made by hand: a pointer's insert or removal, a drag.
+    // A key's result lands (`motion::MotionSource::lands_at_once`), so a title typed into the
+    // entry arrives by the next frame, and the list has nothing left to play afterwards.
+    let mut app = staged("a busy week");
+    let before_rows = rows(&mut app).len();
+    let band = list_band(&mut app);
+    let start = ui::time::Instant::now();
+    let (_, rest) = frame_at(&mut app, start);
+    let before = pixels_in(&mut app, &rest, band);
+
+    // The entry at the list's foot, as a person adds a task: a title typed, then Enter.
+    let [x, y, w, h] = named(&mut app, "Draft");
+    let pressed = start + ui::time::Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+        app.harness().type_text("Water the plants");
+        app.harness().key("Enter");
+    });
+
+    let mut series = Vec::new();
+    for step in 1..=14 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let (_, pixels) = frame_at(&mut app, at);
+        series.push(difference(&mut app, &pixels, &before, band));
+    }
+    println!("insert frames: {series:?}");
+
+    settle(&mut app);
+    assert_eq!(
+        rows(&mut app).len(),
+        before_rows + 1,
+        "the task a person added is in the list"
+    );
+    assert!(
+        rows(&mut app)
+            .iter()
+            .any(|(name, _)| name == "Water the plants"),
+        "the list shows what was typed"
+    );
+    assert!(
+        series.first().copied().unwrap_or_default() > 0.5,
+        "the new row is drawn by the frame after the key: {series:?}"
+    );
+    assert!(
+        in_flight(&series) == 0,
+        "a key's result lands rather than playing: {series:?}"
+    );
+}
+
+#[test]
+fn the_rows_a_person_removes_leave_the_list() {
+    let mut app = staged("a busy week");
+    let before_rows = rows(&mut app).len();
+    assert!(before_rows > 2, "the place holds tasks");
+
+    // A first removal teaches the list its rows' order; the next one moves the survivors.
+    let [x, y, w, h] = named(&mut app, "Remove");
+    with_monotonic_time(ui::time::Instant::now(), || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+    settle(&mut app);
+
+    // A task the person opens, then removes from the pane it opened.
+    let [x, y, w, h] = rows(&mut app)
+        .into_iter()
+        .find(|(name, _)| name == "Book a haircut")
+        .expect("the list shows the task")
+        .1;
+    with_monotonic_time(ui::time::Instant::now(), || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+    settle(&mut app);
+
+    let band = list_band(&mut app);
+    let start = ui::time::Instant::now();
+    let (_, rest) = frame_at(&mut app, start);
+    let before = pixels_in(&mut app, &rest, band);
+    let [x, y, w, h] = named(&mut app, "Remove");
+    let pressed = start + ui::time::Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+
+    let mut series = Vec::new();
+    for step in 1..=14 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let (_, pixels) = frame_at(&mut app, at);
+        series.push(difference(&mut app, &pixels, &before, band));
+    }
+    println!("remove frames: {series:?}");
+
+    settle(&mut app);
+    assert_eq!(
+        rows(&mut app).len(),
+        before_rows - 2,
+        "the tasks a person removed are gone"
+    );
+    assert!(
+        in_flight(&series) >= 3,
+        "the rows below make way over frames rather than jumping: {series:?}"
+    );
+    assert!(settles(&series), "the list settles: {series:?}");
+    assert!(
+        !moving(&mut app),
+        "nothing is still playing once the list settled"
+    );
+}
+
+#[test]
+fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
+    let mut app = staged("a busy week");
+    let title = "Buy oat milk and eggs";
+    let band = row_box(&mut app, title);
+
+    // What a still window costs a frame: what the motion is measured against.
+    let still = frame_times(&mut app, 8);
+
+    let start = ui::time::Instant::now();
+    let (x, y) = (band[0] + band[2] / 2.0, band[1] + band[3] / 2.0);
+    with_monotonic_time(start + ui::time::Duration::from_millis(100), || {
+        app.harness().click_at(x, y);
+    });
+    let mut moving = Vec::new();
+    for step in 1..=14 {
+        let at = start + ui::time::Duration::from_millis(16 * step as u64);
+        let began = std::time::Instant::now();
+        let _ = frame_at(&mut app, at);
+        moving.push(began.elapsed());
+    }
+    let still_ms = median_ms(&still);
+    let moving_ms = median_ms(&moving);
+    println!("a frame: {still_ms:.2} ms still, {moving_ms:.2} ms with the mark on its way");
+    assert!(
+        moving_ms < still_ms * 1.5 + 1.0,
+        "a frame of the mark costs what a still frame costs: {still_ms:.2} ms still, \
+         {moving_ms:.2} ms moving"
+    );
+}
+
+/// How long each of the next frames takes, drawn as the window draws it.
+fn frame_times(app: &mut TestApp<TlApp>, count: usize) -> Vec<std::time::Duration> {
+    let start = ui::time::Instant::now();
+    let mut times = Vec::new();
+    for step in 0..count {
+        let at = start + ui::time::Duration::from_millis(16 * step as u64);
+        let began = std::time::Instant::now();
+        let _ = frame_at(app, at);
+        times.push(began.elapsed());
+    }
+    times
+}
+
+fn median_ms(times: &[std::time::Duration]) -> f64 {
+    let mut sorted: Vec<f64> = times.iter().map(|t| t.as_secs_f64() * 1000.0).collect();
+    sorted.sort_by(f64::total_cmp);
+    sorted.get(sorted.len() / 2).copied().unwrap_or_default()
+}
+
+#[test]
+#[ignore = "writes the frames it reads as PNGs, to look at"]
+fn the_frames_a_person_sees() {
+    // A task checked off in its row.
+    let mut app = staged("a busy week");
+    let band = row_box(&mut app, "Buy oat milk and eggs");
+    let start = ui::time::Instant::now();
+    let (_, _) = frame_at(&mut app, start);
+    shot(&mut app, "check-off-00-rest");
+    let pressed = start + ui::time::Duration::from_millis(100);
+    let (x, y) = (band[0] + band[2] / 2.0, band[1] + band[3] / 2.0);
+    with_monotonic_time(pressed, || app.harness().click_at(x, y));
+    for step in 1..=10 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let _ = frame_at(&mut app, at);
+        if step % 2 == 0 {
+            shot(&mut app, &format!("check-off-{step:02}"));
+        }
+    }
+
+    // A task added at the list's foot.
+    let mut app = staged("a busy week");
+    let start = ui::time::Instant::now();
+    let _ = frame_at(&mut app, start);
+    let [x, y, w, h] = named(&mut app, "Draft");
+    let pressed = start + ui::time::Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+        app.harness().type_text("Water the plants");
+        app.harness().key("Enter");
+    });
+    for step in 1..=10 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let _ = frame_at(&mut app, at);
+        if step % 2 == 0 {
+            shot(&mut app, &format!("insert-{step:02}"));
+        }
+    }
+
+    // Two removals from the pane: the first reads the list's order, the second glides.
+    let mut app = staged("a busy week");
+    let start = ui::time::Instant::now();
+    let _ = frame_at(&mut app, start);
+    shot(&mut app, "remove-00-rest");
+    let [x, y, w, h] = named(&mut app, "Remove");
+    with_monotonic_time(start + ui::time::Duration::from_millis(100), || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+    settle(&mut app);
+    let [x, y, w, h] = rows(&mut app)
+        .into_iter()
+        .find(|(name, _)| name == "Book a haircut")
+        .expect("the list shows the task")
+        .1;
+    with_monotonic_time(ui::time::Instant::now(), || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+    settle(&mut app);
+    let (_, _) = frame_at(&mut app, ui::time::Instant::now());
+    shot(&mut app, "remove-01-opened");
+    let [x, y, w, h] = named(&mut app, "Remove");
+    let pressed = ui::time::Instant::now() + ui::time::Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+    for step in 1..=10 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let _ = frame_at(&mut app, at);
+        if step % 2 == 0 {
+            shot(&mut app, &format!("remove-{step:02}"));
+        }
+    }
+}
+
+/// Write the frame the window holds now, and print it as hex so a run away from the machine
+/// it was drawn on can carry it back.
+fn shot(app: &mut TestApp<TlApp>, name: &str) {
+    let path = shot_path(name);
+    app.harness().render_png(&path);
+    let bytes = std::fs::read(&path).expect("the frame it wrote");
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in &bytes {
+        use std::fmt::Write as _;
+        write!(hex, "{byte:02x}").expect("a String takes every write");
+    }
+    println!("SHOT {name} {hex}");
+}
+
+/// Where a frame is written: beside the test binary, so a run away from this machine can carry
+/// it back (each is printed by the test as it is written).
+fn shot_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.png"))
+}

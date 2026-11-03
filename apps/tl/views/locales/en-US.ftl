@@ -2,7 +2,7 @@
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-bqgmjsyo = Written view
-    .doc = A view of the person's own: a tilolang `view` definition, written as an app declares one (`view open_threads(m: mail.Mail) {"{"{"}"} ...
+    .doc = A view of the person's own: a tilolang `view` definition, written as an app declares one (`view open_threads(m: mail.Mail) {"{"} ...
     .noun = { $count ->
         [one] written view
        *[other] written views
@@ -89,8 +89,8 @@ d-unwqgbdt = View row
 
 d-p33c52uw = View page
 
-d-2dc3zfxw~row0 = Views list for p
+d-2dc3zfxw-row0 = Views list for p
 
-d-2dc3zfxw~row1 = Views list for x
+d-2dc3zfxw-row1 = Views list for x
 
-d-2dc3zfxw~row2 = Views list for x
+d-2dc3zfxw-row2 = Views list for x

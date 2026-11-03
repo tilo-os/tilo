@@ -223,10 +223,20 @@ impl Checker<'_> {
             return;
         }
         // `bind:` names the component's bindable value whatever it is called: the binding is the
-        // description's, its type and its merge.
+        // description's, its type and its merge. A component with several offers the one whose
+        // type the bound place has.
         if name == "bind" && d.binding(name).is_none() {
-            if let Some(b) = self.only_binding(d, value.span) {
-                self.binding_prop(n, d, value, b);
+            if d.bindings.is_empty() {
+                self.err(
+                    "E063",
+                    value.span,
+                    format!(
+                        "{} binds nothing; `bind:` names a component's bindable value",
+                        shown(d)
+                    ),
+                );
+            } else {
+                self.binding_prop(n, d, value, &d.bindings);
             }
             return;
         }
@@ -245,7 +255,7 @@ impl Checker<'_> {
             // view's `on change(v)`, which asks whoever holds the value to change it.
             self.typed_prop(n, d, name, &b.ty, &b.doc, value);
         } else if let Some(b) = d.binding(name) {
-            self.binding_prop(n, d, value, b);
+            self.binding_prop(n, d, value, std::slice::from_ref(b));
         } else if let Some(s) = d.state(name) {
             self.typed_prop(n, d, name, &s.ty, &s.doc, value);
         } else if prims::NODE_ARGS.contains(&name) {
@@ -271,74 +281,30 @@ impl Checker<'_> {
         }
     }
 
-    /// `bind:` to the component's binding `b`: what it binds is checked against the binding's own
-    /// type, and the node carries the binding's name, which is the name the host merges under.
+    /// A binding of the component `d` bound to what `value` names: checked against the binding's
+    /// own type, and the node carries the binding's name, which is the name the host merges
+    /// under. Of `bindings`, the one whose type the bound place has is the one bound.
     fn binding_prop(
         &mut self,
         n: LocalId,
         d: &'static Description,
         value: &ast::Expr,
-        b: &'static tilo_ui_graph::component::Binding,
+        bindings: &[tilo_ui_graph::component::Binding],
     ) {
         let node = Ex::local(n, Ty::View);
-        let want: Vec<Ty> = match &b.ty {
-            Type::Text => vec![Ty::Text],
-            Type::Bool => vec![Ty::Bool],
-            Type::Int => vec![Ty::Int],
-            Type::Float => vec![Ty::Float],
-            // A moment is a Date, a Time, or one that may be none.
-            Type::Time => vec![
-                Ty::Date,
-                Ty::Time,
-                Ty::Option(Box::new(Ty::Date)),
-                Ty::Option(Box::new(Ty::Time)),
-            ],
-            Type::RichText => vec![Ty::RichText],
-            _ => Vec::new(),
-        };
+        let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
         // A document's title is drawn by a control that declares it, as TextInput does.
         let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
-        if self.bind_typed(&node, value, &want, titled).is_some() {
-            self.emit(host(
-                Imp::UiPropH,
-                vec![node, Ex::str("bind"), Ex::str(&b.name)],
-            ));
-        }
-    }
-
-    /// The binding a `bind:` argument names: a component's single bindable value.
-    fn only_binding(
-        &mut self,
-        d: &'static Description,
-        span: Span,
-    ) -> Option<&'static tilo_ui_graph::component::Binding> {
-        match d.bindings.as_slice() {
-            [one] => Some(one),
-            [] => {
-                self.err(
-                    "E063",
-                    span,
-                    format!(
-                        "{} binds nothing; `bind:` names a component's bindable value",
-                        shown(d)
-                    ),
-                );
-                None
-            }
-            many => {
-                self.err(
-                    "E063",
-                    span,
-                    format!(
-                        "{} binds {}; name the one it edits: {}",
-                        shown(d),
-                        listed(many.iter().map(|b| format!("`{}`", b.name))),
-                        listed(many.iter().map(|b| format!("`{}: <field>`", b.name)))
-                    ),
-                );
-                None
-            }
-        }
+        let Some(ty) = self.bind_typed(&node, value, &want, titled) else {
+            return;
+        };
+        let Some(b) = bindings.iter().find(|b| binding_types(&b.ty).contains(&ty)) else {
+            return;
+        };
+        self.emit(host(
+            Imp::UiPropH,
+            vec![node, Ex::str("bind"), Ex::str(&b.name)],
+        ));
     }
 
     /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the
@@ -909,7 +875,17 @@ impl Checker<'_> {
                         },
                         _ => false,
                     };
+                    // What the caller of a template gives the slot — its block or a view of
+                    // its own — is the component where it is written.
+                    let from_caller = match &c.call.kind {
+                        ExprKind::Call { callee, .. } => match &callee.kind {
+                            ExprKind::Ident(v) => self.macro_slot(d, slot, v, calls),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
                     let fits = own_view
+                        || from_caller
                         || component_of(c).is_some_and(|(base, name)| {
                             slot.accepts.takes(name) && self.names_toolkit(base)
                         });
@@ -941,6 +917,41 @@ impl Checker<'_> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Whether `name`, a parameter of the template being expanded, fills `slot`: its block is
+    /// checked against the slot as if it stood there, and a view by what its body makes.
+    fn macro_slot(
+        &mut self,
+        d: &Description,
+        slot: &tilo_ui_graph::component::Slot,
+        name: &str,
+        calls: &mut usize,
+    ) -> bool {
+        match self.st.macros.get(name).cloned() {
+            Some(super::template::Macro::Some(inner)) => match &*inner {
+                super::template::Macro::View(v) => self
+                    .env
+                    .view_makes
+                    .get(&v.name)
+                    .is_some_and(|made| slot.accepts.takes(made)),
+                super::template::Macro::Block(block) => {
+                    self.slot_calls(d, slot, &block.body, calls);
+                    true
+                }
+                _ => false,
+            },
+            Some(super::template::Macro::View(v)) => self
+                .env
+                .view_makes
+                .get(&v.name)
+                .is_some_and(|made| slot.accepts.takes(made)),
+            Some(super::template::Macro::Block(block)) => {
+                self.slot_calls(d, slot, &block.body, calls);
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -1012,6 +1023,25 @@ fn names_cases(ty: &Type) -> bool {
         Type::Option(inner) | Type::List(inner) | Type::Set(inner) => names_cases(inner),
         Type::Map { value, .. } => names_cases(value),
         _ => false,
+    }
+}
+
+/// The language's types a binding of the description's `ty` takes: a moment is a Date, a Time,
+/// or one that may be none.
+fn binding_types(ty: &Type) -> Vec<Ty> {
+    match ty {
+        Type::Text => vec![Ty::Text],
+        Type::Bool => vec![Ty::Bool],
+        Type::Int => vec![Ty::Int],
+        Type::Float => vec![Ty::Float],
+        Type::Time => vec![
+            Ty::Date,
+            Ty::Time,
+            Ty::Option(Box::new(Ty::Date)),
+            Ty::Option(Box::new(Ty::Time)),
+        ],
+        Type::RichText => vec![Ty::RichText],
+        _ => Vec::new(),
     }
 }
 

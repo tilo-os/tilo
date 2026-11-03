@@ -1215,6 +1215,7 @@ impl Checker<'_> {
                     | "all"
                     | "find"
                     | "count"
+                    | "index_of"
                     | "sort_by"
                     | "first"
                     | "last"
@@ -1254,6 +1255,7 @@ impl Checker<'_> {
                 "all",
                 "find",
                 "count",
+                "index_of",
                 "sort_by",
                 "first",
                 "last",
@@ -1645,6 +1647,22 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 Self::end_item(r, &elem, m == "last")
             }
+            // `items.index_of(x)`: where it stands among the items, or none when it is not one.
+            (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "index_of") => {
+                let elem = (**t).clone();
+                if !self.arity(name, args, 1, span) {
+                    return Ex::error();
+                }
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                let what = self.expr_as(&a.value, &elem);
+                Ex::host(
+                    Imp::ListIndexOf,
+                    vec![r, what],
+                    Ty::Option(Box::new(Ty::Int)),
+                )
+            }
             (Ty::List(_), "of") => self.list_of(r, args, span),
             (Ty::List(t) | Ty::Collection(t), "matching") => {
                 let elem = (**t).clone();
@@ -1685,7 +1703,7 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count, sort_by, count_by, group, take, each, single"
+                        "len, is_empty, first, last, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single"
                     }
                     _ => "none",
                 };
@@ -1807,7 +1825,7 @@ impl Checker<'_> {
 
     /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the
     /// items ordered by them (ascending, stable). Keys are Int, Float, Text or Bool; a Date or
-    /// a Time sorts in time order, one that may be absent before every other.
+    /// a Time sorts in time order, and one that may be absent after every item that has one.
     fn sort_by(
         &mut self,
         list: Ex,
@@ -1839,10 +1857,11 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
-        // Over a collection, a key the store can order by is asked of it first; the collection
-        // is held in a local for that, which the loop reads too.
+        // A key the store can order by is asked of it first: over a collection, and over a list
+        // that may be one (a parameter taking either keeps the collection it is given), which
+        // is held in a local for the asking, and that the loop reads too.
         let native = match &list.ty {
-            Ty::Collection(_) => self.sort_key(elem, &param.name, &body),
+            Ty::Collection(_) | Ty::List(_) => self.sort_key(elem, &param.name, &body),
             _ => None,
         };
         let (list, held) = match native {
@@ -1863,20 +1882,30 @@ impl Checker<'_> {
             }
             _ => self.expr(&body, None),
         };
-        // A Date or a Time is ISO text, which sorts in time order. One that may be absent
-        // sorts as no text at all, which comes before every day.
-        let key = match key.ty {
-            Ty::Date | Ty::Time => key.typed(Ty::Text),
+        // A Date or a Time is ISO text, which sorts in time order; one that may be absent is
+        // read once, its presence and its value telling where the item stands: the items
+        // without one stand after those with one, whatever the direction.
+        let (key, present) = match key.ty.clone() {
+            Ty::Date | Ty::Time => (key.typed(Ty::Text), None),
             Ty::Option(ref inner) if matches!(**inner, Ty::Date | Ty::Time) => {
                 let inner = (**inner).clone();
-                let present = Ex::host(Imp::IsSome, vec![key.clone()], Ty::Bool);
-                let value = Ex::host(Imp::UnwrapH, vec![key], inner).typed(Ty::Text);
-                Ex::new(
-                    Ek::If(Box::new(present), Box::new(value), Box::new(Ex::str(""))),
+                let ty = key.ty.clone();
+                let held = self.fresh(ty.clone());
+                self.emit(Stmt::Set(held, key));
+                let present = Ex::host(Imp::IsSome, vec![Ex::local(held, ty.clone())], Ty::Bool);
+                let value =
+                    Ex::host(Imp::UnwrapH, vec![Ex::local(held, ty)], inner).typed(Ty::Text);
+                let key = Ex::new(
+                    Ek::If(
+                        Box::new(present.clone()),
+                        Box::new(value),
+                        Box::new(Ex::str("")),
+                    ),
                     Ty::Text,
-                )
+                );
+                (key, Some(present))
             }
-            _ => key,
+            _ => (key, None),
         };
         if !matches!(
             key.ty,
@@ -1889,29 +1918,74 @@ impl Checker<'_> {
                 format!("`sort_by` keys must be Int, Float, Text, Bool, Date or Time, found {t}"),
             );
         }
+        let out_ty = Ty::List(Box::new(elem.clone()));
         let keys_ty = Ty::List(Box::new(key.ty.clone()));
         let keys = self.fresh(keys_ty.clone());
-        self.emit(Stmt::Eval(Self::push_item(
-            Ex::local(keys, keys_ty.clone()),
-            key,
-        )));
+        // The items that have a value go to a list of their own, sorted there, and those
+        // without one follow them in the order the list holds them, whichever direction: a task
+        // nobody gave a day is no day's work, not the first one's.
+        let kept = self.fresh(out_ty.clone());
+        let missing = self.fresh(out_ty.clone());
+        if let Some(present) = &present {
+            let item = || Ex::local(fl.item_local, elem.clone());
+            let push_keys = Stmt::Eval(Self::push_item(Ex::local(keys, keys_ty.clone()), key));
+            let push_kept = Self::push_item(Ex::local(kept, out_ty.clone()), item());
+            self.emit(Stmt::Eval(Ex::new(
+                Ek::If(
+                    Box::new(present.clone()),
+                    Box::new(Ex::new(
+                        Ek::Seq(vec![push_keys], Box::new(push_kept)),
+                        Ty::Unit,
+                    )),
+                    Box::new(Self::push_item(Ex::local(missing, out_ty.clone()), item())),
+                ),
+                Ty::Unit,
+            )));
+        } else {
+            self.emit(Stmt::Eval(Self::push_item(
+                Ex::local(keys, keys_ty.clone()),
+                key,
+            )));
+        }
         let mut inner = self.pop_sink();
         fl.body.append(&mut inner);
-        let out_ty = Ty::List(Box::new(elem.clone()));
         let list_local = fl.list_local;
-        let stmts = vec![
-            Stmt::Set(keys, Ex::host(Imp::ListNew, Vec::new(), keys_ty.clone())),
-            Stmt::ForList(Box::new(fl)),
-        ];
+        let mut stmts = vec![Stmt::Set(
+            keys,
+            Ex::host(Imp::ListNew, Vec::new(), keys_ty.clone()),
+        )];
+        if present.is_some() {
+            for keep in [kept, missing] {
+                stmts.push(Stmt::Set(
+                    keep,
+                    Ex::host(Imp::ListNew, Vec::new(), out_ty.clone()),
+                ));
+            }
+        }
+        stmts.push(Stmt::ForList(Box::new(fl)));
+        let source = if present.is_some() { kept } else { list_local };
         let mut sorted = Ex::host(
             Imp::ListSortByKey,
-            vec![Ex::local(list_local, Ty::Text), Ex::local(keys, keys_ty)],
+            vec![Ex::local(source, Ty::Text), Ex::local(keys, keys_ty)],
             out_ty.clone(),
         );
         if desc {
             sorted = Ex::host(Imp::ListReverse, vec![sorted], out_ty.clone());
         }
-        let looped = Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty);
+        let ordered = self.fresh(out_ty.clone());
+        stmts.push(Stmt::Set(ordered, sorted));
+        if present.is_some() {
+            let mut tail = self.new_for(Ex::local(missing, out_ty.clone()), elem);
+            tail.body.push(Stmt::Eval(Self::push_item(
+                Ex::local(ordered, out_ty.clone()),
+                Ex::local(tail.item_local, elem.clone()),
+            )));
+            stmts.push(Stmt::ForList(Box::new(tail)));
+        }
+        let looped = Ex::new(
+            Ek::Seq(stmts, Box::new(Ex::local(ordered, out_ty.clone()))),
+            out_ty,
+        );
         match (native, held) {
             (Some(key), Some((local, held))) => {
                 self.ordered_or_loop(local, held, &key, desc, looped)

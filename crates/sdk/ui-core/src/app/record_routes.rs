@@ -69,7 +69,7 @@ impl RecordRouteParticipant {
         let events = self.manager.poll();
         if self.manager.document_publication_failed() {
             for entry in &mut self.routes.owners {
-                entry.sent_heads.clear();
+                entry.sent = crate::state::DocumentFrontier::default();
                 entry.needs_snapshot = true;
             }
         }
@@ -174,9 +174,13 @@ impl RecordRouteParticipant {
 pub struct RouteDocument {
     manager: CollaborationManager,
     route: RouteSpec,
-    /// The heads the route holds from this holder; `None` until it has
-    /// published its whole document since it connected.
-    sent: Option<Vec<automerge::ChangeHash>>,
+    /// The changes the route holds from this holder. What arrived from the
+    /// route is counted as held too, without covering changes this holder
+    /// still has to send.
+    sent: crate::state::DocumentFrontier,
+    /// Whether this connection published the whole document: what goes out
+    /// now is the change since [`Self::sent`].
+    whole_sent: bool,
     /// Committed history the route delivered before the document could
     /// take it.
     committed: Vec<crate::collaboration::CommittedDocument>,
@@ -289,7 +293,8 @@ impl RouteDocument {
         let mut held = Self {
             manager,
             route,
-            sent: None,
+            sent: crate::state::DocumentFrontier::default(),
+            whole_sent: false,
             committed: Vec::new(),
             waiting: std::collections::VecDeque::new(),
             _wake: wake,
@@ -322,7 +327,8 @@ impl RouteDocument {
         let mut pumped = Pumped::default();
         let events = self.manager.poll();
         if self.manager.document_publication_failed() {
-            self.sent = None;
+            self.sent = crate::state::DocumentFrontier::default();
+            self.whole_sent = false;
         }
         for event in events {
             match event {
@@ -350,7 +356,8 @@ impl RouteDocument {
                     }
                 }
                 CollabEvent::DocumentSnapshotRequested { route } if route == self.route => {
-                    self.sent = None;
+                    self.sent = crate::state::DocumentFrontier::default();
+                    self.whole_sent = false;
                 }
                 CollabEvent::CommittedDocument { route, read } if route == self.route => {
                     self.committed.push(read);
@@ -401,7 +408,7 @@ impl RouteDocument {
         ) {
             Ok(Admission::Merged(changed)) => {
                 pumped.merged |= changed;
-                self.echoed(&before, doc);
+                self.observed(&before, doc);
                 true
             }
             Ok(Admission::Waiting) => {
@@ -468,7 +475,7 @@ impl RouteDocument {
                 Ok(Ok(changed)) => {
                     read.applied();
                     merged |= changed;
-                    self.echoed(&before, doc);
+                    self.observed(&before, doc);
                 }
                 Ok(Err(error)) => {
                     tracing::warn!(%error, "a held route delivered unreadable committed history");
@@ -481,13 +488,15 @@ impl RouteDocument {
         merged
     }
 
-    /// What arrived is held by the route already: when everything of this
-    /// holder's was published before it merged, the merged document counts
-    /// as published.
-    fn echoed(&mut self, before: &[automerge::ChangeHash], doc: &mut AutoCommit) {
-        if self.sent.as_deref() == Some(before) {
-            self.sent = Some(doc.get_heads());
-        }
+    /// What arrived is held by the route already: count its changes as sent,
+    /// so they are not published back, while this holder's own unsent
+    /// changes stay outside the frontier and still go out.
+    fn observed(&mut self, before: &[automerge::ChangeHash], doc: &mut AutoCommit) {
+        self.sent.observe(
+            doc.get_changes(before)
+                .into_iter()
+                .map(|change| change.hash()),
+        );
     }
 
     /// Offer the route what `doc` holds that it does not: the whole
@@ -496,12 +505,18 @@ impl RouteDocument {
         if !self.publishable() {
             return;
         }
-        let heads = doc.get_heads();
-        let mutation = match &self.sent {
-            Some(sent) if *sent == heads => return,
-            Some(sent) => collab_types::DocumentMutation::Incremental(doc.save_after(sent)),
-            None if heads.is_empty() => return,
-            None => collab_types::DocumentMutation::Snapshot(doc.save()),
+        let (mutation, heads) = if self.whole_sent {
+            let (delta, heads) = self.sent.pending_delta(doc);
+            if delta.is_empty() {
+                return;
+            }
+            (collab_types::DocumentMutation::Incremental(delta), heads)
+        } else {
+            let heads = doc.get_heads();
+            if heads.is_empty() {
+                return;
+            }
+            (collab_types::DocumentMutation::Snapshot(doc.save()), heads)
         };
         #[cfg(test)]
         let observed = mutation.clone();
@@ -513,7 +528,8 @@ impl RouteDocument {
             Ok(()) => {
                 #[cfg(test)]
                 self.published.push(observed);
-                self.sent = Some(heads);
+                self.sent.advance(heads);
+                self.whole_sent = true;
             }
             Err(error) => tracing::debug!(%error, "a held route takes no writes yet"),
         }
@@ -733,6 +749,45 @@ mod tests {
 
     fn take_everything(doc: &mut AutoCommit, arrival: Arrival<'_>) -> Result<Admission, String> {
         arrival.merge_into(doc)
+    }
+
+    /// A change made here while a peer's committed history merged goes out on
+    /// its own: the history the route delivered is held by its sender, and
+    /// carrying it back would publish a change this holder never signed.
+    #[test]
+    fn a_local_change_interleaved_with_a_committed_arrival_goes_out_alone() {
+        let route = RouteSpec::record("so.tilo.test-held", uuid::Uuid::new_v4(), "desktop");
+        let mut held = holding_route(&route);
+        let mut doc = AutoCommit::new();
+        set(&mut doc, "one", "1");
+        held.pump(&mut doc, &mut take_everything);
+        assert_eq!(
+            std::mem::take(&mut held.published).len(),
+            1,
+            "the whole document went out first"
+        );
+
+        let mut peer = doc.fork();
+        peer.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
+        let base = peer.get_heads();
+        set(&mut peer, "from-peer", "remote");
+        held.committed
+            .push(crate::collaboration::CommittedDocument::for_test(
+                peer.save_after(&base),
+                Some(base),
+            ));
+
+        // A local change the route has not taken yet.
+        let before_local = doc.get_heads();
+        set(&mut doc, "two", "2");
+        let expected = doc.save_after(&before_local);
+        held.pump(&mut doc, &mut take_everything);
+        let published = std::mem::take(&mut held.published);
+        let [collab_types::DocumentMutation::Incremental(bytes)] = published.as_slice() else {
+            panic!("expected one incremental, got {published:?}");
+        };
+        assert_eq!(bytes, &expected, "only this holder's own change goes out");
+        assert_eq!(get(&doc, "from-peer").as_deref(), Some("\"remote\""));
     }
 
     /// Two hosts holding one route by itself, as plain documents: each

@@ -31,15 +31,12 @@ pub struct Options {
     pub person: String,
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
-    /// What the tilolang shell package (`apps/tl/shell`) shows, one part per display, each on
-    /// its own display's rectangle and stepping aside where a fullscreen window owns one:
-    /// its bar as a layer over the desktop
-    /// ([`ShellLayer::Bar`](tilo_surface_host::shell_part::ShellLayer::Bar)), or the whole
-    /// screen under the windows ([`ShellLayer::Screen`](tilo_surface_host::shell_part::ShellLayer::Screen)),
-    /// its bar, dock and the person's arrangement as their preset shows it, every window in
-    /// the well its place leaves it. `None`, the default, until the desktop's own bar and its
-    /// tests move onto it.
-    pub shell: Option<tilo_surface_host::shell_part::ShellLayer>,
+    /// Whether the tilolang shell package (`apps/tl/shell`) runs: its whole screen under the
+    /// windows, one part per display, each on its own display's rectangle and stepping aside
+    /// where a fullscreen window owns one — its bar, dock and the person's arrangement as
+    /// their preset shows it, every window in the well its place leaves it. `false`, the
+    /// default, until the desktop's own chrome moves onto it.
+    pub shell: bool,
     /// The controllers in the room, which drive the desktop; without one, a
     /// controller does nothing here.
     pub controllers: Option<controllers::Source>,
@@ -328,7 +325,7 @@ impl Default for Options {
             device: "this-device".into(),
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
-            shell: None,
+            shell: false,
             sync: None,
             controllers: None,
             config: SessionConfig::default(),

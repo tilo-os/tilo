@@ -4,10 +4,10 @@
 
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
-use tilolang_runtime::Principal;
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
+use tilolang_runtime::{Principal, SourceWords};
 use tilolang_tilo::action::{DynAction, DynEdit};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::{DynRecord, DynValue};
@@ -353,7 +353,7 @@ fn what_is_published_follows_a_card_to_its_new_column() {
     let record = r.ada.host.store().record(&r.root).unwrap();
     let label = r.ada.host.label_of(&r.root);
     let anew = publish_tree(
-        &ActionTypes::new(&r.meta, &planner),
+        &ActionTypes::new(&r.meta, &planner, &SourceWords),
         &record,
         "Board",
         &r.root,

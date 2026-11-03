@@ -1054,6 +1054,9 @@ pub struct Section {
     ghosts: crate::widget::Ghosts,
     /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
+    /// The pace its bands arriving and leaving play at, when it says something other than the
+    /// theme's.
+    feel: crate::motion::Feel,
     /// Told whether the pointer is over the section.
     pointer: Option<Rc<Cell<bool>>>,
     /// How its own items changed since the host last read it: inserted, removed or moved by
@@ -1074,9 +1077,22 @@ impl Section {
             gaps: Vec::new(),
             ghosts: crate::widget::Ghosts::default(),
             motion: crate::tokens::EffectiveMotion::default(),
+            feel: crate::motion::Feel::Standard,
             pointer: None,
             structure: crate::widget::StructureChange::None,
         }
+    }
+
+    /// Play its content arriving and leaving at `feel` rather than the theme's pace.
+    #[must_use]
+    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// [`Self::with_feel`] on a section already built.
+    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+        self.feel = feel;
     }
 
     /// Keep `over` saying whether the pointer is over the section: a host
@@ -1316,7 +1332,7 @@ impl Widget for Section {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.motion = theme.motion();
+        self.motion = self.feel.over(theme.motion());
         self.share_trailing_column(theme);
         let rhythm = &theme.tokens.spacing.rhythm;
         let node = self.parts.build(

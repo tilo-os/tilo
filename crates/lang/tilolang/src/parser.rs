@@ -309,6 +309,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether an `(` at the cursor opens the parameters of a lambda, `(a, b) ->`.
+    fn params_arrow(&self) -> bool {
+        let mut at = 1;
+        loop {
+            if !matches!(self.peek_at(at), Tok::Ident(_)) {
+                return false;
+            }
+            at += 1;
+            match self.peek_at(at) {
+                Tok::Comma => at += 1,
+                Tok::RParen => return matches!(self.peek_at(at + 1), Tok::Arrow),
+                _ => return false,
+            }
+        }
+    }
+
     fn skip_nl(&mut self) {
         while matches!(self.peek(), Tok::Newline) {
             self.bump();
@@ -1556,7 +1572,31 @@ impl<'a> Parser<'a> {
             let span = param.span.to(body.span);
             return Ok(Expr {
                 kind: ExprKind::Lambda {
-                    param,
+                    params: vec![param],
+                    body: Box::new(body),
+                },
+                span,
+            });
+        }
+        // `(a, b) -> ...`: a lambda applied to several values, where a function takes that
+        // many. A parenthesised expression is never a list of names, so the lookahead is
+        // exact.
+        if self.is(&Tok::LParen) && self.params_arrow() {
+            let start = self.bump().span;
+            let mut params = vec![self.ident("a lambda parameter")?];
+            while self.is(&Tok::Comma) {
+                self.bump();
+                self.skip_nl();
+                params.push(self.ident("a lambda parameter")?);
+            }
+            self.expect(&Tok::RParen)?;
+            self.expect(&Tok::Arrow)?;
+            self.skip_nl();
+            let body = self.expr()?;
+            let span = start.to(body.span);
+            return Ok(Expr {
+                kind: ExprKind::Lambda {
+                    params,
                     body: Box::new(body),
                 },
                 span,

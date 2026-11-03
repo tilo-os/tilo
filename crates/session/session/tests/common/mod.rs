@@ -27,7 +27,6 @@ use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
-use tilo_surface_host::shell_part::ShellLayer;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
@@ -237,7 +236,7 @@ pub fn seeded_session_with(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             questions: Some(Questions::new()),
@@ -274,7 +273,7 @@ pub fn repl_session(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(notes)],
             questions: Some(questions.clone()),

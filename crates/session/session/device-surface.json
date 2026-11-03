@@ -1769,6 +1769,19 @@
           ]
         },
         {
+          "id": "stop-agent",
+          "label": "Stop",
+          "description": "End the agent `agent`'s work here: the connection the person admitted closes and its presence leaves the bar",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "agent",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "close-surface",
           "label": "Close the surface `surface`, when it is the one up",
           "description": "Close the surface `surface`, when it is the one up.",

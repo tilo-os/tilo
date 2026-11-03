@@ -213,6 +213,9 @@ pub struct DesktopChromeSnapshot {
     /// The person arrived where others are: their faces pulse in the bar
     /// and a short name slides out of them, for a moment.
     pub arrived: Option<ArrivalNotice>,
+    /// Settings asked which screen is which: each display's number and the
+    /// name Settings gives it, said on that display for a moment.
+    pub identify: Option<crate::display_identify::Ask>,
 }
 
 /// Whether the host lets the person at this desktop invite others here.

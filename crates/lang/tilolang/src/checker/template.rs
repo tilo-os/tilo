@@ -662,14 +662,23 @@ impl Checker<'_> {
     ) -> Option<Macro> {
         let param_tys: Vec<Ty> = fparams.iter().map(|t| self.type_in(t, types)).collect();
         if let Some(a) = arg {
-            let lambda = super::optional::lambda_of(&a.value).filter(|_| !item_block);
-            if let Some((param, body)) = lambda {
-                if param_tys.len() != 1 {
+            // A key path or a lambda, as the function of every value the parameter takes.
+            let bound: Option<(Vec<ast::Ident>, ast::Expr)> = if item_block {
+                None
+            } else if let Some((param, body)) = super::optional::lambda_of(&a.value) {
+                Some((vec![param], body))
+            } else if let ExprKind::Lambda { params, body } = &a.value.kind {
+                Some((params.clone(), (**body).clone()))
+            } else {
+                None
+            };
+            if let Some((params, body)) = bound {
+                if params.len() != param_tys.len() {
                     self.err(
                         "E050",
                         a.value.span,
                         format!(
-                            "`{}` takes a function of {} values; a lambda takes one",
+                            "`{}` takes a function of {}; a lambda takes that many values",
                             p.name.name,
                             param_tys.len()
                         ),
@@ -678,34 +687,17 @@ impl Checker<'_> {
                 }
                 let result = self.type_in(result, types);
                 return Some(Macro::Lambda(Rc::new(Closure {
-                    params: vec![(param.name, param_tys[0].clone())],
+                    params: params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .zip(param_tys)
+                        .collect(),
                     result,
                     body,
                     scope: caller.clone(),
                 })));
             }
             return match &a.value.kind {
-                ExprKind::Lambda { param, body } if !item_block => {
-                    if param_tys.len() != 1 {
-                        self.err(
-                            "E050",
-                            a.value.span,
-                            format!(
-                                "`{}` takes a function of {} values; a lambda takes one",
-                                p.name.name,
-                                param_tys.len()
-                            ),
-                        );
-                        return None;
-                    }
-                    let result = self.type_in(result, types);
-                    Some(Macro::Lambda(Rc::new(Closure {
-                        params: vec![(param.name.clone(), param_tys[0].clone())],
-                        result,
-                        body: (**body).clone(),
-                        scope: caller.clone(),
-                    })))
-                }
                 ExprKind::Ident(name) if item_block => {
                     let found = self.own_callable(name).cloned();
                     match found {

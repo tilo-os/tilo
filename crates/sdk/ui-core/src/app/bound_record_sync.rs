@@ -1,15 +1,19 @@
 //! The native primary channel addresses one canonical record, not App's outer
-//! scratch document. A fresh broker epoch starts a fresh delivery frontier.
+//! scratch document. A fresh broker epoch is given the record whole, then a
+//! fresh delivery frontier for the changes this replica makes.
 use super::{App, Widget};
 use crate::bound_dispatch::CallbackBinding;
 use crate::collaboration::PrimaryRouteWitness;
 use crate::state::DocumentFrontier;
-use tilo_sort::CompactSort as _;
 
 pub(super) struct BoundRecordSync {
     pub(super) binding: CallbackBinding,
     route: PrimaryRouteWitness,
     frontier: DocumentFrontier,
+    /// Whether this epoch was given the record whole. A route's first
+    /// publication in a session is the whole document; only the changes this
+    /// replica makes after it go out one by one.
+    whole: bool,
 }
 
 impl BoundRecordSync {
@@ -23,17 +27,11 @@ impl BoundRecordSync {
         self.binding.checkout == *checkout && self.binding.records.same_owner(records)
     }
 
-    /// Whether every change up to `heads` (sorted) is already published.
-    pub(super) fn published_through(&self, heads: &[automerge::ChangeHash]) -> bool {
-        let mut published = self.frontier.heads().to_vec();
-        published.compact_sort();
-        published == heads
-    }
-
-    /// Count `heads` as published: history the primary document's owner
-    /// already holds, merged in from it.
-    pub(super) fn observe_published(&mut self, heads: Vec<automerge::ChangeHash>) {
-        self.frontier.advance(heads);
+    /// Count changes the primary document's owner served this replica as
+    /// published: it holds them, so publishing them back would be an echo.
+    /// Changes this replica still has to send stay outside the frontier.
+    pub(super) fn observe_published(&mut self, observed: Vec<automerge::ChangeHash>) {
+        self.frontier.observe(observed);
     }
 }
 
@@ -96,16 +94,19 @@ impl App {
                 route,
                 // Include edits made before the connection was admitted.
                 frontier: DocumentFrontier::default(),
+                whole: false,
             });
         }
         Ok(true)
     }
 
-    pub(super) fn pending_primary_document_delta(
+    pub(super) fn pending_primary_document(
         &mut self,
-    ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), String> {
+    ) -> Result<Option<(collab_types::DocumentMutation, Vec<automerge::ChangeHash>)>, String> {
         if !self.prepare_primary_document()? {
-            return Ok(self.state.pending_outbound_delta());
+            let (delta, heads) = self.state.pending_outbound_delta();
+            return Ok((!delta.is_empty())
+                .then_some((collab_types::DocumentMutation::Incremental(delta), heads)));
         }
         let sync = self
             .actions
@@ -113,11 +114,24 @@ impl App {
             .as_mut()
             .ok_or("primary record is unavailable")?;
         let _scope = sync.binding.enter().map_err(|error| format!("{error:?}"))?;
-        sync.binding
+        let BoundRecordSync {
+            binding,
+            frontier,
+            whole,
+            ..
+        } = sync;
+        binding
             .records
-            .with_action_state(&sync.binding.checkout.id, |doc, _, actions| {
+            .with_action_state(&binding.checkout.id, |doc, _, actions| {
                 actions.commit_for_save(doc);
-                sync.frontier.pending_delta(doc)
+                if !*whole {
+                    let heads = doc.get_heads();
+                    return (!heads.is_empty())
+                        .then(|| (collab_types::DocumentMutation::Snapshot(doc.save()), heads));
+                }
+                let (delta, heads) = frontier.pending_delta(doc);
+                (!delta.is_empty())
+                    .then_some((collab_types::DocumentMutation::Incremental(delta), heads))
             })
             .map_err(|error| error.to_string())
     }
@@ -125,6 +139,7 @@ impl App {
     pub(super) fn advance_primary_document(&mut self, heads: Vec<automerge::ChangeHash>) {
         if let Some(sync) = self.actions.bound_record_sync.as_mut() {
             sync.frontier.advance(heads);
+            sync.whole = true;
         } else {
             self.state.advance_outbound(heads);
         }

@@ -21,7 +21,13 @@ pub(crate) mod owned_restore_tests;
 /// advanced from an acknowledgement rather than merely from a send attempt.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DocumentFrontier {
+    /// Heads whose whole history the destination is known to hold.
     heads: Vec<ChangeHash>,
+    /// Changes the destination delivered. It holds them, and they are never
+    /// sent back; they are kept apart from `heads` because a delivered change
+    /// can build on one this device has not sent yet, and that one still has
+    /// to go out.
+    observed: Vec<ChangeHash>,
 }
 
 impl DocumentFrontier {
@@ -30,6 +36,7 @@ impl DocumentFrontier {
     pub fn at_document(doc: &mut AutoCommit) -> Self {
         Self {
             heads: doc.get_heads(),
+            observed: Vec::new(),
         }
     }
 
@@ -38,8 +45,25 @@ impl DocumentFrontier {
     /// share hidden mutable cursor state with persistence or snapshot export.
     pub fn take_delta(&mut self, doc: &mut AutoCommit) -> Vec<u8> {
         let (delta, current) = self.pending_delta(doc);
-        self.heads = current;
+        self.advance(current);
         delta
+    }
+
+    /// Everything the document holds that the destination does not, whoever
+    /// made it: for a destination that mirrors the record whole, such as a
+    /// page replicating an open record, not for a route, which publishes this
+    /// replica's own changes alone ([`Self::pending_delta`]).
+    pub fn pending_mirror_delta(&mut self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
+        let current = doc.get_heads();
+        if current == self.heads {
+            // Nothing was made since the frontier: no change to walk for.
+            return (Vec::new(), current);
+        }
+        let delta = doc.save_after(&self.heads);
+        if delta.is_empty() {
+            self.heads.clone_from(&current);
+        }
+        (delta, current)
     }
 
     /// Build a delta without advancing the frontier. Call [`Self::advance`]
@@ -48,20 +72,49 @@ impl DocumentFrontier {
     pub fn pending_delta(&mut self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
         let current = doc.get_heads();
         if current == self.heads {
+            // Nothing was made since the frontier: no change to walk for.
             return (Vec::new(), current);
         }
-        let delta = doc.save_after(&self.heads);
-        // Multiple observed frontiers may already cover the whole graph even
-        // when their vector is not Automerge's minimal current-head set.
-        if delta.is_empty() {
-            self.heads.clone_from(&current);
+        let delta = self.delta(doc);
+        if !delta.is_empty() {
+            return (delta, current);
         }
-        (delta, current)
+        // Everything this replica would publish is there already: what the
+        // route delivered covers what arrived, and the frontier says so
+        // without another clone.
+        self.advance(current.clone());
+        (Vec::new(), current)
     }
 
-    /// Advance to heads whose delta a durable destination accepted.
+    /// What this device holds that the destination does not, as an
+    /// incremental payload: this replica's own changes after the frontier.
+    ///
+    /// Another replica's change is never in it, whether or not this frontier
+    /// was told it arrived: a change is published by the replica that made
+    /// it, and the identity service signs a change for the action that names
+    /// it. A route that handed a change on would publish history its device
+    /// did not make, which no action of its own names. History a route does
+    /// not get this way — another device's, or this one's from before a join —
+    /// arrives whole, in the snapshot a route publishes when it opens and when
+    /// a holder asks for one.
+    pub fn delta(&self, doc: &mut AutoCommit) -> Vec<u8> {
+        let actor = doc.get_actor().clone();
+        let mut bytes = Vec::new();
+        for change in doc.get_changes(&self.heads) {
+            if change.actor_id() != &actor || self.observed.contains(&change.hash()) {
+                continue;
+            }
+            bytes.extend_from_slice(change.raw_bytes());
+        }
+        bytes
+    }
+
+    /// Advance to heads whose delta a durable destination accepted. Its own
+    /// accepted changes cover everything the document held, delivered ones
+    /// included.
     pub fn advance(&mut self, heads: Vec<ChangeHash>) {
         self.heads = heads;
+        self.observed.clear();
     }
 
     /// Treat the document's current state as already observed on this route.
@@ -69,17 +122,26 @@ impl DocumentFrontier {
     /// outbound mutation.
     pub fn rebase(&mut self, doc: &mut AutoCommit) {
         self.heads = doc.get_heads();
+        self.observed.clear();
     }
 
     /// Record changes known to have arrived from this destination without
-    /// claiming that it received locally pending changes. The union frontier
-    /// lets `save_after` omit echoes while retaining a rejected local delta.
+    /// claiming that it received locally pending changes.
     pub fn observe(&mut self, observed: impl IntoIterator<Item = ChangeHash>) {
         for hash in observed {
-            if !self.heads.contains(&hash) {
-                self.heads.push(hash);
+            if !self.heads.contains(&hash) && !self.observed.contains(&hash) {
+                self.observed.push(hash);
             }
         }
+    }
+
+    /// Whether the destination already holds the document at `heads`: nothing
+    /// arrived since this device was told what it holds, and every change
+    /// under those heads was delivered or accepted then.
+    pub fn unchanged(&self, heads: &[ChangeHash]) -> bool {
+        self.observed.is_empty()
+            && self.heads.len() == heads.len()
+            && heads.iter().all(|head| self.heads.contains(head))
     }
 
     fn observe_changes_after(&mut self, doc: &mut AutoCommit, before: &[ChangeHash]) {
@@ -90,9 +152,30 @@ impl DocumentFrontier {
         );
     }
 
+    /// Record what a delivered incremental carried beyond what applied: a
+    /// change whose history this replica lacks waits for it, but this route
+    /// delivered it now, and it is never sent back.
+    fn observe_undelivered(&mut self, doc: &mut AutoCommit, payload: &[u8]) {
+        self.observe(changes_beyond(doc, payload));
+    }
+
     pub fn heads(&self) -> &[ChangeHash] {
         &self.heads
     }
+}
+
+/// The changes `payload` carries that `doc` does not hold: loading a change
+/// whose history is missing keeps it until that history arrives, and it was
+/// delivered now all the same.
+pub fn changes_beyond(doc: &mut AutoCommit, payload: &[u8]) -> Vec<ChangeHash> {
+    let Ok(changes) = automerge::Automerge::parse_changes(payload) else {
+        return Vec::new();
+    };
+    changes
+        .into_iter()
+        .map(|change| change.hash())
+        .filter(|hash| doc.get_change_by_hash(hash).is_none())
+        .collect()
 }
 
 /// A CRDT document paired with the explicit frontier for one collaboration
@@ -138,6 +221,7 @@ impl DocumentReplica {
         let before = self.doc.get_heads();
         let loaded = self.doc.load_incoming_whole(data)?;
         self.outbound.observe_changes_after(&mut self.doc, &before);
+        self.outbound.observe_undelivered(&mut self.doc, data);
         Ok(loaded)
     }
 
@@ -149,9 +233,9 @@ impl DocumentReplica {
     /// be merged into this document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
-        let observed = incoming.get_heads();
+        let before = self.doc.get_heads();
         self.doc.merge_incoming(&mut incoming)?;
-        self.outbound.observe(observed);
+        self.outbound.observe_changes_after(&mut self.doc, &before);
         Ok(())
     }
 }
@@ -458,6 +542,7 @@ impl State {
         // action, leaving the just-merged remote ops intact.
         self.undo.rebase(&mut self.doc);
         self.outbound.observe_changes_after(&mut self.doc, &before);
+        self.outbound.observe_undelivered(&mut self.doc, data);
         Ok(n)
     }
 
@@ -470,10 +555,10 @@ impl State {
     /// be merged into this document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
-        let observed = incoming.get_heads();
+        let before = self.doc.get_heads();
         self.doc.merge_incoming(&mut incoming)?;
         self.undo.rebase(&mut self.doc);
-        self.outbound.observe(observed);
+        self.outbound.observe_changes_after(&mut self.doc, &before);
         Ok(())
     }
 
@@ -539,6 +624,36 @@ mod tests {
         // The whole payload applies.
         assert!(state.load_incremental(&first).unwrap() > 0);
         assert_eq!(state.doc.get_heads(), peer.get_heads());
+    }
+
+    #[test]
+    fn a_frontier_publishes_only_this_replicas_changes() {
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::random());
+        doc.put(ROOT, "mine", "this device").unwrap();
+        doc.commit();
+        let mine = doc.get_heads();
+        // Another device adds to the same document, and this replica takes
+        // the change in.
+        let mut other = AutoCommit::load(&doc.save())
+            .unwrap()
+            .with_actor(automerge::ActorId::random());
+        other.put(ROOT, "from_room", "another device").unwrap();
+        other.commit();
+        doc.load_incremental(&other.save_after(&mine)).unwrap();
+        assert_eq!(
+            doc.get_heads(),
+            other.get_heads(),
+            "the change is held here"
+        );
+        // A frontier never told the delivered change arrived publishes this
+        // replica's change alone: a change goes out from the replica that
+        // made it, and the snapshot handshake carries the rest.
+        let mut frontier = DocumentFrontier::default();
+        let (delta, heads) = frontier.pending_delta(&mut doc);
+        let published = automerge::Automerge::parse_changes(&delta).unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].actor_id(), doc.get_actor());
+        assert_eq!(heads, doc.get_heads());
     }
 
     #[test]

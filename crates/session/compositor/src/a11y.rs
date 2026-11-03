@@ -173,6 +173,9 @@ pub(crate) struct Visual {
     pub(crate) focus: Focus,
     /// When the visual alert started, and how long it takes to fade out.
     pub(crate) flash: Option<(Instant, Duration)>,
+    /// Whether an alert was asked for since the last frame drew one: the
+    /// frame after it starts the alert, so no time between the two takes it.
+    pub(crate) flash_pending: bool,
 }
 
 impl Visual {
@@ -279,7 +282,27 @@ fn focused_rect(state: &State) -> Option<Rectangle<i32, Logical>> {
 /// hear an alert sound would otherwise miss.
 pub(crate) fn flash_all(state: &State, now: Instant) {
     for output in state.space.outputs() {
-        change(output, |visual| visual.flash = Some((now, FLASH)));
+        change(output, |visual| {
+            visual.flash = Some((now, FLASH));
+            visual.flash_pending = true;
+        });
+    }
+}
+
+/// Start the alert on every output that was asked for one and has not drawn it
+/// yet, at `now`: it runs from the frame that first shows it, so a frame that
+/// took longer than the alert's run to draw cannot put it away unseen — a
+/// machine busy enough to draw one frame in half a second still tells the
+/// person what happened.
+pub(crate) fn start_flash(state: &State, now: Instant) {
+    for output in state.space.outputs() {
+        change(output, |visual| {
+            if !visual.flash_pending {
+                return;
+            }
+            visual.flash_pending = false;
+            visual.flash = visual.flash.map(|(_, length)| (now, length));
+        });
     }
 }
 
@@ -304,6 +327,16 @@ pub(crate) fn finish_flash(state: &mut State, now: Instant) {
         change(output, |visual| visual.flash = None);
     }
     state.mark_redraw_all();
+}
+
+/// Prepare every output's visual alert for the frame about to be drawn at
+/// `now`: an alert asked for since the last frame starts now, and one whose
+/// run is over is put away. Every frame goes through here — the session's own
+/// frames and the ones a display's vertical blank draws — so an alert runs
+/// from a frame that shows it whichever frame that is.
+pub(crate) fn begin_frame(state: &mut State, now: Instant) {
+    start_flash(state, now);
+    finish_flash(state, now);
 }
 
 /// Whether any output is showing the visual alert at `now`.
@@ -495,6 +528,29 @@ mod tests {
             t0 + ms(30),
         );
         assert_eq!(focus.centre(), Some(point(600.0, 320.0)));
+    }
+
+    /// An alert asked for between frames is drawn by the first frame after it,
+    /// however late that frame comes: a machine busy enough to draw a frame in
+    /// half a second still shows the person what happened.
+    #[test]
+    fn a_late_frame_still_shows_the_alert_it_was_asked_for() {
+        let mut compositor = crate::Compositor::headless(Box::new(crate::StackPolicy))
+            .expect("a headless compositor");
+        compositor
+            .add_output(&crate::OutputConfig::new("HEADLESS-1", 640, 480))
+            .expect("an output");
+        compositor.render().expect("a frame");
+        // Asked for well before the frame that draws it: the frame the machine
+        // was busy with ran the alert's whole length.
+        let asked_at = Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("two seconds before now");
+        flash_all(&compositor.data.state, asked_at);
+        compositor.render().expect("the late frame");
+        let shot = compositor.screenshot("HEADLESS-1").expect("the frame");
+        let edge = shot.pixel(320, 1).expect("a pixel on the display's edge");
+        assert!(edge[2] > 120, "the alert is on screen: {edge:?}");
     }
 
     #[test]

@@ -1034,27 +1034,16 @@ impl Checker<'_> {
             vec![node.clone(), b, Ex::str(&f.id)],
             Ty::Unit,
         )));
-        // A control bound to the field marked `(title)` or `(body)` edits the resource's title
-        // or its body: a document draws them as its large title and its running text. A
-        // document is a text field or a rich text one; a title is text. Any other control is
-        // given the value it binds alone. Whether it draws a title is the control's own to say
-        // (`titled`, its component declaring `title`): one that does not is never sent a prop it
-        // does not declare.
-        if let Some(role) = &f.role
-            && (f.ty == Ty::Text || f.ty == Ty::RichText)
-        {
+        // A control bound to the field marked `(title)` draws the resource's title, as TextInput
+        // does: the field is text, and the control declares `title`, so one that does not is
+        // never sent a prop it does not declare. Any other control is given the value it binds
+        // alone; a document's body is placed by the view as `ui.BlockEditor(bind: doc.body)`.
+        if titled && f.ty == Ty::Text && f.role.as_deref() == Some("title") {
             self.emit(Stmt::Eval(Ex::host(
-                Imp::UiPropH,
-                vec![node.clone(), Ex::str("field_role"), Ex::str(role)],
+                Imp::UiPropI,
+                vec![node.clone(), Ex::str("title"), Ex::int(1)],
                 Ty::Unit,
             )));
-            if role == "title" && titled && f.ty == Ty::Text {
-                self.emit(Stmt::Eval(Ex::host(
-                    Imp::UiPropI,
-                    vec![node.clone(), Ex::str("title"), Ex::int(1)],
-                    Ty::Unit,
-                )));
-            }
         }
         Some(f.ty.clone())
     }

@@ -221,7 +221,7 @@ view item_row(x: Item) {
     stack(gap: .tight) {
         ui.ListRow(x.title, secondary: .some(x.stage))
         if not x.notes.is_empty() {
-            ui.RichText(x.notes)
+            ui.BlockEditor(x.notes)
         }
         ui.Reactions(reactions: x.reactions)
         if x.stage == "Doing" {

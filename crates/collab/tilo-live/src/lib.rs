@@ -23,6 +23,11 @@ pub mod grant;
 #[cfg(feature = "native")]
 pub mod native;
 
+/// Another relay of one scope, carried into this one: members split across
+/// two relays of a workspace still hear each other.
+#[cfg(all(feature = "relay", feature = "plane"))]
+pub mod bridge;
+
 /// The client half of the carrier (present a grant, run `moq-lite`), which
 /// a page runs too: it needs no runtime of its own.
 #[cfg(feature = "plane")]
@@ -45,9 +50,11 @@ pub mod client;
 
 /// One participant's sealed session in one scope, sealed under the scope's
 /// channel keys.
-#[cfg(feature = "relay")]
+#[cfg(feature = "plane")]
 pub mod plane;
 
+/// Where a plane's readers and origin drivers run: the device's own executor
+/// on a desktop, the page's queue in a browser.
 /// `at + age`, or `at` when the clock cannot represent the sum: an
 /// immediately expired deadline fails closed instead of panicking.
 #[cfg(feature = "relay")]
@@ -55,15 +62,32 @@ pub(crate) fn later(at: std::time::Instant, age: std::time::Duration) -> std::ti
     at.checked_add(age).unwrap_or(at)
 }
 
-/// Aborts its task on drop, so no pump outlives the state that owns it.
-#[cfg(feature = "relay")]
-pub(crate) struct Task(Option<tokio::task::JoinHandle<()>>);
+/// Work a plane or a relay started, aborted when the state that owns it is
+/// dropped, so no reader or pump outlives what it reads.
+///
+/// The executor is the target's own: a device's ambient runtime, or the
+/// browser's queue in a page. Only the bound on what may be spawned differs —
+/// a device's work may move between threads, a page's may not — so the one
+/// call is spelled twice, and nothing above this asks which it runs on.
+#[cfg(feature = "plane")]
+pub(crate) struct Task(Option<n0_future::task::JoinHandle<()>>);
+
+#[cfg(all(feature = "plane", not(target_arch = "wasm32")))]
+impl Task {
+    pub(crate) fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
+        Self(Some(n0_future::task::spawn(future)))
+    }
+}
+
+#[cfg(all(feature = "plane", target_arch = "wasm32"))]
+impl Task {
+    pub(crate) fn spawn(future: impl std::future::Future<Output = ()> + 'static) -> Self {
+        Self(Some(n0_future::task::spawn(future)))
+    }
+}
 
 #[cfg(feature = "relay")]
 impl Task {
-    pub(crate) fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
-        Self(Some(tokio::spawn(future)))
-    }
     pub(crate) fn is_finished(&self) -> bool {
         self.0
             .as_ref()
@@ -81,7 +105,7 @@ impl Task {
     }
 }
 
-#[cfg(feature = "relay")]
+#[cfg(feature = "plane")]
 impl Drop for Task {
     fn drop(&mut self) {
         if let Some(task) = self.0.take() {

@@ -52,8 +52,11 @@ pub(crate) const NIGHT_LIGHT: &str = "session:night-light";
 pub(crate) const DESK: &str = "desktop:desk";
 
 /// Every resource the panel shows or acts on, watched for its whole life.
-/// The desk is here for its search alone: Settings opens through it.
-pub(crate) const WATCHED: [&str; 13] = [
+/// The desk is here for its search alone: Settings opens through it. A
+/// resource is opened before its actions are asked of it, so the screen and
+/// the night light are here even where the panel only presses them or only
+/// shows the switch.
+pub(crate) const WATCHED: [&str; 15] = [
     NETWORK,
     BLUETOOTH,
     VPN,
@@ -66,6 +69,8 @@ pub(crate) const WATCHED: [&str; 13] = [
     NOTIFICATIONS,
     CLIPBOARD,
     DEVICES,
+    SCREEN,
+    NIGHT_LIGHT,
     DESK,
 ];
 

@@ -34,7 +34,7 @@ use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, ActorKind,
     EncodedAction, InvocationId, InvocationUpdate, ResourceSpec,
 };
-use tilo_render_protocol::patch::Transport;
+use tilo_render_protocol::patch::{ActionCatalogue, ToUi, Transport};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -147,8 +147,9 @@ impl Surface {
                 .values()
                 .map(|tree| (**tree).clone()),
         );
+        let words = self.host.runtime().words();
         for package in self.host.packages() {
-            let mut resource = publish_package(&package.meta, &self.planner);
+            let mut resource = publish_package(&package.meta, &self.planner, &*words);
             if package.meta.app == self.app {
                 resource = with_app_actions(resource, &self.activate);
             }
@@ -446,6 +447,7 @@ impl Hosted {
             .receive_and(&mut self.instance, |event| events.push(event));
         self.instance.sync(Some(self.record.doc()));
         changed |= self.instance.update();
+        changed |= self.chosen();
         if let Some(why) = self.instance.take_stage_failure() {
             tracing::error!(%why, "the staged scenario failed");
         }
@@ -877,6 +879,7 @@ impl Hosted {
             // A stale catalogue that looks valid is worse than none.
             self.directory.withdraw();
             self.directory_behind = false;
+            self.offer(&[]);
             if self
                 .published
                 .as_ref()
@@ -900,6 +903,7 @@ impl Hosted {
         }
         self.refused.clear();
         let descriptors = tilo_actions::door::survey(&resources);
+        self.offer(&descriptors);
         self.directory.publish(&resources, &descriptors);
         self.directory_behind = false;
         if self
@@ -925,6 +929,55 @@ impl Hosted {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
         }
+    }
+
+    /// Offer the window the person's command palette `descriptors`, the actions the instance
+    /// publishes on its connection: the window offers them the way it offers its own, with the
+    /// labels, keys and icons the app gives them. Nothing is sent while the broker's copy is
+    /// what the window holds.
+    fn offer(&mut self, descriptors: &[ActionDescriptor]) {
+        let unchanged = self
+            .published
+            .as_ref()
+            .is_some_and(|(held, _)| held.as_slice() == descriptors);
+        if !unchanged {
+            self.say_actions(ActionCatalogue::All, descriptors);
+        }
+    }
+
+    /// Tell the window `catalogue` of `descriptors`, as the action directory carries them.
+    fn say_actions(
+        &mut self,
+        catalogue: fn(Vec<u8>) -> ActionCatalogue,
+        descriptors: &[ActionDescriptor],
+    ) {
+        match serde_json::to_vec(descriptors) {
+            Ok(actions) => {
+                self.instance.say(ToUi::Actions(catalogue(actions)));
+                // The window takes it now, not on the frame after.
+                self.instance.flush();
+            }
+            Err(error) => tracing::error!(%error, "an action catalogue did not encode"),
+        }
+    }
+
+    /// Run what the person chose from the window's command palette as their own step: the same
+    /// door an invocation the broker delivered for them takes, so the action runs for them
+    /// however it reached the app. Whether anything changed.
+    fn chosen(&mut self) -> bool {
+        let chosen = self.instance.take_chosen();
+        if chosen.is_empty() {
+            return false;
+        }
+        let invoker = ActionInvoker::actor(self.spec.person.clone());
+        let mut changed = false;
+        for (address, argument) in chosen {
+            match self.invoke(&address, argument.as_deref(), invoker.clone(), None) {
+                Ok(_) => changed = true,
+                Err(refused) => self.instance.action_refused(refused.message),
+            }
+        }
+        changed
     }
 
     /// Publish a change to the surface that moved only labels (a note's title typed into) as
@@ -969,6 +1022,13 @@ impl Hosted {
         let Some(delta) = state.relabel(descriptors, &changed) else {
             return false;
         };
+        // The window's palette shows the labels the person types into, which are what moved.
+        let relabeled: Vec<tilo_actions::ActionDescriptor> = descriptors
+            .iter()
+            .filter(|descriptor| changed.contains(&descriptor.address.resource.as_str()))
+            .cloned()
+            .collect();
+        self.say_actions(ActionCatalogue::Relabeled, &relabeled);
         if !delta.is_empty()
             && !self
                 .record

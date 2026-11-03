@@ -138,6 +138,23 @@ mod durable_local_matrix {
             Self::with_services(env, env.membership.services()).await
         }
         async fn with_services(env: &Environment, services: HostServices) -> Self {
+            Self::configured(env, services, None).await
+        }
+        /// A rig whose broker is given its own journal
+        /// (`durable_owner_required`), as a session keeping its state gives
+        /// its broker one.
+        async fn with_own_journal(
+            env: &Environment,
+            services: HostServices,
+            config: &crate::NativePeerBrokerConfig,
+        ) -> Self {
+            Self::configured(env, services, Some(config)).await
+        }
+        async fn configured(
+            env: &Environment,
+            services: HostServices,
+            config: Option<&crate::NativePeerBrokerConfig>,
+        ) -> Self {
             let fanout = Arc::new(FanoutState::new());
             let (state, bridge_rx) = AppBrokerState::new_configured(
                 &fanout,
@@ -145,15 +162,17 @@ mod durable_local_matrix {
                 env.publisher.clone(),
                 Some(env.membership.authority()),
                 None,
-                None,
+                config,
                 services,
             );
-            assert!(
-                state
-                    .certificate_authority
-                    .set(env.authority.clone())
-                    .is_ok()
-            );
+            if config.is_none() {
+                assert!(
+                    state
+                        .certificate_authority
+                        .set(env.authority.clone())
+                        .is_ok()
+                );
+            }
             state
                 .invocation_host()
                 .expect("actual broker journal available after normal stop/open");

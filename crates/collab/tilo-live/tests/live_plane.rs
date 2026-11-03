@@ -24,6 +24,7 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
@@ -443,4 +444,68 @@ async fn a_plane_seals_under_the_keys_it_now_holds() {
                 .any(|object| object.body == b"epoch=moved" && object.sender == a_key)
         },
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_member_that_reached_another_relay_is_heard_here() {
+    let authority = Authority::new();
+    let (alpha_endpoint, beta_endpoint, publisher_endpoint, member_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await, endpoint().await);
+    let (alpha_key, beta_key) = (
+        *alpha_endpoint.id().as_bytes(),
+        *beta_endpoint.id().as_bytes(),
+    );
+    let (publisher_key, member_key) = (
+        *publisher_endpoint.id().as_bytes(),
+        *member_endpoint.id().as_bytes(),
+    );
+    let publisher_cert = authority.admit_device(publisher_key);
+    let member_cert = authority.admit_device(member_key);
+    let beta_cert = authority.admit_device(beta_key);
+    authority.admit_device(alpha_key);
+    let roster = authority.roster();
+
+    // Two members of the workspace relay it. A member that reaches the first
+    // of them and one that reaches the second are still one workspace.
+    let alpha = Relay::new(authority.clone());
+    let beta = Relay::new(authority.clone());
+    let _alpha_router = serve(&alpha, &alpha_endpoint);
+    let _beta_router = serve(&beta, &beta_endpoint);
+    let _bridge = tilo_live::bridge::Bridge::join(
+        &native::Iroh::new(beta_endpoint.clone(), addr(&alpha_endpoint)),
+        &grant_for(&beta_cert),
+        &scope(),
+        &beta,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+
+    let keys = keys();
+    let publisher = Plane::join(
+        &native::Iroh::new(publisher_endpoint.clone(), addr(&alpha_endpoint)),
+        &grant_for(&publisher_cert),
+        join(publisher_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let member = Plane::join(
+        &native::Iroh::new(member_endpoint.clone(), addr(&beta_endpoint)),
+        &grant_for(&member_cert),
+        join(member_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    // Alpha carries the publisher and the bridge beta keeps into it; beta
+    // carries the member that reached it.
+    wait_until("both sessions admitted", || {
+        alpha.counters().accepted >= 2 && beta.counters().accepted >= 1
+    });
+
+    publisher.publish(Track::Presence, 1, b"relay=alpha").unwrap();
+    wait_until("the member on the other relay hears the publisher", || {
+        heard(&member, Track::Presence)
+            .iter()
+            .any(|object| object.body == b"relay=alpha" && object.sender == publisher_key)
+    });
 }

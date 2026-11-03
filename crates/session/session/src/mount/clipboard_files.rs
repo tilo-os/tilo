@@ -213,27 +213,32 @@ impl Paste {
         destination: &Path,
         conflict: Conflict,
         now_ms: u64,
+        wake: &tilo_service::Wake,
     ) -> Self {
-        Self::spawn(Job::Paste {
-            files: files.clone(),
-            destination: destination.to_path_buf(),
-            conflict,
-            now_ms,
-        })
+        Self::spawn(
+            Job::Paste {
+                files: files.clone(),
+                destination: destination.to_path_buf(),
+                conflict,
+                now_ms,
+            },
+            wake,
+        )
     }
 
     /// The paste a session that stopped was in the middle of, to be undone.
     /// `None` when it left nothing behind.
-    pub(crate) fn unfinished() -> Option<Self> {
-        read_receipt().map(|receipt| Self::spawn(Job::Undo(receipt)))
+    pub(crate) fn unfinished(wake: &tilo_service::Wake) -> Option<Self> {
+        read_receipt().map(|receipt| Self::spawn(Job::Undo(receipt), wake))
     }
 
-    fn spawn(job: Job) -> Self {
+    fn spawn(job: Job, wake: &tilo_service::Wake) -> Self {
         let progress = Arc::new(Mutex::new(Progress::default()));
         let shared = Arc::clone(&progress);
+        let wake = Arc::clone(wake);
         match thread::Builder::new()
             .name("file-paste".to_owned())
-            .spawn(move || run(&job, &shared))
+            .spawn(move || run(&job, &shared, &wake))
         {
             Ok(worker) => Self {
                 progress,
@@ -286,7 +291,7 @@ enum Job {
     Undo(Receipt),
 }
 
-fn run(job: &Job, progress: &Mutex<Progress>) {
+fn run(job: &Job, progress: &Mutex<Progress>, wake: &tilo_service::Wake) {
     let stopped = match job {
         Job::Paste {
             files,
@@ -299,11 +304,14 @@ fn run(job: &Job, progress: &Mutex<Progress>) {
             undo(receipt, progress).map_err(Refused::Stopped)
         }
     };
-    let mut progress = progress.lock_recover();
+    let mut state = progress.lock_recover();
     if let Err(refusal) = stopped {
-        progress.refusal = Some(refusal);
+        state.refusal = Some(refusal);
     }
-    progress.finished = true;
+    state.finished = true;
+    drop(state);
+    // The loop only asks whether the paste is over: the answer is here.
+    wake();
 }
 
 /// Carry out a new paste: what it means is written down before its first

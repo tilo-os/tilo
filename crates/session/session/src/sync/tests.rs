@@ -635,6 +635,57 @@ fn pointers_are_followed_on_the_room_tile() {
     assert!(sync.pointers(WORKSPACE, 3).is_empty());
 }
 
+/// The panel that draws other people's pointers asks for a frame on the
+/// presence revision: a pointer landing on a desk where nothing moves draws
+/// one frame, a pointer resting there draws none, and a repeated say of what
+/// a peer already said draws none either.
+#[test]
+fn a_pointer_landing_draws_a_frame_and_a_resting_one_draws_none() {
+    let (sync, _said) = session("Quinten", Some(0x04));
+    sync.hear(hello(1, 0xaa, "Framework 16"));
+    sync.hear(here(1));
+    let still = sync.presence_revision();
+
+    // The peer says it is here again, as every device does now and then: it
+    // said nothing new, so the desk draws nothing.
+    sync.hear(here(1));
+    assert_eq!(
+        sync.presence_revision(),
+        still,
+        "a repeated presence drew a frame"
+    );
+
+    // Their pointer arrives on the desk: one frame.
+    sync.hear(pointer_moved(1, WORKSPACE, 3, (12.5, 34.5)));
+    let landed = sync.presence_revision();
+    assert_ne!(landed, still, "an arriving pointer asked for no frame");
+
+    // It rests where it is: the same place said again is no change, and the
+    // desk holds still.
+    sync.hear(pointer_moved(1, WORKSPACE, 3, (12.5, 34.5)));
+    assert_eq!(
+        sync.presence_revision(),
+        landed,
+        "a resting pointer asked for a frame"
+    );
+
+    // Leaving the tile, and the device going away, each draw one frame.
+    sync.hear(pointer_cleared(1, WORKSPACE, 3));
+    let left = sync.presence_revision();
+    assert_ne!(left, landed, "a leaving pointer asked for no frame");
+    sync.hear(NetEvent::PeerLeft {
+        ws: topic(WORKSPACE),
+        peer: device(1),
+        cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
+        membership_epoch: None,
+    });
+    assert_ne!(
+        sync.presence_revision(),
+        left,
+        "a departing device drew nothing"
+    );
+}
+
 #[test]
 fn a_wave_reaches_the_person_it_is_for() {
     let (sync, _said) = session("Quinten", Some(0x04));

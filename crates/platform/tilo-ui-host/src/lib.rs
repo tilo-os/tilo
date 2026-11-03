@@ -9,6 +9,8 @@
 //!
 //! - [`window::AppWindow`]: one app window, as a widget: what it is sent, applied; what the
 //!   person does, sent back.
+//! - [`catalogue`]: the actions the app publishes for the window, offered to the person through
+//!   the window's own command palette.
 //! - [`adapter`]: a node of a described component as the toolkit's widget, read through the
 //!   component's description.
 //! - [`reconcile`]: a tree as retained widgets, reconciled by key.
@@ -28,7 +30,7 @@
 
 pub mod adapter;
 pub mod attach;
-pub mod body;
+pub mod catalogue;
 pub mod date;
 pub mod form;
 pub mod i18n;

@@ -1287,6 +1287,12 @@ pub(crate) fn screen_share() -> &'static Arc<ScreenShare> {
     SHARE.get_or_init(|| Arc::new(ScreenShare::new()))
 }
 
+/// When the screen a call shares next needs a frame of the desk; `None` while
+/// nothing is shared, or a locked desktop withholds it.
+pub(crate) fn next_screen_frame() -> Option<Instant> {
+    screen_share().next_frame(Instant::now())
+}
+
 /// Hand the desktop this session shares the frame the pass just drew: the
 /// largest screen layer at most, and never a locked screen.
 pub(crate) fn share_screen(compositor: &mut tilo_compositor::Compositor) {

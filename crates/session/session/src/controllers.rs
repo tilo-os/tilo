@@ -227,7 +227,7 @@ impl Session {
         };
         for wake in controllers.take_wakes() {
             match wake {
-                ControllerWake::Watch { key, fd } => match self.compositor.watch_input(fd) {
+                ControllerWake::Watch { key, fd } => match self.compositor.watch_readable(fd) {
                     Ok(watch) => drop(self.controller_wakes.insert(key, watch)),
                     Err(error) => {
                         tracing::warn!(%error, "controller cannot wake the session");

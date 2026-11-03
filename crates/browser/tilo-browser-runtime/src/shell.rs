@@ -663,6 +663,7 @@ impl BrowserShell {
                 expanded_id: self.expanded.as_deref(),
                 watching,
                 waved: &self.chrome.here.borrow().waved(now_ms()),
+                waved_until: self.chrome.here.borrow().waved_until(now_ms()),
                 spectating: self.chrome.shared.watching.get(),
             },
             self.cursor,

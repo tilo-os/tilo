@@ -24,8 +24,9 @@ use tilo_call_lane::frame::{Opener, Refusal, Sealer, Stream, TrackName};
 use tilo_call_lane::roster::Roster;
 use tilo_lock::MutexRecover as _;
 
-use crate::carrier::{self, AdmissionError, Dial, OriginTask};
-use crate::live::{self, Delivery, Namespace, Track};
+use crate::Task;
+use crate::admit::{AdmissionError, Connected, Dial, OriginTask, origin_config};
+use crate::live::{self, Delivery, Namespace, Track, exact};
 use crate::scope::Scope;
 use crate::voice::{self, VoiceObject};
 
@@ -124,6 +125,8 @@ pub(crate) struct Shared {
     heard: Mutex<VecDeque<Heard>>,
     ended: Mutex<bool>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Told once, when the plane ends: what rejoins the scope elsewhere.
+    ended_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
@@ -175,6 +178,7 @@ impl Shared {
             heard: Mutex::new(VecDeque::new()),
             ended: Mutex::new(false),
             wake: Mutex::new(None),
+            ended_hook: Mutex::new(None),
         }))
     }
 
@@ -184,8 +188,7 @@ impl Shared {
             return None;
         }
         let path = Namespace::new(&self.join.scope, self.join.device).path();
-        crate::relay::exact(&[path.as_str()])
-            .and_then(|names| outgoing.consume().scope("", &names).ok())
+        exact(&[path.as_str()]).and_then(|names| outgoing.consume().scope("", &names).ok())
     }
 
     /// What the carrier subscribes to: every participant of this scope.
@@ -208,6 +211,10 @@ impl Shared {
             !std::mem::replace(&mut *ended, true)
         };
         if first {
+            let hook = self.ended_hook.lock_recover().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
             self.wake();
         }
     }
@@ -244,9 +251,12 @@ impl Shared {
 /// One device's sealed session in one scope.
 pub struct Plane {
     shared: Arc<Shared>,
-    _readers: Vec<crate::Task>,
+    /// This device's recent audio objects, newest last: the redundancy its
+    /// datagrams carry, so one lost packet costs one frame and not two.
+    sent: Mutex<VecDeque<Vec<u8>>>,
+    _readers: Vec<Task>,
     _origins: Vec<OriginTask>,
-    _connected: Option<carrier::Connected>,
+    _connected: Option<Connected>,
 }
 
 impl Plane {
@@ -259,14 +269,28 @@ impl Plane {
     /// [`PlaneError::Refused`] when the scope's keys do not cover this
     /// device's own presence.
     pub async fn join(dial: &impl Dial, grant: &[u8], join: Join) -> Result<Self, PlaneError> {
-        let (outgoing, outgoing_task) =
-            carrier::OriginTask::produce(carrier::origin_config(INGRESS, RETAIN));
-        let (incoming, incoming_task) =
-            carrier::OriginTask::produce(carrier::origin_config(EGRESS, RETAIN));
+        Self::join_within(dial, grant, join, JOINT).await
+    }
+
+    /// Join as [`Self::join`], waiting at most `within` for the carrier and
+    /// the admission: a device trying the relays of a scope in turn spends no
+    /// more than this on one that is not there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::join`].
+    pub async fn join_within(
+        dial: &impl Dial,
+        grant: &[u8],
+        join: Join,
+        within: Duration,
+    ) -> Result<Self, PlaneError> {
+        let (outgoing, outgoing_task) = OriginTask::produce(origin_config(INGRESS, RETAIN));
+        let (incoming, incoming_task) = OriginTask::produce(origin_config(EGRESS, RETAIN));
         let shared = Shared::new(&join, &outgoing, &incoming)?;
         let publish = shared.publication(&outgoing);
         let subscribe = shared.subscription(&incoming)?;
-        let connected = dial.dial(grant, publish, subscribe, JOINT).await?;
+        let connected = dial.dial(grant, publish, subscribe, within).await?;
         let plane = Self::serve(shared, vec![outgoing_task, incoming_task], Some(connected));
         Ok(plane)
     }
@@ -278,6 +302,7 @@ impl Plane {
     /// # Errors
     ///
     /// As [`Self::join`].
+    #[cfg(feature = "relay")]
     pub fn local(relay: &crate::relay::Relay, join: &Join) -> Result<Self, PlaneError> {
         let shared_origin = relay.shared();
         let shared = Shared::new(join, &shared_origin, &shared_origin)?;
@@ -285,16 +310,12 @@ impl Plane {
     }
 
     /// Start the readers of a prepared plane.
-    fn serve(
-        shared: Arc<Shared>,
-        origins: Vec<OriginTask>,
-        connected: Option<carrier::Connected>,
-    ) -> Self {
+    fn serve(shared: Arc<Shared>, origins: Vec<OriginTask>, connected: Option<Connected>) -> Self {
         let mut readers = Vec::new();
         if let Some(connected) = &connected {
             let watched = connected.session.clone();
             let ended = shared.clone();
-            readers.push(crate::Task::spawn(async move {
+            readers.push(Task::spawn(async move {
                 let _ = watched.closed().await;
                 ended.end();
             }));
@@ -304,11 +325,12 @@ impl Plane {
                 continue;
             }
             for track in TRACKS {
-                readers.push(crate::Task::spawn(receive(shared.clone(), device, track)));
+                readers.push(Task::spawn(receive(shared.clone(), device, track)));
             }
         }
         Self {
             shared,
+            sent: Mutex::new(VecDeque::new()),
             _readers: readers,
             _origins: origins,
             _connected: connected,
@@ -363,10 +385,26 @@ impl Plane {
             let object = VoiceObject { payload, ..object }
                 .encode()
                 .map_err(|_| PlaneError::Invalid)?;
-            let timestamp =
-                moq_net::Timestamp::from_scale(at, 48_000).unwrap_or(moq_net::Timestamp::ZERO);
+            // The objects before this one again, as far as one datagram
+            // carries them: a subscriber that lost the previous packet plays
+            // it from this one.
+            let mut sent = self.sent.lock_recover();
+            let mut bundle = object.clone();
+            for earlier in sent.iter().rev() {
+                if bundle.len().saturating_add(earlier.len()) > voice::MAX_BUNDLE_BYTES {
+                    break;
+                }
+                bundle.extend_from_slice(earlier);
+            }
+            sent.push_back(object);
+            while sent.len() >= voice::MAX_BUNDLE_OBJECTS {
+                sent.pop_front();
+            }
+            drop(sent);
+            let timestamp = moq_net::Timestamp::from_scale(at, u64::from(voice::SAMPLE_RATE))
+                .unwrap_or(moq_net::Timestamp::ZERO);
             return producer
-                .insert_datagram(u64::from(sequence), timestamp, object)
+                .insert_datagram(u64::from(sequence), timestamp, bundle)
                 .map_err(|_| PlaneError::Unavailable);
         }
         let frame = sealer.seal(sequence, body)?;
@@ -405,6 +443,12 @@ impl Plane {
     /// Ask `wake` to run whenever an object is heard or the session ends.
     pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *self.shared.wake.lock_recover() = Some(wake);
+    }
+
+    /// Ask `ended` to run once, when the plane ends: the carrier closed, the
+    /// relay went away, or the roster no longer opens what it reads.
+    pub fn set_ended(&self, ended: Arc<dyn Fn() + Send + Sync>) {
+        *self.shared.ended_hook.lock_recover() = Some(ended);
     }
 
     /// Whether the carrier has ended.

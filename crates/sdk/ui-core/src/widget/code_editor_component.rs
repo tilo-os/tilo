@@ -54,7 +54,7 @@ impl Described for CodeEditor {
             gutter,
             read_only,
         } = props;
-        let mut editor = Self::local()
+        let mut editor = Self::from_state(&value.state)
             .with_gutter(gutter)
             .with_placeholder(placeholder.as_deref().unwrap_or_default());
         if let Some(language) = language {
@@ -69,7 +69,6 @@ impl Described for CodeEditor {
         if read_only {
             editor = editor.read_only();
         }
-        editor.set_text(&value.state.get());
         editor
     }
 }

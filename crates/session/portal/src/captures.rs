@@ -18,8 +18,8 @@ use tilo_service::{Started, decode, offer};
 
 use crate::PortalCaller;
 use crate::capture_broker::{
-    CaptureBroker, CaptureBrokerError, CaptureKind, CaptureLeaseId, CaptureSessionBinding,
-    LocalCaptureHandle,
+    CaptureBroker, CaptureBrokerError, CaptureKind, CaptureLeaseId, CaptureRevocation,
+    CaptureSessionBinding, LocalCaptureHandle,
 };
 use crate::session::Sessions;
 
@@ -71,6 +71,28 @@ impl Captures {
     #[must_use]
     pub fn broker(&self) -> &Arc<Mutex<CaptureBroker>> {
         &self.broker
+    }
+
+    /// End every live capture the desk no longer allows, and forget the asks
+    /// it would answer: `keep` is asked about each app, workspace and kind.
+    /// Revoked streams stop and their portal sessions end; the apps keep
+    /// running. Returns how many were stopped.
+    pub fn keep_only(&self, keep: impl Fn(&str, &str, CaptureKind) -> bool + Copy) -> usize {
+        let revoked = self
+            .broker
+            .lock_recover()
+            .revoke_unkept(CaptureRevocation::GrantRevoked, keep);
+        if revoked > 0 {
+            self.sessions.changed();
+        }
+        revoked
+    }
+
+    /// Follow the person's lockdown policy for one capture kind: with the
+    /// switch on, nothing new is authorized and what is capturing now stops.
+    pub fn set_lockdown(&self, kind: CaptureKind, disabled: bool) {
+        self.broker.lock_recover().set_kill_switch(kind, disabled);
+        self.sessions.changed();
     }
 
     /// Hold a lease on stream `node` of portal session `path` for
@@ -294,6 +316,142 @@ mod tests {
                 .enumerate(CaptureKind::Screen)
                 .is_empty(),
             "its sources are gone too"
+        );
+    }
+
+    /// A camera lease for `app` in `workspace`, stopping `hook` when it is
+    /// revoked: what realtime media holds while it captures.
+    fn camera_lease(
+        captures: &Captures,
+        source: &str,
+        app: &str,
+        workspace: &str,
+        hook: Arc<AtomicBool>,
+    ) -> CaptureLeaseId {
+        let binding =
+            CaptureSessionBinding::new(app, workspace, "/session/1", "device").expect("binding");
+        let now = Instant::now();
+        let mut broker = captures.broker().lock_recover();
+        broker
+            .register_source(
+                source,
+                "Built-in camera",
+                CaptureKind::Camera,
+                LocalCaptureHandle::SystemDefault(CaptureKind::Camera),
+            )
+            .expect("source");
+        let authorization = broker
+            .authorize(&binding, source, CaptureKind::Camera, now)
+            .expect("authorized");
+        let lease = broker
+            .acquire_held(authorization, &binding, source, CaptureKind::Camera, now)
+            .expect("held");
+        broker
+            .stop_on_revoke(
+                lease,
+                &binding,
+                now,
+                Arc::new(move || hook.store(true, Ordering::SeqCst)),
+            )
+            .expect("hook");
+        lease
+    }
+
+    #[test]
+    fn taking_the_camera_away_ends_the_stream_and_leaves_the_app_running() {
+        let sessions = Sessions::default();
+        let captures = Captures::new(&sessions);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let kept = Arc::new(AtomicBool::new(false));
+        camera_lease(
+            &captures,
+            "camera-0",
+            "so.tilo.meet",
+            "room-1",
+            Arc::clone(&stopped),
+        );
+        camera_lease(
+            &captures,
+            "camera-1",
+            "so.tilo.camera",
+            "room-2",
+            Arc::clone(&kept),
+        );
+        assert_eq!(captures.resources().len(), 2);
+
+        let ended = captures.keep_only(|app, _, _| app != "so.tilo.meet");
+        assert_eq!(ended, 1, "only the app that lost the camera");
+        assert!(
+            stopped.load(Ordering::SeqCst),
+            "the stream the broker handed out stopped"
+        );
+        assert!(
+            !kept.load(Ordering::SeqCst),
+            "the other app keeps capturing"
+        );
+        assert_eq!(captures.resources().len(), 1);
+        assert!(
+            captures
+                .broker()
+                .lock_recover()
+                .live()
+                .iter()
+                .all(|capture| capture.app_id != "so.tilo.meet"),
+            "the app keeps running; what it may no longer capture is gone"
+        );
+    }
+
+    #[test]
+    fn a_capture_the_desk_still_allows_is_left_alone() {
+        let sessions = Sessions::default();
+        let captures = Captures::new(&sessions);
+        let stopped = Arc::new(AtomicBool::new(false));
+        camera_lease(
+            &captures,
+            "camera-0",
+            "so.tilo.meet",
+            "room-1",
+            Arc::clone(&stopped),
+        );
+        assert_eq!(captures.keep_only(|_, _, _| true), 0);
+        assert!(!stopped.load(Ordering::SeqCst));
+        assert_eq!(captures.resources().len(), 1);
+    }
+
+    #[test]
+    fn the_lockdown_switch_stops_what_captures_and_answers_no_next_ask() {
+        let sessions = Sessions::default();
+        let captures = Captures::new(&sessions);
+        let stopped = Arc::new(AtomicBool::new(false));
+        camera_lease(
+            &captures,
+            "camera-0",
+            "so.tilo.meet",
+            "room-1",
+            Arc::clone(&stopped),
+        );
+        captures.set_lockdown(CaptureKind::Camera, true);
+        assert!(stopped.load(Ordering::SeqCst), "capturing stopped");
+        assert!(captures.resources().is_empty());
+        let binding = CaptureSessionBinding::new("so.tilo.meet", "room-1", "/session/2", "device")
+            .expect("binding");
+        assert_eq!(
+            captures.broker().lock_recover().authorize(
+                &binding,
+                "camera-0",
+                CaptureKind::Camera,
+                Instant::now()
+            ),
+            Err(CaptureBrokerError::Disabled)
+        );
+        captures.set_lockdown(CaptureKind::Camera, false);
+        assert!(
+            captures
+                .broker()
+                .lock_recover()
+                .authorize(&binding, "camera-0", CaptureKind::Camera, Instant::now())
+                .is_ok(),
+            "turning the switch off lets the camera be asked for again"
         );
     }
 }

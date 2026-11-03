@@ -79,6 +79,17 @@ impl NotificationLog {
         &self.active
     }
 
+    /// When the log next changes with nobody asking: a banner's time on
+    /// screen running out, or a Clear all's undo window closing.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let banners = self
+            .active
+            .iter()
+            .filter_map(|notification| notification.dwell.ends_at(notification.dismiss_after))
+            .min();
+        [banners, self.clear_deadline()].into_iter().flatten().min()
+    }
+
     /// Retained notifications, oldest first.
     pub fn history(&self) -> &[Notification] {
         &self.history

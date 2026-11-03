@@ -80,6 +80,7 @@ impl Rotation {
         let device = self.device.as_deref()?;
         let Some(panel) = panel(outputs) else {
             self.turned = None;
+            self.due = None;
             return None;
         };
         let stamp = settings_store::stamp();
@@ -107,6 +108,14 @@ impl Rotation {
         self.turned
             .as_ref()
             .map(|(connector, transform)| (connector.as_str(), *transform))
+    }
+
+    /// When the panel next needs a sample of the accelerometer: only a
+    /// machine with a sensor under a panel that turns needs a pass of its
+    /// own.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.device.as_ref()?;
+        self.due
     }
 }
 

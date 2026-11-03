@@ -198,6 +198,16 @@ pub(crate) fn arrange(
         .collect()
 }
 
+/// The scale a display comes up at before the person chooses one: what its
+/// resolution against its physical size argues for, snapped to a step and
+/// clamped (`settings_store::display_scale`). A 14" 2880x1800 panel runs at
+/// 2, a 24" 1080p monitor at 1, and a connector that does not say how big
+/// it is at 1.
+#[must_use]
+pub fn panel_scale(size: (u32, u32), physical_mm: Option<(u32, u32)>) -> f64 {
+    settings_store::display_scale::derive_scale(size, physical_mm)
+}
+
 /// One output as a backend describes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputConfig {
@@ -234,6 +244,19 @@ impl OutputConfig {
     #[must_use]
     pub const fn with_scale(mut self, scale: f64) -> Self {
         self.scale = scale;
+        self
+    }
+
+    /// The same output as a panel of `physical_mm` millimetres across and
+    /// down: it comes up at the scale its density argues for
+    /// ([`panel_scale`]), the way a real screen on a DRM connector does,
+    /// until the person chooses a scale.
+    #[must_use]
+    pub fn panel(mut self, physical_mm: (u32, u32)) -> Self {
+        self.scale = panel_scale(
+            (self.size.0.unsigned_abs(), self.size.1.unsigned_abs()),
+            Some(physical_mm),
+        );
         self
     }
 

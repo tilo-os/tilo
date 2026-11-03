@@ -22,7 +22,9 @@
 //! and its tests run on their own.
 
 pub mod cpu_trace;
+pub mod key_latency;
 pub mod profile;
+pub mod switch_latency;
 mod trace_writer;
 pub use cpu_trace::{CpuPhase, CpuSnapshot};
 use trace_writer::TraceWriter;

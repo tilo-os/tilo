@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tilo_action_broker::services::LaunchableApplication;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_files::native::Watched;
@@ -32,6 +33,12 @@ pub struct AppLists {
     /// its own identity, by package id: the ceiling the broker admits an
     /// app's query and invoke against, never a grant.
     pub declared: BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess>,
+    /// The apps a service can ask this session to open, as the action door
+    /// lists them: each app's name, the actions its signed manifest offers
+    /// while it is not running, and the capabilities a grant is decided on.
+    /// What decides the reach the device's settings app has of the settings
+    /// document.
+    pub launchable: Vec<LaunchableApplication>,
 }
 
 impl AppLists {
@@ -133,6 +140,7 @@ impl AppLists {
         );
         let blocks = app_catalogue::BlockList::load();
         let catalogue = catalogue.offered(&present, &blocks).cloned().collect();
+        let launchable = launchable(&installed, &scan.entries);
         Self {
             applications,
             host_apps,
@@ -140,6 +148,7 @@ impl AppLists {
             icons,
             candidates,
             declared,
+            launchable,
         }
     }
 
@@ -155,6 +164,55 @@ impl AppLists {
         directories.dedup();
         directories
     }
+}
+
+/// The apps a service can ask this session to open: this device's packages,
+/// then the machine's own entries no package answers for. Only the
+/// capabilities a grant is decided on are read, and only for the app the
+/// image could grant one to: the manifest is read for that app alone.
+fn launchable(
+    installed: &[tilo_installed_apps::InstalledApp],
+    entries: &[desktop_entry::entry::DesktopEntry],
+) -> Vec<LaunchableApplication> {
+    let packages: std::collections::HashSet<String> = installed
+        .iter()
+        .map(|app| app.package_id.to_ascii_lowercase())
+        .collect();
+    installed
+        .iter()
+        .filter(|app| app.has_gui)
+        .map(|app| LaunchableApplication {
+            capabilities: if settings_store::app_scope::SYSTEM_SETTINGS_APPS
+                .contains(&app.package_id.as_str())
+            {
+                app.declared_capabilities()
+                    .into_iter()
+                    .filter(|capability| {
+                        capability == settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            package_id: app.package_id.clone(),
+            display_name: app.display_name.clone(),
+            unconfined: false,
+            offers: app.offers.clone(),
+        })
+        .chain(
+            entries
+                .iter()
+                .filter(|entry| !entry.no_display && !entry.hidden)
+                .filter(|entry| !packages.contains(&entry.id.to_ascii_lowercase()))
+                .map(|entry| LaunchableApplication {
+                    capabilities: Vec::new(),
+                    package_id: format!("{}{}", tilo_app_launch::launch::HOST_PREFIX, entry.id),
+                    display_name: entry.name.clone(),
+                    unconfined: true,
+                    offers: Vec::new(),
+                }),
+        )
+        .collect()
 }
 
 /// Each app's declared reach of the action door, from its signed manifest:

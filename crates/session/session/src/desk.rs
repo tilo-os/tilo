@@ -183,12 +183,8 @@ pub(crate) enum DeskPolicy {
 impl DeskPolicy {
     /// The shell drawing the whole screen places the windows in its wells; otherwise the
     /// desktop's strips do.
-    pub(crate) fn for_shell(
-        shell: Option<tilo_surface_host::shell_part::ShellLayer>,
-        desktop: &DesktopHost,
-        strips: StripPolicy,
-    ) -> Self {
-        if shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen) {
+    pub(crate) fn for_shell(shell: bool, desktop: &DesktopHost, strips: StripPolicy) -> Self {
+        if shell {
             Self::Wells(desktop.well_policy())
         } else {
             Self::Strips(strips)

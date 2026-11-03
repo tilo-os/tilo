@@ -47,6 +47,7 @@ imports! {
     (ListSortByKey, "list_sort_by_key", "ii", "i"),
     (ListReverse, "list_reverse", "i", "i"),
     (ListEnd, "list_end", "ii", "i"),
+    (ListIndexOf, "list_index_of", "ii", "i"),
 
     (TupleNew, "tuple_new", "i", "i"),
     (TupleSetI, "tuple_set_i", "iil", ""),

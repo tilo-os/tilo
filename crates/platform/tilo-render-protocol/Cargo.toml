@@ -9,6 +9,9 @@ homepage.workspace = true
 description = "Scene transport between Tilo apps and the workspace's render service: frame records, vello encodings by resource id, the validator every scene passes before a GPU sees it, and the sealed-memfd ring and control channel they travel on."
 
 [dependencies]
+# What a window's command palette offers: the actions its app publishes, as the session's
+# action directory lists them.
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 peniko = "0.6.1"
 postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true

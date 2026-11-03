@@ -41,12 +41,12 @@ desk-not-opened-newer-detail = { $path } was saved by a newer version of Tilo (l
 desk-not-opened-unreadable-title = Your desk could not be read
 desk-not-opened-unreadable-detail = { $path } is there but could not be read ({ $error }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
 
-## The desk Tilo kept before this version, which was not brought over: it is
-## still on disk, untouched, and this session keeps its own desk instead.
+## The desk from the version before this one, which was not brought over: it
+## is still on disk, untouched, and this session has its own desk instead.
 desk-not-opened-old-newer-title = Your old desk was not brought over
-desk-not-opened-old-newer-detail = { $path } is the desk Tilo kept before this version, saved by a newer one (layout { $found }; this one understands { $understood }). It has not been changed and is still on this machine: this session starts on an empty desk.
+desk-not-opened-old-newer-detail = { $path } is your desk from the version before this one, saved by a newer one (layout { $found }; this one understands { $understood }). It has not been changed and is still on this machine: this session starts on an empty desk.
 desk-not-opened-old-unreadable-title = Your old desk could not be read
-desk-not-opened-old-unreadable-detail = { $path } is the desk Tilo kept before this version, and it could not be read ({ $error }). It has not been changed and is still on this machine: this session starts on an empty desk.
+desk-not-opened-old-unreadable-detail = { $path } is your desk from the version before this one, and it could not be read ({ $error }). It has not been changed and is still on this machine: this session starts on an empty desk.
 
 ## A window this device left open whose app did not come back.
 desk-window-not-installed = { $app } is not installed on this machine
@@ -94,12 +94,31 @@ session-display-builtin = Built-in display
 session-clipboard = Clipboard
 session-devices = Devices
 session-devices-press = Press one of the person's devices
+session-bluetooth-app = Bluetooth
+session-bluetooth-moved = { $accessory } moved
+session-bluetooth-moved-body = It works on { $device } now.
+session-bluetooth-moving = Moving { $accessory }
+session-bluetooth-moving-body = It will work on { $device }.
+session-bluetooth-no-identity = This session is not one of the person's devices.
+session-bluetooth-not-connected = It is not connected here.
+session-bluetooth-not-connected-there = It could not connect on { $device }.
+session-bluetooth-not-paired-there = { $device } does not hold its pairing.
+session-bluetooth-not-released = This device could not let go of it.
+session-bluetooth-cancelled = { $device } gave the move up.
+session-bluetooth-stayed = { $accessory } stayed here
+session-bluetooth-taken = { $accessory } is here now
+session-bluetooth-taken-body = { $device } moved it.
+session-bluetooth-target-away = The other device is not online.
+session-bluetooth-target-unknown = The other device is not in the person's devices.
+session-bluetooth-timed-out = The move took too long.
+session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
 session-notifications-open = Open the notification
+session-notifications-hand-to-agent = Hand the notification to an agent
 session-apps = Apps
 session-apps-uninstall = Uninstall an app
 session-param-app = The app's name

@@ -50,6 +50,9 @@ pub struct ListRowProps {
     /// A checkbox in the leading column, bound to whether the item is done.
     #[component(bind)]
     pub checkbox: Option<Bound<bool>>,
+    /// The pace the row's own motion plays at: its mark coming and going, and the row arriving,
+    /// leaving and changing places in its list. Unset, the theme's.
+    pub motion: Option<crate::motion::Feel>,
     /// The row was activated (a click, Enter, an assistive technology): open what it shows.
     #[component(event)]
     pub activate: Event,
@@ -78,6 +81,7 @@ impl ListRowProps {
             avatar: self.avatar.clone(),
             trailing: None,
             checkbox: self.checkbox.clone(),
+            motion: self.motion,
             activate: self.activate.clone(),
         })
     }
@@ -170,6 +174,7 @@ impl ListRow {
             avatar,
             trailing,
             checkbox,
+            motion,
             activate,
         } = props;
         // An empty line is no line: a row of a note without a body is one line high.
@@ -181,6 +186,7 @@ impl ListRow {
         self.value = shown(value).map(|value| (value, super::RowValue::Body));
         self.mark = mark;
         self.selected = selected;
+        self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
         self.leading = if let Some(bound) = checkbox {
             let checked = bound.state.get();
             Some(Leading::Checkbox {

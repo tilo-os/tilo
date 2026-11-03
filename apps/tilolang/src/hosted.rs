@@ -326,11 +326,40 @@ impl ui::component_lifecycle::HostIntents for HostedWindow {
 impl ui::widget::Decorator for HostedWindow {
     type Inner = dyn Widget;
 
-    ui::provides!(
-        dyn ui::component_lifecycle::WindowActivation,
-        dyn ui::component_lifecycle::HostIntents,
-        dyn ui::undo::LocalUndo
-    );
+    /// What the window itself answers, and everything else the widget it shows: the UI host's
+    /// window publishes the app's actions for the command palette and runs the one the person
+    /// chooses ([`tilo_ui_host::catalogue`]), so a request for either reaches it through here.
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
+            request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
+            return;
+        }
+        if request.wants::<dyn ui::component_lifecycle::HostIntents>() {
+            request.provide::<dyn ui::component_lifecycle::HostIntents>(self);
+            return;
+        }
+        if request.wants::<dyn ui::undo::LocalUndo>() {
+            request.provide::<dyn ui::undo::LocalUndo>(self);
+            return;
+        }
+        self.content().provide(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
+            request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
+            return;
+        }
+        if request.wants::<dyn ui::component_lifecycle::HostIntents>() {
+            request.provide::<dyn ui::component_lifecycle::HostIntents>(self);
+            return;
+        }
+        if request.wants::<dyn ui::undo::LocalUndo>() {
+            request.provide::<dyn ui::undo::LocalUndo>(self);
+            return;
+        }
+        self.content_mut().provide_mut(request);
+    }
 
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.content()

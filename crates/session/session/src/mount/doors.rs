@@ -225,13 +225,16 @@ pub(crate) struct Serving {
     /// The person's answers, which the portal keeps: an answer given to one
     /// question stands for the other.
     pub consents: Option<tilo_portal::consent::Consents>,
+    /// What wakes the session's loop when a worker read something that the
+    /// loop counts.
+    pub wake: tilo_service::Wake,
 }
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves
 /// them for as long as the session runs.
 pub(crate) fn start(mut serving: Serving) -> Doors {
     let mut doors = Doors {
-        usage: data_usage::Counting::start(),
+        usage: data_usage::Counting::start(serving.wake.clone()),
         ..Doors::default()
     };
     for door in TABLE {
@@ -465,9 +468,10 @@ mod data_usage {
     }
 
     impl Counting {
-        /// Start reading this device's counters. The worker ends with what
-        /// it reads into.
-        pub(super) fn start() -> Option<Self> {
+        /// Start reading this device's counters, waking the loop with
+        /// `wake` for each reading it counts. The worker ends with what it
+        /// reads into.
+        pub(super) fn start(wake: tilo_service::Wake) -> Option<Self> {
             let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
                 .ok()
                 .map(|id| id.trim().to_owned());
@@ -489,6 +493,7 @@ mod data_usage {
                             if sender.send(due).is_err() {
                                 return;
                             }
+                            wake();
                         }
                         std::thread::park_timeout(if idle { IDLE } else { READ_EVERY });
                     }

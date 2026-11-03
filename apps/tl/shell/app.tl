@@ -160,6 +160,9 @@ type Agent (origin: session.agent) {
     doing: Text merge register
     mark: Text merge register
     unseen: Int
+    /// Whether it is seated at the person's agent door now, a client they admitted, rather
+    /// than a run's own agent.
+    seat: Bool
 }
 
 /// A workspace the person is in, as the workspace overview names it.

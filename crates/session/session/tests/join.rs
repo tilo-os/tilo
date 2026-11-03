@@ -25,7 +25,7 @@ use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceId};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Options, Session};
+use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, SearchOptions, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 const WIDTH: i32 = 1280;
@@ -160,10 +160,30 @@ fn desk(person: &Keys) -> DesktopTree {
 /// A session serving the apps it starts on `socket`, with the person's desk
 /// and this device's identity.
 fn session(socket: &Path, person: &Keys) -> Session {
+    session_of(socket, person, &[APP], None)
+}
+
+/// A session serving `apps` as the apps it started, keeping its state — and
+/// so its broker's admission journal — at `state` when it is given one.
+fn session_of(socket: &Path, person: &Keys, apps: &[&str], state: Option<&Path>) -> Session {
+    serving(socket, person, apps, state, Lists::default())
+}
+
+/// [`session_of`] for a device whose app lists are `lists`: what the action
+/// door lists as each app's offers and declared capabilities.
+fn serving(
+    socket: &Path,
+    person: &Keys,
+    apps: &[&str],
+    state: Option<&Path>,
+    lists: Lists,
+) -> Session {
     // The apps speak from this test's own process, so the launches the
     // session would have recorded for them name that process.
     let launches = std::sync::Arc::new(Launches::default());
-    launches.started(std::process::id(), APP, WORKSPACE, true);
+    for app in apps {
+        launches.started(std::process::id(), app, WORKSPACE, true);
+    }
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -172,6 +192,11 @@ fn session(socket: &Path, person: &Keys) -> Session {
             action_plane: ActionPlane::At(socket.to_path_buf()),
             person: "Ada".to_owned(),
             launches,
+            state: state.map(Path::to_path_buf),
+            search: SearchOptions {
+                lists,
+                ..SearchOptions::default()
+            },
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -186,9 +211,22 @@ fn session(socket: &Path, person: &Keys) -> Session {
     session
 }
 
+/// The channel key of `app`'s record in the workspace.
+fn record_channel(app: &str) -> String {
+    tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
+}
+
 /// The channel key of the app's record in the workspace.
 fn channel() -> String {
-    tilo_action_broker::route::CrdtRoute::record(APP, WORKSPACE, RECORD).channel_key()
+    record_channel(APP)
+}
+
+/// The app whose settings the keyboard shortcuts are.
+const SETTINGS: &str = "so.tilo.settings";
+
+/// The channel key of Settings' record in the workspace.
+fn settings_channel() -> String {
+    record_channel(SETTINGS)
 }
 
 /// One change of the record: `value` written under `key`, as an app writes it.
@@ -281,9 +319,9 @@ fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc:
 
 /// An app connected to the session's plane as `APP` in `WORKSPACE`, as the
 /// launcher hands it the connection.
-fn connect(socket: &PathBuf) -> CollabClient {
+fn connect(socket: &PathBuf, app: &str) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
-    launcher::services::write_collab_handoff(&mut stream, APP, WORKSPACE)
+    launcher::services::write_collab_handoff(&mut stream, app, WORKSPACE)
         .expect("the launcher names the app on the connection");
     stream
         .set_nonblocking(true)
@@ -293,6 +331,122 @@ fn connect(socket: &PathBuf) -> CollabClient {
     let (client, carrying) = CollabClient::over(reader, writer);
     tokio::spawn(carrying);
     client
+}
+
+/// What the session answers to `message` on `handle`, as the status it
+/// leaves the invocation in.
+async fn answered(
+    handle: &runtime_collab::ChannelHandle,
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::remote::ReceiptStatus {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+    let frame = RemoteActionFrame::new(message)
+        .encode()
+        .expect("a remote action encodes");
+    let answer = handle
+        .remote_action(&frame)
+        .await
+        .expect("the session answers the app");
+    match RemoteActionFrame::decode(&answer)
+        .expect("the answer decodes")
+        .message
+    {
+        RemoteActionMessage::Receipt(receipt) => receipt.status,
+        RemoteActionMessage::Update {
+            state: Some(state), ..
+        } => match state.update {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+                ReceiptStatus::Completed { output }
+            }
+            other => panic!("the invocation never succeeded: {other:?}"),
+        },
+        other => panic!("the session answered {other:?}"),
+    }
+}
+
+/// Settings, the app the session launched, joins its workspace's channel and
+/// lists the desktop's shortcuts through the session's services: the answer
+/// it gets back from the settings it holds.
+fn settings_lists_shortcuts(
+    socket: &PathBuf,
+    person: &Keys,
+) -> tilo_actions::remote::ReceiptStatus {
+    use tilo_actions::remote::{
+        InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the app");
+    runtime.block_on(async {
+        let settings = connect(socket, SETTINGS);
+        let handle = settings
+            .join_channel(
+                &settings_channel(),
+                &presentation(&person.device, &person.cert),
+            )
+            .await
+            .expect("the app the session launched joins its workspace's channel");
+        let invocation = tilo_actions::InvocationId::new();
+        let status = answered(
+            &handle,
+            RemoteActionMessage::Invoke(InvokeRequest {
+                invocation,
+                target: RemoteActionTarget {
+                    provider: tilo_actions::remote::workspace_provider(WORKSPACE),
+                    address: tilo_actions::ActionAddress::new(
+                        tilo_sheets::keyboard_shortcuts::RESOURCE,
+                        tilo_sheets::keyboard_shortcuts::LIST_ACTION,
+                    ),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                on_behalf_of: None,
+                revision: None,
+                wait_ms: Some(5_000),
+                appearance: None,
+            }),
+        )
+        .await;
+        if status.is_terminal() {
+            return status;
+        }
+        answered(
+            &handle,
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms: Some(5_000),
+                seen: None,
+            },
+        )
+        .await
+    })
+}
+
+/// The settings `app` reads over the session's door, as the JSON document the
+/// session answered: joined as the launch the session recorded for it.
+fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Value {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the app");
+    runtime.block_on(async {
+        let client = connect(socket, app);
+        let handle = client
+            .join_channel(
+                &record_channel(app),
+                &presentation(&person.device, &person.cert),
+            )
+            .await
+            .expect("the app the session launched joins its workspace's channel");
+        let view = handle
+            .settings()
+            .read(0)
+            .await
+            .expect("the session answers the app's settings");
+        serde_json::from_slice(&view.document_json).expect("the settings view is JSON")
+    })
 }
 
 /// What the apps found: the changes each read from the other, and how the
@@ -318,8 +472,8 @@ fn apps(socket: &PathBuf, person: &Keys) -> Joined {
         presentation(&person.other_device, &person.other_cert),
     );
     runtime.block_on(async {
-        let this_device = connect(socket);
-        let other_device = connect(socket);
+        let this_device = connect(socket, APP);
+        let other_device = connect(socket, APP);
         let this_channel = this_device
             .join_channel(&channel(), &first)
             .await
@@ -438,4 +592,103 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
         "another person's device is refused: {}",
         joined.wrong_person
     );
+}
+
+/// A session that keeps its state keeps its broker's admission journal, and
+/// still admits the app its launcher started: Settings joins its workspace's
+/// channel, and the shortcuts it lists are the settings this device holds.
+#[test]
+fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
+    use tilo_actions::remote::ReceiptStatus;
+    let home = private_home();
+    let socket = home.path().join("collab.sock");
+    let person = person();
+    let state = home.path().join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    let mut session = session_of(&socket, &person.keys, &[SETTINGS], Some(&state));
+
+    let (done, received) = std::sync::mpsc::channel();
+    let plane = socket;
+    let keys = person.keys;
+    std::thread::spawn(move || {
+        let _ = done.send(settings_lists_shortcuts(&plane, &keys));
+    });
+    let status = until_the_apps_are_done(&mut session, &received);
+
+    let ReceiptStatus::Completed { output } = status else {
+        panic!("Settings lists the desktop's shortcuts: {status:?}");
+    };
+    let value = output.value.expect("the list answers with its rows");
+    let rows = value["shortcuts"]
+        .as_array()
+        .expect("the catalogue answers with its rows");
+    assert!(!rows.is_empty(), "the desktop has shortcuts to list");
+    assert!(
+        rows.iter().any(|row| row["id"] == "open-terminal"
+            && row["defaults"]
+                .as_array()
+                .is_some_and(|defaults| defaults.iter().any(|chord| chord == "Ctrl+Alt+T"))),
+        "the desktop's own shortcuts are listed: {rows:?}"
+    );
+}
+
+/// The device's settings app reaches every section of the settings document
+/// over the session's door, because the app lists say its manifest declares
+/// the system reach; an app that declares none reads the shared sections
+/// only.
+#[test]
+fn the_settings_app_the_app_lists_allow_reaches_every_section() {
+    let person = person();
+    // A section the session keeps and no app reads as a shared one: what
+    // only the device's own settings app may see.
+    let mut power = serde_json::Map::new();
+    power.insert("probe".to_owned(), serde_json::json!("system"));
+    settings_store::update_section(settings_store::power::SECTION, power)
+        .expect("the session keeps the power settings");
+
+    let settings = settings_of(&person.keys, SETTINGS, &[(SETTINGS, true)]);
+    let notes = settings_of(&person.keys, APP, &[(APP, false)]);
+    assert_eq!(
+        settings["power"]["probe"], "system",
+        "the device's settings app reads the whole document: {settings}"
+    );
+    assert!(
+        notes.get("power").is_none(),
+        "an app whose manifest declares no system reach reads the shared sections only: {notes}"
+    );
+}
+
+/// What `app` reads of the settings over the session's door, in a session
+/// whose app lists say of each of `declared` whether its manifest asks for
+/// the device's system settings reach.
+fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_json::Value {
+    use tilo_action_broker::services::LaunchableApplication;
+    let home = private_home();
+    let socket = home.path().join("collab.sock");
+    let lists = AppLists {
+        launchable: declared
+            .iter()
+            .map(|(package_id, asks)| LaunchableApplication {
+                package_id: (*package_id).to_owned(),
+                display_name: (*package_id).to_owned(),
+                unconfined: false,
+                offers: Vec::new(),
+                capabilities: if *asks {
+                    vec![settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY.to_owned()]
+                } else {
+                    Vec::new()
+                },
+            })
+            .collect(),
+        ..AppLists::default()
+    };
+    let mut session = serving(&socket, person, &[app], None, Lists::fixed(lists));
+    let (done, received) = std::sync::mpsc::channel();
+    let plane = socket;
+    let keys = person.clone();
+    let called = app.to_owned();
+    std::thread::spawn(move || {
+        let _ = done.send(settings_read(&plane, &keys, &called));
+    });
+    until_the_apps_are_done(&mut session, &received)
 }

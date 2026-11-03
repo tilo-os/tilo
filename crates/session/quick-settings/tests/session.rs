@@ -448,6 +448,95 @@ fn the_quiet_tile_is_the_published_centres_switch() {
 }
 
 #[test]
+fn the_lock_tile_locks_the_screens() {
+    // A session with a lock screen of its own: a lock is only taken where it
+    // can be lifted again.
+    let lock_screen = tilo_test_env::sibling_binary("tilo-lock-screen", "tilo-lock-screen");
+    let mut laptop = session_of_device_prepared(
+        &[panel()],
+        Machine::Owned,
+        (WIDTH, HEIGHT),
+        |options, _root| {
+            options.user = "ada".to_owned();
+            options.verifier = Arc::new(Sesame);
+            options
+                .surfaces
+                .push(Surface::new("lock", &lock_screen).person("ada").lock());
+        },
+    );
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "lock-screen");
+    assert!(
+        !session.compositor().locked(),
+        "the screens are open to start with"
+    );
+
+    // The tile is one action of the session's own screen: the screens lock,
+    // and the session says so on the resource the tile was pressed through.
+    let ended = ask_ended(session, "lock-screen", None);
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the tile's press is carried out: {ended:?}"
+    );
+    // The resource says what the screens are a pass after they took it, so
+    // the pass that locks them is the one that tells of it.
+    let deadline = Instant::now() + OPENING;
+    loop {
+        session.settle_services();
+        pump(session);
+        if session.read("session:screen") == Some(json!({ "locked": true })) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the screens never locked: locked={} read={:?}",
+            session.compositor().locked(),
+            session.read("session:screen")
+        );
+    }
+    assert!(
+        session.compositor().locked(),
+        "the screens' resource reads what the tile did"
+    );
+}
+
+#[test]
+fn the_night_light_tile_warms_the_screen() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "set-night-light");
+    assert_eq!(
+        session.read("session:night-light"),
+        Some(json!({ "on": false })),
+        "the screen is its own colour to start with"
+    );
+
+    // A press on the tile is the night light's own action: the screen warms,
+    // and the resource it was pressed through reads so.
+    let ended = ask_ended(session, "set-night-light", Some(json!({ "on": true })));
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the tile's press is carried out: {ended:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        session.settle_services();
+        pump(session);
+        let light = session.read("session:night-light");
+        if light == Some(json!({ "on": true })) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the screen never warmed: {light:?}"
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
+#[test]
 fn a_press_outside_the_panel_closes_it() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
     let session = &mut laptop.session;
@@ -657,6 +746,19 @@ fn ask_ended(
     }
 }
 
+/// The password of the one login this device is: what its lock screen checks.
+struct Sesame;
+
+impl tilo_session::unlock::PasswordVerifier for Sesame {
+    fn verify(&self, _user: &str, password: &str) -> tilo_session::unlock::Verdict {
+        if password == "sesame" {
+            tilo_session::unlock::Verdict::Unlocks
+        } else {
+            tilo_session::unlock::Verdict::Wrong
+        }
+    }
+}
+
 /// A directory for the plane's socket that only this user reaches: the broker
 /// refuses to serve one anybody else could open.
 fn private_home() -> tempfile::TempDir {
@@ -822,6 +924,18 @@ fn session_of_device(surfaces: &[Surface], machine: Machine) -> Laptop {
 
 /// A session with a device's services, on an output of `output` pixels.
 fn session_of_device_at(surfaces: &[Surface], machine: Machine, output: (i32, i32)) -> Laptop {
+    session_of_device_prepared(surfaces, machine, output, |_options, _root| {})
+}
+
+/// A session with a device's services, on an output of `output` pixels, as
+/// `prepare` hands it the options and the directory its sockets live in
+/// before it starts.
+fn session_of_device_prepared(
+    surfaces: &[Surface],
+    machine: Machine,
+    output: (i32, i32),
+    prepare: impl FnOnce(&mut Options, &std::path::Path),
+) -> Laptop {
     let radios = Arc::new(Radios::default());
     {
         let mut readings = radios.readings.lock().expect("the radios");
@@ -857,15 +971,17 @@ fn session_of_device_at(surfaces: &[Surface], machine: Machine, output: (i32, i3
         Box::new(sound),
         Box::new(pack.clone()),
     ];
+    let mut options = Options {
+        presentation: ui::headless::fixture_runner_inputs,
+        surfaces: surfaces.to_vec(),
+        services,
+        action_plane: ActionPlane::At(socket),
+        machine,
+        ..Options::default()
+    };
+    prepare(&mut options, root.path());
     let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            surfaces: surfaces.to_vec(),
-            services,
-            action_plane: ActionPlane::At(socket),
-            machine,
-            ..Options::default()
-        },
+        options,
         &[OutputConfig::new("HEADLESS-1", output.0, output.1)],
     )
     .expect("session");

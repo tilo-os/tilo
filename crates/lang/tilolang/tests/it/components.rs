@@ -200,6 +200,54 @@ fn a_component_without_content_of_its_own_takes_no_block_content() {
 }
 
 #[test]
+fn a_templates_item_block_fills_a_components_part_slot() {
+    // The caller's block or view is what the component's slot holds.
+    let c = compile_body(&with_note(
+        r"view note_row(n: Note) {
+    ui.TreeViewRow(checkbox: n.done, secondary: n.title)
+}
+
+view outline<T>(notes: List<T>, label: (T) -> Text, row: (T) -> View) {
+    ui.TreeView(name: .none, fill: true) {
+        for x in notes {
+            ui.TreeViewNode(x, label(x)) {
+                row: { row(x) }
+            }
+        }
+    }
+}
+
+view v(nb: Notebook) {
+    outline(nb.notes, x -> x.title, note_row)
+    outline(nb.notes, x -> x.title) { x ->
+        note_row(x)
+    }
+}",
+    ));
+    validate(&c.wasm);
+    // A caller block that makes something else is refused where the block is written.
+    let (code, message) = one_error(&with_note(
+        r"view outline<T>(notes: List<T>, label: (T) -> Text, row: (T) -> View) {
+    ui.TreeView(name: .none, fill: true) {
+        for x in notes {
+            ui.TreeViewNode(x, label(x)) {
+                row: { row(x) }
+            }
+        }
+    }
+}
+
+view v(nb: Notebook) {
+    outline(nb.notes, x -> x.title) { x ->
+        ui.Text(x.title)
+    }
+}",
+    ));
+    assert_eq!(code, "E063");
+    assert!(message.contains("TreeViewRow"), "{message}");
+}
+
+#[test]
 fn a_binding_binds_a_field_of_its_type() {
     let c = compile_body(&with_note(
         "view v(n: Note) {\n    ui.TextInput(value: n.title, placeholder: \"Title\")\n    ui.ListRow(title: n.title, checkbox: n.done)\n}",

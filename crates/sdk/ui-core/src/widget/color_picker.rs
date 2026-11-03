@@ -132,7 +132,7 @@ pub struct ColorPicker {
     accessible_name: Option<String>,
     color: Color,
     on_change: Option<Box<dyn FnMut(Color)>>,
-    local_state: Option<crate::local_state::LocalBinding<Color>>,
+    local_state: Option<crate::widget::binding::BoxedBinding<Color>>,
     rect: Rect,
     sv_rect: Rect,
     hue_strip_rect: Rect,
@@ -229,7 +229,17 @@ impl ColorPicker {
     /// Pointer, text, and semantic changes update `state`; mutations through
     /// any clone update this picker on the next synchronization pass.
     pub fn from_state(state: &crate::LocalState<Color>) -> Self {
-        let (color, binding) = crate::local_state::LocalBinding::new(state);
+        let (color, binding) = crate::widget::binding::local(state);
+        let mut picker = Self::new(color);
+        picker.local_state = Some(binding);
+        picker
+    }
+
+    /// Create a colour picker following a colour held as its hex text: `fallback` until the
+    /// text names one.
+    pub fn from_text_state(state: &crate::LocalState<String>, fallback: Color) -> Self {
+        let (color, binding) =
+            crate::widget::binding::derived(state, move |text| parse_hex(text).unwrap_or(fallback));
         let mut picker = Self::new(color);
         picker.local_state = Some(binding);
         picker
@@ -976,11 +986,9 @@ impl ColorPicker {
 }
 
 impl Widget for ColorPicker {
-    fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {
-        if let Some(color) = self
-            .local_state
-            .as_mut()
-            .and_then(crate::local_state::LocalBinding::poll)
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if let Some(binding) = &mut self.local_state
+            && let crate::widget::binding::Pulled::Value(color) = binding.pull(state, root)
         {
             self.color = color;
             self.sync_input();
@@ -2044,5 +2052,23 @@ mod tests {
         cancel_restores_the_opening_colour_and_reports_the_revert();
         enter_confirms_and_escape_cancels_while_focused();
         confirm_mode_exposes_titled_group_with_cancel_and_done_actions();
+    }
+
+    #[test]
+    fn a_bound_text_colour_is_shown_and_followed() {
+        let state = crate::LocalState::new("#ff0000".to_owned());
+        let mut picker = ColorPicker::from_text_state(&state, Color::TRANSPARENT);
+        assert_eq!(
+            Some(picker.color()),
+            parse_hex("#ff0000"),
+            "the colour is shown"
+        );
+        state.set("#00ff00".to_owned());
+        picker.sync(&(), &());
+        assert_eq!(
+            Some(picker.color()),
+            parse_hex("#00ff00"),
+            "a colour set elsewhere shows in place"
+        );
     }
 }

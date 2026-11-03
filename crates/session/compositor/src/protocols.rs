@@ -147,6 +147,9 @@ impl State {
                 .create_global::<Self>(&display, formats),
         };
         self.protocols.dmabuf_global = Some(global);
+        // Where clients allocate is what `tilo system health --gpu` reads.
+        let node = device.and_then(|node| node.dev_path());
+        crate::gpu_health::record_dmabuf(node.as_deref());
     }
 
     /// Whether a client keeps the session from idling.

@@ -352,8 +352,7 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let _settled = ui::motion::testing::settled();
     let (mut service, meta) = notebook();
     let note = note(&mut service, &meta, "Groceries");
-    let (mut part, link) =
-        super::tests_support::part_as(ShellLayer::Screen, reading_with_windows(), None);
+    let (mut part, link) = super::tests_support::part_as(reading_with_windows(), None);
     let mut arrangement = arrangement(&note);
     // The one place names no view: it falls back to its type's default view.
     let placed = arrangement

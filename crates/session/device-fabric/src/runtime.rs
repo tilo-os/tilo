@@ -21,8 +21,8 @@ use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 use crate::{
     ClipboardEntry, DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
-    FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricError, FabricStamp, OwnerSession,
-    PersonalFabricAction, PersonalFabricActionEnvelope, WakeRoute,
+    DisplayPlacement, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricError, FabricStamp,
+    OwnerSession, PersonalFabricAction, PersonalFabricActionEnvelope, WakeRoute,
 };
 
 /// Request ids remembered so a replayed action is refused.
@@ -331,6 +331,130 @@ impl FabricRuntime {
         self.revise()
     }
 
+    /// Take the displays this device shows now, replacing what it showed
+    /// before: where each connector's output stands, how big the plane they
+    /// make is, and what the hardware behind each one says. A display that
+    /// left stops being listed. Returns whether this device's record changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the placement and the facts do not make a valid record, or
+    /// do not agree with each other.
+    pub fn set_display(
+        &mut self,
+        rect: crate::DisplayRect,
+        scale_milli: u16,
+        connectors: Vec<crate::DisplayConnectorPlacement>,
+        facts: Vec<crate::DisplayOutputObservation>,
+    ) -> Result<bool, FabricError> {
+        let Some(local) = &mut self.local else {
+            return Ok(false);
+        };
+        let unchanged = local.snapshot.display.as_ref().is_some_and(|shown| {
+            shown.rect == rect && shown.scale_milli == scale_milli && shown.outputs == connectors
+        }) && self.fabric.display_outputs(&local.device) == Some(facts.as_slice());
+        if unchanged {
+            return Ok(false);
+        }
+        let device = local.device.clone();
+        let counter = local.snapshot.presence.stamp.counter.saturating_add(1);
+        let placement = DisplayPlacement {
+            device: device.clone(),
+            outputs: connectors,
+            rect,
+            scale_milli,
+            stamp: FabricStamp {
+                counter,
+                device: device.clone(),
+            },
+        };
+        // The record and what the hardware says are admitted together: a
+        // record whose outputs the facts do not describe is never what this
+        // device shows.
+        let mut candidate = self.fabric.clone();
+        let mut record = local.snapshot.clone();
+        record.presence.stamp = placement.stamp.clone();
+        record.presence.online = true;
+        record.presence.last_seen_unix_ms = tilo_clock::unix_now_ms();
+        record.display = Some(placement.clone());
+        candidate.upsert(record.clone())?;
+        candidate.observe_display_outputs(&device, &placement.stamp, facts)?;
+        self.fabric = candidate;
+        if let Some(local) = &mut self.local {
+            local.snapshot = record;
+        }
+        self.changed = true;
+        Ok(true)
+    }
+
+    /// What this device shows now, as its next announcement carries it: the
+    /// revision of its own display, the outputs' places, and what their
+    /// hardware says.
+    pub fn local_display(
+        &self,
+    ) -> Option<(
+        FabricStamp,
+        Vec<crate::DisplayConnectorPlacement>,
+        Vec<crate::DisplayOutputObservation>,
+    )> {
+        let local = self.local.as_ref()?;
+        let display = local.snapshot.display.as_ref()?;
+        Some((
+            display.stamp.clone(),
+            display.outputs.clone(),
+            self.fabric.display_outputs(&local.device)?.to_vec(),
+        ))
+    }
+
+    /// Take the outputs one of the person's devices says it shows, in the
+    /// revision of its record it says it for. The device is the one behind
+    /// `peer`: another device's state cannot be put under its name.
+    ///
+    /// # Errors
+    ///
+    /// Returns why `peer` names no device of the person's, or why the
+    /// observation is not for its current revision.
+    pub fn observe_display_connectors(
+        &mut self,
+        peer: EndpointId,
+        stamp: &FabricStamp,
+        outputs: Vec<crate::DisplayConnectorPlacement>,
+    ) -> Result<bool, FabricError> {
+        let Some(owner) = self.device_on(peer) else {
+            return Err(FabricError::UnknownDevice);
+        };
+        self.fabric
+            .observe_display_connectors(&owner, stamp, outputs)
+    }
+
+    /// Take what the hardware behind one of the person's devices' outputs
+    /// says, in the revision of its record it says it for.
+    ///
+    /// # Errors
+    ///
+    /// Returns why `peer` names no device of the person's, or why the facts
+    /// are not for its current revision.
+    pub fn observe_display_outputs(
+        &mut self,
+        peer: EndpointId,
+        stamp: &FabricStamp,
+        outputs: Vec<crate::DisplayOutputObservation>,
+    ) -> Result<bool, FabricError> {
+        let Some(owner) = self.device_on(peer) else {
+            return Err(FabricError::UnknownDevice);
+        };
+        self.fabric.observe_display_outputs(&owner, stamp, outputs)
+    }
+
+    /// The person's devices and the outputs each says it shows, as the
+    /// shared arrangement lays them out.
+    pub fn person_devices(&self) -> Vec<settings_store::person_displays::PersonDevice> {
+        let Some(local) = self.local.as_ref() else {
+            return Vec::new();
+        };
+        self.fabric.person_devices(&local.device)
+    }
+
     /// The fabric as this device last converged it.
     pub fn device_fabric(&self) -> &DeviceFabric {
         &self.fabric
@@ -456,6 +580,7 @@ fn own_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect};
 
     fn endpoint(seed: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
@@ -497,6 +622,29 @@ mod tests {
         let mut own = DeviceFabric::default();
         own.upsert(own_record(device, label, counter).expect("a valid record"))
             .expect("one device's record");
+        own.encode_checkpoint().expect("an encoded checkpoint")
+    }
+
+    /// The frame a device that shows one screen announces itself with.
+    fn announcement_with_screen(device: &DeviceId, label: &str, counter: u64) -> Vec<u8> {
+        let mut record = own_record(device, label, counter).expect("a valid record");
+        record.display = Some(DisplayPlacement {
+            device: device.clone(),
+            outputs: Vec::new(),
+            rect: DisplayRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            scale_milli: 1000,
+            stamp: FabricStamp {
+                counter,
+                device: device.clone(),
+            },
+        });
+        let mut own = DeviceFabric::default();
+        own.upsert(record).expect("one device's record");
         own.encode_checkpoint().expect("an encoded checkpoint")
     }
 
@@ -544,6 +692,152 @@ mod tests {
         assert!(
             runtime.device_fabric().snapshots().contains_key(&local().0),
             "this device's own record is in the fabric it shares"
+        );
+    }
+
+    /// One output of this device at `x`, with the facts that describe it.
+    fn output(connector: &str, x: i32) -> (DisplayConnectorPlacement, DisplayOutputObservation) {
+        let output = settings_store::person_displays::DeviceOutput {
+            id: format!("edid:{connector}"),
+            name: format!("{connector} monitor"),
+            builtin: false,
+            x,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            mode_width: 1920,
+            mode_height: 1080,
+            refresh_mhz: 60_000,
+            scale_milli: 1000,
+            connected: true,
+            enabled: true,
+        };
+        (
+            DisplayConnectorPlacement {
+                connector: connector.to_owned(),
+                label: "A display".to_owned(),
+                rect: DisplayRect {
+                    x,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                scale_milli: 1000,
+            },
+            DisplayOutputObservation {
+                connector: connector.to_owned(),
+                output,
+            },
+        )
+    }
+
+    #[test]
+    fn what_this_device_shows_is_its_record_and_lists_its_outputs() {
+        let mut runtime = runtime();
+        let (left, left_facts) = output("eDP-1", 0);
+        let (right, right_facts) = output("DP-2", 1920);
+        assert!(
+            runtime
+                .set_display(
+                    DisplayRect {
+                        x: 0,
+                        y: 0,
+                        width: 3840,
+                        height: 1080,
+                    },
+                    1000,
+                    vec![left.clone(), right.clone()],
+                    vec![left_facts.clone(), right_facts.clone()],
+                )
+                .expect("a valid display"),
+            "two outputs are news for the person's other devices"
+        );
+        assert!(
+            runtime.changed(),
+            "its devices hear it on the next announcement"
+        );
+        let devices = runtime.person_devices();
+        assert_eq!(devices.len(), 1, "this device only: {devices:?}");
+        assert!(devices[0].local);
+        assert_eq!(
+            devices[0]
+                .outputs
+                .iter()
+                .map(|output| output.name.as_str())
+                .collect::<Vec<_>>(),
+            ["eDP-1 monitor", "DP-2 monitor"],
+            "each output says what hardware is behind it"
+        );
+        assert!(
+            !runtime
+                .set_display(
+                    DisplayRect {
+                        x: 0,
+                        y: 0,
+                        width: 3840,
+                        height: 1080,
+                    },
+                    1000,
+                    vec![left, right],
+                    vec![left_facts, right_facts],
+                )
+                .expect("a valid display"),
+            "what it showed before is not said again"
+        );
+    }
+
+    #[test]
+    fn another_device_s_screens_are_taken_only_as_it_says_them() {
+        let mut runtime = runtime();
+        let peer = endpoint(3);
+        let other = device_at(peer);
+        runtime.sibling(peer, &[cert(peer, "Studio")], &[]);
+        runtime
+            .snapshot(peer, &announcement_with_screen(&other, "Studio", 5))
+            .expect("its own record");
+        let stamp = FabricStamp {
+            counter: 5,
+            device: other.clone(),
+        };
+        let (screen, facts) = output("DP-1", 0);
+        assert!(
+            runtime
+                .observe_display_connectors(peer, &stamp, vec![screen.clone()])
+                .expect("its screen"),
+            "where that device's screen stands is new"
+        );
+        assert!(
+            runtime
+                .observe_display_outputs(peer, &stamp, vec![facts.clone()])
+                .expect("its screen's facts"),
+            "what its hardware says is new"
+        );
+        let devices = runtime.person_devices();
+        let studio = devices
+            .iter()
+            .find(|device| device.device == other.as_str())
+            .expect("the other device is listed");
+        assert!(!studio.local);
+        assert_eq!(studio.outputs.len(), 1);
+        assert_eq!(studio.outputs[0].name, "DP-1 monitor");
+        assert!(
+            runtime
+                .observe_display_outputs(
+                    peer,
+                    &FabricStamp {
+                        counter: 4,
+                        device: other.clone(),
+                    },
+                    vec![facts],
+                )
+                .is_err(),
+            "facts for a revision the device no longer says are refused"
+        );
+        assert!(
+            !runtime
+                .observe_display_connectors(peer, &stamp, vec![screen])
+                .expect("its screen, as it stands"),
+            "the place it already gave is not news"
         );
     }
 

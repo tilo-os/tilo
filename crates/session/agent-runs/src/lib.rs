@@ -439,6 +439,21 @@ impl AgentRuns {
         }
     }
 
+    /// The first agent live in the workspace in front, where one is: who a
+    /// notification on this desktop can be handed to.
+    #[must_use]
+    pub fn taking_agent(&self) -> Option<String> {
+        let held = self.held.lock_recover();
+        let front = &held.here.front;
+        held.here
+            .workspaces
+            .iter()
+            .find(|facts| &facts.workspace == front)?
+            .agents
+            .first()
+            .cloned()
+    }
+
     /// A number that moves whenever any run's reading may have moved: a
     /// reader keeping its own copy reads [`Self::readings`] again only then.
     #[must_use]

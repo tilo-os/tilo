@@ -42,8 +42,15 @@ view contact_row(c: Contact) {
 - Bindings are the description's, so `bind:` works on any component that declares one
   (`ui.TextInput(bind: t.title)`, `ui.Checkbox(bind: t.done)`, `ui.DatePicker(bind: t.due)`,
   `ui.RichInput(bind: t.notes)`), with the type and the merge it declares; no widget has binding
-  code of its own. A primitive that is a component (`text`, `input`, `checkbox`, ...) is its
-  shorter name and nothing else.
+  code of its own. A component may declare several bindings, and `bind:` takes the one whose
+  type the bound place has. A primitive that is a component (`text`, `input`, `checkbox`, ...)
+  is its shorter name and nothing else.
+- A document's running text is placed like any other component:
+  `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
+  a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
+  text round-tripped), and edits the one the view bound; a change from elsewhere shows when the
+  person is not typing there. Nothing about a field marked `(body)` changes what a control
+  draws: the role is the document's metadata, and the view places the editor.
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or
@@ -99,28 +106,157 @@ The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.List
 (`group:` and `tail:` on a row, `tail_title:` on the list), so a view composed from `ui.*`
 groups as `std.rows` does.
 
-## 4. Custom widgets: a ladder
+## 4. Customizing a component: a ladder
 
-Most needs stop at step 1 or 2. Every step stays native under any theme, and hot paths stay in
-Rust so Tilo runs well on slow hardware.
+How deeply a view may make its UI its own, from saying nothing to shipping Rust. Each rung is a
+superset of the one before it: a view that composes `ui.*` directly, or draws a shape itself,
+keeps everything the rungs above give it — native behaviour, accessibility, theming, motion and
+reduced motion. There is no second rendering path to fall behind. Most needs stop at rung 1 or 2,
+and hot paths stay in Rust so Tilo runs well on slow hardware.
 
-1. **Compose `ui.*`.**
-2. **Draw with the design system:** shapes, paths, arcs and gradients, with colours only by
-   theme role, sizes from tokens, text by role, motion from the platform's curves. Retained and
-   damage-limited. A semantic role is required (`role: .progress(0.6)`), so screen readers and
-   agents understand it. Theming belongs to the person; an app's identity comes from shape,
-   layout, icons and motion, never its own colours.
-3. **A render graph:** declared shader and compositing nodes over textures, run by the platform.
-   For video previews and image layers.
-4. **A WebGPU-shaped API** for 3D and heavy work: validated WGSL, rendering into a texture slot
-   inside the app's window. Never raw Vulkan, never outside the slot.
+| Rung | The view says | Code it writes |
+|---|---|---|
+| 0 | nothing | none |
+| 1 | options on a component | one argument |
+| 2 | how the parts are laid out | its own `view` |
+| 3 | how a change plays | a `motion:` argument |
+| 4 | a shape of its own | specified, not in the language yet |
+| 5 | a widget of its own | Rust, shipped with the package |
 
-Steps 3 and 4 produce a texture placed in the normal widget tree, with layout, focus and
-accessibility.
+### 0. Defaults: nothing said, everything right
 
-### 4.1 Drawing with the design system (step 2)
+`std` and `ui.*` already look, behave and move the way the platform does. An app that writes its
+list the obvious way gets motion with no code at all:
 
-One described component, `ui.Drawing`, draws a list of shapes. The shapes are values, so a
+```
+row view task_row for Task
+
+view task_row(t: Task) {
+    row(t.title, checkbox: t.done, secondary: t.project?.name, meta: t.due)
+}
+
+default view home for Tasks
+
+view home(tasks: Tasks) {
+    std.list(tasks, tasks.items)
+}
+```
+
+What that already does, with no option set:
+
+- **Lists move.** A row a person adds by hand arrives at its place and the rows below it make
+  room; a row they remove by hand fades where it stood and those below close the gap; a row they
+  move glides to where it lands. A change a key or an action makes (Enter, a menu item, an
+  assistive technology) lands on the next frame instead, because the eye is already where it
+  went: `motion::MotionSource::lands_at_once`. A list the host re-reads whole — its order
+  replaced, not edited — lands as a page's worth of rows rather than one change to follow.
+- **Marks fill.** A checkbox's mark comes in and goes out over the theme's base motion, and the
+  box the next frame builds goes on from where the last one was (`motion::HandOn`), so a host
+  that rebuilds rows on every change still shows one continuous mark.
+- **Things open and close.** A disclosure row and a tree branch unfold their content, a
+  collapsible section's content arrives and leaves, a badge's count cross-fades, a menu, sheet
+  and window take the theme's named motion for opening and closing.
+- **The person is obeyed.** A theme that holds still, and reduced motion, land every one of these
+  on the frame it happens. No component, and no option below, can animate for someone who asked
+  it not to.
+
+All of it is ui-core's motion system: `motion::HandOn` for a widget a host rebuilds,
+`motion::CheckMotion` for marks, `motion::RowMotions` and `collection_transition` for lists,
+`Disclosure` and `Appear` for reveals and arrivals, `MotionSpec` for what a named motion becomes
+at a given moment and source. tilolang has no animation machinery of its own, and `std` writes no
+motion code: a rung is a way to describe a component, never a second engine.
+
+### 1. Options: the component's own props
+
+The first thing a view can say is an option on the component it already uses: emphasis, density,
+which motion, how many lines. Options are typed, checked against the real widget, and bound to
+the theme and its tokens — never to a colour, a duration or a curve.
+
+```
+ui.ListRow(title: t.title, checkbox: t.done, secondary: t.project?.name, motion: .brisk)
+```
+
+`motion:` takes `.standard` (the theme's pace, and what a component does anyway), `.brisk`
+(0.7× the theme's durations: dense, repetitive work where the eye is already where the change
+will be), `.calm` (1.5×: a surface a person reads or watches) and `.still` (every change on the
+next frame). It changes *how long* the design system's named motions take, never what they do:
+the curve stays the theme's spring, reduced motion and a still theme pass through untouched.
+
+The components that own motion take it: `ui.VirtualList`, `ui.ListRow`, `ui.Checkbox`,
+`ui.Badge`, `ui.Section`, `ui.DisclosureRow`, `ui.TreeView`. A list's own pace is the pace of the
+rows it builds (rung 1 example above), so one option covers a whole list; a row says its own when
+it needs to differ from the list's. `std`'s shapes take the platform's pace — a view that wants
+its own either names the row it builds or composes the list itself (rung 2).
+
+### 2. Compose `ui.*` into views
+
+When an option is not enough, the view says how the parts are laid out, still from components:
+
+```
+view task_list(tasks: Tasks) {
+    ui.VirtualList(selection_follows_focus: true, in_column: true, motion: .brisk) {
+        on activate(x: Task): open(x)
+        for x in tasks.items {
+            ui.ListItem(item: x) {
+                ui.ListRow(title: x.title, checkbox: x.done, secondary: x.project?.name) {
+                    trailing: { ui.Badge(x.project?.name ?? "Inbox", tone: .neutral) }
+                }
+            }
+        }
+    }
+}
+```
+
+Nothing is lost by leaving `std`: the list still virtualizes, rows still carry their menus,
+swipes and presence, selection and scrolling stay the list's, and everything from rung 0 keeps
+moving. `std` is a library of such views; a package's own views are the same kind of thing and
+compose with them.
+
+### 3. Motion and state: how a change plays
+
+Rung 1's `motion:` is also the smallest way to say how a *state* change plays, because the
+component that owns the change is the one that knows what it means:
+
+- **check-off** — `ui.Checkbox`, `ui.ListRow`'s leading box;
+- **reveal** — `ui.Section(collapsible: true)`, `ui.DisclosureRow`, a `ui.TreeView` branch;
+- **reorder** — `ui.VirtualList`, including a move the view state drives (`items.move(x, before: y)`);
+- **emphasis** — `ui.Badge`'s changed count.
+
+So the whole rung costs an argument:
+
+```
+view inbox(tasks: Tasks) {
+    lens open: Option<Task> = .none
+    page {
+        ui.Section("Inbox", collapsible: true, motion: .calm) {
+            for x in tasks.items {
+                ui.ListRow(title: x.title, checkbox: x.done, selected: open == .some(x), motion: .brisk) {
+                    on activate: set(open, .some(x))
+                }
+            }
+        }
+    }
+}
+```
+
+What it does *not* let a view say, and this is deliberate: no duration, no cubic-bezier, no
+per-property easing, no keyframes. An app's motion comes from which named motion plays and at
+which pace, so every app accelerates, settles and respects reduced motion the same way, and a
+theme change reaches all of them. Two things are specified and not in the language yet, and both
+would be a `motion:` on the view rather than a new syntax:
+
+- a transition on a value a component does not own (a figure that changes when a filter does):
+  today that value lands on the next frame, and the smallest form it will take is the same
+  `motion:` on the `ui.Text` that shows it;
+- a view that wants to say what moved as a whole, rather than which component animated.
+
+### 4. Draw with the design system
+
+A view may draw shapes of its own: paths, arcs, gradients, strokes. Specified, not in the
+language yet, and it will be one described component, so it stays on the same paint path, in the
+same widget tree, with the same damage accounting.
+
+`ui.Drawing` draws a list of shapes held as values. The shapes are values, so a
 drawing is a pure function of what the view reads, it is retained like any other node, and the
 compiler checks it like any other prop. There is no paint callback and no new syntax.
 
@@ -165,6 +301,40 @@ paint with, resolving each role against the current theme. The component descrip
 the one thing it lacks for this: a closed set of cases *with fields* (`Type::Cases`, as a
 tilolang `enum` with payloads), which the compiler already understands from `enum`.
 
+Until it lands, a view that needs a picture uses the drawn components that exist
+(`ui.Sparkline`, `ui.ProgressRing`, `ui.ProgressBar`, `ui.Icon`), and a view that needs more is at
+rung 5.
+
+### 5. Native: a widget of its own
+
+The last rung is Rust: a ui-core widget shipped with the package, or the platform's heavy
+surfaces.
+
+- **A widget written in Rust** is a component like any other once it is described (`#[derive(Component)]`,
+  catalogue in `crates/dev/ui-graph/components.json`): it appears in `ui` for every tilolang
+  package as soon as it lands, with its props, slots, events and defaults, and needs no adapter.
+  That is also how `std` and the shell are built.
+- **A render graph** — declared shader and compositing nodes over textures, run by the platform
+  — is for video previews and image layers.
+- **A WebGPU-shaped API** — validated WGSL, rendering into a texture slot inside the app's
+  window — is for 3D and heavy work: never raw Vulkan, never outside the slot.
+
+The last two produce a texture placed in the normal widget tree, with layout, focus and
+accessibility.
+
+### Climbing down
+
+Dropping a rung never loses what the rungs above gave: a view that composes `ui.*` keeps
+virtualization, selection, presence and motion; a view that draws a shape keeps theming,
+reduced motion and accessibility through its role; a native widget is a component like any
+other. The ladder is about how much a view says, never about a faster but poorer path.
+
+Motion costs no frame. A mark, a row's arrival and a reveal are drawn as part of the frame that
+shows them, so a frame while something moves costs what a still frame costs; `apps/tilolang`'s
+motion suite measures it, and the same suite pins the behaviour of every rung above (a row's
+mark filling over frames, a row arriving, rows leaving, a still theme and reduced motion landing
+at once).
+
 ## 5. Efficiency is enforced
 
 - Counts, filters and queries come from the index, never a loop in a view. The compiler warns
@@ -178,7 +348,8 @@ tilolang `enum` with payloads), which the compiler already understands from `enu
 ## 6. What stays out
 
 Closures and Rust callbacks (events are data), raw painting or GPU access outside the ladder,
-raw colours, sizes and fonts, and widgets that are only internals of other widgets.
+raw colours, sizes, fonts, durations, curves and easing, and widgets that are only internals of
+other widgets. A view picks a named motion and its pace; the platform owns what they are.
 
 ## 7. Order
 

@@ -133,7 +133,7 @@ impl Foreign {
     }
 
     /// Keep `error` as one a read gave for want of a reading that has not arrived yet.
-    fn remember_waiting(&mut self, error: &str) {
+    fn remember_waiting(&self, error: &str) {
         self.waiting.borrow_mut().insert(error.to_owned());
     }
 

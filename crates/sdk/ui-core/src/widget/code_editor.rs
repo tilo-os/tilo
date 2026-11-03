@@ -193,6 +193,12 @@ impl CodeEditor {
         Self::wrap(Self::configure(TextInput::local()))
     }
 
+    /// Non-CRDT, following `state`: the editor shows the code it holds and writes each edit
+    /// back to it, so code set elsewhere shows in place.
+    pub fn from_state(state: &crate::LocalState<String>) -> Self {
+        Self::wrap(Self::configure(TextInput::from_state(state)))
+    }
+
     /// Source a person reads, selects and copies but does not edit (a
     /// diff, a generated file, a log). Keys that would change the text do
     /// nothing; assistive technology hears it as read-only.

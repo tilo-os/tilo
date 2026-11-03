@@ -285,6 +285,8 @@ pub struct Checkbox {
     radio: bool,
     /// How far the fill and the mark have come.
     motion: CheckMotion,
+    /// The pace its mark plays at, when it says something other than the theme's.
+    feel: crate::motion::Feel,
     /// A view that builds the box anew on each change: the one built in its
     /// place goes on from its mark (`motion::keep`).
     hand_on: crate::motion::HandOn<KeptCheck>,
@@ -338,6 +340,7 @@ impl Checkbox {
             drawing: None,
             radio: false,
             motion: CheckMotion::default(),
+            feel: crate::motion::Feel::Standard,
             hand_on: crate::motion::HandOn::default(),
         }
     }
@@ -404,6 +407,21 @@ impl Checkbox {
     pub fn indeterminate(mut self, indeterminate: bool) -> Self {
         self.indeterminate = indeterminate;
         self
+    }
+
+    /// Play its mark at `feel` rather than the theme's pace.
+    #[must_use]
+    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// [`Self::with_feel`] on a box already built.
+    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+        if self.feel != feel {
+            self.feel = feel;
+            self.painted = None;
+        }
     }
 
     /// A labelled checkbox as wide as its box and label, instead of the row:
@@ -742,7 +760,8 @@ impl Widget for Checkbox {
     ) {
         let now = crate::motion::frame_now();
         let (marked, glyph) = self.shown();
-        self.motion.follow_input(marked, glyph, theme.motion(), now);
+        self.motion
+            .follow_input(marked, glyph, self.feel.over(theme.motion()), now);
         self.drawing = Some(self.painted_now());
         let target = f64::from(self.control.interaction.minimum_target());
         let visual_center = if self.label.is_some() {

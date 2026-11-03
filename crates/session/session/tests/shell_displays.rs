@@ -1,7 +1,7 @@
-//! The tilolang shell's bar on every display: one bar per output, standing on its own
-//! display's rectangle (each part follows an output added, moved or taken away), not stretched
-//! across the displays' bounding box as one; and a bar steps aside on the display a fullscreen
-//! window owns, from the signal the compositor names those displays by.
+//! The tilolang shell on every display: one part per output, standing on its own display's
+//! rectangle (each part follows an output added, moved or taken away), not stretched across the
+//! displays' bounding box as one; and a part steps aside on the display a fullscreen window
+//! owns, from the signal the compositor names those displays by.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -39,7 +39,7 @@ fn options() -> Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
         collab: false,
-        shell: Some(tilo_surface_host::shell_part::ShellLayer::Bar),
+        shell: true,
         ..Options::default()
     }
 }
@@ -70,116 +70,119 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
         }
     }
     panic!(
-        "condition not reached; the bars say: {:?}",
-        session.shell_bars()
+        "condition not reached; the parts say: {:?}",
+        session.shell_parts()
     );
 }
 
-/// Where the bar on `output` stands, `(x, y, w, h)`, and whether it stepped aside: `None`
-/// while no bar stands there.
-fn bar(session: &Session, output: &str) -> Option<((i32, i32, u32, u32), bool)> {
+/// Where the part on `output` stands, `(x, y, w, h)`, and whether it stepped aside: `None`
+/// while no part stands there.
+fn part(session: &Session, output: &str) -> Option<((i32, i32, u32, u32), bool)> {
     session
-        .shell_bars()
+        .shell_parts()
         .into_iter()
-        .find(|bar| bar.output == output)
-        .map(|bar| (bar.rect, bar.aside))
+        .find(|part| part.output == output)
+        .map(|part| (part.rect, part.aside))
 }
 
 #[test]
-fn every_display_has_a_bar_on_its_own_rectangle() {
+fn every_display_has_a_shell_on_its_own_rectangle() {
     let _settled = ui::motion::testing::settled();
     let mut session = session(&[(0, 0), (WIDTH, 0)]);
-    until(&mut session, |session| session.shell_bars().len() == 2);
-    let bars = session.shell_bars();
-    let names: Vec<&str> = bars.iter().map(|bar| bar.output.as_str()).collect();
-    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"], "one bar per display");
-    for bar in &bars {
+    until(&mut session, |session| session.shell_parts().len() == 2);
+    let parts = session.shell_parts();
+    let names: Vec<&str> = parts.iter().map(|part| part.output.as_str()).collect();
+    assert_eq!(
+        names,
+        ["HEADLESS-1", "HEADLESS-2"],
+        "one part per display"
+    );
+    for part in &parts {
         assert!(
-            !bar.aside,
-            "no window covers {}: its bar stands",
-            bar.output
+            !part.aside,
+            "no window covers {}: its part stands",
+            part.output
         );
     }
-    let first = bar(&session, "HEADLESS-1")
-        .expect("the first display's bar")
+    let first = part(&session, "HEADLESS-1")
+        .expect("the first display's part")
         .0;
-    let second = bar(&session, "HEADLESS-2")
-        .expect("the second display's bar")
+    let second = part(&session, "HEADLESS-2")
+        .expect("the second display's part")
         .0;
     assert_eq!(
-        (first.0, first.1, first.2),
-        (0, 0, WIDTH as u32),
-        "the first bar stands on the first display, its band high"
+        (first.0, first.1, first.2, first.3),
+        (0, 0, WIDTH as u32, HEIGHT as u32),
+        "the first part stands on the first display, its whole screen"
     );
     assert_eq!(
-        (second.0, second.1, second.2),
-        (WIDTH, 0, WIDTH as u32),
-        "the second bar stands on the second display, not stretched across both"
+        (second.0, second.1, second.2, second.3),
+        (WIDTH, 0, WIDTH as u32, HEIGHT as u32),
+        "the second part stands on the second display, not stretched across both"
     );
-    assert_eq!(first.3, second.3, "both bands are the bar's own height");
     assert!(
         second.0 >= WIDTH,
-        "the second bar is on its display, beyond the first: {second:?}"
+        "the second part is on its display, beyond the first: {second:?}"
     );
 }
 
 #[test]
-fn a_display_added_later_gets_its_own_bar() {
+fn a_display_added_later_gets_its_own_shell() {
     let _settled = ui::motion::testing::settled();
     let mut session = session(&[(0, 0)]);
-    until(&mut session, |session| session.shell_bars().len() == 1);
-    assert!(bar(&session, "HEADLESS-1").is_some());
-    // A second display comes: its bar is made, on its rectangle.
+    until(&mut session, |session| session.shell_parts().len() == 1);
+    assert!(part(&session, "HEADLESS-1").is_some());
+    // A second display comes: its part is made, on its rectangle.
     let mut output = OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT);
     output.position = Some((WIDTH, 0));
     session.compositor().add_output(&output).unwrap();
-    until(&mut session, |session| session.shell_bars().len() == 2);
-    let second = bar(&session, "HEADLESS-2")
-        .expect("the new display's bar")
+    until(&mut session, |session| session.shell_parts().len() == 2);
+    let second = part(&session, "HEADLESS-2")
+        .expect("the new display's part")
         .0;
     assert_eq!(
-        (second.0, second.2),
-        (WIDTH, WIDTH as u32),
-        "the added display's bar stands on the added display"
+        (second.0, second.2, second.3),
+        (WIDTH, WIDTH as u32, HEIGHT as u32),
+        "the added display's part stands on the added display"
     );
 }
 
 #[test]
-fn a_display_turned_off_takes_its_bar_and_brings_it_back() {
+fn a_display_turned_off_takes_its_part_and_brings_it_back() {
     let _settled = ui::motion::testing::settled();
     let mut session = session(&[(0, 0), (WIDTH, 0)]);
-    until(&mut session, |session| session.shell_bars().len() == 2);
+    until(&mut session, |session| session.shell_parts().len() == 2);
     let offered = session.resources().len();
     session
         .compositor()
         .configure_outputs(&[OutputChange::disable("HEADLESS-2")])
         .unwrap();
-    until(&mut session, |session| session.shell_bars().len() == 1);
+    until(&mut session, |session| session.shell_parts().len() == 1);
     assert!(
-        bar(&session, "HEADLESS-1").is_some(),
-        "the display left on keeps its bar"
+        part(&session, "HEADLESS-1").is_some(),
+        "the display left on keeps its part"
     );
     assert!(
         session.resources().len() < offered,
-        "the gone display's bar offers nothing on the door"
+        "the gone display's part offers nothing on the door"
     );
     session
         .compositor()
         .configure_outputs(&[OutputChange::enable("HEADLESS-2")])
         .unwrap();
-    until(&mut session, |session| session.shell_bars().len() == 2);
+    until(&mut session, |session| session.shell_parts().len() == 2);
     assert_eq!(
         session.resources().len(),
         offered,
-        "the display back has its own bar again, not another one beside it"
+        "the display back has its own part again, not another one beside it"
     );
 }
 
 #[test]
-fn a_bar_steps_aside_on_the_display_a_fullscreen_window_owns() {
+fn a_part_steps_aside_on_the_display_a_fullscreen_window_owns() {
     let _settled = ui::motion::testing::settled();
     let mut session = session(&[(0, 0), (WIDTH, 0)]);
-    until(&mut session, |session| session.shell_bars().len() == 2);
+    until(&mut session, |session| session.shell_parts().len() == 2);
     let mut client = TestClient::connect(session.compositor());
     pump(&mut session, &mut client, |_, client| {
         client.seen.wm_base.is_some() && client.seen.shm.is_some()
@@ -198,9 +201,9 @@ fn a_bar_steps_aside_on_the_display_a_fullscreen_window_owns() {
         window(session.compositor()).is_some()
     });
     assert!(
-        session.shell_bars().iter().all(|bar| !bar.aside),
-        "a window that is not fullscreen leaves every bar standing: {:?}",
-        session.shell_bars()
+        session.shell_parts().iter().all(|part| !part.aside),
+        "a window that is not fullscreen leaves every part standing: {:?}",
+        session.shell_parts()
     );
 
     // The window asks to cover its display, as a video player's full screen does.
@@ -213,22 +216,22 @@ fn a_bar_steps_aside_on_the_display_a_fullscreen_window_owns() {
     assert_eq!(owned.len(), 1, "the window covers one display: {owned:?}");
     let owned = &owned[0];
     pump(&mut session, &mut client, |session, _| {
-        bar(session, owned).is_some_and(|(_, aside)| aside)
+        part(session, owned).is_some_and(|(_, aside)| aside)
     });
-    for place in session.shell_bars() {
+    for place in session.shell_parts() {
         assert_eq!(
             place.aside,
             &place.output == owned,
-            "only the bar on the display the window owns steps aside: {place:?}"
+            "only the part on the display the window owns steps aside: {place:?}"
         );
     }
 
-    // It leaves fullscreen: the bar is back on that display.
+    // It leaves fullscreen: the part is back on that display.
     let full = client.seen.size.unwrap_or((WIDTH, HEIGHT));
     client.toplevel().unset_fullscreen();
     client.redraw_when_resized(&mut session, full);
     pump(&mut session, &mut client, |session, _| {
-        session.shell_bars().iter().all(|bar| !bar.aside)
+        session.shell_parts().iter().all(|part| !part.aside)
     });
 }
 
@@ -320,7 +323,7 @@ impl TestClient {
         let qh = self.queue.handle();
         let stride = width * 4;
         let len = usize::try_from(stride * height).unwrap();
-        let fd = rustix::fs::memfd_create("tilo-shell-bar-test", rustix::fs::MemfdFlags::CLOEXEC)
+        let fd = rustix::fs::memfd_create("tilo-shell-part-test", rustix::fs::MemfdFlags::CLOEXEC)
             .unwrap();
         let mut file = std::fs::File::from(fd);
         file.write_all(&[40, 40, 200, 255].repeat(len / 4)).unwrap();
@@ -356,8 +359,8 @@ fn pump(
         }
     }
     panic!(
-        "condition not reached; the bars say {:?}, the windows {:?}, fullscreen on {:?}",
-        session.shell_bars(),
+        "condition not reached; the parts say {:?}, the windows {:?}, fullscreen on {:?}",
+        session.shell_parts(),
         session.compositor().windows(),
         session.compositor().fullscreen_outputs()
     );

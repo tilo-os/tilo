@@ -140,7 +140,7 @@ fn desk() -> Desk {
     let link = EmojiLink::new(Box::new(MemoryRecents(Rc::new(RefCell::new(
         Recents::default(),
     )))));
-    let chrome = DesktopChrome::new(
+    let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
         Rc::new(Rules {
@@ -149,8 +149,8 @@ fn desk() -> Desk {
         TopBarChrome::from_tree(&tree),
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
-    )
-    .with_emoji(link.clone());
+    );
+    chrome.set_emoji(link.clone());
     Desk {
         surface,
         handle,

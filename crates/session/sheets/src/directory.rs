@@ -423,7 +423,7 @@ fn rows(directory: &Directory, query: &str, dispatch: &Dispatcher<WorkspaceDirec
 fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element {
     let (label, named, primary) = match listing.action {
         ListingAction::Open => ("directory-open", "directory-open-named", false),
-        ListingAction::Joining => ("directory-joining", "directory-join-named", true),
+        ListingAction::Joining => ("directory-joining", "directory-joining-named", true),
         ListingAction::TryAgain => ("directory-try-again", "directory-join-named", true),
         ListingAction::Join => ("directory-join", "directory-join-named", true),
     };

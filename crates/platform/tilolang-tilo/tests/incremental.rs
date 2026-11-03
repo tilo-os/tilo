@@ -8,6 +8,7 @@ use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
 use tilo_actions::{ResourceSpec, Target};
 use tilo_resource::{Edit, EditOp, Id, Segment};
+use tilolang_runtime::SourceWords;
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, Publications, publish_tree, resource_id,
@@ -183,7 +184,7 @@ fn published_anew(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) 
     let record = replica.host.store().record(root).unwrap();
     let label = replica.host.label_of(root);
     shape(&publish_tree(
-        &ActionTypes::new(meta, &planner),
+        &ActionTypes::new(meta, &planner, &SourceWords),
         &record,
         "TodoList",
         root,
@@ -837,7 +838,7 @@ fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
         let record = ada.host.store().record(&root).unwrap();
         let label = ada.host.label_of(&root);
         shape(&publish_tree(
-            &ActionTypes::new(&meta, &planner),
+            &ActionTypes::new(&meta, &planner, &SourceWords),
             &record,
             "Inbox",
             &root,

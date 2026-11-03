@@ -258,6 +258,14 @@ impl Overlays {
         }
     }
 
+    /// Search from `query`: the launcher opens with what the person asked for, whether it was
+    /// already up or not.
+    pub fn search(&self, query: &str) {
+        query.clone_into(&mut self.spotlight.borrow_mut());
+        self.show(Overlay::Launcher);
+        self.revision.set(self.revision.get().wrapping_add(1));
+    }
+
     /// Close the surface `name` names, when it is the one up (`close-surface`).
     pub fn close(&self, name: &str) {
         if Overlay::named(name) == Some(self.here.get()) {

@@ -408,26 +408,25 @@ fn each_change_is_one_turn() {
 }
 
 #[test]
-fn the_part_covers_its_band_at_rest_and_the_outputs_while_its_menu_is_up() {
+fn the_part_covers_the_screen_at_rest_and_while_its_menu_is_up() {
     let (mut part, _link) = part();
     assert_eq!(
         part.widgets.placement().size,
-        (1280, 32),
-        "the band at rest"
+        (1280, 800),
+        "the whole screen at rest"
     );
     assert!(
-        !part.accepts_pointer(900.0, 400.0),
-        "the desk under it takes presses"
+        part.accepts_pointer(900.0, 400.0),
+        "the shell is the screen under the windows"
     );
     click(&mut part, "Desk");
     assert_eq!(
         part.widgets.placement().size,
         (1280, 800),
-        "room for the menu"
+        "still the whole screen"
     );
     assert!(part.control_bounds("Studio").is_some(), "the menu is up");
     // A press away from the menu closes it.
-    assert!(part.accepts_pointer(900.0, 400.0));
     part.pointer_motion(900.0, 400.0);
     part.prepare_frame();
     part.pointer_button(0x110, true);
@@ -437,11 +436,6 @@ fn the_part_covers_its_band_at_rest_and_the_outputs_while_its_menu_is_up() {
         part.prepare_frame();
     }
     assert!(part.control_bounds("Studio").is_none(), "the menu closed");
-    assert_eq!(
-        part.widgets.placement().size,
-        (1280, 32),
-        "back to the band"
-    );
 }
 
 #[test]
@@ -511,13 +505,6 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
             ),
         )
         .expect("Sheets is pinned");
-    // The dock rides the bottom on its own.
-    part.set_edges(HostEdges {
-        bar: false,
-        bar_top: true,
-        dock: true,
-        dock_bottom: true,
-    });
     // The next reading of the desk's draws the dock again, over the record as it is now.
     link.publish(DeskReading {
         clock: "4:29 PM".to_owned(),
@@ -548,15 +535,15 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
 #[test]
 fn a_part_on_a_fullscreen_display_steps_aside_and_comes_back() {
     let (mut part, _link) = part();
-    assert!(!part.aside(), "no window owns the display: the bar stands");
-    assert_eq!(part.widgets.placement().size, (1280, 32), "the band");
+    assert!(!part.aside(), "no window owns the display: the part stands");
+    assert_eq!(part.widgets.placement().size, (1280, 800), "the screen");
     // A fullscreen window takes the display the part stands on: it draws nothing there.
     part.set_fullscreen(vec!["HEADLESS-1".to_owned()]);
-    assert!(part.aside(), "the bar stepped aside");
+    assert!(part.aside(), "the part stepped aside");
     assert_eq!(
         part.widgets.placement().size.1,
         1,
-        "nothing of the bar covers the window"
+        "nothing of the part covers the window"
     );
     assert!(
         !part.accepts_pointer(100.0, 10.0),
@@ -564,15 +551,15 @@ fn a_part_on_a_fullscreen_display_steps_aside_and_comes_back() {
     );
     assert!(
         part.layers().is_empty(),
-        "not a row of the bar is handed to the compositor over the window"
+        "not a row of the part is handed to the compositor over the window"
     );
-    // The window leaves fullscreen: the bar is back, in its band.
+    // The window leaves fullscreen: the part is back, over the whole screen.
     part.set_fullscreen(Vec::new());
     assert!(!part.aside());
     assert_eq!(
         part.widgets.placement().size,
-        (1280, 32),
-        "back to the band"
+        (1280, 800),
+        "back over the screen"
     );
 }
 
@@ -590,44 +577,26 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     // The compositor tells it of the outputs left: it does not stretch over them.
     part.outputs_changed(&[(1280, 0, 1280, 800)]);
     assert_eq!(part.placement(), None, "it stays off the other display");
-    // The display comes back: the bar stands on it again.
+    // The display comes back: the part stands on it again.
     part.set_display(Some(display.clone()));
     assert_eq!(part.placement(), Some(display));
     assert!(crate::Published::offered(&part));
-    assert_eq!(part.widgets.placement().size, (1280, 32), "in its band");
+    assert_eq!(
+        part.widgets.placement().size,
+        (1280, 800),
+        "its whole screen"
+    );
 }
 
 #[test]
-fn a_fullscreen_window_on_another_display_leaves_this_bar_standing() {
+fn a_fullscreen_window_on_another_display_leaves_this_part_standing() {
     let (mut part, _link) = part();
     part.set_fullscreen(vec!["HEADLESS-2".to_owned()]);
     assert!(
         !part.aside(),
-        "the window owns the other display: this bar stands"
+        "the window owns the other display: this part stands"
     );
-    assert_eq!(part.widgets.placement().size, (1280, 32));
-}
-
-#[test]
-fn the_part_stands_in_the_band_the_shell_records_dock_names() {
-    let (mut part, _link) = part();
-    assert_eq!(
-        part.widgets.placement().origin,
-        (0, 0),
-        "the first shell: a bar at the top"
-    );
-    part.set_edges(HostEdges {
-        bar: false,
-        bar_top: true,
-        dock: true,
-        dock_bottom: true,
-    });
-    assert_eq!(
-        part.widgets.placement().origin.1,
-        800 - 32,
-        "a dock at the bottom alone stands in the bottom band"
-    );
-    assert_eq!(part.widgets.placement().size, (1280, 32));
+    assert_eq!(part.widgets.placement().size, (1280, 800));
 }
 
 /// The person's arrangement: one strip on the desk, its one place a foreign window's (no
@@ -663,11 +632,11 @@ fn one_window_arrangement() -> ArrangementReading {
     }
 }
 
-/// A part standing as `layer`, its wells reporting to the handle it returns, over the
-/// arrangement of one foreign window.
-fn showing_one_window(layer: ShellLayer) -> (ShellPart, ui::widget::Wells) {
+/// A part over the arrangement of one foreign window, its wells reporting to the handle it
+/// returns.
+fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
     let wells = ui::widget::Wells::new();
-    let (mut part, link) = super::tests_support::part_as(layer, reading(), Some(wells.clone()));
+    let (mut part, link) = super::tests_support::part_as(reading(), Some(wells.clone()));
     link.publish_arrangement(one_window_arrangement());
     for _ in 0..6 {
         part.prepare_frame();
@@ -680,7 +649,7 @@ fn showing_one_window(layer: ShellLayer) -> (ShellPart, ui::widget::Wells) {
 /// handle, on the output under the bar.
 #[test]
 fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
-    let (mut part, wells) = showing_one_window(ShellLayer::Screen);
+    let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
     let labels = crate::Published::accessible_labels(&mut part);
     for name in ["Notifications", "Strips", "Frames", "Spaces"] {
@@ -716,19 +685,6 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
         wells.well("p1").is_some_and(|well| well.width() >= 1.0),
         "the place is a well on the canvas"
     );
-}
-
-/// The bar shows none of the arrangement, and reports no well.
-#[test]
-fn the_bar_shows_none_of_the_arrangement() {
-    let (mut part, wells) = showing_one_window(ShellLayer::Bar);
-    assert!(!part.below_windows(), "the bar rides over the windows");
-    let labels = crate::Published::accessible_labels(&mut part);
-    assert!(
-        !labels.iter().any(|label| label == "Frames"),
-        "the bar shows no preset switch: {labels:?}"
-    );
-    assert!(wells.well("p1").is_none(), "the bar reports no well");
 }
 
 /// The overview over a window on each of `strips`, the first window's on the first strip.
@@ -964,8 +920,6 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             seed: true,
         },
-        ShellLayer::Bar,
-        32,
         1.0,
         std::sync::Arc::new(|| {}),
         None,

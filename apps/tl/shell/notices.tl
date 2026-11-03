@@ -97,13 +97,13 @@ view notice_row(d: Desk, n: Notice) {
 }
 
 /// A banner: the newest notice, risen over the desk, with its first action and a dismiss. The
-/// session takes it away when it is dismissed or its sender closes it.
+/// session takes it away when it is dismissed or its sender closes it, and names the one it has
+/// up (`Desk.banner`), so the banner and the centre never disagree about what just arrived.
 ///
 /// A desk with room shows the toolkit's banner; a narrow one shows the notice as a row with its
 /// actions under it, so nothing is cut at any text size.
 view banner(d: Desk) {
-    let newest = d.notices.sort_by(n -> n.key).first()
-    if let n = newest {
+    if let n = d.notices.find(n -> n.key == d.banner) {
         if not (d.quiet and not n.wants_reply) {
             if space.compact or space.width < 44.0 {
                 banner_row(d, n)

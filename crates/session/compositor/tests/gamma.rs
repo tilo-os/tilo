@@ -220,6 +220,62 @@ fn a_gamma_tool_holds_the_ramp_exclusively_until_it_lets_go() {
     assert_eq!(shown(&mut compositor), warm);
 }
 
+#[test]
+fn a_display_dimmed_in_software_shows_less_light_under_night_light() {
+    let mut compositor = compositor();
+    let full = shown(&mut compositor);
+    // The brightness service's half: half its linear light, through the
+    // transfer the panel shows.
+    let half = tilo_color_pipeline::software_dim::dimmed_signal(
+        f32::from(full[0]) / 255.0,
+        0.5,
+        tilo_color_pipeline::software_dim::Transfer::Srgb,
+    );
+    compositor
+        .set_software_dim(&[("HEADLESS-1".to_owned(), 0.5)])
+        .expect("dim");
+    let dimmed = shown(&mut compositor);
+    assert!(
+        (f32::from(dimmed[0]) - half * 255.0).abs() <= 1.0,
+        "half dims to {half}, got {dimmed:?}"
+    );
+    assert!(
+        dimmed[0] < full[0],
+        "a dimmed display shows less light: {dimmed:?} against {full:?}"
+    );
+
+    // Undimmed again, it is as it was.
+    compositor
+        .set_software_dim(&[("HEADLESS-1".to_owned(), 1.0)])
+        .expect("undim");
+    assert_eq!(shown(&mut compositor), full, "full light is back");
+
+    // Under night light it dims what night light shows, not the untinted
+    // screen.
+    compositor
+        .set_night_light(Some(3_000))
+        .expect("night light");
+    let warm = shown(&mut compositor);
+    assert!(warm != full, "night light warms the screen: {warm:?}");
+    compositor
+        .set_software_dim(&[("HEADLESS-1".to_owned(), 0.5)])
+        .expect("dim");
+    let both = shown(&mut compositor);
+    assert!(
+        both[0] < warm[0] && both[2] < warm[2],
+        "{both:?} against {warm:?}"
+    );
+    compositor
+        .set_software_dim(&[("HEADLESS-1".to_owned(), 1.0)])
+        .expect("undim");
+    assert_eq!(shown(&mut compositor), warm, "night light alone is back");
+    compositor.set_night_light(None).expect("night light off");
+
+    // Back at full light, the screen is as it was.
+    assert_eq!(shown(&mut compositor), full);
+    assert!(compositor.software_dim().is_empty());
+}
+
 impl Dispatch<WlRegistry, ()> for Tool {
     fn event(
         tool: &mut Self,

@@ -473,7 +473,9 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
 
     builders! {
         with_id(id: impl Into<String>);
+        with_feel(feel: crate::motion::Feel);
         on_select(f: impl FnMut(NodeId) + 'static);
+        on_check(f: impl FnMut(NodeId) + 'static);
         on_view(id: impl Into<String>, f: impl FnMut(NodeId) + 'static);
         on_expand(f: impl FnMut(NodeId, bool) + 'static);
         on_load_request(f: impl FnMut(TreeLoadRequest) + 'static);

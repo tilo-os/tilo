@@ -32,8 +32,11 @@ d-v56iknh2 = Section
 
 d-4sriymst = Priority
 
+d-3pf74ifm = Parent
+    .doc = The task it is a subtask of; none for a task of its own.
+
 d-2ozuzhiq = Step
-    .doc = One step of a task: a line of its checklist.
+    .doc = One step of a task's checklist, from before a task's steps were tasks of their own.
     .noun = { $count ->
         [one] step
        *[other] steps
@@ -86,7 +89,7 @@ d-lg5gedbh = Items
 d-mdhllpbo = Projects
 
 d-exy7sakn = Steps
-    .doc = The steps of every task, each naming its task: a task's checklist is the run of its steps, which the index answers without reading the others.
+    .doc = The steps of every task, before a task's steps were tasks of their own.
 
 d-nk5542m7 = Sections
     .doc = The sections of every project, each naming its project, in the order its board shows them.
@@ -103,6 +106,9 @@ d-iubwjt4e = Medium
 d-clxahlh2 = High
 
 d-d6avlyc5 = Urgent
+
+d-ymvliuk3 = Adopt steps
+    .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
 d-dypqwvdm = Add
     .doc = Adds a task with this title to the inbox.
@@ -143,20 +149,23 @@ d-jqhwyztw = Set due date
 d-b5m5wz7r = Prioritize
     .doc = Sets how much a task matters.
 
-d-7m3rjcry = Add step
-    .doc = Adds a step to a task's checklist.
+d-fykojijd = Add subtask
+    .doc = Adds a subtask under a task: a task of its own, in its project and section.
 
-d-jwmxavgo = Complete
-    .doc = Checks a step off, or opens it again.
+d-berwb3de = Move to
+    .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
 
-d-t5kst44e = Remove step
-    .doc = Removes a step from a task's checklist.
+d-he6qkhh4 = Indent
+    .doc = Moves a task under the task just over it, as Tab does in an outline.
+
+d-khy6tj7s = Outdent
+    .doc = Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
 
 d-ojzyzzxu = Remove
-    .doc = Deletes a task.
+    .doc = Deletes a task and its subtasks.
 
 d-rjpcv6es = Clear done
-    .doc = Deletes every task that is done.
+    .doc = Deletes every finished task, and answers how many went: a task whose subtasks are still undone stays, so clearing never takes unfinished work with it.
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
@@ -195,9 +204,9 @@ d-7g55zawk = Release~present
 
 d-day53wfn = Unfile~present
 
-d-oun77u2m = Check step~present
+d-mg3c777a = Move to~present
 
-d-wrth4lq3 = Clear done~present
+d-tpvjqy5m = Clear done~present
 
 d-swaiyhcf = Show board~present
 
@@ -221,37 +230,37 @@ d-hc5ndp4x = Task card
 
 d-w63ba6ad = Task row
 
-d-dne3p7nf = Step row
+d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
     .w-title = Title
     .w-inbox = Inbox
-    .w-steps = Steps
-    .w-add-a-step = Add a step
+    .w-subtasks = Subtasks
+    .w-add-a-subtask = Add a subtask
     .w-add-notes = Add notes
 
-d-i2mhsb3h~row0 = Home for p
+d-i2mhsb3h-row0 = Home for p
 
-d-i2mhsb3h~row1 = Home for p
+d-i2mhsb3h-row1 = Home for p
 
-d-i2mhsb3h~row2 = Home for x
+d-i2mhsb3h-row2 = Home for x
 
-d-asnonvwl~row0 = Project page for x
+d-asnonvwl-row0 = Project page for x
 
-d-gu3twlv2~row0 = Project board for s
+d-gu3twlv2-row0 = Project board for s
     .w-new-task = New task
 
-d-gu3twlv2~row1 = Project board for s
+d-gu3twlv2-row1 = Project board for s
     .w-new-task = New task
 
-d-mtmufg3w~row0 = Task page for p
+d-mtmufg3w-row0 = Task page for p
 
-d-mtmufg3w~row1 = Task page for s
+d-mtmufg3w-row1 = Task page for x
 
-d-mtmufg3w~row2~row0 = Task page for c
+d-mtmufg3w-row2-row0 = Task page for c
 
-d-mtmufg3w~row2~row1~row0 = Task page for c
+d-mtmufg3w-row2-row1-row0 = Task page for c
 
-d-mtmufg3w~row2~row1 = Task page for v
+d-mtmufg3w-row2-row1 = Task page for v
 
-d-mtmufg3w~row2 = Task page for s
+d-mtmufg3w-row2 = Task page for s

@@ -79,15 +79,18 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
         .unwrap();
     app.state.doc.commit_edit("fixture", "fixture");
     assert!(
-        app.pending_primary_document_delta().unwrap().0.len()
-            > collab_types::MAX_DOCUMENT_MUTATION_BYTES,
+        app.pending_primary_document()
+            .unwrap()
+            .is_some_and(|(mutation, _)| {
+                mutation.data().len() > collab_types::MAX_DOCUMENT_MUTATION_BYTES
+            }),
         "precondition: the change does not fit one signed frame"
     );
 
     app.broadcast_doc_delta();
 
     assert!(
-        app.pending_primary_document_delta().unwrap().0.is_empty(),
+        app.pending_primary_document().unwrap().is_none(),
         "an accepted change advances the frontier"
     );
     let collab_types::DocumentMutation::Incremental(delta) = wait_for_mutation(&*probe) else {
@@ -140,7 +143,7 @@ fn an_over_limit_change_is_reported_and_kept_without_disconnecting() {
         .expect("the refusal is visible to the user");
     assert!(status.contains("no longer shared"), "{status}");
     assert!(
-        !app.pending_primary_document_delta().unwrap().0.is_empty(),
+        app.pending_primary_document().unwrap().is_some(),
         "the refused change stays pending instead of being marked sent"
     );
     // Ordinary traffic still flows on the same bridge, and the bridge keeps

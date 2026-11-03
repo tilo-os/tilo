@@ -350,6 +350,8 @@ pub struct VirtualList<M: ListModel> {
     scroll: super::rows::RowScroll,
     /// The motion the theme allows, sampled by the latest draw.
     motion: crate::tokens::EffectiveMotion,
+    /// The pace the list's own motion plays at, when it says something other than the theme's.
+    feel: crate::motion::Feel,
     reduce_motion: bool,
     vbar: Scrollbar,
     /// `metrics.scrollbar_gutter` and the row lift's bleed, from the last
@@ -516,6 +518,7 @@ impl<M: ListModel> VirtualList<M> {
             reorder_commit: None,
             scroll: super::rows::RowScroll::default(),
             motion: crate::tokens::EffectiveMotion::default(),
+            feel: crate::motion::Feel::Standard,
             reduce_motion: false,
             vbar: Scrollbar::vertical(),
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
@@ -614,6 +617,22 @@ impl<M: ListModel> VirtualList<M> {
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
         self
+    }
+
+    /// Play the list's own motion — rows arriving, leaving and changing places, the reveal that
+    /// takes the person to one — at `feel` rather than the theme's pace.
+    #[must_use]
+    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// [`Self::with_feel`] on a list already built.
+    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+        if self.feel != feel {
+            self.feel = feel;
+            self.layout_dirty = true;
+        }
     }
 
     #[must_use]
@@ -2018,7 +2037,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .size(crate::tokens::TextRole::Caption),
         ) * 24.0
             + f64::from(theme.tokens.spacing.s4) * 6.0;
-        self.motion = theme.motion();
+        self.motion = self.feel.over(theme.motion());
         self.groups.theme(theme);
         if let Some(edges) = self.edges.as_mut() {
             edges.theme(theme);
@@ -2194,8 +2213,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         let now = crate::motion::frame_now();
         self.arrivals.mark_drawn(now);
-        self.start_row_motion(theme.motion());
-        self.motion = theme.motion();
+        self.start_row_motion(self.feel.over(theme.motion()));
+        self.motion = self.feel.over(theme.motion());
         self.scroll.momentum.set_view(
             self.viewport.viewport(),
             self.scroll_metrics().overflows(),

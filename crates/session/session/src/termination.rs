@@ -1,7 +1,10 @@
-//! The signals that end a session: SIGTERM, SIGINT and SIGHUP end its loop, so the session
+//! The signals the session's loop wakes on: SIGTERM, SIGINT and SIGHUP end it, so the session
 //! returns and drops what it holds as it does when it ends on its own: the files people choose
 //! for apps are unmounted, its sockets removed, its apps ended. A process killed by the signal's
 //! default action unwinds nothing, and left all of that behind.
+//!
+//! A child exiting (SIGCHLD) wakes the same loop without ending it: the programs the session
+//! started are noticed as they go, rather than when another event happens to bring a pass.
 //!
 //! The handler only stores a flag and writes a byte to a pipe, both async-signal-safe; a thread
 //! of its own reads the pipe and wakes the loop, which reads the flag ([`asked`]) on its pass.
@@ -24,6 +27,26 @@ static ASKED: AtomicBool = AtomicBool::new(false);
 /// The pipe's write end the handler wakes the reading thread through; `-1` until installed.
 static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 
+/// A child exited (or stopped): the loop wakes to take in which one, and
+/// nothing else changes.
+extern "C" fn on_child(_signal: libc::c_int) {
+    ring();
+}
+
+/// Write the byte the reading thread wakes the loop through, if it is
+/// installed: async-signal-safe, which is all a handler may do.
+fn ring() {
+    let fd = WAKE_FD.load(Ordering::SeqCst);
+    if fd >= 0 {
+        let byte = 1_u8;
+        // SAFETY: write(2) is async-signal-safe; the descriptor stays open for the process's
+        // life once installed, and the byte outlives the call.
+        unsafe {
+            libc::write(fd, (&raw const byte).cast(), 1);
+        }
+    }
+}
+
 extern "C" fn on_signal(signal: libc::c_int) {
     if ASKED.swap(true, Ordering::SeqCst) {
         if signal != libc::SIGINT {
@@ -40,15 +63,7 @@ extern "C" fn on_signal(signal: libc::c_int) {
         }
         return;
     }
-    let fd = WAKE_FD.load(Ordering::SeqCst);
-    if fd >= 0 {
-        let byte = 1_u8;
-        // SAFETY: write(2) is async-signal-safe; the descriptor stays open for the process's
-        // life once installed, and the byte outlives the call.
-        unsafe {
-            libc::write(fd, (&raw const byte).cast(), 1);
-        }
-    }
+    ring();
 }
 
 /// Whether the session was asked to end by a signal.
@@ -57,7 +72,8 @@ pub fn asked() -> bool {
     ASKED.load(Ordering::SeqCst)
 }
 
-/// End the loop on SIGTERM, SIGINT and SIGHUP from now on, waking it through `wake`.
+/// End the loop on SIGTERM, SIGINT and SIGHUP from now on, and wake it when a child exits,
+/// through `wake`.
 ///
 /// # Errors
 /// No pipe could be made, the waking thread could not start, or a handler could not be set.
@@ -89,12 +105,20 @@ pub fn install(wake: Wake) -> io::Result<()> {
     // The write end lives for the process: the handler may run at any time from here on.
     WAKE_FD.store(write.as_raw_fd(), Ordering::SeqCst);
     std::mem::forget(write);
-    for signal in ENDING {
-        // SAFETY: a zeroed sigaction is a valid starting point; the handler is an
+    // Ending the session, and a child exiting, both wake the loop: only the
+    // handlers' own meaning differs.
+    let handlers: [(libc::c_int, extern "C" fn(libc::c_int)); ENDING.len() + 1] = [
+        (ENDING[0], on_signal),
+        (ENDING[1], on_signal),
+        (ENDING[2], on_signal),
+        (libc::SIGCHLD, on_child),
+    ];
+    for (signal, handler) in handlers {
+        // SAFETY: a zeroed sigaction is a valid starting point; each handler is an
         // `extern "C" fn(c_int)` that does only async-signal-safe work.
         let set = unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            action.sa_sigaction = handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
             action.sa_flags = libc::SA_RESTART;
             libc::sigemptyset(&raw mut action.sa_mask);
             libc::sigaction(signal, &raw const action, std::ptr::null_mut())

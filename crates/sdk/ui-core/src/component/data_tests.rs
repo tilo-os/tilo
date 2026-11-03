@@ -305,8 +305,17 @@ fn a_tree_view_reads_its_nodes_and_reports_the_resource_a_node_shows() {
     assert_eq!(props.nodes.len(), 3);
     let host = harness(crate::widget::DescribedTreeView::from_props("files", props));
     let root = host.root::<crate::widget::DescribedTreeView>();
-    assert_eq!(root.id_of("doc/dir:root"), Some(1));
-    assert_eq!(root.id_of("doc/file:main"), Some(3));
+    // A node's id follows the resource it stands for, not where it stands: the rows coming in
+    // another order leave each of them its id.
+    let root_id = root.id_of("doc/dir:root").expect("the root's id");
+    assert_ne!(root_id, root.id_of("doc/file:main").expect("the file's id"));
+    let mut other = Node::new("TreeView", "files", &queue)
+        .prop("name", text("Files"))
+        .holding("nodes", node_part("src", None, "doc/dir:src"))
+        .holding("nodes", node_part("Project", None, "doc/dir:root"));
+    let props = crate::widget::TreeViewProps::from_source(&mut other).unwrap();
+    let other = crate::widget::DescribedTreeView::from_props("files", props);
+    assert_eq!(other.id_of("doc/dir:root"), Some(root_id));
     assert_eq!(
         root.item_of("doc/file:main").map(|i| i.0.as_str()),
         Some("doc/file:main")

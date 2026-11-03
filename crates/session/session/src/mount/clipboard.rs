@@ -68,6 +68,8 @@ pub(crate) struct Clipboard {
     /// every device, so it is read a few times a second rather than every
     /// turn of the loop, and at once when something was copied here.
     synced_at: Cell<Option<Instant>>,
+    /// What wakes the session's loop when a paste on its own thread is over.
+    wake: tilo_service::Wake,
 }
 
 /// One read of the selection.
@@ -88,7 +90,7 @@ pub(crate) enum Ask {
 
 impl Clipboard {
     /// The history this device kept, newest first.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(wake: tilo_service::Wake) -> Self {
         let mut history = History::default();
         history.restore(HISTORY.get().kept().into_iter().filter_map(copy_of));
         Self {
@@ -99,9 +101,10 @@ impl Clipboard {
             generation: Cell::new(0),
             files: RefCell::new(None),
             // A paste the last session was in the middle of is undone here.
-            paste: RefCell::new(clipboard_files::Paste::unfinished()),
+            paste: RefCell::new(clipboard_files::Paste::unfinished(&wake)),
             unshared: Cell::new(true),
             synced_at: Cell::new(None),
+            wake,
         }
     }
 
@@ -255,6 +258,7 @@ impl Clipboard {
             destination,
             conflict,
             ui::time::unix_now_ms(),
+            &self.wake,
         ));
     }
 

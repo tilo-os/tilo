@@ -27,6 +27,7 @@ pub mod person_cursor;
 pub mod session;
 mod shared_tree;
 pub mod surface;
+mod wake;
 pub mod warmth;
 
 #[cfg(not(target_arch = "wasm32"))]

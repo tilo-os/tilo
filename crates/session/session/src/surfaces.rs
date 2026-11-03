@@ -495,14 +495,15 @@ struct Connection {
 
 impl Connection {
     /// The socket pair `stream` is one end of, with a reader and a writer
-    /// thread: neither side's news waits on the other's writing.
-    fn of(stream: UnixStream) -> Self {
+    /// thread: neither side's news waits on the other's writing. The reader
+    /// wakes the loop as each message lands.
+    fn of(stream: UnixStream, wake: Option<tilo_service::Wake>) -> Self {
         let (outgoing, writes) = mpsc::channel();
         let (incoming_sender, incoming) = mpsc::channel();
         if let Ok(reader) = stream.try_clone() {
             std::thread::Builder::new()
                 .name("surface-actions".into())
-                .spawn(move || read_messages(reader, &incoming_sender))
+                .spawn(move || read_messages(reader, &incoming_sender, wake.as_ref()))
                 .ok();
             std::thread::Builder::new()
                 .name("surface-actions-writes".into())
@@ -602,6 +603,19 @@ impl Connection {
         correlation
     }
 
+    /// When this surface is asked to list itself again, while it has
+    /// published nothing yet or its listing is part way through.
+    fn next_deadline(&self) -> Option<Instant> {
+        if !self.published.is_empty() && self.reading.is_empty() {
+            return None;
+        }
+        Some(
+            self.listed_at
+                .and_then(|asked| asked.checked_add(LISTING_INTERVAL))
+                .unwrap_or_else(Instant::now),
+        )
+    }
+
     /// Ask again when the surface has listed nothing yet and the last ask is
     /// old enough: an app that mounts late is still heard.
     fn list_if_silent(&mut self) {
@@ -642,8 +656,13 @@ impl Connection {
     }
 }
 
-/// Read messages from the surface off `stream` until it closes.
-fn read_messages(mut stream: UnixStream, incoming: &mpsc::Sender<RemoteActionMessage>) {
+/// Read messages from the surface off `stream` until it closes, waking the
+/// session's loop for each.
+fn read_messages(
+    mut stream: UnixStream,
+    incoming: &mpsc::Sender<RemoteActionMessage>,
+    wake: Option<&tilo_service::Wake>,
+) {
     loop {
         let Some(body) = FRAMING.read(&mut stream).ok().flatten() else {
             return;
@@ -654,6 +673,9 @@ fn read_messages(mut stream: UnixStream, incoming: &mpsc::Sender<RemoteActionMes
         };
         if incoming.send(frame.message).is_err() {
             return;
+        }
+        if let Some(wake) = wake {
+            wake();
         }
     }
 }
@@ -686,16 +708,25 @@ pub struct Surfaces {
     /// what a surface app connects to read and change what the session
     /// publishes, as any app of the session does.
     services: Option<PathBuf>,
+    /// What wakes the session's loop when a surface app says something, so
+    /// an app's answer is taken the instant it arrives.
+    wake: Option<tilo_service::Wake>,
 }
 
 impl Surfaces {
     /// The session's launch records and the socket it serves its services
     /// on, which every surface app started from here on is told of. Without
     /// a socket, a surface reads nothing of the session: it is a window
-    /// only.
-    pub fn lend(&mut self, launches: std::sync::Arc<crate::Launches>, services: Option<PathBuf>) {
+    /// only. `wake` ends the loop's wait when a surface says something.
+    pub fn lend(
+        &mut self,
+        launches: std::sync::Arc<crate::Launches>,
+        services: Option<PathBuf>,
+        wake: tilo_service::Wake,
+    ) {
         self.launches = Some(launches);
         self.services = services;
+        self.wake = Some(wake);
     }
 
     /// Start `surface` as a trusted client of `compositor`, on the layer
@@ -829,7 +860,7 @@ impl Surfaces {
             program = %surface.program.display(),
             "started a surface app"
         );
-        let mut actions = Connection::of(ours);
+        let mut actions = Connection::of(ours, self.wake.clone());
         // What the surface offers the desktop is what it lists when asked,
         // as any host asks a directory it serves.
         actions.list();
@@ -869,6 +900,15 @@ impl Surfaces {
             .iter()
             .map(|running| running.name.as_str())
             .collect()
+    }
+
+    /// When a surface app that published nothing yet is asked to list
+    /// itself again, so an app that mounts late is still heard.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.running
+            .iter()
+            .filter_map(|app| app.actions.next_deadline())
+            .min()
     }
 
     /// Take in the surface apps that exited, and give the session their
@@ -1279,7 +1319,7 @@ mod tests {
     #[test]
     fn a_listing_is_read_to_its_last_page_before_it_is_the_offer() {
         let (app, mut session) = UnixStream::pair().expect("a socket");
-        let mut connection = Connection::of(app);
+        let mut connection = Connection::of(app, None);
         connection.list();
         let RemoteActionMessage::CatalogueRequest { correlation, query } = told(&mut session)
         else {
@@ -1324,7 +1364,7 @@ mod tests {
     #[test]
     fn a_page_of_a_listing_the_session_gave_up_on_is_ignored() {
         let (app, mut session) = UnixStream::pair().expect("a socket");
-        let mut connection = Connection::of(app);
+        let mut connection = Connection::of(app, None);
         connection.list();
         let RemoteActionMessage::CatalogueRequest {
             correlation: given_up,
@@ -1370,7 +1410,7 @@ mod tests {
     #[test]
     fn a_page_from_another_revision_is_read_from_the_start_again() {
         let (app, mut session) = UnixStream::pair().expect("a socket");
-        let mut connection = Connection::of(app);
+        let mut connection = Connection::of(app, None);
         connection.published = vec![ExportedAction::from(
             &row("toggle-wifi").action.expect("an action"),
         )];

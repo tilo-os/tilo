@@ -265,6 +265,19 @@ impl Drop for Active {
     }
 }
 
+/// Another relay's shared origin, kept in this relay's: every broadcast the
+/// other relay announces, republished here and only while someone here asks
+/// for it.
+///
+/// The members of one workspace can end up on different relays — the first
+/// relay one device reaches is not the first another reaches — and a member
+/// that landed here hears every member of the workspace, not only those that
+/// landed here too. What crosses is sealed end to end: a bridge copies
+/// objects it cannot open, like any relay between them.
+pub struct Bridge {
+    _watch: crate::Task,
+}
+
 /// A publisher's private ingress origin: the session writes into it, the
 /// relay's forwarder reads from it.
 struct Ingress {
@@ -305,13 +318,7 @@ impl Offered {
     }
 }
 
-/// Exact-path patterns, or `None` when a name cannot be spelled as a path.
-pub(crate) fn exact(names: &[&str]) -> Option<moq_net::Patterns> {
-    names
-        .iter()
-        .map(|name| moq_net::Pattern::literal(name).ok())
-        .collect()
-}
+pub(crate) use crate::live::exact;
 
 impl Relay {
     /// Must be called inside a Tokio runtime: the shared origin's driver runs
@@ -336,6 +343,16 @@ impl Relay {
     #[must_use]
     pub fn shared(&self) -> moq_net::origin::Producer {
         self.origin.clone()
+    }
+
+    /// Carry what another relay of this workspace serves into this one, so a
+    /// member that reached a different relay is heard here too. `source` is
+    /// what this relay reads from the other one; the bytes are sealed end to
+    /// end, so nothing is opened here. Dropping the answer stops the bridge.
+    pub fn bridge(&self, source: moq_net::origin::Consumer) -> Bridge {
+        Bridge {
+            _watch: crate::Task::spawn(crate::mirror::watch(source, self.origin.clone(), None)),
+        }
     }
 
     pub fn counters(&self) -> CounterSnapshot {

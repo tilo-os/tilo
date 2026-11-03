@@ -41,29 +41,27 @@ pub(super) fn reading_with_windows() -> DeskReading {
     }
 }
 
-/// A bar part over `reading`, its outputs set.
+/// A part over `reading`, its outputs set.
 pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
     part_on(reading, (1280, 800))
 }
 
-/// A bar part over `reading` on one output `size` logical pixels big.
+/// A part over `reading` on one output `size` logical pixels big.
 pub(super) fn part_on(reading: DeskReading, size: (u32, u32)) -> (ShellPart, Rc<SessionLink>) {
-    part_at(ShellLayer::Bar, reading, None, size)
+    part_at(reading, None, size)
 }
 
-/// A part standing as `layer` over `reading`, its outputs set, its wells reporting to `wells`.
+/// A part over `reading`, its outputs set, its wells reporting to `wells`.
 pub(super) fn part_as(
-    layer: ShellLayer,
     reading: DeskReading,
     wells: Option<ui::widget::Wells>,
 ) -> (ShellPart, Rc<SessionLink>) {
-    part_at(layer, reading, wells, (1280, 800))
+    part_at(reading, wells, (1280, 800))
 }
 
-/// A part standing as `layer` over `reading` on one output `size` logical pixels big, its
-/// wells reporting to `wells`.
+/// A part over `reading` on one output `size` logical pixels big, its wells reporting to
+/// `wells`.
 fn part_at(
-    layer: ShellLayer,
     reading: DeskReading,
     wells: Option<ui::widget::Wells>,
     size: (u32, u32),
@@ -87,8 +85,6 @@ fn part_at(
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             seed: true,
         },
-        layer,
-        32,
         1.0,
         std::sync::Arc::new(|| {}),
         wells,

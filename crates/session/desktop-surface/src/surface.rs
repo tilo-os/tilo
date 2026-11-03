@@ -268,11 +268,15 @@ struct Shared {
     /// pass, and what the person did there, for the apps' connections
     /// ([`DesktopHandle::declare_bar`] and its siblings).
     bars: window_bars::Bars,
+    /// What wakes the host holding this desk for a change queued on its handle
+    /// ([`DesktopHandle::set_wake`]).
+    wake: crate::wake::Waker,
 }
 
 impl Shared {
     fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.wake.wake();
     }
 
     fn present(&mut self, presentation: Presentation) {
@@ -295,7 +299,9 @@ impl DesktopHandle {
     /// copied"): a short-lived pill, said politely to screen readers,
     /// never a notification. The host asks for a redraw.
     pub fn acknowledge(&self, text: impl Into<String>) {
-        self.shared.borrow().acknowledger.say(text);
+        let shared = self.shared.borrow_mut();
+        shared.acknowledger.say(text);
+        shared.wake.wake();
     }
 
     pub fn revision(&self) -> u64 {
@@ -311,6 +317,13 @@ impl DesktopHandle {
 
     pub fn read<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
         read(&self.shared.borrow().tree)
+    }
+
+    /// Have `wake` run whenever what this handle commands or changes is
+    /// waiting for the desk's next pass: the host holding the desk asks for
+    /// that frame, however little of the desk shows.
+    pub fn set_wake(&self, wake: Rc<dyn Fn()>) {
+        self.shared.borrow_mut().wake.set(wake);
     }
 
     /// The apps whose windows keep what they show to themselves: a password
@@ -417,6 +430,7 @@ impl DesktopHandle {
             _ => {}
         }
         shared.queue.push(admitted);
+        shared.wake.wake();
         Ok(())
     }
 
@@ -587,6 +601,7 @@ impl DesktopHandle {
             return false;
         };
         shared.queue.push(Admitted::Select(ids));
+        shared.wake.wake();
         true
     }
 
@@ -883,6 +898,7 @@ impl DesktopSurface {
             #[cfg(not(target_arch = "wasm32"))]
             peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
             bars: window_bars::Bars::default(),
+            wake: crate::wake::Waker::default(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
         #[cfg(not(target_arch = "wasm32"))]
@@ -2808,13 +2824,16 @@ impl Widget for DesktopSurface {
     /// one, so a host that only draws what asks needs no separate schedule.
     /// What the host above the windows did with the search palette since the
     /// last pass is work for this one: a row it chose, a scope it widened, a
-    /// query field it typed into.
+    /// query field it typed into. So is a tree replaced from outside — a
+    /// workspace's desktop its members changed: the desk's rows are only
+    /// brought to it by a pass, and none would come for it otherwise.
     fn needs_redraw(&self) -> bool {
         let work = {
             let shared = self.shared.borrow();
             shared.search_request.is_some()
                 || !shared.queue.is_empty()
                 || shared.search_revision != self.seen_search
+                || shared.replaced
         };
         // The desk asks its search sources a frame at a time, and cuts its
         // rows to the card once the card gives its room: a search with such
@@ -2828,6 +2847,7 @@ impl Widget for DesktopSurface {
         let shown = self.shown;
         self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
             || !self.shared.borrow().queue.is_empty()
+            || self.shared.borrow().replaced
             || self
                 .children()
                 .into_iter()

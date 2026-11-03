@@ -11,7 +11,7 @@
 //! The outcome of the most recent edit is polled once via [`take_outcome`]
 //! (rising-edge, like [`TextInput::take_dirty`]).
 
-use crate::widget::ModelPath;
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -84,6 +84,8 @@ pub struct EditableLabel {
     blank_clears: bool,
     /// What a committed name is reported to, as a described component's binding path does.
     edits: Option<crate::component::Bound<String>>,
+    /// The revision of the bound name last shown here.
+    seen: u64,
 }
 
 impl EditableLabel {
@@ -112,15 +114,36 @@ impl EditableLabel {
             measured: None,
             blank_clears: false,
             edits: None,
+            seen: 0,
         }
     }
 
-    /// Report each committed name to the component binding `edits`, as a described component
-    /// does: the person's edits, never a name the view gave.
+    /// Report each committed name to the component binding `edits` as a described component
+    /// does (the person's edits, never a name the view gave), and show a name it takes from
+    /// elsewhere.
     #[must_use]
     pub fn on_edit(mut self, edits: crate::component::Bound<String>) -> Self {
+        self.seen = edits.state.revision();
         self.edits = Some(edits);
         self
+    }
+
+    /// A name set elsewhere (renamed on another device) shows in place, unless the person is
+    /// typing one now: their commit is the newer name.
+    fn follow(&mut self) {
+        let Some(edits) = &self.edits else {
+            return;
+        };
+        let revision = edits.state.revision();
+        if self.editing || revision == self.seen {
+            return;
+        }
+        self.seen = revision;
+        let given = edits.state.get();
+        if given != self.value {
+            self.value = given;
+            self.measured = None;
+        }
     }
 
     /// What it is set in.
@@ -419,6 +442,10 @@ impl EditableLabel {
 
 impl Widget for EditableLabel {
     crate::provides!(dyn crate::widget::controls::ActionControls);
+
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.follow();
+    }
 
     fn build_layout(
         &mut self,
@@ -990,5 +1017,14 @@ mod tests {
         drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
         assert_eq!(el.take_outcome(), EditOutcome::Committed(String::new()));
         assert_eq!(el.value(), "");
+    }
+
+    #[test]
+    fn a_name_set_elsewhere_shows_unless_the_person_is_typing_one() {
+        let bound = crate::component::Bound::<String>::default();
+        let mut label = EditableLabel::new("Old").on_edit(bound.clone());
+        bound.state.set("New".to_owned());
+        label.sync(&(), &());
+        assert_eq!(label.value(), "New", "a name set elsewhere shows in place");
     }
 }

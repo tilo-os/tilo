@@ -20,6 +20,8 @@ pub struct CheckboxProps {
     pub indeterminate: bool,
     /// Whether it can be chosen now.
     pub enabled: bool,
+    /// The pace its mark plays at: the theme's unless it says otherwise.
+    pub motion: crate::motion::Feel,
 }
 
 impl Default for CheckboxProps {
@@ -29,6 +31,7 @@ impl Default for CheckboxProps {
             label: None,
             indeterminate: false,
             enabled: true,
+            motion: crate::motion::Feel::Standard,
         }
     }
 }
@@ -42,12 +45,14 @@ impl Described for Checkbox {
             label,
             indeterminate,
             enabled,
+            motion,
         } = props;
         let edits = value.clone();
         let mut boxed = Self::from_state(&value.state)
             .on_change(move |marked| edits.edited(Value::Bool(marked)))
             .with_id(key)
-            .with_enabled(enabled);
+            .with_enabled(enabled)
+            .with_feel(motion);
         if let Some(label) = label {
             boxed = boxed.with_label(label);
         }
@@ -64,6 +69,7 @@ impl Described for Checkbox {
         }
         let marked = props.value.state.get();
         self.set_enabled(props.enabled);
+        self.set_feel(props.motion);
         self.set_checked(marked);
         true
     }

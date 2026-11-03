@@ -371,6 +371,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         panic!("a resource: {project:?}")
     };
     let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.poll_patches().unwrap();
     // The window opens as the project's list; its Board button switches it to the board.
     let board = key_of(&view, "ui.Button", &|b| {
         b.props.get("label") == Some(&Value::text("Board"))
@@ -413,4 +414,270 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     );
     assert_eq!(target(&read(&ada, &van, "section")), target(&doing));
     assert_eq!(read(&ada, &bedworkspace, "section"), Value::none());
+}
+
+/// A checklist written before a task's steps were tasks of their own opens with each step a
+/// subtask of the task it was a step of, in the checklist's order, and the migration runs once.
+#[test]
+fn a_checklist_written_before_subtasks_opens_as_subtasks() {
+    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
+    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let copy = call(
+        &ada,
+        "add",
+        vec![all.clone(), Value::text("Write the launch post")],
+    );
+    ada.commit();
+    for title in ["Outline", "First draft", "Screenshots"] {
+        call(
+            &ada,
+            "add_step",
+            vec![all.clone(), copy.clone(), Value::text(title)],
+        );
+        ada.commit();
+    }
+
+    // The same workspace, opened by the version that keeps subtasks.
+    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
+    later.host.sync_from(&later.doc);
+    assert_eq!(later.host.migrate(), 1, "the checklist migration runs");
+    for done in later.host.take_committed() {
+        later.apply(&done.action);
+    }
+    let tasks = items(&later);
+    let titles: Vec<Value> = tasks
+        .iter()
+        .map(|item| read(&later, item, "title"))
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            Value::text("Write the launch post"),
+            Value::text("Outline"),
+            Value::text("First draft"),
+            Value::text("Screenshots"),
+        ],
+        "the task, then its checklist in order"
+    );
+    let of = target(&copy).expect("the task");
+    for step in &tasks[1..] {
+        assert_eq!(
+            target(&read(&later, step, "parent")),
+            Some(of.clone()),
+            "a step's task is under the task it was a step of"
+        );
+    }
+    assert_eq!(
+        read(&later, &tasks[1], "done"),
+        Value::Bool(false),
+        "a step keeps what it had"
+    );
+    assert_eq!(later.host.migrate(), 0, "the migration runs once");
+}
+
+/// A step outlived the task it was a step of: it opens as a task of its own, keeping what it
+/// said, rather than being lost or failing the migration.
+#[test]
+fn a_step_whose_task_was_removed_becomes_a_task_of_its_own() {
+    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
+    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let gone = call(&ada, "add", vec![all.clone(), Value::text("Old task")]);
+    ada.commit();
+    call(
+        &ada,
+        "add_step",
+        vec![all.clone(), gone.clone(), Value::text("Its step")],
+    );
+    ada.commit();
+    call(&ada, "remove", vec![all, gone]);
+    ada.commit();
+
+    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
+    later.host.sync_from(&later.doc);
+    assert_eq!(later.host.migrate(), 1, "the steps migration runs");
+    for done in later.host.take_committed() {
+        later.apply(&done.action);
+    }
+    let tasks = items(&later);
+    assert_eq!(tasks.len(), 1, "the step stayed, as a task of its own");
+    assert_eq!(read(&later, &tasks[0], "title"), Value::text("Its step"));
+    assert_eq!(read(&later, &tasks[0], "parent"), Value::none());
+}
+
+/// The drawn row of the task held by `item`.
+fn row_of(view: &ViewInstance, item: &Value) -> String {
+    let want = target(item);
+    key_of(view, "ui.TreeViewNode", &|node| {
+        node.props.get("item").and_then(target) == want
+    })
+}
+
+/// The drawn node with this key, at any depth.
+fn node_of<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
+    if node.key == key {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| node_of(child, key))
+}
+
+/// The task with this title.
+fn task(r: &Replica, title: &str) -> Value {
+    items(r)
+        .into_iter()
+        .find(|item| read(r, item, "title") == Value::text(title))
+        .unwrap_or_else(|| panic!("{title}"))
+}
+
+/// Every task's title, in the order the tasks stand.
+fn titles(r: &Replica) -> Vec<Value> {
+    items(r).iter().map(|item| read(r, item, "title")).collect()
+}
+
+/// A launch post with the subtasks "Outline", "First draft" and "Screenshots".
+fn launch_post() -> (Replica, Value) {
+    let (mut ada, root) = workspace();
+    let parent = call(
+        &ada,
+        "add",
+        vec![root.clone(), Value::text("Write the launch post")],
+    );
+    ada.commit();
+    for title in ["Outline", "First draft", "Screenshots"] {
+        call(
+            &ada,
+            "add_subtask",
+            vec![root.clone(), parent.clone(), Value::text(title)],
+        );
+        ada.commit();
+    }
+    (ada, parent)
+}
+
+/// The page a task opens, drawn.
+fn task_page(ada: &Replica, task: &Value) -> ViewInstance {
+    let Value::Ref(at) = task else {
+        panic!("a task: {task:?}")
+    };
+    let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.poll_patches().unwrap();
+    view
+}
+
+/// A drag in a task's outline is the one action that names both the new place and the parent it
+/// comes to stand under; a row's checkbox asks the outline to toggle that task.
+#[test]
+fn a_subtask_moves_and_is_checked_from_the_outline() {
+    let (mut ada, parent) = launch_post();
+    let outline = task(&ada, "Outline");
+    let shots = task(&ada, "Screenshots");
+    let mut view = task_page(&ada, &parent);
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Write the launch post"),
+            Value::text("Outline"),
+            Value::text("First draft"),
+            Value::text("Screenshots"),
+        ]
+    );
+    let key = row_of(&view, &outline);
+    view.fire_with(&key, "drop", Some(&shots)).unwrap();
+    ada.commit();
+    view.poll_patches().unwrap();
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Write the launch post"),
+            Value::text("Screenshots"),
+            Value::text("Outline"),
+            Value::text("First draft"),
+        ]
+    );
+    let key = row_of(&view, &outline);
+    view.fire_with(&key, "check", None).unwrap();
+    ada.commit();
+    view.poll_patches().unwrap();
+    assert_eq!(read(&ada, &outline, "done"), Value::Bool(true));
+}
+
+/// Dropped inside another task's row, a task becomes its subtask, and the outline draws it there.
+#[test]
+fn a_subtask_dropped_inside_another_is_nested() {
+    let (mut ada, parent) = launch_post();
+    let outline = task(&ada, "Outline");
+    let draft = task(&ada, "First draft");
+    let mut view = task_page(&ada, &parent);
+    let key = row_of(&view, &draft);
+    view.fire_with(&key, "into", Some(&outline)).unwrap();
+    ada.commit();
+    view.poll_patches().unwrap();
+    assert_eq!(
+        target(&read(&ada, &outline, "parent")),
+        target(&draft),
+        "the task is inside the row it was dropped on"
+    );
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Write the launch post"),
+            Value::text("First draft"),
+            Value::text("Outline"),
+            Value::text("Screenshots"),
+        ],
+        "it stands where it landed, under its new parent"
+    );
+    let key = row_of(&view, &outline);
+    let node = node_of(view.tree(), &key).unwrap();
+    assert_eq!(
+        node.props.get("parent").and_then(target),
+        target(&draft),
+        "the row is drawn under its new parent"
+    );
+}
+
+/// The menu's Indent and Outdent are the moves `Tab` and `Shift-Tab` make: under the task over
+/// it, and out beside the one over it.
+#[test]
+fn a_subtask_indents_over_itself_and_outdents_beside_its_parent() {
+    let (mut ada, parent) = launch_post();
+    let draft = task(&ada, "First draft");
+    let shots = task(&ada, "Screenshots");
+    call(&ada, "indent", vec![shots.clone()]);
+    ada.commit();
+    assert_eq!(
+        target(&read(&ada, &shots, "parent")),
+        target(&draft),
+        "Tab puts it under the task just over it"
+    );
+    let view = task_page(&ada, &parent);
+    let key = row_of(&view, &shots);
+    let node = node_of(view.tree(), &key).unwrap();
+    assert_eq!(
+        node.props.get("parent").and_then(target),
+        target(&draft),
+        "the row is drawn one step deeper"
+    );
+    call(&ada, "outdent", vec![shots.clone()]);
+    ada.commit();
+    assert_eq!(
+        target(&read(&ada, &shots, "parent")),
+        target(&parent),
+        "Shift-Tab puts it back beside the task over it"
+    );
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Write the launch post"),
+            Value::text("Outline"),
+            Value::text("First draft"),
+            Value::text("Screenshots"),
+        ],
+        "out again it stands after the task it was under"
+    );
 }

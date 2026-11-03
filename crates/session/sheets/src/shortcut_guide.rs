@@ -22,6 +22,7 @@ use ui::input::{
 use ui::prelude::*;
 use ui::widget::{Column, Container, Element, InputHint, ModalDialog, Row, Scrollable, Text};
 
+use crate::keyboard_shortcuts::chord_text;
 use crate::presentation::Presentation;
 use crate::t;
 
@@ -693,12 +694,6 @@ fn keycaps(chord: &KeyChord) -> KeyboardBinding {
         chord.modifiers.iter().filter_map(|name| modifier(name)),
         KeyLegend::from_name(&chord.key),
     )
-}
-
-/// `chord` as the active keyboard layout spells it (`Strg+Umschalt+T` on a
-/// German layout).
-fn chord_text(chord: &KeyChord) -> String {
-    ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
 }
 
 /// What else the guide tells the person about the keys, in reading order.

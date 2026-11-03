@@ -225,6 +225,10 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             put(&mut arguments, "action", action);
             (NOTIFICATIONS, "act")
         }
+        QsEffect::HandNotificationToAgent { notification } => {
+            put(&mut arguments, "notification", notification);
+            (NOTIFICATIONS, "hand-to-agent")
+        }
         QsEffect::ClearNotifications => (NOTIFICATIONS, "clear"),
         QsEffect::UndoClearNotifications => (NOTIFICATIONS, "undo-clear"),
         QsEffect::SetDoNotDisturb { on } => {
@@ -254,6 +258,11 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
                 serde_json::to_value(part).unwrap_or(Value::Null),
             );
             (DEVICES, "press")
+        }
+        QsEffect::HandOffBluetooth { address, device } => {
+            put(&mut arguments, "address", address);
+            put(&mut arguments, "device", device);
+            (DEVICES, "hand-off")
         }
         // The session itself.
         QsEffect::LockScreen => (SCREEN, "lock"),
@@ -362,6 +371,24 @@ mod tests {
             .as_deref(),
             Some("session:devices press row=laptop part=decline"),
             "the part the person pressed goes with the row"
+        );
+    }
+
+    #[test]
+    fn an_accessory_move_and_a_handed_notification_are_the_sessions_own() {
+        assert_eq!(
+            said(&QsEffect::HandOffBluetooth {
+                address: "00:1B:66:A1:B2:C3".into(),
+                device: "desk".into(),
+            })
+            .as_deref(),
+            Some("session:devices hand-off address=00:1B:66:A1:B2:C3 device=desk"),
+            "the session moves the accessory between the person's devices"
+        );
+        assert_eq!(
+            said(&QsEffect::HandNotificationToAgent { notification: 7 }).as_deref(),
+            Some("session:notifications hand-to-agent notification=7"),
+            "the notification centre hands the kept notification on"
         );
     }
 

@@ -170,10 +170,20 @@ fn a_join_running_holds_the_other_buttons() {
             )
         })
         .collect();
-    let joins: Vec<&(String, bool)> = buttons
+    // A row's button is announced with the workspace it acts on ("Joining
+    // Tilo Coffee"), so the rows are found by those names; the way in by a
+    // link or code is no row of the list and stays live.
+    let rows = ["Joining Tilo Coffee", "Join Gardeners", "Open Chess club"];
+    let held: Vec<&(String, bool)> = buttons
         .iter()
-        .filter(|(name, _)| ["Join", "Joining…", "Open"].contains(&name.as_str()))
+        .filter(|(name, _)| rows.contains(&name.as_str()))
         .collect();
-    assert!(!joins.is_empty(), "{buttons:?}");
-    assert!(joins.iter().all(|(_, disabled)| *disabled), "{buttons:?}");
+    assert_eq!(
+        held.iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        rows,
+        "{buttons:?}"
+    );
+    assert!(held.iter().all(|(_, disabled)| *disabled), "{buttons:?}");
 }

@@ -828,6 +828,10 @@ pub struct BlockEditor {
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
+    /// The document a view binds it to, when it is a document's body
+    /// ([`crate::component::Described`]): the field it edits, what it showed when it last read
+    /// it, and the revision it read.
+    pub(super) body: Option<super::block_editor_body::BodyBinding>,
 }
 
 /// Whether `text[start..end]` stands as a whole word: no letter or digit
@@ -1015,6 +1019,7 @@ impl BlockEditor {
             window_find: false,
             find_reveal: false,
             presence_key: None,
+            body: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -8763,6 +8768,12 @@ impl Widget for BlockEditor {
         dyn super::find_bar::Findable
     );
 
+    /// The described component's instance, for the generic adapter to take new props in place
+    /// and for a harness to read it by type.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     /// The editor's popovers, in the window's top layer — unless its owner
     /// painted them itself this frame, inside its own scroll and clip.
     fn draw_overlay(
@@ -8923,7 +8934,21 @@ impl Widget for BlockEditor {
             },
             ..Default::default()
         };
-        taffy.widget_node(style, &layout_children, node_map, self)
+        let node = taffy.widget_node(style, &layout_children, node_map, self);
+        // A document's body hangs its handle lane outside the text column, so its text starts
+        // on the page's content edge, under the title, and still runs to the column's end, as
+        // native Notes lines a note's title up with its text. It is placed there, not margined
+        // there: a margin would have the layout ask the block stack for heights at a second
+        // width than the one it is applied at, and its blocks then paint taller than the rect
+        // they got.
+        if self.body.is_some() {
+            let inset = self.text_inset(theme);
+            if let Ok(mut hung) = taffy.style(node).cloned() {
+                hung.inset.left = length(-inset as f32);
+                let _ = taffy.set_style(node, hung);
+            }
+        }
+        node
     }
 
     #[expect(
@@ -9983,6 +10008,7 @@ impl Widget for BlockEditor {
             _ => EditScope::Anywhere,
         };
         self.edit_scope.widen(scope);
+        let _ = self.take_body_edits();
     }
 
     fn name(&self) -> &'static str {
@@ -10686,6 +10712,14 @@ impl Widget for BlockEditor {
         self.restack
             || self.table_relayout
             || self.blocks.iter().any(|block| block.line.is_layout_dirty())
+    }
+
+    /// A document's body reports what the person typed and shows what the field got from
+    /// elsewhere.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let edited = self.take_body_edits();
+        let followed = self.follow_body();
+        super::defaults::update(self.children_mut(), state, path) || edited || followed
     }
 }
 

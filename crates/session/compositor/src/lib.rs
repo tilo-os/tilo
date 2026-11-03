@@ -38,13 +38,16 @@ mod dnd;
 pub mod effects;
 pub mod gamma;
 pub mod gestures;
+mod gpu_health;
 mod hdr;
+pub mod heap_trim;
 pub mod host;
 pub mod idle;
 pub mod input;
 pub mod keys;
 mod layer;
 mod lock;
+pub mod memory_report;
 pub mod output;
 mod output_management;
 mod output_power;
@@ -110,6 +113,10 @@ pub use input::{
     TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
+
+/// How close to the whole timeout a park must be to have ended on the
+/// deadline rather than on arriving work.
+const WAKE_MARGIN: Duration = Duration::from_millis(1);
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 
 /// What the person is in the middle of, as the compositor sees it: an
@@ -309,6 +316,12 @@ pub struct Compositor {
     /// [`Compositor::input`]; a backend's own devices filter theirs before
     /// they get there.
     keys: AccessKeys,
+    /// The timings of the loop's turns, when `TILO_FRAME_TRACE` or a profile
+    /// asked for them.
+    recorder: tilo_frame_metrics::FrameRecorder,
+    /// A turn is open: [`Compositor::begin_tick`] ran and
+    /// [`Compositor::end_tick`] has not.
+    ticking: bool,
 }
 
 impl Compositor {
@@ -349,6 +362,8 @@ impl Compositor {
             turns: None,
             a11y: A11y::default(),
             keys: AccessKeys::default(),
+            recorder: tilo_frame_metrics::FrameRecorder::from_env(),
+            ticking: false,
         };
         compositor.publish_displays();
         Ok(compositor)
@@ -413,12 +428,59 @@ impl Compositor {
         self.data.backend.closed()
     }
 
-    /// How long a loop may wait for clients and devices before the next
-    /// frame is due.
-    pub fn next_wait(&self) -> Duration {
-        /// The longest the loop sleeps with nothing due, so a caller's own
-        /// checks still run.
-        const IDLE: Duration = Duration::from_millis(250);
+    /// Start a recorded turn of the loop. The session calls it before
+    /// [`Compositor::dispatch`] and ends it after the work the frame it drew
+    /// answered.
+    pub fn begin_tick(&mut self) {
+        self.ticking = true;
+        // A frame the display retired since the last turn closes the input
+        // measurement of the frame that carried it.
+        if let Some((serial, at)) = self.data.state.take_retired() {
+            self.recorder.note_retirement(serial, at);
+        }
+        self.recorder.begin_tick(Instant::now());
+    }
+
+    /// The session's own share of the turn before the frame: the desk, the
+    /// apps and the overlays it laid out.
+    pub fn mark_pump(&mut self, took: Duration) {
+        self.recorder.mark_pump(took);
+    }
+
+    /// Answering the session's control socket after the frame was drawn.
+    pub fn mark_testctl(&mut self, took: Duration) {
+        self.recorder.mark_testctl(took);
+    }
+
+    /// The workspace in front changed: its frames are timed until the desk
+    /// rests.
+    pub fn workspace_switched(&mut self) {
+        self.data.state.workspace_switched();
+    }
+
+    /// Whether the workspace switch in flight still owes the desk's motion.
+    pub fn set_switch_holding(&mut self, holding: bool) {
+        self.data.state.set_switch_holding(holding);
+    }
+
+    /// How many frames the displays presented since this session began.
+    pub fn frames_presented(&self) -> u64 {
+        self.data.state.frames_presented()
+    }
+
+    /// The turn is over: its timings go to the frame trace.
+    pub fn end_tick(&mut self) {
+        if !self.ticking {
+            return;
+        }
+        self.ticking = false;
+        self.recorder.end_tick();
+    }
+
+    /// How long a loop may wait for clients, devices and its own work before
+    /// the next frame is due; `None` when nothing is due, and it waits for an
+    /// event.
+    pub fn next_wait(&self) -> Option<Duration> {
         let now = std::time::Instant::now();
         let backend = self.data.backend.next_deadline(&self.data.state);
         // A running visual alert fades frame by frame.
@@ -436,7 +498,7 @@ impl Compositor {
             .chain(self.keys.next_deadline())
             .chain(alert)
             .min()
-            .map_or(IDLE, |at| at.saturating_duration_since(now).min(IDLE))
+            .map(|at| at.saturating_duration_since(now))
     }
 
     /// Add an output the backend simulates.
@@ -564,19 +626,20 @@ impl Compositor {
     }
 
     /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives
-    /// on it (a controller's presses, a device's hotplug) ends the wait
-    /// rather than waiting for the next turn. Dropping the watch stops it.
+    /// on it (a controller's presses, a device's hotplug, a socket a client
+    /// connects to or writes on) ends the wait rather than waiting for the
+    /// next turn. Dropping the watch stops it.
     ///
     /// What the descriptor says is read by the caller's own source, not
     /// here: this only ends the wait.
-    pub fn watch_input(&mut self, fd: std::os::fd::OwnedFd) -> Result<InputWatch, Error> {
+    pub fn watch_readable(&mut self, fd: std::os::fd::OwnedFd) -> Result<ReadableWatch, Error> {
         let handle = self.event_loop.handle();
         let token = handle
             .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
                 Ok(PostAction::Continue)
             })
             .map_err(io)?;
-        Ok(InputWatch {
+        Ok(ReadableWatch {
             handle: handle.clone(),
             token,
         })
@@ -671,23 +734,37 @@ impl Compositor {
     }
 
     /// Wait up to `timeout` for client requests or backend events, handle
-    /// them and flush the answers.
-    pub fn dispatch(&mut self, timeout: Duration) -> Result<(), Error> {
+    /// them and flush the answers; with `None`, wait for an event however
+    /// long that takes.
+    pub fn dispatch(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
+        let timeout: Option<Duration> = timeout.into();
+        let started = Instant::now();
         // A held key's next repeat for a hosted surface wakes the loop.
         let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
-            timeout.min(due.saturating_duration_since(std::time::Instant::now()))
+            let held = due.saturating_duration_since(std::time::Instant::now());
+            Some(timeout.map_or(held, |timeout| timeout.min(held)))
         });
         if let Some(turns) = &self.turns {
             turns.parking();
         }
+        let waiting = Instant::now();
         let dispatched = self
             .event_loop
-            .dispatch(Some(timeout), &mut self.data)
+            .dispatch(timeout, &mut self.data)
             .map_err(io);
+        let parked = waiting.elapsed();
         if let Some(turns) = &self.turns {
             turns.unparked();
         }
+        // A wait that ran its time out ended on the deadline; one cut short
+        // was ended by work arriving.
+        self.recorder.mark_sleep(parked);
+        let expired = timeout.is_some_and(|timeout| parked.saturating_add(WAKE_MARGIN) >= timeout);
+        self.recorder
+            .mark_wake(if expired { "idle" } else { tilo_frame_metrics::WAKE_IO });
         dispatched?;
+        self.recorder
+            .mark_input(started.elapsed().saturating_sub(parked));
         self.data.state.repeat_keys();
         let ticked = Instant::now();
         let due = self.keys.tick(ticked);
@@ -899,6 +976,23 @@ impl Compositor {
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Show `light` of their linear light on the displays without a
+    /// backlight or DDC/CI, by connector (`1.0` or absent: not dimmed), on
+    /// top of the tint they already have. A monitor whose brightness is its
+    /// own hardware is not among them: its brightness is set there.
+    pub fn set_software_dim(&mut self, dims: &[(String, f32)]) -> Result<(), Error> {
+        self.data.state.gamma.set_software_dim(dims);
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// How much of its linear light each display is dimmed to in software,
+    /// by connector, for the displays that are.
+    pub fn software_dim(&self) -> Vec<(String, f32)> {
+        self.data.state.gamma.software_dim()
     }
 
     /// Draw the window `id` with `effect` (moved, scaled about its centre,
@@ -1575,6 +1669,7 @@ impl Compositor {
     /// assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
         let now = Instant::now();
+        self.recorder.note_input(now);
         let events = self.keys.filter(event, now);
         for event in events {
             self.data.state.note_typing(&event, now);
@@ -1610,9 +1705,10 @@ impl Compositor {
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
         self.seed_visuals();
-        // A frame drawn after the alert's run shows the scene without it, and
-        // is the frame that puts it away.
-        a11y::finish_flash(&mut self.data.state, Instant::now());
+        // An alert asked for between frames runs from the frame that shows it,
+        // however late that frame is, and an alert whose run is over goes away
+        // on the frame that draws the scene without it.
+        a11y::begin_frame(&mut self.data.state, Instant::now());
         // The visual alert fades frame by frame, so each frame it covers is
         // a new one to draw.
         if a11y::flashing(&self.data.state, Instant::now()) {
@@ -1628,7 +1724,21 @@ impl Compositor {
         // A frame can move windows (a strip panning, a group resizing): the
         // policy places them where the surfaces just laid them out.
         self.data.state.rearrange();
+        let drawn_before = self.data.state.frames_drawn();
+        let submitting = Instant::now();
         self.data.backend.render(&mut self.data.state)?;
+        let drawn = self.data.state.frames_drawn();
+        if drawn > drawn_before {
+            self.recorder.mark_submit(
+                submitting.elapsed(),
+                self.data.backend.presents_async(),
+                Instant::now(),
+                Some(drawn),
+            );
+        } else {
+            // Nothing was drawn: no frame will answer this turn's input.
+            self.recorder.settle_unpainted_input();
+        }
         self.data.backend.serve_captures(&mut self.data.state);
         self.data.backend.serve_backdrops(&mut self.data.state);
         self.data.state.confirm_lock();
@@ -1828,15 +1938,15 @@ impl Compositor {
     }
 }
 
-/// A descriptor [`Compositor::watch_input`] polled for the loop: its
+/// A descriptor [`Compositor::watch_readable`] polls for the loop: its
 /// readiness ends the wait, and dropping the watch stops the polling.
 #[derive(Debug)]
-pub struct InputWatch {
+pub struct ReadableWatch {
     handle: LoopHandle<'static, LoopData>,
     token: smithay::reexports::calloop::RegistrationToken,
 }
 
-impl Drop for InputWatch {
+impl Drop for ReadableWatch {
     fn drop(&mut self) {
         self.handle.remove(self.token);
     }

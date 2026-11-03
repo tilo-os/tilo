@@ -57,6 +57,12 @@ path = "tests/forms.rs"
 name = "tasks_board"
 path = "tests/tasks_board.rs"
 
+# The motion the Tasks package gets with no view asking for it: a check-off filling over frames,
+# and rows a person adds and removes arriving and leaving through the list's own motion.
+[[test]]
+name = "motion"
+path = "tests/motion.rs"
+
 # A hosted app's window, as a person uses it, against the tilolang host running its instance.
 [[test]]
 name = "hosted"

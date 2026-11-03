@@ -118,7 +118,7 @@ view card_tile(b: Board, col: Column, card: Card) {
 view card_page(card: Card) {
     std.document(card) {
         ui.TextInput(value: card.title, placeholder: "Title")
-        ui.TextInput(value: card.notes, placeholder: "Notes", lines: 8)
+        ui.BlockEditor(bind: card.notes, placeholder: "Notes")
     }
 }
 

@@ -278,6 +278,11 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
         quiet: None,
         can_undo: false,
     };
+    // An agent works in the workspace in front, so the newest kept
+    // notification can be handed to it.
+    if let Some(newest) = state.notifications.rows.first_mut() {
+        newest.agent = Some("claude-code".into());
+    }
     state.handoff_targets = Some(vec![
         HandoffTarget {
             id: "laptop".into(),

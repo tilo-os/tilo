@@ -97,6 +97,35 @@ fn key_paths_stand_for_a_lambda_reading_a_field() {
 }
 
 #[test]
+fn a_lambda_takes_the_values_a_function_parameter_takes() {
+    // `(a, b) -> ...` where a parameter of the type is given a function of two or more.
+    ok(
+        "action rename(c: C, t: Text) {\n    c.t = t\n}\nview picker(n: Text, act: (Text, Text) -> Action) {\n    ui.ListRow(title: n) {\n        on activate: act(n, n)\n    }\n}\nview w(c: C) {\n    picker(c.t, (a, b) -> rename(c, b))\n}",
+    );
+    ok(
+        "action rename(c: C, t: Text) {\n    c.t = t\n}\nview picker(n: Text, act: (Text, Text, Text) -> Action) {\n    ui.ListRow(title: n) {\n        on activate: act(n, n, n)\n    }\n}\nview w(c: C) {\n    picker(c.t, (a, b, d) -> rename(c, d))\n}",
+    );
+    // One value is one `x -> ...`, unchanged.
+    ok(
+        "action rename(c: C, t: Text) {\n    c.t = t\n}\nview picker(n: Text, act: (Text) -> Action) {\n    ui.ListRow(title: n) {\n        on activate: act(n)\n    }\n}\nview w(c: C) {\n    picker(c.t, x -> rename(c, x))\n}",
+    );
+    // The lambda names no more and no fewer than the function takes.
+    expect(
+        "E050",
+        "action rename(c: C, t: Text) {\n    c.t = t\n}\nview picker(n: Text, act: (Text, Text) -> Action) {\n    ui.ListRow(title: n) {\n        on activate: act(n, n)\n    }\n}\nview w(c: C) {\n    picker(c.t, x -> rename(c, x))\n}",
+    );
+}
+
+#[test]
+fn index_of_is_where_an_item_stands() {
+    ok(
+        "fn f(c: C) -> Bool {\n    if let i = c.items.index_of(c) {\n        i == 0\n    } else {\n        false\n    }\n}",
+    );
+    ok("fn f(c: C) -> Option<Int> {\n    c.items.filter(.b).index_of(c)\n}");
+    expect("E020", "fn f(c: C) -> Int {\n    c.items.index_of(c)\n}");
+}
+
+#[test]
 fn remove_where_removes_and_counts() {
     ok("action clear(c: C) -> Int {\n    c.items.remove_where(.b)\n}");
     ok("action clear(c: C) -> Int {\n    c.items.remove_where(x -> x.t == \"\")\n}");
@@ -251,7 +280,7 @@ fn sort_by_takes_dates_and_times_and_a_descending_order() {
 
 #[test]
 fn sort_by_takes_a_key_path_that_may_be_absent() {
-    // A list grouped by a day sorts by its date too, and the items without one come first.
+    // A list grouped by a day sorts by its date too, and the items without one come last.
     ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(.due)\n}");
     ok("fn f(c: C) -> List<C> {\n    c.items.filter(.b).sort_by(.due, desc)\n}");
     ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(x -> x.at)\n}");

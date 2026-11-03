@@ -4,7 +4,8 @@
 //! reported at the view's node in its source.
 //!
 //! Each scenario's window is one instance and one frame pipeline, laid out again for every
-//! configuration; nothing is painted or rasterised.
+//! configuration; nothing is painted or rasterised. Every scenario is a window of its own, so
+//! the windows are checked at the same time, one per core.
 
 mod audit;
 mod source;
@@ -14,6 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Mutex;
+use std::sync::PoisonError;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub use audit::Kind;
 use ui::interaction::InteractionEnvironment;
@@ -287,21 +291,68 @@ pub fn check(options: &Options) -> Result<Report, String> {
         .map(read_allow)
         .transpose()?
         .unwrap_or_default();
-    let mut findings = Vec::new();
+    let apps: Vec<App> = options
+        .dirs
+        .iter()
+        .map(|dir| App::read(dir, &options.search, options.root.as_deref()))
+        .collect::<Result<_, String>>()?;
+    // Every scenario of every app, on every layer it has: the units of work, each a window and
+    // a frame pipeline of its own, so they run at the same time.
+    let scenes: Vec<Scene> = apps
+        .iter()
+        .enumerate()
+        .flat_map(|(app, held)| {
+            held.roots.iter().flat_map(move |root| {
+                held.meta.scenarios.iter().map(move |scenario| Scene {
+                    app,
+                    root: root.clone(),
+                    scenario: scenario.name.clone(),
+                })
+            })
+        })
+        .collect();
+    let mut planned = Vec::with_capacity(scenes.len().saturating_mul(2));
+    for scene in &scenes {
+        planned.extend(scene.units());
+    }
+    let mut phase = run(&apps, &planned, options)?;
+    // The views nothing showed yet, opened on the scenario whose resources they take, with
+    // what every scene before it showed: the scenes of one app decide in order, as the check
+    // ran them one after another, while the apps decide at the same time.
+    let (mut opened, shown) = run_opens(&apps, &scenes, &phase, options)?;
     let mut layouts_run: usize = 0;
+    let mut gathered: Vec<BTreeMap<Identity, Finding>> = Vec::new();
+    gathered.resize_with(apps.len(), BTreeMap::new);
+    for ((scene, pair), opened) in scenes
+        .iter()
+        .zip(phase.chunks_mut(2))
+        .zip(opened.iter_mut())
+    {
+        let [scenario, press] = pair else {
+            continue;
+        };
+        layouts_run = layouts_run
+            .saturating_add(scenario.layouts)
+            .saturating_add(press.layouts)
+            .saturating_add(opened.layouts);
+        let Some(held) = gathered.get_mut(scene.app) else {
+            continue;
+        };
+        merge(held, std::mem::take(&mut scenario.gathered));
+        merge(held, std::mem::take(&mut opened.gathered));
+        merge(held, std::mem::take(&mut press.gathered));
+    }
+    let mut findings: Vec<Finding> = gathered
+        .into_iter()
+        .flat_map(BTreeMap::into_values)
+        .collect();
     let mut unreached = Vec::new();
-    for dir in &options.dirs {
-        let (app_findings, ran, app_unreached) = check_app(
-            dir,
-            &options.search,
-            options.dump,
-            options.shots.as_deref(),
-            &options.themes,
-            options.root.as_deref(),
-        )?;
-        findings.extend(app_findings);
-        layouts_run = layouts_run.saturating_add(ran);
-        unreached.extend(app_unreached);
+    for (held, shown) in apps.iter().zip(&shown) {
+        for view in &held.meta.views {
+            if view.presents.is_none() && view.row_of.is_none() && !shown.contains(&view.name) {
+                unreached.push(format!("{} › {}", held.short, view.name));
+            }
+        }
     }
     let mut seen = BTreeSet::new();
     for finding in &mut findings {
@@ -319,8 +370,159 @@ pub fn check(options: &Options) -> Result<Report, String> {
     })
 }
 
+/// One app of the check, read once: its metadata and its views' source, which every unit of its
+/// work shares.
+struct App {
+    dir: PathBuf,
+    /// Where its package and the ones it uses are found.
+    search: Vec<PathBuf>,
+    short: String,
+    meta: tilolang::PackageMeta,
+    sources: source::SourceMap,
+    /// The layers laid out: the window's own, and every other root the app declares.
+    roots: Vec<Option<String>>,
+}
+
+impl App {
+    fn read(dir: &Path, search: &[PathBuf], root: Option<&str>) -> Result<Self, String> {
+        let mut search = search.to_vec();
+        search.extend(dir.parent().map(Path::to_path_buf));
+        let (built, _platform) = build(dir, &search)?;
+        let sources = source::SourceMap::new(&built);
+        let meta = built.last().ok_or("no package")?.compiled.meta.clone();
+        let short = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            search,
+            short,
+            roots: layers_of(&meta, root),
+            meta,
+            sources,
+        })
+    }
+}
+
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
+
+/// One scenario of one app on one layer, the window laid out every way people lay one out.
+struct Scene {
+    app: usize,
+    root: Option<String>,
+    scenario: String,
+}
+
+impl Scene {
+    /// The units every scene has: the scenario as staged, and its primary actions pressed.
+    fn units(&self) -> [Unit; 2] {
+        [
+            Unit {
+                scene: self.at(),
+                what: What::Scenario,
+            },
+            Unit {
+                scene: self.at(),
+                what: What::Press,
+            },
+        ]
+    }
+
+    /// The views nothing showed yet, opened on the scenario whose resources they take, with
+    /// what every scene before this one showed.
+    fn opens(&self, shown: &BTreeSet<String>) -> Unit {
+        Unit {
+            scene: self.at(),
+            what: What::Opens {
+                shown: shown.clone(),
+            },
+        }
+    }
+
+    fn at(&self) -> At {
+        At {
+            app: self.app,
+            root: self.root.clone(),
+            scenario: self.scenario.clone(),
+        }
+    }
+
+    /// Whether opening a view on this scenario may show one nothing showed yet: the views of
+    /// types it did not open, and the views the system shows on surfaces of its own.
+    fn needs_opens(&self, apps: &[App], shown: &BTreeSet<String>) -> bool {
+        let Some(app) = apps.get(self.app) else {
+            return false;
+        };
+        let meta = &app.meta;
+        let default = meta.default_views.iter().any(|default| {
+            !meta.roots.contains(&default.ty)
+                && meta
+                    .views
+                    .iter()
+                    .find(|v| v.id == default.view)
+                    .is_some_and(|v| !shown.contains(&v.name))
+        });
+        default
+            || surface_views(meta).iter().any(|view| {
+                !shown.contains(&view.name)
+                    && view
+                        .params
+                        .first()
+                        .is_some_and(|param| meta.types.iter().any(|t| t.name == param.ty))
+                    && view.params.len() == 1
+            })
+    }
+}
+
+/// Where a unit of work runs: one scenario of one app on one layer.
+#[derive(Clone)]
+struct At {
+    app: usize,
+    root: Option<String>,
+    scenario: String,
+}
+
+/// One unit of work: a window staged from one scenario and what is done with it.
+#[derive(Clone)]
+struct Unit {
+    scene: At,
+    what: What,
+}
+
+#[derive(Clone)]
+enum What {
+    /// The scenario as staged, laid out every way.
+    Scenario,
+    /// The scenario with the views nothing showed yet opened on it, laid out every way.
+    Opens { shown: BTreeSet<String> },
+    /// The scenario with each of its primary actions pressed, at every size.
+    Press,
+}
+
+/// What one unit of work found.
+#[derive(Default)]
+struct Found {
+    gathered: BTreeMap<Identity, Finding>,
+    /// Layouts run.
+    layouts: usize,
+    /// The views some layout showed a node of.
+    shown: BTreeSet<String>,
+}
+
+/// Add what `found` gathered to `into`, as a further layout of the app shows the same.
+fn merge(into: &mut BTreeMap<Identity, Finding>, found: BTreeMap<Identity, Finding>) {
+    for (identity, finding) in found {
+        let Some(held) = into.get_mut(&identity) else {
+            into.insert(identity, finding);
+            continue;
+        };
+        held.count = held.count.saturating_add(finding.count);
+        for layout in finding.layouts {
+            if !held.layouts.contains(&layout) {
+                held.layouts.push(layout);
+            }
+        }
+    }
+}
 
 /// The app in `dir` compiled after the packages it uses, found in `search`; and the packages
 /// it uses as metadata rather than as a package directory: the native apps' (each a committed
@@ -338,112 +540,247 @@ fn build(
     crate::compile(dir, search, &mut tilolang::OsEntropy::default()).map_err(|e| e.to_string())
 }
 
-/// Check one app: every scenario at every layout, then each view no scenario showed, opened on
-/// a resource of its type the window names. Its findings, the layouts run and the views
-/// shown nowhere.
-fn check_app(
-    dir: &Path,
-    search: &[PathBuf],
-    dump: Option<(u32, u32)>,
-    shots: Option<&Path>,
-    themes: &[String],
-    root: Option<&str>,
-) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
-    let mut search = search.to_vec();
-    search.extend(dir.parent().map(Path::to_path_buf));
-    let (built, platform) = build(dir, &search)?;
-    let sources = source::SourceMap::new(&built);
-    let meta = built.last().ok_or("no package")?.compiled.meta.clone();
-    let packages = Rc::new(stage::Packages(
-        Rc::new(built.into_iter().map(|b| b.compiled).collect()),
-        platform,
-    ));
-    let mut check = AppCheck {
-        dir,
-        short: meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned(),
-        meta: &meta,
-        sources,
-        dump,
-        shots,
-        themes,
-        gathered: BTreeMap::new(),
-        text: ui::TextRenderer::new(),
-        ran: 0,
-        shown: BTreeSet::new(),
+/// Run every unit of `units` at the same time, each on a worker of its own, and return what each
+/// found in the order given. A worker reads an app's package itself: the compiled packages a
+/// window loads belong to one window at a time, so no two workers share them.
+fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, String> {
+    if units.is_empty() {
+        return Ok(Vec::new());
+    }
+    // A dump is read as a page of one layout after another, so it runs alone.
+    let workers = if options.dump.is_some() {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(units.len())
     };
-    let first = layouts().first().copied().ok_or("no layouts")?;
-    let roots = layers_of(&meta, root);
-    for root in &roots {
-        for scenario in &meta.scenarios {
-            let mut staged = stage::Staged::over(
-                &meta.app,
-                &packages,
-                &scenario.name,
-                (first.size.width, first.size.height),
-                ui::Theme::light(),
-                root.as_deref(),
-            )?;
-            // A layer other than the window's own is named in what the check says and in its
-            // shots' names, so the shots of one scenario on two layers never overwrite each
-            // other.
-            let title = on_layer(&scenario.name, root.as_deref());
-            check.run(&mut staged, &title)?;
-            // The views of types the scenario did not open, on a resource its window names.
-            for default in &meta.default_views {
-                let Some(view) = meta.views.iter().find(|v| v.id == default.view) else {
-                    continue;
+    let taken: Vec<Mutex<Option<Result<Found, String>>>> =
+        units.iter().map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    let stopped = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                tilo_ui_host::i18n::ensure();
+                let mut worker = Worker {
+                    apps,
+                    options,
+                    text: ui::TextRenderer::new(),
+                    loaded: None,
                 };
-                // The root's own view is the window's first column already.
-                if check.shown.contains(&view.name) || meta.roots.contains(&default.ty) {
-                    continue;
+                while !stopped.load(Ordering::Relaxed) {
+                    let at = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(unit) = units.get(at) else {
+                        break;
+                    };
+                    let found = worker.check(unit);
+                    if found.is_err() {
+                        stopped.store(true, Ordering::Relaxed);
+                    }
+                    if let Some(slot) = taken.get(at) {
+                        *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(found);
+                    }
                 }
-                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty)
-                else {
-                    continue;
-                };
-                staged.open(resource);
-                check.run(
-                    &mut staged,
-                    &format!("{title}, then a {} opened", view.name),
-                )?;
-            }
-            // The views the system shows on surfaces of its own rather than in a window of the
-            // app: a type's row view (a search result, a row of an agent's answer) and an action's
-            // proposal view (the card asking to run it), on a resource of the type they take.
-            for view in surface_views(&meta) {
-                if check.shown.contains(&view.name) {
-                    continue;
-                }
-                let [param] = view.params.as_slice() else {
-                    continue;
-                };
-                // A parameter names its type as written; a resource carries the type's id.
-                let Some(ty) = meta.types.iter().find(|t| t.name == param.ty) else {
-                    continue;
-                };
-                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
-                    continue;
-                };
-                staged.open_with(&resource, &view.id);
-                check.run(&mut staged, &format!("{title}, then {} shown", view.name))?;
-            }
-            press_stage(
-                &mut check,
-                &meta,
-                &packages,
-                &scenario.name,
-                root.as_deref(),
-            )?;
+            });
+        }
+    });
+    let mut out = Vec::with_capacity(units.len());
+    for slot in taken {
+        let found = slot
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ok_or("a unit of work did not run: another failed first")?;
+        out.push(found?);
+    }
+    Ok(out)
+}
+
+/// What opening the views of one scene found, under the index of the scene it was staged on.
+type Opened = Vec<(usize, Found)>;
+
+/// Run the views no layout showed yet, on the scene whose resources they take, for every app:
+/// an app's scenes one after another, each seeing what the ones before it showed, and the apps
+/// at the same time. Returns what each scene opened and the views every layout of each app
+/// showed.
+fn run_opens(
+    apps: &[App],
+    scenes: &[Scene],
+    phase: &[Found],
+    options: &Options,
+) -> Result<(Vec<Found>, Vec<BTreeSet<String>>), String> {
+    let mut per_app: Vec<Vec<usize>> = vec![Vec::new(); apps.len()];
+    for (index, scene) in scenes.iter().enumerate() {
+        if let Some(held) = per_app.get_mut(scene.app) {
+            held.push(index);
         }
     }
-    let unreached = meta
-        .views
+    let slots: Vec<Mutex<Option<Result<Opened, String>>>> =
+        per_app.iter().map(|_| Mutex::new(None)).collect();
+    let busy: Vec<usize> = per_app
         .iter()
-        .filter(|v| v.presents.is_none() && v.row_of.is_none())
-        .filter(|v| !check.shown.contains(&v.name))
-        .map(|v| format!("{} › {}", check.short, v.name))
+        .enumerate()
+        .filter(|(_, indices)| !indices.is_empty())
+        .map(|(app, _)| app)
         .collect();
-    Ok((check.gathered.into_values().collect(), check.ran, unreached))
+    let chain = |app: usize| -> Result<Opened, String> {
+        let Some(indices) = per_app.get(app) else {
+            return Ok(Vec::new());
+        };
+        let mut worker = Worker {
+            apps,
+            options,
+            text: ui::TextRenderer::new(),
+            loaded: None,
+        };
+        // What the scenes before this one showed, and this one itself has shown of its own.
+        let mut shown = BTreeSet::new();
+        let mut opened = Vec::new();
+        for &index in indices {
+            let Some(scene) = scenes.get(index) else {
+                continue;
+            };
+            let [scenario, press] = scene_units(phase, index);
+            let mut seed = shown.clone();
+            if let Some(scenario) = scenario {
+                seed.extend(scenario.shown.iter().cloned());
+            }
+            let found = if scene.needs_opens(apps, &seed) {
+                let found = worker.check(&scene.opens(&seed))?;
+                shown.extend(found.shown.iter().cloned());
+                found
+            } else {
+                Found::default()
+            };
+            if let Some(press) = press {
+                shown.extend(press.shown.iter().cloned());
+            }
+            opened.push((index, found));
+        }
+        Ok(opened)
+    };
+    if options.dump.is_some() {
+        for app in busy {
+            if let Some(slot) = slots.get(app) {
+                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
+            }
+        }
+    } else {
+        std::thread::scope(|scope| {
+            for app in busy {
+                let Some(slot) = slots.get(app) else {
+                    continue;
+                };
+                scope.spawn(move || {
+                    tilo_ui_host::i18n::ensure();
+                    *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
+                });
+            }
+        });
+    }
+    let mut opened: Vec<Found> = (0..scenes.len()).map(|_| Found::default()).collect();
+    let mut shown: Vec<BTreeSet<String>> = vec![BTreeSet::new(); apps.len()];
+    for (app, slot) in slots.into_iter().enumerate() {
+        let Some(result) = slot.into_inner().unwrap_or_else(PoisonError::into_inner) else {
+            continue;
+        };
+        let Some(held) = shown.get_mut(app) else {
+            continue;
+        };
+        for (index, found) in result? {
+            held.extend(found.shown.iter().cloned());
+            if let Some(slot) = opened.get_mut(index) {
+                *slot = found;
+            }
+        }
+    }
+    for (index, scene) in scenes.iter().enumerate() {
+        let [scenario, press] = scene_units(phase, index);
+        let Some(held) = shown.get_mut(scene.app) else {
+            continue;
+        };
+        if let Some(scenario) = scenario {
+            held.extend(scenario.shown.iter().cloned());
+        }
+        if let Some(press) = press {
+            held.extend(press.shown.iter().cloned());
+        }
+    }
+    Ok((opened, shown))
+}
+
+/// The two units every scene has in the first phase, in the order the check ran them.
+fn scene_units(phase: &[Found], index: usize) -> [Option<&Found>; 2] {
+    let mut held = [None, None];
+    for (slot, found) in held
+        .iter_mut()
+        .zip(phase.chunks(2).nth(index).unwrap_or_default())
+    {
+        *slot = Some(found);
+    }
+    held
+}
+
+/// One thread's check: the apps it reads, the packages of the app it is in, and the text it
+/// measures with.
+struct Worker<'a> {
+    apps: &'a [App],
+    options: &'a Options,
+    text: ui::TextRenderer,
+    /// The app whose packages are loaded, held beside them. A worker moves from one app to the
+    /// next rarely (it takes the units in the order they come), so one is enough.
+    loaded: Option<(usize, Rc<stage::Packages>)>,
+}
+
+impl Worker<'_> {
+    fn check(&mut self, unit: &Unit) -> Result<Found, String> {
+        let packages = self.packages(unit.scene.app)?;
+        let Some(app) = self.apps.get(unit.scene.app) else {
+            return Err(format!("no app {}", unit.scene.app));
+        };
+        let mut check = AppCheck {
+            dir: &app.dir,
+            short: &app.short,
+            meta: &app.meta,
+            sources: &app.sources,
+            dump: self.options.dump,
+            shots: self.options.shots.as_deref(),
+            themes: &self.options.themes,
+            gathered: BTreeMap::new(),
+            text: &mut self.text,
+            ran: 0,
+            shown: match &unit.what {
+                What::Opens { shown } => shown.clone(),
+                What::Scenario | What::Press => BTreeSet::new(),
+            },
+        };
+        check.unit(&packages, unit)?;
+        Ok(Found {
+            gathered: check.gathered,
+            layouts: check.ran,
+            shown: check.shown,
+        })
+    }
+
+    /// `app`'s package compiled, on the first unit of it this worker runs, and again when the
+    /// worker moves to another app.
+    fn packages(&mut self, app: usize) -> Result<Rc<stage::Packages>, String> {
+        if let Some((held, packages)) = &self.loaded
+            && *held == app
+        {
+            return Ok(Rc::clone(packages));
+        }
+        let Some(held) = self.apps.get(app) else {
+            return Err(format!("no app {app}"));
+        };
+        let (built, platform) = build(&held.dir, &held.search)?;
+        let packages = Rc::new(stage::Packages(
+            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+            platform,
+        ));
+        self.loaded = Some((app, Rc::clone(&packages)));
+        Ok(packages)
+    }
 }
 
 /// The layers laid out. A package with more than one root declares layers the person sees
@@ -490,50 +827,6 @@ fn on_layer(scenario: &str, root: Option<&str>) -> String {
         || scenario.to_owned(),
         |root| format!("{scenario} on {root}"),
     )
-}
-
-/// What the window shows once a person pressed one of its primary actions (a new note opened
-/// beside the list, its header row laid out again around it): at each size, from `scenario` as
-/// staged, pressed as a person presses (a tap on a touchscreen, a click otherwise) and with the
-/// motion it starts run out, read as it stands then, before anything lays the window out
-/// afresh. A layout that only a fresh pass puts right (a header row left where a frame of the
-/// motion put it) shows here.
-fn press_stage(
-    check: &mut AppCheck<'_>,
-    meta: &tilolang::PackageMeta,
-    packages: &Rc<stage::Packages>,
-    scenario: &str,
-    root: Option<&str>,
-) -> Result<(), String> {
-    for label in primary_labels(meta) {
-        for size in SIZES {
-            let layout = Layout {
-                size,
-                display_scale: 1.0,
-                text_scale: 1.0,
-            };
-            let viewport = (size.width, size.height);
-            let mut staged = stage::Staged::over(
-                &meta.app,
-                packages,
-                scenario,
-                viewport,
-                layout.theme(),
-                root,
-            )?;
-            staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
-            let Some(id) = button_named(&staged.harness().inspection().root, label) else {
-                continue;
-            };
-            staged.press(&id, size.touch)?;
-            check.audit(
-                &mut staged,
-                layout,
-                &format!("{}, then {label} pressed", on_layer(scenario, root)),
-            )?;
-        }
-    }
-    Ok(())
 }
 
 /// The views of `meta` the system shows on surfaces of its own: each type's row view and each
@@ -590,21 +883,131 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
 /// One app's check under way.
 struct AppCheck<'a> {
     dir: &'a Path,
-    short: String,
+    short: &'a str,
     meta: &'a tilolang::PackageMeta,
-    sources: source::SourceMap,
+    sources: &'a source::SourceMap,
     dump: Option<(u32, u32)>,
     shots: Option<&'a Path>,
     themes: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
-    text: ui::TextRenderer,
+    text: &'a mut ui::TextRenderer,
     ran: usize,
     /// The views some layout showed a node of.
     shown: BTreeSet<String>,
 }
 
 impl AppCheck<'_> {
+    /// One unit of the app's work, from the scenario as staged.
+    fn unit(&mut self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<(), String> {
+        let title = on_layer(&unit.scene.scenario, unit.scene.root.as_deref());
+        match unit.what {
+            What::Scenario => {
+                let mut staged = self.stage(packages, unit)?;
+                self.run(&mut staged, &title)
+            }
+            What::Opens { .. } => {
+                let mut staged = self.stage(packages, unit)?;
+                self.open_views(&mut staged, &title)
+            }
+            What::Press => self.press(packages, unit),
+        }
+    }
+
+    /// The scenario as staged, laid out once at the smallest window so a window's first frame
+    /// is drawn before its layouts are read.
+    fn stage(&self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<stage::Staged, String> {
+        let first = layouts().first().copied().ok_or("no layouts")?;
+        stage::Staged::over(
+            &self.meta.app,
+            packages,
+            &unit.scene.scenario,
+            (first.size.width, first.size.height),
+            ui::Theme::light(),
+            unit.scene.root.as_deref(),
+        )
+    }
+
+    /// The views of types the scenario did not open, on a resource its window names; and the
+    /// views the system shows on surfaces of its own rather than in a window of the app: a
+    /// type's row view (a search result, a row of an agent's answer) and an action's proposal
+    /// view (the card asking to run it), on a resource of the type they take. A view another
+    /// layout showed already is not opened again.
+    fn open_views(&mut self, staged: &mut stage::Staged, title: &str) -> Result<(), String> {
+        for default in &self.meta.default_views {
+            let Some(view) = self.meta.views.iter().find(|v| v.id == default.view) else {
+                continue;
+            };
+            // The root's own view is the window's first column already.
+            if self.shown.contains(&view.name) || self.meta.roots.contains(&default.ty) {
+                continue;
+            }
+            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
+                continue;
+            };
+            staged.open(resource);
+            self.run(staged, &format!("{title}, then a {} opened", view.name))?;
+        }
+        for view in surface_views(self.meta) {
+            if self.shown.contains(&view.name) {
+                continue;
+            }
+            let [param] = view.params.as_slice() else {
+                continue;
+            };
+            // A parameter names its type as written; a resource carries the type's id.
+            let Some(ty) = self.meta.types.iter().find(|t| t.name == param.ty) else {
+                continue;
+            };
+            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+                continue;
+            };
+            staged.open_with(&resource, &view.id);
+            self.run(staged, &format!("{title}, then {} shown", view.name))?;
+        }
+        Ok(())
+    }
+
+    /// What the window shows once a person pressed one of its primary actions (a new note
+    /// opened beside the list, its header row laid out again around it): at each size, from the
+    /// scenario as staged, pressed as a person presses (a tap on a touchscreen, a click
+    /// otherwise) and with the motion it starts run out, read as it stands then, before anything
+    /// lays the window out afresh. A layout that only a fresh pass puts right (a header row left
+    /// where a frame of the motion put it) shows here.
+    fn press(&mut self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<(), String> {
+        for label in primary_labels(self.meta) {
+            for size in SIZES {
+                let layout = Layout {
+                    size,
+                    display_scale: 1.0,
+                    text_scale: 1.0,
+                };
+                let viewport = (size.width, size.height);
+                let mut staged = stage::Staged::over(
+                    &self.meta.app,
+                    packages,
+                    &unit.scene.scenario,
+                    viewport,
+                    layout.theme(),
+                    unit.scene.root.as_deref(),
+                )?;
+                staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
+                let Some(id) = button_named(&staged.harness().inspection().root, label) else {
+                    continue;
+                };
+                staged.press(&id, size.touch)?;
+                self.audit(
+                    &mut staged,
+                    layout,
+                    &format!(
+                        "{}, then {label} pressed",
+                        on_layer(&unit.scene.scenario, unit.scene.root.as_deref())
+                    ),
+                )?;
+            }
+        }
+        Ok(())
+    }
     /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
     fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         for layout in layouts() {
@@ -677,7 +1080,7 @@ impl AppCheck<'_> {
         );
         problems.extend(audit::clipped_text(
             staged.harness_mut().root_widget_mut(),
-            &mut self.text,
+            self.text,
             viewport,
         ));
         for mut problem in problems {
@@ -790,7 +1193,7 @@ impl AppCheck<'_> {
         );
         let identity = (
             problem.kind,
-            self.short.clone(),
+            self.short.to_owned(),
             view.clone(),
             node.clone(),
             problem.widget.clone(),
@@ -798,7 +1201,7 @@ impl AppCheck<'_> {
         let shown = layout.to_string();
         let finding = self.gathered.entry(identity).or_insert_with(|| Finding {
             kind: problem.kind,
-            app: self.short.clone(),
+            app: self.short.to_owned(),
             view,
             node,
             widget: problem.widget.clone(),
