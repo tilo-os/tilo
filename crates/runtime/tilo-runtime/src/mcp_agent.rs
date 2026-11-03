@@ -371,11 +371,15 @@ impl Node {
             .unwrap_or(&self.key)
     }
 
-    /// Whether `other` is this resource's own: its key names this one's distinguishing
-    /// part, and does not grow out of this one's (`tl:<app>` stands beside its records).
+    /// Whether `other`'s key names this one's distinguishing part.
     fn owns(&self, other: &Node) -> bool {
         let token = self.token();
-        token.len() >= 8 && !other.key.starts_with(&self.key) && other.key.contains(token)
+        token.len() >= 8 && other.key != self.key && other.key.contains(token)
+    }
+
+    /// Whether `other` is this resource's own and not one of its children.
+    fn beside(&self, other: &Node) -> bool {
+        self.owns(other) && !other.key.starts_with(&self.key)
     }
 
     /// Whether this resource is one of `other`'s: it sits under the other's id.
@@ -383,9 +387,8 @@ impl Node {
         matches!(self.id.strip_prefix(other.id.as_str()), Some(rest) if rest.starts_with('/'))
     }
 
-    /// How well `name` names this node: 0 is its label, 1 its key (whole or
-    /// its last part), 2 its kind, 3 the start of its label or key part.
-    /// `None` when it does not.
+    /// How well `name` names this node: 0 its label, 1 its key (whole or last
+    /// part), 2 its kind, 3 the start of either; `None` when it does not.
     fn answers_to(&self, name: &str) -> Option<u8> {
         let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
         let tail = |text: &str| {
@@ -1515,8 +1518,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The resources an app's path starts from: its top-level resources and
     /// the resources inside its containers (a notebook's pages are the app's
-    /// own), with the containers' own actions (`notes#new-page`). What
-    /// another resource owns is listed under it, not here.
+    /// own), with the containers' own actions (`notes#new-page`).
     async fn app_children(&self, provider: &str, levels: &mut Levels) -> Result<Level, String> {
         let mut root = self.level(provider, "", levels).await?;
         let containers: Vec<Node> = root
@@ -1537,7 +1539,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let all = root.children.clone();
         root.children
-            .retain(|node| !all.iter().any(|owner| owner.owns(node)));
+            .retain(|node| !all.iter().any(|owner| owner.beside(node)));
         Ok(root)
     }
 
@@ -1581,8 +1583,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// What `name` may mean at the app's level, asked by name: the app's top
     /// level and, inside each of its containers, what `name` names there,
-    /// less what another of them owns. `None` when a container cannot be
-    /// asked by name.
+    /// less what another of them owns; `None` when one cannot be asked.
     async fn named_at_app(
         &self,
         provider: &str,
@@ -1609,7 +1610,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
         }
         let all = pool.clone();
-        pool.retain(|node| !all.iter().any(|owner| owner.owns(node)));
+        pool.retain(|node| !all.iter().any(|owner| owner.beside(node)));
         Ok(Some(Level {
             own: Vec::new(),
             children: pool,
