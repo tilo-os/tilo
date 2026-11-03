@@ -199,6 +199,8 @@ d-day53wfn = Unfile~present
 
 d-mg3c777a = Move to~present
 
+d-hefmcmk4 = Outdent~present
+
 d-tpvjqy5m = Clear done~present
 
 d-swaiyhcf = Show board~present

@@ -1585,8 +1585,11 @@ mod cases {
         assert_eq!(row_titles(v.tree()), ["bread"]);
     }
 
+    /// An action whose requirement its subject does not meet is offered all the same, its
+    /// control disabled with the requirement's reason as its description, and running it is
+    /// refused with that reason: what a header's button says before a person presses it.
     #[test]
-    fn an_action_whose_requirement_fails_is_not_offered_and_is_refused_with_its_reason() {
+    fn an_action_whose_requirement_fails_is_offered_disabled_with_its_reason() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         // The workspace's one Tasks root: a check reads its tasks from it, as the app does.
@@ -1596,21 +1599,30 @@ mod cases {
             "new_task",
             vec![res(&list), Value::text("milk")],
         ));
-        // The header offers a command as a button or, when it is not the window's main thing
-        // and the app does not mark it frequent, in the one menu the rest go behind.
-        let labels = |v: &ViewInstance| -> Vec<String> {
-            ["ui.Button", "ui.MenuItem"]
-                .iter()
-                .flat_map(|kind| of_kind(v.tree(), kind))
-                .map(|node| text_prop(node, "label"))
-                .collect()
+        // Clear done stands in the header's one menu, as every command that is not the window's
+        // main thing does: a control that names it, and says whether it can run now.
+        let can_run = |v: &ViewInstance| -> bool {
+            node_with(v.tree(), "ui.Button", "label", "Clear done")
+                .props
+                .get("enabled")
+                == Some(&Value::Int(1))
+        };
+        let why = |v: &ViewInstance| -> String {
+            match node_with(v.tree(), "ui.Button", "label", "Clear done")
+                .props
+                .get("description")
+            {
+                Some(Value::Text(why)) => why.clone(),
+                other => panic!("no description on Clear done: {other:?}"),
+            }
         };
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         assert!(
-            !labels(&v).contains(&"Clear done".to_owned()),
-            "nothing is done, so the header offers no Clear done: {:?}",
-            labels(&v)
+            !can_run(&v),
+            "nothing is done, so Clear done cannot run: {}",
+            dump(v.tree())
         );
+        assert_eq!(why(&v), "Nothing is done yet", "and it says why");
         let refused =
             w.rt.invoke_action(
                 &me(),
@@ -1629,18 +1641,18 @@ mod cases {
         );
         v.poll_patches().unwrap();
         assert!(
-            !labels(&v).contains(&"Clear done".to_owned()),
-            "an open step under an open task is nothing done: {:?}",
-            labels(&v)
+            !can_run(&v),
+            "an open step under an open task is nothing done: {}",
+            dump(v.tree())
         );
-        // Checking the task off takes the step with it, so Clear done is offered exactly when
-        // a clear takes something.
+        // Checking the task off takes the step with it, so Clear done can run exactly when a
+        // clear takes something.
         w.call(&apps.todo, "check", vec![res(&item)]);
         v.poll_patches().unwrap();
         assert!(
-            labels(&v).contains(&"Clear done".to_owned()),
-            "once an item is done, Clear done is offered: {:?}",
-            labels(&v)
+            can_run(&v),
+            "once an item is done, Clear done can run: {}",
+            dump(v.tree())
         );
         let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
         assert!(
@@ -1650,10 +1662,11 @@ mod cases {
         assert!(items(&w, &list, "items").is_empty());
         v.poll_patches().unwrap();
         assert!(
-            !labels(&v).contains(&"Clear done".to_owned()),
-            "with nothing left to clear it is offered no more: {:?}",
-            labels(&v)
+            !can_run(&v),
+            "with nothing left to clear it cannot run: {}",
+            dump(v.tree())
         );
+        assert_eq!(why(&v), "Nothing is done yet", "and it says why again");
         let refused =
             w.rt.invoke_action(
                 &me(),

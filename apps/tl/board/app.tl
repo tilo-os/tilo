@@ -107,7 +107,7 @@ view card_tile(b: Board, col: Column, card: Card) {
                     }
                 }
             }
-            for a in actions(card) {
+            for a in actions(card).filter(a -> a.available) {
                 ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
                     on choose: a.run
                 }

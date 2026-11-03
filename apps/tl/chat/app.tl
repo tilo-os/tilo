@@ -524,7 +524,7 @@ view thread_typing_here(of: Thread) {
 
 /// Edit, for whoever may edit the message (its author): puts the editor in its place.
 view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    if actions(m).any(a -> a.is(edit)) {
+    if actions(m).any(a -> a.is(edit) and a.available) {
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }

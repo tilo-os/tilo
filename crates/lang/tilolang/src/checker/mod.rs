@@ -39,6 +39,7 @@ mod ui;
 mod union;
 mod words;
 
+pub(crate) use native::subject_decided;
 pub use program::{RESOURCE_TYPE_NAME, check_program, resource_key};
 pub use template::is_template;
 
@@ -270,7 +271,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let Some(action) = env.own_callable(&a.name.name) else {
             continue;
         };
-        funcs.push(c.run_present(&view, &a.opts, &a.requires, &action.params));
+        funcs.push(c.run_present(&view, &a.opts, &action.params));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
     for d in &env.defaults {
@@ -305,6 +306,22 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             Span::default(),
             "internal: the declared functions and their indexes disagree",
         );
+    }
+    // The guard of each action that keeps a requirement its subject alone decides: what a
+    // surface offering it reads whether it can run now from.
+    for item in &module.items {
+        let Item::Action(a) = item else { continue };
+        let Some(action) = env.own_callable(&a.name.name) else {
+            continue;
+        };
+        if !a
+            .requires
+            .iter()
+            .any(|r| native::subject_decided(r, &action.params))
+        {
+            continue;
+        }
+        funcs.push(c.run_guard(action, &a.requires, &action.params));
     }
     ir::Module {
         funcs,
@@ -527,6 +544,7 @@ impl Checker<'_> {
             FuncKind::Fn => "n_",
             FuncKind::View => "v_",
             FuncKind::Block => "b_",
+            FuncKind::Guard => "q_",
         };
         let mut f = self.end(kind, &c.name, &format!("{prefix}{}", c.id));
         f.nparams = c.params.len();

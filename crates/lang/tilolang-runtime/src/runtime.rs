@@ -180,7 +180,13 @@ impl Runtime {
                 a.params
                     .iter()
                     .filter_map(|p| p.default.as_ref().map(|d| d.export.clone()))
-            }));
+            }))
+            .chain(
+                meta.actions
+                    .iter()
+                    .filter(|a| a.guard)
+                    .map(|a| tilolang::ir::guard_export(&a.id)),
+            );
         for name in wanted {
             if !exports.contains(&name) {
                 return Err(RuntimeError::Package(format!(
@@ -714,6 +720,33 @@ impl Runtime {
     /// As [`Runtime::project`] with explicit limits.
     pub fn project_with(&self, value: &Value, opts: ProjectOptions) -> Json {
         project(&self.core, value, opts)
+    }
+
+    /// Why the action `action` cannot run on the resource `subject` now, as the requirements its
+    /// subject alone decides say: the first that does not hold, in `viewer`'s words. `None` while
+    /// it can run, and for an action whose app keeps no requirement the subject decides.
+    ///
+    /// # Errors
+    ///
+    /// A requirement that traps, or answers something else than a text.
+    pub fn refusal(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<Option<String>, RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .refusal(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("a guard waited on a decision".into())
+                }
+            })
     }
 
     /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).

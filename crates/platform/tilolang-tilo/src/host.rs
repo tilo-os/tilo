@@ -584,6 +584,37 @@ impl HostInner {
         };
     }
 
+    /// Whether the action `action` can run on the published resource `resource` now: the
+    /// requirements its subject alone decides, as its app says them, in the person at the
+    /// window's eyes. `None` when the app keeps none, or when one of them cannot be read.
+    fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
+        let package = self
+            .packages
+            .borrow()
+            .iter()
+            .find(|package| package.meta.actions.iter().any(|held| held.id == action))
+            .cloned()?;
+        let meta = package.meta.actions.iter().find(|held| held.id == action)?;
+        if !meta.guard {
+            return None;
+        }
+        let declared = package.meta.subject_of(&meta.params)?;
+        let id = resource
+            .strip_prefix(&crate::publish::resource_id(&package.meta.app, ""))
+            .unwrap_or(resource);
+        let target = ResourceRef::parse_id(id, declared.id.clone())?;
+        match self.runtime.refusal(action, &target, &self.viewer) {
+            Ok(Some(reason)) => Some(tilo_actions::Availability::Unavailable {
+                code: "unmet".to_owned(),
+                reason,
+            }),
+            Ok(None) => Some(tilo_actions::Availability::Available),
+            // A requirement that cannot be read says nothing of the action: it is offered, and
+            // refuses with its reason when it runs.
+            Err(_) => None,
+        }
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         let action = package
@@ -898,6 +929,15 @@ impl Host {
     #[must_use]
     pub fn authority(&self) -> &TiloAuthority {
         &self.inner.authority
+    }
+
+    /// Whether the action `action` can run on the published resource `resource` now, as its app
+    /// says: the requirements its subject alone decides hold for the person at the window, or the
+    /// first that does not and why. `None` when the app keeps no requirement its subject could
+    /// decide, and the action is offered as it is.
+    #[must_use]
+    pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
+        self.inner.availability(resource, action)
     }
 
     /// The resource `action` returned when the person last ran it here, once: a window opens

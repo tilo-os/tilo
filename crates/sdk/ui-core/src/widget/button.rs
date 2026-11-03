@@ -36,6 +36,9 @@ pub struct Button {
     /// icon-only button, used as the accessible name when none was set
     /// explicitly.
     tooltip: Option<String>,
+    /// Why it cannot be pressed now, where that says more than the label (an action whose
+    /// requirement does not hold): spoken as its description, beside the name it announces.
+    description: Option<String>,
     /// Original presentation captured while a responsive toolbar displays
     /// this button icon-first. Kept separately so an app's explicit tooltip
     /// and accessible name are restored exactly when space returns.
@@ -188,6 +191,7 @@ impl Button {
             label: label.to_string(),
             accessible_name: None,
             tooltip: None,
+            description: None,
             compact_presentation: None,
             menu_only: false,
             rect: Rect::ZERO,
@@ -512,6 +516,24 @@ impl Button {
 
     pub fn set_tooltip(&mut self, text: Option<String>) {
         self.tooltip = text;
+    }
+
+    /// Why it cannot be pressed now, where the label does not say: an action whose requirement
+    /// does not hold. Assistive technology reads it as the button's description, so the name it
+    /// announces stays the action's own.
+    #[must_use]
+    pub fn with_description(mut self, why: impl Into<String>) -> Self {
+        self.description = Some(why.into());
+        self
+    }
+
+    /// Change why it cannot be pressed, as its state does ("Nothing is done yet" once the last
+    /// done task is cleared).
+    pub fn set_description(&mut self, why: Option<String>) {
+        if self.description != why {
+            self.description = why;
+            self.dirty = true;
+        }
     }
 
     /// Change what an icon-only button is announced (and published) as, for
@@ -2545,7 +2567,16 @@ impl Widget for Button {
                 checked: self.toggled,
                 ..Default::default()
             });
-        Some(node)
+        // Why it cannot be pressed now, if it says: read beside its name, never instead of it.
+        let description = self
+            .description
+            .as_deref()
+            .map(|why| i18n!(why))
+            .filter(|why| !why.trim().is_empty());
+        Some(match description {
+            Some(why) => node.with_description(why),
+            None => node,
+        })
     }
 }
 

@@ -1026,7 +1026,6 @@ impl Checker<'_> {
         &mut self,
         view: &Callable,
         opts: &[ast::ActionOpt],
-        requires: &[ast::Require],
         params: &[crate::resolve::ParamInfo],
     ) -> crate::ir::Func {
         self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
@@ -1086,27 +1085,6 @@ impl Checker<'_> {
                 }
             }
         }
-        // Why it is unavailable on the subject now: the reason of its first requirement on the
-        // subject alone that does not hold, which is set last. A requirement that reads what a
-        // caller gives (`to` in `move_to(t, to)`) cannot be decided before it is given: it is
-        // checked when the action runs with it, and a form shows its reason as the refusal.
-        for r in requires.iter().rev() {
-            if mentions(&r.cond, others)
-                .or_else(|| mentions(&r.reason, others))
-                .is_some()
-            {
-                continue;
-            }
-            // A requirement may read `invoker`: here, the person looking.
-            self.st.invoker = super::Invoker::Viewer;
-            let cond = self.expr_as(&r.cond, &Ty::Bool);
-            let reason = self.expr_as(&r.reason, &Ty::Text);
-            self.st.invoker = super::Invoker::None;
-            self.push_sink();
-            self.prop(node.clone(), "unavailable", reason, r.span);
-            let unmet = self.pop_sink();
-            self.emit(Stmt::If(cond, Vec::new(), unmet));
-        }
         self.emit(Stmt::Return(Some(node)));
         let mut f = self.end(
             crate::ir::FuncKind::View,
@@ -1114,6 +1092,37 @@ impl Checker<'_> {
             &format!("v_{}", view.id),
         );
         f.nparams = view.params.len();
+        f
+    }
+
+    /// The guard of the action `c`: the requirements its subject alone decides, as one function
+    /// answering the first reason the action cannot run on the subject now, or the empty text
+    /// while it can ([`crate::ir::FuncKind::Guard`]). A requirement that reads what a caller
+    /// gives (`to` in `move_to(t, to)`) cannot be decided before it is given: it is checked when
+    /// the action runs with it, and a form shows its reason as the refusal.
+    pub(super) fn run_guard(
+        &mut self,
+        c: &Callable,
+        requires: &[ast::Require],
+        params: &[crate::resolve::ParamInfo],
+    ) -> crate::ir::Func {
+        let subject = params.get(..1).unwrap_or_default();
+        self.begin(super::Ctx::View, subject, Ty::Text, &c.id);
+        for r in requires.iter().filter(|r| subject_decided(r, params)) {
+            // A requirement may read `invoker`: here, the person looking, who would run it.
+            self.st.invoker = super::Invoker::Viewer;
+            let cond = self.expr_as(&r.cond, &Ty::Bool);
+            let reason = self.expr_as(&r.reason, &Ty::Text);
+            self.st.invoker = super::Invoker::None;
+            self.emit(Stmt::If(cond, Vec::new(), vec![Stmt::Return(Some(reason))]));
+        }
+        self.emit(Stmt::Return(Some(Ex::str(""))));
+        let mut f = self.end(
+            crate::ir::FuncKind::Guard,
+            &c.name,
+            &crate::ir::guard_export(&c.id),
+        );
+        f.nparams = subject.len();
         f
     }
 
@@ -1166,6 +1175,15 @@ impl Checker<'_> {
             vec![Ex::local(parent, Ty::View), Ex::local(n, Ty::View)],
         ));
     }
+}
+
+/// Whether the requirement `r` reads nothing a caller gives beyond the subject: what the subject
+/// alone decides, so a surface offering the action can say whether it can run before anyone gives
+/// the rest. One that reads another argument (`to` in `move_to(t, to)`) is checked when the action
+/// runs with it.
+pub(crate) fn subject_decided(r: &ast::Require, params: &[crate::resolve::ParamInfo]) -> bool {
+    let others: Vec<&str> = params.iter().skip(1).map(|p| p.name.as_str()).collect();
+    mentions(&r.cond, &others).is_none() && mentions(&r.reason, &others).is_none()
 }
 
 /// The first of `names` an expression reads as a variable, ignoring the inside of lambdas.

@@ -45,7 +45,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Planner, Publications, host_resource, publish_package,
+    Caller, Committer, Planner, Publications, host_resource, publish_availability, publish_package,
 };
 use tilolang_tilo::{HostEffect, OpenEffect};
 
@@ -80,7 +80,13 @@ pub struct Spec {
 
 /// What a [`Surface`]'s resources are built from: the published records' revision and the
 /// loaded packages.
-type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>);
+type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
+
+/// What one action of one record was read as: the record, the action, and whether it can run now.
+type Read = (String, String, tilo_actions::Availability);
+
+/// What a record's actions were read as, with the tree they were read from.
+type Reads = (Rc<ResourceSpec>, Vec<Read>);
 
 /// What the instance publishes on its connection: the workspace's records with their actions, kept up
 /// to date change by change.
@@ -93,6 +99,9 @@ struct Surface {
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
     publications: RefCell<Publications>,
+    /// Per record, each action's availability as it was last read, with the tree it was read
+    /// from: a record's requirements are read again only when its tree is built again.
+    availability: RefCell<std::collections::BTreeMap<String, Reads>>,
 }
 
 impl Surface {
@@ -111,6 +120,7 @@ impl Surface {
             planner,
             committer: handle,
             publications: RefCell::new(publications),
+            availability: RefCell::new(std::collections::BTreeMap::new()),
         };
         surface.update();
         surface
@@ -123,11 +133,14 @@ impl Surface {
     }
 
     /// What [`Self::resources`] is built from, besides what never changes for this surface: the
-    /// published records' revision and the loaded packages.
+    /// published records' revision, the loaded packages, and the updates that saw a change: an
+    /// action's availability follows what its app's requirements read, which a change moves
+    /// without moving a label.
     fn inputs(&self) -> SurfaceInputs {
         (
             self.publications.borrow().revision(),
             self.host.package_ids(),
+            self.publications.borrow().moved(),
         )
     }
 
@@ -136,24 +149,117 @@ impl Surface {
     /// app publishes. Built now, so an invocation resolves against what the record holds now.
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
-        out.extend(
-            self.publications
-                .borrow()
-                .trees()
-                .values()
-                .map(|tree| (**tree).clone()),
-        );
+        let trees: Vec<(String, Rc<ResourceSpec>)> = self
+            .publications
+            .borrow()
+            .trees()
+            .iter()
+            .map(|(doc, tree)| (doc.clone(), Rc::clone(tree)))
+            .collect();
+        for (doc, tree) in trees {
+            out.push(self.available(&doc, &tree));
+        }
         let words = self.host.runtime().words();
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner, &*words);
             if package.meta.app == self.app {
                 resource = with_app_actions(resource, &self.activate);
             }
+            publish_availability(&self.host, &mut resource);
             if !resource.actions.is_empty() {
                 out.push(resource);
             }
         }
         out
+    }
+
+    /// The record `doc` is published as, its actions' availability as its app says it now: the
+    /// requirements of a record are read again when its tree is built again, and taken from the
+    /// read before while the tree is the one they were read for.
+    fn available(&self, doc: &str, tree: &Rc<ResourceSpec>) -> ResourceSpec {
+        let mut published = (**tree).clone();
+        let mut cache = self.availability.borrow_mut();
+        let held = cache
+            .get(doc)
+            .filter(|(from, _)| Rc::ptr_eq(from, tree))
+            .map(|(_, said)| said.clone());
+        let mut said = Vec::new();
+        fill_availability(&self.host, &mut published, held.as_deref(), &mut said);
+        cache.insert(doc.to_owned(), (Rc::clone(tree), said));
+        published
+    }
+}
+
+/// Forget what actions were read as, for the records `changed` and every record their tree links
+/// to them: a requirement reads what an item holds and what holds it.
+fn forget_reads(surface: &Surface, changed: &[String]) {
+    surface.availability.borrow_mut().retain(|doc, _| {
+        !changed.iter().any(|changed| {
+            doc == changed
+                || doc
+                    .strip_prefix(changed.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+                || changed
+                    .strip_prefix(doc.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    });
+}
+
+/// The records whose actions are read again after `changed`: the changed records, and every
+/// package's own resource, whose actions may read the whole workspace.
+fn reads_again(surface: &Surface, changed: &[String]) -> Vec<String> {
+    let publications = surface.publications.borrow();
+    let mut again: Vec<String> = changed
+        .iter()
+        .filter_map(|doc| {
+            publications
+                .trees()
+                .get(doc)
+                .map(|tree| tree.id.as_str().to_owned())
+        })
+        .collect();
+    again.extend(
+        surface
+            .host
+            .packages()
+            .iter()
+            .map(|package| package_resource_id(&package.meta.app)),
+    );
+    again
+}
+
+/// Set each action's availability on `resource` and the items under it, as `host` says it now:
+/// from `held`, what they were read as for the same tree, and read from the app otherwise. What
+/// each action is set to is appended to `said`.
+fn fill_availability(
+    host: &Host,
+    resource: &mut ResourceSpec,
+    held: Option<&[Read]>,
+    said: &mut Vec<Read>,
+) {
+    for action in &mut resource.actions {
+        let availability = held
+            .and_then(|held| {
+                held.iter()
+                    .find(|(id, name, _)| id.as_str() == resource.id.as_str() && name == &action.id)
+            })
+            .map(|(_, _, availability)| availability.clone())
+            .or_else(|| host.availability(resource.id.as_str(), &action.id));
+        // An action the app keeps no requirement for keeps what it is published as: a host
+        // action beside it (undo, redo) says for itself whether it can run now.
+        let Some(availability) = availability else {
+            continue;
+        };
+        action.type_mut().contract.availability = availability.clone();
+        said.push((
+            resource.id.as_str().to_owned(),
+            action.id.clone(),
+            availability,
+        ));
+    }
+    for child in &mut resource.children {
+        fill_availability(host, child, held, said);
     }
 }
 
@@ -1027,17 +1133,26 @@ impl Hosted {
     /// those resources alone: their descriptors patched, and a delta of them, at the cost of
     /// what changed whatever the notebook. `inputs` are the surface's ([`Surface::inputs`]).
     /// Whether this turn's publishing is done; when the surface changed in more than labels
-    /// since the broker took it, the caller builds it whole.
+    /// since the broker took it, or an action's availability moved, the caller builds it whole.
     ///
     /// Nothing is validated again: no rule reads a label.
     fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
-        let Some((from, (published_at, published_packages))) = &self.published_from else {
+        let Some((from, taken)) = &self.published_from else {
             return false;
         };
-        if !Rc::ptr_eq(from, surface) || *published_packages != inputs.1 {
+        if !Rc::ptr_eq(from, surface) || taken.1 != inputs.1 {
             return false;
         }
-        let Some(labels) = surface.publications.borrow().labels_since(*published_at) else {
+        // A change moves what a requirement of an action reads without moving a label: the
+        // records it changed offer what they can run now, and a package's own actions may read
+        // the whole workspace a change moves (a task checked, and `Clear done` can run now).
+        let Some(changed_docs) = surface.publications.borrow().changed_since(taken.2) else {
+            return false;
+        };
+        // A record's requirements are read from what it holds and what holds it: a change to
+        // one moves every read around it, up and down the tree it is published in.
+        forget_reads(surface, &changed_docs);
+        let Some(labels) = surface.publications.borrow().labels_since(taken.0) else {
             return false;
         };
         let Some((descriptors, state)) = &mut self.published else {
@@ -1054,6 +1169,24 @@ impl Hosted {
             for index in state.indices(resource).unwrap_or_default() {
                 if let Some(descriptor) = descriptors.get_mut(*index) {
                     descriptor.resource_label.clone_from(label);
+                }
+            }
+        }
+        // A catalogue the window holds says what its actions could run when it was sent: what
+        // moved since is offered whole, the way a label alone is not.
+        for resource in reads_again(surface, &changed_docs) {
+            for index in state.indices(&resource).unwrap_or_default() {
+                let Some(descriptor) = descriptors.get(*index) else {
+                    continue;
+                };
+                let Some(availability) = surface
+                    .host
+                    .availability(&descriptor.address.resource, &descriptor.address.action)
+                else {
+                    continue;
+                };
+                if descriptor.contract.availability != availability {
+                    return false;
                 }
             }
         }

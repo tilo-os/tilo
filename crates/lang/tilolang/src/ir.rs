@@ -99,6 +99,10 @@ pub enum FuncKind {
     Flow,
     View,
     Block,
+    /// An action's requirements its subject alone decides: it answers the first reason the
+    /// action cannot run on the subject now, or the empty text while it can
+    /// ([`guard_export`]).
+    Guard,
 }
 
 /// An action or flow that code can apply: `app` and `id` name it for the host.
@@ -173,6 +177,13 @@ pub struct AtEventFn {
 /// The export of the argument function with id `id` ([`AtEventFn`]).
 pub fn at_event_export(id: &str) -> String {
     format!("e_{id}")
+}
+
+/// The export of the guard of the action with id `id`: the action's requirements its subject
+/// alone decides, answering the first reason it cannot run on the subject now, or the empty
+/// text while it can ([`FuncKind::Guard`]).
+pub fn guard_export(id: &str) -> String {
+    format!("q_{id}")
 }
 
 /// A view the checker made of the body of a UI `for`: one boundary per item, keyed by it, which

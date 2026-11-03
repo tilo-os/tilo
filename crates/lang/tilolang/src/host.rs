@@ -91,6 +91,18 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether it is a command the person reaches for on most things of its type \
                  (`frequent: true`): a surface showing the resource's actions draws it directly.",
             ),
+            (
+                "available",
+                "Bool",
+                "Whether it can run on the resource now: the requirements its subject decides \
+                 hold. A control for one that cannot is disabled, and says `reason`.",
+            ),
+            (
+                "reason",
+                "Text",
+                "Why it cannot run now, as the `require` that does not hold says it, in the \
+                 person's language; empty while it can.",
+            ),
         ],
     },
     ValueType {

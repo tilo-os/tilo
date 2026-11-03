@@ -1943,11 +1943,6 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
                 Some(ui::icons::Icon::FolderPlus),
                 None,
             ),
-            (
-                "Clear done".to_owned(),
-                Some(ui::icons::Icon::CircleCheck),
-                None,
-            ),
             ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
             ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
             (
@@ -2019,16 +2014,15 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Tasks",
             "New task",
             "New project",
-            "Clear done",
             "Task summary",
             "Complete",
             "Snooze until…",
-            "Move to inbox",
             "Set due date",
             "Prioritize",
             "Indent",
-            "Outdent",
             "Undo",
+            "Redo",
+            "Checkpoint",
         ],
         "the open task's palette"
     );
@@ -2053,5 +2047,92 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
         complete.2,
         Some(vec![command, "Enter".to_owned()]),
         "and its own chord"
+    );
+
+    // What cannot run now is no row: a task in the inbox has nowhere to move out of, the app
+    // has nothing done to clear, and a task at the outline's top has nowhere to outdent to.
+    for not_now in ["Move to inbox", "Clear done", "Outdent"] {
+        assert!(
+            !titles.contains(&not_now),
+            "{not_now} cannot run now, so it is no row: {titles:?}"
+        );
+    }
+    // Checked, the app can clear what is done, and the palette says so, without a label
+    // anywhere having changed.
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Escape);
+    session.settle();
+    let mut shown = Vec::new();
+    boxes(session.window.root(), &mut shown);
+    let (rect, _) = shown
+        .into_iter()
+        .find(|(rect, done)| !done && rect.width() > 0.0)
+        .expect("the task shows a box to check");
+    let (x, y) = (rect.center().x, rect.center().y);
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        a_checked_control(session),
+        "the task's own Complete checks it"
+    );
+    let checked: Vec<String> = palette_rows(session, "")
+        .into_iter()
+        .map(|(title, ..)| title)
+        .collect();
+    assert!(
+        checked.iter().any(|title| title == "Clear done"),
+        "a done task makes Clear done a row: {checked:?}"
+    );
+}
+
+/// A header's button for an action that cannot run now stands disabled, and says why: the
+/// requirement it does not meet is the reason the person reads, beside the name it announces.
+#[test]
+fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
+    /// Every node of `kind` under `node`, its own first.
+    fn of_kind<'a>(
+        node: &'a tilo_ui_host::UiNode,
+        kind: &str,
+        out: &mut Vec<&'a tilo_ui_host::UiNode>,
+    ) {
+        if node.kind == kind {
+            out.push(node);
+        }
+        for child in &node.children {
+            of_kind(child, kind, out);
+        }
+    }
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::tasks();
+    session.settle();
+    let view = session.hosted().view().expect("the window is connected");
+    let tree = view.root_tree().expect("the window has a tree");
+    let mut buttons = Vec::new();
+    of_kind(&tree, "ui.Button", &mut buttons);
+    let button = |label: &str| {
+        buttons
+            .iter()
+            .find(|button| {
+                button.props.get("label") == Some(&tilo_ui_host::Value::Text(label.to_owned()))
+            })
+            .unwrap_or_else(|| panic!("the header holds {label}"))
+    };
+    let clear = button("Clear done");
+    assert_eq!(
+        clear.props.get("enabled"),
+        Some(&tilo_ui_host::Value::Int(0)),
+        "nothing is done, so Clear done is disabled"
+    );
+    assert_eq!(
+        clear.props.get("description"),
+        Some(&tilo_ui_host::Value::Text("Nothing is done yet".to_owned())),
+        "and it says why"
+    );
+    let new_task = button("New task");
+    assert_eq!(
+        new_task.props.get("enabled"),
+        Some(&tilo_ui_host::Value::Int(1)),
+        "an action that can run is enabled"
     );
 }

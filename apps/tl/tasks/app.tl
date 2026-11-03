@@ -265,6 +265,7 @@ action indent(t: Task) (label: "Indent", icon: .arrow_right, key: "Tab") {
 
 /// Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
 action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Shift+Tab") {
+    require t.parent != .none "It is at the top level already"
     if let p = t.parent {
         t.parent = p.parent
         tasks.items.move(t, after: p)
@@ -575,7 +576,7 @@ view task_card(t: Task, sections: List<Section>) {
                     }
                 }
             }
-            for a in actions(t) {
+            for a in actions(t).filter(a -> a.available) {
                 ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
                     on choose: a.run
                 }

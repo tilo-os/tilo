@@ -32,7 +32,9 @@ view list<R, T, S>(
         ?? if places.is_empty() { meta(of).title } else { everything }
     // An empty list offers the primary action while nothing was made yet: on the place a
     // window starts on, or on all of the items. One another filter emptied says only that.
-    let primary = if query == "" or query == place { offered.find(a -> a.primary) } else { .none }
+    let primary = if query == "" or query == place {
+        offered.find(a -> a.primary and a.available)
+    } else { .none }
     ui.NavShell(
         content_kind: if kind.opens { .document } else { .list },
         sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) },
@@ -137,7 +139,7 @@ view rows<T>(
             on select(x: T): open(x, front: false)
             on activate(x: T): open(x)
             for x in shown {
-                let offered = actions(x)
+                let takeable = actions(x).filter(a -> a.available)
                 let heading: Option<Date> = if let g = group { g(x) } else { .none }
                 let tail = if let c = closed { c(x) } else { false }
                 let under: Option<T> = if let p = parent { p(x) } else { .none }
@@ -153,7 +155,7 @@ view rows<T>(
                     progress: count,
                 ) {
                     menu: {
-                        for a in offered {
+                        for a in takeable {
                             ui.MenuItem(
                                 a.label,
                                 icon: a.icon,
@@ -165,11 +167,11 @@ view rows<T>(
                         }
                     }
                     swipe: {
-                        if let a = offered.find(.destructive) {
+                        if let a = takeable.find(.destructive) {
                             ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
                                 on swipe: a.run
                             }
-                        } else if let a = offered.first() {
+                        } else if let a = takeable.first() {
                             ui.SwipeAction(a.label, icon: a.icon) {
                                 on swipe: a.run
                             }
@@ -218,14 +220,14 @@ view outline<T>(
         ) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
-                let offered = actions(x)
+                let takeable = actions(x).filter(a -> a.available)
                 let count: Option<Text> = if let c = progress { c(x) } else { .none }
                 ui.TreeViewNode(x, label(x), parent: parent(x), progress: count) {
                     on drop(moved: T): place(moved, .none, .some(x))
                     on into(moved: T): place(moved, .some(x), .none)
                     on check: toggled(x)
                     menu: {
-                        for a in offered {
+                        for a in takeable {
                             ui.MenuItem(
                                 a.label,
                                 icon: a.icon,
@@ -267,7 +269,14 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
     extra
     for a in offered {
         if a.primary {
-            ui.Button(a.label, icon: a.icon, role: .primary, key: a.key) {
+            ui.Button(
+                a.label,
+                icon: a.icon,
+                role: .primary,
+                key: a.key,
+                enabled: a.available,
+                description: a.reason,
+            ) {
                 on press: a.run
             }
         }
@@ -280,11 +289,19 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
                 icon_only: true,
                 toggled: a.on == .some(true),
                 key: a.key,
+                enabled: a.available,
+                description: a.reason,
             ) {
                 on press: a.run
             }
         } else if a.frequent and not a.primary {
-            ui.Button(a.label, toggled: a.on == .some(true), key: a.key) {
+            ui.Button(
+                a.label,
+                toggled: a.on == .some(true),
+                key: a.key,
+                enabled: a.available,
+                description: a.reason,
+            ) {
                 on press: a.run
             }
         }
@@ -297,6 +314,8 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
                 toggled: a.on == .some(true),
                 key: a.key,
                 in_menu: true,
+                enabled: a.available,
+                description: a.reason,
             ) {
                 on press: a.run
             }
@@ -345,7 +364,7 @@ view page<R>(
         }
         content: {
             if empty {
-                if let a = actions(of).find(.primary) {
+                if let a = actions(of).find(a -> a.primary and a.available) {
                     ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon, action: a.label) {
                         on act: a.run
                     }
@@ -405,10 +424,10 @@ view transcript<R, T>(
                 ui.VirtualList(transcript: true, unread: unread) {
                     for m in items {
                         let made = created(m)
-                        let offered = actions(m)
+                        let takeable = actions(m).filter(a -> a.available)
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
                             menu: {
-                                for a in offered {
+                                for a in takeable {
                                     ui.MenuItem(
                                         a.label,
                                         icon: a.icon,

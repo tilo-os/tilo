@@ -667,7 +667,7 @@ view unified(m: Mail) {
                         on select(x: Thread): open(x, front: false).then(mark_read(x, false))
                         on activate(x: Thread): open(x).then(mark_read(x, false))
                         for x in shown {
-                            let offered = actions(x)
+                            let offered = actions(x).filter(o -> o.available)
                             ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
                                 menu: {
                                     for o in offered {
@@ -788,7 +788,7 @@ view thread_list(shown: List<Thread>) {
             on select(x: Thread): open(x, front: false).then(mark_read(x, false))
             on activate(x: Thread): open(x).then(mark_read(x, false))
             for x in shown {
-                let offered = actions(x)
+                let offered = actions(x).filter(o -> o.available)
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
                     menu: {
                         for o in offered {

@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
-use crate::handles::FrameKind;
+use crate::handles::{FrameKind, ViewState};
 use crate::ids::Principal;
 use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::render::Offer;
@@ -1330,8 +1330,8 @@ impl Core {
     }
 
     /// An offered action as a `host.Action`: presented for the subject (its label, icon and
-    /// toggled state as its presentation view gives them now), the view taking what that read.
-    /// `None` while a requirement of it on the subject does not hold: it is not offered.
+    /// toggled state as its presentation view gives them now), the view taking what that read,
+    /// and whether it can run on the subject now (`available`, with the `reason` it cannot).
     fn action_value(&self, shown: &Offered<'_>, subject: &RefValue) -> HResult<Option<Value>> {
         let action = shown.action;
         let mut label = self.words.borrow().word(
@@ -1356,9 +1356,14 @@ impl Core {
                 Some(Value::Int(flag)) => Some(*flag != 0),
                 _ => None,
             };
-            if matches!(node.props.get("unavailable"), Some(Value::Text(why)) if !why.is_empty()) {
-                return Ok(None);
-            }
+        }
+        // Whether it can run on the subject now, as the requirements its subject decides say: a
+        // control for it stands disabled with the reason, rather than failing when pressed.
+        let mut available = true;
+        let mut why = String::new();
+        if let Some(refused) = self.refusal(&action.id, subject, &self.viewer_here())? {
+            available = false;
+            why = refused;
         }
         // An action that still asks for something opens its form: its label says so, as a
         // menu item that opens a dialog does.
@@ -1402,10 +1407,92 @@ impl Core {
                 .clone()
                 .map_or_else(Value::none, |group| Value::some(Value::Text(group))),
             Value::Bool(action.frequent),
+            Value::Bool(available),
+            Value::Text(why),
             // After its fields, the action's id, which `a.is(edit)` compares
             // (`tilolang::host::action_id_at`).
             Value::Text(action.id.clone()),
         ])))
+    }
+
+    /// Why the action `action` cannot run on `subject` now, as the requirements its subject
+    /// alone decides say: the first that does not hold, in `viewer`'s words. `None` when they
+    /// all hold, or when the app keeps none the subject could decide. What it reads is the
+    /// view's it is offered in, so a surface showing the action runs again when that changes.
+    ///
+    /// # Errors
+    ///
+    /// A guard that traps, or answers something else than a text.
+    pub(crate) fn refusal(
+        &self,
+        action: &str,
+        subject: &RefValue,
+        viewer: &Principal,
+    ) -> HResult<Option<String>> {
+        let (pkg, params) = {
+            let registry = self.registry.borrow();
+            let Some(pkg) = registry.action_package(action) else {
+                return Ok(None);
+            };
+            let Some(meta) = pkg.action(action) else {
+                return Ok(None);
+            };
+            if !meta.guard {
+                return Ok(None);
+            }
+            let params = meta.params.get(..1).unwrap_or_default().to_vec();
+            (pkg.clone(), params)
+        };
+        self.frames.borrow_mut().push(
+            pkg.hash.clone(),
+            FrameKind::View(ViewState {
+                viewer: viewer.clone(),
+                ..ViewState::default()
+            }),
+        );
+        let answered = self
+            .call_in_frame(
+                &pkg,
+                &tilolang::ir::guard_export(action),
+                &params,
+                &[Value::Ref(subject.clone())],
+                Some("Text"),
+            )
+            .map_err(|e| e.to_string());
+        let frame = self.frames.borrow_mut().pop();
+        let Some(FrameKind::View(reads)) = frame.map(|f| f.kind) else {
+            return trap("the guard frame vanished");
+        };
+        let reason = match answered? {
+            Value::Text(text) => text,
+            other => {
+                return trap(format!(
+                    "the guard of `{action}` answered {} where a reason is",
+                    other.kind_name()
+                ));
+            }
+        };
+        self.note_time(reads.changes_at);
+        self.note_reads(reads.reads);
+        {
+            let mut frames = self.frames.borrow_mut();
+            if let Some(vs) = frames.view_mut() {
+                vs.state_reads.extend(reads.state_reads);
+                vs.state_seen.extend(reads.state_seen);
+                vs.space_reads.extend(reads.space_reads);
+            }
+        }
+        Ok((!reason.is_empty()).then_some(reason))
+    }
+
+    /// The person the code running is for: whom an action offered now would be offered to.
+    fn viewer_here(&self) -> Principal {
+        let frames = self.frames.borrow();
+        match frames.deciding().map(|f| &f.kind) {
+            Some(FrameKind::View(vs)) => vs.viewer.clone(),
+            Some(FrameKind::Action(state)) => state.invoker.clone(),
+            _ => Principal(String::new()),
+        }
     }
 
     /// The `present` node the presentation view `view` builds for `subject`, rendered as part

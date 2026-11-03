@@ -507,6 +507,7 @@ impl Reader<'_> {
             key: None,
             group: None,
             frequent: false,
+            guard: false,
         });
     }
 

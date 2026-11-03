@@ -566,6 +566,13 @@ pub struct Publications {
     /// How many times the updates read every record in full: only the first update, and a turn
     /// that changed what every record is published as.
     sweeps: u64,
+    /// How many updates saw a change in the workspace, whether or not it changed what a record
+    /// is published as: an action's availability follows what its app's requirements read, which
+    /// a change may move without moving a label.
+    moved: u64,
+    /// The documents each recent update saw change, by [`Self::moved`], oldest first: what a
+    /// reader holding an earlier count reads the requirements of again.
+    motions: std::collections::VecDeque<(u64, Vec<String>)>,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -695,6 +702,8 @@ impl Publications {
             fresh: true,
             visited: 0,
             sweeps: 0,
+            moved: 0,
+            motions: std::collections::VecDeque::new(),
         }
     }
 
@@ -852,6 +861,36 @@ impl Publications {
         self.visited
     }
 
+    /// How many updates have seen a change in the workspace, whether or not it changed what a
+    /// record is published as: what an action's availability, and only it, reads besides.
+    #[must_use]
+    pub fn moved(&self) -> u64 {
+        self.moved
+    }
+
+    /// The documents that changed since the update counted `since`, each once: a record the
+    /// store wrote, whether or not it changed what is published of it. `None` when what changed
+    /// that long ago is no longer kept.
+    #[must_use]
+    pub fn changed_since(&self, since: u64) -> Option<Vec<String>> {
+        if since == self.moved {
+            return Some(Vec::new());
+        }
+        if since > self.moved {
+            return None;
+        }
+        let first = self.motions.iter().position(|(at, _)| *at > since)?;
+        // Every update after `since` is one the journal holds.
+        if self.motions.get(first)?.0 != since.wrapping_add(1) {
+            return None;
+        }
+        let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (_, docs) in self.motions.iter().skip(first) {
+            out.extend(docs.iter().cloned());
+        }
+        Some(out.into_iter().collect())
+    }
+
     /// How many times the updates so far have read every record in full: what publishing a
     /// change must never cost, whatever the workspace holds.
     #[must_use]
@@ -963,6 +1002,21 @@ impl Publications {
             // Nothing changed: no record is looked at, whether the workspace holds one or ten
             // thousand.
             self.publish_changed(host, planner, &changes, relabels, &mut touched);
+        }
+        // A change may move what a requirement of an action reads without moving any tree of
+        // its own (a task checked, and `Clear done` can run now): a surface holding the actions
+        // reads the requirements of the records that changed again, whether or not the record
+        // is published as something else.
+        if !changes.is_empty() {
+            self.moved = self.moved.saturating_add(1);
+            let mut docs: std::collections::BTreeSet<String> =
+                changes.docs.keys().cloned().collect();
+            docs.extend(changes.whole.iter().cloned());
+            if self.motions.len() >= MOTIONS_KEPT {
+                self.motions.pop_front();
+            }
+            self.motions
+                .push_back((self.moved, docs.into_iter().collect()));
         }
         touched
     }
@@ -1105,6 +1159,9 @@ impl Publications {
 
 /// How many label-only revisions [`Publications::labels_since`] reaches back over.
 const RELABELS_KEPT: usize = 256;
+
+/// How many updates [`Publications::changed_since`] reaches back over.
+const MOTIONS_KEPT: usize = 256;
 
 /// What republishing a record did to its tree.
 enum Republished {
@@ -1741,6 +1798,22 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
         }
     }
     None
+}
+
+/// Set each action's availability on `resource` and the items under it, as its app says it now:
+/// whether the requirements its subject alone decides hold for the person at the window, or the
+/// first that does not and why. What a palette reads to leave an action out, and a toolbar to
+/// disable its control with the reason.
+pub fn publish_availability(host: &crate::host::Host, resource: &mut ResourceSpec) {
+    let id = resource.id.as_str().to_owned();
+    for action in &mut resource.actions {
+        if let Some(availability) = host.availability(&id, &action.id) {
+            action.type_mut().contract.availability = availability;
+        }
+    }
+    for child in &mut resource.children {
+        publish_availability(host, child);
+    }
 }
 
 /// The package's own resource, carrying the actions that take no record.

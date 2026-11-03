@@ -113,7 +113,7 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
                         );
                     }
                 }
-                FuncKind::Fn => {}
+                FuncKind::Fn | FuncKind::Guard => {}
             }
             let Some(map) = reaches.get_mut(i) else {
                 continue;

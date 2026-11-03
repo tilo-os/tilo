@@ -488,6 +488,11 @@ pub struct ActionMeta {
     /// surface showing the resource's actions draws directly rather than behind the rest.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frequent: bool,
+    /// Whether the action keeps a requirement its subject alone decides, exported as
+    /// [`crate::ir::guard_export`]: the first reason it cannot run on the subject now, or empty
+    /// while it can. What a surface offering the action reads its availability from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guard: bool,
 }
 
 impl ActionMeta {
