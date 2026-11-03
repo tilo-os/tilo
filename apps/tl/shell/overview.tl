@@ -31,7 +31,7 @@ view overview(d: Desk) {
         rooms_here(d)
         if query == "" {
             if here.is_empty() {
-                ui.EmptyState("No windows", message: "Open something and its picture shows here", icon: .app_window, inline: true)
+                ui.EmptyState("No windows", message: "Open something to see its window", icon: .app_window, inline: true)
             }
             for s in window_strips(here) {
                 picture(d, here, s)
@@ -159,7 +159,7 @@ view window_menu(d: Desk, w: Win) {
 /// or moving it here. What apps hold is the platform search's, not the overview's.
 view found(d: Desk, elsewhere: List<Win>) {
     if elsewhere.is_empty() {
-        ui.EmptyState("Nothing matches", message: "Windows of every workspace show here. What apps hold is in Search", icon: .search, inline: true)
+        ui.EmptyState("Nothing matches", message: "Finds windows in every workspace. What is inside an app is in Search", icon: .search, inline: true)
     } else {
         ui.Section("Windows") {
             for w in elsewhere.take(16) {

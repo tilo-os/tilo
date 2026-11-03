@@ -821,7 +821,7 @@ d-tnecawb6 = A foreign place
 d-i6ll2n4j = Desk view
 
 d-72tgr4px = Clock
-    .w-paused = Paused · { $timer_left }
+    .w-paused = Paused
 
 d-3ezewqgy = Bar
     .w-top-bar = Top bar
@@ -1001,7 +1001,7 @@ d-clgbrhsn = Notices
     .w-notifications = Notifications
     .w-clear-all = Clear all
     .w-nothing-to-catch-up-on = Nothing to catch up on
-    .w-what-apps-and-agents-tell-you = What apps and agents tell you shows here
+    .w-apps-and-agents-leave-a-notice = Apps and agents leave a notice when something needs you
     .w-search-notifications = Search notifications
     .w-nothing-matches-that = Nothing matches that
     .w-clear-the-search-to-see-every = Clear the search to see every notice
@@ -1024,7 +1024,7 @@ d-rcjzvfxp = Overview
     .w-join-a-workspace = Join a workspace
     .w-search-windows-across-your-workspaces = Search windows across your workspaces
     .w-no-windows = No windows
-    .w-open-something-and-its-picture-shows = Open something and its picture shows here
+    .w-open-something-to-see-its-window = Open something to see its window
 
 d-f5tl6n63 = Rooms here
     .w-here = { $len } here
@@ -1042,7 +1042,7 @@ d-6l3wldtm = Window menu
 
 d-6nn35yb7 = Found
     .w-nothing-matches = Nothing matches
-    .w-windows-of-every-workspace-show-here = Windows of every workspace show here. What apps hold is in Search
+    .w-finds-windows-in-every-workspace-what = Finds windows in every workspace. What is inside an app is in Search
     .w-windows = Windows
 
 d-kxdzjhoo = Window line
@@ -1147,7 +1147,7 @@ d-z4vc77e6 = Place controls
 
 d-fziuz57n = Switcher
     .w-no-windows = No windows
-    .w-open-something-and-it-shows-here = Open something and it shows here
+    .w-open-something-to-switch-to-it = Open something to switch to it
 
 d-dswgb57x = Window card
 

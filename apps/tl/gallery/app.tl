@@ -171,7 +171,7 @@ view parts(b: Basics, last: State<Text>) {
             ui.Property("Stage", "Review")
         }
     }
-    ui.EmptyState("No archived items", message: "Archived items show here.", icon: .archive, inline: true)
+    ui.EmptyState("No archived items", message: "Archive an item to put it aside.", icon: .archive, inline: true)
     ui.Section("A page of a stack") {
         ui.PageSlide(level: 1) {
             ui.Text("A section opened in its own page of the panel, one level deep.", role: .caption)

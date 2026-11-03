@@ -253,7 +253,10 @@ view clock(d: Desk) {
         ui.Text(d.clock, role: .subheading, numeric: true)
         if d.timer != "" {
             ui.Text(d.timer, role: .caption)
-            ui.Text(if d.timer_paused { "Paused · {d.timer_left}" } else { d.timer_left }, role: .caption, numeric: true)
+            if d.timer_paused {
+                ui.Text("Paused", role: .caption)
+            }
+            ui.Text(d.timer_left, role: .caption, numeric: true)
         }
     }
 }

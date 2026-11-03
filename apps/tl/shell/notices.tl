@@ -32,7 +32,7 @@ view notices(d: Desk) {
             }
             body: {
                 if all.is_empty() {
-                    ui.EmptyState("Nothing to catch up on", message: "What apps and agents tell you shows here", icon: .bell)
+                    ui.EmptyState("Nothing to catch up on", message: "Apps and agents leave a notice when something needs you", icon: .bell)
                 } else {
                     ui.TextInput(value: query, placeholder: "Search notifications")
                     if shown.is_empty() {

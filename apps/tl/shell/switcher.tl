@@ -37,7 +37,7 @@ view switcher(d: Desk) {
         ui.FloatingPanel {
             body: {
                 if count == 0 {
-                    ui.EmptyState("No windows", message: "Open something and it shows here", icon: .app_window, inline: true)
+                    ui.EmptyState("No windows", message: "Open something to switch to it", icon: .app_window, inline: true)
                 } else {
                     stack(gap: .section) {
                         row(gap: .related, align: .center, distribute: .center, wrap: true) {
