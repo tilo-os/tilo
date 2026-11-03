@@ -330,17 +330,27 @@ fn foreign_state(kind: &'static str) {
 /// a group of them, last landing last.
 fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Action> {
     if encoded.type_id == R::ACTION_TYPE {
-        return tilo_actions::decode_json(&encoded.payload)
-            .map(|action| vec![action])
-            .unwrap_or_default();
+        return match tilo_actions::decode_json(&encoded.payload) {
+            Ok(action) => vec![action],
+            Err(error) => {
+                // Its permissions and its presentation both come from what it
+                // says, so an action that does not read back is none.
+                tracing::warn!(%error, "an action of this resource did not read back; it is not among its own actions");
+                Vec::new()
+            }
+        };
     }
     if encoded.type_id == tilo_resource::group::group_type::<R>() {
-        return tilo_actions::decode_payload::<tilo_resource::ActionGroup<R::Action>>(
+        return match tilo_actions::decode_payload::<tilo_resource::ActionGroup<R::Action>>(
             &encoded.type_id,
             &encoded.payload,
-        )
-        .map(|group| group.actions)
-        .unwrap_or_default();
+        ) {
+            Ok(group) => group.actions,
+            Err(error) => {
+                tracing::warn!(%error, "a group of this resource's actions did not read back; it is not among its own actions");
+                Vec::new()
+            }
+        };
     }
     Vec::new()
 }
@@ -553,6 +563,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
         };
         let previous = previous
             .filter(|encoded| encoded.type_id == R::ACTION_TYPE)
+            // ignored-failure: an action that does not read back does not coalesce with this one
             .and_then(|encoded| tilo_actions::decode_json::<R::Action>(&encoded.payload).ok());
         (
             previous

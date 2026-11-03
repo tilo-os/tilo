@@ -591,8 +591,8 @@ impl WorkspaceState {
         let chain = P::chain_beside(base.id());
         let state = self
             .chains
-            .open_at::<P>(&workspace, chain, move || live.get())?;
-        Some(Chain::applying(state, self.app_id, base.me()))
+            .open_at::<P>(&workspace, &chain, move || live.get())?;
+        Some(Chain::applying(&state, self.app_id, base.me()))
     }
 
     /// Keep an opened record for the window: its route reported to the

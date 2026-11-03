@@ -557,7 +557,7 @@ impl<R: Resource> Actions<R> {
         let resource = self.table.exporting(spec.clone());
         let spec = resource.actions.first()?.clone();
         ActionBinding::static_json(&resource, &spec, serde_json::Map::new())
-            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .map_err(|error| tracing::warn!(%error, action = %spec.id, "control not bound"))
             .ok()
     }
 
@@ -572,7 +572,7 @@ impl<R: Resource> Actions<R> {
         let spec = resource.actions.first()?.clone();
         let arguments: Arguments<bool> = Box::new(|_| Ok(serde_json::Map::new()));
         ActionBinding::fallible(&resource, &spec, arguments)
-            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .map_err(|error| tracing::warn!(%error, action = %spec.id, "control not bound"))
             .ok()
     }
 

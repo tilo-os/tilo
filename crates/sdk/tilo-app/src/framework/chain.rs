@@ -344,7 +344,7 @@ impl<P: Chained> ChainState<P> {
                     }
                     Ok(Opened::Asked) => {}
                     Err(error) => {
-                        tracing::debug!(kind = P::KIND, part = index, %error, "earlier part not opened");
+                        tracing::warn!(kind = P::KIND, part = index, %error, "earlier part not opened");
                     }
                 }
             }
@@ -406,7 +406,7 @@ impl<P: Chained> ChainState<P> {
         };
         opened
             .map_err(|error| {
-                tracing::debug!(kind = P::KIND, part = newest, %error, "chain head not opened");
+                tracing::warn!(kind = P::KIND, part = newest, %error, "chain head not opened");
             })
             .is_ok()
     }
@@ -954,8 +954,8 @@ impl<P: Chained> Chain<P> {
     /// records ([`WorkspaceHandle::chain_beside`](super::WorkspaceHandle::chain_beside)):
     /// its actions are applied as `me` when the app asks for them
     /// ([`Self::invoke`]), not submitted to a host's door.
-    pub(crate) fn applying(state: Rc<ChainState<P>>, app_id: &'static str, me: &str) -> Self {
-        Self::new(Rc::clone(&state), detached_dispatch(app_id, &state, me))
+    pub(crate) fn applying(state: &Rc<ChainState<P>>, app_id: &'static str, me: &str) -> Self {
+        Self::new(Rc::clone(state), detached_dispatch(app_id, state, me))
     }
 
     /// The address the chain is published under: what an agent or a
@@ -1289,7 +1289,7 @@ impl Chains {
         base: &RecordId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
-        self.open_at::<P>(workspace?, P::chain_beside(base), base_state)
+        self.open_at::<P>(workspace?, &P::chain_beside(base), base_state)
     }
 
     /// The chain of `P` kept at `chain` in `workspace`, opened on first use.
@@ -1298,10 +1298,10 @@ impl Chains {
     pub(crate) fn open_at<P: Chained>(
         &self,
         workspace: &WorkspaceRecords,
-        chain: RecordId,
+        chain: &RecordId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
-        if let Some(held) = self.opened::<P>(&chain) {
+        if let Some(held) = self.opened::<P>(chain) {
             return Some(held);
         }
         let state = Rc::new(ChainState::<P>::open_at(
@@ -1309,7 +1309,7 @@ impl Chains {
             Rc::new(base_state),
             chain.clone(),
         )?);
-        self.hold(&chain, &state);
+        self.hold(chain, &state);
         Some(state)
     }
 

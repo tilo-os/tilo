@@ -3,20 +3,6 @@
 # --update records a file that shed some. Report the error, or mark a
 # genuinely ignorable failure with `// ignored-failure: <why>`.
 [files]
-"crates/sdk/tilo-app/src/framework/chain.rs" = 2
-"crates/sdk/tilo-app/src/framework/controls.rs" = 2
-"crates/sdk/tilo-app/src/framework/dispatch.rs" = 1
-"crates/sdk/tilo-app/src/framework/effect.rs" = 2
-"crates/sdk/tilo-app/src/framework/effect/causal.rs" = 1
-"crates/sdk/tilo-app/src/framework/query.rs" = 1
-"crates/sdk/tilo-app/src/framework/root/read.rs" = 1
-"crates/sdk/tilo-app/src/framework/root/typed.rs" = 3
-"crates/sdk/tilo-app/src/framework/save_notice.rs" = 1
-"crates/sdk/tilo-app/src/framework/section.rs" = 1
-"crates/sdk/tilo-app/src/framework/testing/perf.rs" = 7
-"crates/sdk/tilo-app/src/framework/testing/reach.rs" = 2
-"crates/sdk/tilo-app/src/framework/text.rs" = 1
-"crates/sdk/tilo-app/src/linked_accounts.rs" = 1
 "crates/session/session/src/activity.rs" = 3
 "crates/session/session/src/activity_models.rs" = 2
 "crates/session/session/src/agent_door.rs" = 10
