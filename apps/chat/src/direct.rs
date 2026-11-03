@@ -398,9 +398,13 @@ impl Records {
     }
 
     /// Announce the pair with `peer` to the workspace, so that its record is
-    /// the two people's: the door holds the device key that proves it.
+    /// the two people's: the door holds the device key that proves it, and
+    /// names the other person by their root public key.
     fn announce(&self, peer: &str) -> Result<(), String> {
-        match ui::person_chat::announce(peer).take() {
+        let person = self
+            .person(peer)
+            .ok_or_else(|| "no direct conversation with them here".to_owned())?;
+        match ui::person_chat::announce(&person.root).take() {
             Some(Ok(())) => Ok(()),
             Some(Err(error)) => Err(error),
             None => Err("the pair is being announced".into()),
