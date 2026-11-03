@@ -56,7 +56,7 @@ pub struct ActivitySnapshot {
     pub doc: AutoCommit,
     /// The workspace whose document this is, or `None` when it is the device's own
     /// document of the whole desk.
-    workspace: Option<tilo_desktop_model::RoomId>,
+    workspace: Option<tilo_desktop_model::WorkspaceId>,
     /// What takes a change the model wrote back to the desk it came from: a
     /// host that keeps the workspace's own layout applies it here, and a
     /// host whose history is read only keeps none.
@@ -68,7 +68,7 @@ impl ActivitySnapshot {
         let workspace = desktop
             .active_workspace()
             .ok_or("active workspace unavailable")?
-            .room();
+            .id();
         let mut snapshot = Self {
             desktop,
             doc,
@@ -144,7 +144,7 @@ impl ActivityTree for ActivitySnapshot {
         // A historical projection must not retain tabs that only exist in the
         // current cache. Workspace documents do not record local width or active-tab
         // selection, so reconstructed groups use neutral presentation defaults.
-        self.desktop.workspaces.retain(|w| w.room() == workspace);
+        self.desktop.workspaces.retain(|w| w.id() == workspace);
         for workspace in &mut self.desktop.workspaces {
             workspace.strips.clear();
         }
@@ -292,7 +292,7 @@ mod admitted_history_tests {
         };
         let workspace = Workspace::new(WorkspaceSlot(9), "Actual workspace");
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
+        doc.put(ROOT, "room", workspace.id().to_string()).unwrap();
         doc.put(ROOT, "name", "Actual workspace").unwrap();
         doc.commit();
         let mut strips = vec![Strip {
@@ -320,7 +320,7 @@ mod admitted_history_tests {
             layout.strips = strips.to_vec();
             tilo_desktop_model::shared_record::device::write(
                 doc,
-                workspace.room(),
+                workspace.id(),
                 &layout,
                 &tilo_desktop_model::shared_record::device::Writer {
                     person: Some("ada"),

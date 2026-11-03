@@ -124,7 +124,7 @@ fn publishers(
 #[test]
 fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
     let workspace = workspace();
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let state = broker(vec![workspace], vec![NOTES, SHEETS], true);
     let agent = Caller::local_agent("scribe").in_workspace(&workspace_id);
 
@@ -167,7 +167,7 @@ fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
 #[test]
 fn an_agent_in_a_workspace_with_nothing_reads_an_empty_list() {
     let workspace = workspace();
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let state = broker(vec![workspace], Vec::new(), true);
     let agent = Caller::local_agent("scribe").in_workspace(&workspace_id);
 
@@ -185,7 +185,7 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
         other => panic!("an unreachable workspace answered {other:?}"),
     };
     let workspace = workspace();
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
 
     // Not a member: the person removed it, or never admitted it here.
     let state = broker(vec![workspace.clone()], vec![NOTES], true);
@@ -200,7 +200,7 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
 
     // The workspace it was admitted to is gone from this device.
     let elsewhere = Workspace::new(WorkspaceSlot(15), "Elsewhere");
-    let gone = Caller::local_agent("scribe").in_workspace(elsewhere.room().to_string());
+    let gone = Caller::local_agent("scribe").in_workspace(elsewhere.id().to_string());
     let why = reason(publishers(&state, &gone));
     assert!(why.contains("no longer on this device"), "{why}");
 

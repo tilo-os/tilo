@@ -21,7 +21,7 @@ impl ParticipantJoinFixture {
             "Exact Agent identity",
         );
         workspace.set_owner(principal.clone());
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::cluster(workspace.id().to_string());
         for agent in agents {
             workspace.admit_agent(agent, crate::test_support::KindSet::READ);
         }

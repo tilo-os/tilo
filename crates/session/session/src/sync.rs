@@ -37,7 +37,9 @@ use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::ContentSources;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
-use tilo_desktop_model::{DesktopTree, RoomId as DeskRoom, TabId, WorkspaceSlot as DeskSlot};
+use tilo_desktop_model::{
+    DesktopTree, TabId, WorkspaceId as DeskWorkspaceId, WorkspaceSlot as DeskSlot,
+};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
@@ -314,7 +316,11 @@ impl Workspace {
             }
             (
                 PresenceKey::Pointer {
-                    space: PointerSpace::Tile { room, tab },
+                    space:
+                        PointerSpace::Tile {
+                            workspace: room,
+                            tab,
+                        },
                 },
                 PeerPresencePayload::Pointer { x, y },
             ) if *room == self.id => {
@@ -331,7 +337,11 @@ impl Workspace {
     /// whether it moved: it is compared where it is.
     fn point(&mut self, from: EndpointId, key: &PresenceKey, point: (f64, f64)) {
         let PresenceKey::Pointer {
-            space: PointerSpace::Tile { room, tab },
+            space:
+                PointerSpace::Tile {
+                    workspace: room,
+                    tab,
+                },
         } = key
         else {
             return;
@@ -656,7 +666,7 @@ pub struct Enrolling {
     /// The slot the desk made for it.
     pub slot: DeskSlot,
     /// The workspace the invitation grants.
-    pub workspace_id: DeskRoom,
+    pub workspace_id: DeskWorkspaceId,
     /// The invitation itself, verified for this person before it got here.
     pub invitation: String,
 }
@@ -665,7 +675,7 @@ pub struct Enrolling {
 #[derive(Debug)]
 pub struct Enrolled {
     pub slot: DeskSlot,
-    pub workspace_id: DeskRoom,
+    pub workspace_id: DeskWorkspaceId,
     /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), String>,
 }
@@ -1034,18 +1044,18 @@ impl Client {
         let live: Vec<(WorkspaceId, String)> = tree
             .workspaces
             .iter()
-            .filter(|workspace| !workspace.room().is_nil())
+            .filter(|workspace| !workspace.id().is_nil())
             .map(|workspace| {
                 (
-                    workspace_topic_id(workspace.room()),
-                    workspace.room().to_string(),
+                    workspace_topic_id(workspace.id()),
+                    workspace.id().to_string(),
                 )
             })
             .collect();
         let active = tree
             .active_workspace()
-            .filter(|workspace| !workspace.room().is_nil())
-            .map(|workspace| workspace_topic_id(workspace.room()));
+            .filter(|workspace| !workspace.id().is_nil())
+            .map(|workspace| workspace_topic_id(workspace.id()));
         let mut joined = Vec::new();
         let mut left = Vec::new();
         let mut changed = false;
@@ -1687,7 +1697,7 @@ impl Client {
         };
         let key = postcard::to_stdvec(&PresenceKey::Pointer {
             space: PointerSpace::Tile {
-                room: workspace.id.clone(),
+                workspace: workspace.id.clone(),
                 tab,
             },
         })

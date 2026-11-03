@@ -8,7 +8,7 @@
 use std::time::SystemTime;
 
 use iroh::EndpointId;
-use tilo_desktop_model::RoomId as DeskRoom;
+use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_network_actor::NetEvent;
 
@@ -72,7 +72,7 @@ impl Client {
     /// as, when the device announced no certificate of its own here.
     fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
         let engine = self.engine.as_ref()?;
-        let identity = DeskRoom::parse(workspace)?;
+        let identity = DeskWorkspaceId::parse(workspace)?;
         engine
             .owner()
             .with_current(identity, |view| {

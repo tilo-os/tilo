@@ -36,7 +36,7 @@ pub(crate) fn still_allowed(
     };
     tree.workspaces
         .iter()
-        .find(|held| held.room().to_string() == workspace)
+        .find(|held| held.id().to_string() == workspace)
         .is_some_and(|held| held.grants_device_at(app_id, device, now))
 }
 
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn taking_the_camera_away_stops_the_next_ask_but_not_any_other_device() {
         let mut tree = desk(camera("so.tilo.meet"));
-        let room = tree.workspaces[0].room().to_string();
+        let room = tree.workspaces[0].id().to_string();
         assert!(still_allowed(
             &tree,
             "so.tilo.meet",
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn an_expired_grant_stops_capturing_and_another_workspace_does_not_count() {
         let tree = desk(camera("so.tilo.meet").expiring(collab_types::caps::Expiry::AtUnix(20)));
-        let room = tree.workspaces[0].room().to_string();
+        let room = tree.workspaces[0].id().to_string();
         assert!(still_allowed(
             &tree,
             "so.tilo.meet",

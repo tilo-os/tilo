@@ -74,7 +74,7 @@ fn broker_with_tree(
     let mut workspace = Workspace::new(WorkspaceSlot(95), "Owner import");
     workspace.set_owner("owner");
     workspace.admit_agent("limited", KindSet::ALL);
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();

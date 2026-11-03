@@ -1,13 +1,13 @@
 use super::{CheckpointCapture, CheckpointRoute};
 use crate::owner::application_record::tests::{Fixture, fixture};
 use crate::owner::{
-    ApplicationRecord, DocumentRead, NativeWorkspaceOwner, RoomId, open_file, testing,
+    ApplicationRecord, DocumentRead, NativeWorkspaceOwner, WorkspaceId, open_file, testing,
 };
 use automerge::transaction::Transactable as _;
 use collab_types::CommitNamed as _;
 
-fn workspace() -> RoomId {
-    RoomId::parse(testing::WORKSPACE).unwrap()
+fn workspace() -> WorkspaceId {
+    WorkspaceId::parse(testing::WORKSPACE).unwrap()
 }
 
 fn routes() -> Vec<CheckpointRoute> {

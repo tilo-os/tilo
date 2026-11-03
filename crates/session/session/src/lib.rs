@@ -556,7 +556,7 @@ impl Shared {
     fn active_workspace_id(&self) -> String {
         self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| held.room().to_string())
+                .map(|held| held.id().to_string())
                 .unwrap_or_default()
         })
     }
@@ -610,7 +610,7 @@ impl Shared {
     /// showing it.
     fn open_from_history(
         &self,
-        workspace_id: &tilo_desktop_model::RoomId,
+        workspace_id: &tilo_desktop_model::WorkspaceId,
         target: &ui::HistoryResourceTarget,
     ) {
         let Some(apps) = &self.launch else {

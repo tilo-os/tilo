@@ -10,7 +10,8 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
         use crate::services::person_chat::PersonChatCommand;
         let command: PersonChatCommand =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        let workspace = tilo_desktop_model::RoomId::parse(workspace).ok_or("invalid workspace")?;
+        let workspace =
+            tilo_desktop_model::WorkspaceId::parse(workspace).ok_or("invalid workspace")?;
         let authority = tilo_peer_state::caller_authority::CallerAuthority::Person {
             caller: caller.clone(),
         };
@@ -75,7 +76,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             )
             .unwrap();
             let workspace_id =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                     .unwrap();
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = workspace_id.to_string();
@@ -180,7 +181,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
 fn enroll_contact(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     governor: &mut tilo_peer_state::owner::testing::governor::TestGovernor,
-    workspace: tilo_desktop_model::RoomId,
+    workspace: tilo_desktop_model::WorkspaceId,
 ) -> String {
     use tilo_peer_state::join;
     let now = std::time::SystemTime::now();
@@ -255,7 +256,7 @@ fn enroll_contact(
 /// Everything the workspace publishes about `owner`'s state, as peers can read it.
 fn public_owner_bytes(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
-    workspace: tilo_desktop_model::RoomId,
+    workspace: tilo_desktop_model::WorkspaceId,
 ) -> Vec<Vec<u8>> {
     owner
         .with_current(workspace, |view| {
@@ -293,7 +294,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
             )
             .unwrap();
             let workspace_id =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                     .unwrap();
             let peer = enroll_contact(&owner, &mut governor, workspace_id);
             env.route.app_id = "so.tilo.chat".into();

@@ -883,7 +883,7 @@ pub fn governance_events(
         .to_hex()
         .to_string();
         events.push(tilo_automation::dispatch::RecordEvent {
-            room: room.to_owned(),
+            workspace: room.to_owned(),
             record: String::new(),
             kind: tilo_action_policy::roles::ROOM_KIND.to_owned(),
             change,

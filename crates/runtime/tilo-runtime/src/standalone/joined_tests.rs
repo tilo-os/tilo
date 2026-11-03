@@ -103,7 +103,7 @@ impl Joined {
     /// on it and held: admitted as every joined workspace is, its session not
     /// held yet.
     pub(in crate::standalone) async fn test_hosting(
-        workspace: RoomId,
+        workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
         let host = tilo_room_host::host::RoomHost::open(
@@ -145,7 +145,7 @@ struct HostedWorkspace {
     relay: tilo_relay::Relay,
     server: iroh::Endpoint,
     relay_root: std::path::PathBuf,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     topic: u64,
     governor: DeviceCert,
     governor_key: SigningKey,
@@ -167,7 +167,7 @@ impl HostedWorkspace {
             .bind()
             .await
             .unwrap();
-        let workspace = RoomId::parse(governing.workspace()).unwrap();
+        let workspace = WorkspaceId::parse(governing.workspace()).unwrap();
         let topic = workspace_topic(workspace).unwrap();
         let hint = governing.hint(server.addr());
         let relay_root = dir.join("relay");
@@ -293,7 +293,7 @@ impl HostedWorkspace {
     }
 }
 
-fn assert_changed_custody_refused(joined: &Joined, workspace: RoomId, actor: &str) {
+fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
     let mut custody = joined.custody.clone();
     // In memory only: this probe compares what it holds, never a disk.
     custody.identity_paths = None;
@@ -367,15 +367,10 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: RoomId, actor: &st
             .is_err(),
         "changed selected custody must not reuse the retained roster identity"
     );
-    assert!(
-        !probe
-            .workspaces()
-            .iter()
-            .any(|held| held.room() == workspace)
-    );
+    assert!(!probe.workspaces().iter().any(|held| held.id() == workspace));
 }
 
-fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: RoomId, actor: &str) {
+fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId, actor: &str) {
     use crate::standalone::RuntimeActionHost;
     use tilo_action_broker::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
@@ -489,7 +484,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: RoomId, act
     assert!(host.observe(&owner, &id).is_some());
     joined
         .owner
-        .invalidate_identity(RoomId::parse(&workspace_id).unwrap());
+        .invalidate_identity(WorkspaceId::parse(&workspace_id).unwrap());
     assert!(host.observe(&owner, &id).is_none());
     assert_eq!(
         host.cancel(&owner, &id)
@@ -546,7 +541,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         workspace_revocations: std::collections::HashMap::default(),
         identity_paths: None,
     };
-    let own_workspace = RoomId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+    let own_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
         directory.path(),
         custody,
@@ -668,7 +663,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         joined
             .workspaces()
             .iter()
-            .any(|held| held.room() == workspace),
+            .any(|held| held.id() == workspace),
         "the joined workspace is a workspace of this profile"
     );
     assert!(
@@ -814,7 +809,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         !joined
             .workspaces()
             .iter()
-            .any(|held| held.room() == workspace),
+            .any(|held| held.id() == workspace),
         "broker snapshots must drop stale admission too"
     );
     assert!(
@@ -1383,7 +1378,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
 
 /// A write as the SDK signs one, of `app`'s record in `workspace`, signed by `key`.
 fn signed_write(
-    workspace: RoomId,
+    workspace: WorkspaceId,
     app: &str,
     key: &SigningKey,
 ) -> tilo_peer_state::owner_commit::OwnerCommitRequest {
@@ -1423,7 +1418,7 @@ fn signed_write(
 /// as a joined workspace, admitted like any other; placing it again finds it.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
-    let workspace = RoomId::new();
+    let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
     assert!(joined.hosted_here(workspace));
     assert!(joined.workspace(workspace).is_some());
@@ -1450,7 +1445,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
 /// this device; nothing refused reaches the host.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
-    let workspace = RoomId::new();
+    let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
     let key = joined.custody.device_signing_key.clone();
     for (app, kind) in [
@@ -1478,7 +1473,7 @@ async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kin
 /// The workspaces the desktop session governs here are refused, writes included.
 #[tokio::test(flavor = "multi_thread")]
 async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
-    let workspace = RoomId::new();
+    let workspace = WorkspaceId::new();
     let (empty, directory) = Joined::test_empty().await;
     let joined = Joined::open(
         directory.path(),

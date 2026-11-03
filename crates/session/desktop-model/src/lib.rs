@@ -47,8 +47,8 @@ pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION
 pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};
 pub use collaborator::Collaborator;
 pub use ids::{
-    FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, RoomId, StripId,
-    TabId, TabRef, WorkspaceSlot, compose_id, counter_of, mint_in_namespace, peer_salt_of,
+    FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, StripId, TabId,
+    TabRef, WorkspaceId, WorkspaceSlot, compose_id, counter_of, mint_in_namespace, peer_salt_of,
 };
 pub use layout::{MissingApp, Strip, Tab, TileContent, WindowGroup};
 pub use own_arrangement::{Place, Row, Strips};

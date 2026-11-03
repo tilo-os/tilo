@@ -194,7 +194,7 @@ impl Admitted {
             "the host holds it in place of the certificate it replaced"
         );
         self.owner.install(&enrollment, SystemTime::now()).unwrap();
-        let joined = tilo_desktop_model::RoomId::parse(&self.workspace).unwrap();
+        let joined = tilo_desktop_model::WorkspaceId::parse(&self.workspace).unwrap();
         let role = self
             .owner
             .with_current(joined, |view| {

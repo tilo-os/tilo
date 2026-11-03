@@ -34,7 +34,7 @@ pub(crate) fn allows(
     let (node, kind) = required;
     tree.workspaces
         .iter()
-        .find(|held| held.room().to_string() == workspace)
+        .find(|held| held.id().to_string() == workspace)
         .is_some_and(|workspace| {
             workspace.answer_at(person, &workspace.node().join(node), *kind, now) == Answer::Allow
         })

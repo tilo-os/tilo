@@ -61,7 +61,7 @@ pub struct WorkspaceSettingsModel<'a> {
 pub struct ArchivedWorkspace {
     /// The archived workspace. The field keeps its name: the session reads it
     /// by name when it lists the workspaces it keeps archived.
-    pub room: tilo_desktop_model::RoomId,
+    pub room: tilo_desktop_model::WorkspaceId,
     pub name: String,
 }
 

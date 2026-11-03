@@ -250,7 +250,7 @@ fn a_process_the_session_did_not_start_reaches_no_service() {
         .handle()
         .read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
         })
         .expect("the session shows a workspace");
     let mut panel = std::process::Command::new(panel_binary())

@@ -402,7 +402,7 @@ impl LauncherServices for Launches {
         ) {
             return Err(format!("{app} starts no process"));
         }
-        self.ask(launch, &workspace.room().to_string(), place.clone(), None)
+        self.ask(launch, &workspace.id().to_string(), place.clone(), None)
     }
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {

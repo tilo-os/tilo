@@ -511,10 +511,10 @@ pub enum TriggerSpec {
         app_id: String,
     },
     /// Joining a workspace; `None` for any. The field keeps the key `room`
-    /// in a stored program.
+    /// in a stored program, which is the name a program's text reads.
     WorkspaceJoined {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        room: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "room")]
+        workspace: Option<String>,
     },
     /// A file created, changed or removed inside the folder a capability of
     /// the shortcut's workspace shares with its saver, named by the

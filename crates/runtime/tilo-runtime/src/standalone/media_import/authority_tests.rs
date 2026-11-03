@@ -80,8 +80,8 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
 fn owner_revision_ignores_effect_updates_but_not_ownership() {
     struct Membership(Workspace);
     impl tilo_identity_host::broker::WorkspaceMembership for Membership {
-        fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
-            if &self.0.room() == workspace {
+        fn with_workspace(&self, workspace: &WorkspaceId, read: &mut dyn FnMut(&Workspace)) {
+            if &self.0.id() == workspace {
                 read(&self.0);
             }
         }
@@ -91,7 +91,7 @@ fn owner_revision_ignores_effect_updates_but_not_ownership() {
         "Workspace",
     ));
     membership.0.set_owner("owner");
-    let workspace = membership.0.room().to_string();
+    let workspace = membership.0.id().to_string();
     let revision = owner_revision(&membership, &workspace, "owner").unwrap();
     membership
         .0

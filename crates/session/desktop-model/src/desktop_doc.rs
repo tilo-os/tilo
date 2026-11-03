@@ -38,7 +38,7 @@ use tilo_action_policy::{Grant, GrantId, Preset, Role, Subject, WorkspacePolicy}
 
 use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
-use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceSlot};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
 use crate::projection::{
@@ -331,7 +331,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     let _ = doc.put_str_if_changed(entry, "name", &ws.name);
     // Workspace identity travels with the workspace: a reader hydrating from
     // this document must land in this workspace, not mint its own.
-    let _ = doc.put_str_if_changed(entry, "room", &ws.room().to_string());
+    let _ = doc.put_str_if_changed(entry, "room", &ws.id().to_string());
     match ws.owner() {
         Some(owner) => {
             let _ = doc.put_str_if_changed(entry, "owner", owner);
@@ -772,7 +772,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         let slot = WorkspaceSlot::from(*id_raw);
         let identity = doc
             .str_at(entry, "room")
-            .and_then(|v| RoomId::parse(v.as_str()))
+            .and_then(|v| WorkspaceId::parse(v.as_str()))
             .filter(|r| !r.is_nil());
         // A workspace keeps the identity it has: an existing one keeps the id
         // it was given, whatever the document names, and a new one is made at
@@ -799,7 +799,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             // Old appended entries had no grants map. Reconstruct their
             // canonical defaults even when this tree reuses a cached workspace.
             ws.policy.grants =
-                WorkspacePolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
+                WorkspacePolicy::unowned(ws.id().to_string(), &Subject::Role(Role::Owner)).grants;
         }
         if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
             ws.sandbox = sandbox;
@@ -1001,7 +1001,7 @@ pub fn append_workspace(
     doc: &mut AutoCommit,
     slot: WorkspaceSlot,
     name: &str,
-    identity: RoomId,
+    identity: WorkspaceId,
 ) -> bool {
     let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY)
         .or_else(|| doc.put_object(&ROOT, WORKSPACES_KEY, ObjType::List).ok())

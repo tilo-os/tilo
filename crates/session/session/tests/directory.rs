@@ -104,7 +104,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
                 (
                     held.slot.0.to_string(),
                     held.name.clone(),
-                    held.room().to_string(),
+                    held.id().to_string(),
                 )
             })
             .collect()
@@ -1106,7 +1106,7 @@ fn desk_layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)>
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .find(|held| held.room().to_string() == workspace)
+            .find(|held| held.id().to_string() == workspace)
             .map(|held| {
                 held.strips
                     .iter()
@@ -1291,7 +1291,7 @@ fn owner_on_desk(session: &Session, workspace: &str) -> Option<String> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .find(|held| held.room().to_string() == workspace)
+            .find(|held| held.id().to_string() == workspace)
             .and_then(|held| held.owner().cloned())
     })
 }
@@ -1473,7 +1473,7 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     );
     let active = session.handle().read(|tree| {
         tree.active_workspace()
-            .map(|workspace| workspace.room().to_string())
+            .map(|workspace| workspace.id().to_string())
     });
     assert_eq!(
         active.as_deref(),
@@ -1692,7 +1692,7 @@ fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
         space: collab_types::presence::PointerSpace::Tile {
-            room: lounge.workspace.clone(),
+            workspace: lounge.workspace.clone(),
             tab,
         },
     })

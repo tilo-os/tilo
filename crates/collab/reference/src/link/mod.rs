@@ -303,7 +303,7 @@ pub enum Scope {
     /// is deleted whole when its windows move onto the new session.
     Room {
         host: HostOrigin,
-        room: Uuid,
+        id: Uuid,
         slug: Option<Slug>,
     },
 }
@@ -313,14 +313,9 @@ impl PartialEq for Scope {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Own, Self::Own) => true,
-            (
-                Self::Room {
-                    host: a, room: x, ..
-                },
-                Self::Room {
-                    host: b, room: y, ..
-                },
-            ) => a == b && x == y,
+            (Self::Room { host: a, id: x, .. }, Self::Room { host: b, id: y, .. }) => {
+                a == b && x == y
+            }
             _ => false,
         }
     }
@@ -532,7 +527,7 @@ impl LinkTarget {
             Scope::Own => out.push_str("/me"),
             Scope::Room {
                 host,
-                room: workspace,
+                id: workspace,
                 slug,
             } => {
                 if omit_host != Some(host) {
@@ -676,7 +671,7 @@ mod tests {
     fn workspace(host: &str) -> Scope {
         Scope::Room {
             host: HostOrigin::new(host).unwrap(),
-            room: WORKSPACE.parse().unwrap(),
+            id: WORKSPACE.parse().unwrap(),
             slug: None,
         }
     }

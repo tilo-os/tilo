@@ -1,5 +1,5 @@
 //! Same-barrier native outgoing custody; relay queue acceptance is never an ACK.
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, RoomId, enrollment, record};
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, record};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use crate::{Reseal, StatePeer};
 use collab_types::{EncryptionMetadata, OpKind, SignedOp};
@@ -1072,7 +1072,7 @@ impl NativeWorkspaceOwner {
     /// Read `workspace`'s outgoing custody: what the relay session may send now.
     pub fn with_outgoing<T>(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         now: SystemTime,
         read: impl FnOnce(&NativeCommittedView, NativeOutgoing<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
@@ -1094,13 +1094,13 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     /// The workspace is not held here or is fenced.
-    pub fn unadmitted_writes(&self, workspace: RoomId) -> Result<usize, String> {
+    pub fn unadmitted_writes(&self, workspace: WorkspaceId) -> Result<usize, String> {
         self.with_current(workspace, |view| Ok(state(view)?.entries.len()))
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn outgoing_status(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         now: SystemTime,
     ) -> Result<NativeOutgoingStatus, String> {
         self.with_current(workspace, |view| status(view, now))
@@ -1113,7 +1113,7 @@ impl NativeWorkspaceOwner {
     /// cannot be published.
     pub fn reconcile_outgoing(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
@@ -1177,7 +1177,7 @@ impl NativeWorkspaceOwner {
     /// fenced or the renewals cannot be committed.
     pub fn renew_outgoing(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         key: &SigningKey,
         reseal: &mut Reseal<'_>,
         now: SystemTime,
@@ -1247,7 +1247,7 @@ impl NativeWorkspaceOwner {
     /// is fenced, or a compaction cannot be committed.
     pub fn compact_outgoing(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         key: &SigningKey,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         seal: &mut SealRecord<'_>,

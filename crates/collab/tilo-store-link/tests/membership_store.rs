@@ -34,7 +34,7 @@ use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceHostMode,
 };
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
@@ -104,7 +104,7 @@ fn hint(
     endpoint: &Endpoint,
     cert: &DeviceCert,
     key: &SigningKey,
-    workspace_id: &RoomId,
+    workspace_id: &WorkspaceId,
     workspace: u64,
 ) -> TransportHint {
     IrohWorkspaceHostHintV1 {
@@ -131,11 +131,11 @@ fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
     }
 }
 
-fn channel(workspace_id: &RoomId) -> ChannelId {
+fn channel(workspace_id: &WorkspaceId) -> ChannelId {
     collab_types::document_channel_id(APP, &workspace_id.to_string(), RECORD)
 }
 
-fn artifact(workspace_id: &RoomId) -> ArtifactId {
+fn artifact(workspace_id: &WorkspaceId) -> ArtifactId {
     collab_types::document_artifact_id(APP, &workspace_id.to_string(), RECORD)
 }
 
@@ -165,7 +165,7 @@ fn opener(keys: &ChannelContentKeys) -> impl FnMut(&SignedOp) -> Result<Vec<u8>,
 /// Invite `guest` into the workspace, redeemed at the device that answers joins.
 fn invitation(
     owner: &NativeWorkspaceOwner,
-    workspace_id: &RoomId,
+    workspace_id: &WorkspaceId,
     member: &DeviceCert,
     key: &SigningKey,
     guest: &DeviceCert,
@@ -234,7 +234,7 @@ fn store_profile(device: [u8; 32], workspace: u64) -> DeviceMeshProfile {
 /// not been given yet.
 fn outgoing(
     owner: &NativeWorkspaceOwner,
-    workspace_id: RoomId,
+    workspace_id: WorkspaceId,
     now: SystemTime,
 ) -> Vec<NeighbourMsg> {
     owner
@@ -510,7 +510,7 @@ async fn a_store_admits_the_workspaces_members_and_no_one_else() {
 /// Publish `change` to the record as A's sealed write.
 fn publish(
     owner: &NativeWorkspaceOwner,
-    workspace_id: RoomId,
+    workspace_id: WorkspaceId,
     change: &[u8],
     keys: &ChannelContentKeys,
     artifact: ArtifactId,
@@ -541,7 +541,7 @@ fn publish(
 /// in place of the writes it covers.
 fn compact(
     owner: &NativeWorkspaceOwner,
-    workspace_id: RoomId,
+    workspace_id: WorkspaceId,
     keys: &ChannelContentKeys,
     artifact: ArtifactId,
     key: &SigningKey,
@@ -589,7 +589,7 @@ fn document_write(message: NeighbourMsg) -> Result<OwnerCommitRequest, String> {
 
 fn read_value(
     owner: &NativeWorkspaceOwner,
-    workspace_id: RoomId,
+    workspace_id: WorkspaceId,
     keys: &ChannelContentKeys,
 ) -> String {
     let opened = owner

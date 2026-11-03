@@ -447,7 +447,7 @@ impl BrokerActor {
                 decide(&workspace.person_authority_on(&self.id, self.capped, foreign_bound))
             }
             (Some(delegate), Some(person)) => {
-                let carried = self.session_grants(&workspace.room().to_string(), person);
+                let carried = self.session_grants(&workspace.id().to_string(), person);
                 decide(
                     &workspace
                         .person_authority_on(person, self.capped, foreign_bound)
@@ -861,7 +861,7 @@ impl AdmittedJoinIdentity {
             .ok_or("the identity has no workspace authority")?
             .workspaces
             .iter()
-            .find(|workspace| workspace.room().to_string() == workspace_id)
+            .find(|workspace| workspace.id().to_string() == workspace_id)
             .ok_or("the identity's workspace is no longer hosted")?;
         Ok(self
             .broker_actor()
@@ -9289,7 +9289,7 @@ impl JoinedChannel {
     ) -> Result<Rc<dyn crate::services::WorkspaceControlSession>, BrokerError> {
         let route = self.route();
         revalidate_workspace_control(&self.state, &route, &self.verified_identity)?;
-        let Some(workspace) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
             return Err(BrokerError::failed(
                 "workspace control requires a workspace-scoped channel".into(),
             ));
@@ -12570,7 +12570,7 @@ pub mod tests {
                         "Other publication workspace",
                     );
                     other_workspace.set_owner(person.clone());
-                    let other_workspace_id = other_workspace.room().to_string();
+                    let other_workspace_id = other_workspace.id().to_string();
                     {
                         let mut tree = fixture.membership.as_ref().unwrap().write();
                         tree.workspaces[0].set_owner(person);
@@ -12699,7 +12699,7 @@ pub mod tests {
             .unwrap()
             .active_workspace()
             .expect("fixture active workspace")
-            .room()
+            .id()
             .to_string();
         let route = CrdtRoute::record("so.tilo.atlas", cluster_id.clone(), "atlas");
         let fanout = Arc::new(FanoutState::new());
@@ -13417,7 +13417,7 @@ pub mod tests {
             crate::test_support::WorkspaceSlot(1),
             "Member workspace",
         );
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::cluster(workspace.id().to_string());
         workspace.admit(principal.clone(), crate::test_support::Role::Editor);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -13459,7 +13459,7 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(4), "Actions");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let route = CrdtRoute::cluster(&workspace_id);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -13525,7 +13525,7 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(5), "Own");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new(
@@ -13582,7 +13582,7 @@ pub mod tests {
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(3), "Foreign");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::cluster(workspace.id().to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let foreign = VerifiedJoinIdentity {
@@ -13633,7 +13633,7 @@ pub mod tests {
             "Agent workspace",
         );
         workspace.set_owner(principal);
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::cluster(workspace.id().to_string());
         let agent_membership = workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -13707,7 +13707,7 @@ pub mod tests {
         let granted_by = crate::test_support::Subject::Person(owner);
         let operator = workspace.admit_agent_preset("scribe", AgentPreset::Operator, &granted_by);
         workspace.admit_agent_preset("reader", AgentPreset::Observer, &granted_by);
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::cluster(workspace.id().to_string());
         let notes = workspace.node().app("so.tilo.notes");
         let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
         let mut tree = WorkspaceTree::default();
@@ -13823,7 +13823,7 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(46), "Roster");
         workspace.set_owner(person.clone());
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let other_person = "other-person";
         workspace.admit(other_person, crate::test_support::Role::Viewer);
         workspace.policy.joined.insert(other_person.into(), 7_000);
@@ -14117,7 +14117,7 @@ pub mod tests {
             crate::test_support::WorkspaceSlot(45),
             "Delegation workspace",
         );
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::cluster(workspace.id().to_string());
         workspace.admit(member_id, crate::test_support::Role::Editor);
         workspace.admit_agent("operator", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
@@ -14136,7 +14136,7 @@ pub mod tests {
             crate::test_support::WorkspaceSlot(2),
             "Revocation workspace",
         );
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::cluster(workspace.id().to_string());
         workspace.admit(member_id.clone(), crate::test_support::Role::Viewer);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -14173,7 +14173,7 @@ pub mod tests {
             crate::test_support::WorkspaceSlot(4),
             "Other workspace",
         );
-        let replay_route = CrdtRoute::cluster(other_workspace.room().to_string());
+        let replay_route = CrdtRoute::cluster(other_workspace.id().to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(member_workspace);
         tree.workspaces.push(other_workspace);
@@ -14270,11 +14270,7 @@ pub mod tests {
             "Typed document workspace",
         );
         workspace.set_owner(&principal);
-        let route = CrdtRoute::record(
-            "so.tilo.notes",
-            workspace.room().to_string(),
-            "meeting-notes",
-        );
+        let route = CrdtRoute::record("so.tilo.notes", workspace.id().to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -14687,7 +14683,7 @@ pub mod tests {
             "Catalogue workspace",
         );
         workspace.set_owner(owner);
-        let cluster = workspace.room().to_string();
+        let cluster = workspace.id().to_string();
         let mut tree = tilo_desktop_model::DesktopTree::default();
         tree.workspaces.push(workspace);
         let tree = Arc::new(Mutex::new(tree));
@@ -14795,7 +14791,7 @@ pub mod tests {
             "Other catalogue workspace",
         );
         other.set_owner("same");
-        let other_cluster = other.room().to_string();
+        let other_cluster = other.id().to_string();
         tree.lock().unwrap().workspaces.push(other);
         let (person_tx, mut person_rx) = catalogue_test_channel();
         let (agent_tx, mut agent_rx) = catalogue_test_channel();
@@ -15009,7 +15005,7 @@ pub mod tests {
             "Action workspace",
         );
         workspace.set_owner("owner");
-        let route = CrdtRoute::app("so.tilo.files", workspace.room().to_string());
+        let route = CrdtRoute::app("so.tilo.files", workspace.id().to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -15449,7 +15445,7 @@ pub mod tests {
             "Agent effect workspace",
         );
         workspace.set_owner("owner");
-        let cluster_id = workspace.room().to_string();
+        let cluster_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();

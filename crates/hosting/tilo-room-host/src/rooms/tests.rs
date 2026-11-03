@@ -1882,7 +1882,7 @@ fn write_windows(
     salt: u16,
     windows: &[tilo_desktop_model::Strip],
 ) {
-    let room = tilo_desktop_model::RoomId::parse(room).unwrap();
+    let room = tilo_desktop_model::WorkspaceId::parse(room).unwrap();
     let mut workspace = tilo_desktop_model::Workspace::in_workspace(
         tilo_desktop_model::WorkspaceSlot::of_workspace(room),
         room,

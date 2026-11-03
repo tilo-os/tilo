@@ -120,13 +120,13 @@ mod tests {
     };
 
     use super::*;
-    use crate::ids::{RoomId, WorkspaceSlot};
+    use crate::ids::{WorkspaceId, WorkspaceSlot};
     use crate::workspace::{Workspace, preset_assign_node};
     use tilo_actions::{EffectReceiptStatus, InvocationId};
 
     fn tree() -> (DesktopTree, WorkspaceSlot) {
         let id = WorkspaceSlot(1);
-        let mut workspace = Workspace::in_workspace(id, RoomId::new(), "Home");
+        let mut workspace = Workspace::in_workspace(id, WorkspaceId::new(), "Home");
         workspace.set_owner("owner");
         (
             DesktopTree {

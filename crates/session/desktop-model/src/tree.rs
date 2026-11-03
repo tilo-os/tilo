@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::collaborator::Collaborator;
-use crate::ids::{GroupId, RoomId, StripId, WorkspaceSlot};
+use crate::ids::{GroupId, StripId, WorkspaceId, WorkspaceSlot};
 use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
 use crate::workspace::Workspace;
@@ -70,11 +70,11 @@ pub struct DesktopTree {
     /// Mirror of each workspace's record index (record id → kind), pushed by
     /// the host so replication can reach it. Not persisted.
     #[serde(skip, default)]
-    pub workspace_records_held: HashMap<RoomId, BTreeMap<String, String>>,
+    pub workspace_records_held: HashMap<WorkspaceId, BTreeMap<String, String>>,
     /// References that arrived from a peer and have not been folded into
     /// the local index yet. Drained by the host.
     #[serde(skip, default)]
-    pub workspace_records_inbound: Vec<(RoomId, String, String)>,
+    pub workspace_records_inbound: Vec<(WorkspaceId, String, String)>,
     /// The salt of the device this tree belongs to: the high 16 bits of
     /// every id the tree mints, and the namespace replication treats as its
     /// own. `0` until the device's session sets it. Kept beside the state

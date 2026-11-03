@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 use tilo_actions::remote::Caller;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::owner::{NativeFenceSubscription, NativeWorkspaceOwner};
 
@@ -17,7 +17,7 @@ pub(super) struct ExecutionPins {
 }
 
 struct ExecutionEntry {
-    workspace: RoomId,
+    workspace: WorkspaceId,
     lease: tilo_actions::remote::ExecutionLease,
     admission: Weak<super::joined::SessionAdmission>,
 }
@@ -39,7 +39,7 @@ impl ExecutionPins {
         pins
     }
 
-    fn fence(&self, workspace: RoomId) {
+    fn fence(&self, workspace: WorkspaceId) {
         // The native owner calls synchronously under its continuity lock. Only
         // atomic lease closure happens here: no owner reread, SDK or user code.
         let entries = self.entries.lock_recover();
@@ -52,7 +52,7 @@ impl ExecutionPins {
 
     pub(super) fn register_checked(
         self: &Arc<Self>,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         caller: &Caller,
         recheck: impl FnOnce() -> Result<(), String>,
     ) -> Result<ExecutionRegistration, String> {
@@ -128,7 +128,7 @@ impl ExecutionPins {
 
     pub(super) fn admissions(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
     ) -> Result<Vec<Arc<super::joined::SessionAdmission>>, String> {
         let entries = self
             .entries

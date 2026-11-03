@@ -28,7 +28,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::{ContentSources, ContentState};
 use tilo_action_broker::route::CrdtRoute;
 use tilo_content::hash_bytes;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
 
 use super::Plane;
@@ -48,7 +48,7 @@ fn route() -> CrdtRoute {
 }
 
 fn topic() -> WorkspaceId {
-    let workspace = RoomId::parse(WORKSPACE).expect("a workspace id");
+    let workspace = ModelWorkspaceId::parse(WORKSPACE).expect("a workspace id");
     workspace_topic_id(workspace)
 }
 

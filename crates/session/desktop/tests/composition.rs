@@ -266,7 +266,7 @@ fn replacing_the_workspace_requires_fresh_component_contexts() {
     let before = tree.workspaces[0].clone();
     let mut replaced = tilo_desktop_model::Workspace::in_workspace(
         before.slot,
-        tilo_desktop_model::RoomId::new(),
+        tilo_desktop_model::WorkspaceId::new(),
         before.name.clone(),
     );
     replaced.strips = before.strips;

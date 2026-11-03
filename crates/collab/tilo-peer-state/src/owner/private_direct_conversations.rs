@@ -1,6 +1,6 @@
 //! Two-person text retained exclusively by the trusted native workspace owner.
 use crate::caller_authority::CallerAuthority;
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, RoomId};
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use web_time::SystemTime;
@@ -78,7 +78,7 @@ struct Pair {
     /// Files written before the engine's vocabulary named the workspace carry
     /// `room`; the key stays so they read back.
     #[serde(rename = "room")]
-    workspace: RoomId,
+    workspace: WorkspaceId,
     people: [String; 2],
     messages: Vec<DirectMessage>,
 }
@@ -126,7 +126,7 @@ fn text_valid(text: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn pair_id(workspace: RoomId, people: &[String; 2]) -> Result<String, String> {
+fn pair_id(workspace: WorkspaceId, people: &[String; 2]) -> Result<String, String> {
     let bytes = serde_json::to_vec(&("private-person-pair-v1", workspace, people))
         .map_err(|e| e.to_string())?;
     Ok(format!("direct_{}", blake3::hash(&bytes).to_hex()))
@@ -308,7 +308,7 @@ fn contacts(
 }
 fn authorized_pair(
     view: &NativeCommittedView,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     peer: &str,
     authority: &CallerAuthority,
     now: SystemTime,
@@ -327,7 +327,7 @@ fn authorized_pair(
 }
 fn ensure_pair(
     store: &mut PrivateDirectConversationStore,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     id: &str,
     people: [String; 2],
 ) -> Result<(), String> {
@@ -354,7 +354,7 @@ impl NativeWorkspaceOwner {
     /// Refuses stale certificates, unavailable custody, or an unauthorized pair.
     pub fn subscribe_direct_conversation(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         peer: &str,
         authority: &CallerAuthority,
         now: SystemTime,
@@ -385,7 +385,7 @@ impl NativeWorkspaceOwner {
     /// Refuses stale or delegated callers and unavailable current membership.
     pub fn direct_contacts(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         authority: &CallerAuthority,
         now: SystemTime,
     ) -> Result<Vec<DirectContact>, String> {
@@ -401,7 +401,7 @@ impl NativeWorkspaceOwner {
     /// Refuses unauthorized pairs, invalid keys, or unavailable durable custody.
     pub fn open_direct_conversation(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         peer_public_key: &str,
         authority: &CallerAuthority,
         now: SystemTime,
@@ -444,7 +444,7 @@ impl NativeWorkspaceOwner {
     /// Refuses unauthorized pairs, invalid cursors, or unavailable custody.
     pub fn read_direct_conversation(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         peer_public_key: &str,
         authority: &CallerAuthority,
         page: DirectConversationPage,
@@ -463,7 +463,7 @@ impl NativeWorkspaceOwner {
     /// Refuses unauthorized pairs, invalid payloads, conflicting invocation IDs, or full custody.
     pub fn send_direct_message(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         peer_public_key: &str,
         authority: &CallerAuthority,
         request: DirectMessageSend,
@@ -557,7 +557,7 @@ mod tests {
         _directory: tempfile::TempDir,
         path: std::path::PathBuf,
         owner: NativeWorkspaceOwner,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         governor: DeviceCert,
         key: SigningKey,
         now: SystemTime,
@@ -579,7 +579,7 @@ mod tests {
                 _directory: directory,
                 path,
                 owner,
-                workspace: RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
+                workspace: WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
                 governor,
                 key,
                 now: SystemTime::now(),
@@ -1401,7 +1401,7 @@ mod tests {
                 now,
             )
             .unwrap();
-        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let authority = owner
             .with_current(workspace, |v| {
                 Ok(CallerAuthority::Person {
@@ -1614,7 +1614,7 @@ mod tests {
                     .is_err()
             );
         }
-        let other_workspace = RoomId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        let other_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
         let mut people = [
             key(fixture.governor.user_public_key),
             key(peer.user_public_key),

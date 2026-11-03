@@ -7,7 +7,7 @@ struct Vouched {
     _directory: tempfile::TempDir,
     path: PathBuf,
     owner: NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     now: SystemTime,
 }
 
@@ -32,7 +32,7 @@ fn vouched() -> Vouched {
             .unwrap(),
         "a workspace held under the same authority stays as it is"
     );
-    let workspace = RoomId::parse(WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
     for message in messages {
         owner
             .receive(

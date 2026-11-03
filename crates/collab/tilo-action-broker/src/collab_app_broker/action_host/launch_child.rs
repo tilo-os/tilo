@@ -75,7 +75,7 @@ impl AppBrokerState {
         if parent.invocation.0.is_nil() {
             return Err(ActionHostError::NotPermitted);
         }
-        let workspace = destination.workspace.room().to_string();
+        let workspace = destination.workspace.id().to_string();
         self.check_launch_origin(caller, Some(origin), &workspace)?;
         let app = self
             .services

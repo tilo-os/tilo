@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(label(&ws, &recipient), None, "a member has nothing to do");
 
         ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-            ws.room().to_string(),
+            ws.id().to_string(),
             [9; 32],
             owner_public,
             recipient_public,

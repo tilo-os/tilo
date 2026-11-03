@@ -48,7 +48,7 @@ fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
     // the workspace it reads the session's resources in.
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()
-            .map(|workspace| workspace.room().to_string())
+            .map(|workspace| workspace.id().to_string())
             .expect("a workspace")
     });
     // The app speaks from this test's own process, so the launch the session
