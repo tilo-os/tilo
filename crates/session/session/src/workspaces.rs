@@ -480,8 +480,25 @@ impl Personal {
         let read = personal
             .store
             .as_deref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| postcard::from_bytes::<Stored>(&bytes).ok());
+            .and_then(|path| match std::fs::read(path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "the remembered workspaces could not be read"
+                    );
+                    None
+                }
+            })
+            .and_then(|bytes| {
+                postcard::from_bytes::<Stored>(&bytes)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the remembered workspaces do not read back");
+                    })
+                    .ok()
+            });
         if let Some(stored) = read
             && let Ok(directory) = WorkspaceDirectory::load(user, device, &stored.directory)
         {
@@ -956,7 +973,7 @@ fn take_personal(personal: &mut Personal, sync: &crate::sync::Client) -> (bool, 
                 missing |= behind;
             }
             Err(error) => {
-                tracing::debug!(%error, "a device's workspaces were not taken");
+                tracing::warn!(%error, "a device's workspaces were not taken");
             }
         }
     }
@@ -1211,6 +1228,7 @@ impl crate::Shared {
         if let Err(error) = self.ask_of_desk("leave-workspace", &args) {
             // The desk keeps its one workspace: the person is never left
             // with none, and the list brings it back on the next pass.
+            // ignored-failure: the desk keeps its one workspace, and the list brings it back
             tracing::debug!(%error, %workspace, "a workspace not shown here was not taken off the desk");
         }
     }

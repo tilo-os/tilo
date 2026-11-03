@@ -105,12 +105,17 @@ impl Unlock {
             return;
         };
         let Some(custody) = read_custody() else {
-            let _ = write_sibling(
+            if !write_sibling(
                 &mut send,
                 &SiblingFrame::Refused(RefusalReason::NotACustodian),
             )
-            .await;
-            let _ = send.finish();
+            .await
+            {
+                tracing::warn!("a boot was not told this device is not a custodian");
+            }
+            if let Err(error) = send.finish() {
+                tracing::warn!(%error, "a boot's refusal did not reach it");
+            }
             return;
         };
         let published = self.published(&custody);
@@ -124,8 +129,12 @@ impl Unlock {
             )
         };
         let SiblingFrame::Challenge(issued) = &challenge else {
-            let _ = write_sibling(&mut send, &challenge).await;
-            let _ = send.finish();
+            if !write_sibling(&mut send, &challenge).await {
+                tracing::warn!("a boot was not told why its hello was refused");
+            }
+            if let Err(error) = send.finish() {
+                tracing::warn!(%error, "a boot's refusal did not reach it");
+            }
             return;
         };
         let nonce = issued.nonce;
@@ -143,7 +152,9 @@ impl Unlock {
         };
         let SiblingFrame::Pending { approval_code } = &frame else {
             if write_sibling(&mut send, &frame).await {
-                let _ = send.finish();
+                if let Err(error) = send.finish() {
+                    tracing::warn!(%error, "a boot's pending answer did not reach it");
+                }
                 let _ = tokio::time::timeout(WRITE_GRACE, send.stopped()).await;
             }
             return;
@@ -158,10 +169,13 @@ impl Unlock {
         if let Some(decided) = self
             .decide(&custody, &published, &hello.boot_cert, &request, approved)
             .await
+            && !write_sibling(&mut send, &decided).await
         {
-            let _ = write_sibling(&mut send, &decided).await;
+            tracing::warn!("a boot was not told the decision on its unlock request");
         }
-        let _ = send.finish();
+        if let Err(error) = send.finish() {
+            tracing::warn!(%error, "an unlock decision did not reach the boot that asked");
+        }
         let _ = tokio::time::timeout(WRITE_GRACE, send.stopped()).await;
     }
 
@@ -236,6 +250,8 @@ impl Unlock {
         let wait = Duration::from_nanos(APPROVAL_TIMEOUT_NS);
         match tokio::time::timeout(wait, asked).await {
             Ok(answer) => answer.is_some(),
+            // The person did not answer in time, which refuses this boot.
+            // ignored-failure: no answer within the window is a refusal
             Err(_) => false,
         }
     }
@@ -364,12 +380,17 @@ impl Unlock {
                 let listener = match crate::agent_door::bind_private(&path) {
                     Ok(listener) => listener,
                     Err(error) => {
+                        // ignored-failure: a session without the enrolment socket enrolls nothing
                         tracing::debug!(%error, "disk-unlock enrolment socket unavailable");
                         return;
                     }
                 };
                 for stream in listener.incoming().flatten() {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                    if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
+                        // Without it a boot that says nothing holds this
+                        // connection open for as long as it likes.
+                        tracing::warn!(%error, "an enrolment connection has no read timeout");
+                    }
                     let _ = service.answer_enrolment(stream);
                 }
             });
@@ -458,12 +479,18 @@ async fn read_client(recv: &mut RecvStream) -> Option<ClientFrame> {
         .await
         .ok()?
         .ok()?;
+    // A frame that does not decode is not an unlock request: the caller closes
+    // the connection as not a boot.
+    // ignored-failure: a frame this protocol does not know is not a boot
     decode_frame(&body).ok()
 }
 
 async fn write_sibling(send: &mut SendStream, frame: &SiblingFrame) -> bool {
     match encode_frame(frame) {
         Ok(bytes) => send.write_all(&bytes).await.is_ok(),
-        Err(_) => false,
+        Err(error) => {
+            tracing::warn!(%error, "an unlock answer could not be encoded");
+            false
+        }
     }
 }

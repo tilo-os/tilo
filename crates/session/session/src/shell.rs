@@ -675,6 +675,8 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
             .trim()
             .parse::<i64>()
             .map_or_else(|_| Value::String(value.to_owned()), Value::from),
+        // ignored-failure: a number that does not parse is sent as the text
+        // the person typed, and the door refuses it by name
         Some(ParamType::Number) => value
             .trim()
             .parse::<f64>()
@@ -795,6 +797,7 @@ impl ShellChrome {
             }
             "shortcut"
                 if arguments.get("action").cloned().and_then(|action| {
+                    // ignored-failure: an action that does not read back is not this one
                     serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
                 }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
             {

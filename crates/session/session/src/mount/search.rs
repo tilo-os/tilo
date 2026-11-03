@@ -79,7 +79,13 @@ impl Shared {
             .services
             .borrow()
             .read(tilo_app_launch::downloaded::RESOURCE)
-            .and_then(|reading| serde_json::from_value(reading).ok());
+            .and_then(|reading| {
+                serde_json::from_value(reading)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the downloaded programs registry does not read back");
+                    })
+                    .ok()
+            });
         let resources = self.doors.resources();
         // What a place made from a resource reads its app and views from:
         // the same tree search and the palette read.

@@ -1823,7 +1823,7 @@ impl Client {
         let sequence = self.presence_seq.get().wrapping_add(1);
         self.presence_seq.set(sequence);
         if let Err(error) = live.say(ws, sequence, frame) {
-            tracing::debug!(%error, "presence was not said on the live plane");
+            tracing::warn!(%error, "presence was not said on the live plane");
         }
     }
 
@@ -2175,7 +2175,7 @@ pub fn configured_hosts() -> Vec<EndpointAddr> {
 /// A configured host, as its JSON address or as a bare endpoint id.
 fn host_addr(value: &str) -> Option<EndpointAddr> {
     serde_json::from_str(value)
-        .ok()
+        .ok() // ignored-failure: a host value that is not JSON names no endpoint address here
         .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
 }
 
@@ -2326,7 +2326,7 @@ async fn admit(
     {
         Ok(admitted) => admitted,
         Err(error) => {
-            tracing::debug!(%error, %workspace, "a workspace's state was not taken in");
+            tracing::warn!(%error, %workspace, "a workspace's state was not taken in");
             return;
         }
     };
@@ -2337,7 +2337,7 @@ async fn admit(
                 replay_wanted |= report.replay_wanted;
             }
             Err(error) => {
-                tracing::debug!(%error, %workspace, "a workspace's state was not taken in");
+                tracing::warn!(%error, %workspace, "a workspace's state was not taken in");
             }
         }
     }

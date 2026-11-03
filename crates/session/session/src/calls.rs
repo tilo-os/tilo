@@ -187,6 +187,7 @@ impl Calls {
         live.iter()
             .filter(|call| call.channel == channel)
             .flat_map(|call| &call.people)
+            // ignored-failure: a caller id that is not an endpoint names no device to open a lane to
             .filter_map(|caller| caller.id.parse::<iroh::EndpointId>().ok())
             .map(|device| *device.as_bytes())
             .collect::<BTreeSet<_>>()
@@ -777,7 +778,12 @@ impl Shared {
                 text: None,
             };
             tokio::spawn(async move {
-                let _ = consents.decide(&caller, &handle, question).await;
+                if let Err(error) = consents.decide(&caller, &handle, question).await {
+                    tracing::warn!(
+                        error = ?error,
+                        "a microphone permission question was not put to the person"
+                    );
+                }
             });
             return Err(Issue::PermissionDenied);
         }
@@ -801,8 +807,17 @@ impl Shared {
         // stream: the frames sealed after it unmutes carry the sequence after
         // the ones the others already heard, so they go on hearing it.
         if side.microphone.is_none() {
-            side.microphone =
-                tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok();
+            match tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS) {
+                Ok(microphone) => side.microphone = Some(microphone),
+                Err(error) => {
+                    // The lane opened but this device cannot capture: the
+                    // person is refused rather than left unheard.
+                    tracing::warn!(%error, "this device's microphone could not be opened");
+                    side.voice.stop();
+                    side.microphone = None;
+                    return Err(Issue::Unavailable);
+                }
+            }
         }
         drop(side);
         Ok(())
@@ -1398,6 +1413,7 @@ fn dial_lane(
     let call = Arc::downgrade(shared);
     tokio::spawn(async move {
         let Ok(remote) = iroh::EndpointId::from_bytes(&device) else {
+            tracing::warn!("a call lane names a device that is not an endpoint; it is not dialled");
             return;
         };
         loop {
@@ -1413,6 +1429,9 @@ fn dial_lane(
                     let _ = joined.send(peer);
                     return;
                 }
+                // A dial that failed is tried again after REDIAL, while the
+                // call is open.
+                // ignored-failure: the lane is redialled until the call closes
                 Err(_) => tokio::time::sleep(REDIAL).await,
             }
         }
@@ -1474,7 +1493,7 @@ fn hand_screen(
             let (width, height) = picture.dimensions();
             share.publish_rgba(width, height, picture.into_raw());
         }
-        Err(error) => tracing::debug!(%error, "no frame of the desktop to share"),
+        Err(error) => tracing::warn!(%error, "no frame of the desktop to share"),
     }
 }
 

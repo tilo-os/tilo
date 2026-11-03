@@ -814,8 +814,12 @@ fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
         PeerRefusal::Unavailable | PeerRefusal::Busy => refusal.message().to_owned(),
     };
     let reply = refusal_json("not_permitted", &message);
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+    if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
+        tracing::warn!(%error, "a control refusal has no write timeout");
+    }
+    if let Err(error) = stream.write_all(format!("{reply}\n").as_bytes()) {
+        tracing::warn!(%error, "a control refusal did not reach its program");
+    }
 }
 
 /// Serve one connection of a program inside an app this session started: the control protocol,
@@ -851,7 +855,7 @@ type Writer = Arc<Mutex<UnixStream>>;
 /// does not serve is refused here, before it reaches anything ([`served`]).
 fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Option<String>) {
     if let Err(error) = stream.set_nonblocking(false) {
-        tracing::debug!(%error, "control: a connection cannot block");
+        tracing::warn!(%error, "control: a connection cannot block");
         return;
     }
     let Ok(writer) = stream.try_clone() else {

@@ -246,6 +246,10 @@ const GENERATION: &str = "session";
 /// lifted for anything but the right password.
 const LOCK_SCREEN_TRIES: u32 = 3;
 
+/// Where each published part stood when search last read it: the part's
+/// index and its revision and head.
+type Observed = RefCell<Option<Vec<(usize, (u64, u64))>>>;
+
 /// What the session keeps between frames, shared with the loop.
 struct Shared {
     handle: DesktopHandle,
@@ -401,7 +405,7 @@ struct Shared {
     session_actions: fn(SessionAction) -> Result<(), String>,
     /// Where everything the session publishes stood when search last read
     /// it.
-    observed: RefCell<Option<Vec<(usize, (u64, u64))>>>,
+    observed: Observed,
     /// The second search last read who is here: people and the calls they are
     /// in change with the clock as well as with what arrives.
     here_at: Cell<u64>,
@@ -599,7 +603,7 @@ impl Shared {
             return;
         }
         if let Err(error) = arrangement.save(state) {
-            tracing::debug!(%error, "the arrangement is not kept");
+            tracing::warn!(%error, "the arrangement is not kept");
             return;
         }
         *self.kept_arrangement.borrow_mut() = Some(heads);
@@ -652,7 +656,7 @@ impl Shared {
         };
         let workspace = apps.workspace_named(&workspace_id.to_string());
         if let Err(error) = apps.start(&launch, &workspace) {
-            tracing::debug!(%error, %app, "an app is not opened from the history");
+            tracing::warn!(%error, %app, "an app is not opened from the history");
         }
     }
 
@@ -1042,7 +1046,7 @@ impl Session {
             );
             woken();
         })
-        .map_err(|error| tracing::debug!(%error, "settings are not watched"))
+        .map_err(|error| tracing::warn!(%error, "settings are not watched"))
         .ok();
         let presentation = (options.presentation)();
         let overview = mount::overview::Overview::new(
@@ -1134,6 +1138,7 @@ impl Session {
         if let Some(text) = options.state.as_deref().and_then(arrangement::load_at) {
             match ui::automerge::AutoCommit::load(&text) {
                 Ok(kept) => record = kept,
+                // ignored-failure: another build kept the arrangement, and a fresh desk is made
                 Err(error) => tracing::debug!(%error, "the kept arrangement is not this build's"),
             }
         }

@@ -248,9 +248,12 @@ fn accept(listener: &UnixListener, handle: &Handle) {
         match stream {
             Ok(stream) => {
                 let handle = handle.clone();
-                let _ = std::thread::Builder::new()
+                if let Err(error) = std::thread::Builder::new()
                     .name("tilo-tools-app".into())
-                    .spawn(move || serve(&handle, stream));
+                    .spawn(move || serve(&handle, stream))
+                {
+                    tracing::warn!(%error, "a tool connection could not be served");
+                }
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => {
@@ -280,6 +283,7 @@ fn serve(handle: &Handle, stream: UnixStream) {
         match read_request(&mut reader) {
             Line::Done => return,
             Line::TooLarge => {
+                // ignored-failure: the connection ends whether or not it read the refusal
                 let _ = say(&mut writing, &refused("the tool request is too large"));
                 return;
             }
@@ -342,7 +346,10 @@ fn read_request(reading: &mut BufReader<UnixStream>) -> Line {
     }
     match serde_json::from_slice::<ToolRequest>(&line) {
         Ok(request) => Line::Request(request),
-        Err(_) => Line::Refused("the tool request does not decode"),
+        Err(error) => {
+            tracing::warn!(%error, "a tool request does not decode");
+            Line::Refused("the tool request does not decode")
+        }
     }
 }
 

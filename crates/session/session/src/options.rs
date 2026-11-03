@@ -316,7 +316,7 @@ pub(crate) fn open_engine(
     match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {
-            tracing::debug!(%error, "this session holds no workspaces");
+            tracing::warn!(%error, "this session holds no workspaces");
             None
         }
     }

@@ -288,6 +288,7 @@ where
     for candidate in candidates.iter().copied() {
         match open(candidate).await {
             Ok(opened) => return Some((candidate, opened)),
+            // ignored-failure: an unreachable relay is skipped, and the next is tried
             Err(error) => tracing::debug!(relay = %hex::encode(candidate), %error,
                 "this relay of the workspace was not reached"),
         }
@@ -304,7 +305,7 @@ impl Shared {
         let members = match channels::members_of(&self.engine, workspace) {
             Ok(members) => members,
             Err(error) => {
-                tracing::debug!(%workspace, %error, "the live plane's membership is unknown");
+                tracing::warn!(%workspace, %error, "the live plane's membership is unknown");
                 self.withdraw(workspace);
                 return None;
             }
@@ -555,6 +556,7 @@ impl Shared {
                         .lock_recover()
                         .insert((workspace, other), Bridged { _copy: bridge });
                 }
+                // ignored-failure: an unreachable relay is skipped, and the next is tried
                 Err(error) => tracing::debug!(%workspace, relay = %hex::encode(other), %error,
                     "the other relay of this workspace was not reached"),
             }

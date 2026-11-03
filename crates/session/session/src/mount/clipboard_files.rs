@@ -275,8 +275,12 @@ impl Paste {
     /// What the worker did, once it is over: it is waited for here, which is
     /// no wait at all by then.
     pub(crate) fn outcome(&mut self) -> Outcome {
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            // Its progress is all the outcome says; a worker that panicked
+            // leaves the paste half-done with no reason.
+            tracing::warn!("the paste worker stopped before it finished");
         }
         let state = std::mem::take(&mut *self.progress.lock_recover());
         Outcome {
@@ -355,7 +359,9 @@ fn paste(
     progress.lock_recover().total = receipt.items.len();
     save(&receipt).map_err(Refused::Stopped)?;
     if let Err(error) = make_staging(&receipt.staging) {
-        let _ = clear_receipt();
+        if let Err(error) = clear_receipt() {
+            tracing::warn!(%error, "the receipt of a paste that could not start was kept");
+        }
         return Err(Refused::Stopped(format!(
             "{} could not hold the paste: {error}",
             destination.display()
@@ -364,12 +370,23 @@ fn paste(
     if let Err(error) = transfer(&mut receipt, progress) {
         // Nothing of a paste that could not be recorded is left standing:
         // what landed stays whole and the rest goes back where it was.
-        let _ = undo(&receipt, progress);
+        if let Err(kept) = undo(&receipt, progress) {
+            tracing::warn!(
+                %kept,
+                %error,
+                destination = %destination.display(),
+                "a paste that could not be recorded could not be put back"
+            );
+        }
         progress.lock_recover().undone = false;
         return Err(Refused::Stopped(error));
     }
-    let _ = remove_staging(&receipt.staging);
-    clear_receipt().ok();
+    best_effort("removing the staging folder", &receipt.staging, || {
+        remove_staging(&receipt.staging)
+    });
+    if let Err(error) = clear_receipt() {
+        tracing::warn!(%error, "a finished paste's receipt was kept");
+    }
     Ok(())
 }
 
@@ -577,7 +594,11 @@ fn stage(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
             }
         }
         Err(error) => {
-            let _ = remove_path(&staged);
+            best_effort(
+                "removing what was staged for a file that was not pasted",
+                &staged,
+                || remove_path(&staged),
+            );
             tracing::warn!(%error, source = %source.display(), "a file was not pasted");
             fail(receipt, index, progress, &name, &error.to_string());
         }
@@ -626,7 +647,11 @@ fn set_aside(
         );
         return false;
     }
-    let _ = sync_directory(&receipt.destination);
+    best_effort(
+        "making the paste's folder survive a crash",
+        &receipt.destination,
+        || sync_directory(&receipt.destination),
+    );
     true
 }
 
@@ -647,7 +672,9 @@ fn hide_source(
         return true;
     };
     if let Err(error) = fs::rename(&source, &held) {
-        let _ = sync_parent(&source);
+        best_effort("making a hidden source survive a crash", &source, || {
+            sync_parent(&source)
+        });
         fail(
             receipt,
             index,
@@ -702,8 +729,10 @@ fn publish(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
                 return;
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                if let Some(item) = receipt.items.get(index) {
-                    put_back(item).ok();
+                if let Some(item) = receipt.items.get(index)
+                    && let Err(error) = put_back(item)
+                {
+                    best_effort_by("putting a cut's source back", &item.source, error);
                 }
                 if conflict == Conflict::Replace {
                     continue;
@@ -732,8 +761,10 @@ fn publish(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
                 }
             }
             Err(error) => {
-                if let Some(item) = receipt.items.get(index) {
-                    put_back(item).ok();
+                if let Some(item) = receipt.items.get(index)
+                    && let Err(kept) = put_back(item)
+                {
+                    best_effort_by("putting a cut's source back", &item.source, kept);
                 }
                 fail(receipt, index, progress, &name, &error.to_string());
                 return;
@@ -767,14 +798,24 @@ fn unhold(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
         );
         return;
     }
-    let _ = sync_parent(&source);
+    best_effort(
+        "making a cut's emptied source survive a crash",
+        &source,
+        || sync_parent(&source),
+    );
 }
 
 /// Record that the item at `index` did not land, and why.
 fn fail(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>, name: &str, reason: &str) {
     if let Some(item) = receipt.items.get_mut(index) {
         // A cut's source comes out of hiding before anything else.
-        let _ = put_back(item);
+        if let Err(error) = put_back(item) {
+            best_effort_by(
+                "putting a cut's source back after a failure",
+                &item.source,
+                error,
+            );
+        }
         item.state = State::Failed;
     }
     progress
@@ -817,7 +858,11 @@ fn undo(receipt: &Receipt, progress: &Mutex<Progress>) -> Result<(), String> {
             if !came_back {
                 trash(&aside);
             }
-            let _ = sync_parent(&item.target);
+            best_effort(
+                "making a restored name survive a crash",
+                &item.target,
+                || sync_parent(&item.target),
+            );
         }
         if let Err(error) = put_back(item) {
             record(&mut trouble, &name, &error, progress);
@@ -832,7 +877,9 @@ fn undo(receipt: &Receipt, progress: &Mutex<Progress>) -> Result<(), String> {
     }
     remove_staging(&receipt.staging)
         .map_err(|error| format!("the staging folder could not be removed: {error}"))?;
-    clear_receipt().ok();
+    if let Err(error) = clear_receipt() {
+        tracing::warn!(%error, "a put-back paste's receipt was kept");
+    }
     Ok(())
 }
 
@@ -872,12 +919,18 @@ fn put_back(item: &Item) -> Result<(), String> {
         };
         fs::rename(held, &beside)
             .map_err(|error| format!("{} could not be put back: {error}", beside.display()))?;
-        let _ = sync_parent(&beside);
+        best_effort("making a put-back name survive a crash", &beside, || {
+            sync_parent(&beside)
+        });
         return Ok(());
     }
     fs::rename(held, &item.source)
         .map_err(|error| format!("{} could not be put back: {error}", item.source.display()))?;
-    let _ = sync_parent(&item.source);
+    best_effort(
+        "making a put-back name survive a crash",
+        &item.source,
+        || sync_parent(&item.source),
+    );
     Ok(())
 }
 
@@ -890,7 +943,11 @@ fn remove_held(item: &Item) -> Result<(), String> {
         return Ok(());
     }
     remove_path(held).map_err(|error| error.to_string())?;
-    let _ = sync_parent(&item.source);
+    best_effort(
+        "making a removed name survive a crash",
+        &item.source,
+        || sync_parent(&item.source),
+    );
     Ok(())
 }
 
@@ -934,8 +991,10 @@ fn copy_tree(source: &Path, staged: &Path) -> io::Result<()> {
         // A copy is the file it was made of, in its permission bits and when
         // it last changed, so a photo album keeps its order.
         to.set_permissions(fs::Permissions::from_mode(metadata.permissions().mode()))?;
-        if let Ok(modified) = metadata.modified() {
-            let _ = to.set_times(fs::FileTimes::new().set_modified(modified));
+        if let Ok(modified) = metadata.modified()
+            && let Err(error) = to.set_times(fs::FileTimes::new().set_modified(modified))
+        {
+            tracing::warn!(%error, path = %staged.display(), "a copy's times were not kept");
         }
         return Ok(());
     }
@@ -947,6 +1006,20 @@ fn copy_tree(source: &Path, staged: &Path) -> io::Result<()> {
 
 /// Flush `path`'s directory entry, so a rename or a fresh name survives a
 /// power cut.
+/// Run a paste step whose failure leaves the paste's own outcome intact — a
+/// durability sync, a cleanup — and say so in the journal with the path it was
+/// about: what it lost shows up only after a crash or a restart.
+fn best_effort<T>(what: &str, path: &Path, step: impl FnOnce() -> io::Result<T>) {
+    if let Err(error) = step() {
+        tracing::warn!(%error, path = %path.display(), what, "a paste step did not finish");
+    }
+}
+
+/// [`best_effort`] for a step that also hands back why it failed.
+fn best_effort_by(what: &str, path: &Path, error: impl std::fmt::Display) {
+    tracing::warn!(%error, path = %path.display(), what, "a paste step did not finish");
+}
+
 fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
@@ -1004,7 +1077,9 @@ fn remove_staging(staging: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     };
-    let _ = sync_parent(staging);
+    best_effort("removing the staging folder", staging, || {
+        sync_parent(staging)
+    });
     gone
 }
 

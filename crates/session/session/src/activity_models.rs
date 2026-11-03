@@ -46,7 +46,7 @@ pub(crate) fn models() -> Option<ui::models::Models> {
     ) {
         Ok(backend) => Some(ui::models::Models::new(backend)),
         Err(error) => {
-            tracing::debug!(%error, "the history is described without a model");
+            tracing::warn!(%error, "the history is described without a model");
             None
         }
     }
@@ -69,6 +69,7 @@ fn gateway() -> Option<std::os::fd::OwnedFd> {
     match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
         Ok(resolved) => resolved.into_iter().next().map(|service| service.host),
         Err(error) => {
+            // ignored-failure: a session with no model gateway describes the history without one
             tracing::debug!(%error, "no model gateway for describing the history");
             None
         }

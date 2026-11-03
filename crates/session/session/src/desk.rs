@@ -68,7 +68,7 @@ impl crate::Shared {
         };
         let address = tilo_actions::ActionAddress::new(crate::MEDIA, action);
         if let Err(error) = self.doors.invoke(&address, &serde_json::Map::new()) {
-            tracing::debug!(%error, ?action, "the desk's music control did not reach the player");
+            tracing::warn!(%error, ?action, "the desk's music control did not reach the player");
         }
     }
 }

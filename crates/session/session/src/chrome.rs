@@ -76,9 +76,13 @@ impl Clock {
 
     /// What the clocks app shows now.
     fn activity(&self) -> Option<ClocksActivity> {
-        self.board
-            .activity(CLOCKS_APP)
-            .and_then(|activity| serde_json::from_value(activity).ok())
+        self.board.activity(CLOCKS_APP).and_then(|activity| {
+            serde_json::from_value(activity)
+                .inspect_err(
+                    |error| tracing::warn!(%error, "the clocks activity does not read back"),
+                )
+                .ok()
+        })
     }
 
     /// Whether the activity floats over the windows for the person to see.

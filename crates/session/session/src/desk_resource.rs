@@ -440,6 +440,7 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
         }
     }
     let rank = |key: &str| -> i64 {
+        // ignored-failure: a key that is no tab number sorts after every tab
         let tab: u64 = key.parse().unwrap_or(u64::MAX);
         if Some(tab) == focused_tab {
             return 0;
@@ -949,6 +950,7 @@ impl Desk {
             .reached(walked.len(), front)
             .and_then(|at| walked.get(at).copied())
             .and_then(|at| windows.get(at));
+        // ignored-failure: a reached window whose key is no tab focuses nothing
         if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
             self.handle.focus_tab(tab);
         }

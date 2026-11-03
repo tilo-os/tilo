@@ -702,7 +702,7 @@ fn tell(reply: &Arc<Mutex<UnixStream>>, message: &FloatingSurfaceHostMessage, ap
     match written {
         Ok(()) => true,
         Err(error) => {
-            tracing::debug!(%error, %app, "a shell-ui answer was not written");
+            tracing::warn!(%error, %app, "a shell-ui answer was not written");
             false
         }
     }
@@ -819,9 +819,13 @@ impl Socket {
                 self.requests.clone(),
                 Arc::clone(&self.wake),
             );
-            let _ = std::thread::Builder::new()
+            if let Err(error) = std::thread::Builder::new()
                 .name(format!("tilo-shell-ui-{connection}"))
-                .spawn(move || serve_connection(connection, stream, &launches, &requests, &wake));
+                .spawn(move || serve_connection(connection, stream, &launches, &requests, &wake))
+            {
+                // Nobody serves this connection: the app it belongs to waits.
+                tracing::warn!(%error, connection, "a shell-ui connection worker could not start");
+            }
         }
     }
 }
@@ -871,6 +875,7 @@ struct Hello {
 /// The shell-ui version `frame` says, when it is a hello.
 fn hello_version(frame: &[u8]) -> Option<u16> {
     serde_json::from_slice::<Hello>(frame)
+        // ignored-failure: a frame that does not read back is not a hello
         .ok()
         .filter(|hello| hello.kind == "hello")
         .and_then(|hello| hello.version)
@@ -902,6 +907,8 @@ fn serve_connection(
     else {
         return;
     };
+    // A client that does not speak this protocol is dropped.
+    // ignored-failure: a handshake that does not read back is not one of ours
     let Ok(handshake) = serde_json::from_slice::<LauncherHandshake>(&handshake_frame) else {
         return;
     };
@@ -1027,12 +1034,14 @@ fn launched_workspace(launches: &Launches, peer: Option<u32>, app: &str) -> Opti
 /// Tell an app speaking another shell-ui version which one this session
 /// speaks, so the one behind can be updated.
 fn refuse_version(writer: &mut UnixStream, app: &str, app_version: Option<u16>) {
-    let _ = write_message(
+    if let Err(error) = write_message(
         writer,
         &FloatingSurfaceHostMessage::VersionMismatch {
             shell: FLOATING_SURFACE_PROTOCOL_VERSION,
         },
-    );
+    ) {
+        tracing::warn!(%error, app, "an app was not told this session speaks another shell-ui version");
+    }
     tracing::info!(
         %app,
         ?app_version,

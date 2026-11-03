@@ -125,7 +125,7 @@ pub(crate) fn forget(state: &Path, log_read: bool) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                tracing::debug!(%error, path = %path.display(), "an old desk file stays");
+                tracing::warn!(%error, path = %path.display(), "an old desk file stays");
             }
         }
     }
@@ -160,6 +160,7 @@ fn read_log(state: &Path) -> Option<AutoCommit> {
     let bytes = std::fs::read(log_at(state)).ok()?;
     let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
     AutoCommit::load_with_options(&bytes, options)
+        // ignored-failure: the old log is another build's, and the new desk is read anyway
         .map_err(|error| tracing::debug!(%error, "the old desk log is not this build's"))
         .ok()
 }

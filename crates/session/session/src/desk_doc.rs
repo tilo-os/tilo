@@ -463,7 +463,7 @@ pub(crate) fn stamp_schema(doc: &mut AutoCommit) {
         return;
     }
     if let Err(error) = doc.put(ROOT, SCHEMA_KEY, u64::from(STATE_SCHEMA_VERSION)) {
-        tracing::debug!(%error, "the desk does not say which shape it is");
+        tracing::warn!(%error, "the desk does not say which shape it is");
     }
 }
 

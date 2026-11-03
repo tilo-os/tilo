@@ -1333,7 +1333,7 @@ impl WindowShares {
         }
         let seat = compositor.open_seat();
         if let Err(error) = compositor.seat_aim_window(seat, window) {
-            tracing::debug!(%error, peer, "a viewer's seat found no window to act in");
+            tracing::warn!(%error, peer, "a viewer's seat found no window to act in");
             compositor.close_seat(seat);
             return None;
         }
@@ -1495,6 +1495,7 @@ impl WindowShares {
                     // A locked or asleep screen sends nothing, and the share
                     // goes on when it wakes.
                     Err(error) => {
+                        // ignored-failure: each pass captures the windows it can
                         tracing::debug!(%error, window = %hosted.window, "a shared window is not captured this pass");
                     }
                 }
@@ -1620,9 +1621,9 @@ fn hosted_window(tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
 /// desktop model names a hosted window's device by.
 fn device_key(host: &str) -> Option<EndpointId> {
     hex::decode(host)
-        .ok()
+        .ok() // ignored-failure: a host that is no device key hosts no window
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .and_then(|bytes| EndpointId::from_bytes(&bytes).ok())
+        .and_then(|bytes| EndpointId::from_bytes(&bytes).ok()) // ignored-failure: 32 bytes that are no endpoint name no device to host a window with
 }
 
 /// Whether the desk shows the tab `tab` anywhere.
@@ -1803,6 +1804,7 @@ fn workspace_argument() -> ActionParam {
 /// The tab an action names, by its decimal id.
 fn tab_of(args: &tilo_actions::ActionArgs) -> TabId {
     args.text("tab")
+        // ignored-failure: text that is no tab id names no tab
         .and_then(|tab| tab.trim().parse().ok())
         .unwrap_or(0)
 }

@@ -479,7 +479,7 @@ fn next_workspace_default(
         match ws.set_default_app_policy_as(actor, resource, next, &resolver) {
             Ok(()) => true,
             Err(error) => {
-                tracing::debug!(%error, "workspace default refused");
+                tracing::warn!(%error, "workspace default refused");
                 false
             }
         }
@@ -513,7 +513,7 @@ fn next_personal_default(
         match ws.set_default_app_choice_as(actor, actor, resource, next, &resolver) {
             Ok(()) => true,
             Err(error) => {
-                tracing::debug!(%error, "personal default refused");
+                tracing::warn!(%error, "personal default refused");
                 false
             }
         }

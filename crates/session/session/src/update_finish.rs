@@ -101,6 +101,7 @@ impl Finish {
                 if let Taken::Action { key, .. } = taken_action
                     && key == RESTART_ACTION
                 {
+                    // ignored-failure: the reader is gone once the session that owns it has shut down
                     let _ = taken.send(());
                 }
             });
@@ -248,10 +249,20 @@ impl Session {
         };
         // What the services last published: the update service keeps it
         // current, and it is absent where this session hosts none.
-        let update = self
+        let update = match self
             .read(tilo_system_service::SYSTEM_UPDATE)
-            .and_then(|reading| serde_json::from_value::<Update>(reading).ok())
-            .unwrap_or_default();
+            .map(serde_json::from_value::<Update>)
+        {
+            Some(Ok(update)) => update,
+            Some(Err(error)) => {
+                tracing::warn!(
+                    %error,
+                    "the published update state does not read back; this pass reads it as no update"
+                );
+                Update::default()
+            }
+            None => Update::default(),
+        };
         let Some(due) =
             self.update_finish
                 .step(now, SystemTime::now(), presence, &update, host(), wanted)

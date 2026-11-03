@@ -500,15 +500,24 @@ impl Connection {
     fn of(stream: UnixStream, wake: Option<tilo_service::Wake>) -> Self {
         let (outgoing, writes) = mpsc::channel();
         let (incoming_sender, incoming) = mpsc::channel();
-        if let Ok(reader) = stream.try_clone() {
-            std::thread::Builder::new()
-                .name("surface-actions".into())
-                .spawn(move || read_messages(reader, &incoming_sender, wake.as_ref()))
-                .ok();
-            std::thread::Builder::new()
-                .name("surface-actions-writes".into())
-                .spawn(move || write_messages(stream, &writes))
-                .ok();
+        match stream.try_clone() {
+            Ok(reader) => {
+                if let Err(error) = std::thread::Builder::new()
+                    .name("surface-actions".into())
+                    .spawn(move || read_messages(reader, &incoming_sender, wake.as_ref()))
+                {
+                    tracing::warn!(%error, "a surface's news is not read");
+                }
+                if let Err(error) = std::thread::Builder::new()
+                    .name("surface-actions-writes".into())
+                    .spawn(move || write_messages(stream, &writes))
+                {
+                    tracing::warn!(%error, "a surface's news is not sent");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a surface's connection could not be split; nothing is sent to or heard from it");
+            }
         }
         Self {
             outgoing,
@@ -758,7 +767,7 @@ impl Surfaces {
         let display = match compositor.bind_surface_display() {
             Ok(display) => Some(display),
             Err(error) => {
-                tracing::debug!(
+                tracing::warn!(
                     surface = %surface.name,
                     %error,
                     "a surface app has no display of its own: it cannot speak the input protocols"
@@ -827,7 +836,7 @@ impl Surfaces {
             compositor
                 .accept_surface_clients(display, child.id(), surface.output.clone())
                 .map_err(|error| {
-                    tracing::debug!(
+                    tracing::warn!(
                         surface = %surface.name,
                         %error,
                         "a surface app's own display did not listen"

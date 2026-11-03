@@ -1134,7 +1134,7 @@ fn take(inner: &Arc<Inner>, store: &mut Option<NearbyTransferStore>, job: Job) {
             let name = source.name().to_owned();
             let bytes = source.metadata().map_or(0, |metadata| metadata.len());
             if let Err(reason) = stage(inner, store, transfer_id, &target, source, stream_now) {
-                tracing::debug!(%reason, "a nearby send is refused");
+                tracing::warn!(%reason, "a nearby send is refused");
                 settle(
                     inner,
                     transfer_id,
@@ -1162,7 +1162,7 @@ fn take(inner: &Arc<Inner>, store: &mut Option<NearbyTransferStore>, job: Job) {
                 committed_offset,
                 prefix_hash,
             ) {
-                tracing::debug!(%reason, "a nearby stream is not started");
+                tracing::warn!(%reason, "a nearby stream is not started");
             }
         }
         Job::Reoffer { transfer_id } => reoffer(inner, store, transfer_id),
@@ -1175,7 +1175,7 @@ fn take(inner: &Arc<Inner>, store: &mut Option<NearbyTransferStore>, job: Job) {
             let bytes = manifest.total_bytes;
             let source = manifest.source.clone();
             if let Err(reason) = accept(inner, store, transfer_id, manifest, destination) {
-                tracing::debug!(%reason, "a nearby receive is not accepted");
+                tracing::warn!(%reason, "a nearby receive is not accepted");
                 if let Ok(peer) = DeviceId::new(source) {
                     settle(
                         inner,
@@ -1319,7 +1319,7 @@ fn destinations(
         }
     });
     if let Err(error) = read {
-        tracing::debug!(%error, "a workspace's files are not read for a received file");
+        tracing::warn!(%error, "a workspace's files are not read for a received file");
         return Vec::new();
     }
     grants
@@ -1573,7 +1573,7 @@ fn reoffer(inner: &Inner, store: &mut Option<NearbyTransferStore>, transfer_id: 
                 .insert(transfer_id, Offered { target, request_id });
         }
         Err(error) => {
-            tracing::debug!(%error, "a staged send is not offered now");
+            tracing::warn!(%error, "a staged send is not offered now");
             inner.state.lock_recover().offering.remove(&transfer_id);
         }
     }
@@ -1645,7 +1645,7 @@ fn cancel_incoming(inner: &Inner, store: &mut Option<NearbyTransferStore>, trans
         accepted: false,
     };
     if let Err(error) = link.send_personal_fabric_action(&source, declined) {
-        tracing::debug!(%error, "a device was not told a nearby transfer was dropped");
+        tracing::warn!(%error, "a device was not told a nearby transfer was dropped");
     }
     if entry.is_some()
         && let Err(error) = store.cancel_incoming(transfer_id)
@@ -1691,7 +1691,7 @@ fn append(
         return;
     }
     if let Err(error) = store.append(transfer_id, offset, bytes) {
-        tracing::debug!(%error, "a nearby chunk is not taken");
+        tracing::warn!(%error, "a nearby chunk is not taken");
     }
 }
 
@@ -1728,7 +1728,7 @@ fn finish(
     match store.finish_secure(transfer_id, &destination) {
         Ok(installed) => {
             if let Err(error) = link.send_personal_fabric_action(source, result(true)) {
-                tracing::debug!(%error, "a device was not told the file landed");
+                tracing::warn!(%error, "a device was not told the file landed");
             }
             tracing::info!(path = %installed.display(), "a file arrived from one of the person's devices");
             settle(
@@ -1742,7 +1742,7 @@ fn finish(
             );
         }
         Err(reason) => {
-            tracing::debug!(%reason, "a received file is not installed");
+            tracing::warn!(%reason, "a received file is not installed");
             let _ = store.cancel_incoming(transfer_id);
             let _ = link.send_personal_fabric_action(source, result(false));
             settle(
@@ -1780,10 +1780,10 @@ fn restart(
                 prefix_hash,
             };
             if let Err(error) = link.send_personal_fabric_action(source, ready) {
-                tracing::debug!(%error, "a device was not told where to stream from");
+                tracing::warn!(%error, "a device was not told where to stream from");
             }
         }
-        Err(reason) => tracing::debug!(%reason, "a received transfer is not restarted"),
+        Err(reason) => tracing::warn!(%reason, "a received transfer is not restarted"),
     }
 }
 
@@ -1816,7 +1816,7 @@ fn cancelled(inner: &Inner, store: &mut Option<NearbyTransferStore>, transfer_id
             transfer_id,
         };
         if let Err(error) = link.send_personal_fabric_action(&target, discard) {
-            tracing::debug!(%error, "a device was not told a send was withdrawn");
+            tracing::warn!(%error, "a device was not told a send was withdrawn");
         }
     }
     settle(
@@ -1975,7 +1975,7 @@ impl Inner {
             }
         });
         if let Err(error) = read {
-            tracing::debug!(%error, "a workspace's grants are not read for a send");
+            tracing::warn!(%error, "a workspace's grants are not read for a send");
             return Vec::new();
         }
         grants

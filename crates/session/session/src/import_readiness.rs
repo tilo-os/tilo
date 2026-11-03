@@ -165,6 +165,7 @@ impl Readiness {
                 continue;
             }
             let _ = client.write_all(answer);
+            // ignored-failure: a readiness client that left needs no answer
             let _ = client.flush();
         }
     }
@@ -223,6 +224,9 @@ fn saved_review_asks_to_open(account: u32) -> bool {
         return false;
     }
     serde_json::from_slice::<serde_json::Value>(&bytes)
+        .inspect_err(|error| {
+            tracing::warn!(%error, "the review record does not read back; the review is not shown");
+        })
         .ok()
         .and_then(|review| {
             review

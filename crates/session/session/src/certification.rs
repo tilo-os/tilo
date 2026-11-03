@@ -483,7 +483,7 @@ pub(crate) fn certify(
         }
         match send(fabric.as_ref(), &device, ask_action(gathering.ask())?) {
             Ok(()) => asked = asked.saturating_add(1),
-            Err(error) => tracing::debug!(%error, "a device of the person could not be asked"),
+            Err(error) => tracing::warn!(%error, "a device of the person could not be asked"),
         }
     }
     if let Some(key) = &share {

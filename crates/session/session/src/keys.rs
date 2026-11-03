@@ -915,7 +915,7 @@ impl Shared {
                             name: None,
                         }));
                     }
-                    tracing::debug!(
+                    tracing::warn!(
                         ?error,
                         address = %invocation.address.encode(),
                         "nothing carried out a key's action"
@@ -933,12 +933,21 @@ impl Shared {
         let read = |resource: &str| services.read(resource);
         let sound = || {
             read(SOUND).and_then(|reading| {
-                serde_json::from_value::<tilo_audio_service::sound::Sound>(reading).ok()
+                serde_json::from_value::<tilo_audio_service::sound::Sound>(reading)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the sound service's reading does not read back");
+                    })
+                    .ok()
             })
         };
         let displays = || {
-            read(displays::RESOURCE)
-                .and_then(|reading| serde_json::from_value::<displays::Reading>(reading).ok())
+            read(displays::RESOURCE).and_then(|reading| {
+                serde_json::from_value::<displays::Reading>(reading)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the displays service's reading does not read back");
+                    })
+                    .ok()
+            })
         };
         if !kind.has_level() {
             let on = match kind {
@@ -946,6 +955,12 @@ impl Shared {
                 OsdKind::AirplaneMode => read(NETWORK)
                     .and_then(|reading| {
                         serde_json::from_value::<tilo_connectivity_service::model::Network>(reading)
+                            .inspect_err(|error| {
+                                tracing::warn!(
+                                    %error,
+                                    "the connectivity service's reading does not read back"
+                                );
+                            })
                             .ok()
                     })
                     .is_some_and(|network| network.airplane_mode),
@@ -982,6 +997,12 @@ impl Shared {
             OsdKind::KeyboardBacklight => read(KEYBOARD_BACKLIGHT)
                 .and_then(|reading| {
                     serde_json::from_value::<tilo_system_service::model::KeyboardLight>(reading)
+                        .inspect_err(|error| {
+                            tracing::warn!(
+                                %error,
+                                "the system service's keyboard light does not read back"
+                            );
+                        })
                         .ok()
                 })
                 .map_or((0.0, true, None), |light| {
@@ -1053,7 +1074,13 @@ impl Shared {
             .services
             .borrow()
             .read(displays::RESOURCE)
-            .and_then(|reading| serde_json::from_value::<displays::Reading>(reading).ok())
+            .and_then(|reading| {
+                serde_json::from_value::<displays::Reading>(reading)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the displays service's reading does not read back");
+                    })
+                    .ok()
+            })
             .and_then(|reading| {
                 // A brightness key dims the display it is about; every other
                 // readout answers on the display the person works on.
@@ -1066,7 +1093,7 @@ impl Shared {
         let arguments = osd.arguments(display.as_deref());
         let address = ActionAddress::new(OSD_RESOURCE, "show");
         if let Err(error) = self.doors.invoke(&address, &arguments) {
-            tracing::debug!(?error, "no readout shown");
+            tracing::warn!(?error, "no readout shown");
         }
     }
 }

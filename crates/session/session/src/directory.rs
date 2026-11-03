@@ -934,6 +934,13 @@ fn join(door: &url::Url, person: &Person) -> Result<Granted, String> {
     }
     if !status.is_success() {
         let refusal = serde_json::from_slice::<DoorRefusal>(&bytes)
+            .inspect_err(|error| {
+                tracing::warn!(
+                    %error,
+                    status = status.as_u16(),
+                    "a door's refusal does not read back"
+                );
+            })
             .ok()
             .and_then(|refusal| refusal.error)
             .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));

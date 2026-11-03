@@ -125,7 +125,13 @@ impl AppSheets {
         self.services
             .borrow()
             .read(downloaded::RESOURCE)
-            .and_then(|reading| serde_json::from_value(reading).ok())
+            .and_then(|reading| {
+                serde_json::from_value(reading)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the downloaded apps registry does not read back");
+                    })
+                    .ok()
+            })
     }
 
     /// Whether a question about the person's apps is up: they are asked one

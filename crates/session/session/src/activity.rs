@@ -517,7 +517,7 @@ fn document_of(
     let stored = match store.read(&StorageKey::record(package, workspace, record)) {
         Ok(stored) => stored?,
         Err(error) => {
-            tracing::debug!(%error, %package, %record, "a record is not read");
+            tracing::warn!(%error, %package, %record, "a record is not read");
             return None;
         }
     };
@@ -528,7 +528,7 @@ fn document_of(
     match AutoCommit::load_with_options(&stored.bytes, options) {
         Ok(doc) => Some(doc),
         Err(error) => {
-            tracing::debug!(%error, %package, %record, "a record does not load");
+            tracing::warn!(%error, %package, %record, "a record does not load");
             None
         }
     }
@@ -613,8 +613,25 @@ impl HistoryMaps {
         let path = state.map(|state| state.join("tilo").join(VIEW_FILE));
         let known = path
             .as_deref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|path| match std::fs::read(path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "the remembered history map view could not be read"
+                    );
+                    None
+                }
+            })
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the remembered history map view does not read back");
+                    })
+                    .ok()
+            })
             .unwrap_or_default();
         Self {
             known: RefCell::new(known),

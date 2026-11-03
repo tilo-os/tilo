@@ -511,7 +511,7 @@ impl Panel {
             author: Some(author.to_owned()),
         };
         if let Err(error) = self.handle.dispatch(command) {
-            tracing::debug!(%error, "activity could not open for that person");
+            tracing::warn!(%error, "activity could not open for that person");
         }
     }
 }

@@ -66,7 +66,7 @@ impl SessionEnvironment {
         if !tilo_paths::login::names_tilo(std::env::var_os("XDG_CURRENT_DESKTOP").as_deref()) {
             return;
         }
-        let _ = std::thread::Builder::new()
+        let exported = std::thread::Builder::new()
             .name("tilo-session-env".to_string())
             .spawn(move || match self.command().status() {
                 Ok(status) if status.success() => tracing::info!(
@@ -78,6 +78,9 @@ impl SessionEnvironment {
                     tracing::warn!(%error, "dbus-update-activation-environment could not run");
                 }
             });
+        if let Err(error) = exported {
+            tracing::warn!(%error, "the display could not be exported in the background");
+        }
     }
 }
 

@@ -393,7 +393,13 @@ impl SessionSearch {
         if let Some(places) = kept
             .get("places")
             .filter(|places| !places.is_null())
-            .and_then(|places| serde_json::from_value(places.clone()).ok())
+            .and_then(|places| {
+                serde_json::from_value(places.clone())
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "the search places do not read back"),
+                    )
+                    .ok()
+            })
         {
             *self.places.borrow_mut() = places;
         }

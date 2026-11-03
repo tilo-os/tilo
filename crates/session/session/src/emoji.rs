@@ -142,8 +142,19 @@ impl FileRecentsStore {
     fn at(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let recents = std::fs::read(&path)
+            .inspect_err(|error| {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(%error, path = %path.display(), "the emoji recents could not be read");
+                }
+            })
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the emoji recents do not read back");
+                    })
+                    .ok()
+            })
             .unwrap_or_default();
         Self { path, recents }
     }

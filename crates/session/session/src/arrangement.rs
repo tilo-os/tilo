@@ -348,6 +348,7 @@ impl ArrangementAction {
     #[must_use]
     pub fn decode(type_id: &str, payload: &[u8]) -> Option<Self> {
         (type_id == OPERATION)
+            // ignored-failure: an operation of another type, or one that does not read back, is not this action
             .then(|| serde_json::from_slice(payload).ok())
             .flatten()
     }
@@ -421,11 +422,14 @@ impl Arrangement {
                     strip.places.push(place);
                     continue;
                 }
-                let Some(tile) = serde_json::from_value::<TileContent>(place.state.clone()).ok()
-                else {
-                    // A live window this build cannot read opens nothing.
-                    changed = true;
-                    continue;
+                let tile = match serde_json::from_value::<TileContent>(place.state.clone()) {
+                    Ok(tile) => tile,
+                    Err(error) => {
+                        // A live window this build cannot read opens nothing.
+                        tracing::warn!(%error, "a saved place does not read back; its window is not restored");
+                        changed = true;
+                        continue;
+                    }
                 };
                 let relaunchable = Tab {
                     id: place.id,
@@ -1274,7 +1278,7 @@ fn path(state: &std::path::Path) -> std::path::PathBuf {
 #[must_use]
 pub fn load_at(state: &std::path::Path) -> Option<Vec<u8>> {
     std::fs::read(path(state))
-        .map_err(|error| tracing::debug!(%error, "no arrangement is kept"))
+        .map_err(|error| tracing::warn!(%error, "no arrangement is kept"))
         .ok()
 }
 
@@ -1465,12 +1469,14 @@ fn strip_actions(key: &str) -> Vec<ActionSpec> {
 fn named(args: &ActionArgs, name: &str, item: Item) -> Option<u64> {
     args.text(name)
         .and_then(|id| item.key(id.trim()))
+        // ignored-failure: an id that is not a number names no row, which the action refuses
         .and_then(|key| key.parse().ok())
 }
 
 /// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless
 /// resource a package describes the kind with, which no door publishes.
 fn count_of(key: &str) -> u64 {
+    // ignored-failure: a keyless resource has no count, and 0 is its count
     key.parse().unwrap_or_default()
 }
 
@@ -1659,6 +1665,7 @@ fn count(args: &ActionArgs, name: &str) -> u64 {
 /// which the action then refuses as naming no workspace.
 fn id_text(args: &ActionArgs, name: &str) -> u64 {
     args.text(name)
+        // ignored-failure: text that is not a number names no workspace, which the action refuses
         .and_then(|id| id.trim().parse().ok())
         .unwrap_or_default()
 }

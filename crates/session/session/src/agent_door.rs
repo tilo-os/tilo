@@ -288,7 +288,15 @@ impl Seats {
 
     /// The connection `seat` names, which ending its seat closes.
     fn attached(&self, seat: u64, stream: &UnixStream) {
-        let copy = stream.try_clone().ok();
+        let copy = match stream.try_clone() {
+            Ok(copy) => Some(copy),
+            Err(error) => {
+                // Without its own handle the seat cannot end this connection;
+                // the client keeps it until it leaves by itself.
+                tracing::warn!(%error, "an agent seat's connection could not be duplicated");
+                None
+            }
+        };
         if let Some(connection) = self.inner.lock_recover().connections.get_mut(&seat) {
             connection.stream = copy;
         }
@@ -523,18 +531,28 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
     let bindings_path = state.map(|directory| directory.join(BINDINGS_FILE));
-    let always = bindings_path
-        .as_deref()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<StoredBindings>(&bytes).ok())
-        .map(|stored| {
-            stored
-                .bindings
-                .into_iter()
-                .map(|binding| (binding.key, binding.agent))
-                .collect()
-        })
-        .unwrap_or_default();
+    let always: HashMap<BindingKey, String> = match bindings_path.as_deref() {
+        None => HashMap::new(),
+        Some(path) => match std::fs::read(path) {
+            // No bindings file yet: nobody chose "Always allow" on this device.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "stored agent bindings could not be read");
+                HashMap::new()
+            }
+            Ok(bytes) => match serde_json::from_slice::<StoredBindings>(&bytes) {
+                Ok(stored) => stored
+                    .bindings
+                    .into_iter()
+                    .map(|binding| (binding.key, binding.agent))
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "stored agent bindings do not read back");
+                    HashMap::new()
+                }
+            },
+        },
+    };
     let (requests, asked) = std::sync::mpsc::channel();
     // A program named by a path that does not resolve is admitted by none.
     let admits = admits
@@ -996,6 +1014,9 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
                 format!("{} already has a live listener", path.display()),
             ));
         }
+        // Nothing is there, or what is there is not a socket: bind it below,
+        // where a socket that answers proves itself live.
+        // ignored-failure: a path with no live listener is the path to bind
         Ok(_) | Err(_) => {}
     }
     // Short on purpose: a Unix socket path is capped near 108 bytes, and the
@@ -1152,8 +1173,12 @@ fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
     let reply =
         tilo_runtime::session_door::error_reply(&serde_json::Value::Null, refusal.message());
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+    if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
+        tracing::warn!(%error, "a refused client's connection has no write timeout");
+    }
+    if let Err(error) = stream.write_all(format!("{reply}\n").as_bytes()) {
+        tracing::warn!(%error, "a refused agent was not told why");
+    }
 }
 
 /// What a control client that is neither an admitted agent nor a program inside an app this
@@ -1170,8 +1195,12 @@ fn refuse_control(mut stream: UnixStream, message: &str) {
         "code": "not_allowed",
         "message": message,
     }});
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+    if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
+        tracing::warn!(%error, "a control client's connection has no write timeout");
+    }
+    if let Err(error) = stream.write_all(format!("{reply}\n").as_bytes()) {
+        tracing::warn!(%error, "a control client was not told why it is served nothing");
+    }
 }
 
 /// What a connection asks of the session's own doors: answered on the loop's
@@ -1957,6 +1986,7 @@ fn serve_connection(
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => {
+            // ignored-failure: a client that left before asking needs no answer
             tracing::debug!(%error, "agent door: the client left before its first request");
             return;
         }
@@ -2003,7 +2033,13 @@ fn serve_connection(
     ));
     let admitted = Arc::clone(&tasks);
     let seat = seats.joining(pid);
-    let seat_stream = stream.try_clone().ok();
+    let seat_stream = match stream.try_clone() {
+        Ok(copy) => Some(copy),
+        Err(error) => {
+            tracing::warn!(%error, "an agent's seat has no handle on its connection");
+            None
+        }
+    };
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
@@ -2024,6 +2060,7 @@ fn serve_connection(
     );
     seats.left(seat);
     if let Err(error) = ended {
+        // ignored-failure: a client that disconnected needs no answer
         tracing::debug!(%error, "agent door: the client disconnected");
     }
 }

@@ -637,7 +637,7 @@ fn follow_codecs(notifications: &Notifications) {
                 *held = Some(watch);
             }
         }
-        Err(error) => tracing::debug!(%error, "codec pack notices are unavailable"),
+        Err(error) => tracing::warn!(%error, "codec pack notices are unavailable"),
     }
 }
 
@@ -695,7 +695,7 @@ pub fn start(notifications: &Notifications) {
     // The records are files, and the kernel's are read through commands: the
     // main thread walks no path.
     let news = notifications.clone();
-    let _ = std::thread::Builder::new()
+    let crash_news = std::thread::Builder::new()
         .name("crash-news".into())
         .spawn(move || {
             let Some(dir) = tilo_crash_records::directory() else {
@@ -706,12 +706,18 @@ pub fn start(notifications: &Notifications) {
             tilo_crash_records::stopped::take_in(&dir);
             tell_crash_news(&news, &dir);
         });
+    if let Err(error) = crash_news {
+        tracing::warn!(%error, "crash records are not watched for");
+    }
     follow_codecs(notifications);
 
     let storage = notifications.clone();
-    let _ = std::thread::Builder::new()
+    let storage_watch = std::thread::Builder::new()
         .name("storage-watch".into())
         .spawn(move || watch_storage(&storage));
+    if let Err(error) = storage_watch {
+        tracing::warn!(%error, "storage is not watched for");
+    }
 }
 
 /// Watch the free space of the person's filesystems, announcing each one that
