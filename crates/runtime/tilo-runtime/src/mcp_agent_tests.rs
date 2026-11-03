@@ -430,9 +430,6 @@ impl Notes {
         let long = self.long.lock().unwrap().is_some();
         let notes = self.notes();
         let mut rows = vec![self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true)];
-        for (_, body, label) in &notes {
-            rows.push(self.row("", body, "tilo.rich-text", label, None, false));
-        }
         rows.extend([
             self.row(
                 NOTEBOOK,
@@ -462,6 +459,12 @@ impl Notes {
         ]);
         for (page, _, label) in &notes {
             rows.push(self.row(NOTEBOOK, page, "notes.page", label, None, true));
+        }
+        // A note's body is published under its note, as the live Notes
+        // publishes it: a field's row names its note as its parent, and the
+        // search names a row about the body by the note's title.
+        for (page, body, label) in &notes {
+            rows.push(self.row(page, body, "tilo.rich-text", label, None, false));
         }
         for (page, _, label) in &notes {
             rows.push(self.row(
@@ -732,7 +735,8 @@ impl tilo_actions::remote::ResourceSearch for Notes {
         _caller: &Caller,
         needle: &str,
     ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionHostError>> {
-        if let Some(reason) = self.unreachable.lock().unwrap().clone() {
+        let unreachable = self.unreachable.lock().unwrap().clone();
+        if let Some(reason) = unreachable {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
         let words = page::needle_words(needle);
@@ -1805,7 +1809,7 @@ fn a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is() {
         assert!(
             by_name
                 .lines()
-                .any(|line| line.starts_with("notes/Notebook/Todo#append-paragraph")),
+                .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
             "{by_name}"
         );
         for app in [APP, "SO.TILO.NOTES", " Notes "] {
@@ -1838,7 +1842,7 @@ fn a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read() 
         assert!(!failed, "{text}");
         assert!(
             text.lines()
-                .any(|line| line.starts_with("notes/Notebook/Todo#append-paragraph")),
+                .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
             "{text}"
         );
         let (text, failed) = tool(&agent(&running), "tilo_find", query("sheets")).await;
