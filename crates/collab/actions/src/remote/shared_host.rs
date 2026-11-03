@@ -60,4 +60,8 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
     fn record_changes(&self) -> Option<std::sync::Arc<dyn RecordChanges>> {
         (**self).record_changes()
     }
+
+    fn resource_search(&self) -> Option<std::sync::Arc<dyn super::ResourceSearch>> {
+        (**self).resource_search()
+    }
 }

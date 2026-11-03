@@ -24,6 +24,7 @@ use super::{
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use tilo_actions::remote::Found;
 use tilo_actions::{ActionDescriptor, OperationKind};
 
 #[path = "mcp_tilo.rs"]
@@ -39,8 +40,6 @@ const PAGE_ROWS: u32 = 128;
 /// Containers at an app's top level whose contents the app's root also
 /// offers: a notebook's pages are the app's own.
 const ROOT_PEEK: usize = 3;
-/// Pages a provider-wide needle search reads before giving up on one name.
-const SEARCH_PAGES: usize = 3;
 /// Containers a name that is not where it was looked for reads on, one by
 /// one, before it is called missing.
 const DEEP_READS: usize = 16;
@@ -48,9 +47,6 @@ const DEEP_READS: usize = 16;
 const NAME_BYTES: usize = 256;
 /// Lines `tilo_ls` answers before a cursor.
 const LS_LINES: usize = 40;
-/// Hits of one app a search asks for by name before it reads the app's
-/// containers whole instead.
-const HITS_ASKED: usize = 8;
 /// Hits `tilo_find` answers.
 const FIND_HITS: usize = 15;
 /// Characters of a read answered before the rest is cut.
@@ -113,7 +109,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_find",
-            "Search apps, resources and actions by words, best first: `{query: \"checklist add\"}`, optionally app: \"notes\" (or its id). One line per hit, path#action(params) and its label, ready for tilo_do. Files are not searched.",
+            "Search the workspace by words, best first, as the desktop's palette does: `{query: \"my mails\"}`, optionally app: \"notes\". One line per hit, a path `tilo_ls` and `tilo_do` take, `path#action` for an action.",
             json!({"query":string,"app":string,"limit":integer}),
             json!(["query"]),
             read,
@@ -1908,23 +1904,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-/// `node`'s path below its app: under the resource that owns it when one is
-/// known (`Todo/body`), else among `pool`.
-fn path_in(node: &Node, pool: &[Node]) -> String {
-    match pool
-        .iter()
-        .filter(|owner| owner.owns(node))
-        .max_by_key(|owner| owner.token().len())
-    {
-        Some(owner) => format!(
-            "{}/{}",
-            path_in(owner, pool),
-            node.name(std::slice::from_ref(owner))
-        ),
-        None => node.name(pool),
-    }
-}
-
 /// The ids of the apps `name` names among those `running` and `installed`:
 /// its whole id or the name `tilo_ls` lists it by, any case. An error naming
 /// the apps there are when it names none, so a search narrowed to an app
@@ -2600,28 +2579,37 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(outcome(&value))
     }
 
+    /// What the workspace holds, by the one search the desktop runs: the
+    /// palette's ranking and `place_found`'s, so a text an agent asks for
+    /// answers what the person sees, in the person's order. Each result is
+    /// named by the path `tilo_ls` and `tilo_do` take, an action as
+    /// `path#action(params)`, so the next call acts on what this one found.
+    ///
+    /// A host with no search of its own (a standalone runtime, which speaks
+    /// for no desk) is told so: answering by its apps' own directories would
+    /// be the second ranking `find` stopped having.
     async fn agent_find(&self, args: FindArgs) -> Result<Reply, String> {
-        let words = page::needle_words(&args.query);
-        if words.is_empty() {
+        if args.query.trim().is_empty() {
             return Err("query needs a word to look for".into());
         }
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
-        let (_, running) = self.providers().await?;
-        // Apps are found by name among those the workspace lists; a list
-        // that could not be read leaves them out but still searches the
-        // running apps.
-        let installed = self.installed().await;
-        let unread = installed.as_ref().err().cloned();
-        let installed = installed.unwrap_or_default();
-        let mut hits: Vec<Hit> = Vec::new();
-        // Apps by name.
-        let mut seen: Vec<String> = Vec::new();
-        for (_, app) in &running {
-            if let Some(app_id) = app["app_id"].as_str()
-                && !seen.iter().any(|id| id == app_id)
-            {
-                seen.push(app_id.to_owned());
-            }
+        let Some(search) = self.host.resource_search() else {
+            return Err(
+                "this host runs no desktop search: find answers what the desktop's one search \
+                 finds, so list an app's directory instead (tilo_ls names the apps)"
+                    .into(),
+            );
+        };
+        let found = search
+            .find(&self.caller, &args.query)
+            .await
+            .ok_or("the desktop's search stopped answering")?
+            .map_err(|error| error.to_string())?;
+        if found.is_empty() {
+            return Ok(Reply::ok(format!(
+                "nothing matches {}; tilo_ls shows the apps and what is in them",
+                args.query.trim()
+            )));
         }
         let wanted = match args
             .app
@@ -2629,46 +2617,35 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .map(str::trim)
             .filter(|app| !app.is_empty())
         {
-            Some(app) => Some(searched_apps(app, &seen, &installed, unread.as_deref())?),
+            Some(app) => Some(self.app_ids(app).await?),
             None => None,
         };
-        for InstalledApp { app_id, label, .. } in &installed {
-            let name = app_names(std::slice::from_ref(app_id)).join("");
-            let matches = words.iter().all(|word| {
-                name.starts_with(word.as_str()) || label.to_lowercase().starts_with(word.as_str())
-            });
-            if matches && wanted.as_ref().is_none_or(|wanted| wanted.contains(app_id)) {
-                let state = if seen.contains(app_id) {
-                    "running"
-                } else {
-                    "installed"
-                };
-                hits.push(Hit {
-                    tier: 0,
-                    line: format!("{name}  {label}  {state}"),
-                });
+        // Each resource once, by its path: the search ranks a resource and
+        // the actions on it apart, and an agent acts on the resource. Each
+        // directory is read once for all of the results it names.
+        let (_, running) = self.providers().await?;
+        let mut lines: Vec<String> = Vec::new();
+        for hit in &found {
+            if wanted
+                .as_ref()
+                .is_some_and(|wanted| !hit.app.as_ref().is_some_and(|app| wanted.contains(app)))
+            {
+                continue;
+            }
+            let Some(line) = self.found_line(hit, &running).await else {
+                continue;
+            };
+            if !lines.contains(&line) {
+                lines.push(line);
             }
         }
-        let (found, silent, asked) = self
-            .search_running(&seen, &running, wanted.as_deref(), &words)
-            .await;
-        hits.extend(found);
-        // Nothing found because no app was searched is not "nothing
-        // matches": an agent would take the resource for absent.
-        if hits.is_empty() && !silent.is_empty() && silent.len() == asked {
-            return Ok(Reply::failed(format!(
-                "not searched, the app did not answer: {}; try again",
-                list_names(&silent)
-            )));
-        }
-        hits.sort_by_key(|hit| hit.tier);
-        let total = hits.len();
+        let total = lines.len();
         let mut text = String::new();
-        for hit in hits.into_iter().take(limit) {
+        for line in lines.into_iter().take(limit) {
             if !text.is_empty() {
                 text.push('\n');
             }
-            text.push_str(&hit.line);
+            text.push_str(&line);
         }
         if total > limit {
             let _ = write!(
@@ -2683,281 +2660,213 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 args.query.trim()
             );
         }
-        if !silent.is_empty() {
-            let _ = write!(
-                text,
-                "\nnot searched, the app did not answer: {}",
-                list_names(&silent)
-            );
-        }
         Ok(Reply::ok(text))
     }
 
-    /// The hits inside each running app in `seen` (only `wanted`, when
-    /// named), newest instance, every app asked at once: one that does not
-    /// answer costs one wait, not one wait per app, and leaves the hits of
-    /// those that did. With the hits come the apps that did not answer and
-    /// how many apps were asked.
-    async fn search_running(
-        &self,
-        seen: &[String],
-        running: &[(String, Value)],
-        wanted: Option<&[String]>,
-        words: &[String],
-    ) -> (Vec<Hit>, Vec<String>, usize) {
-        let mut searched: Vec<(String, String)> = Vec::new();
-        for app_id in seen {
-            if wanted.is_some_and(|wanted| !wanted.contains(app_id)) {
-                continue;
-            }
-            let name = app_names(std::slice::from_ref(app_id)).join("");
-            if let Some(provider) = running
-                .iter()
-                .rev()
-                .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-                .map(|(peer, _)| peer.clone())
-            {
-                searched.push((name, provider));
-            }
-        }
-        let answers = join_all(
-            searched
-                .iter()
-                .map(|(name, provider)| self.search_app(name, provider, words))
-                .collect(),
-        )
-        .await;
-        let asked = answers.len();
-        let mut hits: Vec<Hit> = Vec::new();
-        let mut silent: Vec<String> = Vec::new();
-        for ((name, _), answer) in searched.into_iter().zip(answers) {
-            match answer {
-                Ok(found) => hits.extend(found),
-                Err(_) => silent.push(name),
-            }
-        }
-        (hits, silent, asked)
-    }
-
-    /// The hits inside one running app.
-    async fn search_app(
-        &self,
-        app: &str,
-        provider: &str,
-        words: &[String],
-    ) -> Result<Vec<Hit>, String> {
-        let longest = words
+    /// The app ids `name` means, among the apps this workspace runs and
+    /// installs: its whole id or the name `tilo_ls` lists it by, any case. An
+    /// error names the apps there are when it names none, so a search
+    /// narrowed to an app that is not there does not answer that nothing
+    /// matches.
+    async fn app_ids(&self, name: &str) -> Result<Vec<String>, String> {
+        let (_, running) = self.providers().await?;
+        let seen: Vec<String> = running
             .iter()
-            .max_by_key(|word| word.len())
-            .cloned()
-            .unwrap_or_default();
-        // The words as one phrase first: a name searched whole (a note's
-        // title) is then found in the few rows that carry it, even when its
-        // longest word is shared by more rows than the pages below hold, as
-        // in a notebook of notes titled alike. The words are searched apart,
-        // by the longest, only when the phrase names nothing: "new note"
-        // costs the rows naming it, not every note's "Rename note".
-        let mut rows = if words.len() > 1 {
-            self.needle_rows(provider, &words.join(" ")).await?
-        } else {
-            Vec::new()
-        };
-        if !rows.iter().any(|row| page::matches_words(row, words)) {
-            for row in self.needle_rows(provider, &longest).await? {
-                let same = |seen: &CatalogueRow| {
-                    seen.resource.id == row.resource.id
-                        && seen.action.as_ref().map(|action| &action.address)
-                            == row.action.as_ref().map(|action| &action.address)
-                };
-                if !rows.iter().any(same) {
-                    rows.push(row);
-                }
-            }
-        }
-        let nodes = level_of(&rows, "").children;
-        let pool = self.hit_owners(provider, &nodes).await?;
-        let mut hits = Vec::new();
-        for row in &rows {
-            if !page::matches_words(row, words) {
-                continue;
-            }
-            let Some(node) = nodes.iter().find(|node| node.id == row.resource.id) else {
-                continue;
-            };
-            let path = format!("{app}/{}", path_in(node, &pool));
-            let resource_words = |text: &str| {
-                let lower = text.to_lowercase();
-                words.iter().all(|word| {
-                    lower
-                        .split(|c: char| !c.is_alphanumeric())
-                        .any(|token| token.starts_with(word.as_str()))
-                })
-            };
-            let (tier, line) = match &row.action {
-                None => (1, format!("{path}  {}", node.kind)),
-                Some(action) => {
-                    let named = resource_words(&format!(
-                        "{} {}",
-                        action.address.action, action.action_label
-                    ));
-                    (
-                        if named { 2 } else { 3 },
-                        format!("{path}{}", action_line(action, None)),
-                    )
-                }
-            };
-            if !hits.iter().any(|hit: &Hit| hit.line == line) {
-                hits.push(Hit { tier, line });
-            }
-        }
-        Ok(hits)
+            .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
+            .collect();
+        let installed = self.installed().await;
+        let unread = installed.as_ref().err().cloned();
+        searched_apps(
+            name,
+            &seen,
+            &installed.unwrap_or_default(),
+            unread.as_deref(),
+        )
     }
 
-    /// What the hits `nodes` of one app are named under: the app's top level
-    /// and the hits themselves. A hit whose nearest owner among those is one
-    /// of the app's containers (a note under the notebook) is asked for by
-    /// name there; one that is not among the container's children sits
-    /// deeper, under a resource the search did not find (a note's body found
-    /// without the note), and the containers are read whole to name it, as
-    /// they are once more hits ask than a listing costs.
-    async fn hit_owners(&self, provider: &str, nodes: &[Node]) -> Result<Vec<Node>, String> {
-        let mut levels = Levels::new();
-        let root = self.level(provider, "", &mut levels).await?;
-        let mut pool = root.children.clone();
-        for node in nodes {
-            if !pool.iter().any(|seen| seen.id == node.id) {
-                pool.push(node.clone());
+    /// One result as the line an agent reads: the path `tilo_ls` names the
+    /// resource by, then what it is, or the action it offers after `#`.
+    async fn found_line(&self, found: &Found, running: &[(String, Value)]) -> Option<String> {
+        let located = self.locate(found.app.as_deref(), found, running).await;
+        // No directory of an app this workspace lists holds it (a setting's
+        // page, a file): a path `tilo_ls` cannot read names nothing, so the
+        // result is left out rather than answered as a path that fails.
+        //
+        // The path is `locate`'s, which is the one `tilo_ls` lists the
+        // resource at: a search row and a listing name it the same way.
+        let (named, kind) = located?;
+        Some(match found.open.as_deref() {
+            // The resource's own `open` names the resource itself; any other
+            // action is written after `#`.
+            Some("open") | None => format!("{named}  {kind}"),
+            Some(action) => format!("{named}#{action}  {}", found.label.trim()),
+        })
+    }
+
+    /// The path and kind of `resource` in the directories of the apps that
+    /// publish one: the app `hint` names first, then every other running
+    /// app and the host's services, oldest instance first. A workspace's
+    /// records are published under the provider that keeps them, whose name
+    /// is not the app the person knows, so a resource is found where it is,
+    /// never where its id suggests. Each directory is read once per call.
+    async fn locate(
+        &self,
+        hint: Option<&str>,
+        found: &Found,
+        running: &[(String, Value)],
+    ) -> Option<(String, String)> {
+        // Only the apps `tilo_ls` lists, by the name it lists them by: a
+        // path it cannot read names nothing. The app the search said the row
+        // is of is tried first.
+        let mut providers: Vec<(String, String)> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        let mut candidates: Vec<&(String, Value)> = running.iter().rev().collect();
+        if let Some(app) = hint {
+            let wanted = app_names(std::slice::from_ref(&app.to_owned())).join("");
+            candidates.sort_by_key(|(_, entry)| {
+                entry["app_id"].as_str().is_none_or(|app_id| {
+                    app_names(std::slice::from_ref(&app_id.to_owned())).join("") != wanted
+                })
+            });
+        }
+        for (provider, app) in candidates {
+            let Some(app_id) = app["app_id"].as_str() else {
+                continue;
+            };
+            if seen.contains(provider) {
+                continue;
+            }
+            seen.push(provider.clone());
+            providers.push((
+                app_names(std::slice::from_ref(&app_id.to_owned())).join(""),
+                provider.clone(),
+            ));
+        }
+        for (name, provider) in providers {
+            let Some(candidates) = self.listed(&provider, found).await else {
+                continue;
+            };
+            // The path is the one `tilo_ls` resolves to this very resource:
+            // there is one path model, so a search row is named exactly as a
+            // listing names it, and the first candidate that reads back as
+            // the resource is the one written.
+            eprintln!("LOCATE {:?} candidates={:?}", found.resource, candidates);
+            for (path, kind) in candidates {
+                let written = format!("{name}/{path}");
+                let Ok(parsed) = parse_path(&written) else {
+                    continue;
+                };
+                let Ok(Ok(held)) = self.resolve(&parsed).await else {
+                    continue;
+                };
+                let Some(node) = &held.node else {
+                    continue;
+                };
+                if self.same_resource(node, found) {
+                    return Some((written, kind));
+                }
             }
         }
-        let containers: Vec<&Node> = root
+        None
+    }
+
+    /// Whether `node` is the resource `found` names: the same id, or the
+    /// same label and kind (a host mints a fresh id at every publication, so
+    /// the search's id may name no node the directory answers now).
+    fn same_resource(&self, node: &Node, found: &Found) -> bool {
+        // A bound id names its resource by the logical key at its end, which
+        // is the key the directory publishes it under.
+        let id_matches = node.id == found.resource
+            || bound_key(&found.resource).is_some_and(|key| key == node.key);
+        id_matches
+            || (node.label.trim().eq_ignore_ascii_case(found.label.trim())
+                && (node.kind == found.kind || !found.kind.contains('.')))
+    }
+
+    /// The paths the app's directories list the resource `found` names at,
+    /// as `tilo_ls` writes them, best first: the app's own level, then each
+    /// container's. `None` when no directory lists it.
+    async fn listed(&self, provider: &str, found: &Found) -> Option<Vec<(String, String)>> {
+        let mut levels = Levels::new();
+        let Ok(top) = self.level(provider, "", &mut levels).await else {
+            return None;
+        };
+        let mut paths: Vec<(String, String)> = Vec::new();
+        let mut push = |path: String, node: &Node| {
+            if !paths.iter().any(|(seen, _)| *seen == path) {
+                paths.push((path, node.kind.clone()));
+            }
+        };
+        for node in &top.children {
+            if self.same_resource(node, found) {
+                push(node.name(&top.children), node);
+            }
+        }
+        // A row about a body is named by the body, not by the note whose
+        // title the search also matched: asked by the name the row is of.
+        let asked = found
+            .resource
+            .rsplit(['/', ':'])
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        for container in top
             .children
             .iter()
             .filter(|node| node.container)
             .take(ROOT_PEEK)
-            .collect();
-        let mut asked = 0usize;
-        let mut whole = false;
-        for hit in nodes {
-            let owner = pool
-                .iter()
-                .filter(|owner| owner.owns(hit))
-                .max_by_key(|owner| owner.token().len());
-            let Some(container) =
-                owner.filter(|owner| containers.iter().any(|seen| seen.id == owner.id))
-            else {
+        {
+            // A level read once names the resource among its siblings; one
+            // the open app cannot answer by name is read whole instead.
+            let Ok(shown) = self.level(provider, &container.id, &mut levels).await else {
                 continue;
             };
-            asked = asked.saturating_add(1);
-            let found = if asked > HITS_ASKED {
-                None
-            } else {
-                self.named(provider, &container.id, &hit.label).await?
-            };
-            if !found.is_some_and(|found| found.children.iter().any(|node| node.id == hit.id)) {
-                whole = true;
-                break;
-            }
-        }
-        if whole {
-            for node in self.app_children(provider, &mut levels).await?.children {
-                if !pool.iter().any(|seen| seen.id == node.id) {
-                    pool.push(node);
+            let mut here = shown.children;
+            if let Ok(Some(inside)) = self.named(provider, &container.id, &asked).await {
+                for child in inside.children {
+                    if !here.iter().any(|seen| seen.id == child.id) {
+                        here.push(child);
+                    }
                 }
             }
-        }
-        Ok(pool)
-    }
 
-    /// The rows of `provider` whose names hold `needle`, as many pages as a
-    /// search reads.
-    async fn needle_rows(&self, provider: &str, needle: &str) -> Result<Vec<CatalogueRow>, String> {
-        // One search reads one revision, as a level does: when a busy app's
-        // directory moves on between pages, what was read belongs to the old
-        // revision and the search starts again at the new one, pausing as a
-        // level read does, for as long as an action is waited for; past that
-        // it answers what it read.
-        let deadline = tokio::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
-        let mut rows = Vec::new();
-        let mut cursor = Vec::new();
-        let mut revision = None;
-        let mut pages = 0;
-        let mut reads: u32 = 1;
-        while pages < SEARCH_PAGES {
-            pages = pages.saturating_add(1);
-            let page = self
-                .ask(CatalogueQuery {
-                    provider: Some(provider.to_owned()),
-                    needle: needle.to_owned(),
-                    cursor: std::mem::take(&mut cursor),
-                    revision: revision.take(),
-                    max_results: PAGE_ROWS,
-                    limits: Some(CatalogueLimits {
-                        max_bytes: Some(65536),
-                        max_work: Some(512),
-                        max_depth: Some(16),
-                    }),
-                    ..CatalogueQuery::default()
-                })
-                .await?;
-            if page.stale_cursor {
-                if let Some(deadline) =
-                    deadline.filter(|deadline| tokio::time::Instant::now() < *deadline)
-                {
-                    reads = reads.saturating_add(1);
-                    let until = tokio::time::Instant::now()
-                        .checked_add(restart_pause(reads))
-                        .map_or(deadline, |until| until.min(deadline));
-                    tokio::time::sleep_until(until).await;
-                    rows.clear();
-                    cursor.clear();
-                    revision = None;
-                    pages = 0;
+            let above = container.name(&top.children);
+            // One level further, where a note keeps its body: the path `ls`
+            // lists a body at is under the note holding it.
+            for node in here.clone() {
+                if self.same_resource(&node, found) {
+                    push(format!("{above}/{}", node.name(&here)), &node);
+                }
+                if !node.container {
                     continue;
                 }
-                break;
+                // A note's body is asked for by its own name: the note's
+                // level lists its actions, and the body it publishes.
+                let Ok(named_inside) = self.named(provider, &node.id, "body").await else {
+                    continue;
+                };
+                let Some(inside) = named_inside else {
+                    eprintln!("NOBODY for {}", node.key);
+                    continue;
+                };
+                let mut inside = inside;
+                if let Ok(level) = self.level(provider, &node.id, &mut levels).await {
+                    for child in level.children {
+                        if !inside.children.iter().any(|seen| seen.id == child.id) {
+                            inside.children.push(child);
+                        }
+                    }
+                }
+                for child in &inside.children {
+                    if self.same_resource(child, found) {
+                        let body = child.name(&inside.children);
+                        push(format!("{above}/{}/{body}", node.name(&here)), child);
+                    }
+                }
             }
-            rows.extend(page.rows);
-            if page.exhausted || page.next_cursor.is_empty() {
-                break;
-            }
-            revision = Some(page.revision);
-            cursor = page.next_cursor;
         }
-        Ok(rows)
+        (!paths.is_empty()).then_some(paths)
     }
-}
-
-/// Every one of `futures`, run together, their outputs in their order.
-async fn join_all<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output> {
-    let mut running: Vec<std::pin::Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
-    let mut outputs: Vec<Option<F::Output>> = running.iter().map(|_| None).collect();
-    std::future::poll_fn(|context| {
-        let mut finished = true;
-        for (future, output) in running.iter_mut().zip(outputs.iter_mut()) {
-            if output.is_some() {
-                continue;
-            }
-            match future.as_mut().poll(context) {
-                std::task::Poll::Ready(answer) => *output = Some(answer),
-                std::task::Poll::Pending => finished = false,
-            }
-        }
-        if finished {
-            std::task::Poll::Ready(())
-        } else {
-            std::task::Poll::Pending
-        }
-    })
-    .await;
-    outputs.into_iter().flatten().collect()
-}
-
-/// One line of a search, with how well it matched: 0 an app, 1 a resource,
-/// 2 an action named as searched, 3 an action described so.
-struct Hit {
-    tier: u8,
-    line: String,
 }
 
 /// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which

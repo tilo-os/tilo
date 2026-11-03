@@ -1166,3 +1166,131 @@ fn seeded_thread(session: &Session, id: &str) -> bool {
     }
     find(&session.resources(), id, &format!("tl.{MAIL}.Thread"))
 }
+
+/// The REPL's `find` is the agent's `tilo_find`, and answers by the one search the palette and
+/// text typed on the canvas run: over the same sources, with the same ranking. A text naming
+/// what something is ("my mails"), what it is called, or both, finds there what
+/// `session.place_found` places — never a second ranking that knows a note's title but not
+/// Mail's inbox.
+#[test]
+fn the_repl_finds_what_place_found_places() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(apps)],
+            questions: Some(questions),
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(root.path().join("agent.sock")),
+            admit_repl: vec![program],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    // Each text, and a word the resource it names must carry (its kind, or
+    // the app it belongs to).
+    for (text, wanted) in [
+        ("my mails", "mail.Mail"),
+        ("notes", "notes."),
+        ("Groceries", "notes.Note"),
+        ("mail archive", "mail.Mailbox"),
+    ] {
+        // What the canvas places for `text`: the one search's first result,
+        // typed on the canvas as a person would.
+        let (answer, failed) = repl.call(
+            &mut session,
+            "tilo",
+            &json!({"program": format!(
+                "session.place_found(text: {text:?}, view: .none, x: .some(80), y: .some(60))"
+            )}),
+        );
+        assert!(!failed, "{text:?} is placed: {answer}");
+        until(&mut session, &format!("{text:?} placed"), |session| {
+            !shown(session).is_empty()
+        });
+        let shown_ids = shown(&session);
+        assert_eq!(shown_ids.len(), 1, "{text:?} places one thing: {shown_ids:?}");
+        let placed_kind = published_kind(&session, &shown_ids[0])
+            .unwrap_or_else(|| panic!("the session publishes no {}", shown_ids[0]));
+        assert!(
+            placed_kind.contains(wanted),
+            "{text:?} places a {placed_kind}, not a {wanted}: {shown_ids:?}"
+        );
+
+        // And `find` leads with the same thing: the first row names a
+        // resource of that kind, from the one search.
+        let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": text}));
+        assert!(!failed, "{text:?} answers: {found}");
+        let first = found
+            .lines()
+            .next()
+            .unwrap_or_else(|| panic!("{text:?} finds nothing: {found}"));
+        assert_eq!(
+            first.split("  ").nth(1),
+            Some(placed_kind.as_str()),
+            "{text:?}: find leads with {first}, and the canvas places {}",
+            shown_ids[0]
+        );
+
+        // Each `place_found` is a step of the person's: take it back, so the
+        // next text places on its own.
+        let (undone, failed) = repl.call(&mut session, "tilo", &json!({"program": "undo"}));
+        assert!(!failed, "{undone}");
+        until(&mut session, "the canvas cleared", |session| {
+            shown(session).is_empty()
+        });
+    }
+}
+
+
+/// What the arrangement places on the canvas, by the resource each shows.
+fn shown(session: &Session) -> Vec<String> {
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .foreign
+        .iter()
+        .chain(
+            session
+                .arrangement()
+                .borrow()
+                .strips()
+                .strips
+                .iter()
+                .flat_map(|strip| strip.places.iter()),
+        )
+        .map(|place| place.record.clone())
+        .filter(|record| !record.is_empty())
+        .collect()
+}
+
+/// The kind the session publishes the resource `id` as, when it publishes it.
+fn published_kind(session: &Session, id: &str) -> Option<String> {
+    fn walk(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<String> {
+        for resource in resources {
+            if resource.id.as_str() == id {
+                return Some(resource.kind.clone());
+            }
+            if let Some(found) = walk(&resource.children, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(&session.resources(), id)
+}

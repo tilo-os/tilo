@@ -542,7 +542,8 @@ impl Shared {
 
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
-        self.session_doors.answer(&self.doors, &self.person);
+        self.session_doors
+            .answer(&self.doors, &self.search, &self.person);
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
@@ -1957,6 +1958,17 @@ impl Session {
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement
+    }
+
+    /// The resource the text `text` typed on the canvas places: the top
+    /// result of the one search the palette, the canvas and an agent's
+    /// `find` run, as [`arrangement::found`] reads it. The same call
+    /// `session.place_found` makes, for a caller that asks what a text names
+    /// without placing it.
+    #[must_use]
+    pub fn placed_by(&self, text: &str) -> Option<String> {
+        let search = Rc::clone(&self.shared.search);
+        arrangement::found(text, &|needle| search.find(needle))
     }
 
     /// Undo the person's last arranging step, through the published action
