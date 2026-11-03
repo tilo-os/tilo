@@ -806,6 +806,7 @@ mod tests {
                 icons: std::collections::BTreeMap::new(),
                 candidates: Vec::new(),
                 declared: std::collections::BTreeMap::new(),
+                launchable: Vec::new(),
             }
         }
     }

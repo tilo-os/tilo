@@ -25,7 +25,7 @@ use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceId};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Options, Session};
+use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, SearchOptions, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 const WIDTH: i32 = 1280;
@@ -160,16 +160,30 @@ fn desk(person: &Keys) -> DesktopTree {
 /// A session serving the apps it starts on `socket`, with the person's desk
 /// and this device's identity.
 fn session(socket: &Path, person: &Keys) -> Session {
-    session_of(socket, person, APP, None)
+    session_of(socket, person, &[APP], None)
 }
 
-/// A session serving `app` as the app it started, keeping its state — and so
-/// its broker's admission journal — at `state` when it is given one.
-fn session_of(socket: &Path, person: &Keys, app: &str, state: Option<&Path>) -> Session {
+/// A session serving `apps` as the apps it started, keeping its state — and
+/// so its broker's admission journal — at `state` when it is given one.
+fn session_of(socket: &Path, person: &Keys, apps: &[&str], state: Option<&Path>) -> Session {
+    serving(socket, person, apps, state, Lists::default())
+}
+
+/// [`session_of`] for a device whose app lists are `lists`: what the action
+/// door lists as each app's offers and declared capabilities.
+fn serving(
+    socket: &Path,
+    person: &Keys,
+    apps: &[&str],
+    state: Option<&Path>,
+    lists: Lists,
+) -> Session {
     // The apps speak from this test's own process, so the launches the
     // session would have recorded for them name that process.
     let launches = std::sync::Arc::new(Launches::default());
-    launches.started(std::process::id(), app, WORKSPACE, true);
+    for app in apps {
+        launches.started(std::process::id(), app, WORKSPACE, true);
+    }
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -179,6 +193,10 @@ fn session_of(socket: &Path, person: &Keys, app: &str, state: Option<&Path>) -> 
             person: "Ada".to_owned(),
             launches,
             state: state.map(Path::to_path_buf),
+            search: SearchOptions {
+                lists,
+                ..SearchOptions::default()
+            },
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -193,9 +211,14 @@ fn session_of(socket: &Path, person: &Keys, app: &str, state: Option<&Path>) -> 
     session
 }
 
+/// The channel key of `app`'s record in the workspace.
+fn record_channel(app: &str) -> String {
+    tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
+}
+
 /// The channel key of the app's record in the workspace.
 fn channel() -> String {
-    tilo_action_broker::route::CrdtRoute::record(APP, WORKSPACE, RECORD).channel_key()
+    record_channel(APP)
 }
 
 /// The app whose settings the keyboard shortcuts are.
@@ -203,7 +226,7 @@ const SETTINGS: &str = "so.tilo.settings";
 
 /// The channel key of Settings' record in the workspace.
 fn settings_channel() -> String {
-    tilo_action_broker::route::CrdtRoute::record(SETTINGS, WORKSPACE, RECORD).channel_key()
+    record_channel(SETTINGS)
 }
 
 /// One change of the record: `value` written under `key`, as an app writes it.
@@ -401,6 +424,31 @@ fn settings_lists_shortcuts(
     })
 }
 
+/// The settings `app` reads over the session's door, as the JSON document the
+/// session answered: joined as the launch the session recorded for it.
+fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Value {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the app");
+    runtime.block_on(async {
+        let client = connect(socket, app);
+        let handle = client
+            .join_channel(
+                &record_channel(app),
+                &presentation(&person.device, &person.cert),
+            )
+            .await
+            .expect("the app the session launched joins its workspace's channel");
+        let view = handle
+            .settings()
+            .read(0)
+            .await
+            .expect("the session answers the app's settings");
+        serde_json::from_slice(&view.document_json).expect("the settings view is JSON")
+    })
+}
+
 /// What the apps found: the changes each read from the other, and how the
 /// identity store's refusals read.
 struct Joined {
@@ -557,7 +605,7 @@ fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
     let person = person();
     let state = home.path().join("state");
     std::fs::create_dir_all(&state).expect("a state directory");
-    let mut session = session_of(&socket, &person.keys, SETTINGS, Some(&state));
+    let mut session = session_of(&socket, &person.keys, &[SETTINGS], Some(&state));
 
     let (done, received) = std::sync::mpsc::channel();
     let plane = socket;
@@ -582,4 +630,65 @@ fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
                 .is_some_and(|defaults| defaults.iter().any(|chord| chord == "Ctrl+Alt+T"))),
         "the desktop's own shortcuts are listed: {rows:?}"
     );
+}
+
+/// The device's settings app reaches every section of the settings document
+/// over the session's door, because the app lists say its manifest declares
+/// the system reach; an app that declares none reads the shared sections
+/// only.
+#[test]
+fn the_settings_app_the_app_lists_allow_reaches_every_section() {
+    let person = person();
+    // A section the session keeps and no app reads as a shared one: what
+    // only the device's own settings app may see.
+    let mut power = serde_json::Map::new();
+    power.insert("probe".to_owned(), serde_json::json!("system"));
+    settings_store::update_section(settings_store::power::SECTION, power)
+        .expect("the session keeps the power settings");
+
+    let settings = settings_of(&person.keys, SETTINGS, &[(SETTINGS, true)]);
+    let notes = settings_of(&person.keys, APP, &[(APP, false)]);
+    assert_eq!(
+        settings["power"]["probe"], "system",
+        "the device's settings app reads the whole document: {settings}"
+    );
+    assert!(
+        notes.get("power").is_none(),
+        "an app whose manifest declares no system reach reads the shared sections only: {notes}"
+    );
+}
+
+/// What `app` reads of the settings over the session's door, in a session
+/// whose app lists say of each of `declared` whether its manifest asks for
+/// the device's system settings reach.
+fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_json::Value {
+    use tilo_action_broker::services::LaunchableApplication;
+    let home = private_home();
+    let socket = home.path().join("collab.sock");
+    let lists = AppLists {
+        launchable: declared
+            .iter()
+            .map(|(package_id, asks)| LaunchableApplication {
+                package_id: (*package_id).to_owned(),
+                display_name: (*package_id).to_owned(),
+                unconfined: false,
+                offers: Vec::new(),
+                capabilities: if *asks {
+                    vec![settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY.to_owned()]
+                } else {
+                    Vec::new()
+                },
+            })
+            .collect(),
+        ..AppLists::default()
+    };
+    let mut session = serving(&socket, person, &[app], None, Lists::fixed(lists));
+    let (done, received) = std::sync::mpsc::channel();
+    let plane = socket;
+    let keys = person.clone();
+    let called = app.to_owned();
+    std::thread::spawn(move || {
+        let _ = done.send(settings_read(&plane, &keys, &called));
+    });
+    until_the_apps_are_done(&mut session, &received)
 }

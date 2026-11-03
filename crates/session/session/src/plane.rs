@@ -402,6 +402,10 @@ pub fn serve(
                 certificate_authority: std::sync::Arc::clone(&certificates) as _,
             });
     let engine = hosted.engine.clone();
+    // The apps this device has, as its lists last read them: what the broker
+    // lists as each app's name and offered actions, and what decides the
+    // reach the device's settings app has of the settings document.
+    launches.watching(hosted.lists.clone());
     let services = host_services(
         link,
         launches,

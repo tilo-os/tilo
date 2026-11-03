@@ -60,9 +60,21 @@ pub struct Launches {
     /// the connection is being made: the shell-ui service reads it for the
     /// connection from the session's own process.
     shell_ui: Mutex<Vec<(String, u32)>>,
+    /// This device's apps, as the session's lists last read them: what a
+    /// service asking the launcher is told of every app it could open.
+    applications: Mutex<Option<crate::lists::Lists>>,
 }
 
 impl Launches {
+    /// The apps this device has, as `lists` last read them: what a service
+    /// asking the launcher is told of every app it could open — its name,
+    /// what it offers while it is not running, and the capabilities its
+    /// signed manifest declares, which decide the reach the device's
+    /// settings app has. Nothing is offered until a session lends them.
+    pub fn watching(&self, lists: crate::lists::Lists) {
+        *self.applications.lock_recover() = Some(lists);
+    }
+
     /// Record that `pid` runs `app` in `workspace`, as this session started
     /// it: the
     /// app's connection is admitted from here. A pid whose process cannot be
@@ -245,12 +257,20 @@ impl Window {
 }
 
 impl LauncherServices for Launches {
-    /// This session starts apps from its desktop, not on a service's behalf:
-    /// what a service can open is nothing.
+    /// This device's apps, as its lists last read them: what an app or a
+    /// service asking the action door may open here, and what each app
+    /// declared it may do.
     fn applications(&self) -> Vec<LaunchableApplication> {
-        Vec::new()
+        self.applications
+            .lock_recover()
+            .as_ref()
+            .map(|lists| lists.latest().launchable.clone())
+            .unwrap_or_default()
     }
 
+    /// This session starts apps from its desktop, not on a service's behalf:
+    /// what a service can open is listed, and opening one is not yet asked of
+    /// this door.
     fn launch(
         &self,
         _app: &str,
