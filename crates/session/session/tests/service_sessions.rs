@@ -57,6 +57,13 @@ const MARKER: &str = "private-session-marker";
 /// The person's email account, as their accounts record keys it.
 const ACCOUNT: &str = "me@example.test";
 
+/// Whether this host has a keyring to keep the person's vault key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Keyring {
+    Answers,
+    Missing,
+}
+
 /// The person's keys: this device, which hosts the workspace, and another of
 /// their devices, which only joined it.
 #[derive(Clone)]
@@ -85,7 +92,21 @@ struct Fixture {
     _home: tempfile::TempDir,
 }
 
-fn fixture() -> Fixture {
+/// The person's account vault under this host's one custody: the keyring
+/// where it answers, otherwise an owner-only key file beside the ciphertext.
+fn person_vault(root: &Path) -> accounts::AccountCredentials {
+    accounts::AccountCredentials::open_in(root)
+        .expect("this host can keep the person's account vault")
+}
+
+/// A login on a host whose keyring answers, or on one that has none and
+/// keeps the vault key in an owner-only file beside the ciphertext.
+///
+/// A keyring that answers is the file-backed secret store
+/// [`tilo_secrets::SECRETS_DIR_ENV`] names standing in for the Secret
+/// Service. Either way the session bus is one no Secret Service listens on,
+/// so on the second the host has no keyring whichever machine runs this.
+fn fixture(keyring: Keyring) -> Fixture {
     let root = tempfile::tempdir().expect("a directory for the identity");
     let home = tempfile::tempdir().expect("a home for this machine's session");
     let xdg = root.path().join("config");
@@ -96,6 +117,13 @@ fn fixture() -> Fixture {
         .set("TILO_IDENTITY_ROOT", &system)
         .set(FILE_SECRETS_ENV, "1")
         .set("HOME", home.path());
+    env.set(
+        "DBUS_SESSION_BUS_ADDRESS",
+        format!("unix:path={}", root.path().join("no-session-bus").display()),
+    );
+    if keyring == Keyring::Answers {
+        env.set(tilo_secrets::SECRETS_DIR_ENV, root.path().join("secrets"));
+    }
     let personal = xdg.join("tilo/identity");
     let paths = IdentityPaths::under(&system);
     tilo_identity_host::provisioning::ensure_collaboration_identity(
@@ -354,20 +382,6 @@ fn config_root() -> PathBuf {
     accounts::config_root().expect("this session's config root")
 }
 
-/// The person's account vault in the custody this host's own session root
-/// resolves to: the keyring where one answers, and otherwise the private key
-/// file `SecretVault::open_in` creates the first time, which is what session
-/// custody falls back to.
-fn person_vault(root: &Path) -> accounts::AccountCredentials {
-    if let Ok(credentials) = accounts::AccountCredentials::open_in(root) {
-        return credentials;
-    }
-    SecretVault::open_in(root)
-        .try_save()
-        .expect("this host can keep the person's account vault");
-    accounts::AccountCredentials::open_in(root).expect("the person's account vault opens")
-}
-
 /// A person's selected website session, sealed in `root` as selection leaves
 /// it: its account entry, and its cookies in custody under the person's key.
 fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
@@ -405,7 +419,7 @@ fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     let mut store = AccountStore::load_in(root);
     store.upsert(account);
     store.save_in(root).expect("the person's accounts");
-    let mut vault = SecretVault::open_in(root);
+    let mut vault = SecretVault::open_person(Some(root));
     vault.put(
         &id,
         &account_custody::service_sessions::service_session_secret(&session)
@@ -458,9 +472,39 @@ fn browser_app(
 }
 
 #[test]
-fn browser_lists_resolves_and_forgets_the_persons_selected_website_session() {
-    let fixture = fixture();
-    let selected = select_in(&config_root(), fixture.keys.root);
+fn browser_lists_resolves_and_forgets_the_selection_where_the_keyring_holds_the_vault() {
+    browser_lists_resolves_and_forgets(Keyring::Answers);
+}
+
+/// The same on a host with no keyring: the person's vault is just as much
+/// theirs, sealed under the owner-only key beside it.
+#[test]
+fn browser_lists_resolves_and_forgets_the_selection_where_a_key_file_holds_the_vault() {
+    browser_lists_resolves_and_forgets(Keyring::Missing);
+}
+
+/// Which custody the person's vault reports on a host of this kind.
+fn custody_on(keyring: Keyring) -> accounts::SecretCustody {
+    match keyring {
+        Keyring::Answers => accounts::SecretCustody::System,
+        Keyring::Missing => accounts::SecretCustody::LocalFile,
+    }
+}
+
+fn browser_lists_resolves_and_forgets(keyring: Keyring) {
+    let fixture = fixture(keyring);
+    let root = config_root();
+    assert_eq!(
+        SecretVault::open_person(Some(&root)).custody(),
+        custody_on(keyring),
+        "the person's vault is keyed by this host's one custody"
+    );
+    let selected = select_in(&root, fixture.keys.root);
+    assert_eq!(
+        accounts::vault_dir_in(&root).join("vault.key").exists(),
+        keyring == Keyring::Missing,
+        "the key lives where this host keeps it, never in two places"
+    );
     let (_root, socket) = private_socket();
     let mut session = session(&socket, &fixture, BROWSER);
 
@@ -513,7 +557,7 @@ fn browser_lists_resolves_and_forgets_the_persons_selected_website_session() {
 /// list no longer holds it.
 #[test]
 fn the_persons_other_device_reads_and_forgets_the_selection() {
-    let fixture = fixture();
+    let fixture = fixture(Keyring::Answers);
     select_in(&config_root(), fixture.keys.root);
     let (_root, socket) = private_socket();
     let mut session = session(&socket, &fixture, BROWSER);
@@ -603,7 +647,7 @@ fn settings_app(
 
 #[test]
 fn settings_seals_an_account_secret_in_the_persons_vault() {
-    let fixture = fixture();
+    let fixture = fixture(Keyring::Missing);
     let root = config_root();
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -620,6 +664,11 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
         // it: what a device that signed in once holds.
         let _ = person_vault(&root);
     }
+    assert_eq!(
+        SecretVault::open_person(Some(&root)).custody(),
+        custody_on(Keyring::Missing),
+        "with no keyring, an owner-only key beside the vault keeps it"
+    );
     let (_root, socket) = private_socket();
     let mut session = session(&socket, &fixture, SETTINGS);
 
@@ -686,7 +735,7 @@ fn mail_app(
 
 #[test]
 fn mail_is_released_the_account_secret_it_keeps() {
-    let fixture = fixture();
+    let fixture = fixture(Keyring::Answers);
     let root = config_root();
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -703,6 +752,11 @@ fn mail_is_released_the_account_secret_it_keeps() {
         accounts::custody::seal(&mut credentials, SETTINGS, ACCOUNT, PASSWORD)
             .expect("Settings seals the account's secret");
     }
+    assert_eq!(
+        SecretVault::open_person(Some(&root)).custody(),
+        custody_on(Keyring::Answers),
+        "the keyring keeps the person's vault key, not a file beside it"
+    );
     let (_root, socket) = private_socket();
     let mut session = session(&socket, &fixture, MAIL);
 

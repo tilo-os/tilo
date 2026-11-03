@@ -129,6 +129,7 @@ dependencies = [
  "tilo-net",
  "tilo-oauth",
  "tilo-seal",
+ "tilo-secrets",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "tracing",

@@ -340,7 +340,7 @@ pub fn seal_selected_accounts(
         return Err(PortableError::InvalidConfiguration);
     }
     let store = load_store(root)?;
-    let vault = SecretVault::open_read_only_in(root);
+    let vault = SecretVault::open_person(Some(root));
     if vault.recovery_error().is_some() {
         return Err(PortableError::CredentialUnavailable);
     }
@@ -435,15 +435,16 @@ fn load_store(root: &Path) -> Result<AccountStore, PortableError> {
 
 fn import_bundle(root: &Path, bundle: &Bundle) -> Result<Vec<AccountId>, PortableError> {
     let mut store = load_store(root)?;
-    // A read-only preflight cannot create target keys on rejection. Any existing
-    // vault directory must be readable, even when metadata is still empty.
+    // Reading a vault creates no key where none is stored, so a rejection
+    // leaves the target untouched. Any existing vault directory must be
+    // readable, even when metadata is still empty.
     let vault_path = accounts::vault_dir_in(root);
     let present = match std::fs::symlink_metadata(&vault_path) {
         Ok(_) => true,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => return Err(PortableError::StorageUnavailable),
     };
-    let existing_vault = present.then(|| SecretVault::open_read_only_in(root));
+    let existing_vault = present.then(|| SecretVault::open_person(Some(root)));
     if existing_vault
         .as_ref()
         .is_some_and(|v| v.recovery_error().is_some())
@@ -466,7 +467,7 @@ fn import_bundle(root: &Path, bundle: &Bundle) -> Result<Vec<AccountId>, Portabl
             return Err(PortableError::CredentialUnavailable);
         }
     }
-    let mut vault = SecretVault::open_in(root);
+    let mut vault = SecretVault::open_person(Some(root));
     if vault.recovery_error().is_some() {
         return Err(PortableError::StorageUnavailable);
     }

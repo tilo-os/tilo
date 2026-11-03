@@ -87,10 +87,7 @@ impl Service {
             self.google_credential(id)?
         } else {
             self.require_type(id, cloud_types::NEXTCLOUD)?;
-            let vault = match self.custodian.config_root() {
-                Some(root) => SecretVault::open_in(root),
-                None => SecretVault::open(),
-            };
+            let vault = SecretVault::open_person(self.custodian.config_root());
             let secret = vault.get(id).ok_or("calendar credential is missing")?;
             let password = account_custody::password_credential(&secret);
             if password.is_empty() {

@@ -156,6 +156,18 @@ impl HandoffStore {
         })
     }
 
+    /// The person's store under `config_root` (their own when `None`): the
+    /// keyring where it answers, otherwise an owner-only key file, as
+    /// [`crate::SecretVault::open_person`] opens the person's vault.
+    pub fn open_person(config_root: Option<&Path>) -> Option<Self> {
+        match config_root {
+            Some(root) if crate::config_root().as_deref() != Some(root) => {
+                Some(Self::open_in(root))
+            }
+            _ => Self::open(),
+        }
+    }
+
     /// The store under an explicit config root, with the same key custody
     /// as [`crate::SecretVault::open_in`].
     pub fn open_in(config_root: &Path) -> Self {
