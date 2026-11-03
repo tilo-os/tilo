@@ -377,6 +377,49 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
   (a resource or an app). Whether it runs, its badge and whether it wants attention are read
   live from `Window` and `Notice`, never saved in the person's record.
 
+## 8.4 Apps written in Rust on the canvas
+
+A place shows a resource, whatever language its app is written in. An app written in Rust
+reaches the canvas, the strips and the desktop exactly as a tilolang app does. It differs only
+in who draws the place: the app's own process, in a surface the compositor gives it for that
+place. Both stay: apps keep being ported to tilolang, and a ported app and its Rust original
+are interchangeable to every shell.
+
+**What the person sees.** They type "youtube videos of mkbhd" on the canvas. A frame stands
+where they typed, showing that creator's page as Tube draws it: their videos, their name, the
+subscribe action. There is no Tube sidebar or Tube window around it. The frame's bar carries
+the channel's own actions, read from what Tube publishes. Pressing a video places the video
+beside it, as pressing a reference in a conversation does. Closing the frame closes that view
+only. Tube may keep running for other places, or stop if no place shows anything of it.
+
+**The mechanism, in three parts. Each part is shared by every app.**
+
+1. **Types.** A Rust app names the type of each resource it publishes: its noun, plural and
+   app, the same `ResourceType` a tilolang package publishes (`LiveRow` takes it, and the
+   resource's `ResourceSpec::resource_type` carries it). The one search then matches "youtube
+   videos" against Tube's channels and videos exactly as "my mails" matches Mail's root
+   (search.md). A type without a declared noun reads as its name in words.
+2. **Views.** A resource a Rust app can draw on its own offers a view-mount action
+   (`ResourceViewMountSpec`: the action, a mount capability parameter, and a view parameter).
+   The app answers it by drawing that resource, in that view, in a surface on the mount it was
+   handed, and nothing else. Its window chrome, navigation and other resources stay out. One
+   process may serve many mounts.
+3. **Placing.** When the arrangement places a resource whose app publishes no tilolang view,
+   the session invokes that resource's mount action with a compositor mount keyed by the place,
+   as the person (the place is theirs). The place draws `ui.WindowWell(place: p.key)`, which
+   already shows a compositor surface by its key. Removing the place revokes the mount. A
+   resource that offers no mount action is placed as its app's window opened at that resource,
+   which is today's fallback, and the place's bar says so.
+
+**Window state and lens.** The mounted view's scroll and selection are the app's own, kept per
+mount the way a window keeps them. The person's lens on the resource (workspace-model.md §2) is
+published by the app as for any of its windows.
+
+**Not done here.** The view's looks follow the theme through the toolkit: a Rust app draws with
+the same `ui` components and theme roles, so switching theme changes the mounted view too. A
+Rust app that draws without the toolkit (a video surface, a browser engine) keeps its own looks
+inside the place.
+
 ## 9. Open
 
 - Shared or personal arrangement. A workspace whose arrangement everyone shares gives presence
