@@ -80,6 +80,7 @@ mod engine;
 mod env;
 pub mod fabric;
 mod feeds;
+mod file_clipboard;
 mod fs_authority;
 mod held;
 mod here;
@@ -2695,6 +2696,15 @@ impl Session {
         self.feed_portal();
         self.feed_capabilities();
         self.feed_window_artwork();
+        // What Files copied goes on the desktop's clipboard, as a file
+        // manager's copy does: the person pastes it into any app.
+        if let Some(plane) = &self.action_plane {
+            for files in plane.file_clipboard.take_published() {
+                self.shared
+                    .clipboard
+                    .offer_files(&mut self.compositor, &files);
+            }
+        }
         // What the apps copied since the last pass joins the history; a copy
         // chosen in it is pasted once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);

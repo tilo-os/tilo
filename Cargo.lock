@@ -21389,6 +21389,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-frame-metrics",
+ "tilo-fs-client",
  "tilo-identity-authority",
  "tilo-identity-host",
  "tilo-installed-apps",
