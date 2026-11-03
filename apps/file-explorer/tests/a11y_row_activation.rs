@@ -84,4 +84,9 @@ fn an_assistive_technology_opens_the_row_menu() {
             .is_some(),
         "the menu the row asked for opens, on that row"
     );
+    assert_eq!(
+        h.w.state().current_path(),
+        dir.path(),
+        "asking a row for its menu opens the menu, not the folder"
+    );
 }
