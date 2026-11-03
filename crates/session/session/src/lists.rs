@@ -430,3 +430,28 @@ impl Lists {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str) -> desktop_entry::DesktopEntry {
+        desktop_entry::entry::parse(
+            "[Desktop Entry]\nType=Application\nName=Notes\nExec=notes\n",
+            id,
+            std::path::Path::new("/usr/share/applications/notes.desktop"),
+            &[],
+        )
+        .expect("a desktop entry")
+    }
+
+    #[test]
+    fn an_installed_tilo_apps_own_entry_is_not_one_of_the_machines() {
+        let tilo_apps = app_catalogue::Installed::from_ids(["so.tilo.notes"]);
+        // The app is listed as itself; the desktop entry its bundle keeps is
+        // the same app, so search names it once.
+        assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
+        // Any other app's entry is one of the machine's.
+        assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
+    }
+}
