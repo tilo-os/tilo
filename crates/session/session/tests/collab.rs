@@ -197,7 +197,6 @@ fn press_faces(session: &mut Session) {
 }
 
 /// The app id the desk says a bare window carries.
-const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 
 /// The person this test's session is a device of, at another of their
 /// devices too.

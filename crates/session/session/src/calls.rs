@@ -1399,7 +1399,7 @@ mod tests {
     use crate::fabric::Continuity;
     use channel_crypto::VaultKey;
     use collab_types::presence::{Availability, Payload, Presence};
-    use collab_types::{ChannelRoute, Ed25519PublicKey, PeerPresence};
+    use collab_types::{ChannelRoute, Ed25519PublicKey};
     use iroh::EndpointId;
     use runtime_collab::native_media::{Command, Request, State};
     use tilo_action_broker::channel_encryption::{
@@ -1425,8 +1425,6 @@ mod tests {
     const CHANNEL: &str = "c_standup";
     const APP: &str = "so.tilo.chat";
     const RECORD: &str = "chat";
-    /// The app id the desktop of a workspace says its own presence under.
-    const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
     /// What the tone's playout reads as heard, against the silence a call
     /// plays while nobody speaks.
     const HEARD: f32 = 0.02;

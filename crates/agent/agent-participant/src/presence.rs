@@ -75,3 +75,59 @@ pub fn heard(workspace: &str, body: &[u8]) -> Option<ShellPresence> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+
+    const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+
+    fn view(label: &str) -> ShellPresence {
+        ShellPresence {
+            seq: 1,
+            sent_at_ms: 1,
+            label: label.to_owned(),
+            agent: true,
+            colour: "#7c3aed".into(),
+            activity: Some("New note".into()),
+            place: None,
+            size: [1440, 900],
+            windows: Vec::new(),
+            selection: None,
+            chat: None,
+            reaction: None,
+        }
+    }
+
+    /// The view an agent says of itself is a desktop presence frame, and the
+    /// frame a member hears is that view: the agent speaks the same presence
+    /// a person's devices do.
+    #[test]
+    fn an_agents_view_reads_back_from_its_frame() {
+        let said = view("Writer helper");
+        let frame = Presence::desktop(
+            WORKSPACE,
+            PeerPresencePayload::Shell(Box::new(said.clone())),
+        );
+        let body = frame.encode().expect("a presence frame encodes");
+        assert_eq!(heard(WORKSPACE, &body), Some(said));
+        assert_eq!(heard("07848ffe-1898-4f72-8419-0b54c93e6dad", &body), None);
+    }
+
+    /// A person's pointer on a workspace is not a view of a desk: the agent
+    /// reads no shell out of it.
+    #[test]
+    fn a_pointer_is_not_a_view_of_a_desk() {
+        let body = Presence::pointing(WORKSPACE, 3, 1.0, 2.0)
+            .encode()
+            .expect("a presence frame encodes");
+        assert_eq!(heard(WORKSPACE, &body), None);
+    }
+}

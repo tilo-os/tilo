@@ -825,7 +825,7 @@ struct JsPresence {
 
 /// The app every shell's presence is published under: the desktop's own,
 /// the one its members name themselves and their screens by.
-const SHELL_APP: &str = neighbour_wire::DESKTOP_PRESENCE_APP;
+const SHELL_APP: &str = collab_types::presence::DESKTOP_APP;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]

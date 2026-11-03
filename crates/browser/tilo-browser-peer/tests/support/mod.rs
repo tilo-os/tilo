@@ -69,41 +69,6 @@ pub fn members_document(event: &PeerEvent) -> bool {
     matches!(event, PeerEvent::Document(document) if !is_host(&document.author))
 }
 
-/// What a member said of itself in `body` (a presence frame the plane
-/// carried), when it is a desktop's presence.
-pub fn presence(body: &[u8]) -> Option<collab_types::PeerPresencePayload> {
-    let said = collab_types::presence::Presence::decode(body)?;
-    (said.app == collab_types::presence::DESKTOP_APP).then_some(said.payload)
-}
-
-/// The presence frame saying the publishing device's pointer is at `(x, y)`
-/// over tab 1 of the test workspace: what a page says as its cursor moves.
-pub fn pointer_body(x: f32, y: f32) -> collab_types::presence::Presence {
-    collab_types::presence::Presence::pointing(WORKSPACE, 1, x, y)
-}
-
-/// The presence frame saying the publishing device shows itself as `label`:
-/// the view of itself a native member publishes.
-pub fn shell_body(label: &str) -> collab_types::presence::Presence {
-    collab_types::presence::Presence::desktop(
-        WORKSPACE,
-        collab_types::PeerPresencePayload::Shell(Box::new(collab_types::presence::ShellPresence {
-            seq: 1,
-            sent_at_ms: 1,
-            label: label.to_owned(),
-            agent: false,
-            colour: "#0ea5e9".into(),
-            activity: None,
-            place: None,
-            size: [1440, 900],
-            windows: Vec::new(),
-            selection: None,
-            chat: None,
-            reaction: None,
-        })),
-    )
-}
-
 pub fn workspace() -> u64 {
     tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
 }
