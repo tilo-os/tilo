@@ -433,9 +433,9 @@ fn two_people_typing_one_rich_body_each_entry_shows_its_authors_change() {
     let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
     let page = view_id(&bo);
     let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let input = rich_input(&editors);
+    let body_field = body_editor(&editors);
     editors
-        .edit(&input, &body("Oat milk and sourdough"))
+        .edit(&body_field, &body("Oat milk and sourdough"))
         .unwrap();
     bo.commit();
     drop(editors);
@@ -477,13 +477,32 @@ fn view_id(r: &Replica) -> String {
         .expect("the richtext package has a post_edit view")
 }
 
-/// The key of the window's rich input.
-fn rich_input(view: &ViewInstance) -> String {
+/// The role assistive technology reads a node as, as the component drawing it describes
+/// itself (the body's document, a field, a button): what a person is told of a control, never
+/// the kind string of the widget behind it, which the toolkit changes as its widgets do.
+fn access_role(node: &UiNode) -> Option<&'static str> {
+    let name = node.kind.strip_prefix(tilolang::toolkit::KIND_PREFIX)?;
+    Some(
+        tilolang::toolkit::catalogue()
+            .get(name)?
+            .semantics
+            .role
+            .as_str(),
+    )
+}
+
+/// The key of the window's body: the document a person types the post's body into.
+///
+/// It is the node assistive technology reads as a document that the view bound to the post's
+/// field; the history's own rich text is read-only, so it binds nothing.
+fn body_editor(view: &ViewInstance) -> String {
     nodes(view.tree())
         .into_iter()
-        .find(|n| n.kind == "ui.RichInput")
-        .map(|n| n.key.clone())
-        .expect("the window has a rich input")
+        .find(|node| node.binding.is_some() && access_role(node) == Some("Document"))
+        .map_or_else(
+            || panic!("the window binds the post's body: {:#?}", view.tree()),
+            |node| node.key.clone(),
+        )
 }
 
 /// The work reading one entry's body diff does in a post of `paragraphs` paragraphs: the
@@ -531,8 +550,8 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     }
     let page = view_id(&bo);
     let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let input = rich_input(&editors);
-    editors.edit(&input, &body(&typed.join("\n"))).unwrap();
+    let body_field = body_editor(&editors);
+    editors.edit(&body_field, &body(&typed.join("\n"))).unwrap();
     bo.commit();
     drop(editors);
     ada.sync_with(&mut bo);
@@ -688,7 +707,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
     let at = target(&task);
     let title =
         crate::fixtures::field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
-    let mut page = ada.host.open_resource(&at, None).unwrap();
+    let page = ada.host.open_resource(&at, None).unwrap();
     let input = bound_key(page.tree(), &title).expect("the task's title is bound to its input");
     page.edit(&input, &Value::text("Bring oat milk")).unwrap();
     ada.commit();
