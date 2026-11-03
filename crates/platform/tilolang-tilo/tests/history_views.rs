@@ -700,7 +700,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks, Value::text("Buy oat milk")],
     );
     ada.commit();
