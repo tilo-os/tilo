@@ -689,6 +689,72 @@ fn the_quick_settings_stand_over_the_desk() {
     }
 }
 
+/// The overview reads the workspace's strips in one chain over the desk's windows: each strip
+/// once, top to bottom, and a window's menu offers the strips of its workspace it is not on.
+/// The chain is a list in an order the index answers, sized by the run its filter chose, so a
+/// desk whose windows this host wrote and has not indexed yet still pictures them.
+#[test]
+fn the_overviews_strips_are_read_once_each_in_the_order_they_stand() {
+    /// Every `ui.Section`'s title, depth first: the overview's strips.
+    fn walk(node: &tilolang_runtime::UiNode, titles: &mut Vec<String>) {
+        if node.kind == "ui.Section"
+            && let Some(Value::Text(title)) = node.props.get("title")
+        {
+            titles.push(title.clone());
+        }
+        for child in &node.children {
+            walk(child, titles);
+        }
+    }
+    /// Every menu item's label under `node`.
+    fn under(node: &tilolang_runtime::UiNode, items: &mut Vec<String>) {
+        for child in &node.children {
+            if child.kind == "ui.MenuItem"
+                && let Some(Value::Text(label)) = child.props.get("label")
+            {
+                items.push(label.clone());
+            }
+            under(child, items);
+        }
+    }
+    let mut r = workspace();
+    r.commit();
+    scenario(&r, APP, "the overview");
+    r.commit();
+    let view = desk_view(&r);
+    let mut titles = Vec::new();
+    walk(view.tree(), &mut titles);
+    let strips: Vec<&str> = titles
+        .iter()
+        .map(String::as_str)
+        .filter(|title| ["Drafts", "Money", "Mail"].contains(title))
+        .collect();
+    assert_eq!(
+        strips,
+        ["Drafts", "Money", "Mail"],
+        "the workspace's strips stand top to bottom: {titles:?}"
+    );
+    // The window in front is on Drafts: its menu carries the other two strips of its
+    // workspace, by their names, and not the strip it stands on.
+    let menus = nodes(&view, "ui.MenuButton");
+    let menu = menus
+        .iter()
+        .find(|menu| menu.props.get("label") == Some(&Value::Text("This window".to_owned())))
+        .unwrap_or_else(|| panic!("a window's place carries its own menu: {:?}", view.tree()));
+    let mut items: Vec<String> = Vec::new();
+    under(menu, &mut items);
+    for item in ["Move to Money", "Move to Mail", "Move to Home"] {
+        assert!(
+            items.iter().any(|held| held == item),
+            "the window's menu offers {item}: {items:?}"
+        );
+    }
+    assert!(
+        !items.iter().any(|held| held == "Move to Drafts"),
+        "a window is not offered the strip it stands on: {items:?}"
+    );
+}
+
 /// The session writes what the screen says of its edges, as it does every turn: one fact on
 /// the shell's own record, through the origin write the session's door applies
 /// (`SessionLink::publish_edges`), which the host then commits.

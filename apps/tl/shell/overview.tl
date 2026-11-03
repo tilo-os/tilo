@@ -232,9 +232,8 @@ fn window_strips(windows: List<Win>) -> List<Text> {
 /// The ids of the strips of the workspace `workspace`, top to bottom, as the desk's windows
 /// name them.
 fn strip_keys(d: Desk, workspace: Text) -> List<Text> {
-    let mine = d.windows.filter(w -> w.workspace_key == workspace)
-    let keys = mine.map(w -> w.strip_key).filter(s -> s != "")
-    return keys.group(s -> s).map(p -> p.key)
+    let in_order = d.windows.filter(w -> w.workspace_key == workspace).sort_by(w -> w.place).map(w -> w.strip_key).filter(s -> s != "")
+    return in_order.group(s -> s).map(p -> p.key)
 }
 
 /// The name of the strip `key`: its own, or the app of the first window on it when it has none,
