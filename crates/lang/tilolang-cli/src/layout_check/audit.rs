@@ -30,7 +30,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
