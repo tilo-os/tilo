@@ -373,8 +373,7 @@ struct Shared {
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     directory_store: directory::Store,
-    /// The workspace the host started this session to join, and whether it
-    /// withholds agents until the host's operator makes it an administrator.
+    /// The workspace the host started this session to join.
     boot_join: RefCell<boot_join::BootJoin>,
     /// The lock, as the session publishes it for the lock screen to show.
     lock: lock_service::Lock,
@@ -734,12 +733,7 @@ impl Shared {
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),
         );
-        // A session the host started for one workspace joins it on its own,
-        // and withholds its agents until the host's operator makes it an
-        // administrator of that workspace.
-        self.boot_join
-            .borrow_mut()
-            .follow_session(&self.handle, &self.person);
+        self.follow_boot_join();
         // A program of this login asking to work as an agent is a question
         // of the person's: their answer admits it, and the client is served
         // from the next pass on.
@@ -791,9 +785,7 @@ pub struct Session {
     /// The login's lock record: the state this session ends in is published
     /// to it, and a session that ends without doing so comes back locked.
     recovery: Option<recovery::Recovery>,
-    /// The clock on finishing the staged system update: the desktop restarts
-    /// onto it once the person is away, and a restart of the machine is
-    /// asked for at most every two days.
+    /// The clock on finishing the staged system update.
     update_finish: update_finish::Finish,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
@@ -2011,7 +2003,7 @@ impl Session {
             lock_view: lock_view.map(lock_screen::LockView::new),
             lock_shown: lock_screen::LockShown::App,
             recovery: options.recovery.take(),
-            update_finish: update_finish::Finish::for_session(&options),
+            update_finish: update_finish::Finish::for_session(options.desktop.as_deref()),
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),

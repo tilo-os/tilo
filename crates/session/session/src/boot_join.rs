@@ -42,6 +42,17 @@ enum Grant {
     Served,
 }
 
+impl crate::Shared {
+    /// A session the host started for one workspace joins it on its own, and
+    /// withholds its agents until the host's operator makes it an
+    /// administrator of that workspace.
+    pub(crate) fn follow_boot_join(&self) {
+        self.boot_join
+            .borrow_mut()
+            .follow_session(&self.handle, &self.person);
+    }
+}
+
 impl BootJoin {
     /// What this session was started to join, as [`Self::start`] takes it
     /// from the desk the login opens on.
@@ -169,7 +180,7 @@ mod tests {
         BootJoin {
             workspace: Some("ws-1".into()),
             grant: Grant::Waiting {
-                until: now + ADMIN_DEADLINE,
+                until: now.checked_add(ADMIN_DEADLINE).unwrap_or(now),
             },
         }
     }

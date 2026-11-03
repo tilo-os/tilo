@@ -271,7 +271,7 @@ impl Session {
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
             crate::keys::next_readout_deadline(&self.shared.waiting.borrow()),
-            self.update_finish.next_deadline(),
+            Some(self.update_finish.next_deadline()),
         ];
         deadlines.into_iter().flatten().min()
     }

@@ -829,8 +829,7 @@ impl Client {
         let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), continuity);
         // What the actor serves for the session is installed before it starts:
         // every actor built from here on answers those doors.
-        let (update_requests, updates) = std::sync::mpsc::channel();
-        crate::network::install(fabric.as_ref(), questions, update_requests);
+        let updates = crate::network::install(fabric.as_ref(), questions);
         // The channels this session runs, if it runs any: their side of the
         // plane is the engine's, opened before the plane starts. The thread
         // takes its own handle, and this one tells them where the plane is.

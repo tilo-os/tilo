@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use super::*;
 
 const MANIFEST: &str = r#"
@@ -696,7 +698,7 @@ fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
     )
     .unwrap();
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut login = std::process::Command::new(&wrapper).spawn().unwrap();
+    let mut login = std::process::Command::new(&wrapper).spawn_locked().unwrap();
     let wrapper_pid = login.id();
     let started = Instant::now();
     let compositor_pid = loop {
@@ -740,7 +742,7 @@ fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
 
     let _ = std::process::Command::new("kill")
         .arg(compositor_pid.to_string())
-        .status();
+        .status_locked();
     let _ = login.kill();
     let _ = login.wait();
 }

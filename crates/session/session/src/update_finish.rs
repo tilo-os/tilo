@@ -78,14 +78,11 @@ pub(crate) struct Finish {
 impl Finish {
     /// The clock this session finishes its updates on, recording what it
     /// asks where a restart of the desktop keeps it.
-    pub(crate) fn for_session(options: &crate::Options) -> Self {
+    pub(crate) fn for_session(desktop: Option<&crate::desktop_services::DesktopServices>) -> Self {
         Self::new(
             Instant::now(),
             asked_path(),
-            options
-                .desktop
-                .as_ref()
-                .map(|desktop| desktop.notifications()),
+            desktop.map(crate::desktop_services::DesktopServices::notifications),
         )
     }
 
@@ -119,8 +116,8 @@ impl Finish {
 
     /// When the session next looks with no event in between, once it has
     /// settled.
-    pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        Some(self.next)
+    pub(crate) fn next_deadline(&self) -> Instant {
+        self.next
     }
 
     /// One look: what finishing the update asks now, if anything. `machine`
@@ -193,7 +190,7 @@ impl Finish {
 
     /// Record that the session asked, or restarted, now: the next one waits
     /// [`update::ASK_INTERVAL`].
-    fn record(&mut self, clock: SystemTime) {
+    fn record(&self, clock: SystemTime) {
         if let Some(path) = &self.asked {
             record_asked_at(path, clock);
         }
@@ -478,7 +475,7 @@ mod tests {
             restart_needed: true,
             ..Update::default()
         };
-        let mut finish = a_finish(now, Some(path.clone()));
+        let mut finish = a_finish(now, Some(path));
         let look = now + FIRST_LOOK_AFTER;
         assert_eq!(
             finish.step(look, clock, away(), &staged, false, false),

@@ -304,7 +304,7 @@ pub fn update_resource(update: &Update) -> ResourceSpec {
             "No update waits for a restart",
         );
     }
-    if !(update.desktop_pending && !update.restart_needed) {
+    if !update.desktop_pending || update.restart_needed {
         unavailable(
             &mut resource,
             crate::update::RESTART_DESKTOP,

@@ -32,16 +32,16 @@ pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion};
 pub(crate) fn install(
     link: Option<&Arc<crate::fabric::SessionFabric>>,
     questions: Option<Questions>,
-    updates: std::sync::mpsc::Sender<()>,
-) {
+) -> std::sync::mpsc::Receiver<()> {
+    let (updates, requests) = std::sync::mpsc::channel();
     let Some(link) = link.map(|link| Arc::clone(link) as SharedLink) else {
-        return;
+        return requests;
     };
     let Some(local) = link
         .local_device_fabric_identity()
         .and_then(|(device, _)| key_of(&device))
     else {
-        return;
+        return requests;
     };
     let unlocking = Arc::new(unlock::Unlock::new(link, local, questions.clone()));
     let installed = services::install(Services {
@@ -52,6 +52,7 @@ pub(crate) fn install(
     if installed {
         unlocking.spawn_enrol_socket();
     }
+    requests
 }
 
 /// Another of the person's devices asks for its unlock half at early boot.

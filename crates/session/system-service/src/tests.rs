@@ -249,10 +249,11 @@ fn a_pending_desktop_restart_is_offered_only_while_the_desktop_waits() {
     };
     service.refresh();
     service.settle();
-    assert!(matches!(
-        service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
-        Ok(_)
-    ));
+    assert!(
+        service
+            .invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new())
+            .is_ok()
+    );
     service.settle();
     assert_eq!(fake.changes(), [Change::RestartDesktop]);
     // Once the machine itself must restart, restarting the desktop would not
