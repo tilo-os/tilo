@@ -1489,6 +1489,51 @@ mod windows {
         let group = named(grouped.harness().root_widget(), "WindowFrame");
         assert_eq!(group.len(), 2, "a window of places beside a window of one");
         the_places_of_a_strip_are_its_tabs(&group);
+
+        // Two windows the desk holds stand side by side, each the share of the desk its strip's
+        // width names, not the floor two of them would need: a row spreads across the desk while
+        // its windows fit, and pans to them whole once they do not.
+        let from = group
+            .iter()
+            .map(|frame| frame.get_rect().x0)
+            .fold(f64::MAX, f64::min);
+        let to = group
+            .iter()
+            .map(|frame| frame.get_rect().x1)
+            .fold(f64::MIN, f64::max);
+        assert!(
+            to - from >= 1270.0,
+            "the desk's row spreads across it at 1280: {} to {to}",
+            from.round()
+        );
+    }
+
+    #[test]
+    fn a_window_alone_on_the_desk_takes_the_desk() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "a window alone on the desk",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let frames = named(staged.harness().root_widget(), "WindowFrame");
+        assert_eq!(
+            frames.len(),
+            1,
+            "one window on the desk, not {}",
+            frames.len()
+        );
+        let window = frames[0].get_rect();
+        assert!(
+            window.width() > 1200.0,
+            "a lone window takes the desk's width at 1280: {window:?}"
+        );
+        bar_and_content_in(frames[0], window);
     }
 
     /// A window is a window: it fills its strip's whole room, and every window of the desk

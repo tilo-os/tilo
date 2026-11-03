@@ -164,6 +164,7 @@ pub fn display(value: &Value) -> String {
 fn flag(node: &UiNode, name: &str) -> bool {
     match prop(node, name) {
         Some(Value::Int(number)) => *number != 0,
+        Some(Value::Float(weight)) => *weight != 0.0,
         Some(Value::Bool(flag)) => *flag,
         _ => false,
     }

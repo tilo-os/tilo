@@ -1936,6 +1936,19 @@ scenario "a window of several places" -> Arrangement {
     a
 }
 
+/// One window alone on the desk: a strip with a note in it, filling the room between the bar and
+/// the dock as the chrome's lone window fills its strip.
+scenario "a window alone on the desk" -> Arrangement {
+    let v = viewing
+    v.showing = .strips
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let one = a_strip(a, row, "Note", 1000)
+    a_note_place(a, one, 0)
+    v.focused = one
+    a
+}
+
 /// A strip with nothing on it yet, beside a strip with one place: the state a person starts
 /// from when they make a strip.
 scenario "an empty strip" -> Arrangement {
