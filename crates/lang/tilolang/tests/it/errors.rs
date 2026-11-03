@@ -405,14 +405,46 @@ fn e080_a_map_is_not_read_as_a_whole() {
 }
 
 #[test]
-fn e081_foreign_fn_call() {
+fn another_packages_fn_is_checked_against_its_own_signature() {
     let lib =
         compile("app so.tilo.lib \"Lib\"\nfn double(x: Int) -> Int {\n    return x * 2\n}\n").meta;
-    let got = codes_with(
-        "use so.tilo.lib as lib\nfn f() -> Int {\n    return lib.double(1)\n}",
-        &[lib],
+    // Its arguments and its result, as the package declares them.
+    assert_eq!(
+        codes_with(
+            "use so.tilo.lib as lib\nfn f() -> Int {\n    return lib.double(1) + 1\n}",
+            std::slice::from_ref(&lib),
+        ),
+        Vec::<String>::new()
     );
-    assert!(got.iter().any(|c| c == "E081"), "{got:?}");
+    assert_eq!(
+        codes_with(
+            "use so.tilo.lib as lib\nfn f() -> Int {\n    return lib.double(\"x\")\n}",
+            std::slice::from_ref(&lib),
+        ),
+        vec!["E020"]
+    );
+    assert_eq!(
+        codes_with(
+            "use so.tilo.lib as lib\nfn f() -> Int {\n    return lib.double(1, 2)\n}",
+            std::slice::from_ref(&lib),
+        ),
+        vec!["E022"]
+    );
+    assert_eq!(
+        codes_with(
+            "use so.tilo.lib as lib\nfn f() -> Int {\n    return lib.doubled(1)\n}",
+            std::slice::from_ref(&lib),
+        ),
+        vec!["E014"]
+    );
+    assert_eq!(
+        codes_with(
+            "use so.tilo.lib as lib\nfn f() -> Int {\n    return lib.double\n}",
+            &[lib],
+        ),
+        vec!["E026"],
+        "a fn is called, not a value"
+    );
 }
 
 #[test]

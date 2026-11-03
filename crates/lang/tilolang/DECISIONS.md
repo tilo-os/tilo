@@ -26,7 +26,14 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   string data segments, starting at offset 0.
 - **Foreign views.** The ABI has no cross-module call, so applying another package's view (in a
   block or a view) emits `ui_node("view:<app>:<view id>", key)` with each argument as a property named
-  `arg.<param>` (`ui_prop_*`). The host resolves such nodes. Calling a foreign `fn` is E081.
+  `arg.<param>` (`ui_prop_*`). The host resolves such nodes.
+- **Foreign `fn` calls.** `todo.finished(list, t)` emits `call_fn("<fn id>", args)` with the
+  arguments as a list handle; the host finds the package that declares the `fn`, runs its `n_<id>`
+  export as that package's own code, and boxes a scalar result like `some_i` so the caller unboxes
+  it like an action's. Only `fn`s are called this way: they are pure by construction (no action,
+  E043; no field changed, E040), so they are not decided — a call is as free as reading that
+  package's resources — and what it reads counts as the calling view's reads and goes into the
+  calling flow's journal. A foreign `action` still goes through `invoke` and its approval.
 - **View calls** of own views are wrapped in a `fragment` node keyed by the call site and the loop
   item, because the callee's root key is the same at every call. Per-node layout arguments on a view
   call (`fill`, `min:`, `at:`, ...) go on that wrapper node.

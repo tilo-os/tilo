@@ -16,7 +16,6 @@
 use std::rc::Rc;
 
 use crate::core::{Core, HResult, trap};
-use crate::handles::FrameKind;
 use crate::meta::FieldKind;
 use crate::store::{FieldRead, FieldSpec, Listing, Store, StoreError};
 use crate::value::{CollRef, Value};
@@ -226,8 +225,7 @@ impl Core {
 
     /// The listing of `coll`: the one this view run read already, else the store's.
     pub(crate) fn coll_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
-        if let Ok(frame) = self.frames.borrow().top()
-            && let FrameKind::View(vs) = &frame.kind
+        if let Some(vs) = self.frames.borrow().view()
             && let Some((_, listing)) = vs
                 .listings
                 .iter()
@@ -236,9 +234,7 @@ impl Core {
             return Ok(Rc::clone(listing));
         }
         let listing = listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?;
-        if let Ok(frame) = self.frames.borrow_mut().top_mut()
-            && let FrameKind::View(vs) = &mut frame.kind
-        {
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
             vs.listings.push((Rc::clone(coll), Rc::clone(&listing)));
         }
         Ok(listing)
@@ -247,10 +243,7 @@ impl Core {
     /// Record, in a view's frame, what one read of `coll`, of `len` items, saw.
     fn saw(&self, coll: &Rc<CollRef>, read: Read, len: usize) {
         let mut frames = self.frames.borrow_mut();
-        let Ok(frame) = frames.top_mut() else {
-            return;
-        };
-        let FrameKind::View(vs) = &mut frame.kind else {
+        let Some(vs) = frames.view_mut() else {
             return;
         };
         let at = vs
@@ -457,9 +450,7 @@ impl Core {
             for (i, id) in listing.iter().enumerate() {
                 self.saw(coll, Read::At(i, id), listing.len());
             }
-        } else if let Ok(frame) = self.frames.borrow_mut().top_mut()
-            && let FrameKind::View(vs) = &mut frame.kind
-        {
+        } else if let Some(vs) = self.frames.borrow_mut().view_mut() {
             vs.reads.push((coll.target.id_string(), coll.field.clone()));
         }
         Ok(listing.iter().map(|id| self.item_ref(coll, &id)).collect())

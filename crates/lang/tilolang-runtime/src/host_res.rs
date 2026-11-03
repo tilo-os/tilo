@@ -498,7 +498,7 @@ impl Core {
     }
 
     fn res_get(&self, rh: i32, fh: i32) -> HResult<Value> {
-        let in_flow = matches!(self.frames.borrow().top()?.kind, FrameKind::Flow(_));
+        let in_flow = self.frames.borrow().flow().is_some();
         if in_flow {
             // A flow's reads go through its journal, which takes the frames to record them.
             let target = Rc::unwrap_or_clone(self.ref_arg(rh)?.target);
@@ -529,6 +529,7 @@ impl Core {
             };
             let top = frames.top()?;
             let author = &top.module;
+            let in_view = frames.view().is_some();
             // A resource of an app this runtime does not run reads from its reading, which the
             // host sets as it follows the session's watch: the slot it moves is what marks the
             // views that read it.
@@ -540,11 +541,11 @@ impl Core {
                     Ok(value) => (value, None, Some(key)),
                     Err(why) => {
                         drop(frames);
-                        self.note_reading(key)?;
+                        self.note_reading(key);
                         return trap(why);
                     }
                 }
-            } else if f.kind == FieldKind::Collection && matches!(top.kind, FrameKind::View(_)) {
+            } else if f.kind == FieldKind::Collection && in_view {
                 // A collection of a union's types names no one item type: each item's is its own.
                 let item = match inner_ty(&f.ty) {
                     Some(Ty::Union(_)) => String::new(),
@@ -565,10 +566,10 @@ impl Core {
             }
         };
         if let Some(key) = reading {
-            self.note_reading(key)?;
+            self.note_reading(key);
         }
         if let Some(read) = read
-            && let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind
+            && let Some(vs) = self.frames.borrow_mut().view_mut()
         {
             vs.reads.push(read);
         }
@@ -577,10 +578,10 @@ impl Core {
 
     /// Mark the reading slot `key` of a resource of another app as read by the view running:
     /// it runs again when the host sets a new reading of it.
-    pub(crate) fn note_reading(&self, key: crate::view_state::StateKey) -> HResult<()> {
+    pub(crate) fn note_reading(&self, key: crate::view_state::StateKey) {
         let generation = self.view_states.borrow().generation(&key);
         let seen = i64::try_from(generation).unwrap_or(i64::MAX);
-        self.note_state_read(key, generation, &Value::Int(seen))
+        self.note_state_read(key, generation, &Value::Int(seen));
     }
 
     fn mut_ctx(&self, rh: i32, fh: i32) -> HResult<MutCtx> {
@@ -1048,7 +1049,7 @@ impl Core {
                     states.get(&key).cloned().unwrap_or_else(Value::none),
                 )
             };
-            self.note_state_read(key, generation, &seen)?;
+            self.note_state_read(key, generation, &seen);
             // Gone, or not synced here yet: the place still stands, showing nothing.
             return self.ret_h(Value::none());
         }
@@ -1186,7 +1187,7 @@ impl Core {
         let Value::List(entries) = read else {
             return trap("a map reads as a list of entries");
         };
-        if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
             vs.reads.push((res.target.id_string(), info.id));
         }
         let pairs = entries.into_iter().filter_map(|entry| match entry {

@@ -101,6 +101,10 @@ pub enum FrameKind {
     Action(ActionState),
     Flow(Box<FlowState>),
     View(ViewState),
+    /// The frame of a call into another package's `fn`: it runs as that package's own code, so
+    /// what it creates is authored there, and what it reads is what the view that called it
+    /// showed.
+    Call,
 }
 
 pub struct Frame {
@@ -231,6 +235,77 @@ impl Frames {
 
     pub fn depth(&self) -> usize {
         self.stack.len()
+    }
+
+    /// How many calls into other packages' code are running: one per frame a `call_fn` pushed.
+    pub fn calls(&self) -> usize {
+        self.stack
+            .iter()
+            .filter(|f| matches!(f.kind, FrameKind::Call))
+            .count()
+    }
+
+    /// The innermost frame that decides what the code running sees: a call into another
+    /// package's `fn` sees who its caller sees, and reads what its caller reads.
+    pub fn deciding(&self) -> Option<&Frame> {
+        self.stack
+            .iter()
+            .rev()
+            .find(|f| !matches!(f.kind, FrameKind::Call))
+    }
+
+    /// The state of the view being run, looking past the frames of pure code and of calls into
+    /// other packages' code: those read what the view showed, and the view runs again when what
+    /// they read changes, as if it had read it itself. None when the code running was not called
+    /// from a view (an action's, a flow's, a block's).
+    pub fn view(&self) -> Option<&ViewState> {
+        for frame in self.stack.iter().rev() {
+            match &frame.kind {
+                FrameKind::Call | FrameKind::Pure => {}
+                FrameKind::View(vs) => return Some(vs),
+                FrameKind::Action(_) | FrameKind::Flow(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// [`Self::view`], to record in.
+    pub fn view_mut(&mut self) -> Option<&mut ViewState> {
+        for frame in self.stack.iter_mut().rev() {
+            match &mut frame.kind {
+                FrameKind::Call | FrameKind::Pure => {}
+                FrameKind::View(vs) => return Some(vs),
+                FrameKind::Action(_) | FrameKind::Flow(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// The state of the flow being run, looking past the frames of calls into other packages'
+    /// code: what such a call reads the flow read, and a run that is replayed reads it again
+    /// from the journal it made then, rather than from a store the flow itself has since
+    /// changed. None when the code running is not part of a flow.
+    pub fn flow(&self) -> Option<&FlowState> {
+        for frame in self.stack.iter().rev() {
+            match &frame.kind {
+                FrameKind::Call => {}
+                FrameKind::Flow(fs) => return Some(fs),
+                FrameKind::Pure | FrameKind::Action(_) | FrameKind::View(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// [`Self::flow`], to journal a read in.
+    pub fn flow_mut(&mut self) -> Option<&mut FlowState> {
+        for frame in self.stack.iter_mut().rev() {
+            match &mut frame.kind {
+                FrameKind::Call => {}
+                FrameKind::Flow(fs) => return Some(fs),
+                FrameKind::Pure | FrameKind::Action(_) | FrameKind::View(_) => return None,
+            }
+        }
+        None
     }
 
     pub fn retained_count(&self) -> usize {

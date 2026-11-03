@@ -33,6 +33,11 @@ use crate::registry::Package;
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 
+/// Calls into other packages' `fn`s deeper than this are refused: each one is a fresh instance
+/// of the callee's module, running on the host's stack, so recursion across packages would
+/// otherwise exhaust it.
+const MAX_CALL_DEPTH: usize = 32;
+
 /// Who an invocation runs for, and through which code.
 #[derive(Clone, Debug)]
 pub struct ExecCtx {
@@ -364,12 +369,70 @@ impl Core {
         args: &[Value],
         result: &str,
     ) -> Result<Value, RuntimeError> {
-        self.frames
-            .borrow_mut()
-            .push(pkg.hash.clone(), FrameKind::Pure);
-        let value = self.call_in_frame(pkg, export, params, args, Some(result));
+        self.call_framed(pkg, FrameKind::Pure, export, params, args, Some(result))
+    }
+
+    /// Call the export `export` of `pkg` in a frame of `kind`, so that what it makes is authored
+    /// by `pkg` and what it reads is what the code that called it sees.
+    fn call_framed(
+        &self,
+        pkg: &Package,
+        kind: FrameKind,
+        export: &str,
+        params: &[ParamMeta],
+        args: &[Value],
+        result: Option<&str>,
+    ) -> Result<Value, RuntimeError> {
+        self.frames.borrow_mut().push(pkg.hash.clone(), kind);
+        let value = self.call_in_frame(pkg, export, params, args, result);
         self.frames.borrow_mut().pop();
         value
+    }
+
+    /// `call_fn`: another package's `fn`, as in `todo.finished(list, t)`. It runs as that
+    /// package's own code, on the values it is given, in a frame authored by that package — so
+    /// what it makes is its app's, and what it reads is what the code that called it sees. It
+    /// changes nothing, so no authority decides it, as reading that package's resources is not
+    /// decided either. A scalar result comes back boxed, as an action's does, for the caller to
+    /// unbox.
+    pub(crate) fn fn_call(&self, id_h: i32, args_h: i32) -> HResult<Option<Wasm>> {
+        let id = self.text(id_h)?;
+        let Value::List(args) = self.val(args_h)? else {
+            return trap("expected the arguments of a call as a list");
+        };
+        let Some(pkg) = self.registry.borrow().fn_package(&id) else {
+            return trap(format!("no app here declares the function `{id}`"));
+        };
+        if !pkg.code {
+            return trap(format!(
+                "the function `{id}` belongs to {}, which this device does not run",
+                pkg.meta.app
+            ));
+        }
+        let Some(func) = pkg.fn_(&id) else {
+            return trap(format!("no app here declares the function `{id}`"));
+        };
+        if self.frames.borrow().calls() >= MAX_CALL_DEPTH {
+            return trap(format!(
+                "calls into other apps' functions are nested more than {MAX_CALL_DEPTH} deep"
+            ));
+        }
+        let value = match self.call_framed(
+            &pkg,
+            FrameKind::Call,
+            &format!("n_{id}"),
+            &func.params,
+            &args,
+            Some(&func.result),
+        ) {
+            Ok(value) => value,
+            Err(e) => return trap(e.to_string()),
+        };
+        let value = match value {
+            v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_)) => Value::some(v),
+            v => v,
+        };
+        self.ret_h(value)
     }
 
     /// `aref` with the arguments it leaves out given their defaults, now.
@@ -769,7 +832,7 @@ impl Core {
     pub(crate) fn journaled_read(&self, live: impl FnOnce() -> HResult<Value>) -> HResult<Value> {
         {
             let mut frames = self.frames.borrow_mut();
-            let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
+            let Some(fs) = frames.flow_mut() else {
                 drop(frames);
                 return live();
             };
@@ -784,7 +847,7 @@ impl Core {
         }
         let value = live()?;
         let mut frames = self.frames.borrow_mut();
-        if let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind {
+        if let Some(fs) = frames.flow_mut() {
             fs.journal.entries.push(JournalEntry::Read {
                 value: value.clone(),
             });
@@ -1448,6 +1511,7 @@ impl Core {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
             Imp::Invoke => self.flow_invoke(a.h(0)?),
             Imp::TryInvoke => self.flow_try_invoke(a.h(0)?),
+            Imp::CallFn => self.fn_call(a.h(0)?, a.h(1)?),
             Imp::IsError => {
                 let failed = self.with_val(a.h(0)?, |v| Ok(matches!(v, Value::Error(_))))?;
                 ret_i32(i32::from(failed))
