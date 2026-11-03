@@ -72,7 +72,11 @@ view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
                     strip_column(a, v, s)
                 }
                 if strips_of(a, held.key).is_empty() {
-                    ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                    ui.EmptyState(
+                        "No window here yet",
+                        message: "Open something into this strip.",
+                        inline: true,
+                    )
                 }
             }
         } else {
@@ -81,7 +85,11 @@ view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
                     strip_column(a, v, s)
                 }
                 if strips_of(a, held.key).is_empty() {
-                    ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                    ui.EmptyState(
+                        "No window here yet",
+                        message: "Open something into this strip.",
+                        inline: true,
+                    )
                 }
             }
         }
@@ -102,7 +110,15 @@ view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
         .some(p) => place_title(p),
         .none => "Empty strip",
     }
-    ui.Card(title: name, selected: in_front, min: if space.width < 16.0 { 8rem } else if not (space.width_class == .expanded or space.width_class == .wide) { 12rem } else if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }) {
+    ui.Card(
+        title: name,
+        selected: in_front,
+        min: if space.width < 16.0 {
+            8rem
+        } else if not (space.width_class == .expanded or space.width_class == .wide) {
+            12rem
+        } else if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem },
+    ) {
         on activate: focus_strip(v, s.key)
         strip_controls(a, s, shown)
         if placed.len() > 1 {
