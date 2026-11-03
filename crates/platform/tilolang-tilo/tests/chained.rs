@@ -100,7 +100,6 @@ fn a_chain_reads_what_its_steps_read() {
     let just_written = texts(ada.host.open_resource(&bag, None).unwrap().tree());
     ada.commit();
     let indexed = texts(ada.host.open_resource(&bag, None).unwrap().tree());
-    println!("{just_written:?} {indexed:?}");
     assert_eq!(
         just_written,
         ["second", "first", "second", "first"],
