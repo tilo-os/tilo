@@ -148,6 +148,9 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     }
     ty.keywords.clone_from(&descriptor.keywords);
     ty.icon.clone_from(&descriptor.icon);
+    // The window offers the app's actions to whoever the app offers them to: one it keeps for
+    // agents stays out of what a person is shown here, as it is everywhere else.
+    ty.contract.set_audience(descriptor.contract.audience());
     spec
 }
 

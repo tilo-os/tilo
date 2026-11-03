@@ -693,6 +693,27 @@ pub struct ResourceType {
     pub root: bool,
 }
 
+/// Whether `kind` names a control the window already draws, or an
+/// operation of the host it runs on: nodes published so a caller can
+/// address them, never something a person looks for in a list.
+#[must_use]
+pub fn kind_mirrors_a_control(kind: &str) -> bool {
+    kind == "tilo.control"
+        || kind == "tl.host"
+        || ["tilo.control.", "tilo.ui.", "tilo.host."]
+            .iter()
+            .any(|prefix| kind.starts_with(prefix))
+}
+
+/// Whether a resource of `kind` titled `label` is something a person looks
+/// for: titled, and the app's own rather than a mirror of one of its
+/// controls or an operation of the host it runs on. Those are published to
+/// be addressed, never listed.
+#[must_use]
+pub fn listed_for_people(kind: &str, label: &str) -> bool {
+    !label.trim().is_empty() && !kind_mirrors_a_control(kind)
+}
+
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](ResourceSpec::children).
 #[derive(Clone)]
@@ -797,6 +818,43 @@ impl ResourceSpec {
     pub fn with_child(mut self, child: ResourceSpec) -> Self {
         self.children.push(child);
         self
+    }
+
+    /// Whether it mirrors a control or a host operation rather than being
+    /// something of the app's own ([`kind_mirrors_a_control`]).
+    #[must_use]
+    pub fn mirrors_a_control(&self) -> bool {
+        kind_mirrors_a_control(&self.kind)
+    }
+
+    /// Whether a palette may list it: a titled resource that offers a
+    /// person at least one action of its own. An untitled node, a control
+    /// mirror, and a node left with only agent actions are all addressing
+    /// machinery, and a list of what a person may act on never shows them.
+    #[must_use]
+    pub fn listed_for_people(&self) -> bool {
+        listed_for_people(&self.kind, &self.label)
+            && self.actions.iter().any(ActionSpec::reaches_people)
+    }
+
+    /// How many of its actions a person may take.
+    #[must_use]
+    pub fn person_action_count(&self) -> usize {
+        self.actions
+            .iter()
+            .filter(|action| action.reaches_people())
+            .count()
+    }
+
+    /// The action that presents it, when a person may take it: what a
+    /// palette lists the resource for.
+    #[must_use]
+    pub fn open_action(&self) -> Option<&ActionSpec> {
+        self.actions
+            .iter()
+            .filter(|action| action.reaches_people())
+            .find(|action| action.kind == OperationKind::View)
+            .or_else(|| self.actions.iter().find(|action| action.reaches_people()))
     }
 
     #[must_use]

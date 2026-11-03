@@ -1782,7 +1782,7 @@ fn palette_shots() {
     std::fs::create_dir_all(&dir).unwrap();
     let _settled = ui::motion::testing::settled();
     for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
-        for (what, query) in [("palette", ""), ("palette-search", "New task")] {
+        for (what, query) in [("palette", ""), ("palette-search", "new")] {
             let mut session = Session::tasks();
             session.window.harness().set_theme(theme.clone());
             let request = ui::search::SearchRequest::this_app();
@@ -1798,5 +1798,75 @@ fn palette_shots() {
                 .harness()
                 .render_png(&dir.join(format!("{what}-{shade}.png")));
         }
+    }
+}
+
+#[test]
+fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::tasks();
+    session.settle();
+    // What the window's own palette reads, row by row.
+    let listed = |session: &mut Session, query: &str| -> Vec<String> {
+        if session.window.harness().palette_shown() {
+            session
+                .window
+                .press_key(ui::winit::keyboard::NamedKey::Escape);
+            session.settle();
+        }
+        session
+            .window
+            .open_search(ui::search::SearchRequest::this_app().with_query(query));
+        session.settle();
+        session
+            .window
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect()
+    };
+
+    // Unasked, it lists what a person is looking for: the app's resources by
+    // their title and its actions, never the nodes they are addressed by.
+    let all = listed(&mut session, "");
+    assert_eq!(
+        all.iter().filter(|label| *label == "Tasks").count(),
+        1,
+        "the app is listed once: {all:?}"
+    );
+    for expected in ["New task", "New project", "Add subtask", "Remove"] {
+        assert!(
+            all.iter().any(|label| label == expected),
+            "{expected} is offered: {all:?}"
+        );
+    }
+    for internal in [
+        "tilolang",
+        "Submit",
+        "Commit a planned action",
+        "Run a block",
+        "Read a resource's fields",
+        "List the catalogue",
+        "Focus",
+        "Go to",
+    ] {
+        assert!(
+            !all.iter().any(|label| label == internal),
+            "{internal} is runtime machinery, never a person's row: {all:?}"
+        );
+    }
+    // Typed, only what it names.
+    let new = listed(&mut session, "new");
+    assert!(
+        new.iter().any(|label| label == "New task")
+            && new.iter().any(|label| label == "New project"),
+        "{new:?}"
+    );
+    for unrelated in ["Open", "Add subtask", "Remove", "Delete project"] {
+        assert!(
+            !new.iter().any(|label| label == unrelated),
+            "the query narrows the list: {new:?}"
+        );
     }
 }

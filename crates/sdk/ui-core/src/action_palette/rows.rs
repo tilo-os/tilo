@@ -11,7 +11,8 @@
 use crate::icons::{self, Icon};
 use crate::platform::{PlatformConventions, Shortcut};
 pub use crate::search::{ActivationModifier, Alternate, RowFace};
-use tilo_actions::{ActionDescriptor, ActionInput, ActionState, FlatAction, InputSpec};
+use crate::search::{CommandRow, SearchResult, SearchRow};
+use tilo_actions::{ActionDescriptor, ActionInput, ActionState, FlatAction, InputSpec, ListedRow};
 
 /// What an argument step collects.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -297,12 +298,13 @@ impl CommandEntry {
         self
     }
 
-    /// The row for one exported action of a resource, as inert data: its
-    /// label, and what it acts on or means under it
-    /// (`tilo_actions::listed_row`), never "Feeds — New folder".
+    /// The row for one exported action of a resource, read as `row` says
+    /// (`tilo_actions::listed_row`): the title a person reads, what it acts
+    /// on or means under it, the action's own picture, and the shortcut it
+    /// declared. Every surface listing an action builds its row here, so the
+    /// window's own search and the desktop's palette show the same thing.
     #[must_use]
-    pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
-        let row = fa.row();
+    pub fn from_flat_action_shown(fa: &FlatAction<'_>, row: ListedRow) -> Self {
         let mut entry = Self::new(fa.key.clone(), row.title);
         if let Some(subtitle) = row.subtitle {
             entry = entry.description(subtitle);
@@ -315,8 +317,17 @@ impl CommandEntry {
         {
             entry = entry.with_argument(prompt.to_owned(), placeholder.to_owned());
         }
+        entry.icon = fa.action.icon.as_deref().and_then(Icon::from_name);
         entry.show_state(&fa.action.state);
         entry
+    }
+
+    /// The row for one exported action of a resource, as inert data: its
+    /// label, and what it acts on or means under it
+    /// (`tilo_actions::listed_row`), never "Feeds — New folder".
+    #[must_use]
+    pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
+        Self::from_flat_action_shown(fa, fa.row())
     }
 
     /// The row for one published action, as inert data: its label, what it
@@ -441,6 +452,44 @@ impl CommandEntry {
                         .collect()
                 })
             })
+    }
+
+    /// The result list's row for this entry: its label, what it says under it,
+    /// its picture, and its shortcut as keycaps. Whether a host handed the row
+    /// in or the palette read it from an app's own actions, the list shows it
+    /// through here.
+    pub(crate) fn result(
+        &self,
+        kind: impl Into<String>,
+        platform: PlatformConventions,
+    ) -> SearchResult {
+        let mut result = SearchResult::new(kind, self.label.clone(), self.id.clone());
+        result.subtitle.clone_from(&self.description);
+        result.icon = self.icon;
+        result.preview.clone_from(&self.preview);
+        // A row the hit's app draws is painted as that app draws it; the
+        // palette's own row is built from what the entry carries.
+        result.row = Some(
+            self.row
+                .clone()
+                .unwrap_or_else(|| self.command_row(platform)),
+        );
+        result
+    }
+
+    /// The palette's own row for this entry, with its shortcut as keycaps.
+    fn command_row(&self, platform: PlatformConventions) -> SearchRow {
+        SearchRow::Command(Box::new(CommandRow {
+            description_is_path: self.description_is_path,
+            facts: self.description_facts.clone(),
+            image: self.image.clone(),
+            avatar: self.avatar.clone(),
+            badge: self.badge.clone(),
+            keycaps: self.keycap_labels(platform),
+            faces: self.faces.clone(),
+            outcome: self.outcome.clone(),
+            alternates: self.alternates.clone(),
+        }))
     }
 }
 

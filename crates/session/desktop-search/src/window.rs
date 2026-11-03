@@ -50,17 +50,6 @@ pub fn action_icon(spec: &ActionSpec) -> Option<ui::icons::Icon> {
     spec.icon.as_deref().and_then(ui::icons::Icon::from_name)
 }
 
-/// Whether resources of `kind` are the toolkit's mirrors of controls the
-/// window already shows (its buttons, segmented controls, the host's search
-/// field), published so agents and assistive technology can press them:
-/// what the window's search lists is what the app does, not its controls.
-fn mirrors_a_control(kind: &str) -> bool {
-    kind == "tilo.control"
-        || ["tilo.control.", "tilo.ui.", "tilo.host."]
-            .iter()
-            .any(|prefix| kind.starts_with(prefix))
-}
-
 /// Whether `spec` acts on what the person selected: its contract declares
 /// the selection as its precondition ([`ContextRequirement::Selection`]).
 #[must_use]
@@ -87,7 +76,10 @@ impl Source for Actions<'_> {
     fn query(&self, needle: &str) -> Vec<Hit> {
         let flat: Vec<FlatAction<'_>> = tilo_actions::flatten(self.resources)
             .into_iter()
-            .filter(|flat| offered(flat.action) && !mirrors_a_control(&flat.resource_kind))
+            .filter(|flat| {
+                offered(flat.action)
+                    && tilo_actions::listed_for_people(&flat.resource_kind, &flat.resource_label)
+            })
             // An item's own view is what its row among what the window
             // holds opens: it is not listed again as something to do.
             .filter(|flat| flat.depth == 0 || flat.action.kind != tilo_actions::OperationKind::View)

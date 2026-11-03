@@ -221,7 +221,8 @@ pub use resource::{
     ContinuationQuery, ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET,
     Noun, PROMPTED_PARAM, Readers, ResourceId, ResourcePresentation, ResourceSemanticIdentity,
     ResourceSpec, ResourceType, ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec,
-    RunBy, Target, flatten, listed_row, listed_row_problems, sole_text_argument,
+    RunBy, Target, flatten, kind_mirrors_a_control, listed_for_people, listed_row,
+    listed_row_problems, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

@@ -42,6 +42,7 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
+use crate::search::system::{ResourceKind, icon_for_kind};
 use crate::search::{
     Facet, FacetFilter, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchCursor,
     SearchProvider, SearchQuery, SearchResult,
@@ -2322,6 +2323,7 @@ impl ActionPalette {
             .filter(|fa| {
                 fa.action.contract.availability.is_available()
                     && fa.action.reaches_people()
+                    && tilo_actions::listed_for_people(&fa.resource_kind, &fa.resource_label)
                     && !shows_a_hit(fa.action)
                     && parsed.in_scope(fa.resource_id.as_str())
             })
@@ -2346,10 +2348,14 @@ impl ActionPalette {
             if targets_of.get(&row).is_some_and(|keys| keys.len() > 1) {
                 row = tilo_actions::listed_row(&fa.action.label, Some(fa.resource_label.as_str()));
             }
-            let mut r = SearchResult::new(ACTIONS_KIND, row.title.clone(), fa.key.clone());
-            if let Some(subtitle) = &row.subtitle {
-                r = r.with_subtitle(subtitle.clone());
+            let found = found_by(&row, &fa.resource_label);
+            // The same row the app's own search shows: its picture, and its
+            // shortcut as the keys it names.
+            let mut entry = CommandEntry::from_flat_action_shown(fa, row);
+            if entry.icon.is_none() {
+                entry.icon = Some(icon_for_kind(&ResourceKind::Action));
             }
+            let mut r = entry.result(ACTIONS_KIND, self.platform);
             if let Some(preview) = fa
                 .resource_presentation
                 .as_ref()
@@ -2361,7 +2367,7 @@ impl ActionPalette {
                 fa.resource_id.as_str(),
                 fa.action.id.as_str(),
             ));
-            candidates.push((r, found_by(&row, &fa.resource_label), resolution));
+            candidates.push((r, found, resolution));
         }
 
         for snapshot in &self.bound_resources {
@@ -2374,6 +2380,7 @@ impl ActionPalette {
                 for fa in flatten(&[resource]) {
                     if !fa.action.contract.availability.is_available()
                         || !fa.action.reaches_people()
+                        || !tilo_actions::listed_for_people(&fa.resource_kind, &fa.resource_label)
                         || shows_a_hit(fa.action)
                     {
                         continue;
@@ -2397,13 +2404,15 @@ impl ActionPalette {
                     if !listed.insert(key.clone()) {
                         continue;
                     }
-                    let mut result = SearchResult::new(ACTIONS_KIND, row.title.clone(), key);
-                    if let Some(subtitle) = &row.subtitle {
-                        result = result.with_subtitle(subtitle.clone());
+                    let found = found_by(&row, &fa.resource_label);
+                    let mut entry = CommandEntry::from_flat_action_shown(&fa, row);
+                    if entry.icon.is_none() {
+                        entry.icon = Some(icon_for_kind(&ResourceKind::Action));
                     }
+                    entry.id = key;
                     candidates.push((
-                        result,
-                        found_by(&row, &fa.resource_label),
+                        entry.result(ACTIONS_KIND, self.platform),
+                        found,
                         RowResolution::Bound(target),
                     ));
                 }
