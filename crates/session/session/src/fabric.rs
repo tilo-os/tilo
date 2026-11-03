@@ -35,7 +35,7 @@ pub struct Continuity {
 
 impl Continuity {
     /// Take the switches from a settings document, as Settings writes it.
-    pub fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
+    pub(crate) fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
         let section = document.get("continuity");
         let on = |name: &str| match section {
             None => settings_store::continuity_privacy::ON_UNLESS_SET,

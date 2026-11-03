@@ -461,6 +461,11 @@ impl NearbyTransfer {
         continuity: Continuity,
         wake: Wake,
     ) -> Result<Arc<Self>, String> {
+        tracing::info!(
+            fabric = link.is_some(),
+            staging = spool.is_some(),
+            "Nearby Send runs on this session"
+        );
         let (jobs, mailbox) = channel();
         let inner = Arc::new(Inner {
             link,
