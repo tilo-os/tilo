@@ -237,6 +237,30 @@ impl<R: Resource> RecordEnv<R> {
     pub fn chain<P: super::Chained<Base = R>>(&self) -> Option<super::Chain<P>> {
         let live = self.live.clone();
         let state = self.storage.chain::<P>(move || live.get())?;
+        self.chain_of(state)
+    }
+
+    /// The chain of `P` kept beside the record `beside` rather than beside
+    /// this window's own ([`Chained::chain_beside`](super::Chained::chain_beside)):
+    /// the messages of one direct conversation, kept in the record the two
+    /// people share. `P`'s base is the type of `beside`'s record.
+    pub fn chain_beside<P: super::Chained<Base = R>>(
+        &self,
+        beside: &super::WorkspaceRecord<R>,
+    ) -> Option<super::Chain<P>> {
+        let live = beside.live();
+        let state = self
+            .storage
+            .chain_beside::<P>(beside.id(), move || live.get())?;
+        self.chain_of(state)
+    }
+
+    /// The chain held by its state, with the dispatcher that applies its
+    /// actions as the window's person.
+    fn chain_of<P: super::Chained>(
+        &self,
+        state: Rc<super::chain::ChainState<P>>,
+    ) -> Option<super::Chain<P>> {
         let applying = Rc::downgrade(&state);
         let me = self.dispatch.me()?.to_owned();
         let dispatch = self.dispatch.for_workspace_record::<P>(
@@ -478,6 +502,21 @@ impl<R: Resource> RecordEnv<R> {
         owner: &'static str,
     ) -> Option<super::WorkspaceRecord<P>> {
         self.storage.shared_workspace::<P>(owner)
+    }
+
+    /// The record the two people of `pair` ([`collab_types::direct_pair_id`])
+    /// share, of `P` that `owner` keeps: a conversation's own record, which
+    /// only their devices read and change. Held the way
+    /// [`Self::shared_workspace`] is, on its route, live as it changes; the
+    /// workspace's grants decide nothing there. `None` where the host keeps
+    /// no records in a workspace (a view of a past version), for a key that
+    /// names no pair, or where it cannot be opened.
+    pub fn shared_direct<P: Resource>(
+        &self,
+        owner: &'static str,
+        pair: &str,
+    ) -> Option<super::WorkspaceRecord<P>> {
+        self.storage.shared_direct::<P>(owner, pair)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their

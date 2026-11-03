@@ -52,12 +52,18 @@ pub enum Request {
         text: String,
         invocation: uuid::Uuid,
     },
+    /// Announce the pair this device's person shares with `public_key`, so
+    /// that both of them read and change its record. The conversation itself
+    /// is the record's, never this door's.
+    Announce { public_key: String },
 }
 
 /// What the host answered a [`Request`].
 pub enum Answer {
     Contacts(Vec<Contact>),
     Conversation(Conversation),
+    /// The pair was announced; nothing of the conversation came back.
+    Announced,
 }
 
 /// Called once with what the host answered.
@@ -319,7 +325,7 @@ fn exchange(
 ) {
     #[cfg(feature = "broker-transport")]
     {
-        let contacts = matches!(request, Request::Contacts);
+        let reply = Reply::of(&request);
         let answer = serde_json::to_vec(&request)
             .map_err(|_| "invalid private conversation request".to_owned())
             .and_then(|bytes| {
@@ -328,7 +334,7 @@ fn exchange(
                     original.map_or_else(Vec::new, |id| id.as_bytes().to_vec()),
                 )
             })
-            .and_then(|bytes| decode(contacts, &bytes));
+            .and_then(|bytes| decode(reply, &bytes));
         done(answer);
     }
     #[cfg(not(feature = "broker-transport"))]
@@ -354,19 +360,42 @@ fn exchange(
     }
 }
 
+/// What a [`Request`] is answered with.
 #[cfg(feature = "broker-transport")]
-fn decode(contacts: bool, bytes: &[u8]) -> Result<Answer, String> {
+#[derive(Clone, Copy)]
+enum Reply {
+    Contacts,
+    Conversation,
+    /// Nothing of the conversation comes back: the host announced its pair.
+    Announced,
+}
+
+#[cfg(feature = "broker-transport")]
+impl Reply {
+    fn of(request: &Request) -> Self {
+        match request {
+            Request::Contacts => Self::Contacts,
+            Request::Announce { .. } => Self::Announced,
+            Request::Open { .. } | Request::Read { .. } | Request::Send { .. } => {
+                Self::Conversation
+            }
+        }
+    }
+}
+
+#[cfg(feature = "broker-transport")]
+fn decode(reply: Reply, bytes: &[u8]) -> Result<Answer, String> {
     if bytes.len() > 1024 * 1024 {
         return Err("private conversation reply exceeds bound".into());
     }
-    if contacts {
-        serde_json::from_slice(bytes)
+    match reply {
+        Reply::Contacts => serde_json::from_slice(bytes)
             .map(Answer::Contacts)
-            .map_err(|_| "invalid private contacts reply".into())
-    } else {
-        serde_json::from_slice(bytes)
+            .map_err(|_| "invalid private contacts reply".into()),
+        Reply::Conversation => serde_json::from_slice(bytes)
             .map(Answer::Conversation)
-            .map_err(|_| "invalid private conversation reply".into())
+            .map_err(|_| "invalid private conversation reply".into()),
+        Reply::Announced => Ok(Answer::Announced),
     }
 }
 
@@ -507,6 +536,31 @@ fn note_conversation(value: &mut Cache, conversation: &Conversation) {
     {
         contact.conversation = true;
     }
+}
+
+/// Announce the pair this device's person shares with `public_key`, so that
+/// the two of them and no one else read and change its record. Answers once
+/// the workspace holds the proof; the conversation itself is the record's.
+pub fn announce(public_key: &str) -> Pending<()> {
+    let original = match original() {
+        Ok(original) => original,
+        Err(error) => return Pending::ready(Err(error)),
+    };
+    let (pending, fill) = Pending::new();
+    exchange(
+        Request::Announce {
+            public_key: public_key.to_owned(),
+        },
+        original,
+        move |answer| {
+            fill.fill(match answer {
+                Ok(Answer::Announced) => Ok(()),
+                Ok(_) => Err("invalid private conversation reply".into()),
+                Err(error) => Err(error),
+            });
+        },
+    );
+    pending
 }
 
 fn generation() -> Result<u64, String> {

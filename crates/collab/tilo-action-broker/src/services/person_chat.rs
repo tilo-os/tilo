@@ -38,6 +38,11 @@ pub enum PersonChatCommand {
         text: String,
         invocation: uuid::Uuid,
     },
+    /// Announce the pair this device's person shares with `public_key`: the
+    /// one write that makes their record the two people's.
+    Announce {
+        public_key: String,
+    },
 }
 // An internally tagged unit variant accepts extra fields even with
 // deny_unknown_fields. Decode Contacts as an empty struct to close that door.
@@ -55,6 +60,9 @@ enum ClosedPersonChatCommand {
         public_key: String,
         text: String,
         invocation: uuid::Uuid,
+    },
+    Announce {
+        public_key: String,
     },
 }
 
@@ -74,6 +82,7 @@ impl<'de> serde::Deserialize<'de> for PersonChatCommand {
                     text,
                     invocation,
                 },
+                ClosedPersonChatCommand::Announce { public_key } => Self::Announce { public_key },
             },
         )
     }
@@ -94,6 +103,7 @@ impl PersonChatCommand {
             Self::Open { .. } => "open-direct-conversation",
             Self::Read { .. } => "read-direct-conversation",
             Self::Send { .. } => "send-direct-message",
+            Self::Announce { .. } => "announce-direct-pair",
         }
     }
 }

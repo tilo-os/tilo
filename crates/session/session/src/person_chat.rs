@@ -120,6 +120,23 @@ impl PersonChatServices for PersonChat {
                 )?;
                 conversation(whole(owner, workspace, &public_key, &authority, now)?)
             }
+            // The one write a conversation needs of its host: the pair the
+            // two people share, so their devices read and change its record.
+            // What it holds is the record's own, and stays off this door.
+            PersonChatCommand::Announce { public_key } => {
+                use tilo_action_broker::owner_commits::OwnerCustody as _;
+                let other = peer_key(&public_key)?;
+                if !owner
+                    .direct_contacts(workspace, &authority, now)?
+                    .iter()
+                    .any(|contact| contact.public_key == public_key)
+                {
+                    return Err("a conversation is opened with a person of this workspace".into());
+                }
+                let key = self.engine.signing_key(owner, workspace)?;
+                owner.commit_direct_pair(workspace, caller, &other, &key, now)?;
+                serde_json::json!({})
+            }
         };
         let mut reply = BoundedReply(Vec::new());
         serde_json::to_writer(&mut reply, &value)
@@ -146,6 +163,12 @@ impl std::io::Write for BoundedReply {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// The 32 bytes of a person's root public key, as the person door spells it.
+fn peer_key(public_key: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(public_key).map_err(|_| "invalid conversation peer")?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| "invalid conversation peer".into())
 }
 
 /// The whole conversation, page by page, held to the bound the workspace

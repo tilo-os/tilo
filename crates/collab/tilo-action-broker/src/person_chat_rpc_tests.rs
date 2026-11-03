@@ -27,6 +27,11 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
                 public_key
             }
             PersonChatCommand::Read { public_key } => public_key,
+            // This double holds the workspace owner, not the caller's device
+            // key, so it cannot sign an announcement.
+            PersonChatCommand::Announce { .. } => {
+                return Err("the double announces no pair".into());
+            }
             PersonChatCommand::Send {
                 public_key,
                 text,

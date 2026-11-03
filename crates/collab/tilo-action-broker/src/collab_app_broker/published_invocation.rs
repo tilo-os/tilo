@@ -281,6 +281,10 @@ impl OriginalInvocationData {
                     return Err("original person conversation send text changed".into());
                 }
             }
+            PersonChatCommand::Announce { .. } => {
+                // The app announces its own pair; no action asks for it.
+                return Err("pair announcement is not an action".into());
+            }
         }
         let original = OriginalInvocation {
             broker: Arc::downgrade(state),

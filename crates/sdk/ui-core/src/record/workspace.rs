@@ -33,6 +33,21 @@ impl RecordOwners {
     }
 }
 
+/// The id of the workspace's record of `kind`
+/// ([`collab_types::workspace_record_id`]): the same in every workspace, which
+/// scopes it.
+#[must_use]
+pub fn record_id(kind: &str) -> String {
+    collab_types::workspace_record_id(kind)
+}
+
+/// The id of the record the two people of `pair` share
+/// ([`collab_types::direct_record`]).
+#[must_use]
+pub fn direct_record_id(pair: &str) -> String {
+    collab_types::direct_record(pair)
+}
+
 /// Opens the store an app keeps in the window's workspace.
 type OpenStore = dyn Fn(&str) -> Result<RecordStore, RecordOpenError>;
 
@@ -90,8 +105,39 @@ impl WorkspaceRecords {
         if collab_types::workspace_record(owner, &id).is_none() {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        let store = (self.open)(owner)?;
         let id = RecordId::parse(&id).ok_or(RecordOpenError::IdentityMismatch)?;
+        self.open_at(owner, id, kind, initialize)
+    }
+
+    /// The record the two people of `pair`
+    /// ([`collab_types::direct_pair_id`]) share in the workspace, kept by
+    /// `owner`, created with `initialize` where nothing holds it yet. Only
+    /// their devices read or change it, whichever app holds it open: the
+    /// workspace's grants decide nothing here.
+    ///
+    /// # Errors
+    /// `pair` names no pair, or the record could not be read or created.
+    pub fn open_direct(
+        &self,
+        owner: &str,
+        pair: &str,
+        kind: &str,
+        initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<StoredRecord, RecordOpenError> {
+        let id = RecordId::of_direct(pair).ok_or(RecordOpenError::IdentityMismatch)?;
+        self.open_at(owner, id, kind, initialize)
+    }
+
+    /// Open `id` in the store `owner` keeps, and in this app's, so that every
+    /// replica of the app publishes it.
+    fn open_at(
+        &self,
+        owner: &str,
+        id: RecordId,
+        kind: &str,
+        initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<StoredRecord, RecordOpenError> {
+        let store = (self.open)(owner)?;
         let checkout = RecordCheckout::new(id, RecordKind::new(kind));
         super::person::open_in(&store, &checkout, initialize)?;
         // Every app of the workspace publishes the record, whichever app wrote
@@ -151,9 +197,31 @@ mod tests {
         );
     }
 
-    /// Two windows of different apps in one process hold the one record:
-    /// what one writes the other reads.
     #[test]
+    fn a_pairs_record_syncs_on_the_app_that_holds_it() {
+        let store = Rc::new(durable_store::MemoryStore::new());
+        let workspace = "00000000-0000-4000-8000-0000000000aa";
+        let pair =
+            collab_types::direct_pair_id(workspace, &"11".repeat(32), &"22".repeat(32)).unwrap();
+        let record = records(&store, "alice")
+            .open_direct("so.tilo.chat", &pair, "so.tilo.chat", &|_| Ok(()))
+            .unwrap();
+        let route = record.route().expect("a pair's record syncs");
+        assert_eq!(route.app_id, "so.tilo.chat");
+        assert_eq!(
+            route.record.as_deref(),
+            Some(collab_types::direct_record(&pair).as_str())
+        );
+        assert!(
+            records(&store, "alice")
+                .open_direct("so.tilo.chat", "direct_nope", "so.tilo.chat", &|_| Ok(()))
+                .is_err(),
+            "a key that names no pair names no record"
+        );
+    }
+
+    /// Two windows of different apps in one process hold the one record:
+    /// what one writes the other reads.    #[test]
     fn every_window_of_the_workspace_holds_the_one_record() {
         let store = Rc::new(durable_store::MemoryStore::new());
         let owners =
