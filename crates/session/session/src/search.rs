@@ -844,9 +844,7 @@ fn found_of(hit: tilo_desktop_search::Hit) -> Option<Found> {
         (named_kind.to_owned(), hit.title.clone())
     } else {
         match &hit.target {
-            Target::Action(action) => {
-                (action.resource_kind.clone(), action.resource_label.clone())
-            }
+            Target::Action(action) => (action.resource_kind.clone(), action.resource_label.clone()),
             Target::Invoke(invoke) => match &invoke.descriptor {
                 Some(action) => (action.resource_kind.clone(), action.resource_label.clone()),
                 None => (named_kind.to_owned(), hit.title.clone()),

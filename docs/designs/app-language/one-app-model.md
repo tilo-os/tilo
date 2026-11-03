@@ -8,7 +8,10 @@ A Tilo app is the same thing whichever language it is written in. It declares:
 
 Its model and actions run in the session's document host. The shell owns windows and places.
 A Rust app and a tilolang app are interchangeable to every shell, every search, every agent and
-the REPL, and neither does anything to be.
+the REPL, and neither does anything to be. A Rust app looks and feels exactly as good as a
+tilolang app: the same components, theme roles, motion, chrome, keyboard and touch behaviour,
+accessibility and i18n, because it is drawn by the same host from the same described components.
+Nothing a Rust app can do makes it look like a second-class app, or better than one.
 
 This replaces the view-mount bridge first drafted in shell.md §8.4. Storage, where actions run,
 identity and permissions are already decided in [apps.md](../../architecture/apps.md) §2–§8, and

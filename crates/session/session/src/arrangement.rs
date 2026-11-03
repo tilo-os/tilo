@@ -27,7 +27,7 @@ use tilo_actions::{
 };
 use tilo_desktop_model::own_arrangement::{self, Place, SHELL, Strips};
 use tilo_desktop_model::{
-    CanvasPlace, DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceSlot,
+    CanvasPlace, DesktopTree, GroupId, StripId, Tab, TabId, TileContent, WindowWidth, WorkspaceSlot,
 };
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
@@ -196,26 +196,66 @@ pub fn names_a_resource(hit: &tilo_desktop_search::Hit) -> bool {
     }
 }
 
-/// The first resource `text` finds, as the arrangement places it: the top
-/// result that names a resource (an app's own search hit), else the resource
-/// an action hit acts on, else `None` for a query no result answers.
+/// The first resource `text` finds that a place can show, as the arrangement
+/// places it: the top hit that names a resource (an app's own search hit) and
+/// that `shows` accepts, else the resource such an action hit acts on, else
+/// `None` for a query no result answers with something placeable.
 #[must_use]
-pub fn found(text: &str, find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>) -> Option<String> {
+pub fn found(
+    text: &str,
+    find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+    shows: impl Fn(&str) -> bool,
+) -> Option<String> {
     let hits = find(text);
     // What a hit opens is the resource it names: an annotated entry's own
-    // anchor, or the one an action hit acts on. The best such hit wins, in
-    // the search's order.
-    hits.iter().filter(|hit| names_a_resource(hit)).find_map(|hit| {
-        match &hit.target {
-            tilo_desktop_search::Target::Invoke(invoke) => {
-                Some(invoke.address.resource.as_str().to_owned())
+    // anchor, or the one an action hit acts on. The best such hit the place
+    // can show wins, in the search's order: a hit the arrangement cannot
+    // place (a settings section) does not stand in the way of one it can.
+    let named: Vec<(&str, &str)> = hits
+        .iter()
+        .filter_map(|hit| match &hit.target {
+            tilo_desktop_search::Target::Invoke(invoke)
+                if invoke.address.action == tilo_desktop_search::OPEN_ACTION =>
+            {
+                let named = invoke.address.resource.as_str();
+                let label = invoke
+                    .descriptor
+                    .as_ref()
+                    .map_or("", |descriptor| descriptor.resource_label.as_str());
+                Some((named, label))
             }
             tilo_desktop_search::Target::Action(action) => {
-                Some(action.resource.as_str().to_owned())
+                Some((action.resource.as_str(), action.resource_label.as_str()))
             }
             _ => None,
-        }
-    })
+        })
+        .filter(|(resource, _)| shows(resource))
+        .collect();
+    most_specific(&named, text)
+}
+
+/// The resource `text` names among the hits a place can show, each with the
+/// name its resource goes by: the top of them, or the one inside it that
+/// carries the same name when the text is that name — a note titled like the
+/// notebook it sits in is the note, while a resource the text only describes
+/// stays itself.
+fn most_specific(named: &[(&str, &str)], text: &str) -> Option<String> {
+    let (resource, label) = named.first()?;
+    if !text.trim().eq_ignore_ascii_case(label) {
+        return Some((*resource).to_owned());
+    }
+    let deeper = named.iter().find(|(other, other_label)| {
+        other != resource && other_label == label && inside(other, resource)
+    });
+    Some(deeper.map_or(*resource, |(other, _)| *other).to_owned())
+}
+
+/// Whether `resource` is a level under `other` (`inbox/m1` is under `inbox`).
+fn inside(resource: &str, other: &str) -> bool {
+    resource != other
+        && resource
+            .strip_prefix(other)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// A resource as the arrangement makes a place of it: the app publishing
@@ -358,23 +398,54 @@ impl Arrangement {
                 tracing::warn!(%error, "the desk could not be migrated into the person's record");
             }
         }
-        // A place whose window was this device's own surface is not open any
-        // more: its app was not running when the session stopped, and it
-        // takes its place again when it runs. The rows, strips, widths and
-        // canvas places stay.
-        let live: Vec<TabId> = kept
-            .places()
-            .filter(|place| place.state.get("Foreign").is_some())
-            .map(|place| place.id)
-            .collect();
-        if !live.is_empty() {
-            let mut pruned = kept.clone();
-            for place in live {
-                pruned.close_place(place);
+        // A place the record kept as the live window this device showed at
+        // the last write is one its app opens again: nothing of a window
+        // outlives the session that mapped it, so the record keeps what opens
+        // it, as the desk keeps a window it must open again
+        // ([`tilo_desktop_model::Tab::relaunchable`]). Keeping the live window
+        // instead would leave the place opening nothing, and the desk loses
+        // the tab it was in. The rows, strips, widths and canvas places stay,
+        // and so does every place that is not a live window; a live window
+        // that names no app opens nothing, so its place goes as it did.
+        let mut revived = kept.clone();
+        let mut changed = false;
+        for strip in &mut revived.strips {
+            let places = std::mem::take(&mut strip.places);
+            for mut place in places {
+                if place.state.get("Foreign").is_none() {
+                    strip.places.push(place);
+                    continue;
+                }
+                let Some(tile) = serde_json::from_value::<TileContent>(place.state.clone()).ok()
+                else {
+                    // A live window this build cannot read opens nothing.
+                    changed = true;
+                    continue;
+                };
+                let relaunchable = Tab {
+                    id: place.id,
+                    title: place.title.clone(),
+                    tile,
+                    app_title: None,
+                }
+                .relaunchable();
+                if matches!(&relaunchable.tile, TileContent::LocalApp { app_id, .. }
+                    if app_id.trim().is_empty())
+                {
+                    changed = true;
+                    continue;
+                }
+                if let Ok(state) = serde_json::to_value(&relaunchable.tile)
+                    && state != place.state
+                {
+                    place.state = state;
+                    changed = true;
+                }
+                strip.places.push(place);
             }
-            if let Err(error) = own_arrangement::write(&mut doc, &pruned) {
-                tracing::warn!(%error, "the closed windows could not leave the record");
-            }
+        }
+        if changed && let Err(error) = own_arrangement::write(&mut doc, &revived) {
+            tracing::warn!(%error, "the windows to open again could not be kept");
         }
         let undo = UndoLog::new(&mut doc);
         Self {
@@ -426,18 +497,17 @@ impl Arrangement {
     }
 
     /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
-    /// the top result of the system's `find` (`find`), resolved against what the
-    /// session publishes now ([`Catalog`]), standing at `at` through the
-    /// arranging action [`ArrangementAction::Place`] — one attributed, undoable
-    /// change of the person's record (shell.md §8). `view` empty shows the
-    /// resource's primary view.
+    /// the top result of the system's `find` (`find`) that a place can show,
+    /// resolved against what the session publishes now ([`Catalog`]), standing at
+    /// `at` through the arranging action [`ArrangementAction::Place`] — one
+    /// attributed, undoable change of the person's record (shell.md §8). `view`
+    /// empty shows the resource's primary view.
     ///
     /// Returns the place's id, or `None` when nothing the text finds is a
     /// resource the arrangement can place.
     ///
     /// # Errors
-    /// Why the place could not be made, and what the text found that it could
-    /// not place.
+    /// Why the place could not be made, or the text found nothing to place.
     pub fn place_found(
         &mut self,
         asked: &str,
@@ -451,14 +521,11 @@ impl Arrangement {
         if text.is_empty() {
             return Err("nothing is typed to place".into());
         }
-        let Some(resource) = found(text, find) else {
+        let Some(resource) = found(text, find, |resource| {
+            self.catalog.borrow().get(resource).is_some()
+        }) else {
             return Err(format!("nothing matches {text:?}"));
         };
-        if self.catalog.borrow().get(&resource).is_none() {
-            return Err(format!(
-                "`{resource}` publishes nothing an arrangement shows"
-            ));
-        }
         let surface = self.surface_at()?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -2065,4 +2132,76 @@ fn actions_between(was: &Strips, became: &Strips) -> Vec<ArrangementAction> {
         }
     }
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{found, most_specific};
+    use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
+
+    /// A row text typed on the canvas would stand for: what it opens, and what it is.
+    fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {
+        Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind,
+            provider: "test".into(),
+            id: resource.into(),
+            title: title.into(),
+            subtitle: None,
+            facts: Vec::new(),
+            score: 0,
+            icon: None,
+            target: Target::Invoke(Box::new(InvokeTarget::open("test", "", resource))),
+        }
+    }
+
+    #[test]
+    fn the_text_places_the_top_result_of_the_hits_a_place_can_show() {
+        let hits = vec![
+            opening(
+                "settings.section:agent_models",
+                "Chat models",
+                ResourceKind::Record,
+            ),
+            opening("tl:so.tilo.lang.chat", "Chat", ResourceKind::Application),
+        ];
+        let showable = |resource: &str| resource == "tl:so.tilo.lang.chat";
+        assert_eq!(
+            found("Chat", &|_| hits.clone(), showable).as_deref(),
+            Some("tl:so.tilo.lang.chat"),
+            "a hit the arrangement cannot place does not stand in the way of one it can"
+        );
+        assert_eq!(
+            found("Chat", &|_| hits.clone(), |_| false),
+            None,
+            "and with nothing placeable, nothing is placed"
+        );
+    }
+
+    #[test]
+    fn the_text_places_what_it_names_inside_the_resource_it_sits_in() {
+        let named = [
+            ("notes", "Groceries"),
+            ("notes/i1", "Groceries"),
+            ("notes/i2", "Groceries"),
+        ];
+        assert_eq!(
+            most_specific(&named, "Groceries").as_deref(),
+            Some("notes/i1"),
+            "a note titled like its notebook is the note, and the top of them"
+        );
+        assert_eq!(
+            most_specific(&named, "my notes").as_deref(),
+            Some("notes"),
+            "a resource the text only describes stays itself"
+        );
+        assert_eq!(
+            most_specific(&[("inbox", "Inbox")], "inbox").as_deref(),
+            Some("inbox"),
+            "and the top stays when nothing inside it carries the same name"
+        );
+    }
 }

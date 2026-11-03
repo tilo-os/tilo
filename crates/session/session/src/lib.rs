@@ -2380,7 +2380,10 @@ impl Session {
     #[must_use]
     pub fn placed_by(&self, text: &str) -> Option<String> {
         let search = Rc::clone(&self.shared.search);
-        arrangement::found(text, &|needle| search.find(needle))
+        let catalog = self.shared.arrangement.borrow().targets();
+        arrangement::found(text, &|needle| search.find(needle), |resource| {
+            catalog.borrow().get(resource).is_some()
+        })
     }
 
     /// Undo the person's last arranging step, through the published action
