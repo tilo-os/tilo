@@ -130,26 +130,46 @@ view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
 }
 
 /// One row of the desk: the band across it, named while the desk holds more than one so a person
-/// can tell them apart, with its strips side by side across the room the row is given, each
-/// taking the share its own width names. Every window of the row stands on the desk, so a desk of
-/// many gives each a narrower window rather than pushing one off it.
+/// can tell them apart, with its strips side by side along it, each keeping the width its own
+/// width names — a narrow, a usual or a wide window — so a window is never cut to the number of
+/// them beside it and its bar and app keep their room. A row holding more windows than the desk
+/// shows scrolls along it, as the chrome's own row does. A phone's output is too narrow for two
+/// windows side by side, so there it shows the strip in front alone, filling the desk, as the
+/// chrome's desk does.
 view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
     let strips = strips_of(a, held.key)
+    let front = strips.find(s -> s.key == strip_in_front(a, v)) ?? strips.first()
     stack(gap: .related, fill) {
         if a.rows.len() > 1 {
             ui.Text(held.name, role: .subheading)
         }
-        row(gap: .group, fill) {
-            for s in strips {
-                // Its share of the row by the width it names: a desk of more windows than
-                // it holds gives each a narrower share, as the chrome's own row does.
-                strip_window(a, v, s, lists, fill(if s.width > 0 { s.width } else { 667 }))
-            }
-            if strips.is_empty() {
+        if space.compact {
+            if let s = front {
+                strip_window(a, v, s, lists, fill(1))
+            } else {
                 ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+            }
+        } else {
+            scroll(axis: .horizontal, fill) {
+                row(gap: .group, align: .stretch, fill) {
+                    for s in strips {
+                        row_window(a, v, s, lists)
+                    }
+                    if strips.is_empty() {
+                        ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                    }
+                }
             }
         }
     }
+}
+
+/// One strip's window as its row stands it: the room the strip's own width names — a narrow, a
+/// usual or a wide window — so a window is never cut to the number of them beside it, and a row
+/// of more windows than the desk holds scrolls along it, as the chrome's own row does.
+view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
+    let kept = if s.width <= 0 { 52rem } else if s.width <= 500 { 26rem } else if s.width < 900 { 52rem } else { 76rem }
+    strip_window(a, v, s, lists, min: kept, max: kept)
 }
 
 /// One strip: the window its places make, filling the room it is given. Its bar runs across its

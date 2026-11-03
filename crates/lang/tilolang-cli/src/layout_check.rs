@@ -1495,6 +1495,12 @@ mod windows {
     /// shares that height, as the chrome's groups do. A card is a few hundred pixels tall with
     /// a sliver of its app under it.
     fn windows_fill_their_strips(frames: &[&dyn Widget]) {
+        // The desk's own windows: the overlays the shell stages beside them are frames too.
+        let frames: Vec<&dyn Widget> = frames
+            .iter()
+            .copied()
+            .filter(|frame| frame.get_rect().height() > 100.0)
+            .collect();
         let height = frames
             .iter()
             .map(|f| f.get_rect().height())
@@ -1503,7 +1509,7 @@ mod windows {
             height > 500.0,
             "a window fills the desk's height: {height} at 1280x800"
         );
-        for frame in frames {
+        for frame in &frames {
             let window = frame.get_rect();
             assert!(
                 (window.height() - height).abs() < 1.0,

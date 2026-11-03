@@ -991,20 +991,29 @@ impl Reconciler {
             .fill_width()
             .gap(Rhythm::Sibling)
             .with_id(format!("{}~content", node.key));
-        // A two-way surface holds a view, not a document: what stands in it fills it, so a
-        // desk's rows of windows are as tall as the desk, and pan sideways by their width.
-        if token(node, "axis") == Some("both") {
-            inner = inner.fill_height();
-        }
         for slot in self.slots(node) {
             inner = inner.push_slot(slot);
         }
-        let scroll = match token(node, "axis") {
-            Some("horizontal") => Scrollable::new_horizontal(),
-            // A two-way surface fills its column and scrolls what it cannot show, rather than
-            // growing past it: the desk a person pans, not a page that runs on.
-            Some("both") => Scrollable::new(ui::widget::ScrollAxis::Both).fill_parent_height(),
-            _ => Scrollable::new_vertical().fit_content_height(),
+        // A surface that fills its pane gives what it holds the pane's height, so its content
+        // stands at the pane's size and pans inside it rather than growing to its own: the desk
+        // a person pans, and a row of windows kept to their own widths whose bars and apps fill
+        // the room between the desk's edges.
+        let filling = flag(node, "fill") || token(node, "axis") == Some("both");
+        if filling {
+            inner = inner.fill_height();
+        }
+        let across = token(node, "axis");
+        let scroll = if filling {
+            let axis = match across {
+                Some("horizontal") => ui::widget::ScrollAxis::Horizontal,
+                Some("both") => ui::widget::ScrollAxis::Both,
+                _ => ui::widget::ScrollAxis::Vertical,
+            };
+            Scrollable::new(axis).fill_parent_height()
+        } else if across == Some("horizontal") {
+            Scrollable::new_horizontal()
+        } else {
+            Scrollable::new_vertical().fit_content_height()
         };
         Box::new(scroll.with_child(Box::new(inner)))
     }
