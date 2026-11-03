@@ -470,7 +470,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut frontier: Vec<Node> = starts.iter().map(|node| (*node).clone()).collect();
         let mut visited: Vec<String> = Vec::new();
         let mut expanded = 0usize;
-        for depth in 0..DEEP_READS {
+        for _ in 0..DEEP_READS {
             let mut deeper: Vec<Node> = Vec::new();
             for container in std::mem::take(&mut frontier) {
                 if expanded >= ROOT_PEEK || visited.contains(&container.id) {
@@ -518,17 +518,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 {
                     return Some(node.clone());
                 }
-                // The first level below the rows the id extends is read
-                // whole: a provider that publishes a tree by path names no
-                // ancestor but the root, so the row holding the resource is
-                // one of them. Deeper down the tree the publisher's own mark
-                // decides.
-                deeper.extend(
-                    level
-                        .children
-                        .into_iter()
-                        .filter(|node| node.container || depth == 0),
-                );
+                // Only a row the publisher says holds children has a level to
+                // read: one that says it holds none ends the branch there.
+                deeper.extend(level.children.into_iter().filter(|node| node.container));
             }
             if deeper.is_empty() {
                 break;

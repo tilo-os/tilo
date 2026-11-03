@@ -1108,10 +1108,10 @@ fn answer(
         } => {
             let resources = door.resources();
             let revision = revision(&resources);
-            let rows: Vec<CatalogueRow> = tilo_actions::door::survey(&resources)
+            let rows: Vec<CatalogueRow> = tilo_actions::door::survey_placed(&resources)
                 .into_iter()
-                .map(|descriptor| {
-                    CatalogueRow::for_action(SESSION_PROVIDER, SESSION_PROVIDER, descriptor)
+                .map(|placed| {
+                    CatalogueRow::for_placed_action(SESSION_PROVIDER, SESSION_PROVIDER, placed)
                 })
                 .collect();
             Some(RemoteActionMessage::CatalogueResponse {

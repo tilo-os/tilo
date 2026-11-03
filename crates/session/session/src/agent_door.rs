@@ -1691,35 +1691,17 @@ impl Host {
                       resources,
                       revision,
                   }| {
-                fn parents<'a>(
-                    resources: &'a [tilo_actions::ResourceSpec],
-                    parent: &'a str,
-                    out: &mut std::collections::HashMap<&'a str, &'a str>,
-                ) {
-                    for resource in resources {
-                        out.insert(resource.id.as_str(), parent);
-                        parents(&resource.children, resource.id.as_str(), out);
-                    }
-                }
-                let mut stands_under = std::collections::HashMap::new();
-                parents(&resources, "", &mut stands_under);
-                let rows: Vec<_> = tilo_actions::door::survey(&resources)
+                let rows: Vec<_> = tilo_actions::door::survey_placed(&resources)
                     .into_iter()
-                    .filter(|descriptor| {
-                        !reads_only || descriptor.kind == tilo_actions::OperationKind::View
+                    .filter(|placed| {
+                        !reads_only || placed.action.kind == tilo_actions::OperationKind::View
                     })
-                    .map(|descriptor| {
-                        let parent = stands_under
-                            .get(descriptor.address.resource.as_str())
-                            .map(|parent| (*parent).to_owned())
-                            .unwrap_or_default();
-                        let mut row = tilo_actions::remote::CatalogueRow::for_action(
+                    .map(|placed| {
+                        tilo_actions::remote::CatalogueRow::for_placed_action(
                             SESSION_PROVIDER,
                             SESSION_PROVIDER,
-                            descriptor,
-                        );
-                        row.parent_resource = parent;
-                        row
+                            placed,
+                        )
                     })
                     .collect();
                 CataloguePage::from_rows(revision, rows, &query)
