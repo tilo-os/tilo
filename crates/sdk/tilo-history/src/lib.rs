@@ -131,6 +131,36 @@ fn langid(locale: &str) -> LanguageIdentifier {
         .unwrap_or_default()
 }
 
+/// The language a window speaks, chosen once from the person's preference and the languages
+/// what it shows ships: the language they prefer when it ships it (`de-DE` for a `de-DE`
+/// preference), the language of theirs it ships in another region (`de-DE` for `de-AT`), the
+/// source language when it ships that, else the first language it ships. A window speaks one
+/// language: an app that ships a translation leaves nothing in it in another. No preference (or
+/// a malformed one) is the source language when it ships, the first one otherwise.
+#[must_use]
+pub fn window_language(preference: Option<&str>, shipped: &[&str]) -> String {
+    if shipped.is_empty() {
+        return preference.map_or_else(|| SOURCE_LOCALE.to_owned(), |p| langid(p).to_string());
+    }
+    if let Some(preference) = preference {
+        let wanted = langid(preference);
+        if let Some(tag) = shipped.iter().find(|tag| langid(tag) == wanted) {
+            return (*tag).to_owned();
+        }
+        if let Some(tag) = shipped
+            .iter()
+            .find(|tag| langid(tag).language == wanted.language)
+        {
+            return (*tag).to_owned();
+        }
+    }
+    shipped
+        .iter()
+        .find(|tag| langid(tag).language == langid(SOURCE_LOCALE).language)
+        .or_else(|| shipped.first())
+        .map_or_else(|| SOURCE_LOCALE.to_owned(), |tag| (*tag).to_owned())
+}
+
 thread_local! {
     static FRAMEWORK_CATALOGUES: RefCell<HashMap<String, Rc<Catalogue>>> = RefCell::new(HashMap::new());
 }

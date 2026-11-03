@@ -422,7 +422,7 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
 /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
 /// send. Invoked after the throttle gate.
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
-/// Lets the shell drain `NeighbourMsg::PresenceMoved` into
+/// Lets the shell drain `NeighbourMsg::RetiredPresenceMoved` into
 /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
 /// Returns `true` only when the callback changed pixels. This keeps an
 /// installed background pump from turning every event-loop wake into a full
@@ -559,6 +559,11 @@ pub struct App {
     native_workspace_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
+    /// [`crate::permissions::shared_revision`] as the last frame painted
+    /// with it: what widgets paint follows permissions that can change with
+    /// nothing in the tree marking it, so a frame draws again from cleared
+    /// drawings after it moves.
+    painted_permissions: u64,
 
     presence: PresenceRuntime,
 
@@ -1281,6 +1286,19 @@ impl App {
             root_widget,
             AppConstructionInputs::controlled(),
         )
+    }
+
+    /// Whether the shared permissions moved since the last frame painted
+    /// them: the drawings the tree holds were made from the ones before.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(
+            dead_code,
+            reason = "read by the native draw and by embedded apps, which this feature set leaves out"
+        )
+    )]
+    pub(crate) fn permissions_moved(&self) -> bool {
+        self.painted_permissions != crate::permissions::shared_revision()
     }
 
     pub fn enter_wake_scope(&self) -> crate::wake::WakeScopeGuard {

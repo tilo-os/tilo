@@ -316,7 +316,6 @@ impl Editor {
             self.model.toggle_endian();
         }
         self.model.move_to(0x10, false);
-        self.dirty = true;
     }
 
     /// Submit the edits the last input made as the resource's actions, one
@@ -939,7 +938,6 @@ impl Editor {
 
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
-        self.dirty = true;
     }
 
     fn is_focused(&self) -> bool {
@@ -1309,7 +1307,6 @@ impl Editor {
             Some("narrow-inspector") => self.reveal_inspector = true,
             _ => {}
         }
-        self.dirty = true;
     }
 }
 
@@ -1540,7 +1537,7 @@ impl Widget for HexView {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.editor.borrow().needs_redraw()
+        self.editor.borrow().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

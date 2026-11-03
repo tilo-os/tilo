@@ -3487,6 +3487,22 @@ impl RecordStore {
         Ok(parked.action_state.invocation_provenance.clone())
     }
 
+    /// The writers this replica has written the open record `id` as, for a
+    /// route that publishes this replica's own changes and nobody else's
+    /// ([`crate::state::DocumentFrontier::delta`]).
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub(crate) fn writing_actors(
+        &self,
+        id: &RecordId,
+    ) -> Result<crate::state::WritingActors, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        set.not_lent(id)?;
+        let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        Ok(parked.action_state.writers.borrow().clone())
+    }
+
     pub(crate) fn require_invocation_provenance(
         &self,
         checkout: &RecordCheckout,

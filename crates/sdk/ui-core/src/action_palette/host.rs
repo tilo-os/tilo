@@ -13,9 +13,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::platform::PlatformConventions;
-use crate::search::{
-    ActivationModifier, CommandRow, FieldWeight, SearchGroup, SearchResult, SearchRow,
-};
+use crate::search::{ActivationModifier, FieldWeight, SearchGroup, SearchResult};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, Widget};
@@ -601,30 +599,7 @@ impl ActionPalette {
 
     /// A host row as a result list row.
     fn host_result(&self, entry: &CommandEntry) -> SearchResult {
-        let mut result = SearchResult::new(
-            entry.group.clone().unwrap_or_default(),
-            entry.label.clone(),
-            entry.id.clone(),
-        );
-        result.subtitle.clone_from(&entry.description);
-        result.icon = entry.icon;
-        result.preview.clone_from(&entry.preview);
-        // A row the hit's app draws is painted as that app draws it; the
-        // host's own row is built from what the entry carries.
-        result.row = entry.row.clone().or_else(|| {
-            Some(SearchRow::Command(Box::new(CommandRow {
-                description_is_path: entry.description_is_path,
-                facts: entry.description_facts.clone(),
-                image: entry.image.clone(),
-                avatar: entry.avatar.clone(),
-                badge: entry.badge.clone(),
-                keycaps: entry.keycap_labels(self.platform),
-                faces: entry.faces.clone(),
-                outcome: entry.outcome.clone(),
-                alternates: entry.alternates.clone(),
-            })))
-        });
-        result
+        entry.result(entry.group.clone().unwrap_or_default(), self.platform)
     }
 
     /// Which of the host's rows the query lets through, and the list they make.

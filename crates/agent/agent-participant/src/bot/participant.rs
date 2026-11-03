@@ -99,7 +99,6 @@ impl BotParticipant {
         );
         let events = peer.events();
         peer.join(workspace_id)?;
-        peer.live_join(workspace_id)?;
         Ok(Self {
             pending: Unopened::new(&config.workspace),
             identity,
@@ -337,13 +336,7 @@ impl BotParticipant {
             focus.as_ref(),
             None,
         );
-        crate::presence::say(
-            &self.peer,
-            &self.identity.cert.device_public_key,
-            &self.workspace,
-            self.workspace_id,
-            view,
-        );
+        crate::presence::say(&self.peer, &self.workspace, self.workspace_id, view);
     }
 
     /// The bot's device key.

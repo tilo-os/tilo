@@ -969,7 +969,11 @@ impl Widget for MessageList {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.scrolled || self.shared.borrow().dirty || self.arriving_step_moved()
+        self.dirty
+            || self.scrolled
+            || self.shared.borrow().dirty
+            || self.arriving_step_moved()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     /// A scroll that changed nothing else offers the host a copy of the

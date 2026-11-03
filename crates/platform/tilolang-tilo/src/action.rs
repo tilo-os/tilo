@@ -36,10 +36,10 @@ pub const RECORDS_KEY: &str = "tl";
 pub const AUTHORSHIP_FACET: &str = "tl.via";
 
 /// The action id of a bound text input changing its field.
-pub const EDIT_TEXT_ACTION: &str = "edit-text";
+pub const EDIT_TEXT_ACTION: &str = tilolang_runtime::store::EDIT_TEXT_ACTION;
 
 /// The action id of a bound checkbox changing its field.
-pub const EDIT_FLAG_ACTION: &str = "edit-flag";
+pub const EDIT_FLAG_ACTION: &str = tilolang_runtime::store::EDIT_FLAG_ACTION;
 
 /// The action id of a resource the host creates on its own, outside any action: a package's
 /// per-workspace root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).

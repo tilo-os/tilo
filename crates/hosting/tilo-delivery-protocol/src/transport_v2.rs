@@ -38,7 +38,7 @@ pub use presence::{
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EnvelopeV2 {
     State(Envelope),
-    /// Retired: a device opened the broker private lane in a room. Actions
+    /// Retired: a device opened the broker private lane in a workspace. Actions
     /// travel to another device on its own connection now; nothing sends
     /// this, and its place is kept so stored bytes still decode.
     RetiredEnableActions,
@@ -54,7 +54,7 @@ pub enum EnvelopeV2 {
     RetiredDelivered,
     /// Retired: a lane spoke the broker's protocol extensions.
     RetiredEnableBrokerClient,
-    /// Retired: a lane named the durable broker host of its room.
+    /// Retired: a lane named the durable broker host of its workspace.
     RetiredRegisterBroker,
     /// Retired: [`Self::RetiredDelivered`] carrying the source's certificate.
     RetiredCertifiedDelivered,
@@ -73,9 +73,9 @@ pub enum EnvelopeV2 {
         #[serde(with = "serde_bytes")]
         delta: Vec<u8>,
     },
-    /// Presence payloads for one room, each coded against the session's
+    /// Presence payloads for one workspace, each coded against the session's
     /// presence slots ([`PresenceItem`]). [`SessionReader`] returns one
-    /// `State(Envelope::Presence)` per item, in order.
+    /// `State(Envelope::RetiredPresence)` per item, in order.
     PresenceBatch {
         workspace_id: u64,
         items: Vec<PresenceItem>,
@@ -184,7 +184,7 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
                     for item in items {
                         let payload = self.presence.expand(item)?;
                         self.expanded
-                            .push_back(EnvelopeV2::State(Envelope::Presence {
+                            .push_back(EnvelopeV2::State(Envelope::RetiredPresence {
                                 workspace_id,
                                 payload,
                             }));
@@ -474,7 +474,7 @@ mod tests {
         .concat();
         let mut reader = SessionReader::new(std::io::Cursor::new(wire));
         let presence = |payload: &std::sync::Arc<[u8]>| {
-            Some(EnvelopeV2::State(Envelope::Presence {
+            Some(EnvelopeV2::State(Envelope::RetiredPresence {
                 workspace_id: 300,
                 payload: payload.to_vec(),
             }))
@@ -618,7 +618,7 @@ mod tests {
             Err(FrameError::TooLarge(_))
         ));
         assert_eq!(reader.payload.len(), 0);
-        let state = EnvelopeV2::State(Envelope::Presence {
+        let state = EnvelopeV2::State(Envelope::RetiredPresence {
             workspace_id: 7,
             payload: vec![0; 64 * 1024],
         });
@@ -631,7 +631,7 @@ mod tests {
         use tokio::io::AsyncWriteExt;
         let (mut writer, read) = tokio::io::duplex(1024);
         let mut reader = SessionReader::new(read);
-        let frame = EnvelopeV2::State(Envelope::Presence {
+        let frame = EnvelopeV2::State(Envelope::RetiredPresence {
             workspace_id: 7,
             payload: vec![9; 32],
         });

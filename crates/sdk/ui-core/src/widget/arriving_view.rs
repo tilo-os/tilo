@@ -1146,7 +1146,7 @@ impl Widget for ArrivingView {
             || self.unobserved()
             || self.drawn_step != Some(self.step(now))
             || self.fade.is_moving(now)
-            || self.inner.needs_redraw()
+            || (self.inner.needs_redraw() || self.inner.needs_animation_frame())
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {

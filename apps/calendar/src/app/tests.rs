@@ -1166,6 +1166,36 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
     }
 }
 
+/// The palette's New event is the window's own: the row an effect answers
+/// starts an event on the day the window shows, exactly as the New button
+/// does, and its form is the place a time, a repeat or a guest is set.
+#[test]
+fn the_palettes_new_event_starts_what_the_button_does() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+    let before = app.state().events.len();
+    app.effect(&crate::resource::CalendarEffect::StartEvent)
+        .expect("the palette's New event runs");
+    app.settle();
+    let events = app.state().events;
+    assert_eq!(events.len(), before + 1, "one more event");
+    let started = events.last().expect("the event it started");
+    assert!(
+        started.title.is_empty(),
+        "a fresh event's title is the form's placeholder: {:?}",
+        started.title
+    );
+    assert_eq!(
+        started.end - started.start,
+        chrono::Duration::hours(1),
+        "it takes an hour, as the button's does"
+    );
+    assert_eq!(
+        started.start.minute() % 15,
+        0,
+        "it starts at a quarter hour, as the button's does"
+    );
+}
+
 // --- responsive layout ---------------------------------------------
 
 /// The demo app laid out at `width`×`height` in a dark theme at `scale`.

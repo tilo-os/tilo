@@ -80,7 +80,38 @@ pub trait FabricLink {
     ///
     /// Returns why media continuity is off.
     fn require_media(&self) -> Result<(), String>;
-    /// Offer what this device copied to the person's other devices, as this
+    /// Whether the person lets Wi-Fi credentials move between their devices.
+    ///
+    /// # Errors
+    ///
+    /// Returns why Wi-Fi continuity is off.
+    fn require_wifi_settings(&self) -> Result<(), String> {
+        Ok(())
+    }
+    /// The passphrase this device holds for `ssid` with `security`, opened for
+    /// this device's key: what one of the person's devices shared here.
+    fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
+        let _ = (ssid, security);
+        None
+    }
+    /// Seal `password`, which this device learned for `ssid`, to this device
+    /// and every device of the person's in the fabric, as this device's own
+    /// record in its next snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the passphrase is not one to carry between the person's
+    /// devices, or why this session takes no part in a fabric to carry it on.
+    fn share_wifi_password(
+        &self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+        password: &str,
+    ) -> Result<(), String> {
+        let _ = (ssid, security, password);
+        Err("this session's fabric carries no Wi-Fi credentials".to_owned())
+    }
+    /// Offer what this device copies to the person's other devices, as this
     /// device's own entry in its next snapshot.
     ///
     /// A link whose transport does not carry the clipboard yet ignores the
@@ -209,6 +240,23 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn require_media(&self) -> Result<(), String> {
         (**self).require_media()
+    }
+
+    fn require_wifi_settings(&self) -> Result<(), String> {
+        (**self).require_wifi_settings()
+    }
+
+    fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
+        (**self).wifi_password(ssid, security)
+    }
+
+    fn share_wifi_password(
+        &self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+        password: &str,
+    ) -> Result<(), String> {
+        (**self).share_wifi_password(ssid, security, password)
     }
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {

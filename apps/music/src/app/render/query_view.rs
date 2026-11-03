@@ -1460,7 +1460,6 @@ impl ui::widget::Queryable for Music {
             self.open_view(View::Search);
         }
         self.run_query(query);
-        self.dirty = true;
     }
 
     fn enter_results(&mut self) {

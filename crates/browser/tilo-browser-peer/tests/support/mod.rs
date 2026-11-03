@@ -22,10 +22,10 @@ use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::rooms::PreAdmitRequest;
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
+use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::Approver;
-use tilo_relay_protocol::rooms::{JoinReply, PreAdmission, RoomRole};
+use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
@@ -69,62 +69,6 @@ pub fn members_document(event: &PeerEvent) -> bool {
     matches!(event, PeerEvent::Document(document) if !is_host(&document.author))
 }
 
-/// What a member said of itself in `body` (a postcard `NeighbourMsg` the
-/// host stamped with its device), when it is a desktop's presence.
-pub fn presence(body: &[u8]) -> Option<collab_types::PeerPresencePayload> {
-    let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
-    match message {
-        neighbour_wire::NeighbourMsg::AppPresenceV2 {
-            app_id, presence, ..
-        } if app_id == neighbour_wire::DESKTOP_PRESENCE_APP => Some(presence.payload),
-        _ => None,
-    }
-}
-
-/// The presence message saying `device`'s pointer is at `(x, y)` over tab 1
-/// of the test workspace: what a page publishes as its cursor moves.
-pub fn pointer_body(device: &[u8; 32], x: f32, y: f32) -> Vec<u8> {
-    let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
-        space: collab_types::presence::PointerSpace::Tile {
-            workspace: WORKSPACE.to_owned(),
-            tab: 1,
-        },
-    })
-    .unwrap();
-    postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(device),
-        WORKSPACE,
-        key,
-        collab_types::PeerPresencePayload::Pointer { x, y },
-    ))
-    .unwrap()
-}
-
-/// The presence message saying `device` shows itself as `label`: the view of
-/// itself a native member publishes.
-pub fn shell_body(device: &[u8; 32], label: &str) -> Vec<u8> {
-    postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(device),
-        WORKSPACE,
-        neighbour_wire::workspace_key(WORKSPACE),
-        collab_types::PeerPresencePayload::Shell(Box::new(collab_types::presence::ShellPresence {
-            seq: 1,
-            sent_at_ms: 1,
-            label: label.to_owned(),
-            agent: false,
-            colour: "#0ea5e9".into(),
-            activity: None,
-            place: None,
-            size: [1440, 900],
-            windows: Vec::new(),
-            selection: None,
-            chat: None,
-            reaction: None,
-        })),
-    ))
-    .unwrap()
-}
-
 pub fn workspace() -> u64 {
     tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
 }
@@ -134,9 +78,11 @@ pub fn workspace() -> u64 {
 /// before it joins ([`PeerHandle::join_placed`]), done here for a peer
 /// that reaches the host without the route that administers them.
 pub async fn place(relay: &Relay, device: &DeviceCert) {
-    let workspaces = relay.rooms().unwrap();
+    let workspaces = relay.workspaces().unwrap();
     if workspaces.summary(WORKSPACE).await.is_err()
-        && let Err(error) = workspaces.create_room("Workspace", Some(WORKSPACE)).await
+        && let Err(error) = workspaces
+            .create_workspace("Workspace", Some(WORKSPACE))
+            .await
     {
         // Another peer of the test may have placed it meanwhile.
         assert!(workspaces.summary(WORKSPACE).await.is_ok(), "{error}");
@@ -620,7 +566,7 @@ pub async fn door(
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
         workspace: workspace.to_owned(),
-        role: RoomRole::Editor,
+        role: WorkspaceRole::Editor,
         token_sha256,
         label: "Guest".into(),
         expires_at_ns: tilo_clock::unix_now_ns()
@@ -632,7 +578,7 @@ pub async fn door(
     grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
     let issued = host
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .pre_admit(
             &owner_host.cert,
@@ -671,7 +617,7 @@ pub async fn redeem(
         matches!(
             &admitted,
             JoinReply::Admitted {
-                role: RoomRole::Editor,
+                role: WorkspaceRole::Editor,
                 ..
             }
         ),
@@ -703,7 +649,7 @@ pub async fn enter(
 pub async fn in_workspace(peer: &PeerHandle, workspace_id: u64) {
     ready(&[peer]).await;
     wait_for("the governed workspace to let the page in", || async {
-        (peer.status().rooms.get(&workspace_id) == Some(&true)).then_some(())
+        (peer.status().workspaces.get(&workspace_id) == Some(&true)).then_some(())
     })
     .await;
 }

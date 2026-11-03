@@ -2,14 +2,14 @@
 //! authorizing, writing and retiring state deliveries.
 
 use super::{
-    AsyncWriteExt, AuthenticatedPeer, Envelope, LiveEnvelope, PeerError, RoomOperation, SessionCtx,
-    SharedWorkspace, StateDelivery, authorize_state_recipient, resume_record,
+    AsyncWriteExt, AuthenticatedPeer, Envelope, LiveEnvelope, PeerError, SessionCtx,
+    SharedWorkspace, StateDelivery, WorkspaceOperation, authorize_state_recipient, resume_record,
     trace_native_publication, unix_now_ns,
 };
 
 /// `envelope` as the relay stream carries it (a zero-signature delta goes
 /// without its signature), for a frame about to be written, charged to its
-/// room's egress. `live` marks live fan-out (a delta or presence forwarded as
+/// workspace's egress. `live` marks live fan-out (a delta or presence forwarded as
 /// it arrived), as opposed to replay, replies and positions.
 pub(super) fn encode_charged(
     envelope: &Envelope,
@@ -17,17 +17,19 @@ pub(super) fn encode_charged(
     live: bool,
 ) -> Result<Vec<u8>, postcard::Error> {
     let frame = tilo_delivery_protocol::transport_v2::encode_state(envelope)?;
-    if let Some(room) = envelope.workspace_id() {
-        session
-            .metrics
-            .add_room_egress(room, u64::try_from(frame.len()).unwrap_or(u64::MAX), live);
+    if let Some(workspace) = envelope.workspace_id() {
+        session.metrics.add_room_egress(
+            workspace,
+            u64::try_from(frame.len()).unwrap_or(u64::MAX),
+            live,
+        );
     }
     Ok(frame)
 }
 
-/// A live delta about to be written, charged to its room's live egress:
+/// A live delta about to be written, charged to its workspace's live egress:
 /// coded against what the session last received from the same author in the
-/// same room (`DeltaEncoder`). A delta the encoder does not code (signed, or
+/// same workspace (`DeltaEncoder`). A delta the encoder does not code (signed, or
 /// larger than it keeps) goes as [`encode_charged`] writes it and changes no
 /// slot.
 fn encode_delta_charged(
@@ -36,9 +38,9 @@ fn encode_delta_charged(
     deltas: &mut tilo_delivery_protocol::transport_v2::DeltaEncoder,
 ) -> Result<Vec<u8>, postcard::Error> {
     if let Some(frame) = deltas.encode(envelope)? {
-        if let Some(room) = envelope.workspace_id() {
+        if let Some(workspace) = envelope.workspace_id() {
             session.metrics.add_room_egress(
-                room,
+                workspace,
                 u64::try_from(frame.len()).unwrap_or(u64::MAX),
                 true,
             );
@@ -83,8 +85,8 @@ pub(super) async fn write_presence<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Encode `due` presence for this connection, each room's authorised once,
-/// as slot-coded `PresenceBatch` frames. Charged to each room's live egress.
+/// Encode `due` presence for this connection, each workspace's authorised once,
+/// as slot-coded `PresenceBatch` frames. Charged to each workspace's live egress.
 async fn encode_presence(
     due: Vec<crate::presence_mailbox::DuePresence>,
     slots: &mut tilo_delivery_protocol::transport_v2::PresenceEncoder,
@@ -93,10 +95,10 @@ async fn encode_presence(
 ) -> Result<Vec<u8>, PeerError> {
     let mut out = Vec::new();
     for run in due.chunk_by(|a, b| a.workspace_id == b.workspace_id) {
-        let Some(room) = run.first().map(|presence| presence.workspace_id) else {
+        let Some(workspace) = run.first().map(|presence| presence.workspace_id) else {
             continue;
         };
-        authorize_state_recipient(room, true, peer, session).await?;
+        authorize_state_recipient(workspace, true, peer, session).await?;
         let before = out.len();
         for chunk in run.chunks(PRESENCE_BATCH_ITEMS) {
             let items: Vec<_> = chunk
@@ -104,19 +106,19 @@ async fn encode_presence(
                 .map(|presence| slots.item(presence.key, &presence.payload))
                 .collect();
             out.extend(tilo_delivery_protocol::transport_v2::encode_presence_batch(
-                room, &items,
+                workspace, &items,
             )?);
         }
         let bytes = u64::try_from(out.len().saturating_sub(before)).unwrap_or(u64::MAX);
-        session.metrics.add_room_egress(room, bytes, true);
+        session.metrics.add_room_egress(workspace, bytes, true);
     }
     Ok(out)
 }
 
-/// The most queued deliveries of one room a writer takes in one turn.
+/// The most queued deliveries of one workspace a writer takes in one turn.
 pub(super) const STATE_RUN: usize = 32;
 
-/// The room a live delivery is for; `None` for what is not a delta.
+/// The workspace a live delivery is for; `None` for what is not a delta.
 pub(super) fn delivery_room(delivery: &StateDelivery) -> Option<u64> {
     match &*delivery.envelope {
         Envelope::Delta { workspace_id, .. } => Some(*workspace_id),
@@ -136,11 +138,11 @@ pub(super) async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     write_state_deliveries(vec![delivery], peer, session, coding, presence, write).await
 }
 
-/// Write `run`, queued deliveries of one room in order, authorised under
-/// one membership read: authorised one by one, a room's every commit took
+/// Write `run`, queued deliveries of one workspace in order, authorised under
+/// one membership read: authorised one by one, a workspace's every commit took
 /// its lock once per member, and a crowd's writers queued on it. A run whose
 /// every delivery is still authorised as its fan-out authorised it
-/// ([`StateDelivery::still_fanned`]) is written without the room's lock.
+/// ([`StateDelivery::still_fanned`]) is written without the workspace's lock.
 pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
     run: Vec<StateDelivery>,
     peer: &AuthenticatedPeer,
@@ -223,7 +225,7 @@ pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// The deliveries of `run` the recipient may still be written, decided under
-/// one membership read of its room, with the room.
+/// one membership read of its workspace, with the workspace.
 async fn authorize_state_deliveries(
     run: Vec<StateDelivery>,
     workspace_id: u64,
@@ -238,7 +240,7 @@ async fn authorize_state_deliveries(
         .cloned()
         .ok_or_else(|| PeerError::Protocol("state workspace disappeared".into()))?;
     let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
-    if !session.admits(&runtime, peer, RoomOperation::State) {
+    if !session.admits(&runtime, peer, WorkspaceOperation::State) {
         drop(runtime);
         return Ok((Vec::new(), workspace));
     }
@@ -288,7 +290,7 @@ async fn retire_written(
     }
     let owner = crate::persistence::handle(workspace).await;
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    if !session.admits(&runtime, peer, RoomOperation::State) {
+    if !session.admits(&runtime, peer, WorkspaceOperation::State) {
         return Ok(());
     }
     for delivery in written {

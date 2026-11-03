@@ -175,7 +175,24 @@ impl ChatApp {
         }
     }
 
+    /// How many messages of `peer`'s conversation this person has not read.
+    pub(crate) fn direct_unread(&self, peer: &str) -> u32 {
+        self.direct.as_ref().map_or(0, |direct| direct.unread(peer))
+    }
+
+    /// Tell the direct conversations who the workspace's people are now,
+    /// and import a few conversations the old private store still holds:
+    /// each is a migration the window does once, not a reason to stall.
+    fn refresh_direct_people(&self) {
+        let Some(direct) = self.direct.clone() else {
+            return;
+        };
+        direct.set_people(self.direct_people.clone());
+        direct.import_old_store();
+    }
+
     pub(crate) fn refresh_person_conversation(&mut self) {
+        self.refresh_direct_people();
         self.settle_person_replies();
         // Native contacts hydrate after the first mounted frame. Keep the
         // semantic rows current even before any conversation is selected.
@@ -203,6 +220,10 @@ impl ChatApp {
                 }
                 self.person_messages = conversation.messages;
                 self.person_error = None;
+                // What is on screen is read, up to where it reaches.
+                if let Some(direct) = &self.direct {
+                    direct.mark_read(&public_key);
+                }
             }
             Ok(_) => {
                 self.person_messages.clear();

@@ -35,7 +35,7 @@ async fn writer_boundary(
         cert.clone(),
     )
     .unwrap();
-    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let id = crate::room_workspace_id(authority.workspace()).unwrap();
     let temp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         temp.path(),
@@ -324,7 +324,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         cert.clone(),
     )
     .unwrap();
-    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let id = crate::room_workspace_id(authority.workspace()).unwrap();
     let temp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         temp.path(),
@@ -577,7 +577,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     );
 }
 
-/// A delivery its fan-out authorised under the room's lock is written
+/// A delivery its fan-out authorised under the workspace's lock is written
 /// without taking that lock again while nothing the fan-out read has
 /// changed, under the lock once anything announced a change, and not at all
 /// once its lease ended.
@@ -616,7 +616,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
     );
     let workspace = Arc::new(AsyncMutex::new(runtime));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
-    // Only a room whose membership a live watch vouches for is stamped.
+    // Only a workspace whose membership a live watch vouches for is stamped.
     let watch = crate::membership_watch::spawn_membership_watch(temp.path());
     tilo_test_env::within("the membership watch to vouch for the room", async {
         while !crate::workspace_io::fresh_membership(&workspace)
@@ -690,11 +690,11 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         }
     };
 
-    // The room stays locked, as a crowd's other turns keep it.
+    // The workspace stays locked, as a crowd's other turns keep it.
     let held = workspace.lock().await;
     // The epoch is process-wide: another test may move it between the stamp
     // and the write, which only sends this one the locked way. One of a few
-    // fresh stamps reaches the wire while the room is held.
+    // fresh stamps reaches the wire while the workspace is held.
     let mut wire = Vec::new();
     for _ in 0..20 {
         let stamp = FanoutStamp::of(&held);

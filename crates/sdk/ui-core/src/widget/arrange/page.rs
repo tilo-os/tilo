@@ -12,6 +12,10 @@ pub const MEASURE_REM: f32 = 40.0;
 
 pub struct PageLayout {
     measure: Option<Length>,
+    /// Take the height the page is given: a canvas (a board, a map) fills the pane it is in
+    /// instead of being as tall as what it holds, and keeps its gutter above and below rather
+    /// than beside it.
+    fill: bool,
     class: Option<WidthClass>,
     /// One row of the page's content, which a virtual list stacks: the gutter at the sides
     /// only, and the row's own spacing above and below.
@@ -51,6 +55,10 @@ impl Layout for PageLayout {
 
     fn container(&self, resolved: &Resolved) -> Style {
         let gutter = length(self.gutter(resolved));
+        // A page that fills its pane is a surface that lays out its own parts (a board's lanes,
+        // a desk's strips): it takes the pane's whole width, and what it holds keeps its own
+        // gutter at the sides. Its height gutter stays the page's.
+        let side = if self.fill { length(0.0_f32) } else { gutter };
         let (top, bottom) = match self.row {
             Some(RowSpacing::Halves) => {
                 let half = length(resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0);
@@ -67,14 +75,21 @@ impl Layout for PageLayout {
             flex_direction: taffy::FlexDirection::Column,
             align_items: Some(taffy::AlignItems::Center),
             padding: taffy::Rect {
-                left: gutter,
-                right: gutter,
+                left: side,
+                right: side,
                 top,
                 bottom,
             },
             size: Size {
                 width: taffy::style_helpers::percent(1.0_f32),
-                height: taffy::Dimension::auto(),
+                // A page that fills is as tall as the pane it is in: what it holds stands on
+                // the pane's floor and scrolls inside itself (a board's lanes), instead of the
+                // page growing past the pane with what it holds.
+                height: if self.fill {
+                    taffy::style_helpers::percent(1.0_f32)
+                } else {
+                    taffy::Dimension::auto()
+                },
             },
             ..Style::default()
         }
@@ -83,6 +98,9 @@ impl Layout for PageLayout {
     fn slot(&self, _index: usize, _slot: &Slot, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         style.size.width = taffy::style_helpers::percent(1.0_f32);
+        if self.fill {
+            style.size.height = taffy::style_helpers::percent(1.0_f32);
+        }
         if let Some(measure) = self.measure {
             style.max_size.width = length(measure.resolve(resolved.rem));
         }
@@ -106,6 +124,7 @@ impl Arranged<PageLayout> {
     pub fn new() -> Self {
         Self::with_layout(PageLayout {
             measure: Some(Length::Rem(MEASURE_REM)),
+            fill: false,
             class: None,
             row: None,
         })
@@ -116,9 +135,20 @@ impl Arranged<PageLayout> {
     pub fn full() -> Self {
         Self::with_layout(PageLayout {
             measure: None,
+            fill: false,
             class: None,
             row: None,
         })
+    }
+
+    /// `page(fill)`: the height the page is given, for a canvas that fills its pane (a board's
+    /// lanes, a map, a media page) instead of growing with what it holds. A page that fills its
+    /// pane is a surface: it also takes the pane's whole width, and what it holds keeps its own
+    /// gutter at the sides.
+    #[must_use]
+    pub const fn filling(mut self) -> Self {
+        self.layout.fill = true;
+        self
     }
 
     /// One row of a page's content, for a virtual list that shows the page's rows one by one
@@ -192,6 +222,7 @@ impl crate::widget::virtual_list::ListEdges for PageRowEdges {
         self.class = Some(class);
         let layout = PageLayout {
             measure: None,
+            fill: false,
             class: Some(class),
             row: Some(RowSpacing::Halves),
         };
@@ -246,6 +277,7 @@ impl crate::widget::virtual_list::ListEdges for TranscriptEdges {
         self.class = Some(class);
         let layout = PageLayout {
             measure: None,
+            fill: false,
             class: Some(class),
             row: Some(RowSpacing::After(self.first)),
         };

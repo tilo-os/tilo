@@ -232,7 +232,7 @@ async fn every_web_app_over_the_session() {
     )
     .unwrap();
 
-    // The browser: one HTTPS session for documents and presence.
+    // The browser: one HTTPS session for the workspace's documents.
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let browser = start_peer(
         Host::Https(host.https()),
@@ -251,9 +251,7 @@ async fn every_web_app_over_the_session() {
     .await;
 
     let mut received: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = BTreeMap::new();
-    let mut table = String::from(
-        "| App | Edit | Browser merged agent's change | Agent shown on the record |\n|---|---|---|---|\n",
-    );
+    let mut table = String::from("| App | Edit | Browser merged agent's change |\n|---|---|---|\n");
     let mut failures = Vec::new();
     for definition in catalogue.iter() {
         let app_id = definition.app_id();
@@ -272,9 +270,7 @@ async fn every_web_app_over_the_session() {
         let expected = body(agent.app(&route).unwrap());
 
         // The browser receives the agent's changes in host order and its
-        // own mount of the app merges them into the agent's state; the views
-        // the agent says of itself arrive on the same session.
-        let mut shells: Vec<collab_types::presence::ShellPresence> = Vec::new();
+        // own mount of the app merges them into the agent's state.
         let deadline = tilo_test_env::hang_deadline();
         let merged = loop {
             agent.pump();
@@ -297,12 +293,6 @@ async fn every_web_app_over_the_session() {
                             .or_default()
                             .push(bytes);
                     }
-                } else if let PeerEvent::Presence { from, body, .. } = event
-                    && from == agent_key
-                    && let Some(collab_types::PeerPresencePayload::Shell(shell)) =
-                        support::presence(&body)
-                {
-                    shells.push(*shell);
                 }
             }
             if let Some(changes) = received.get(&route)
@@ -327,63 +317,13 @@ async fn every_web_app_over_the_session() {
             );
         }
 
-        // The browser sees the agent on this record: the view it says of
-        // itself names the record it works in.
-        let record = tilo_relay_protocol::live::LiveRecord {
-            app: app_id.to_owned(),
-            record: route.record.clone(),
-        }
-        .short_digest();
-        let deadline = tilo_test_env::hang_deadline();
-        let on_record = |shells: &[collab_types::presence::ShellPresence]| {
-            shells
-                .iter()
-                .find(|shell| {
-                    shell
-                        .windows
-                        .iter()
-                        .any(|window| window.app == app_id && window.record == record)
-                })
-                .cloned()
-        };
-        let mut presence = on_record(&shells);
-        while presence.is_none() && Instant::now() <= deadline {
-            agent.pump();
-            for event in browser_events.drain() {
-                let PeerEvent::Presence { from, body, .. } = event else {
-                    continue;
-                };
-                if from == agent_key
-                    && let Some(collab_types::PeerPresencePayload::Shell(shell)) =
-                        support::presence(&body)
-                {
-                    shells.push(*shell);
-                }
-            }
-            presence = on_record(&shells);
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let cursor = match &presence {
-            Some(presence) => {
-                assert!(presence.agent);
-                assert_eq!(presence.label, "Coverage agent");
-                "yes".to_owned()
-            }
-            None => {
-                note(
-                    &mut failures,
-                    format!("{app_id}: the browser never saw the agent on the record"),
-                );
-                "no".to_owned()
-            }
-        };
         let label = edit.as_ref().map_or_else(
             || "— (device-local state)".to_owned(),
             |edit| format!("`{}`", edit.label),
         );
         let _ = writeln!(
             table,
-            "| {app_id} | {label} | {} | {cursor} |",
+            "| {app_id} | {label} | {} |",
             if merged { "yes" } else { "no" }
         );
     }
@@ -646,7 +586,7 @@ async fn every_web_app_over_the_session() {
     browser.close();
     let retained = host
         .relay
-        .room_records()
+        .workspace_records()
         .retained(workspace())
         .await
         .unwrap();

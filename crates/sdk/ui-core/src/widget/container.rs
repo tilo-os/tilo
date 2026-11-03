@@ -755,7 +755,7 @@ impl Widget for Container {
             || self.permission_scope.is_some()
             || !self.presence_path.is_empty()
         {
-            if self.needs_redraw() {
+            if self.needs_redraw() || self.needs_animation_frame() {
                 regions.push(self.rect);
             }
         } else if let Some(child) = &self.child {

@@ -1,9 +1,9 @@
 //! Ordered, bounded state work. The owner awaits publication before dequeuing
 //! its successor; callers only wait on receipts and cannot cancel admitted work.
 //!
-//! Commits this host authors itself (room and channel governance) queue in
+//! Commits this host authors itself (workspace and channel governance) queue in
 //! a lane of their own ([`Lane::Host`]), with their own admission budget,
-//! and the owner takes them ahead of the members' queue: a room's governance
+//! and the owner takes them ahead of the members' queue: a workspace's governance
 //! never waits behind a crowd's traffic. Host order (`seq`) is still the
 //! order of owner turns, and so of publication.
 //!
@@ -67,7 +67,7 @@ const GLOBAL_MESSAGES: usize = 128;
 const GLOBAL_BYTES: usize = 256 * 1024 * 1024;
 const REPLAY_MESSAGES: usize = crate::store::replay::DEFAULT_REPLAY_TICKETS;
 const REPLAY_BYTES: usize = 64 * 1024;
-/// Host-authored commits (room governance, the node's channel frames) take
+/// Host-authored commits (workspace governance, the node's channel frames) take
 /// their own share of the global totals, so a crowd's member traffic never
 /// holds them back: a channels pass waits for its own commits, and every
 /// member waiting for a channel key waits for that pass.
@@ -77,7 +77,7 @@ const HOST_BYTES: usize = 64 * 1024 * 1024;
 /// Host commits one workspace's owner queues.
 const HOST_QUEUE_MESSAGES: usize = 16;
 /// Host jobs an owner runs in a row while member jobs wait, so a burst of
-/// governance cannot hold a room's members back for long either.
+/// governance cannot hold a workspace's members back for long either.
 const HOST_BURST: u32 = 8;
 pub(crate) const NORMAL_MESSAGES: usize = GLOBAL_MESSAGES - REPLAY_MESSAGES - HOST_MESSAGES;
 const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES - HOST_BYTES;
@@ -90,7 +90,7 @@ const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100)
 /// on disk. A restart continues past the reservation, at most this far
 /// ahead of the host clock. Sequences follow the clock, so a workspace that
 /// commits steadily renews the reservation once per this interval: at a
-/// second, a typing room paid a renewal every second.
+/// second, a typing workspace paid a renewal every second.
 const SEQUENCE_RESERVATION_NS: u64 = 10_000_000_000;
 /// One blocking-pool task runs a transaction's quanta for up to this long: a
 /// many-quantum transaction then pays a pool round trip per slice instead of
@@ -237,8 +237,8 @@ fn replay_byte_budget() -> &'static Arc<Semaphore> {
 
 /// Blocking workers every workspace's owner, replay and publication share:
 /// one per core the process may use, between [`BLOCKING_WORKERS`] (what a
-/// small node keeps) and [`MAX_BLOCKING_WORKERS`]. A crowd joining a room
-/// prepares one replay per newcomer, each as large as the room, and four
+/// small node keeps) and [`MAX_BLOCKING_WORKERS`]. A crowd joining a workspace
+/// prepares one replay per newcomer, each as large as the workspace, and four
 /// workers left a large host's cores idle while the replays queued.
 fn blocking_workers() -> usize {
     std::thread::available_parallelism().map_or(BLOCKING_WORKERS, |cores| {
@@ -463,13 +463,13 @@ impl State {
 
 // A registry entry owns one runtime for its lifetime: workspace_io::
 // get_or_initialize uses entry-or-insert under its reservation. Replacing a
-// runtime over an active store is not a supported restart protocol: a room
+// runtime over an active store is not a supported restart protocol: a workspace
 // leaves the registry only through workspace_io::evict, which waits for its
-// owner to end before the room can open again.
+// owner to end before the workspace can open again.
 pub async fn handle(workspace: &SharedWorkspace) -> Persistence {
     let mut runtime = workspace.lock().await;
     if runtime.evicted {
-        // The room left the registry: whatever still holds its runtime is
+        // The workspace left the registry: whatever still holds its runtime is
         // refused, and no second owner writes its files.
         return Persistence::closed(initial_budgets(&runtime));
     }
@@ -1046,8 +1046,8 @@ async fn run_owner_lanes(
             let mut state = shared.lock_recover();
             // A released entry keeps its process-wide replay permit until it
             // is gone, so new subscriptions wait on this. One bounded step
-            // per turn fell behind a room where every guest's arrival
-            // replays to them: spools grow with the room, permits ran out,
+            // per turn fell behind a workspace where every guest's arrival
+            // replays to them: spools grow with the workspace, permits ran out,
             // and joins queued for seconds. Step for one slice instead.
             let start = std::time::Instant::now();
             loop {
@@ -1983,7 +1983,7 @@ mod tests {
         let authority = tilo_relay_shell::selection::fixtures::producer_authority(
             &tilo_relay_shell::selection::fixtures::producer_metadata(),
         );
-        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
         let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
         store.bind_shell_authority(authority).unwrap();
         let state = Arc::new(Mutex::new(State {
@@ -2042,7 +2042,7 @@ mod tests {
         let authority = tilo_relay_shell::selection::fixtures::producer_authority(
             &tilo_relay_shell::selection::fixtures::producer_metadata(),
         );
-        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
         let mut store = WorkspaceStore::open(root, workspace, false).unwrap();
         store.bind_shell_authority(authority).unwrap();
         Arc::new(Mutex::new(State {
@@ -2326,7 +2326,7 @@ mod tests {
         let authority = tilo_relay_shell::selection::fixtures::producer_authority(
             &tilo_relay_shell::selection::fixtures::producer_metadata(),
         );
-        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
         let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
         store.bind_shell_authority(authority).unwrap();
         let state = Arc::new(Mutex::new(State {
@@ -2390,7 +2390,7 @@ mod tests {
         let authority = tilo_relay_shell::selection::fixtures::producer_authority(
             &tilo_relay_shell::selection::fixtures::producer_metadata(),
         );
-        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
         let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
         store.bind_shell_authority(authority).unwrap();
         let state = Arc::new(Mutex::new(State {

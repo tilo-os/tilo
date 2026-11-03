@@ -607,24 +607,6 @@ pub fn literals_in(text: &str) -> Vec<String> {
     found
 }
 
-/// The references `text` shows: each short reference (`t3`) that `programs` named, with the
-/// resource literal it names, in the order the text shows them.
-fn shown_refs(text: &str, programs: &Programs) -> Vec<(String, String)> {
-    let mut refs: Vec<(String, String)> = Vec::new();
-    for piece in pieces(text) {
-        if let Piece::Word {
-            text,
-            member: false,
-        } = piece
-            && let Some(literal) = programs.by_ref.get(&text)
-            && !refs.iter().any(|(known, _)| *known == text)
-        {
-            refs.push((text, literal.clone()));
-        }
-    }
-    refs
-}
-
 /// What a previewed program would apply, and how to apply it.
 fn preview(answer: &Value) -> String {
     let steps = answer["steps"].as_array().cloned().unwrap_or_default();

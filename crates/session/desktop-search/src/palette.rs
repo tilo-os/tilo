@@ -1153,6 +1153,7 @@ fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
 mod tests {
     use super::*;
     use ui::search::AppScope;
+    use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 
     fn data() -> SearchData {
         SearchData {
@@ -1526,8 +1527,22 @@ mod tests {
         assert!(!search.is_open());
     }
 
-    /// The shell's published actions: a switch showing its state and keys,
-    /// and an action with nothing to act on now.
+    /// The desktop keymap's binding of `action`: the chord a publisher
+    /// declares, and the way the palette paints that chord. A switch's keys
+    /// come from the shortcut table, never from a chord written here.
+    fn bound_keys(action: ShortcutAction) -> (String, String) {
+        let chord = ShortcutConfig::default()
+            .bindings
+            .get(&action)
+            .unwrap_or_else(|| panic!("{action:?} is bound"))
+            .clone();
+        let painted =
+            ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key);
+        (chord.display(), painted)
+    }
+
+    /// The shell's published actions: a switch showing its state and the keys
+    /// the keymap binds it to, and an action with nothing to act on now.
     fn published() -> Vec<PublishedActions> {
         let action = |id: &str, label: &str| {
             tilo_actions::ActionSpec::immediate_encoded(
@@ -1540,16 +1555,20 @@ mod tests {
                 },
             )
         };
-        let mut resource = ResourceSpec::new("actions", "actions", "Actions");
-        resource.actions.push(
-            action("notifications.dnd.toggle", "Do Not Disturb").with_state(
-                tilo_actions::ActionState {
+        let (declared, _) = bound_keys(ShortcutAction::ToggleFullscreen);
+        let (resource_id, action_id) = ShortcutAction::ToggleFullscreen
+            .action()
+            .expect("the full screen toggle is a published action");
+        let mut resource = ResourceSpec::new(resource_id, resource_id, "Actions");
+        resource
+            .actions
+            .push(
+                action(action_id, "Full screen").with_state(tilo_actions::ActionState {
                     badge: Some("Off".into()),
                     toggles: true,
-                    shortcut: Some("Super+D".into()),
-                },
-            ),
-        );
+                    shortcut: Some(declared),
+                }),
+            );
         resource.actions.push(
             action("projection.close", "Stop projecting")
                 .unavailable("nothing_to_act_on", "Nothing is projected"),
@@ -1565,13 +1584,22 @@ mod tests {
             ..data()
         });
         settled(&mut search);
-        search.set_query("disturb");
+        search.set_query("full scr");
         settled(&mut search);
         let hit = &search.results()[0];
-        assert_eq!(hit.title, "Do Not Disturb");
+        assert_eq!(hit.title, "Full screen");
+        let (_, painted) = bound_keys(ShortcutAction::ToggleFullscreen);
         let entries = search.palette().visible_entries();
         assert_eq!(entries[0].badge.as_deref(), Some("Off"));
-        assert_eq!(entries[0].keybinding.as_deref(), Some("Super+D"));
+        assert_eq!(
+            entries[0].keybinding_label(ui::PlatformConventions::new(ui::Platform::Linux)),
+            Some(painted),
+            "the keymap's chord, painted as the platform's keycaps"
+        );
+        assert!(
+            entries[0].keybinding.is_none(),
+            "a chord is no free-text keybinding"
+        );
         drop(entries);
         search.palette_mut().activate_selected();
         assert!(
@@ -1585,9 +1613,12 @@ mod tests {
             (invoke.app.as_str(), invoke.workspace.as_str()),
             ("shell", "workspace")
         );
+        let (resource_id, action_id) = ShortcutAction::ToggleFullscreen
+            .action()
+            .expect("the full screen toggle is a published action");
         assert_eq!(
             invoke.address,
-            tilo_actions::ActionAddress::new("actions", "notifications.dnd.toggle")
+            tilo_actions::ActionAddress::new(resource_id, action_id)
         );
         assert!(search.is_open());
     }

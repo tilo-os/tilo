@@ -502,6 +502,30 @@ fn only_a_migration_reads_what_a_type_held_previously() {
 }
 
 #[test]
+fn an_internal_action_is_an_action_no_surface_offers() {
+    let compiled = crate::common::compile_body(
+        "type Task {\n    title: Text (title)\n    at: Int\n}\n\n\
+         internal action place(t: Task, at: Int) {\n    t.at = at\n}\n\n\
+         action rename(t: Task, title: Text) {\n    t.title = title\n}\n",
+    );
+    let place = compiled
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "place")
+        .unwrap();
+    assert!(place.is_internal());
+    assert!(
+        compiled.meta.offered_actions().all(|a| a.name != "place"),
+        "an internal action runs from the app's gestures, not from a list of commands"
+    );
+    assert!(
+        compiled.meta.offered_actions().any(|a| a.name == "rename"),
+        "the actions beside it are offered"
+    );
+}
+
+#[test]
 fn nothing_writes_what_a_type_held_previously() {
     let assigned = "action reshelve(i: Item) {\n    i.shelf = \"top\"\n}\n";
     assert_eq!(

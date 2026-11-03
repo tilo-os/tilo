@@ -227,3 +227,17 @@ test('their own words go on their presence once, and again only when they change
   assert.deepEqual(said, ['Reviewing the plan', null], 'cleared, they are taken off');
   here.stop();
 });
+
+test('a browser that cannot join live says so where the members would be', async () => {
+  const h = harness();
+  h.peer.liveNote = () => 'this browser cannot join live';
+  const layer = fakeLayer();
+  layer.available = false;
+  const here = createHere({runtime: h.runtime, mountId: () => 7, active: () => true, layer: () => layer, peer: h.peer,
+    fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
+  await settle();
+  const people = h.calls.find(([kind]) => kind === 'people')[1];
+  assert.equal(people.members, null);
+  assert.equal(people.unavailable, 'this browser cannot join live');
+  here.stop();
+});

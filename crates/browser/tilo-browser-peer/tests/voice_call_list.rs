@@ -81,12 +81,12 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
     let TestHost { relay, web, .. } =
         start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
-    let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
-    enter(&relay, &laptop.cert, &workspace.room).await;
+    let workspace = relay.workspaces().unwrap().create("Lounge").await.unwrap();
+    enter(&relay, &laptop.cert, &workspace.workspace).await;
     let (owner, channel) = create_voice_channel(
         address.clone(),
         workspace.workspace_id,
-        &workspace.room,
+        &workspace.workspace,
         &host.cert,
         &laptop,
     )
@@ -96,7 +96,14 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
     // Bob looks at the workspace's voice channels once.
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+    invite(
+        &relay,
+        &laptop.cert,
+        &workspace.workspace,
+        &bob,
+        &bob_laptop,
+    )
+    .await;
     let bob_link = session(address.clone(), workspace.workspace_id, &bob_laptop).await;
     bob_link
         .send(Envelope::VoiceCalls {
@@ -169,12 +176,12 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     let TestHost { relay, web, .. } =
         start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
-    let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
-    enter(&relay, &laptop.cert, &workspace.room).await;
+    let workspace = relay.workspaces().unwrap().create("Lounge").await.unwrap();
+    enter(&relay, &laptop.cert, &workspace.workspace).await;
     let (owner, channel) = create_voice_channel(
         address.clone(),
         workspace.workspace_id,
-        &workspace.room,
+        &workspace.workspace,
         &host.cert,
         &laptop,
     )
@@ -183,7 +190,14 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
 
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+    invite(
+        &relay,
+        &laptop.cert,
+        &workspace.workspace,
+        &bob,
+        &bob_laptop,
+    )
+    .await;
     let bob_link = session(address.clone(), workspace.workspace_id, &bob_laptop).await;
     bob_link
         .send(Envelope::VoiceCalls {

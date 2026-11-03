@@ -652,6 +652,10 @@ pub struct Chip {
     /// line — seeding the next `build_layout` so a stable label costs no
     /// extra pass. Cleared when the theme's geometry changes.
     footprint: Option<taffy::Size<f32>>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// What leads a reference's label on its chip: a link.
@@ -682,6 +686,7 @@ impl Chip {
         static STOCK: std::sync::LazyLock<PillMetrics> =
             std::sync::LazyLock::new(|| PillMetrics::of(&Theme::dark(), TextRole::Label));
         Self {
+            dirty: true,
             activation: Activation::new(label.clone()),
             tooltip: None,
             accessible_name: None,
@@ -896,6 +901,7 @@ impl Chip {
 
     /// Programmatically set selection (host syncing from its model).
     pub fn set_selected(&mut self, on: bool) {
+        self.dirty = true;
         self.selected = on;
     }
 
@@ -1189,6 +1195,7 @@ impl Widget for Chip {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
@@ -1247,6 +1254,7 @@ impl Widget for Chip {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
     }
 
@@ -1268,6 +1276,14 @@ impl Widget for Chip {
             Action::Activate | Action::ToggleCheck if self.pressable() => self.press(),
             _ => false,
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

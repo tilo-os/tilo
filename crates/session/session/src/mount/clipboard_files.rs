@@ -55,6 +55,9 @@ const MAX_NUMBERS: u32 = 9999;
 /// The folder a paste stages its copies in, inside the receiving folder, so
 /// that publishing them is a rename within one filesystem.
 const STAGING_PREFIX: &str = ".tilo-transfer-";
+/// The environment names a moment of a paste a crash test dies at (see
+/// [`crash_point`]).
+const CRASH_POINT_ENV: &str = "TILO_FILE_PASTE_CRASH_POINT";
 /// Where a cut's source hides while its copy is published: a hidden name of
 /// its own in its own folder, so putting it back is a rename.
 const HELD_PREFIX: &str = ".tilo-held-";
@@ -207,14 +210,16 @@ impl Paste {
     /// Start pasting `files` into `destination`, staged and recorded as the
     /// module describes. The receiving folder is read, the receipt written
     /// and the copies made on the worker, so the caller never waits on a
-    /// disk.
+    /// disk. `None` when another paste is still running: there is one receipt,
+    /// so a second paste would overwrite the record the first is recovered
+    /// from.
     pub(crate) fn start(
         files: &CopiedFiles,
         destination: &Path,
         conflict: Conflict,
         now_ms: u64,
         wake: &tilo_service::Wake,
-    ) -> Self {
+    ) -> Option<Self> {
         Self::spawn(
             Job::Paste {
                 files: files.clone(),
@@ -229,31 +234,35 @@ impl Paste {
     /// The paste a session that stopped was in the middle of, to be undone.
     /// `None` when it left nothing behind.
     pub(crate) fn unfinished(wake: &tilo_service::Wake) -> Option<Self> {
-        read_receipt().map(|receipt| Self::spawn(Job::Undo(receipt), wake))
+        let receipt = read_receipt()?;
+        Self::spawn(Job::Undo(receipt), wake)
     }
 
-    fn spawn(job: Job, wake: &tilo_service::Wake) -> Self {
+    fn spawn(job: Job, wake: &tilo_service::Wake) -> Option<Self> {
+        let slot = Slot::take()?;
         let progress = Arc::new(Mutex::new(Progress::default()));
         let shared = Arc::clone(&progress);
         let wake = Arc::clone(wake);
         match thread::Builder::new()
             .name("file-paste".to_owned())
-            .spawn(move || run(&job, &shared, &wake))
-        {
-            Ok(worker) => Self {
+            .spawn(move || {
+                run(&job, &shared, &wake);
+                drop(slot);
+            }) {
+            Ok(worker) => Some(Self {
                 progress,
                 worker: Some(worker),
-            },
+            }),
             Err(error) => {
                 tracing::warn!(%error, "the paste of files could not be started");
                 let mut state = progress.lock_recover();
                 state.refusal = Some(Refused::Stopped(error.to_string()));
                 state.finished = true;
                 drop(state);
-                Self {
+                Some(Self {
                     progress,
                     worker: None,
-                }
+                })
             }
         }
     }
@@ -277,6 +286,25 @@ impl Paste {
             refusal: state.refusal,
             undone: state.undone,
         }
+    }
+}
+
+/// The one paste a session carries at a time: the receipt is one file, so a
+/// second paste written down beside the first would leave neither whole.
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The running paste's claim on the receipt, held until its worker is done.
+struct Slot;
+
+impl Slot {
+    fn take() -> Option<Self> {
+        (!RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel)).then_some(Self)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        RUNNING.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -485,8 +513,12 @@ fn transfer(receipt: &mut Receipt, progress: &Mutex<Progress>) -> Result<(), Str
             format!("{} could not be synced: {error}", receipt.staging.display())
         })?;
         save(receipt)?;
+        crash_point("staging");
         for index in start..end {
             publish(receipt, index, progress);
+            if start == 0 && index == 0 {
+                crash_point("publishing");
+            }
         }
         sync_directory(&receipt.destination).map_err(|error| {
             format!(
@@ -506,6 +538,20 @@ fn transfer(receipt: &mut Receipt, progress: &Mutex<Progress>) -> Result<(), Str
     // person can get it back from.
     trash_asides(receipt);
     Ok(())
+}
+
+/// End the process at `stage` of a paste when a crash test asks for it: a
+/// test that kills a session mid-paste names the moment to die at rather than
+/// sampling the disk for it, so it dies at that moment and no other.
+fn crash_point(stage: &str) {
+    let dying = cfg!(debug_assertions)
+        && std::env::var_os(CRASH_POINT_ENV).as_deref() == Some(std::ffi::OsStr::new(stage));
+    if dying {
+        // SAFETY: the process ends here, as a power cut would end it: the
+        // kill cannot be caught, so no destructor runs and nothing of the
+        // paste is tidied up.
+        unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+    }
 }
 
 /// Stage the item at `index`: its whole copy, synced, under the paste's

@@ -21,7 +21,13 @@ view people_button(d: Desk) {
         let one = people.first() ?? Person(key: "", name: "People")
         let others = people.len() - 1
         let second = people.last() ?? one
-        let label = if others == 0 { "{one.name} is here" } else if others == 1 { "{one.name} and {second.name} are here" } else { "{one.name} and {others} others are here" }
+        let label = if others == 0 {
+            "{one.name} is here"
+        } else if others == 1 {
+            "{one.name} and {second.name} are here"
+        } else {
+            "{one.name} and {others} others are here"
+        }
         ui.Button(label, faces: people.map(p -> p.name), role: .bar) {
             on press: session.toggle_collaborators()
         }
@@ -47,7 +53,11 @@ view agent_chip(d: Desk, a: Agent) {
 /// An agent here with what it is doing and what it last changed: its face, its activity line
 /// and the mark of what it did, which opens the run's log.
 view agent_line(d: Desk, a: Agent) {
-    ui.ListRow(a.name, secondary: .some(if a.doing != "" { a.doing } else { a.state }), icon: .bot) {
+    ui.ListRow(
+        a.name,
+        secondary: .some(if a.doing != "" { a.doing } else { a.state }),
+        icon: .bot,
+    ) {
         trailing: {
             ui.Badge(count: a.unseen)
         }

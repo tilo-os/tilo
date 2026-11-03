@@ -992,6 +992,19 @@ impl RowsOf {
         (row_key, args)
     }
 
+    /// Whether `other` makes its rows as this does: the same view of the same items, with the
+    /// same arguments and layout. Rows built from this template stand for `other`'s too.
+    pub fn makes_as(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.suffix == other.suffix
+            && self.target.module == other.target.module
+            && self.target.export == other.target.export
+            && self.args == other.args
+            && self.layout == other.layout
+            && self.lazy == other.lazy
+            && self.depth == other.depth
+    }
+
     /// The boundary of the row keyed `key`, called with `args`.
     pub fn stub<'k>(&self, key: &'k str, args: Vec<Value>) -> Stub<'k> {
         Stub {
@@ -1041,7 +1054,7 @@ impl LoopRows {
 }
 
 /// What a row view's parameter takes.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum RowArg {
     Item,
     /// The row's key suffix.

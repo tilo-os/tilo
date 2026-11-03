@@ -41,8 +41,7 @@ use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
     self, ActivityView, Admitted, Application, ChromeEffect, DesktopPan, HistoryDirection,
-    HistoryState, NotificationsState, Presentation, RouteIds, ScrollAction, ScrollState, Snapshot,
-    Verb,
+    HistoryState, NotificationsState, Presentation, RouteIds, ScrollState, Snapshot, Verb,
 };
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
@@ -55,7 +54,9 @@ mod artwork;
 mod close_motion_tests;
 mod displays;
 mod history;
+mod hung;
 mod live_shares;
+mod liveness;
 mod notices;
 #[cfg(test)]
 mod open_motion_tests;
@@ -78,6 +79,7 @@ pub mod window_menu;
 mod window_move;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
+pub use liveness::LivenessChoice;
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
 pub use search::{
@@ -260,6 +262,16 @@ struct Shared {
     /// The apps whose windows keep what they show to themselves
     /// ([`DesktopHandle::set_withheld_apps`]).
     withheld: std::collections::BTreeSet<String>,
+    /// The windows whose app stopped answering
+    /// ([`DesktopHandle::set_unresponsive_windows`]), by the compositor's id
+    /// for them.
+    unresponsive: std::collections::BTreeSet<u64>,
+    /// Bumped whenever `unresponsive` changes, so a reading made from it is
+    /// published again.
+    unresponsive_revision: u64,
+    /// What the person chose on a window that stopped answering, for the
+    /// host to carry out ([`DesktopHandle::take_liveness_choices`]).
+    liveness: Vec<(TabId, LivenessChoice)>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
     /// The windows other devices share with this one, each decoded into its
@@ -672,41 +684,32 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
     })
 }
 
-/// A widget-side follow-up to a command already applied to the tree.
-enum RowOp {
-    Show(StripId, GroupId, TabId),
-    Width(StripId, GroupId, WindowWidth),
-    ToggleMaximized(StripId, GroupId),
-    /// A launched window, already in the tree at `index` of `strip`.
-    Open {
-        strip: StripId,
-        group: GroupId,
-        index: usize,
-        tab: Tab,
-    },
-    /// A tab opened into a group that is already there, at `index` of its
-    /// tabs, with the tab that ends up in front.
-    TabInGroup {
-        strip: StripId,
-        group: GroupId,
-        index: usize,
-        tab: Tab,
-        front: TabId,
-        background: bool,
-    },
-    Close {
-        strip: StripId,
-        group: GroupId,
-        tab: TabId,
-        group_removed: bool,
-    },
-    Pan(StripId, f64),
-    Scroll(StripId, GroupId, ScrollAction),
-    History(StripId, GroupId, TabId, HistoryDirection),
-    /// The share row of a window: share it with its workspace's people, or
-    /// stop sharing it.
-    WindowShare(TabId, bool),
-}
+mod row_op;
+
+/// What one app may ask of its host in one frame; more waits for the next.
+const MAX_HOST_INTENTS: usize = 8;
+
+/// Time the update pass may spend building deferred tabs in one frame. At
+/// least one tab is built per frame, however long it takes.
+const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// A pause in wheel input this long ends a swipe. A trackpad keeps
+/// reporting while the fingers move and through the momentum after they
+/// lift, and a spun mouse wheel's notches come 0 to 50 ms apart, all well
+/// inside this; the pauses between spins are mostly longer.
+const SWIPE_GAP: Duration = Duration::from_millis(200);
+/// How soon search looks again for an app's answer that is still coming.
+const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
+
+/// Sideways travel that steps focus one window on a strip that cannot pan
+/// that way. About the width of a window: a Normal one is two thirds of a
+/// 1280 px strip, so a spin steps about as many windows on a strip that fits
+/// as it pans past on one that overflows. A notch of the native wheel (a
+/// line) is a sixteenth of it, a spin of about twenty notches a window or
+/// two.
+const STEP_TRAVEL_PX: f64 = 640.0;
+
+use row_op::RowOp;
 
 pub struct DesktopSurface {
     shared: Rc<RefCell<Shared>>,
@@ -771,6 +774,9 @@ pub struct DesktopSurface {
     acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
     /// "Kim opened Notes": windows others opened out of sight.
     arrival_hints: arrivals::ArrivalHints,
+    /// "Not responding": the windows whose app stopped answering, each with
+    /// its Wait and its Force quit.
+    hung_apps: hung::HungApps,
     /// Where the host collects what controls emit, once it has bound this
     /// surface. A tab built after that (a launch, a record that arrived, a
     /// rebuilt row) is bound to it as it is built, or its registered
@@ -791,29 +797,6 @@ pub struct DesktopSurface {
     /// The windows shared live, and the views windows embed of them.
     live_shares: live_shares::LiveShares,
 }
-
-/// What one app may ask of its host in one frame; more waits for the next.
-const MAX_HOST_INTENTS: usize = 8;
-
-/// Time the update pass may spend building deferred tabs in one frame. At
-/// least one tab is built per frame, however long it takes.
-const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
-
-/// A pause in wheel input this long ends a swipe. A trackpad keeps
-/// reporting while the fingers move and through the momentum after they
-/// lift, and a spun mouse wheel's notches come 0 to 50 ms apart, all well
-/// inside this; the pauses between spins are mostly longer.
-const SWIPE_GAP: Duration = Duration::from_millis(200);
-/// How soon search looks again for an app's answer that is still coming.
-const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
-
-/// Sideways travel that steps focus one window on a strip that cannot pan
-/// that way. About the width of a window: a Normal one is two thirds of a
-/// 1280 px strip, so a spin steps about as many windows on a strip that fits
-/// as it pans past on one that overflows. A notch of the native wheel (a
-/// line) is a sixteenth of it, a spin of about twenty notches a window or
-/// two.
-const STEP_TRAVEL_PX: f64 = 640.0;
 
 /// One horizontally dominant wheel gesture, from its first event until
 /// wheel input pauses for [`SWIPE_GAP`]: a trackpad swipe and its momentum,
@@ -882,6 +865,9 @@ impl DesktopSurface {
             presented: 0,
             artwork: std::collections::BTreeMap::new(),
             withheld: std::collections::BTreeSet::new(),
+            unresponsive: std::collections::BTreeSet::new(),
+            unresponsive_revision: 0,
+            liveness: Vec::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             #[cfg(not(target_arch = "wasm32"))]
             peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
@@ -923,6 +909,7 @@ impl DesktopSurface {
             notices: None,
             acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
             arrival_hints: arrivals::ArrivalHints::default(),
+            hung_apps: hung::HungApps::default(),
             controls: None,
             keyboard_tab: None,
             activation: None,
@@ -1583,8 +1570,14 @@ impl DesktopSurface {
                             && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
                             && tab.rename(&name)
                         {
-                            // The renamed window is a new tree the rows follow.
-                            shared.replaced = true;
+                            // A name is what the window shows, not a window
+                            // the desk gained or lost: the row renames its
+                            // pill where it stands.
+                            ops.push(RowOp::Rename {
+                                strip: ids.strip,
+                                group: ids.group,
+                                tab: descriptor(tab),
+                            });
                         }
                     }
                     Admitted::Close(ids) if live(&shared.tree, ids) => {
@@ -1701,6 +1694,11 @@ impl DesktopSurface {
                         if self.settle.take() != Some(group) {
                             row.scroll_group_into_view(group);
                         }
+                    }
+                }
+                RowOp::Rename { strip, group, tab } => {
+                    if let Some(widget) = self.group_widget(strip, group) {
+                        widget.update_tab_descriptor(tab);
                     }
                 }
                 RowOp::Width(strip, group, width) => {
@@ -2399,6 +2397,10 @@ impl Widget for DesktopSurface {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        // Which apps stopped answering is the host's to report; a new report
+        // is a layout of its own, so their cards are placed this frame.
+        let unresponsive = self.shared.borrow().unresponsive_revision;
+        self.hung_apps.follow(unresponsive);
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.borrow().is_open();
         self.end_idle_swipe(ui::time::now());
@@ -2482,15 +2484,17 @@ impl Widget for DesktopSurface {
             .as_mut()
             .map(|layer| layer.build_layout(taffy, theme, node_map));
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
+        let hung = self.hung_apps.build_layout(taffy, theme, node_map);
         let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
         // The row, when shown, is always the first child, then the
-        // notifications, when present, and the arrival hints and the
-        // acknowledgement last. Search is drawn over the windows, by the
-        // host above them, not in this tree.
+        // notifications, when present, the arrival hints and the cards of
+        // apps that stopped answering, and the acknowledgement last. Search
+        // is drawn over the windows, by the host above them, not in this
+        // tree.
         let children: Vec<NodeId> = row
             .into_iter()
             .chain(notices)
-            .chain([arrivals, acknowledgement])
+            .chain([arrivals, hung, acknowledgement])
             .collect();
         let style = Style {
             display: ui::taffy::Display::Flex,
@@ -2520,8 +2524,9 @@ impl Widget for DesktopSurface {
         {
             layer.apply_layout(taffy, notices, inner);
         }
-        if let [.., arrivals, acknowledgement] = nodes[..] {
+        if let [.., arrivals, hung, acknowledgement] = nodes[..] {
             self.arrival_hints.apply_layout(taffy, arrivals, inner);
+            self.hung_apps.apply_layout(taffy, hung, inner);
             self.acknowledgement
                 .apply_layout(taffy, acknowledgement, inner);
         }
@@ -2569,6 +2574,8 @@ impl Widget for DesktopSurface {
             layer.set_clear_top(content_top);
         }
         self.place_arrival_hints(content_top);
+        self.place_hung_apps();
+        self.drain_liveness_choices();
         let focused_presence = {
             let shared = self.shared.borrow();
             navigation::active_route(&shared.tree)
@@ -2625,7 +2632,16 @@ impl Widget for DesktopSurface {
             return;
         }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        if let [.., arrivals, _] = children[..] {
+        if let [.., _, hung, _] = children[..] {
+            let path = ctx.path.clone();
+            self.hung_apps
+                .handle_event(event, &mut ctx.reborrow(&path, hung));
+            if *ctx.handled {
+                self.drain_liveness_choices();
+                return;
+            }
+        }
+        if let [.., arrivals, _, _] = children[..] {
             let path = ctx.path.clone();
             self.arrival_hints
                 .handle_event(event, &mut ctx.reborrow(&path, arrivals));
@@ -2729,6 +2745,7 @@ impl Widget for DesktopSurface {
             .chain(notices)
             .chain([
                 &self.arrival_hints as &dyn Widget,
+                &self.hung_apps as &dyn Widget,
                 &self.acknowledgement as &dyn Widget,
             ])
             .collect()
@@ -2754,10 +2771,11 @@ impl Widget for DesktopSurface {
             .map(|row| row as &mut (dyn Widget + '_));
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
+        let hung = &mut self.hung_apps as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         row.into_iter()
             .chain(notices)
-            .chain([arrivals, acknowledgement])
+            .chain([arrivals, hung, acknowledgement])
             .collect()
     }
 
@@ -2822,6 +2840,11 @@ impl Widget for DesktopSurface {
                 || !shared.queue.is_empty()
                 || shared.search_revision != self.seen_search
                 || shared.replaced
+                // An app that arrived is built by a pass
+                // (`Self::build_deferred`), so it asks for the frame that
+                // takes its component rather than waiting for an unrelated
+                // one.
+                || !shared.rebuild.is_empty()
         };
         // The desk asks its search sources a frame at a time, and cuts its
         // rows to the card once the card gives its room: a search with such
@@ -2836,6 +2859,7 @@ impl Widget for DesktopSurface {
         self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
             || !self.shared.borrow().queue.is_empty()
             || self.shared.borrow().replaced
+            || !self.shared.borrow().rebuild.is_empty()
             || self
                 .children()
                 .into_iter()
@@ -2888,8 +2912,8 @@ impl Widget for DesktopSurface {
 }
 
 impl DesktopSurface {
-    /// The arrival hints, the banners and the centre over everything the
-    /// desk draws.
+    /// The arrival hints, the cards of apps that stopped answering, the
+    /// banners and the centre over everything the desk draws.
     fn draw_overlays(
         &mut self,
         scene: &mut Scene,
@@ -2900,6 +2924,7 @@ impl DesktopSurface {
     ) {
         self.arrival_hints
             .draw(scene, transform, text, theme, presence);
+        self.hung_apps.draw(scene, transform, text, theme, presence);
         if let Some(layer) = self.notices.as_mut() {
             layer.draw(scene, transform, text, theme, presence);
         }

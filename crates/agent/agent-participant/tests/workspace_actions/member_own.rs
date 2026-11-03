@@ -64,11 +64,11 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.rooms().unwrap();
+    let workspaces = hosted.relay.workspaces().unwrap();
     let workspace = workspaces.create("Bridged workspace").await.unwrap();
     workspaces
         .prepare_application(
-            &workspace.room,
+            &workspace.workspace,
             &host.cert,
             &common::catalogue(),
             "so.tilo.discord",
@@ -77,11 +77,11 @@ async fn a_member_links_their_discord_account_through_the_host() {
         .await
         .unwrap();
     let mut owner_browser =
-        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.room).await;
+        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
     let connected = answered(
         &mut owner_browser,
         on_guild(
-            &workspace.room,
+            &workspace.workspace,
             "connect",
             serde_json::json!({"guild_id": "1", "name": "Tilo"}),
         ),
@@ -94,19 +94,19 @@ async fn a_member_links_their_discord_account_through_the_host() {
     admit_person(
         &hosted,
         &host,
-        &workspace.room,
+        &workspace.workspace,
         &guest_device,
         MemberRole::Editor,
     )
     .await;
-    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.room).await;
+    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.workspace).await;
 
     // The workspace's host offers signing in with Discord, as the bridge's bot
     // says it at each start.
     let page = "https://discord.test/oauth2/authorize?client_id=1&scope=identify";
     workspaces
         .author_application(
-            &workspace.room,
+            &workspace.workspace,
             &host.cert,
             &common::catalogue(),
             "so.tilo.discord",
@@ -132,7 +132,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
         let reading = value(
             &answered(
                 &mut visitor,
-                on_guild(&workspace.room, "my-link", serde_json::json!({})),
+                on_guild(&workspace.workspace, "my-link", serde_json::json!({})),
             )
             .await,
         );
@@ -152,7 +152,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let start = value(
         &answered(
             &mut visitor,
-            on_guild(&workspace.room, &connect, serde_json::json!({})),
+            on_guild(&workspace.workspace, &connect, serde_json::json!({})),
         )
         .await,
     );
@@ -168,7 +168,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let owner_person = hex::encode(owner_device.cert.user_public_key);
     loop {
         let saved = workspaces
-            .record_document(&workspace.room, "so.tilo.discord", "")
+            .record_document(&workspace.workspace, "so.tilo.discord", "")
             .await
             .unwrap()
             .expect("the governor holds the Discord record");
@@ -196,7 +196,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let refused = answered(
         &mut visitor,
         on_guild(
-            &workspace.room,
+            &workspace.workspace,
             "connect",
             serde_json::json!({"guild_id": "2", "name": "Other"}),
         ),
@@ -228,11 +228,11 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.rooms().unwrap();
+    let workspaces = hosted.relay.workspaces().unwrap();
     let workspace = workspaces.create("Bridged workspace").await.unwrap();
     workspaces
         .prepare_application(
-            &workspace.room,
+            &workspace.workspace,
             &host.cert,
             &common::catalogue(),
             "so.tilo.discord",
@@ -241,11 +241,11 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
         .await
         .unwrap();
     let mut owner_browser =
-        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.room).await;
+        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
     let reading = value(
         &answered(
             &mut owner_browser,
-            on_guild(&workspace.room, "my-link", serde_json::json!({})),
+            on_guild(&workspace.workspace, "my-link", serde_json::json!({})),
         )
         .await,
     );
@@ -253,7 +253,7 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
 
     tilo_relay::room_bots::discord::connect(
         workspaces,
-        &workspace.room,
+        &workspace.workspace,
         &host.cert,
         &tilo_relay::room_bots::discord::DiscordLink {
             guild_id: "1".into(),
@@ -270,7 +270,7 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
         let reading = value(
             &answered(
                 &mut owner_browser,
-                on_guild(&workspace.room, "my-link", serde_json::json!({})),
+                on_guild(&workspace.workspace, "my-link", serde_json::json!({})),
             )
             .await,
         );

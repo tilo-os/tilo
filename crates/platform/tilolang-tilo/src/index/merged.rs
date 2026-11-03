@@ -364,8 +364,8 @@ impl Filtered {
         self
     }
 
-    /// The listing at most `most` items: the count of another run of the index, one that names
-    /// no more than this run does, for the items it answers for.
+    /// The listing at most `most` items: the count of another column's run as the open writes
+    /// leave it, one that names no more than this run does, for the items it answers for.
     #[must_use]
     pub fn bounded(mut self, most: Option<usize>) -> Self {
         if let Some(most) = most {

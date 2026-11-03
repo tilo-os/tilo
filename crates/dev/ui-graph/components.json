@@ -514,6 +514,11 @@
           "name": "alert",
           "doc": "It needs the person: the count or the dot in the warning tone, not in your colour.",
           "type": "bool"
+        },
+        {
+          "name": "in_menu",
+          "doc": "It belongs in its header's menu rather than in the row ([`crate::widget::Button::in_menu`]).",
+          "type": "bool"
         }
       ],
       "events": [
@@ -900,6 +905,12 @@
               ]
             }
           }
+        }
+      ],
+      "events": [
+        {
+          "name": "check",
+          "doc": "It was pressed: what a mark is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value."
         }
       ],
       "bindings": [
@@ -2391,6 +2402,10 @@
       ],
       "events": [
         {
+          "name": "check",
+          "doc": "The checkbox was pressed: what a check is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value."
+        },
+        {
           "name": "activate",
           "doc": "The row was activated (a click, Enter, an assistive technology): open what it shows."
         }
@@ -2398,7 +2413,7 @@
       "bindings": [
         {
           "name": "checkbox",
-          "doc": "A checkbox in the leading column, bound to whether the item is done.",
+          "doc": "A checkbox in the leading column, bound to whether the item is done. A press on it asks the row's `check`, when it names one, instead of changing what it is bound to.",
           "type": "bool",
           "merge": "register"
         }
@@ -3061,6 +3076,39 @@
       ],
       "semantics": {
         "role": "Group"
+      }
+    },
+    {
+      "name": "PersonField",
+      "doc": "A form's person: who is doing it, shown as their avatar and name, and picked from the workspace's members and agents. \"Me\" picks the person the view is shown to, \"No one\" clears it.",
+      "props": [
+        {
+          "name": "people",
+          "doc": "The people to offer, after \"Me\" and \"No one\": the workspace's members and agents, as the platform's membership names them.",
+          "type": {
+            "option": {
+              "list": "principal"
+            }
+          }
+        },
+        {
+          "name": "me",
+          "doc": "The person the view is shown to: the list's \"Me\".",
+          "type": {
+            "option": "principal"
+          }
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The person's identity, as the person a component binds (its identity text, empty for nobody), and where a pick goes.",
+          "type": "principal",
+          "merge": "register"
+        }
+      ],
+      "semantics": {
+        "role": "ComboBox"
       }
     },
     {
@@ -4491,6 +4539,18 @@
           "name": "secondary",
           "doc": "What it says stands beside the content it is about, in secondary ink: \"edited\" after a message, \"Pinned\" over it.",
           "type": "bool"
+        },
+        {
+          "name": "lines",
+          "doc": "How many lines it takes: what does not fit is elided at the last of them, so a clamp holds however long the words are. Unset, it wraps to as many lines as its width needs.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "truncate",
+          "doc": "It elides at the room it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
+          "type": "bool"
         }
       ],
       "semantics": {
@@ -4809,7 +4869,7 @@
         },
         {
           "name": "hide_root",
-          "doc": "The tree's one root node's label is its own name: the nodes under it form the top level.",
+          "doc": "The tree's root node — the tree itself, labelled with its `name` — is not a row: the nodes at the top level are, at the first depth. Off, the tree's name stands over them as a row of its own. Hide it where a heading or a page title already names the tree.",
           "type": "bool"
         },
         {
@@ -5023,6 +5083,18 @@
         {
           "name": "tail_title",
           "doc": "The title over the list's tail group: the rows whose item says it is one of those done with ([`ListItemProps::tail`]) stand after every group, under it, closed until the person opens them. `None` leaves those rows among the others.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tree",
+          "doc": "The rows stand as a tree: each indented under the row of the item it names as its parent ([`ListItemProps::parent`]), with a disclosure on the rows that have subtasks, folding them away. The list works the tree out of the items as it builds their rows.",
+          "type": "bool"
+        },
+        {
+          "name": "ungrouped_title",
+          "doc": "The title over the group of rows whose item names no group: a list grouped by a thing some items lack (a day, a place) heads those rows with it, never folding them under the last group that names one. The rows keep the order their list gives. `None` leaves them among the others.",
           "type": {
             "option": "text"
           }
@@ -6775,6 +6847,27 @@
           "name": "removed",
           "doc": "The item was removed and the person has not seen it go: the row stands in for it, its title struck through, at the row's own height. The UI host places such rows.",
           "type": "bool"
+        },
+        {
+          "name": "parent",
+          "doc": "The item this one is a subtask of: in a tree list (`tree`) the row stands indented under that item's row, with a disclosure that folds it away.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "parent_title",
+          "doc": "The title of the item it is under, for the row to say where it belongs while that item is no row of the list.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "progress",
+          "doc": "Its open subtasks of all of them, on the row's trailing edge: \"1/3\".",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "slots": [

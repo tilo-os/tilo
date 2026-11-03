@@ -133,11 +133,16 @@ pub struct FilterMenu<T> {
     /// The filter it showed when it was hidden, so a leaving menu fades as
     /// it was; its rows stay in the list until it opens again.
     leaving: Option<String>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl<T: Clone> FilterMenu<T> {
     pub(super) fn with_spec(spec: &'static MenuSpec, entries: Vec<MenuEntry<T>>) -> Self {
         let mut menu = Self {
+            dirty: true,
             spec,
             entries,
             index: ListIndex::default(),
@@ -161,6 +166,7 @@ impl<T: Clone> FilterMenu<T> {
     }
 
     pub(super) fn set_entries(&mut self, entries: Vec<MenuEntry<T>>) {
+        self.dirty = true;
         self.entries = entries;
         self.rebuild_visible();
     }
@@ -168,6 +174,7 @@ impl<T: Clone> FilterMenu<T> {
     /// Show / hide the menu. Hiding resets the filter and cursor so the
     /// next open lands fresh.
     pub fn set_visible(&mut self, visible: bool) {
+        self.dirty = true;
         if !visible && self.shows() {
             self.leaving = Some(self.filter.clone());
         }
@@ -189,6 +196,7 @@ impl<T: Clone> FilterMenu<T> {
 
     /// Put the popover's top-left corner at `anchor`.
     pub fn set_anchor(&mut self, anchor: Point) {
+        self.dirty = true;
         self.list.set_anchor(Rect::from_points(anchor, anchor));
     }
 
@@ -197,6 +205,7 @@ impl<T: Clone> FilterMenu<T> {
     /// as far as it must to stay inside `bounds`
     /// ([`place_anchored`](crate::widget::floating_surface::place_anchored)).
     pub fn set_caret(&mut self, caret: Rect, bounds: Option<Rect>) {
+        self.dirty = true;
         self.list.set_anchor(caret);
         if let Some(bounds) = bounds {
             self.list.set_viewport(bounds);
@@ -208,6 +217,7 @@ impl<T: Clone> FilterMenu<T> {
     /// field. An inline menu paints no field and leaves typing to the
     /// parent.
     pub fn set_inline(&mut self, inline: bool) {
+        self.dirty = true;
         self.inline = inline;
         self.sync_list_chrome();
     }
@@ -231,6 +241,7 @@ impl<T: Clone> FilterMenu<T> {
     /// Replace the filter and rebuild the visible rows; the same filter
     /// again keeps the highlighted row.
     pub fn set_filter(&mut self, filter: &str) {
+        self.dirty = true;
         if self.filter == filter {
             return;
         }
@@ -276,6 +287,7 @@ impl<T: Clone> FilterMenu<T> {
     /// has its own field: an inline menu with nothing to offer shows
     /// nothing at all.
     fn sync_list_chrome(&mut self) {
+        self.dirty = true;
         self.list.set_header(self.field_height());
         let empty = (!self.inline && self.visible.is_empty())
             .then(|| crate::i18n!("filter-menu-no-matches"));
@@ -555,6 +567,14 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         self.spec.widget_name

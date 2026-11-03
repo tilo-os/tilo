@@ -313,10 +313,12 @@ impl OptionsPanel {
         self.appearing.is_moving()
     }
 
-    /// Whether it must be painted again: moving, or a switch not yet
-    /// painted at rest.
+    /// Whether it must be painted again: shown and moving, or a switch it
+    /// shows not yet painted at rest. A folded panel paints nothing, so what
+    /// its controls hold is not asked for and is made again when it opens.
     pub(super) fn needs_redraw(&self) -> bool {
-        self.is_moving() || self.faces.needs_redraw(crate::motion::frame_now())
+        self.appearing.is_drawn()
+            && (self.is_moving() || self.faces.needs_redraw(crate::motion::frame_now()))
     }
 
     /// Whether anything of it is drawn.

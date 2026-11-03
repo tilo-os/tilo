@@ -51,6 +51,15 @@ pub fn sentence(name: &str) -> String {
     })
 }
 
+/// A field's name as a sentence goes on with it: `Notes` reads "notes".
+fn field_of_sentence(name: &str) -> String {
+    let name = sentence(name);
+    let mut chars = name.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    })
+}
+
 /// The label an action is shown with: as the compiler derived it, else its name in sentence
 /// case.
 #[must_use]
@@ -254,42 +263,8 @@ impl Core {
                 let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
             }
-            Imp::Mentions => {
-                // `mentions(c, field, Message)`: how many of `c`'s items name the person looking,
-                // that they have not seen: a channel's mention count, next to its unread count.
-                let coll = self.ref_arg(a.h(0)?)?;
-                let field = self.text(a.h(1)?)?;
-                let item = self.text(a.h(2)?)?;
-                let person = self.looking()?;
-                let count = self
-                    .mentions_of(&person, &coll.target, &field, &item)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(&coll.target);
-                self.note_seen_read(&person, &coll.target.id_string());
-                crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
-            }
-            Imp::FirstUnseen => {
-                // `first_unseen(c, field, Message)`: where the first unread item of `c`'s
-                // collection begins, read by the frame running, so the view runs again when it
-                // moves.
-                let coll = self.ref_arg(a.h(0)?)?;
-                let field = self.text(a.h(1)?)?;
-                let item = self.text(a.h(2)?)?;
-                let person = self.looking()?;
-                let found = self
-                    .first_unseen_of(&person, &coll.target, &field, &item)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                // The view read what the answer is made of: `c`'s own versions (which move when
-                // an item is posted) and the person's seen mark and reviewed runs (which move
-                // when they read on).
-                self.read_versions_of(&coll.target);
-                self.note_seen_read(&person, &coll.target.id_string());
-                let value = found.map_or_else(Value::none, |id| {
-                    let at = coll.target.item(&id, item);
-                    Value::some(Value::resource(&at))
-                });
-                self.ret_h(value)
-            }
+            Imp::Mentions => self.mentions_import(a),
+            Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
                 let meta = match subject {
@@ -336,6 +311,44 @@ impl Core {
         }
     }
 
+    /// `mentions(c, field, Message)`: how many of `c`'s items name the person looking,
+    /// that they have not seen: a channel's mention count, next to its unread count.
+    fn mentions_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let coll = self.ref_arg(a.h(0)?)?;
+        let field = self.text(a.h(1)?)?;
+        let item = self.text(a.h(2)?)?;
+        let person = self.looking()?;
+        let count = self
+            .mentions_of(&person, &coll.target, &field, &item)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        self.read_versions_of(&coll.target);
+        self.note_seen_read(&person, &coll.target.id_string());
+        crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
+    }
+
+    /// `first_unseen(c, field, Message)`: where the first unread item of `c`'s
+    /// collection begins, read by the frame running, so the view runs again when it
+    /// moves.
+    fn first_unseen_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let coll = self.ref_arg(a.h(0)?)?;
+        let field = self.text(a.h(1)?)?;
+        let item = self.text(a.h(2)?)?;
+        let person = self.looking()?;
+        let found = self
+            .first_unseen_of(&person, &coll.target, &field, &item)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        // The view read what the answer is made of: `c`'s own versions (which move
+        // when an item is posted) and the person's seen mark and reviewed runs (which
+        // move when they read on).
+        self.read_versions_of(&coll.target);
+        self.note_seen_read(&person, &coll.target.id_string());
+        let value = found.map_or_else(Value::none, |id| {
+            let at = coll.target.item(&id, item);
+            Value::some(Value::resource(&at))
+        });
+        self.ret_h(value)
+    }
+
     /// `workspace.me`: the person the view is shown to, which the frame running carries as the
     /// runtime was opened for them. An action reads `invoker` instead: it acts for someone,
     /// where the viewer only looks.
@@ -357,25 +370,25 @@ impl Core {
             ]))
         });
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
-        let fields = v
+        let named: Vec<String> = v
             .fields
             .iter()
             .map(|id| {
-                let name = info
-                    .as_ref()
+                info.as_ref()
                     .and_then(|info| info.field(id))
-                    .map_or_else(|| id.clone(), |f| f.name.clone());
-                Value::Text(name)
+                    .map_or_else(|| id.clone(), |f| f.name.clone())
             })
             .collect();
+        let fields = named.iter().cloned().map(Value::Text).collect();
         let declared = self
             .registry
             .borrow()
             .action_package(&v.action)
             .and_then(|pkg| pkg.action(&v.action).cloned());
-        let description = declared
-            .as_ref()
-            .map_or_else(String::new, |a| a.doc.clone());
+        let description = declared.as_ref().map_or_else(
+            || self.bound_edit_words(&v.action, named.first().map(String::as_str)),
+            |a| a.doc.clone(),
+        );
         let icon = declared
             .as_ref()
             .and_then(|a| a.icon.clone())
@@ -1091,6 +1104,24 @@ impl Core {
             return found;
         }
         sentence(id.trim_start_matches('$'))
+    }
+
+    /// What a bound control's change of `field` says it does, where history reads it: the
+    /// toolkit's words for a text or flag edit, naming the field it wrote. Empty for every
+    /// other action, which history names by its label.
+    fn bound_edit_words(&self, action: &str, field: Option<&str>) -> String {
+        let (key, verb) = match action.trim_start_matches('$') {
+            crate::store::EDIT_TEXT_ACTION => ("tilolang-history-edit-field", "Edited"),
+            crate::store::EDIT_FLAG_ACTION => ("tilolang-history-set-field", "Changed"),
+            _ => return String::new(),
+        };
+        let named = field.map(field_of_sentence);
+        let (key, source) = match &named {
+            Some(name) => (key, format!("{verb} {name}")),
+            None => (key.trim_end_matches("-field"), format!("{verb} a field")),
+        };
+        let args = named.map_or_else(Vec::new, |name| vec![("field".to_owned(), name)]);
+        self.words.borrow().word(key, &args, &source)
     }
 
     /// Take a view state slot read into the running view's reads, when a view runs.

@@ -594,7 +594,6 @@ impl Grid {
         // the body never paints empty past the last row.
         self.clamp_scroll();
         self.needs_autofit = true;
-        self.dirty = true;
     }
 
     /// The metrics currently driving the grid's automatic geometry.
@@ -775,7 +774,6 @@ impl Grid {
             self.bold = bold;
             self.needs_autofit = true;
         }
-        self.dirty = true;
     }
 
     /// Toggle "formula view" (show raw formulas instead of results). Returns
@@ -1214,7 +1212,6 @@ impl Grid {
             ScrollAxis::Vertical => self.scroll_y = offset,
         }
         self.clamp_scroll();
-        self.dirty = true;
     }
 
     /// A bar shows only while its content overflows the body.
@@ -1476,7 +1473,6 @@ impl Grid {
         }
         self.find_cover = inset;
         self.ensure_visible();
-        self.dirty = true;
     }
 
     /// Begin editing the active cell. `seed` replaces the content (typed
@@ -2246,7 +2242,6 @@ impl Grid {
             e.set_caret(idx.min(e.text.chars().count()), extend);
             e.entering = false;
             self.point_anchor = None;
-            self.dirty = true;
         }
     }
 

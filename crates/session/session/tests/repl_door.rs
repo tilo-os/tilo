@@ -53,6 +53,17 @@ fn session(
     (session, note)
 }
 
+/// An action read as a value, rather than called: what it says of how it is
+/// called.
+fn reading_an_action_says_how_it_is_called(session: &mut Session, repl: &mut Repl) {
+    let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
+    assert!(failed, "{named}");
+    assert!(
+        named.contains("call it: `session.overview(open: Option<Bool> = .none)`"),
+        "{named}"
+    );
+}
+
 /// Lists the apps, places the note through a `tilo` program, sees it on the shell's screen as
 /// the person's step, and takes it back with `undo`.
 fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &str) {
@@ -76,8 +87,14 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         "the arrangement is among the session's resources: {desk}"
     );
 
-    // `ls` lists each action as a program calls it, what it may go without included.
-    let (chrome, failed) = repl.call(session, "tilo_ls", &json!({"path": "session/Desktop"}));
+    // `ls` lists each action as a program calls it, what it may go without included. The
+    // chrome by its key: a window's control reads under the window's name, and the desk's
+    // window is another `Desktop`.
+    let (chrome, failed) = repl.call(
+        session,
+        "tilo_ls",
+        &json!({"path": "session/desktop:chrome"}),
+    );
     assert!(!failed, "{chrome}");
     assert!(
         chrome
@@ -109,23 +126,22 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         &json!({"path": format!("session/{book}")}),
     );
     assert!(!failed, "{notebook}");
+    // The note's own line: a reference, then the name it goes by. The
+    // listing's first line is the path as it resolves, which names the
+    // notebook by the title it shares with its note.
     let reference = notebook
         .lines()
-        .find(|line| line.contains(NOTE_TITLE))
-        .and_then(|line| line.split_whitespace().next())
-        .filter(|word| {
-            word.strip_prefix('n')
-                .is_some_and(|number| number.chars().all(|digit| digit.is_ascii_digit()))
+        .find_map(|line| {
+            let mut words = line.split_whitespace();
+            let reference = words.next()?;
+            (words.next() == Some(NOTE_TITLE)
+                && reference.strip_prefix('n').is_some_and(|number| {
+                    !number.is_empty() && number.chars().all(|digit| digit.is_ascii_digit())
+                }))
+            .then(|| reference.to_owned())
         })
-        .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"))
-        .to_owned();
-    // An action read as a value says how it is called.
-    let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
-    assert!(failed, "{named}");
-    assert!(
-        named.contains("call it: `session.overview(open: Option<Bool> = .none)`"),
-        "{named}"
-    );
+        .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"));
+    reading_an_action_says_how_it_is_called(session, repl);
 
     // The framed canvas, as the person shows it.
     until(session, "the preset switch", |session| {
@@ -994,13 +1010,13 @@ impl tilo_service::Service for Withholding {
     }
 }
 
-/// A place whose data never arrives does not freeze the screen. A task is placed whose record's
-/// reading the session withholds (the `Step`s the task's window lists): the place shows the
-/// toolkit's waiting state, and the rest of the shell keeps working — a note placed after it
-/// shows on screen, and the overview opens and closes. One place's missing reading never fails
-/// the whole screen's view.
+/// A place whose data never arrives does not freeze the screen. A task is placed while the
+/// session withholds every task's reading: its window has nothing to draw and refuses nothing,
+/// and the rest of the shell keeps working — a note placed after it arrives and shows on
+/// screen, and the overview opens and closes. One place's missing reading never fails the whole
+/// screen's view.
 #[test]
-fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_works() {
+fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
@@ -1013,9 +1029,9 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
             collab: false,
             services: vec![Box::new(Withholding {
                 inner: apps,
-                // The steps of the seeded task the task's own window lists: their reading never
-                // comes, and the view that draws them waits on it.
-                withheld: "tl.so.tilo.lang.tasks.Step",
+                // Every task's reading never comes: the window of the one placed has no
+                // record to draw.
+                withheld: "tl.so.tilo.lang.tasks.Task",
                 ids: std::cell::RefCell::new(None),
             })],
             questions: Some(Questions::new()),
@@ -1043,14 +1059,14 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
         &json!({"program": "session.place_found(text: \"Pack the books\", view: .none, x: .some(80), y: .some(60))"}),
     );
     assert!(!failed, "the task is placed: {answer}");
-    // The place shows the waiting state, not an error: the shell says "Loading" where the
-    // place stands, and refuses nothing.
-    until(&mut session, "the place's waiting state", |session| {
-        session.shell_says("Loading")
+    // The place stands with nothing to draw, and the shell refuses nothing: the reading it is
+    // missing is not the screen's fault.
+    until(&mut session, "the place", |session| {
+        on_screen(session, "Pack the books — Tasks").is_some()
     });
     assert!(
         session.shell_refusals().is_empty(),
-        "the place waiting is no refusal: {:?}",
+        "the place without its reading is no refusal: {:?}",
         session.shell_refusals()
     );
 

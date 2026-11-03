@@ -1,116 +1,86 @@
 //! Sending the last screenshot: to one of the person's other devices, or into
 //! this workspace's files.
 //!
-//! A device send is an ordinary Nearby Send: the screenshot is staged into
-//! this device's private spool, offered to the device as a fabric action, and
-//! its bytes stream from that spool; the receiving device's person still
-//! decides where it lands there. A workspace save copies the screenshot into
-//! the workspace's `Screenshots` folder, where the person's collaborators see
-//! it like anything else placed there. Both read and write files - possibly
-//! over a remote workspace mount - so both happen on a worker of their own,
-//! never on the session's pass: the pass hands the worker the send and takes
-//! what became of it.
+//! A device send is an ordinary Nearby Send, so it goes through the session's
+//! one transfer engine: the screenshot is staged into this device's private
+//! spool, offered to the device as a fabric action, and its bytes stream from
+//! that spool; the receiving device's person still decides where it lands
+//! there. A workspace save copies the screenshot into the workspace's
+//! `Screenshots` folder, where the person's collaborators see it like anything
+//! else placed there. That copy reads and writes files - possibly over a
+//! remote workspace mount - so it happens on a worker of its own, never on the
+//! session's pass: the pass hands the worker the save and takes what became of
+//! it.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use tilo_capture_studio::{Refusal, Sent};
-use tilo_device_fabric::link::{NearbySpoolOffer, SharedLink};
-use tilo_device_fabric::{DeviceId, PersonalFabricAction};
-use tilo_nearby_service::{MAX_TRANSFER_BYTES, NearbyTransferStore, SecureNearbySource};
-use tilo_network_actor::NearbyTransferCheckpoint;
+use tilo_device_fabric::DeviceId;
 use tilo_service::Wake;
-use ui::widget::ScreenshotSendDevice;
+
+use crate::nearby_transfer::NearbyTransfer;
 
 /// Folder inside the workspace files that sent screenshots land in.
 pub(crate) const WORKSPACE_SCREENSHOTS_DIR: &str = "Screenshots";
 
-/// Where the spool this session stages into lives: beside what the rest of
-/// the session keeps, private to the person.
-#[must_use]
-pub(crate) fn spool_root() -> Option<PathBuf> {
-    tilo_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
-}
-
-/// The person's other devices that are here now, as the studio's "Send…"
-/// lists them: online, never this device, by their own names.
-#[must_use]
-pub(crate) fn devices(link: &SharedLink) -> Vec<ScreenshotSendDevice> {
-    let local = link
-        .local_device_fabric_identity()
-        .map(|(device, _)| device);
-    let online = link.online_device_ids();
-    let fabric = link.device_fabric();
-    let mut devices: Vec<ScreenshotSendDevice> = fabric
-        .online_devices()
-        .filter(|presence| online.contains(&presence.device))
-        .filter(|presence| local.as_ref() != Some(&presence.device))
-        .map(|presence| ScreenshotSendDevice {
-            id: presence.device.as_str().to_owned(),
-            label: presence.label.clone(),
-        })
-        .collect();
-    devices.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.id.cmp(&b.id)));
-    devices
-}
-
 /// The screenshots on their way to the person's other devices and into the
 /// workspace's files, and what became of the last one.
 pub(crate) struct Sends {
-    /// The person's devices, when this session runs on one.
-    link: Option<SharedLink>,
-    /// The worker that owns the spool and writes into the workspace's files;
-    /// `None` when there is nothing to send with or its worker could not
-    /// start.
+    /// The session's transfer engine, when this session runs on a device
+    /// fabric: every send to another device is one of its transfers.
+    nearby: Option<Arc<NearbyTransfer>>,
+    /// The worker that writes into the workspace's files; `None` when there
+    /// is no workspace or its worker could not start.
     jobs: Option<Sender<Job>>,
     /// The workspace's files root, when one is mounted for this session.
     workspace: Option<PathBuf>,
-    /// What became of each send the worker finished.
+    /// Where the engine and the worker report what became of a send.
+    answers: Sender<Sent>,
+    /// What became of each send, as the pass polls for it.
     done: Receiver<Sent>,
+    /// This session's wake, turned when the engine or the worker answers.
+    wake: Wake,
 }
 
-/// One send, as the pass hands it to the worker.
+/// One save, as the pass hands it to the worker.
 enum Job {
-    /// Offer the screenshot at `path` to one of the person's other devices.
-    Device {
-        device: DeviceId,
-        /// How the person sees that device named.
-        label: String,
-        path: PathBuf,
-    },
     /// Copy the screenshot at `path` into the files under `root`.
     Workspace { path: PathBuf, root: PathBuf },
 }
 
 impl Sends {
-    /// The sends of a session that stages into `spool`, offers on `link` and
-    /// saves into the files under `workspace`.
+    /// The sends of a session whose transfers go through `nearby` and whose
+    /// workspace saves land under `workspace`.
     pub(crate) fn new(
-        link: Option<SharedLink>,
-        spool: Option<PathBuf>,
+        nearby: Option<Arc<NearbyTransfer>>,
         workspace: Option<PathBuf>,
         wake: Wake,
     ) -> Self {
         let (jobs, mailbox) = channel();
         let (answers, done) = channel();
         let mut worker = None;
-        if spool.is_some() || workspace.is_some() {
-            let offered = link.clone();
+        if workspace.is_some() {
+            let answers = answers.clone();
+            let waking = Arc::clone(&wake);
             let spawned = std::thread::Builder::new()
                 .name("tilo-capture-send".into())
-                .spawn(move || work(offered, spool, mailbox, answers, wake));
+                .spawn(move || work(mailbox, answers, waking));
             match spawned {
                 Ok(_) => worker = Some(jobs),
                 Err(error) => {
-                    tracing::warn!(%error, "no thread takes what a screenshot is sent by");
+                    tracing::warn!(%error, "no thread takes what a screenshot is saved by");
                 }
             }
         }
         Self {
-            link,
+            nearby,
             jobs: worker,
             workspace,
+            answers,
             done,
+            wake,
         }
     }
 
@@ -119,36 +89,33 @@ impl Sends {
     /// id is never trusted, and one that left since is refused at once.
     ///
     /// Returns what became of it when it was refused before anything was
-    /// staged; the worker reports the rest through [`Self::take`].
+    /// staged; the engine reports the rest through [`Self::take`].
     pub(crate) fn send(&self, id: &str, path: PathBuf) -> Option<Sent> {
-        let Some(link) = &self.link else {
+        let Some(nearby) = &self.nearby else {
             return Some(Sent::refused(id.to_owned(), Refusal::SyncOff));
         };
-        let Some(device) = devices(link)
+        if !nearby.has_link() {
+            return Some(Sent::refused(id.to_owned(), Refusal::SyncOff));
+        }
+        let Some((device, label)) = nearby
+            .devices()
             .into_iter()
             .find(|device| device.id == id)
             .and_then(|device| DeviceId::new(&device.id).ok().map(|id| (id, device.label)))
         else {
             return Some(Sent::refused(id.to_owned(), Refusal::Offline));
         };
-        let Some(jobs) = &self.jobs else {
-            return Some(Sent::refused(
-                device.1,
-                Refusal::Refused("the send worker is not running".to_owned()),
-            ));
-        };
-        let job = Job::Device {
-            device: device.0,
-            label: device.1,
+        let answers = self.answers.clone();
+        let wake = Arc::clone(&self.wake);
+        nearby.studio_send(
+            device,
+            label,
             path,
-        };
-        if jobs.send(job).is_err() {
-            return Some(Sent::refused(
-                id.to_owned(),
-                Refusal::Refused("the send worker stopped".to_owned()),
-            ));
-        }
-        None
+            Box::new(move |sent| {
+                let _ = answers.send(sent);
+                wake();
+            }),
+        )
     }
 
     /// Copy the screenshot at `path` into this workspace's files, on the
@@ -180,40 +147,20 @@ impl Sends {
         None
     }
 
-    /// What became of a send the worker finished since the last pass.
+    /// What became of a send since the last pass.
     pub(crate) fn take(&self) -> Option<Sent> {
         self.done.try_recv().ok()
     }
 }
 
-/// Take every send the pass hands over and deliver it, until the pass is
-/// gone.
+/// Take every save the pass hands over and write it, until the pass is gone.
 #[allow(
     clippy::needless_pass_by_value,
-    reason = "the thread owns the spool, the link and its ends of both channels"
+    reason = "the thread owns its end of the channel and the session's wake"
 )]
-fn work(
-    link: Option<SharedLink>,
-    spool: Option<PathBuf>,
-    jobs: Receiver<Job>,
-    done: Sender<Sent>,
-    wake: Wake,
-) {
-    let mut store: Option<NearbyTransferStore> = None;
+fn work(jobs: Receiver<Job>, done: Sender<Sent>, wake: Wake) {
     while let Ok(job) = jobs.recv() {
         let sent = match job {
-            Job::Device {
-                device,
-                label,
-                path,
-            } => match (&link, spool.as_deref()) {
-                (Some(link), Some(spool)) => offer(&mut store, spool, link, &device, label, path),
-                (None, _) => Sent::refused(label, Refusal::SyncOff),
-                (_, None) => Sent::refused(
-                    label,
-                    Refusal::Refused("there is nowhere to stage a send".to_owned()),
-                ),
-            },
             Job::Workspace { path, root } => save(&path, &root),
         };
         if done.send(sent).is_err() {
@@ -305,129 +252,6 @@ fn copy_bytes(source: &Path, target: &mut std::fs::File) -> Result<(), Refusal> 
     Ok(())
 }
 
-/// Stage the screenshot one send names into the spool and offer it to its
-/// device, with the staged bytes on their way to it.
-fn offer(
-    store: &mut Option<NearbyTransferStore>,
-    spool: &Path,
-    link: &SharedLink,
-    device: &DeviceId,
-    label: String,
-    path: PathBuf,
-) -> Sent {
-    let Some(folder) = path.parent() else {
-        return Sent::refused(label, Refusal::NoFolder { path });
-    };
-    if !path.is_file() {
-        return Sent::refused(label, Refusal::Gone { path });
-    }
-    let source = match SecureNearbySource::open_beneath(folder, &path) {
-        Ok(source) => source,
-        Err(error) => return Sent::refused(label, Refusal::Refused(error)),
-    };
-    let bytes = match source.metadata() {
-        Ok(metadata) => metadata.len(),
-        Err(error) => return Sent::refused(label, Refusal::Refused(error)),
-    };
-    if bytes > MAX_TRANSFER_BYTES {
-        return Sent::refused(
-            label,
-            Refusal::TooLarge {
-                bytes,
-                limit: MAX_TRANSFER_BYTES,
-            },
-        );
-    }
-    let store = match spooled(store, spool) {
-        Ok(store) => store,
-        Err(error) => return Sent::refused(label, Refusal::Refused(error)),
-    };
-    let id = tilo_device_fabric::random::nonzero::<16>();
-    let staged = match store.stage_secure_with_id(
-        source,
-        device.as_str().to_owned(),
-        tilo_clock::unix_now_ms(),
-        id,
-    ) {
-        Ok(staged) => staged,
-        Err(error) => return Sent::refused(label, Refusal::Refused(error)),
-    };
-    let offer = PersonalFabricAction::NearbyTransferOffer {
-        transfer_id: staged.id,
-        name: staged.name.clone(),
-        kind: staged.kind,
-        total_bytes: staged.total_bytes,
-        content_hash: staged.content_hash,
-    };
-    let request_id = match link.try_send_personal_fabric_action(device, offer) {
-        Ok(request_id) => request_id,
-        Err(error) => {
-            let _ = store.cancel_outgoing(staged.id);
-            return Sent::refused(label, Refusal::Refused(error.to_string()));
-        }
-    };
-    let file = match std::fs::File::open(store.object_path(staged.id)) {
-        Ok(file) => file,
-        Err(error) => {
-            cancel(link, store, device, request_id, staged.id);
-            return Sent::refused(label, Refusal::Refused(error.to_string()));
-        }
-    };
-    let checkpoint = NearbyTransferCheckpoint {
-        transfer_id: staged.id,
-        request_id,
-        total_bytes: staged.total_bytes,
-        // The offer is out; the bytes start from the top of the object, and
-        // the receiving device keeps what it already holds only if this
-        // prefix is what it has.
-        resume_offset: 0,
-        prefix_hash: *blake3::hash(&[]).as_bytes(),
-        content_hash: staged.content_hash,
-    };
-    if let Err(error) = link.share_nearby_spool(device, NearbySpoolOffer { checkpoint, file }) {
-        cancel(link, store, device, request_id, staged.id);
-        return Sent::refused(label, Refusal::Refused(error.to_string()));
-    }
-    Sent::offered(label)
-}
-
-/// The spool this worker stages into, opened on its first send.
-fn spooled<'a>(
-    store: &'a mut Option<NearbyTransferStore>,
-    spool: &Path,
-) -> Result<&'a mut NearbyTransferStore, String> {
-    if store.is_none() {
-        *store = Some(NearbyTransferStore::open(
-            spool.to_path_buf(),
-            tilo_clock::unix_now_ms(),
-        )?);
-    }
-    store
-        .as_mut()
-        .ok_or_else(|| "the transfer spool did not open".to_owned())
-}
-
-/// Nothing will stream what was offered: the receiving device is told to
-/// discard it, and the staged bytes go.
-fn cancel(
-    link: &SharedLink,
-    store: &mut NearbyTransferStore,
-    device: &DeviceId,
-    request_id: [u8; 16],
-    transfer_id: [u8; 16],
-) {
-    let discard = PersonalFabricAction::NearbyTransferCancel {
-        request_id,
-        transfer_id,
-    };
-    if let Err(error) = link.send_personal_fabric_action(device, discard) {
-        tracing::warn!(%error, "a device was not told a screenshot offer was withdrawn");
-    }
-    if let Err(error) = store.cancel_outgoing(transfer_id) {
-        tracing::warn!(%error, "a staged screenshot was not removed");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -435,14 +259,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
+    use tilo_device_fabric::link::{
+        FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
+    };
     use tilo_device_fabric::{
         DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-        FabricCapabilities, FabricStamp, OwnerSession,
+        FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
     };
     use tilo_nearby_service::TransferKind;
 
     use super::*;
+    use crate::fabric::Continuity;
 
     /// One of the person's devices as it last published itself.
     fn device(id: &str, label: &str, online: bool, counter: u64) -> DeviceFabricSnapshot {
@@ -589,13 +416,48 @@ mod tests {
         (wake, woken)
     }
 
+    /// What the person's settings say with nothing turned off: every facet of
+    /// continuity on.
+    fn permitted() -> Continuity {
+        let continuity = Continuity::default();
+        let document: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
+            serde_json::json!({"continuity": {"enabled": true, "file_transfer": true}}),
+        )
+        .expect("a settings document");
+        continuity.read(&document);
+        continuity
+    }
+
+    /// The sends of a session on `link`, staging into `spool`, with a real
+    /// transfer engine behind them.
+    fn sending(
+        link: Option<SharedLink>,
+        spool: Option<PathBuf>,
+        workspace: Option<PathBuf>,
+        wake: Wake,
+    ) -> Sends {
+        let nearby = NearbyTransfer::open(link, spool, permitted(), Arc::clone(&wake))
+            .expect("a transfer engine");
+        Sends::new(Some(nearby), workspace, wake)
+    }
+
     #[test]
     fn the_picker_lists_the_other_devices_that_are_here() {
-        let (_dir, _shot, fake) = fixture();
-        let link: SharedLink = fake;
+        let (dir, _shot, fake) = fixture();
+        let (wake, _woken) = waking();
+        let sends = sending(
+            Some(Arc::clone(&fake) as SharedLink),
+            Some(dir.path().join("spool")),
+            None,
+            wake,
+        );
         assert_eq!(
-            devices(&link),
-            vec![ScreenshotSendDevice {
+            sends
+                .nearby
+                .as_ref()
+                .map(|nearby| nearby.devices())
+                .unwrap_or_default(),
+            vec![ui::widget::ScreenshotSendDevice {
                 id: "device-phone".into(),
                 label: "Ada's phone".into(),
             }],
@@ -609,7 +471,7 @@ mod tests {
         let spool = dir.path().join("spool");
         let link: SharedLink = Arc::clone(&fake) as SharedLink;
         let (wake, woken) = waking();
-        let sends = Sends::new(Some(link), Some(spool), None, wake);
+        let sends = sending(Some(link), Some(spool), None, wake);
         assert_eq!(
             sends.send("device-phone", shot.clone()),
             None,
@@ -659,7 +521,7 @@ mod tests {
         let spool = dir.path().join("spool");
         let link: SharedLink = fake.clone();
         let (wake, _woken) = waking();
-        let sends = Sends::new(Some(link), Some(spool.clone()), None, wake);
+        let sends = sending(Some(link), Some(spool.clone()), None, wake);
         assert_eq!(
             sends.send("device-gone", shot),
             Some(Sent::refused("device-gone".into(), Refusal::Offline)),
@@ -675,7 +537,7 @@ mod tests {
         let spool = dir.path().join("spool");
         let link: SharedLink = fake.clone();
         let (wake, woken) = waking();
-        let sends = Sends::new(Some(link), Some(spool), None, wake);
+        let sends = sending(Some(link), Some(spool), None, wake);
         let gone = dir.path().join("Screenshot 2.png");
         assert_eq!(sends.send("device-phone", gone.clone()), None);
         woken
@@ -696,11 +558,36 @@ mod tests {
     fn a_session_with_no_fabric_says_so_instead_of_sending() {
         let (dir, shot, _fake) = fixture();
         let (wake, _woken) = waking();
-        let sends = Sends::new(None, Some(dir.path().join("spool")), None, wake);
+        let sends = Sends::new(None, None, wake);
         assert_eq!(
             sends.send("device-phone", shot),
             Some(Sent::refused("device-phone".into(), Refusal::SyncOff))
         );
+        assert!(
+            !dir.path().join("spool").exists(),
+            "a session with no engine stages nothing"
+        );
+    }
+
+    #[test]
+    fn a_session_whose_files_do_not_leave_says_so() {
+        let (dir, shot, fake) = fixture();
+        let link: SharedLink = fake.clone();
+        let (wake, _woken) = waking();
+        let nearby = NearbyTransfer::open(
+            Some(link),
+            Some(dir.path().join("spool")),
+            Continuity::default(),
+            Arc::clone(&wake),
+        )
+        .expect("a transfer engine");
+        let sends = Sends::new(Some(nearby), None, wake);
+        assert_eq!(
+            sends.send("device-phone", shot),
+            Some(Sent::refused("Ada's phone".into(), Refusal::SyncOff)),
+            "the person turned file transfer off"
+        );
+        assert!(fake.actions().is_empty(), "nothing was offered");
     }
 
     #[test]
@@ -709,7 +596,6 @@ mod tests {
         let workspace = tempfile::tempdir().expect("a workspace");
         let (wake, woken) = waking();
         let sends = Sends::new(
-            None,
             None,
             Some(workspace.path().to_path_buf()),
             Arc::clone(&wake),
@@ -736,7 +622,6 @@ mod tests {
         // A second send of a file of the same name is a second screenshot:
         // it lands beside the first instead of replacing it.
         let sends = Sends::new(
-            None,
             None,
             Some(workspace.path().to_path_buf()),
             Arc::clone(&wake),
@@ -767,7 +652,7 @@ mod tests {
     fn a_session_with_no_workspace_says_so_and_writes_nothing() {
         let (dir, shot, _fake) = fixture();
         let (wake, _woken) = waking();
-        let sends = Sends::new(None, Some(dir.path().join("spool")), None, wake);
+        let sends = Sends::new(None, None, wake);
         assert_eq!(
             sends.send_to_workspace(shot),
             Some(Sent::not_saved(Refusal::NoWorkspace)),
@@ -786,7 +671,6 @@ mod tests {
         let gone = workspace.path().join("Screenshot 7.png");
         let (wake, woken) = waking();
         let sends = Sends::new(
-            None,
             None,
             Some(workspace.path().to_path_buf()),
             Arc::clone(&wake),

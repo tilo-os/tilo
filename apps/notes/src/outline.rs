@@ -214,7 +214,7 @@ impl Widget for NotesOutline {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.list.needs_redraw()
+        self.list.needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

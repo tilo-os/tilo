@@ -1372,6 +1372,25 @@ where
         true
     }
 
+    /// Forget a row's folded-away measurement: it takes the room it measures again, as a row
+    /// that was never folded does. [`Self::collapse`]'s other half.
+    pub fn expand(&mut self, index: usize, key: &K) -> bool {
+        if index >= self.count
+            || self
+                .measurements
+                .get(key)
+                .is_none_or(|height| *height != 0.0)
+        {
+            return false;
+        }
+        let anchor = self.capture_numeric_anchor();
+        self.measurements.remove(key);
+        self.positions.remove(key);
+        self.rebuild_prefix();
+        self.restore_numeric_anchor(anchor);
+        true
+    }
+
     /// Move a resident measurement to a replacement stable key without
     /// changing its logical position. Useful when a placeholder resolves to
     /// a real model id.

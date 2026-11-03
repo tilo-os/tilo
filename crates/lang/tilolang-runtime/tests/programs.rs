@@ -133,7 +133,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.add({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
+                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
                 w.list_literal()
             ),
         );
@@ -202,14 +202,14 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "print(\"before\")\ntasks.add({}, \"Ask first\")\nprint(\"after\")",
+                "print(\"before\")\ntasks.new_task({}, \"Ask first\")\nprint(\"after\")",
                 w.list_literal()
             ),
         );
         let ProgramOutcome::Suspended(asked) = &reply.outcome else {
             panic!("the action did not ask: {:?}", reply.outcome);
         };
-        assert_eq!(asked.action, w.todo.action("add"));
+        assert_eq!(asked.action, w.todo.action("new_task"));
         assert_eq!(reply.output, ["before"]);
         assert!(w.todo_titles().is_empty());
     }
@@ -218,8 +218,8 @@ mod cases {
     fn errors_name_what_was_meant() {
         let w = world();
         let mut session = Session::new();
-        let typo = rejected(&session.run(&w.rt, &agent(), "tasks.ad(1)"));
-        assert!(typo.contains("did you mean `add`?"), "{typo}");
+        let typo = rejected(&session.run(&w.rt, &agent(), "tasks.new_taskk(1)"));
+        assert!(typo.contains("did you mean `new_task`?"), "{typo}");
         let word = rejected(&session.run(&w.rt, &agent(), "prnt(1)"));
         assert!(word.contains("did you mean `print`?"), "{word}");
         let ty = rejected(&session.run(&w.rt, &agent(), "find(\"Notee launch\")"));

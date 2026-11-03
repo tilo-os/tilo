@@ -264,6 +264,16 @@ impl Widget for Facts {
             taffy::AvailableSpace::Definite(w) => natural.min(w),
             _ => natural,
         };
+        // The solver rounds every edge onto the display's device pixels, so a row measured at
+        // its text's exact width is handed a box up to a pixel narrower than that and the last
+        // fact elides a letter it has the room to draw ("1 he…" for "1 here"). Measure up onto
+        // that grid, so the box a fact is painted in is never narrower than its text.
+        let grid = crate::widget::device_scale();
+        let width = if grid > 0.0 {
+            crate::num::f32_of_f64((f64::from(width) * f64::from(grid)).ceil() / f64::from(grid))
+        } else {
+            width
+        };
         Size {
             width: known.width.unwrap_or(width),
             height: known
@@ -335,6 +345,54 @@ mod tests {
         assert_eq!(face.shown_in(all - 1.0, &mut text, &theme), vec![0, 2]);
         // Very short: only the highest priority is left, and it elides.
         assert_eq!(face.shown_in(10.0, &mut text, &theme), vec![0]);
+    }
+
+    /// A row of facts standing beside the chips it shares its line with is measured at its
+    /// text's exact width, and the solver that places it rounds every edge onto the display's
+    /// device pixels. The row measured narrower than its text elides the last fact's last
+    /// letters: the desk's presence read "1 he…" for "1 here".
+    #[test]
+    fn a_row_measured_for_its_text_is_not_handed_a_box_that_shaves_it() {
+        let theme = Theme::light();
+        let mut text = TextRenderer::new();
+        let m = FactsMetrics::of(&theme);
+        for fact in [
+            Fact::with_icon(Icon::Users, "1 here"),
+            Fact::with_icon(Icon::Users, "3 here"),
+            Fact::text("12 files"),
+        ] {
+            let natural = crate::num::f32_of_f64(
+                FactsFace::new(std::slice::from_ref(&fact)).natural_width(&mut text, &theme),
+            );
+            let mut row = Facts::new(vec![fact.clone()]);
+            let measured = row.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut text,
+            );
+            // What the solver places: the measured size rounded onto the device pixel grid.
+            let grid = f64::from(crate::widget::device_scale());
+            let boxed = f64::from(measured.width) * grid;
+            let boxed = boxed.round() / grid;
+            let inset = if fact.icon.is_some() {
+                m.icon + m.icon_gap
+            } else {
+                0.0
+            };
+            let room = crate::num::f32_of_f64(boxed - inset);
+            assert_eq!(
+                text.elide_to_width_style(&fact.text, room, &m.style),
+                fact.text,
+                "{:?} measured {natural} stands in a box of {boxed}",
+                fact.text
+            );
+        }
     }
 
     #[test]

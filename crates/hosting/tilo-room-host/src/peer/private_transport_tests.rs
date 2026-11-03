@@ -50,7 +50,7 @@ async fn activation_failure_fences_original_sessions_and_retry(operation: &'stat
         serde_json::from_value(meta["authority"].clone()).unwrap(),
     )
     .unwrap();
-    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let id = crate::room_workspace_id(authority.workspace()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -259,7 +259,7 @@ async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresse
         serde_json::from_value(meta["authority"].clone()).unwrap(),
     )
     .unwrap();
-    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let id = crate::room_workspace_id(authority.workspace()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -1317,8 +1317,8 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (native, _) = certified_device(&root, user.public_key, "native");
     let (browser, _) = certified_device(&root, user.public_key, "browser");
-    let room = uuid::Uuid::from_u128(7);
-    let id = crate::room_workspace_id(&room.to_string()).unwrap();
+    let workspace = uuid::Uuid::from_u128(7);
+    let id = crate::room_workspace_id(&workspace.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -1391,7 +1391,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         &browser,
         &session,
         &[id],
-        Envelope::Presence {
+        Envelope::RetiredPresence {
             workspace_id: id,
             payload: vec![9, 9],
         },
@@ -1434,14 +1434,14 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         &browser,
         &session,
         &[id],
-        Envelope::Presence {
+        Envelope::RetiredPresence {
             workspace_id: id,
             payload: forged.encode().unwrap(),
         },
     )
     .await
     .unwrap();
-    let Envelope::Presence { payload, .. } = native_rx.try_recv().unwrap() else {
+    let Envelope::RetiredPresence { payload, .. } = native_rx.try_recv().unwrap() else {
         panic!("expected forwarded presence");
     };
     let observed = crate::AttributedPresence::decode(&payload).unwrap();
@@ -1450,14 +1450,14 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
 }
 
 /// A heartbeat is answered while the session's writer is held behind a live
-/// frame whose authorization waits for the room's lock: a slow store under
+/// frame whose authorization waits for the workspace's lock: a slow store under
 /// that lock never makes the host look silent.
 #[tokio::test]
 async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
     let (root, user) = UserIdentity::generate("owner", 1);
     let (b, _) = certified_device(&root, user.public_key, "b");
-    let room = uuid::Uuid::from_u128(91);
-    let id = crate::room_workspace_id(&room.to_string()).unwrap();
+    let workspace = uuid::Uuid::from_u128(91);
+    let id = crate::room_workspace_id(&workspace.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -1513,11 +1513,11 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
     let outbound = workspace.lock().await.subscribers[&b.device_public_key]
         .tx
         .clone();
-    // Hold the room: the writer's authorization of the next live frame waits
+    // Hold the workspace: the writer's authorization of the next live frame waits
     // for it, as it waits for a slow store under it.
     let held = workspace.lock().await;
     outbound
-        .send(Envelope::Presence {
+        .send(Envelope::RetiredPresence {
             workspace_id: id,
             payload: vec![1],
         })
@@ -1545,8 +1545,8 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
     session.abort();
     let _ = session.await;
 }
-/// A heartbeat is answered while another room's state admission is held in
-/// its membership read: a slow disk on one room never makes the host look
+/// A heartbeat is answered while another workspace's state admission is held in
+/// its membership read: a slow disk on one workspace never makes the host look
 /// silent on the connection.
 #[tokio::test]
 async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {

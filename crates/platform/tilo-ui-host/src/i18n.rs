@@ -86,4 +86,18 @@ mod tests {
             assert!(!text.trim().is_empty(), "{key} resolves to nothing");
         }
     }
+
+    /// A window's language reaches the host's own words: a package that ships German makes
+    /// its frames' sort menu and its More button speak German too, where the desktop's own
+    /// catalogue would leave them in its source language.
+    #[test]
+    fn a_windows_language_covers_the_hosts_own_words() {
+        ensure();
+        ui::i18n::I18nManager::register_widget_messages();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(t("tilolang-sort"), "Sortieren");
+        assert_eq!(ui::i18n!("window-toolbar-more"), "Weitere Aktionen");
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(t("tilolang-sort"), "Sort");
+    }
 }

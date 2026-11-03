@@ -88,6 +88,32 @@ fn already_holds(doc: &AutoCommit, patch: &automerge::Patch) -> bool {
     )
 }
 
+/// The object a patch writes into: the one it names while the document still
+/// holds it, and otherwise the one now standing where that patch's path led.
+///
+/// A write that restores an object creates a fresh one — the document cannot
+/// have two places point at the same object — so an inverse patch derived
+/// before that restore still names the object the restore replaced. Writing
+/// there changes a copy nothing reaches and the value visibly stays as it
+/// was; the value the patch inverts sits at the same path, on the object that
+/// replaced it.
+fn patch_target(doc: &AutoCommit, patch: &automerge::Patch) -> ObjId {
+    let reachable = doc
+        .parents(&patch.obj)
+        .is_ok_and(|parents| parents.visible_path().is_some());
+    if reachable {
+        return patch.obj.clone();
+    }
+    let mut live = ObjId::Root;
+    for (_, prop) in &patch.path {
+        match doc.get(&live, prop.clone()) {
+            Ok(Some((Value::Object(_), child))) => live = child,
+            _ => return patch.obj.clone(),
+        }
+    }
+    live
+}
+
 /// Write an already-derived patch set forward into `doc`'s open transaction.
 ///
 /// The half of [`write_revert_patches`] after the diff, split out so a caller
@@ -139,7 +165,7 @@ pub fn write_selected_patches(
         let target = remap
             .get(&patch.obj)
             .cloned()
-            .unwrap_or_else(|| patch.obj.clone());
+            .unwrap_or_else(|| patch_target(doc, &patch));
         let is_text = matches!(doc.object_type(&target), Ok(automerge::ObjType::Text));
         let sequence =
             if is_text || matches!(doc.object_type(&target), Ok(automerge::ObjType::List)) {

@@ -402,6 +402,7 @@ impl Widget for UndoButton {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -535,7 +536,7 @@ mod tests {
 
             crate::undo::set_undo_status(&mut b, &mut || status(true, false));
             assert!(
-                b.needs_redraw(),
+                b.needs_redraw() || b.needs_animation_frame(),
                 "gaining an undoable action must repaint the control"
             );
         }

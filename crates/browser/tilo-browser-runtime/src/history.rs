@@ -342,7 +342,7 @@ fn bound(
     let apps: HashMap<TabId, String> = tree
         .workspaces
         .iter()
-        .filter(|w| w.id == workspace)
+        .filter(|w| w.slot == workspace)
         .flat_map(|w| &w.strips)
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
@@ -575,7 +575,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         tree: &DesktopTree,
         workspace: WorkspaceSlot,
     ) -> Option<ActivitySnapshot> {
-        tree.workspaces.iter().find(|w| w.id == workspace)?;
+        tree.workspaces.iter().find(|w| w.slot == workspace)?;
         // The desk's history is the desk's document: every change in it, by
         // the person who made it, as native reads the same document.
         let mut document = self.desk_document();
@@ -639,7 +639,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
             .find(|tab| {
                 tree.workspaces
                     .iter()
-                    .filter(|w| w.id == active)
+                    .filter(|w| w.slot == active)
                     .flat_map(|w| &w.strips)
                     .flat_map(|strip| &strip.window_groups)
                     .any(|group| group.tabs.iter().any(|t| t.id == *tab))

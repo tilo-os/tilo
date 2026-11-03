@@ -42,7 +42,7 @@ pub struct PresenceItem {
     pub middle: Vec<u8>,
 }
 
-/// Whose presence a slot holds on the relay: one author's slot in one room.
+/// Whose presence a slot holds on the relay: one author's slot in one workspace.
 /// Only the encoder sees it; the wire carries the session's slot index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PresenceSlotKey {
@@ -210,7 +210,7 @@ pub fn encode_presence_batch(
         workspace_id: u64,
         items: &'a [PresenceItem],
     }
-    // Room for the length prefix, written once the length is known.
+    // Workspace for the length prefix, written once the length is known.
     let mut out = vec![0, 0, 0, 0, PRESENCE_BATCH_KIND];
     out = postcard::to_extend(
         &Fields {

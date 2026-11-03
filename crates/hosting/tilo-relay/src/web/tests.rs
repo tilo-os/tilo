@@ -130,8 +130,8 @@ async fn browser_as(
     protocol::decode_grant(&body).unwrap().0.token
 }
 
-/// A page takes its seat in a room by subscribing to it over its session, as
-/// the page's own client does once it joined: the room's bootstrap and replay
+/// A page takes its seat in a workspace by subscribing to it over its session, as
+/// the page's own client does once it joined: the workspace's bootstrap and replay
 /// reach the page, then its `Ready`.
 #[cfg(feature = "agents")]
 async fn subscribe(addr: SocketAddr, token: [u8; 32], workspace_id: u64) {
@@ -169,7 +169,7 @@ async fn subscribe(addr: SocketAddr, token: [u8; 32], workspace_id: u64) {
         }
         ack = page.cursor;
     }
-    assert!(ready, "the room admitted the page");
+    assert!(ready, "the workspace admitted the page");
 }
 
 #[test]
@@ -189,40 +189,44 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
         None
     );
     assert_eq!(
-        browser_locator_origin(&files(Some("room.example".into())), wildcard).unwrap(),
-        Some("https://room.example".into())
+        browser_locator_origin(&files(Some("workspace.example".into())), wildcard).unwrap(),
+        Some("https://workspace.example".into())
     );
     assert_eq!(
         browser_locator_origin(&files(None), "[::1]:8443".parse().unwrap()).unwrap(),
         Some("https://[::1]:8443".into())
     );
-    for host in ["user@room.example", "room.example/path", "bad host"] {
+    for host in [
+        "user@workspace.example",
+        "workspace.example/path",
+        "bad host",
+    ] {
         assert!(browser_locator_origin(&files(Some(host.into())), wildcard).is_err());
     }
     let development = TlsSource::Development {
-        hosts: vec!["0.0.0.0".into(), "room.example".into()],
+        hosts: vec!["0.0.0.0".into(), "workspace.example".into()],
         store: None,
     };
     assert_eq!(
         browser_locator_origin(&development, wildcard).unwrap(),
-        Some("https://room.example".into())
+        Some("https://workspace.example".into())
     );
 }
 
-/// A public room's spectator takes a channel's content keys from the node
+/// A public workspace's spectator takes a channel's content keys from the node
 /// and opens what was sealed there; nobody else does: not before it
-/// holds a seat, not a member, not in a room that is not public, and never
+/// holds a seat, not a member, not in a workspace that is not public, and never
 /// for a channel nobody created.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its rooms serve the page until the relay shuts down at the end"
+    reason = "the relay and its workspaces serve the page until the relay shuts down at the end"
 )]
 async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     let signer = SigningKey::from_bytes(&[71; 32]);
     let watcher = SigningKey::from_bytes(&[72; 32]);
-    // A room service's node, which takes part in its rooms' channels.
+    // A workspace service's node, which takes part in its workspaces' channels.
     let (host_key, host) = device(
         &signer,
         73,
@@ -247,15 +251,18 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     )
     .await
     .unwrap();
-    let rooms = relay.rooms().unwrap().clone();
-    let room = rooms.create("Plaza").await.unwrap();
-    rooms.enter(&room.room, &owner).await.unwrap();
-    // The spectator person is a viewer of the room, as its host makes it.
-    let invitation = rooms
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &owner)
+        .await
+        .unwrap();
+    // The spectator person is a viewer of the workspace, as its host makes it.
+    let invitation = workspaces
         .issue(
-            &room.room,
+            &workspace.workspace,
             &owner,
-            crate::rooms::IssueInvitationRequest {
+            crate::workspaces::IssueInvitationRequest {
                 request_id: [1; 32],
                 role: MemberRole::Viewer,
                 recipient_user_public_key: Some(joined.user_public_key),
@@ -285,11 +292,11 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         .unwrap();
     // A member wrote in the chat's channel.
     let record = "@tilo:package-primary";
-    let node = rooms
+    let node = workspaces
         .own_route_keys(
             &tilo_peer_state::document_frame::DocumentRoute {
                 app_id: "so.tilo.chat".into(),
-                cluster_id: room.room.clone(),
+                cluster_id: workspace.workspace.clone(),
                 record: record.into(),
             },
             true,
@@ -310,7 +317,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         },
         allowed_origins: vec![],
         features: 0,
-        rooms: relay.rooms().cloned(),
+        workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -334,13 +341,13 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
             Some(token),
             postcard::to_allocvec(&protocol::ChannelKeysRequest {
                 app_id: "so.tilo.chat".into(),
-                room: room.room.clone(),
+                workspace: workspace.workspace.clone(),
                 record: record.into(),
             })
             .unwrap(),
         )
     };
-    let spectators = |public| crate::room_access::Spectators {
+    let spectators = |public| crate::workspace_access::Spectators {
         root: watcher.verifying_key().to_bytes(),
         seats: 4,
         public,
@@ -348,10 +355,10 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     let watching = browser(addr, &watch_key, &watch).await;
     let owner_token = browser(addr, &owner_key, &owner).await;
 
-    // Before the room lets anyone watch, and before the page holds a seat.
+    // Before the workspace lets anyone watch, and before the page holds a seat.
     assert_eq!(ask(watching, record).await.0, 403);
     relay
-        .admit_spectators(room.workspace_id, spectators(true))
+        .admit_spectators(workspace.workspace_id, spectators(true))
         .await
         .unwrap();
     assert_eq!(
@@ -359,7 +366,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         403,
         "a spectator without a seat"
     );
-    subscribe(addr, watching, room.workspace_id).await;
+    subscribe(addr, watching, workspace.workspace_id).await;
     let (code, body) = ask(watching, record).await;
     assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
     let keys: protocol::ChannelKeys = postcard::from_bytes(&body).unwrap();
@@ -379,9 +386,9 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         403,
         "a member takes keys over the channel"
     );
-    // A room that is not public keeps its members' writing from spectators.
+    // A workspace that is not public keeps its members' writing from spectators.
     relay
-        .admit_spectators(room.workspace_id, spectators(false))
+        .admit_spectators(workspace.workspace_id, spectators(false))
         .await
         .unwrap();
     assert_eq!(ask(watching, record).await.0, 403);
@@ -525,7 +532,7 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and its rooms serve the page until the relay shuts down at the end; only some feature sets see the drop"
+    reason = "the relay and its workspaces serve the page until the relay shuts down at the end; only some feature sets see the drop"
 )]
 async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let signer = SigningKey::from_bytes(&[81; 32]);
@@ -555,16 +562,19 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     )
     .await
     .unwrap();
-    let rooms = relay.rooms().unwrap().clone();
-    let room = rooms.create("Lounge").await.unwrap();
-    rooms.enter(&room.room, &owner).await.unwrap();
-    // The spectator person is a viewer of the room, as its host makes it,
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &owner)
+        .await
+        .unwrap();
+    // The spectator person is a viewer of the workspace, as its host makes it,
     // and every watching page is one of its devices.
-    let invitation = rooms
+    let invitation = workspaces
         .issue(
-            &room.room,
+            &workspace.workspace,
             &owner,
-            crate::rooms::IssueInvitationRequest {
+            crate::workspaces::IssueInvitationRequest {
                 request_id: [1; 32],
                 role: MemberRole::Viewer,
                 recipient_user_public_key: Some(joined.user_public_key),
@@ -601,7 +611,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         },
         allowed_origins: vec!["https://app.example".into()],
         features: protocol::FEATURE_FETCH_PROXY,
-        rooms: relay.rooms().cloned(),
+        workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -610,7 +620,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         here: Arc::new(here::Here::new(None)),
         country: None,
         // The target is on loopback, which a host's proxy never reaches; the
-        // refusal of its own network is `tilo_net`'s to test. The room may
+        // refusal of its own network is `tilo_net`'s to test. The workspace may
         // receive what the two answers below carry, together.
         fetch: Some(
             tilo_net::proxy::host::FetchProxy::new(tilo_net::proxy::host::Config {
@@ -636,8 +646,8 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let watching = browser(addr, &watch_key, &watch).await;
     relay
         .admit_spectators(
-            room.workspace_id,
-            crate::room_access::Spectators {
+            workspace.workspace_id,
+            crate::workspace_access::Spectators {
                 root: watcher.verifying_key().to_bytes(),
                 seats: 4,
                 public: true,
@@ -756,7 +766,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         "an open-ended range is asked a piece at a time"
     );
 
-    // The room received its budget: another of its people's devices is
+    // The workspace received its budget: another of its people's devices is
     // refused, in a way the page can read, and the target never asked.
     let laptop_token = browser(addr, &laptop_key, &laptop).await;
     let (status, head, _) = fetch(Some(hex::encode(laptop_token)), "https://app.example").await;
@@ -859,7 +869,7 @@ async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answer
         },
         allowed_origins: vec![],
         features: 0,
-        rooms: relay.rooms().cloned(),
+        workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -1011,7 +1021,9 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         fetch_proxy: None,
     };
     let identity = tls::Identity::load(&config.tls).unwrap();
-    let live = wt::Live::start(&identity, sessions.clone(), &config, "https://127.0.0.1").unwrap();
+    let plane = relay.plane.as_ref().expect("the relay runs a live plane");
+    plane.pages.serve_pages(sessions.clone());
+    let live = wt::Live::start(plane, &identity, &config, "https://127.0.0.1").unwrap();
     let answered = live.info.clone();
     let lane = endpoint(&SigningKey::from_bytes(&[76; 32])).await;
     let web = Arc::new(Web {
@@ -1021,7 +1033,7 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         },
         allowed_origins: vec![],
         features: 0,
-        rooms: relay.rooms().cloned(),
+        workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,

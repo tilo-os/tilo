@@ -58,6 +58,7 @@ pub use session::{
     Failure, FailureSubject, Host, LaneCompletion, LocalState, NodeCompletion, PAGE_FAILURE_CODES,
     PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
+pub use tilo_live::live::Track;
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, HttpsLink, LinkError, host_info};
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

@@ -337,6 +337,16 @@ mod inner {
         }
     }
 
+    /// The voice `sender`'s frames are played as: one publisher per device of
+    /// the call, at the one carrier generation this call's lane is.
+    fn publisher(sender: [u8; 32]) -> PublicationId {
+        PublicationId {
+            namespace: hex::encode(sender),
+            carrier_generation: 1,
+            incarnation: 1,
+        }
+    }
+
     /// The output the call plays through: the person's default sink, or the
     /// only one there is.
     fn sink_of(observed: &Observed) -> Option<(u32, u32)> {
@@ -474,11 +484,7 @@ mod inner {
                 .audio()
                 .receive(
                     ReceivedOpus {
-                        publisher: PublicationId {
-                            namespace: hex::encode(sender),
-                            carrier_generation: 1,
-                            incarnation: 1,
-                        },
+                        publisher: publisher(sender),
                         sequence,
                         timestamp_48k,
                         duration_samples: 960,
@@ -489,6 +495,13 @@ mod inner {
                     now,
                 )
                 .map_err(|_| Issue::TransportFailed)
+        }
+
+        /// Forget what was heard from `sender`: a lane that ended, or a stream
+        /// that starts over on a fresh one, is heard at its own place from its
+        /// first frame on, rather than behind where the one before it got.
+        pub(crate) fn forget(&mut self, sender: [u8; 32]) {
+            self.0.audio().remove_publisher(&publisher(sender));
         }
 
         /// The samples played since this was last called, where the call
@@ -554,6 +567,7 @@ mod inner {
         pub(crate) fn played(&mut self) -> Vec<f32> {
             Vec::new()
         }
+        pub(crate) fn forget(&mut self, _sender: [u8; 32]) {}
         pub(crate) fn close(&mut self) {}
     }
 }

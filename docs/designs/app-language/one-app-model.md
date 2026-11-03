@@ -8,7 +8,10 @@ A Tilo app is the same thing whichever language it is written in. It declares:
 
 Its model and actions run in the session's document host. The shell owns windows and places.
 A Rust app and a tilolang app are interchangeable to every shell, every search, every agent and
-the REPL, and neither does anything to be.
+the REPL, and neither does anything to be. A Rust app looks and feels exactly as good as a
+tilolang app: the same components, theme roles, motion, chrome, keyboard and touch behaviour,
+accessibility and i18n, because it is drawn by the same host from the same described components.
+Nothing a Rust app can do makes it look like a second-class app, or better than one.
 
 This replaces the view-mount bridge first drafted in shell.md §8.4. Storage, where actions run,
 identity and permissions are already decided in [apps.md](../../architecture/apps.md) §2–§8, and
@@ -49,8 +52,15 @@ drawing goes through `ui.Drawing` (components.md §4.1).
 
 | Today (Rust) | One model |
 |---|---|
-| The app opens its window and draws its own chrome (`NavShell`, sidebar, app bar) | The app has no window. "Opening Tube" places its root resource with its default view; that view may contain the navigation it needs (a sidebar of subscriptions), as Mail's root view contains its mailboxes. |
+| The app opens its window and draws its own chrome (`NavShell`, sidebar, app bar) | The app has no window and no chrome. Windows, places, a window's bar and its actions, navigation between an app's resources, and back/forward belong to the system. "Opening Tube" places its root resource with its default view. |
 | Deep links and open-at-resource handled inside the app | `open(r)` places `r` with its default view, beside where it was asked, for every app. |
+
+**Who the system is, per platform.** On Tilo, the shell draws windows and places, and the
+session's document host keeps the records. On another platform (macOS, Windows, the web), the
+same runtime is compiled into the app: it opens the platform's window, draws the same chrome
+the shell would draw (each view's bar with the resource's actions, and navigation between
+resources), and hosts the records itself. The app's code is the same on both. It never draws
+chrome and never opens a window.
 
 ## 4. Storage, actions, identity, permissions
 

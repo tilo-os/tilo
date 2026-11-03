@@ -245,6 +245,10 @@ pub struct PageSidebar {
     /// The dragged page is over a drop target of the host's own (a delete
     /// zone) that shows the drop itself, so no ghost is painted.
     ghost_hidden: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// The hairline that seats a page thumbnail on the rail.
@@ -255,6 +259,7 @@ impl PageSidebar {
     /// (e.g. `792.0/612.0` for US-Letter PDF pages, `720.0/1280.0` for slides).
     pub fn new(aspect: f64) -> Self {
         Self {
+            dirty: true,
             aspect: aspect.max(0.05),
             header: "Pages".to_string(),
             add_label: String::new(),
@@ -300,6 +305,7 @@ impl PageSidebar {
     /// Show that a drop over the rail would land (a file dragged in from
     /// outside): the list is ringed in your colour while armed.
     pub fn set_drop_target_armed(&mut self, armed: bool) {
+        self.dirty = true;
         self.drop_armed = armed;
     }
 
@@ -307,6 +313,7 @@ impl PageSidebar {
     /// host's own (a delete zone) that shows the drop itself; the drag
     /// goes on, and the ghost returns once it leaves.
     pub fn set_ghost_hidden(&mut self, hidden: bool) {
+        self.dirty = true;
         self.ghost_hidden = hidden;
     }
 
@@ -318,6 +325,7 @@ impl PageSidebar {
     /// The pages that carry a mark (annotations, comments): a dot inside
     /// the thumbnail's corner.
     pub fn set_marked(&mut self, pages: Vec<usize>) {
+        self.dirty = true;
         self.marked = pages;
     }
 
@@ -343,6 +351,7 @@ impl PageSidebar {
     }
 
     pub fn set_aspect(&mut self, aspect: f64) {
+        self.dirty = true;
         self.aspect = aspect.max(0.05);
     }
 
@@ -351,6 +360,7 @@ impl PageSidebar {
     }
 
     pub fn set_scroll(&mut self, s: f64) {
+        self.dirty = true;
         self.scroll = s.clamp(0.0, self.max_scroll);
     }
 
@@ -1070,6 +1080,14 @@ impl Widget for PageSidebar {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "PageSidebar"

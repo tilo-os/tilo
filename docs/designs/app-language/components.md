@@ -45,6 +45,11 @@ view contact_row(c: Contact) {
   code of its own. A component may declare several bindings, and `bind:` takes the one whose
   type the bound place has. A primitive that is a component (`text`, `input`, `checkbox`, ...)
   is its shorter name and nothing else.
+- A box bound to a value writes that field when it is pressed, unless the view names what a
+  press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and
+  `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,
+  so completing a task completes what is under it in the same step, one undo, and `check` is
+  what history says it did.
 - A document's running text is placed like any other component:
   `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same

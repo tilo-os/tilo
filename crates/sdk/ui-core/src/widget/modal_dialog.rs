@@ -2603,7 +2603,8 @@ impl Widget for ModalDialog<dyn Widget> {
     fn needs_redraw(&self) -> bool {
         // Opening, closing and every move are marked stale; an open sheet
         // otherwise changes only through its content or an event.
-        self.stale || (self.open && self.content.needs_redraw())
+        self.stale
+            || (self.open && (self.content.needs_redraw() || self.content.needs_animation_frame()))
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2843,7 +2844,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.as_dyn().needs_redraw()
+        self.as_dyn().needs_redraw() || crate::widget::Widget::needs_animation_frame(self)
     }
 
     fn needs_animation_frame(&self) -> bool {

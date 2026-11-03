@@ -598,8 +598,7 @@ fn idle_frame_poll_does_not_materialize_accessibility_tree() {
 #[test]
 fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
     // Two retained buttons; the column below them is empty space with no
-    // hover state. (A childless Container is a leaf that never opts into
-    // incremental redraw, so it is deliberately not used as the inert area.)
+    // hover state.
     let mut frame = frame(Box::new(target_and_other()));
     let device_id = winit::event::DeviceId::dummy();
     let button = frame.targets()["target"];

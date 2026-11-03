@@ -67,7 +67,7 @@ struct InteractiveWorkspaceScope {
 struct ExpectedServer {
     user: Option<[u8; 32]>,
     device: Option<[u8; 32]>,
-    /// The pinned device is one of this person's own, hosting rooms
+    /// The pinned device is one of this person's own, hosting workspaces
     /// itself: it proves `user` and `device` but needs no host capability.
     own_device: bool,
     interactive_scope: Option<InteractiveWorkspaceScope>,
@@ -87,7 +87,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         Envelope::Subscribe { workspace_id }
         | Envelope::Unsubscribe { workspace_id }
         | Envelope::Delta { workspace_id, .. }
-        | Envelope::Presence { workspace_id, .. }
+        | Envelope::RetiredPresence { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
         | Envelope::NotAuthorised { workspace_id, .. }
         | Envelope::SyncRequest { workspace_id, .. }
@@ -98,10 +98,10 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::Commit { workspace_id, .. }
         | Envelope::Committed { workspace_id, .. }
         | Envelope::CommitRefused { workspace_id, .. }
-        | Envelope::LiveJoin { workspace_id }
+        | Envelope::RetiredLiveJoin { workspace_id }
         | Envelope::LiveLeave { workspace_id }
-        | Envelope::Live { workspace_id, .. }
-        | Envelope::LiveMember { workspace_id, .. }
+        | Envelope::RetiredLive { workspace_id, .. }
+        | Envelope::RetiredLiveMember { workspace_id, .. }
         | Envelope::SubscribeFrom { workspace_id, .. }
         | Envelope::Position { workspace_id, .. }
         | Envelope::CompactVolunteer { workspace_id }
@@ -118,7 +118,8 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::VoiceShow { workspace_id, .. }
         | Envelope::OpenRecord { workspace_id, .. }
         | Envelope::RecordOpened { workspace_id, .. }
-        | Envelope::RoomBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
+        | Envelope::RecordContentWant { workspace_id, .. }
+        | Envelope::WorkspaceBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         Envelope::PeerRelayHello { .. } | Envelope::HostAction { .. } => false,
     }
@@ -658,7 +659,7 @@ impl RelayClient {
     /// Connect to the host behind `http`, a host that publishes no iroh
     /// address, over its HTTPS routes. The host must present `host_device`
     /// (pinned from its `/host` answer or a membership kept for it), under any
-    /// person's root: the host of a room this device joined. The session
+    /// person's root: the host of a workspace this device joined. The session
     /// carries state envelopes only; it has no private action channel.
     ///
     /// # Errors
@@ -752,9 +753,9 @@ impl RelayClient {
     }
 
     /// Connect to `expected_device`, one of this person's own devices
-    /// (`own_user`) that hosts rooms itself. The host proves exactly that
+    /// (`own_user`) that hosts workspaces itself. The host proves exactly that
     /// device under the person's root; neither side needs host capability.
-    /// The session is the person's own: the host answers its rooms' listing
+    /// The session is the person's own: the host answers its workspaces' listing
     /// and entry on it.
     ///
     /// # Errors
@@ -847,7 +848,7 @@ impl RelayClient {
 
     /// Connect to the exact primary device authorized by a verified signed
     /// interactive-owner hint. The opaque trust token binds the service key,
-    /// governing certificate, room, and workspace; the resulting client
+    /// governing certificate and workspace; the resulting client
     /// rejects every state frame outside that scope.
     pub async fn connect_v2_to_interactive_workspace_owner(
         endpoint: Endpoint,

@@ -3,7 +3,7 @@
 //! A heartbeat proves the connection's reader and writer are alive and
 //! nothing more: no client takes a `Pong` as an acknowledgement of what it
 //! sent before. So a `Pong` must never wait for anything the writer waits
-//! for: a live frame's authorization under the room's lock, a replay's
+//! for: a live frame's authorization under the workspace's lock, a replay's
 //! reads of the store, a state run. Queued behind those, a slow disk held
 //! it past the client's silence limit, and every member reconnected at once
 //! and waited again.

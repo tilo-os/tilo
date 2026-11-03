@@ -12,7 +12,7 @@ const WATCH_ONLY: &str = "a spectator only watches this room";
 /// Content the room's host keeps: one item, by its BLAKE3 address.
 struct Kept(Vec<u8>);
 
-impl tilo_relay::rooms::RoomContent for Kept {
+impl tilo_relay::workspaces::WorkspaceContent for Kept {
     fn read(&self, _room: &str, _app: &str, hash: &str) -> Option<Vec<u8>> {
         (blake3::hash(&self.0).to_hex().as_str() == hash).then(|| self.0.clone())
     }
@@ -157,7 +157,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     let mut bob_peer = join(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         (&bob, &phone),
         MemberRole::Editor,
         1,
@@ -166,7 +166,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     join(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         (&spectator, &first),
         MemberRole::Viewer,
         2,
@@ -195,7 +195,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
         .unwrap();
 
     let mut alice_peer = StatePeer::new(
-        &room.room,
+        &room.workspace,
         host.cert.clone(),
         vec![host.cert.clone()],
         RevocationList::new(),
@@ -225,20 +225,20 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     assert_eq!(subscribe(&watching, workspace_id).await, Ok(()));
     // Asked what it may do, the page hears it writes nowhere, as the room's
     // viewer: no refusal for a device the room's roster never lists.
-    for node in tilo_action_policy::roles::telling_nodes(&room.room) {
+    for node in tilo_action_policy::roles::telling_nodes(&room.workspace) {
         assert_eq!(
             relay
-                .rooms()
+                .workspaces()
                 .unwrap()
                 .page_rooms(
                     &watcher.cert,
-                    tilo_relay_protocol::rooms::RoomsRequest::Permits {
-                        room: room.room.clone(),
+                    tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+                        workspace: room.workspace.clone(),
                         node: node.to_string(),
                     },
                 )
                 .await,
-            tilo_relay_protocol::rooms::RoomsReply::Permits(false),
+            tilo_relay_protocol::workspaces::WorkspacesReply::Permits(false),
             "{node}"
         );
     }
@@ -331,7 +331,9 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     )
     .await;
     assert_eq!(refused, WATCH_ONLY);
-    watching.send(Envelope::LiveJoin { workspace_id }).unwrap();
+    watching
+        .send(Envelope::RetiredLiveJoin { workspace_id })
+        .unwrap();
     let reason = answer(
         "the spectator's live join is refused",
         &watching,
@@ -365,7 +367,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     .encode()
     .unwrap();
     watching
-        .send(Envelope::Presence {
+        .send(Envelope::RetiredPresence {
             workspace_id,
             payload: attributed,
         })
@@ -439,9 +441,11 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
         "Bob's presence reaches the watching page",
         &watching,
         |envelope| match envelope {
-            Envelope::Presence { payload, .. } => tilo_relay::AttributedPresence::decode(&payload)
-                .filter(|presence| presence.author == phone.device_pubkey())
-                .map(|presence| presence.body),
+            Envelope::RetiredPresence { payload, .. } => {
+                tilo_relay::AttributedPresence::decode(&payload)
+                    .filter(|presence| presence.author == phone.device_pubkey())
+                    .map(|presence| presence.body)
+            }
             _ => None,
         },
     )
@@ -453,7 +457,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     let image = b"an image a member posted".to_vec();
     let hash = blake3::hash(&image).to_hex().to_string();
     relay
-        .rooms()
+        .workspaces()
         .expect("the host governs rooms")
         .serve_content(std::sync::Arc::new(Kept(image.clone())));
     let want = tilo_relay::AttributedPresence {
@@ -461,7 +465,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
         body: postcard::to_stdvec(&NeighbourMsg::RecordContentWant {
             requester: tilo_peer_state::peer_handle(&watcher_key),
             app_id: "so.tilo.chat".into(),
-            cluster_id: room.room.clone(),
+            cluster_id: room.workspace.clone(),
             hash: hash.clone(),
         })
         .unwrap(),
@@ -469,7 +473,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     .encode()
     .unwrap();
     watching
-        .send(Envelope::Presence {
+        .send(Envelope::RetiredPresence {
             workspace_id,
             payload: want,
         })

@@ -9,7 +9,7 @@ use iroh::EndpointAddr;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tokio::sync::mpsc;
 
-use crate::local_host::room_host::{HostConfig, HostMode, RoomHost};
+use crate::local_host::room_host::{HostConfig, HostMode, WorkspaceHost};
 use crate::local_host::{LocalHost, room_host};
 use crate::{Actor, HostIdentity, Hosting, NetCmd};
 
@@ -92,7 +92,7 @@ pub(crate) async fn spawn_ticking(
         }),
         Vec::new(),
     );
-    let host = RoomHost::open(
+    let host = WorkspaceHost::open(
         HostConfig::new(state.join("room-host"), HostMode::Device),
         room_host::HostIdentity {
             user_public_key: cert.user_public_key,

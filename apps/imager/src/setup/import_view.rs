@@ -187,6 +187,10 @@ pub struct ImportApp {
     opens_when_live: bool,
     /// What the window shares with the view it stands in.
     published: Rc<RefCell<Published>>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for ImportApp {
@@ -224,6 +228,7 @@ impl ImportApp {
 
     fn unavailable(error: &str) -> Self {
         Self {
+            dirty: true,
             continuation: None,
             identity_ready: false,
             navigation: super::journey_navigation::Navigation::default(),
@@ -575,6 +580,7 @@ impl ImportApp {
             "Previous imports reopened. Interrupted work requires an explicit retry.".into()
         };
         Ok(Self {
+            dirty: true,
             continuation,
             identity_ready: false,
             navigation: super::journey_navigation::Navigation::default(),
@@ -2716,6 +2722,7 @@ impl Widget for ImportApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         let staged = self.published.borrow_mut().take_staged();
         if let Some(crate::window_view::Staged(scenario)) = staged {
             self.stage(scenario.as_deref());
@@ -2757,6 +2764,14 @@ impl Widget for ImportApp {
     }
 
     ui::forward_to_composed!(composed);
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
 
     fn name(&self) -> &'static str {
         "ImportApp"

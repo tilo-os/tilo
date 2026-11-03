@@ -176,12 +176,13 @@ pub fn parse_package(source: &PackageSource) -> Result<ast::Module, Vec<Diagnost
 }
 
 /// One file of a package, parsed on its own, for printing it back: `path`, its header when it
-/// has one, and its items.
+/// has one, its items, and the plain `//` comments printed among them.
 #[derive(Clone, Debug)]
 pub struct FileSyntax {
     pub path: String,
     pub header: Option<ast::AppHeader>,
     pub items: Vec<ast::Item>,
+    pub comments: Vec<crate::lexer::Comment>,
 }
 
 /// Parses each file of a package for the canonical printer (`tilolang fmt`). Syntax errors in
@@ -199,6 +200,7 @@ pub fn parse_package_files(source: &PackageSource) -> Result<Vec<FileSyntax>, Ve
             path: f.path.to_string(),
             header: p.header,
             items: p.items,
+            comments: p.comments,
         })
         .collect())
 }
@@ -233,8 +235,22 @@ pub fn compile_package_source_with(
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze_package(source, ids, imports, rng)?;
     let mut compiled = emit_package(a);
-    crate::meta::append_locales(&mut compiled.wasm, &source.locales);
+    crate::meta::append_locales(&mut compiled.wasm, &locales_of(source, &compiled.meta));
     Ok(compiled)
+}
+
+/// The catalogues a module built from `source` carries: the source language's written from the
+/// compiled sources, so the words a module shows are never older than the code that shows them,
+/// and every other language as its catalogue beside the sources says.
+fn locales_of(source: &PackageSource, meta: &PackageMeta) -> Vec<(String, String)> {
+    let mut locales = source.locales.clone();
+    if let Some((_, text)) = locales
+        .iter_mut()
+        .find(|(locale, _)| locale == crate::messages::SOURCE_LOCALE)
+    {
+        *text = crate::messages::source_catalogue_keeping(meta, text);
+    }
+    locales
 }
 
 /// Reports every error of a package of one or more files, or an empty list when it is fine.

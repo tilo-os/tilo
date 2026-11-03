@@ -683,7 +683,7 @@ fn unchanged_layout_preserves_tree_paint_while_theme_and_extent_invalidate() {
     view.mark_drawn();
     layout(&mut view, &dark, 280.0);
     assert!(
-        !view.needs_redraw(),
+        !(view.needs_redraw() || view.needs_animation_frame()),
         "an identical layout must not dirty the sidebar"
     );
     let mut damage = Vec::new();
@@ -693,7 +693,7 @@ fn unchanged_layout_preserves_tree_paint_while_theme_and_extent_invalidate() {
     view.mark_drawn();
     layout(&mut view, &light, 280.0);
     assert!(
-        view.needs_redraw(),
+        view.needs_redraw() || view.needs_animation_frame(),
         "theme changes must invalidate retained ink"
     );
     let themed = paint(&mut view, &light, &mut text);
@@ -701,7 +701,7 @@ fn unchanged_layout_preserves_tree_paint_while_theme_and_extent_invalidate() {
     view.mark_drawn();
     layout(&mut view, &light, 360.0);
     assert!(
-        view.needs_redraw(),
+        view.needs_redraw() || view.needs_animation_frame(),
         "changed bounds must invalidate retained ink"
     );
     assert!(!themed.encoding_eq(&paint(&mut view, &light, &mut text)));

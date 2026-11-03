@@ -167,11 +167,16 @@ pub struct Plot<M: PlotMarks> {
     focused: bool,
     /// The theme seen at layout, for measuring a filling chart.
     theme: Option<Theme>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl<M: PlotMarks> Plot<M> {
     pub(crate) fn from_marks(marks: M) -> Self {
         Self {
+            dirty: true,
             marks,
             activated: None,
             focused: false,
@@ -214,6 +219,7 @@ impl<M: PlotMarks> Plot<M> {
     /// Shows or hides series `id`; whether that changed anything. Hiding
     /// the inspected mark's series ends the inspection.
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
+        self.dirty = true;
         if !self.marks.series().iter().any(|(series, _)| *series == id) {
             return false;
         }
@@ -351,6 +357,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
         self.marks.paint(scene, transform, tr, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         // Keys inspect the chart only while it has focus; otherwise they
         // belong to whatever does.
         if self.focused || chart_nav_action(event).is_none() {
@@ -431,6 +438,14 @@ impl<M: PlotMarks> Widget for Plot<M> {
         self.activated = Some(activated);
         true
     }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
     fn name(&self) -> &'static str {
         M::NAME
     }
@@ -441,6 +456,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if !focused && self.marks.frame().inspection.keyboard {
             self.clear_inspection();

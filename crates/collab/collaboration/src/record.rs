@@ -187,6 +187,14 @@ impl RecordId {
         ))
     }
 
+    /// The record of the pair two people share in a workspace
+    /// ([`collab_types::direct_pair_id`]): read and changed by their devices
+    /// and by no one else's. `None` for a key that names no pair.
+    #[must_use]
+    pub fn of_direct(pair: &str) -> Option<Self> {
+        collab_types::canonical_pair(pair).then(|| Self(collab_types::direct_record(pair)))
+    }
+
     /// Identity of the record that plays `role` for `of` — "the annotations
     /// of this document". Distinct from its target so the two can be
     /// shared separately: handing over the document doesn't hand the notes.
@@ -355,6 +363,9 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
     }
     if s.starts_with("member:") {
         return collab_types::member_record(s).is_some();
+    }
+    if let Some(pair) = s.strip_prefix("direct/") {
+        return collab_types::canonical_pair(pair);
     }
     if let Some(tab) = s.strip_prefix("tab:") {
         return tab.len() == 16 && tab.bytes().all(|c| c.is_ascii_hexdigit());

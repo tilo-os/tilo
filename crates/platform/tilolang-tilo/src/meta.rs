@@ -129,6 +129,8 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
                     | Ty::Date
                     | Ty::Time
                     | Ty::Identifier
+                    | Ty::Repeat
+                    | Ty::Reminder
                     | Ty::Choice(_)
             ) {
                 schema
@@ -160,7 +162,8 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
         Ty::Bool => (ColumnKind::Bool, Vec::new()),
         Ty::Int => (ColumnKind::Int, Vec::new()),
         Ty::Float => (ColumnKind::Float, Vec::new()),
-        Ty::Text => (ColumnKind::Text, Vec::new()),
+        // A repeat and a reminder are text as they are held, and a picker writes them.
+        Ty::Text | Ty::Repeat | Ty::Reminder => (ColumnKind::Text, Vec::new()),
         Ty::Date => (ColumnKind::Date, Vec::new()),
         Ty::Time => (ColumnKind::Time, Vec::new()),
         Ty::Identifier => (ColumnKind::Ident, Vec::new()),

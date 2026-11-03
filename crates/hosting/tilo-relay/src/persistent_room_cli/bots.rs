@@ -1,4 +1,4 @@
-//! The room's bots on this host: installing them, starting the connectors
+//! The workspace's bots on this host: installing them, starting the connectors
 //! their programs listen to, and handing the Discord bridge its sign-ins.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -7,34 +7,41 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use ed25519_dalek::SigningKey;
-use tilo_relay::rooms::Rooms;
+use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::DeviceCert;
 
 use super::{BotSpec, PersistentArgs, PersistentRoom, input_value};
 
-/// Connect the room to the Discord server a bridge's inputs name
+/// Connect the workspace to the Discord server a bridge's inputs name
 /// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)),
 /// its posts pointing at what `connectors`' host serves publicly.
 async fn link_discord(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     host_cert: &DeviceCert,
     spec: &BotSpec,
     bot: &mut tilo_relay::room_bots::installed::InstalledBot,
     connectors: &tilo_relay::room_bots::installed::ConnectorHost,
 ) -> Result<Vec<(String, String)>, String> {
     let public = &connectors.public;
-    tilo_relay::room_bots::discord::link_bridge(rooms, room, host_cert, &spec.inputs, bot, public)
-        .await
+    tilo_relay::room_bots::discord::link_bridge(
+        workspaces,
+        workspace,
+        host_cert,
+        &spec.inputs,
+        bot,
+        public,
+    )
+    .await
 }
 
 /// Install the bots the operator named (once: a restart finds the same
 /// installations), start the connectors their programs listen to, and run
-/// each bot on this host. Each is kept a governed member of the room, its
-/// delegation renewed with the room's root as it runs out.
+/// each bot on this host. Each is kept a governed member of the workspace, its
+/// delegation renewed with the workspace's root as it runs out.
 pub(super) async fn start_bots(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     host_cert: &DeviceCert,
     root: &SigningKey,
     bots: &[BotSpec],
@@ -74,7 +81,16 @@ pub(super) async fn start_bots(
         let shortcut = bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?;
         let wanted = InstalledBot::connectors(&shortcut);
         if wanted.contains(discord::APP) {
-            match link_discord(rooms, room, host_cert, spec, &mut bot, connector_host).await {
+            match link_discord(
+                workspaces,
+                workspace,
+                host_cert,
+                spec,
+                &mut bot,
+                connector_host,
+            )
+            .await
+            {
                 Ok(env) => {
                     settings.insert(discord::APP.to_owned(), env);
                 }
@@ -91,8 +107,8 @@ pub(super) async fn start_bots(
     if installed_bots.is_empty() {
         return Ok((Vec::new(), None));
     }
-    let blobs = connector_host.blobs(rooms);
-    // The room serves without its bots rather than not at all: a connector
+    let blobs = connector_host.blobs(workspaces);
+    // The workspace serves without its bots rather than not at all: a connector
     // whose worker does not start (a missing binary, an unreachable service)
     // leaves the bots that need it out, said in the log, as a bridge that
     // does not link does.
@@ -107,7 +123,7 @@ pub(super) async fn start_bots(
     {
         Ok(started) => started,
         Err(error) => {
-            tracing::error!(%error, "not running the room's bots: a connector did not start");
+            tracing::error!(%error, "not running the workspace's bots: a connector did not start");
             return Ok((Vec::new(), None));
         }
     };
@@ -122,8 +138,8 @@ pub(super) async fn start_bots(
             .collect::<BTreeMap<_, _>>();
         let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
         let runner = BotRunner::new(
-            rooms.clone(),
-            room.to_owned(),
+            workspaces.clone(),
+            workspace.to_owned(),
             host_cert.clone(),
             certifier.device_key(&bot.installation),
             bot.clone(),
@@ -133,8 +149,8 @@ pub(super) async fn start_bots(
         .map_err(|error| anyhow::anyhow!("{error}"))?;
         runners.push(tokio::spawn(
             tilo_relay::room_bots::membership::keep_renewed(
-                rooms.clone(),
-                room.to_owned(),
+                workspaces.clone(),
+                workspace.to_owned(),
                 host_cert.clone(),
                 certifier,
                 bot.clone(),
@@ -159,7 +175,7 @@ fn slug_of(entry: &str) -> String {
         .collect()
 }
 
-/// Hand a sign-in with Discord that came back to the service to the room's
+/// Hand a sign-in with Discord that came back to the service to the workspace's
 /// Discord bridge, as an event of its connector: the bridge offers the
 /// account to the person who started it. Nothing secret is in it: the
 /// state and the token arrive hashed.
@@ -173,7 +189,9 @@ pub(super) async fn hand_to_discord(
     link_check: String,
 ) {
     let Some(discord) = &context.discord else {
-        tracing::warn!("a sign-in with Discord came back, but the room runs no Discord bridge");
+        tracing::warn!(
+            "a sign-in with Discord came back, but the workspace runs no Discord bridge"
+        );
         return;
     };
     let event = discord::event::Authorized {
@@ -199,7 +217,7 @@ pub(super) async fn hand_to_discord(
 }
 
 /// Tell the Discord bridge whether, and through which consent page, the
-/// room offers signing in with Discord: members are offered "Connect
+/// workspace offers signing in with Discord: members are offered "Connect
 /// Discord" while it does. Said at each start, so settings taken away are
 /// withdrawn too.
 pub(super) async fn offer_sign_in(

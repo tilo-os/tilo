@@ -170,6 +170,9 @@ pub struct Person {
 pub struct HereState {
     /// The live layer's members, or `None` while it is not live.
     members: Option<Vec<LiveMember>>,
+    /// Why this page cannot join the live layer at all, in the words it shows
+    /// in the members' place: a browser without WebTransport.
+    unavailable: Option<String>,
     /// This page itself: its publisher, name and colour.
     own: Option<LiveMember>,
     lines: Vec<HostLine>,
@@ -261,6 +264,24 @@ impl HereState {
         self.hear_waves(&members);
         self.revision = self.revision.wrapping_add(1);
         true
+    }
+
+    /// What the page says it cannot do where it would show who is here, or
+    /// `None` while it can (or did). Returns whether it changed.
+    pub fn set_unavailable(&mut self, unavailable: Option<String>) -> bool {
+        if self.unavailable == unavailable {
+            return false;
+        }
+        self.unavailable = unavailable;
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// Why the page joins no live layer at all, shown in the members' place;
+    /// `None` while it does.
+    #[must_use]
+    pub fn unavailable(&self) -> Option<&str> {
+        self.unavailable.as_deref()
     }
 
     pub fn set_lines(&mut self, lines: Vec<HostLine>, now_ms: u64) -> bool {

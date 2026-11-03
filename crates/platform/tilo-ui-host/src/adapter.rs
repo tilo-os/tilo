@@ -465,8 +465,9 @@ impl Source for NodeSource<'_> {
         let path = presence_path(self.node);
         let key = self.node.key.clone();
         Some(match ty {
-            // A moment is held as its ISO text (or the day it names): what its widget shows.
-            Type::Text | Type::Time => BoundValue::Text(Bound {
+            // A moment is held as its ISO text (or the day it names), and a person as their
+            // identity: what its widget shows, and what an edit carries.
+            Type::Text | Type::Time | Type::Principal => BoundValue::Text(Bound {
                 state: self.reconciler.text_state(&key),
                 edits,
                 name: called,

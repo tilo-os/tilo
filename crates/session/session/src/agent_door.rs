@@ -623,7 +623,14 @@ impl Loop {
             .name("tilo-agent-door".into())
             .spawn(move || {
                 serve_connection(
-                    stream, pid, broker, session, &requests, &launches, &wake, &control, &seats,
+                    Opened { stream, pid },
+                    broker,
+                    &session,
+                    &requests,
+                    &launches,
+                    &wake,
+                    &control,
+                    &seats,
                 );
                 served.fetch_sub(1, Ordering::Relaxed);
                 // A question for a client that is gone is withdrawn on the
@@ -1242,6 +1249,17 @@ fn unanswered() -> ActionHostError {
 }
 
 impl SessionDoors {
+    /// Who sits here: the person a program typed in a conversation, or one an agent writes in
+    /// its task, runs as.
+    pub(crate) fn person(&self) -> &str {
+        &self.person
+    }
+
+    /// The runs' program hosts, which a task's host is kept in beside a conversation's.
+    pub(crate) fn runs(&self) -> crate::run_programs::Shared {
+        std::sync::Arc::clone(&self.runs)
+    }
+
     /// The seam `wake` wakes the loop on, shared by every connection that
     /// asks the session's own doors, and the runs' program hosts (`runs`)
     /// whose person is `person`.
@@ -1504,6 +1522,11 @@ impl Host {
 
     /// The session's own rows `caller` is offered, as a page of `query`: the
     /// page's cursor reads on to the next, as for any other provider.
+    ///
+    /// A resource's rows stand at its parent's level, as in any other
+    /// published directory: what the session offers is the tree it publishes,
+    /// read a level at a time, so a listing names the tree's roots and never
+    /// the whole of it (which no page holds).
     fn session_page(&self, caller: &Caller, query: &CatalogueQuery) -> Pending<CataloguePage> {
         let (_, reads_only) = Self::at_session(caller);
         let (done, offered) = tilo_actions::remote::pending();
@@ -1514,17 +1537,35 @@ impl Host {
                       resources,
                       revision,
                   }| {
+                fn parents<'a>(
+                    resources: &'a [tilo_actions::ResourceSpec],
+                    parent: &'a str,
+                    out: &mut std::collections::HashMap<&'a str, &'a str>,
+                ) {
+                    for resource in resources {
+                        out.insert(resource.id.as_str(), parent);
+                        parents(&resource.children, resource.id.as_str(), out);
+                    }
+                }
+                let mut stands_under = std::collections::HashMap::new();
+                parents(&resources, "", &mut stands_under);
                 let rows: Vec<_> = tilo_actions::door::survey(&resources)
                     .into_iter()
                     .filter(|descriptor| {
                         !reads_only || descriptor.kind == tilo_actions::OperationKind::View
                     })
                     .map(|descriptor| {
-                        tilo_actions::remote::CatalogueRow::for_action(
+                        let parent = stands_under
+                            .get(descriptor.address.resource.as_str())
+                            .map(|parent| (*parent).to_owned())
+                            .unwrap_or_default();
+                        let mut row = tilo_actions::remote::CatalogueRow::for_action(
                             SESSION_PROVIDER,
                             SESSION_PROVIDER,
                             descriptor,
-                        )
+                        );
+                        row.parent_resource = parent;
+                        row
                     })
                     .collect();
                 CataloguePage::from_rows(revision, rows, &query)
@@ -1859,22 +1900,28 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
     }
 }
 
+/// A client the door accepted: its socket, and the pid that opened it, which
+/// is how the door knows whether it is a program inside an app.
+struct Opened {
+    stream: UnixStream,
+    pid: u32,
+}
+
 /// Serve one connection of this account, on its own thread: read what it
 /// opens with, ask the person, and only once they admit it answer what it
 /// asked. A refusal answers its `initialize` with a JSON-RPC error and
 /// closes.
 fn serve_connection(
-    stream: UnixStream,
-    pid: u32,
+    opened: Opened,
     broker: Option<Arc<AppBrokerState>>,
-    session: Arc<SessionDoors>,
+    session: &Arc<SessionDoors>,
     requests: &Sender<Request>,
     launches: &Launches,
     wake: &Wake,
     control: &crate::test_control::Door,
     seats: &Seats,
 ) {
-    let mut stream = stream;
+    let Opened { mut stream, pid } = opened;
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => {
@@ -1912,7 +1959,7 @@ fn serve_connection(
     let tasks = Arc::new(TaskHosts::new(
         &session.person,
         std::sync::Arc::clone(&session.runs),
-        Arc::clone(&session),
+        Arc::clone(session),
     ));
     let admitted = Arc::clone(&tasks);
     let seat = seats.joining();
@@ -1920,7 +1967,7 @@ fn serve_connection(
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
-        || Ok(Host::new(Some(broker), Arc::clone(&session))),
+        || Ok(Host::new(Some(broker), Arc::clone(session))),
         Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
         |hello, connected| {
             let consent = ask(requests, wake, facts, hello, connected, seat);

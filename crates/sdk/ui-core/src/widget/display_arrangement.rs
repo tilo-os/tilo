@@ -1284,6 +1284,7 @@ impl Widget for DisplayArrangement {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     /// Frames while a dropped display settles, the view springs to frame
@@ -1937,7 +1938,7 @@ mod tests {
                 monitor.center() + Vec2::new(-12.0 * f64::from(step), 6.0 * f64::from(step));
             assert!(canvas.drag_to(point));
             assert!(
-                canvas.needs_redraw(),
+                canvas.needs_redraw() || canvas.needs_animation_frame(),
                 "move {step} asks for its frame: the host repaints a pointer move only then"
             );
             assert!(!canvas.is_layout_dirty(), "move {step} lays nothing out");
@@ -1953,7 +1954,7 @@ mod tests {
                     .is_some_and(|view| view.is_moving(crate::motion::frame_now()))
             });
             assert!(
-                !canvas.needs_redraw() || view_growing,
+                !(canvas.needs_redraw() || canvas.needs_animation_frame()) || view_growing,
                 "move {step} asks for nothing more"
             );
             // 1:1: away from every line, the held display is exactly where

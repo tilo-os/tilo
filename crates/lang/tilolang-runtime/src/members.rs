@@ -112,6 +112,30 @@ impl Core {
         self.view_states.borrow_mut().set(members_key(), value);
     }
 
+    /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a
+    /// view that offers the members offers them too, under the name the scenario gave.
+    pub(crate) fn named_person(&self, who: crate::ids::Principal) {
+        if self
+            .members
+            .borrow()
+            .list
+            .iter()
+            .any(|member| member.who == who)
+        {
+            return;
+        }
+        let (mut list, reads) = {
+            let members = self.members.borrow();
+            (members.list.clone(), members.reads.clone())
+        };
+        list.push(Member {
+            who,
+            kind: MemberKind::Person,
+            role: None,
+        });
+        self.set_members(list, reads);
+    }
+
     /// The members, noted as read by the running view.
     fn read_members(&self) -> Vec<Member> {
         let key = members_key();

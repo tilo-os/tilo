@@ -127,11 +127,11 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         assert_eq!((first_w, second_w), (200.0, 200.0), "one full-width column");
         assert!((second_y - (first_y + first_h + gap)).abs() < 0.5);
         driver.click_named("card-1").unwrap();
-        assert!(
-            driver.poll_frame().unwrap(),
-            "the press's frame runs the card's action"
+        assert_eq!(
+            *clicks.borrow(),
+            vec![1],
+            "the card's action runs with the click's frame"
         );
-        assert_eq!(*clicks.borrow(), vec![1]);
     }
 
     // Case `card_grid_under_scrollable_clips_input_before_paint`.

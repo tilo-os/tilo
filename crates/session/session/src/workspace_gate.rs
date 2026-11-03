@@ -79,12 +79,9 @@ pub(crate) fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceA
         // A member saying which of the receiving device's windows it views: it
         // may see the workspace's windows, and is streamed them read only.
         | NeighbourMsg::SurfaceViewRequest { .. }
-        // Ephemeral presence and liveness of a member who can see the
-        // workspace; nothing is written to its state.
-        | NeighbourMsg::PresenceMoved { .. }
-        | NeighbourMsg::PresenceCleared { .. }
+        // Ephemeral liveness of a member who can see the workspace; nothing
+        // is written to its state.
         | NeighbourMsg::Heartbeat { .. }
-        | NeighbourMsg::AppPresenceV2 { .. }
         | NeighbourMsg::LivePresence { .. }
         // The sender's own device certificate, which only the workspace's
         // governor may promote into its governance.
@@ -106,9 +103,13 @@ pub(crate) fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceA
         | NeighbourMsg::MediaCapabilities { .. }
         | NeighbourMsg::PersonalWorkspaces { .. }
         // Retired generations, refused where they enter
-        // (`NeighbourMsg::is_retired`).
+        // (`NeighbourMsg::is_retired`): presence is a frame on the live plane,
+        // not a message here.
         | NeighbourMsg::IdentityAnnouncement { .. }
-        | NeighbourMsg::PermissionRequest { .. } => None,
+        | NeighbourMsg::PermissionRequest { .. }
+        | NeighbourMsg::RetiredPresenceMoved { .. }
+        | NeighbourMsg::RetiredPresenceCleared { .. }
+        | NeighbourMsg::RetiredAppPresenceV2 { .. } => None,
     }
 }
 
@@ -189,7 +190,7 @@ mod tests {
                 Some(change()),
             ),
             (
-                NeighbourMsg::PresenceMoved {
+                NeighbourMsg::RetiredPresenceMoved {
                     peer: 1,
                     user: "ada".into(),
                     key: "cursor".into(),
@@ -197,14 +198,14 @@ mod tests {
                     ts: 0,
                     colour: None,
                 },
-                Some(read()),
+                None,
             ),
             (
-                NeighbourMsg::PresenceCleared {
+                NeighbourMsg::RetiredPresenceCleared {
                     peer: 1,
                     key: "cursor".into(),
                 },
-                Some(read()),
+                None,
             ),
             (
                 NeighbourMsg::SurfaceFrame {
@@ -283,7 +284,7 @@ mod tests {
                 Some(comment()),
             ),
             (
-                NeighbourMsg::AppPresenceV2 {
+                NeighbourMsg::RetiredAppPresenceV2 {
                     peer: 1,
                     app_id: "so.tilo.notes".into(),
                     cluster_id: WORKSPACE.into(),
@@ -293,7 +294,7 @@ mod tests {
                     },
                     colour: None,
                 },
-                Some(read()),
+                None,
             ),
             (
                 NeighbourMsg::ScrollbackRequest {

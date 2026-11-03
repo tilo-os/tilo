@@ -73,6 +73,10 @@ pub struct ImageCropEditor {
     drag: Option<Drag>,
     focused_edge: Edge,
     focused: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ImageCropEditor {
@@ -83,6 +87,7 @@ impl ImageCropEditor {
         selection: LocalState<CropSelection>,
     ) -> Self {
         Self {
+            dirty: true,
             image: Image::from_rgba(rgba, width, height)
                 .with_fit(ImageFit::Contain)
                 .with_alt("Page being cropped")
@@ -384,6 +389,7 @@ impl Widget for ImageCropEditor {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.handle_event_at(event, ctx.scale_factor) {
             if self.drag.is_some() {
                 *ctx.focus_target = Some(ctx.node_id);
@@ -454,6 +460,14 @@ impl Widget for ImageCropEditor {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "ImageCropEditor"
     }
@@ -467,6 +481,7 @@ impl Widget for ImageCropEditor {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if !focused {
             self.drag = None;

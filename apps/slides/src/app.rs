@@ -566,6 +566,10 @@ pub struct SlidesApp {
     /// delete zone on the first drawn frame, so a headless capture shows the
     /// armed "Drop to delete" target. Never set on a live launch.
     demo_delete_zone: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// Which context menu a `--shots` scenario should pop open for its capture.
@@ -592,6 +596,7 @@ impl SlidesApp {
         let notes = notes_control(&dispatch, "");
         let store = Rc::new(RefCell::new(store::Store::new(content.clone())));
         SlidesApp {
+            dirty: true,
             focus_slide: None,
             deferred: None,
             opened: Rc::default(),
@@ -899,6 +904,7 @@ impl SlidesApp {
     /// (closed) flaps with no one-frame flash. Returns the rail layout. Called
     /// once per frame before `compute_chrome`.
     fn sync_flaps(&mut self, theme: Option<&Theme>) -> SplitLayout {
+        self.dirty = true;
         self.resolve_drawers();
         if self.flap_uninitialised {
             // A `--shots` scenario's drawer is opened for the size class the
@@ -1174,6 +1180,7 @@ impl SlidesApp {
     /// then mirrors the clamped scroll back into `rail_scroll` so the widget
     /// stays the single source of truth for the list geometry.
     fn sync_page_rail(&mut self) {
+        self.dirty = true;
         let viewport = self.rail_viewport(self.rail_rect());
         self.page_sidebar.set_aspect(SLIDE_H / SLIDE_W);
         self.page_sidebar.set_scroll(self.rail_scroll);
@@ -1775,6 +1782,7 @@ impl SlidesApp {
     /// another slide rebinds it; otherwise a collaborator's edit folds in
     /// under the live caret.
     fn sync_notes(&mut self, doc: &AutoCommit) {
+        self.dirty = true;
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             self.end_notes_edit();
             return;
@@ -2432,6 +2440,7 @@ impl Widget for SlidesApp {
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         let (state, _) = ui::doc::document_ref(state, path);
         self.follow_document();
         let asks = std::mem::take(&mut self.store.borrow_mut().asks);
@@ -2607,6 +2616,7 @@ impl Widget for SlidesApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         // The press that opens a box is taken up within its own event.
         self.opening_press = None;
         // The toolkit delivers a finger's taps and drags as pointer events
@@ -2698,6 +2708,14 @@ impl Widget for SlidesApp {
             ctx.handled,
         );
         self.open_at_press(&mut routed);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -3318,6 +3336,7 @@ impl SlidesApp {
     /// a window resize (or a fresh over-large offset) self-corrects rather
     /// than sticking past the end of the list. Called once per `draw`.
     fn sync_scroll_offsets(&mut self, dt: f64) {
+        self.dirty = true;
         match self.mode {
             Mode::Edit => {
                 // Auto-scroll the rail while a thumbnail reorder drag hovers near

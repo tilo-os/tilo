@@ -1,5 +1,6 @@
 //! Damage certified by the actual retained draw, rather than consumed edit flags.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
@@ -8,12 +9,119 @@ use vello::kurbo::{Affine, Rect};
 
 use crate::Theme;
 
+use std::cell::RefCell;
+use std::mem;
+
+// A widget paints its parts every frame it draws, each part into a scene of
+// its own (`PaintParts::draw_bounded`). Those scenes are worth keeping: a part
+// scene is appended to the frame and then no longer read, so the next frame's
+// part of the same shape draws into it instead of allocating another encoding.
+// A part that drew a great deal hands its scene to the allocator instead, so
+// one large draw does not pin its memory.
+
+/// How many drawn scenes one thread keeps for the parts of the frames after.
+const SPARE_SCENES: usize = 1024;
+
+/// How much encoded drawing all the kept scenes hold together, in entries
+/// of their streams: a few megabytes, however many parts a desk paints.
+const SPARE_ENTRIES: usize = 64 * 1024;
+
+/// A part that drew more than this many draw commands was no row or cell.
+const SPARE_PART_TAGS: usize = 4096;
+
+/// Roughly the memory a scene's encoding holds, in entries of its streams.
+fn held(scene: &Scene) -> usize {
+    let encoding = scene.encoding();
+    encoding.draw_tags.capacity()
+        + encoding.path_tags.capacity()
+        + encoding.path_data.capacity()
+        + encoding.transforms.capacity()
+        + encoding.styles.capacity()
+        + encoding.resources.glyphs.capacity()
+}
+
+#[derive(Default)]
+struct SpareScenes {
+    scenes: Vec<Scene>,
+    tags: usize,
+}
+
+thread_local! {
+    static DRAW_SCENES: RefCell<SpareScenes> = const { RefCell::new(SpareScenes { scenes: Vec::new(), tags: 0 }) };
+}
+
+/// A scene to draw one part into, its last frame's drawing cleared.
+fn take_scene() -> Scene {
+    DRAW_SCENES.with_borrow_mut(|spare| {
+        let Some(scene) = spare.scenes.pop() else {
+            return Scene::default();
+        };
+        spare.tags = spare.tags.saturating_sub(held(&scene));
+        scene
+    })
+}
+
+/// The part's drawing is in the frame; keep its scene for the next one.
+fn spare_scene(mut scene: Scene) {
+    let tags = held(&scene);
+    if tags > SPARE_PART_TAGS {
+        return;
+    }
+    scene.reset();
+    DRAW_SCENES.with_borrow_mut(|spare| {
+        if spare.scenes.len() < SPARE_SCENES && spare.tags + tags <= SPARE_ENTRIES {
+            spare.scenes.push(scene);
+            spare.tags += tags;
+        }
+    });
+}
+
+impl Drop for PaintPart {
+    fn drop(&mut self) {
+        spare_scene(mem::take(&mut self.scene));
+    }
+}
+
+/// Where a part's drawing can differ from the last frame's: the bounds it
+/// was drawn in, or more than one region for a part that changed position.
+enum Damage {
+    One(Rect),
+    Many(Vec<Rect>),
+}
+
+impl Damage {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::One(_) => false,
+            Self::Many(rects) => rects.is_empty(),
+        }
+    }
+
+    fn each(&self, mut visit: impl FnMut(Rect)) {
+        match self {
+            Self::One(rect) => visit(*rect),
+            Self::Many(rects) => rects.iter().copied().for_each(visit),
+        }
+    }
+}
+
+impl From<Vec<Rect>> for Damage {
+    fn from(mut rects: Vec<Rect>) -> Self {
+        if rects.len() == 1 {
+            Self::One(rects.remove(0))
+        } else {
+            Self::Many(rects)
+        }
+    }
+}
+
 /// One stable draw partition, with the damage its owning widget certified.
 pub struct PaintPart {
-    key: String,
+    /// Its name in the frame: a literal as it is, a made one as it is made.
+    key: Cow<'static, str>,
     rect: Rect,
     scene: Scene,
-    damage: Vec<Rect>,
+    damage: Damage,
     /// Whether `damage` covers every pixel `scene` paints, so the part may
     /// come, go or move between frames ([`Self::placed`]).
     placed: bool,
@@ -24,12 +132,17 @@ impl PaintPart {
     /// `damage` covers where the scene can differ from the last frame's part
     /// of the same key and rect; a part that comes, goes or changes its rect
     /// repaints the whole frame.
-    pub fn new(key: String, rect: Rect, scene: Scene, damage: Vec<Rect>) -> Self {
+    pub fn new(
+        key: impl Into<Cow<'static, str>>,
+        rect: Rect,
+        scene: Scene,
+        damage: Vec<Rect>,
+    ) -> Self {
         Self {
-            key,
+            key: key.into(),
             rect,
             scene,
-            damage,
+            damage: damage.into(),
             placed: false,
         }
     }
@@ -42,10 +155,30 @@ impl PaintPart {
     /// [`Self::new`] for a part whose `damage` covers every pixel its scene
     /// paints (a paragraph's row, a table cell): it may come, go or move, and
     /// repaints where it was and where it is.
-    pub fn placed(key: String, rect: Rect, scene: Scene, damage: Vec<Rect>) -> Self {
+    pub fn placed(
+        key: impl Into<Cow<'static, str>>,
+        rect: Rect,
+        scene: Scene,
+        damage: Vec<Rect>,
+    ) -> Self {
         Self {
+            key: key.into(),
+            rect,
+            scene,
+            damage: damage.into(),
             placed: true,
-            ..Self::new(key, rect, scene, damage)
+        }
+    }
+
+    /// [`Self::placed`] for a part whose damage is the bounds it was drawn
+    /// in, as [`PaintParts`] draws them.
+    fn placed_at(key: impl Into<Cow<'static, str>>, rect: Rect, scene: Scene) -> Self {
+        Self {
+            key: key.into(),
+            rect,
+            scene,
+            damage: Damage::One(rect),
+            placed: true,
         }
     }
 }
@@ -87,10 +220,12 @@ impl PaintFrame {
                 .all(|value| value.is_finite())
             && self.transform.determinant() != 0.0
             && self.parts.iter().all(|part| {
+                let mut finite_damage = true;
+                part.damage.each(|rect| finite_damage &= rect.is_finite());
                 part.rect.is_finite()
                     && part.rect.width() > 0.0
                     && part.rect.height() > 0.0
-                    && part.damage.iter().all(|rect| rect.is_finite())
+                    && finite_damage
             })
     }
 
@@ -107,7 +242,7 @@ impl PaintFrame {
         let keyed: HashMap<_, _> = self
             .parts
             .iter()
-            .map(|part| (part.key.as_str(), part))
+            .map(|part| (part.key.as_ref(), part))
             .collect();
         (keyed.len() == self.parts.len()).then_some(keyed)
     }
@@ -121,19 +256,40 @@ impl PaintFrame {
 /// painted in another order, a part that is not placed came, went or moved,
 /// or a part that changed certified no damage.
 fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect>> {
+    // The common frame: the same parts, each where it was. Only their
+    // drawings can differ, and comparing them in order answers that without
+    // a map or a name lookup.
+    if previous.parts.len() == current.parts.len()
+        && previous
+            .parts
+            .iter()
+            .zip(&current.parts)
+            .all(|(was, is)| was.key == is.key && was.rect == is.rect)
+    {
+        let mut damage = Vec::new();
+        for (was, is) in previous.parts.iter().zip(&current.parts) {
+            if was.scene.encoding_eq(&is.scene) {
+                continue;
+            }
+            // A part that changed and certified no damage paints the same
+            // pixels: the drawing it made differs, where it shows does not.
+            is.damage.each(|rect| damage.push(rect));
+        }
+        return Some(tidied(damage));
+    }
     let old = previous.keyed()?;
     let new = current.keyed()?;
     let kept_before = previous
         .parts
         .iter()
-        .filter(|part| new.contains_key(part.key.as_str()));
+        .filter(|part| new.contains_key(part.key.as_ref()));
     let kept_after = current
         .parts
         .iter()
-        .filter(|part| old.contains_key(part.key.as_str()));
+        .filter(|part| old.contains_key(part.key.as_ref()));
     if !kept_before
-        .map(|part| part.key.as_str())
-        .eq(kept_after.map(|part| part.key.as_str()))
+        .map(|part| part.key.as_ref())
+        .eq(kept_after.map(|part| part.key.as_ref()))
     {
         return None;
     }
@@ -143,7 +299,7 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
     let painting = |part: &PaintPart| !part.scene.encoding_eq(&nothing);
     let mut changed: Vec<&PaintPart> = Vec::new();
     for part in &current.parts {
-        match old.get(part.key.as_str()).copied() {
+        match old.get(part.key.as_ref()).copied() {
             Some(was) if was.rect == part.rect && was.scene.encoding_eq(&part.scene) => {}
             Some(was) if was.placed && part.placed => {
                 changed.extend([was, part].into_iter().filter(|part| painting(part)));
@@ -155,7 +311,7 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
         }
     }
     for part in &previous.parts {
-        if !new.contains_key(part.key.as_str()) {
+        if !new.contains_key(part.key.as_ref()) {
             if !part.placed {
                 return None;
             }
@@ -167,14 +323,19 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
     }
     // A part that changed in place damages the same rows it was and is:
     // each once.
-    let mut damage: Vec<Rect> = changed
-        .into_iter()
-        .flat_map(|part| part.damage.iter().copied())
-        .collect();
+    let mut damage: Vec<Rect> = Vec::new();
+    for part in changed {
+        part.damage.each(|rect| damage.push(rect));
+    }
+    Some(tidied(damage))
+}
+
+/// `damage` with each region once.
+fn tidied(mut damage: Vec<Rect>) -> Vec<Rect> {
     let bits = |rect: &Rect| [rect.x0, rect.y0, rect.x1, rect.y1].map(f64::to_bits);
     damage.compact_sort_by_key(bits);
     damage.dedup_by_key(|rect| bits(rect));
-    Some(damage)
+    damage
 }
 
 /// A self-drawn widget's draw, split into the parts of a [`PaintFrame`] as
@@ -210,7 +371,7 @@ impl PaintParts {
     pub fn draw<R>(
         &mut self,
         scene: &mut Scene,
-        key: impl Into<String>,
+        key: impl Into<Cow<'static, str>>,
         bounds: Rect,
         draw: impl FnOnce(&mut Scene) -> R,
     ) -> R {
@@ -223,16 +384,15 @@ impl PaintParts {
     pub fn draw_bounded<R>(
         &mut self,
         scene: &mut Scene,
-        key: impl Into<String>,
+        key: impl Into<Cow<'static, str>>,
         draw: impl FnOnce(&mut Scene) -> (Rect, R),
     ) -> R {
         self.outside |= scene.encoding().draw_tags.len() != self.drawn;
-        let mut part = Scene::new();
+        let mut part = take_scene();
         let (bounds, result) = draw(&mut part);
         scene.append(&part, None);
         self.drawn = scene.encoding().draw_tags.len();
-        self.parts
-            .push(PaintPart::placed(key.into(), bounds, part, vec![bounds]));
+        self.parts.push(PaintPart::placed_at(key, bounds, part));
         result
     }
 
@@ -342,13 +502,13 @@ mod tests {
         Rect::new(0.0, top, 100.0, top + 20.0)
     }
 
-    fn placed(key: &str, top: f64) -> PaintPart {
-        PaintPart::placed(key.into(), row(top), filled(row(top)), vec![row(top)])
+    fn placed(key: &'static str, top: f64) -> PaintPart {
+        PaintPart::placed(key, row(top), filled(row(top)), vec![row(top)])
     }
 
     /// A part that is not placed, painting its row.
-    fn unplaced(key: &str, top: f64) -> PaintPart {
-        PaintPart::new(key.into(), row(top), filled(row(top)), vec![row(top)])
+    fn unplaced(key: &'static str, top: f64) -> PaintPart {
+        PaintPart::new(key, row(top), filled(row(top)), vec![row(top)])
     }
 
     /// Where the editor painted, the whole of it.
@@ -398,7 +558,7 @@ mod tests {
 
     #[test]
     fn a_placed_part_that_paints_nothing_damages_nothing_where_it_goes() {
-        let empty = |top| PaintPart::placed("handles".into(), row(top), Scene::new(), Vec::new());
+        let empty = |top| PaintPart::placed("handles", row(top), Scene::new(), Vec::new());
         let repainted = damage(
             vec![placed("a", 0.0), empty(0.0)],
             vec![placed("a", 0.0), empty(20.0)],
@@ -427,7 +587,7 @@ mod tests {
             vec![BOUNDS]
         );
         // Changed in place: what it certified.
-        let changed = PaintPart::new("a".into(), row(0.0), filled(row(1.0)), vec![row(0.0)]);
+        let changed = PaintPart::new("a", row(0.0), filled(row(1.0)), vec![row(0.0)]);
         assert_eq!(
             damage(vec![unplaced("a", 0.0)], vec![changed]),
             vec![row(0.0)]

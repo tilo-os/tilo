@@ -28,7 +28,11 @@ destructive action remove(s: Shelf, b: Book) (icon: .trash) {
 }
 
 /// Marks a book read or unread.
-action mark(b: Book, read: Bool = not b.read) (label: if read { "Mark read" } else { "Mark unread" }, icon: .check, on: b.read) {
+action mark(b: Book, read: Bool = not b.read) (
+    label: if read { "Mark read" } else { "Mark unread" },
+    icon: .check,
+    on: b.read,
+) {
     b.read = read
 }
 
@@ -37,7 +41,11 @@ action mark(b: Book, read: Bool = not b.read) (label: if read { "Mark read" } el
 /// whose actions are its context menu and its swipe, and a book opens beside the list.
 view shelf(s: Shelf) {
     let offered = actions(s)
-    ui.NavShell(content_kind: .document, overview_title: meta(s).title, overview_count: s.books.count(b -> true)) {
+    ui.NavShell(
+        content_kind: .document,
+        overview_title: meta(s).title,
+        overview_count: s.books.count(b -> true),
+    ) {
         overview_actions: {
             ui.SearchButton()
             for a in offered {
@@ -64,7 +72,11 @@ view shelf(s: Shelf) {
                         }
                         swipe: {
                             match mine.find(a -> a.destructive) {
-                                .some(a) => ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
+                                .some(a) => ui.SwipeAction(
+                                    a.label,
+                                    icon: a.icon,
+                                    destructive: true,
+                                ) {
                                     on swipe: a.run
                                 },
                                 .none => {}

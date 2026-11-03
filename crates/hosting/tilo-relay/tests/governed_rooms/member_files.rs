@@ -4,7 +4,7 @@
 //! smaller than the largest file the host keeps.
 use super::*;
 use std::sync::Arc;
-use tilo_relay::room_bots::attachments::{AttachmentLimits, Referenced, RoomAttachments};
+use tilo_relay::room_bots::attachments::{AttachmentLimits, Referenced, WorkspaceAttachments};
 use tilo_relay::room_bots::installed::FsBlobs;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -38,22 +38,22 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
     .await
     .unwrap();
     let room = create_and_enter(&relay, &laptop, "Lounge").await;
-    super::sealed_records::join(&relay, &laptop, &room.room, &bob, &phone, [5; 32])
+    super::sealed_records::join(&relay, &laptop, &room.workspace, &bob, &phone, [5; 32])
         .await
         .unwrap();
 
-    let rooms = relay.rooms().unwrap().clone();
+    let workspaces = relay.workspaces().unwrap().clone();
     let blobs = Arc::new(FsBlobs::new(state.path().join("blobs"), None).unwrap());
-    rooms.serve_content(blobs.clone());
-    let keeper = RoomAttachments::new(
-        rooms.clone(),
-        room.room.clone(),
+    workspaces.serve_content(blobs.clone());
+    let keeper = WorkspaceAttachments::new(
+        workspaces.clone(),
+        room.workspace.clone(),
         host.device_pubkey(),
         blobs,
         state.path().join("attachments.json"),
         limits,
     );
-    rooms.keep_content(keeper.clone());
+    workspaces.keep_content(keeper.clone());
 
     // Bob posted a file exactly as large as the host keeps; the host asks
     // for it, and his page answers as a browser page does.

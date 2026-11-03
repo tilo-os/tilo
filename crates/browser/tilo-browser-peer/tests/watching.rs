@@ -26,19 +26,21 @@ use tilo_browser_peer::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::https as carrier;
-use tilo_relay_protocol::rooms::{JoinReply, Room, RoomRole, RoomsReply, RoomsRequest};
+use tilo_relay_protocol::workspaces::{
+    JoinReply, Workspace, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 use support::{
     TestHost, admitted, enrol, next_document_on, start_peer, start_workspace_host, wait_for,
 };
 
-async fn workspaces(link: &HttpsLink, request: RoomsRequest) -> Room {
-    match carrier::rooms(link.client().as_ref(), link.session(), &request)
+async fn workspaces(link: &HttpsLink, request: WorkspacesRequest) -> Workspace {
+    match carrier::workspaces(link.client().as_ref(), link.session(), &request)
         .await
         .unwrap()
     {
-        RoomsReply::Room(workspace) => workspace,
+        WorkspacesReply::Workspace(workspace) => workspace,
         other => panic!("expected a workspace, got {other:?}"),
     }
 }
@@ -132,30 +134,30 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     .unwrap();
     let created = workspaces(
         &owner,
-        RoomsRequest::Create {
+        WorkspacesRequest::Create {
             name: "Plaza".into(),
         },
     )
     .await;
     workspaces(
         &owner,
-        RoomsRequest::Enter {
-            room: created.room.clone(),
+        WorkspacesRequest::Enter {
+            workspace: created.workspace.clone(),
         },
     )
     .await;
     let workspace_id = created.workspace_id;
 
     // The spectator person is a viewer of the workspace, as its host makes it.
-    let RoomsReply::Invitation {
+    let WorkspacesReply::Invitation {
         signed_invitation, ..
-    } = carrier::rooms(
+    } = carrier::workspaces(
         owner.client().as_ref(),
         owner.session(),
-        &RoomsRequest::Invite {
-            room: created.room.clone(),
+        &WorkspacesRequest::Invite {
+            workspace: created.workspace.clone(),
             request_id: [1; 32],
-            role: RoomRole::Viewer,
+            role: WorkspaceRole::Viewer,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: None,
             wait_list_entry: None,
@@ -191,8 +193,8 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     );
     workspaces(
         &owner,
-        RoomsRequest::Admit {
-            room: created.room.clone(),
+        WorkspacesRequest::Admit {
+            workspace: created.workspace.clone(),
             request_id: [2; 32],
         },
     )
@@ -210,7 +212,7 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     // Alice writes in a note, sealed with its channel's keys.
     let route = DocumentRoute {
         app_id: "so.tilo.notes".into(),
-        cluster_id: created.room.clone(),
+        cluster_id: created.workspace.clone(),
         record: "note-1".into(),
     };
     let alice_page = start_peer(
@@ -236,8 +238,6 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     });
     let watcher = watching_page(&spectator, &host.cert, paths.clone()).await;
     watcher.join(workspace_id).unwrap();
-    // What a page does as a member, it does not do watching.
-    watcher.live_join(workspace_id).unwrap();
     watcher.open_route(route.clone()).unwrap();
     watcher
         .publish(

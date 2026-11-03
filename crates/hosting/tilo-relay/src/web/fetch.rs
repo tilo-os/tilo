@@ -6,10 +6,10 @@
 //! directory's API, a calendar subscription) through the workspace host it
 //! is admitted to. Only a member's or guest's device with an open session
 //! may: the session token arrives in [`SESSION_HEADER`], as on every other
-//! route, and its person must be admitted to a workspace here. A room's
+//! route, and its person must be admitted to a workspace here. A workspace's
 //! spectators only watch, so they may not. The proxy itself enforces
 //! destinations, bounds, rates and budgets (see `tilo_net::proxy::host`);
-//! this module adds who may call it, which rooms' budgets a request counts
+//! this module adds who may call it, which workspaces' budgets a request counts
 //! against (every workspace here its person is admitted to), and the CORS
 //! headers a page on the web entry's origin needs to read the answer.
 
@@ -28,13 +28,13 @@ pub struct FetchProxySetup {
     /// Its bounds, destinations and rates.
     pub config: Config,
     /// Where its counters are written as Prometheus text every few seconds,
-    /// for a room host's metrics page.
+    /// for a workspace host's metrics page.
     pub metrics_file: Option<PathBuf>,
 }
 
 /// How often the counters are written.
 const METRICS_EVERY: Duration = Duration::from_secs(5);
-/// The counters' name prefix, as a room host's metrics page names its own.
+/// The counters' name prefix, as a workspace host's metrics page names its own.
 const METRICS_PREFIX: &str = "tilo_rooms_fetch_proxy";
 
 /// The fetch proxy a listener serves, if any, and the task writing its
@@ -113,8 +113,8 @@ pub(super) async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -
         ),
         Some(_) if preflight => reply(hyper::StatusCode::NO_CONTENT, Vec::new()),
         Some(proxy) => match caller(web, &request).await {
-            Ok((caller, rooms)) => proxy
-                .serve_in(caller, &rooms, request)
+            Ok((caller, workspaces)) => proxy
+                .serve_in(caller, &workspaces, request)
                 .await
                 .map(Body::Proxied),
             Err(why) => proxy
@@ -131,7 +131,7 @@ pub(super) async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -
     response
 }
 
-/// The device a request is made for, and the rooms its person is admitted
+/// The device a request is made for, and the workspaces its person is admitted
 /// to here, when its session belongs to a person admitted here.
 async fn caller(
     web: &Web,
@@ -150,18 +150,18 @@ async fn caller(
         .get(&token)
         .map_err(|_| "the session ended; sign in again")?;
     let user = session.peer.user_public_key;
-    let rooms = member_of(web, user).await;
-    // The person this host runs for may use it before any of their rooms is
+    let workspaces = member_of(web, user).await;
+    // The person this host runs for may use it before any of their workspaces is
     // bound here: their fetches count against their device's budget alone.
-    if rooms.is_empty() && user != web.sessions.context().relay.identity.user_public_key {
+    if workspaces.is_empty() && user != web.sessions.context().relay.identity.user_public_key {
         return Err("the fetch proxy is for members of a workspace on this host");
     }
-    Ok((Caller(session.peer.device_public_key), rooms))
+    Ok((Caller(session.peer.device_public_key), workspaces))
 }
 
 /// The workspaces here `user` is admitted to as a person of its own: a
 /// member or a guest. None for the spectator person every watching page of
-/// a public room shares.
+/// a public workspace shares.
 async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
     let workspaces: Vec<_> = web
         .sessions
@@ -173,7 +173,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
         .iter()
         .map(|(id, workspace)| (*id, workspace.clone()))
         .collect();
-    let mut rooms = Vec::new();
+    let mut admitted = Vec::new();
     let own_user = web.sessions.context().relay.identity.user_public_key;
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
@@ -184,10 +184,10 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
             return Vec::new();
         }
         if workspace.admits_person(&user, &own_user) {
-            rooms.push(Room(id));
+            admitted.push(Room(id));
         }
     }
-    rooms
+    admitted
 }
 
 /// The methods a page may send through the proxy, as a preflight answers.

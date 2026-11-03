@@ -308,6 +308,8 @@ close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
 
 block-image-untitled = Bild
+# The title a row shows for an item nobody has named yet.
+list-row-untitled = Ohne Titel
 block-image-missing = Noch nicht auf diesem Gerät
 notes-image-edit = Beschreibung bearbeiten
 notes-image-done = Fertig
@@ -895,6 +897,9 @@ history-preview-now = Zurück zu jetzt
 date-field-none = Kein Datum
 date-field-calendar = Kalender
 date-field-clear = Datum entfernen
+
+person-field-none = Niemand
+person-field-me = Ich
 
 # Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
 text-menu-cut = Ausschneiden

@@ -1223,6 +1223,37 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
     assert!(list.row_selection(3).above);
 }
 
+/// A delegate whose row a view wraps, as `std.rows` gives every row the swipe its item offers:
+/// the list still hands the row its selection, in place.
+#[test]
+fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {
+    let model = VecListModel::new((0..3_u32).collect(), |i| *i).unwrap();
+    let mut list = VirtualList::with_selection_delegate(model, 40.0, |_, _, key, _| {
+        let row = crate::widget::ListRow::new(format!("r{key}"), format!("Row {key}"));
+        Box::new(crate::widget::SwipeRow::new(Box::new(row), None, None)) as Element
+    })
+    .with_viewport_height(400.0);
+    let _ = lay_out(&mut list, 300.0);
+    list.selection_mut().select_only(1);
+    list.push_row_selection();
+    let selected: Vec<bool> = list
+        .mounted
+        .iter_mut()
+        .map(|row| {
+            row.widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<crate::widget::SwipeRow>())
+                .expect("the row's swipe")
+                .content()
+                .as_any()
+                .and_then(|any| any.downcast_ref::<crate::widget::ListRow>())
+                .expect("the row under its swipe")
+                .is_selected()
+        })
+        .collect();
+    assert_eq!(selected, [false, true, false], "only the chosen row is");
+}
+
 /// A change the person just made moves the rows it displaced from where
 /// they stood (`motion::ListChange`) and fades a row they added in; a
 /// change nobody just made (a sync) and a shortcut's result land at

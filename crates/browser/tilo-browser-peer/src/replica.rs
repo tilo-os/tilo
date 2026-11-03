@@ -4,7 +4,7 @@
 //! storage through its [`PeerStore`].
 //!
 //! The host sends a subscriber the workspace's bootstrap ahead of its replay
-//! ([`tilo_relay_protocol::Envelope::RoomBootstrap`]): the workspace-join
+//! ([`tilo_relay_protocol::Envelope::WorkspaceBootstrap`]): the workspace-join
 //! contract's membership answer, the workspace's governing authority, roster and
 //! revocations. The owner holds the workspace on that answer, vouched for by the
 //! host the page authenticated to

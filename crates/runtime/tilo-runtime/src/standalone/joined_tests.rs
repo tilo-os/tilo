@@ -106,7 +106,7 @@ impl Joined {
         workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
-        let host = tilo_room_host::host::RoomHost::open(
+        let host = tilo_room_host::host::WorkspaceHost::open(
             tilo_room_host::host::HostConfig::new(
                 directory.path().join("room-host"),
                 tilo_room_host::host::HostMode::Device,

@@ -253,13 +253,16 @@ impl Clipboard {
             tracing::debug!("the clipboard holds no files to paste");
             return;
         };
-        *self.paste.borrow_mut() = Some(clipboard_files::Paste::start(
+        let paste = clipboard_files::Paste::start(
             &files,
             destination,
             conflict,
             ui::time::unix_now_ms(),
             &self.wake,
-        ));
+        );
+        if let Some(paste) = paste {
+            *self.paste.borrow_mut() = Some(paste);
+        }
     }
 
     /// What the paste that just ended has to tell the person, if anything.
@@ -664,3 +667,22 @@ fn copy_of(stored: StoredCopy) -> Option<Copy> {
 const KEY_LEFTCTRL: u32 = 29;
 const KEY_LEFTSHIFT: u32 = 42;
 const KEY_V: u32 = 47;
+
+/// Offer the files `files` names on the desktop's clipboard, as a file
+/// manager does: the copy a person pastes into any app, and which the
+/// clipboard's next read takes in as their own copy.
+pub(crate) fn offer_files(compositor: &mut Compositor, files: &CopiedFiles) {
+    let offer = vec![
+        (
+            ui::dnd::COPIED_FILES_MIME.to_owned(),
+            ui::dnd::copied_files_list(&files.paths, files.cut).into_bytes(),
+        ),
+        (
+            ui::dnd::URI_LIST_MIME.to_owned(),
+            ui::dnd::uri_list(&files.paths).into_bytes(),
+        ),
+    ];
+    if let Err(error) = compositor.set_selection(Selection::Clipboard, offer) {
+        tracing::warn!(%error, "the copied files could not be put on the clipboard");
+    }
+}

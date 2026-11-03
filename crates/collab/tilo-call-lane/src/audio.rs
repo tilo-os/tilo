@@ -39,7 +39,8 @@ impl Microphone {
     /// sealed just before its newest one.
     ///
     /// The scope's epoch moves when its membership does, and with it the key:
-    /// a sender that sees a new epoch seals with a new [`Microphone`].
+    /// a microphone that sees the new keys moves to them with [`Self::rekey`],
+    /// so the stream it speaks keeps the place it had on the lane.
     ///
     /// # Errors
     ///
@@ -56,6 +57,27 @@ impl Microphone {
             bundles: Rebundler::default(),
             repeats: repeats.min(MAX_REPEATS),
         })
+    }
+
+    /// Seal this microphone's next frames under `keys` instead, as the same
+    /// `sender`: the stream keeps its sequence, so every device hearing it
+    /// goes on hearing it across the epoch it moved to.
+    ///
+    /// The frames bundled under the old epoch's key are dropped: what a
+    /// datagram repeats is what the receivers of that epoch already hold.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sealer::new`].
+    pub fn rekey(
+        &mut self,
+        keys: &ChannelContentKeys,
+        sender: [u8; 32],
+        scope: &Scope,
+    ) -> Result<(), Refusal> {
+        self.sealer = Sealer::new(keys, sender, Stream::Microphone, track(scope))?;
+        self.bundles = Rebundler::default();
+        Ok(())
     }
 
     /// The epoch this seals under.
@@ -183,7 +205,11 @@ mod tests {
     const STRANGER: [u8; 32] = [3; 32];
 
     fn keys(key: u8) -> ChannelContentKeys {
-        let wire = (1_u8, ChannelId::new(), 1_u64, vec![(1_u64, [key; 32])]);
+        keys_at(1, key)
+    }
+
+    fn keys_at(epoch: u64, key: u8) -> ChannelContentKeys {
+        let wire = (1_u8, ChannelId::new(), epoch, vec![(epoch, [key; 32])]);
         ChannelContentKeys::from_bytes(&postcard::to_stdvec(&wire).unwrap()).unwrap()
     }
 
@@ -212,6 +238,34 @@ mod tests {
                 sequence: 1,
                 timestamp_48k: 1_920,
                 opus: b"another".to_vec()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_microphones_stream_keeps_its_place_when_its_key_moves_to_another_epoch() {
+        let speaking = keys(7);
+        let mut microphone = Microphone::new(&speaking, ALICE, &scope(), 2).unwrap();
+        let first = microphone.frame(0, b"hello").unwrap().unwrap();
+        assert_eq!(
+            heard(&ear(speaking, &[ALICE]), ALICE, &scope(), &first)
+                .unwrap()
+                .len(),
+            1
+        );
+        // The channel's membership moves: the same stream goes on under the
+        // new epoch's key, and the frames it carried before are not repeated
+        // under a key the receivers of that epoch cannot open them with.
+        let moved = keys_at(2, 7);
+        microphone.rekey(&moved, ALICE, &scope()).unwrap();
+        assert_eq!(microphone.epoch(), 2);
+        let second = microphone.frame(960, b"still here").unwrap().unwrap();
+        assert_eq!(
+            heard(&ear(moved, &[ALICE]), ALICE, &scope(), &second).unwrap(),
+            vec![super::Heard {
+                sequence: 1,
+                timestamp_48k: 960,
+                opus: b"still here".to_vec()
             }]
         );
     }

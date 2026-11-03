@@ -112,8 +112,8 @@ fn arrival_count() -> &'static tokio::sync::watch::Sender<u64> {
 }
 
 /// Changes each time an app surface arrives here: a change held for it can
-/// be decided now. A room's governor replays what its relay retains then
-/// ([`crate::rooms::Rooms`]), so a held change is never let go for good.
+/// be decided now. A workspace's governor replays what its relay retains then
+/// ([`crate::workspaces::Workspaces`]), so a held change is never let go for good.
 pub(crate) fn arrivals() -> tokio::sync::watch::Receiver<u64> {
     arrival_count().subscribe()
 }
@@ -130,10 +130,10 @@ fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlob
 /// Why the relay refuses the change the delta `delta` carries, if it does:
 /// a change that names no action, a cleartext op that brings claims of its
 /// own, a claim to an action or field the app's surface does not publish,
-/// one writing a unit outside its action's footprint, or, where the room's
+/// one writing a unit outside its action's footprint, or, where the workspace's
 /// governor projected its members' standings (`standings`), an action the
 /// author is not granted. Ops whose surface has not arrived here yet are
-/// left to the room's devices, which hold them. `payloads` reads the
+/// left to the workspace's devices, which hold them. `payloads` reads the
 /// document frame.
 pub(crate) fn refusal(
     payloads: &dyn crate::payloads::ShellPayloads,

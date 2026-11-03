@@ -8,10 +8,12 @@ use wasm_bindgen::prelude::*;
 use super::{error, with_mount, with_mount_quietly};
 
 /// Who is in the workspace's live layer now: `{own: {publisher, label, user},
-/// members: [{publisher, kind, label, focus, activity, place}] | null}`,
-/// `members` null while the layer is not live. The bar, the People popover
-/// and the windows show them, each in the colour the workspace settles for them;
-/// nothing is written to the workspace.
+/// members: [{publisher, kind, label, focus, activity, place}] | null,
+/// unavailable: string | null}`, `members` null while the layer is not live
+/// and `unavailable` the reason a page cannot join it at all (a browser
+/// without WebTransport, whose plane has no fallback), shown in their place.
+/// The bar, the People popover and the windows show them, each in the colour
+/// the workspace settles for them; nothing is written to the workspace.
 ///
 /// # Errors
 ///
@@ -22,6 +24,7 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
     struct People {
         own: Option<tilo_desktop::here::LiveMember>,
         members: Option<Vec<tilo_desktop::here::LiveMember>>,
+        unavailable: Option<String>,
     }
     let people: People = serde_json::from_str(people).map_err(error)?;
     with_mount(id, |m| {
@@ -29,11 +32,13 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
-        if desktop
-            .here
-            .borrow_mut()
-            .set_members(people.own, people.members)
-        {
+        let changed = {
+            let mut here = desktop.here.borrow_mut();
+            let members = here.set_members(people.own, people.members);
+            let note = here.set_unavailable(people.unavailable);
+            members || note
+        };
+        if changed {
             desktop.announce_arrivals();
             // The bar reads the strips' counts in its update pass, which a
             // bare redraw skips: without the wake it would paint them only
@@ -246,7 +251,7 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
             // the composition draws it.
             let strip = tree
                 .active_strip
-                .get(&workspace.id)
+                .get(&workspace.slot)
                 .and_then(|id| workspace.strips.iter().find(|s| s.id == *id))
                 .or_else(|| workspace.strips.first())?;
             let group = tree

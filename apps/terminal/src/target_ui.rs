@@ -119,26 +119,23 @@ fn environment_details(env: &EnvironmentSummary) -> (String, String) {
 fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> String {
     match target {
         SessionTarget::Host => t("terminal-target-host"),
-        SessionTarget::Environment { record } => {
-            let name = record
-                .as_deref()
-                .and_then(|key| environments.iter().find(|env| env.key == key))
-                .or_else(|| {
-                    record.is_none().then(|| {
-                        environments
-                            .iter()
-                            .find(|env| env.key == tilo_environment::DEFAULT_RECORD)
-                    })?
-                })
-                .map_or_else(
-                    || match record {
-                        None => t("terminal-target-default"),
-                        Some(key) => key.clone(),
-                    },
-                    |env| env.name.clone(),
-                );
-            name
-        }
+        SessionTarget::Environment { record } => record
+            .as_deref()
+            .and_then(|key| environments.iter().find(|env| env.key == key))
+            .or_else(|| {
+                record.is_none().then(|| {
+                    environments
+                        .iter()
+                        .find(|env| env.key == tilo_environment::DEFAULT_RECORD)
+                })?
+            })
+            .map_or_else(
+                || match record {
+                    None => t("terminal-target-default"),
+                    Some(key) => key.clone(),
+                },
+                |env| env.name.clone(),
+            ),
         SessionTarget::Legacy { vm } => crate::i18n::t_args(
             "terminal-target-legacy",
             &[("vm", ui::i18n::ArgValue::Text(vm.clone()))],

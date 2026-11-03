@@ -116,7 +116,9 @@ pub struct TreeViewProps {
     /// The tree takes the height it is given and scrolls inside itself, rather than sizing to
     /// the rows inside another scroll.
     pub fill: bool,
-    /// The tree's one root node's label is its own name: the nodes under it form the top level.
+    /// The tree's root node — the tree itself, labelled with its `name` — is not a row: the
+    /// nodes at the top level are, at the first depth. Off, the tree's name stands over them
+    /// as a row of its own. Hide it where a heading or a page title already names the tree.
     pub hide_root: bool,
     /// A press selects and activates in one, as a navigator sidebar does; a double click
     /// activates otherwise.
@@ -430,13 +432,11 @@ impl Layout {
         }
     }
 
-    /// The tree's root: the one root node's children, its label the tree's name, when there is
-    /// one root and the view hides it; a node of the tree's own name over the roots otherwise.
-    fn root(&self, name: Option<&String>, hide_root: bool) -> TreeNode<()> {
+    /// The tree's root: a node of the tree's own name over the nodes at the top level. The
+    /// view hides it ([`TreeView::hide_root`]) when the heading above the tree already says
+    /// what the tree is, so the name is stated once.
+    fn root(&self, name: Option<&String>) -> TreeNode<()> {
         let roots = self.siblings_of(None);
-        if hide_root && roots.len() == 1 {
-            return self.tree_node(&roots[0]);
-        }
         TreeNode::branch(
             0,
             name.cloned().unwrap_or_default(),
@@ -582,7 +582,7 @@ impl DescribedTreeView {
             drop,
         } = props;
         let layout = Rc::new(Layout::of(nodes, drop));
-        let root = layout.root(name.as_ref(), hide_root);
+        let root = layout.root(name.as_ref());
         let mut tree = TreeView::new(root)
             .with_id(key)
             .with_feel(motion.unwrap_or(crate::motion::Feel::Standard));
@@ -833,11 +833,44 @@ mod tests {
         assert_eq!(layout.parents.get("a"), Some(&Some("b".to_owned())));
         assert_eq!(layout.parents.get("c"), Some(&Some("a".to_owned())));
         assert_eq!(layout.parents.get("itself"), Some(&None));
-        let root = layout.root(None, false);
+        let root = layout.root(None);
         for key in ["a", "b", "c", "itself"] {
             let id = layout.ids[key];
             assert!(root.find(id).is_some(), "{key} is in the tree");
         }
+    }
+
+    /// Hiding the root drops the tree's own name and keeps every node at the top level, one of
+    /// them as much as several: the heading above the tree names it once.
+    #[test]
+    fn hiding_the_root_keeps_every_top_level_node() {
+        let queue = crate::Intents::default();
+        let layout = Layout::of(
+            vec![
+                node("a", None, false, &queue),
+                node("b", None, false, &queue),
+            ],
+            Event::None,
+        );
+        let name = "Subtasks".to_owned();
+        let labels = |tree: &TreeView<()>| -> Vec<(String, usize)> {
+            tree.visible_rows()
+                .into_iter()
+                .map(|(_, label, depth)| (label.to_owned(), depth))
+                .collect()
+        };
+        let named = TreeView::new(layout.root(Some(&name)));
+        assert_eq!(
+            labels(&named),
+            [("Subtasks".to_owned(), 0)],
+            "the tree's name stands over its nodes when it is not hidden"
+        );
+        let hidden = TreeView::new(layout.root(Some(&name))).hide_root();
+        assert_eq!(
+            labels(&hidden),
+            [("a".to_owned(), 0), ("b".to_owned(), 0)],
+            "the node's rows are the nodes, not the tree's name"
+        );
     }
 
     /// A move is reported by the node it lands at: the next sibling it goes before, the node

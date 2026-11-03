@@ -473,7 +473,7 @@ impl<W: Widget + 'static> crate::widget::Decorator for Follow<W> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.fresh || self.widget.needs_redraw()
+        self.fresh || (self.widget.needs_redraw() || self.widget.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {
@@ -568,6 +568,7 @@ impl Widget for Art {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -734,6 +735,7 @@ impl Widget for SongLines {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn needs_animation_frame(&self) -> bool {

@@ -264,7 +264,7 @@ impl Connection {
     }
     fn current(&self) -> Result<Enrollment, Error> {
         let status = self.peer.status();
-        if !status.authenticated || status.rooms.get(&self.workspace) != Some(&true) {
+        if !status.authenticated || status.workspaces.get(&self.workspace) != Some(&true) {
             return Err(Error::Invalid("feedback session admission unavailable"));
         }
         self.admission

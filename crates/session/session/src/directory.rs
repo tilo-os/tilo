@@ -25,7 +25,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_relay_protocol::directory::{Activity, DirectoryEntry, DirectoryPage, DoorAnswer};
-use tilo_relay_protocol::rooms::RoomRole;
+use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_sheets::directory::{Directory, Listing, ListingAction, Status};
 
 /// How long establishing a connection to a site may take.
@@ -147,12 +147,12 @@ impl Listed {
     /// The key it is joined and found again by: its workspace, else the site
     /// whose home it is, else the name it is listed under.
     pub(crate) fn key(&self) -> String {
-        if self.entry.room.is_empty() {
+        if self.entry.workspace.is_empty() {
             self.site
                 .as_ref()
                 .map_or_else(|| self.entry.name.clone(), url::Url::to_string)
         } else {
-            self.entry.room.clone()
+            self.entry.workspace.clone()
         }
     }
 
@@ -225,10 +225,10 @@ fn listings_of(page: DirectoryPage, directory: &url::Url, site: Option<&url::Url
 fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
     Listed {
         entry: DirectoryEntry {
-            room: String::new(),
+            workspace: String::new(),
             name: home.name.clone(),
             description: String::new(),
-            default_role: RoomRole::Editor,
+            default_role: WorkspaceRole::Editor,
             door: home
                 .admission
                 .as_ref()
@@ -255,13 +255,13 @@ fn ordered(listings: Vec<Listed>, now_ms: u64) -> Vec<Listed> {
     let mut kept: Vec<_> = listings
         .into_iter()
         .filter(|listing| {
-            if listing.entry.room.is_empty() {
+            if listing.entry.workspace.is_empty() {
                 listing
                     .site
                     .as_ref()
                     .is_none_or(|site| seen.insert(site.to_string()))
             } else {
-                seen.insert(listing.entry.room.clone())
+                seen.insert(listing.entry.workspace.clone())
             }
         })
         .collect();
@@ -609,6 +609,17 @@ impl Store {
                     }
                     *self.listed.borrow_mut() = listings;
                     *self.status.borrow_mut() = Status::Listed;
+                    // A site that could not be read is missing from the
+                    // list: say so, so a short list is never taken for
+                    // everything there is.
+                    if !self.settling() {
+                        *self.note.borrow_mut() = (!failures.is_empty()).then(|| {
+                            tilo_sheets::words(
+                                "directory-sites-unread",
+                                &[("error", &failures.join("; "))],
+                            )
+                        });
+                    }
                 }
                 Answer::Joined { key, name, granted } => {
                     *self.joining.borrow_mut() = None;
@@ -1106,12 +1117,12 @@ fn fetch_directory(
 }
 
 /// The words a role is shown with.
-fn role_label(role: RoomRole) -> String {
+fn role_label(role: WorkspaceRole) -> String {
     tilo_sheets::word(match role {
-        RoomRole::Viewer => "directory-role-viewer",
-        RoomRole::Commenter => "directory-role-commenter",
-        RoomRole::Editor => "directory-role-editor",
-        RoomRole::Moderator => "directory-role-moderator",
+        WorkspaceRole::Viewer => "directory-role-viewer",
+        WorkspaceRole::Commenter => "directory-role-commenter",
+        WorkspaceRole::Editor => "directory-role-editor",
+        WorkspaceRole::Moderator => "directory-role-moderator",
     })
 }
 
@@ -1172,7 +1183,7 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
     let mut shown: BTreeSet<String> = BTreeSet::new();
     for listing in ordered(store.listed.borrow().clone(), now_ms) {
         let listed_key = listing.key();
-        let held_by = held.get(&listing.entry.room).cloned();
+        let held_by = held.get(&listing.entry.workspace).cloned();
         let key = match &held_by {
             Some((id, _)) => {
                 shown.insert(id.clone());
@@ -1248,10 +1259,10 @@ mod tests {
     fn entry(name: &str) -> DirectoryEntry {
         let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
         DirectoryEntry {
-            room: workspace.into(),
+            workspace: workspace.into(),
             name: name.into(),
             description: format!("All about {name}"),
-            default_role: RoomRole::Commenter,
+            default_role: WorkspaceRole::Commenter,
             door: door_path(workspace),
             here: Vec::new(),
             here_count: 0,
@@ -1303,7 +1314,7 @@ mod tests {
             Some(
                 format!(
                     "https://eu1.tilo.coffee/peer/v1/directory/{}/",
-                    listed[0].entry.room
+                    listed[0].entry.workspace
                 )
                 .as_str()
             )
@@ -1330,7 +1341,7 @@ mod tests {
     fn the_community_comes_first_then_the_liveliest_then_by_name() {
         let now = 10 * 24 * 60 * 60 * 1000;
         let workspace = |listing: &mut DirectoryEntry, index: u8| {
-            listing.room = format!("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b{index:02}");
+            listing.workspace = format!("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b{index:02}");
         };
         let mut quiet = entry("Bakery");
         workspace(&mut quiet, 1);

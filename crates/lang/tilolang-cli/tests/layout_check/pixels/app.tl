@@ -28,7 +28,9 @@ view samples(s: Sample) {
                 text("Five")
             }
         }
-        text("A paragraph long enough to wrap onto a few lines, so the boxes under it stand at a height in pixels that is not a whole number unless layout rounds it")
+        text(
+            "A paragraph long enough to wrap onto a few lines, so the boxes under it stand at a height in pixels that is not a whole number unless layout rounds it",
+        )
         stack(min: 4.45rem) {
             text(s.name)
         }

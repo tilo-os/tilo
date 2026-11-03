@@ -1335,7 +1335,7 @@ impl Widget for Slider {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.needs_redraw() {
+        if self.needs_redraw() || self.needs_animation_frame() {
             regions.push(self.rect);
         }
         if self.readout_drawn || (self.reads_out && self.is_held()) {

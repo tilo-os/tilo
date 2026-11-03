@@ -15,8 +15,19 @@ impl Shared {
     pub(crate) fn observe(&self) {
         // Who is here changes faster than what is published: people and
         // calls come and go between two door revisions, so the empty
-        // palette's first group is read every pass.
-        self.search.set_here(self.here_now());
+        // palette's first group is not read with them. Reading it costs more
+        // than the rest of this pass and a drag runs sixty of them, so it is
+        // read when presence moved — everyone's face, the call they are in,
+        // the window they switched to — and otherwise once a second, for what
+        // it says from the clock alone: who is away, and who counts as an
+        // agent.
+        let people = self.sync.as_ref().map_or(0, |sync| sync.people_revision());
+        let second = ui::time::unix_now();
+        if self.here_at.get() != second || self.here_seen.get() != people {
+            self.here_at.set(second);
+            self.here_seen.set(people);
+            self.search.set_here(self.here_now());
+        }
         // The workspaces as this frame shows them, before the door revision
         // decides whether the rest is worth reading again: a record held by
         // another workspace is offered under that workspace's name.
@@ -26,6 +37,15 @@ impl Shared {
                 .map(|held| (held.id().to_string(), held.name.clone()))
                 .collect()
         }));
+        // A held pointer drags or resizes a window, and every frame of it
+        // moves the desk — a change of how the desk shows a window, not of
+        // what search offers, and the palette cannot open while the pointer
+        // is held. The revision this read last is left as it was, so the
+        // survey reads the desk once, in the first pass after the person
+        // lets go.
+        if self.underway.get().gesture {
+            return;
+        }
         let now = self.doors.revision();
         if now.is_some() && *self.observed.borrow() == now {
             return;

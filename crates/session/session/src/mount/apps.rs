@@ -28,8 +28,8 @@ use tilo_actions::remote::{
 };
 use tilo_app_launch::routing;
 use tilo_app_launch::{
-    Answer, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext, Planned,
-    Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
+    Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
+    Planned, Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -47,6 +47,10 @@ pub struct Apps {
     state: RefCell<State>,
 }
 
+/// What lets a package author its own records in the workspace it opens in,
+/// called with the workspace's id and the package's.
+type Authorship = Rc<dyn Fn(&str, &str)>;
+
 /// What starting an app needs besides the launch itself.
 struct State {
     environment: SessionEnvironment,
@@ -60,6 +64,15 @@ struct State {
     /// The identity record this workspace's apps are given, when the session
     /// resolved one.
     identity: Option<PathBuf>,
+    /// The person at this device, by the id the workspaces' governance names
+    /// them by: whose authority each app it starts is handed.
+    person: String,
+    /// What the person's authority in a workspace is published as, for each
+    /// app this session starts there, and this session's hold on it.
+    authority: Authority,
+    /// The desk's revision the published authority was last brought up to:
+    /// nothing is republished while the desk has not moved.
+    authority_at: Option<u64>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
     /// The session's launch records, once it has lent them: what its broker
@@ -72,6 +85,10 @@ struct State {
     /// This session, while the doors are lent: a window that must start a
     /// process of its own starts it here.
     me: Weak<Apps>,
+    /// What lets a package author its own records in the workspace it opens
+    /// in, once it is lent: asked before the process is planned, so the app
+    /// starts with the authorship rather than waiting for a window to reopen.
+    authorship: Option<Authorship>,
     /// The door of each launch still running, by the launch's id: the end of
     /// the launch retires it, so the app's next window there starts a process
     /// again.
@@ -109,10 +126,14 @@ impl Apps {
                 running: BTreeMap::new(),
                 launcher,
                 identity: None,
+                person: String::new(),
+                authority: Authority::new(),
+                authority_at: None,
                 render_node: None,
                 launches: None,
                 doors: None,
                 me: Weak::new(),
+                authorship: None,
                 held: BTreeMap::new(),
                 tool_context: None,
             }),
@@ -142,6 +163,13 @@ impl Apps {
         self.state.borrow_mut().render_node = node;
     }
 
+    /// The person at this device, by the id the workspaces' governance names
+    /// them by: whose authority in a workspace each app started from here on
+    /// is handed, so it decides their actions as the workspace's policy says.
+    pub fn set_person(&self, person: impl Into<String>) {
+        self.state.borrow_mut().person = person.into();
+    }
+
     /// The session's launch records: each app started from here on is
     /// written into them, so its connection to the session's services is
     /// admitted for the launch that made it.
@@ -156,6 +184,13 @@ impl Apps {
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
         state.doors = Some(doors);
+    }
+
+    /// What lets a package author its own records in the workspace it opens
+    /// in, once it is lent: called with the workspace's id and the package's,
+    /// before the launch is planned, so the process starts as an author.
+    pub fn lend_authorship(&self, authorship: Authorship) {
+        self.state.borrow_mut().authorship = Some(authorship);
     }
 
     /// The desktop the person works on, which the launches come from.
@@ -176,6 +211,32 @@ impl Apps {
         self.start_asked();
         self.start_asked_of_services();
         self.follow_ended();
+        self.follow_policy();
+    }
+
+    /// Bring what the person's authority in a workspace is published as up to
+    /// the policy the desk holds now: a part someone is given or taken back
+    /// reaches the apps they already run, rather than only their next launch.
+    /// The desk's revision says whether anything may have changed at all, so a
+    /// pass that changed nothing writes nothing.
+    fn follow_policy(&self) {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        let revision = desktop.with_policy(|policy| policy.handle().revision());
+        {
+            let state = self.state.borrow();
+            if state.authority.is_empty() || state.authority_at == Some(revision) {
+                return;
+            }
+        }
+        self.state.borrow_mut().authority_at = Some(revision);
+        for room in self.state.borrow().authority.workspaces() {
+            let workspace = self.workspace_named(&room);
+            if let Err(error) = self.state.borrow().authority.refresh(&workspace) {
+                tracing::warn!(%room, %error, "the person's authority there was not published");
+            }
+        }
     }
 
     /// The launches services, apps and agents asked the session for: each is
@@ -348,20 +409,22 @@ impl Apps {
     }
 
     /// The workspace a launch from the desktop belongs to: the one in front,
-    /// with what the person granted apps in it.
+    /// with what the person granted apps in it and the policy that decides
+    /// what they may do in them.
     fn active_workspace(&self) -> Workspace {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return Workspace::under(&runtime_dir(), String::new());
         };
         let handle = desktop.with_policy(|policy| policy.handle().clone());
-        handle.read(|tree| match tree.active_workspace() {
-            Some(shown) => {
-                let mut launched = Workspace::under(&runtime_dir(), shown.id().to_string());
-                launched.grants = shown.launch_grants(unix_seconds());
-                launched
-            }
-            None => Workspace::under(&runtime_dir(), String::new()),
-        })
+        let person = self.state.borrow().person.clone();
+        let mut launched = handle.read(|tree| {
+            tree.active_workspace().map_or_else(
+                || Workspace::under(&runtime_dir(), String::new()),
+                Self::launching_into,
+            )
+        });
+        launched.person = person;
+        launched
     }
 
     /// The workspace named `workspace`, with its grants when the desktop
@@ -369,23 +432,31 @@ impl Apps {
     /// device does not show gets the app's manifest permissions alone.
     #[must_use]
     pub fn workspace_named(&self, workspace: &str) -> Workspace {
-        self.desktop.borrow().clone().map_or_else(
-            || Workspace::under(&runtime_dir(), workspace.to_owned()),
-            |desktop| {
-                let handle = desktop.with_policy(|policy| policy.handle().clone());
-                handle.read(|tree| {
-                    let held = tree
-                        .workspaces
-                        .iter()
-                        .find(|held| held.id().to_string() == workspace);
-                    let mut launched = Workspace::under(&runtime_dir(), workspace.to_owned());
-                    if let Some(workspace) = held {
-                        launched.grants = workspace.launch_grants(unix_seconds());
-                    }
-                    launched
-                })
-            },
-        )
+        let person = self.state.borrow().person.clone();
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return Workspace::under(&runtime_dir(), workspace.to_owned());
+        };
+        let handle = desktop.with_policy(|policy| policy.handle().clone());
+        let mut launched = handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|held| held.id().to_string() == workspace)
+                .map_or_else(
+                    || Workspace::under(&runtime_dir(), workspace.to_owned()),
+                    Self::launching_into,
+                )
+        });
+        launched.person = person;
+        launched
+    }
+
+    /// `shown` as a launch into it is planned: what the person granted apps
+    /// there, and the policy their authority in it is projected from.
+    fn launching_into(shown: &tilo_desktop_model::Workspace) -> Workspace {
+        let mut launched = Workspace::under(&runtime_dir(), shown.id().to_string());
+        launched.grants = shown.launch_grants(unix_seconds());
+        launched.policy = Some(shown.policy.clone());
+        launched
     }
 
     /// Start `launch` in `workspace`, unless the app already has a window
@@ -410,6 +481,32 @@ impl Apps {
         self.start_window(launch, workspace, true)
     }
 
+    /// `workspace` as this launch starts in it: when the launch opens a
+    /// package there, the workspace is asked to make that package an author
+    /// of its own records first, and read again with what it granted, so the
+    /// process starts with the authorship it writes by. A launch into no
+    /// workspace, and one whose app the workspace already makes an author,
+    /// are left as they are.
+    fn authored(&self, launch: &Launch, workspace: &Workspace) -> Workspace {
+        let Some(app) = launch.package() else {
+            return workspace.clone();
+        };
+        if !workspace.is_workspace() || workspace.grants.authors(app) {
+            return workspace.clone();
+        }
+        let authorship = self.state.borrow().authorship.clone();
+        let Some(authorship) = authorship else {
+            return workspace.clone();
+        };
+        authorship(&workspace.id, app);
+        let refreshed = self.workspace_named(&workspace.id);
+        if refreshed.grants.authors(app) {
+            refreshed
+        } else {
+            workspace.clone()
+        }
+    }
+
     /// Start `launch` in `workspace`: in the process the app already runs
     /// there when that one opens the app's windows, and otherwise in a process
     /// of its own, which holds the app's door for its workspace until it ends.
@@ -419,6 +516,8 @@ impl Apps {
         workspace: &Workspace,
         new_window: bool,
     ) -> Result<(), DoorError> {
+        let authored = self.authored(launch, workspace);
+        let workspace = &authored;
         let planned = {
             let state = self.state.borrow();
             let context = PlanContext {
@@ -426,6 +525,7 @@ impl Apps {
                 workspace,
                 launcher: state.launcher.clone(),
                 identity: state.identity.clone(),
+                authority: Some(&state.authority),
                 render_node: state.render_node.clone(),
                 new_window,
             };

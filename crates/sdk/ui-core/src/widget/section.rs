@@ -703,7 +703,12 @@ impl Widget for HeaderRow {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.own_paint_changed() || self.parts.children.iter().any(|child| child.needs_redraw())
+        self.own_paint_changed()
+            || self
+                .parts
+                .children
+                .iter()
+                .any(|child| child.needs_redraw() || child.needs_animation_frame())
     }
 
     /// Where its hover, press or focus changed, and what its parts changed:
@@ -1703,6 +1708,10 @@ pub struct StatusLine {
     style: Option<TextStyle>,
     dot: f64,
     gap: f64,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1717,6 +1726,7 @@ enum OwnedStatus {
 impl StatusLine {
     fn with(status: OwnedStatus, text: impl Into<String>) -> Self {
         Self {
+            dirty: true,
             status,
             text: text.into(),
             rect: Rect::ZERO,
@@ -1753,6 +1763,7 @@ impl StatusLine {
 
     /// Replace the sentence (a live count).
     pub fn set_text(&mut self, text: impl Into<String>) {
+        self.dirty = true;
         self.text = text.into();
     }
 
@@ -1849,6 +1860,14 @@ impl Widget for StatusLine {
             Point::new(x, self.rect.y0),
             Some(crate::num::f32_of_f64((self.rect.x1 - x).max(1.0))),
         );
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

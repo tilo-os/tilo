@@ -1185,6 +1185,8 @@ pub fn catalogue() -> Catalogue {
     }
 }
 
+pub mod gallery;
+
 #[cfg(test)]
 mod tests;
 

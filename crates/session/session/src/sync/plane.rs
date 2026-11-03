@@ -48,6 +48,28 @@ pub(crate) struct Serving {
     pub(crate) beside: Beside,
 }
 
+impl Serving {
+    /// What the session serves on the endpoint it is about to bind: the
+    /// endpoint it fills in once bound, its call lane, and what answers beside
+    /// the workspaces' traffic.
+    pub(crate) fn new(
+        endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+        lane: crate::calls::LaneSlot,
+        link: Option<Arc<ChannelLink>>,
+        actions: Arc<std::sync::OnceLock<DeviceActions>>,
+        protocols: tilo_network_actor::local_host::Protocols,
+    ) -> Self {
+        Self {
+            bound: Bound { endpoint, lane },
+            beside: Beside {
+                link,
+                actions,
+                protocols,
+            },
+        }
+    }
+}
+
 /// What the session serves on this device's endpoint beside the workspaces'
 /// traffic: the channels they use, this device's action plane, and whatever
 /// else the session was handed — this device as an exit for the person's

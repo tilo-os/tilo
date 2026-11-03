@@ -255,6 +255,11 @@ fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
     until(&mut session, "the app to leave their apps", |session| {
         !published(session, &desktop_id)
     });
+    // What it did is said once the registry reads the app as gone, which is
+    // a pass after the app leaves their apps.
+    until(&mut session, "the notice saying where it went", |session| {
+        !notices(session).is_empty()
+    });
     let trashed = home.data().join("Trash/files");
     assert!(
         trashed.join("Tilo Imager.AppImage").is_file(),
@@ -409,6 +414,11 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
         !published(session, &desktop_id)
     });
     assert!(!file.exists(), "its file went to the Trash");
+    // What it did is said once the registry reads the app as gone, which is
+    // a pass after the app leaves their apps.
+    until(&mut session, "the notice saying where it went", |session| {
+        !notices(session).is_empty()
+    });
     assert_eq!(
         notices(&session),
         [(

@@ -147,9 +147,32 @@ type Win (origin: session.window) {
     /// Its strip's id, as moving a window there names the strip.
     strip_key: Text merge register
     workspace: Text merge register
+    /// Its workspace's id, as switching to it names the workspace.
+    workspace_key: Text merge register
+    /// The window it is a tab of: a group's tabs are one window on the desk, and its other
+    /// tabs stand behind it.
+    group_key: Text merge register
+    /// Its place among its group's tabs: 0 for the tab in front, then the tabs behind it in
+    /// their order.
+    tab_index: Int
+    /// Its share of its strip's width, 0..1: the width the window keeps on the desk.
+    share: Float
+    /// Whether it runs on this device: false for a window on another of the person's devices,
+    /// or on a peer's.
+    local: Bool
+    /// The device that runs it, when it is not this one: its key, empty when it is not known.
+    device: Text merge register
+    /// That device's name, as its certificate labels it.
+    device_name: Text merge register
+    /// Where it stands in the picture of its workspace: 1 for the first tab of the first group
+    /// of the first strip, on along them, strips top to bottom.
+    place: Int
     recency: Int
     focused: Bool
     preview: Text merge register
+    /// Whether its app stopped answering: its card says so, and offers to keep waiting for the
+    /// app or to quit it.
+    not_responding: Bool
 }
 
 /// An agent here for the person, or that acted for them.
@@ -228,7 +251,10 @@ view clock(d: Desk) {
         ui.Text(d.clock, role: .subheading, numeric: true)
         if d.timer != "" {
             ui.Text(d.timer, role: .caption)
-            ui.Text(if d.timer_paused { "Paused · {d.timer_left}" } else { d.timer_left }, role: .caption, numeric: true)
+            if d.timer_paused {
+                ui.Text("Paused", role: .caption)
+            }
+            ui.Text(d.timer_left, role: .caption, numeric: true)
         }
     }
 }
@@ -246,8 +272,18 @@ view bar(d: Desk) {
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
-            if part.shown and (space.wide or not part_gives_way(part, roomy)) and not (part.slot == .people and nobody) {
-                ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status { .trailing } else if part.slot == .space { .space } else { .leading }) {
+            if part.shown
+                and (space.wide or not part_gives_way(part, roomy))
+                and not (part.slot == .people and nobody) {
+                ui.DragItem(
+                    part,
+                    title: part.title,
+                    group: if part.slot == .clock {
+                        .center
+                    } else if part.slot == .people or part.slot == .status {
+                        .trailing
+                    } else if part.slot == .space { .space } else { .leading },
+                ) {
                     bar_part(d, part)
                 }
             }
@@ -339,7 +375,12 @@ view bar_part(d: Desk, part: BarPart) {
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu(d: Desk) {
     let name = if d.workspace != "" { d.workspace } else { "Workspaces" }
-    ui.MenuButton(name, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
+    ui.MenuButton(
+        name,
+        icon: if space.width < 18.0 { .layers },
+        icon_only: space.width < 18.0,
+        role: .bar,
+    ) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)
@@ -383,7 +424,12 @@ view volume_status() {
     if let volume = sound.volume {
         // Rounded, not cut: a level of 0.65 is 65%.
         let percent = (volume * 100.0 + 0.5).to_int()
-        ui.Button(if sound.muted { "Volume, muted" } else { "Volume, {percent}%" }, icon: if sound.muted { .volume_x } else { .volume_2 }, icon_only: true, role: .bar) {
+        ui.Button(
+            if sound.muted { "Volume, muted" } else { "Volume, {percent}%" },
+            icon: if sound.muted { .volume_x } else { .volume_2 },
+            icon_only: true,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -398,10 +444,15 @@ view network_status() {
             if let called = joined.name { "Wi-Fi, {called}" } else { "Wi-Fi" }
         } else if joined.kind == .wired {
             if let called = joined.name { "Wired, {called}" } else { "Wired" }
-        } else {
-            "Offline"
-        }
-        ui.Button(label, icon: if joined.kind == .wifi { .wifi } else if joined.kind == .wired { .ethernet_port } else { .wifi_off }, icon_only: true, role: .bar) {
+        } else { "Offline" }
+        ui.Button(
+            label,
+            icon: if joined.kind == .wifi {
+                .wifi
+            } else if joined.kind == .wired { .ethernet_port } else { .wifi_off },
+            icon_only: true,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -417,7 +468,13 @@ view battery_status() {
     if b.present {
         let charging = b.state == "charging" or b.state == "pending-charge"
         let name = if charging { "{b.percentage}%, charging" } else { "{b.percentage}%" }
-        ui.Button("{b.percentage}%", accessible_name: name, icon: if charging { .battery_charging } else { .battery }, icon_only: space.compact, role: .bar) {
+        ui.Button(
+            "{b.percentage}%",
+            accessible_name: name,
+            icon: if charging { .battery_charging } else { .battery },
+            icon_only: space.compact,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -432,8 +489,16 @@ view battery_status() {
 /// the bell nor the control beside it.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
-    let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
-    ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar, count: d.unread) {
+    let label = if d.unread == 0 {
+        name
+    } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
+    ui.Button(
+        label,
+        icon: if d.quiet { .bell_off } else { .bell },
+        icon_only: true,
+        role: .bar,
+        count: d.unread,
+    ) {
         on press: device.show_surface(device.desk, surface: "quick-settings")
     }
 }

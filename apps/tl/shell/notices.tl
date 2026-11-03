@@ -17,7 +17,10 @@ view notices(d: Desk) {
     let all = d.notices.sort_by(n -> n.key)
     let shown = all.matching(query)
     row(fill, distribute: .end, padding: .related) {
-        ui.FloatingPanel(width: if space.compact { .none } else { .some(360.0) }, fill: if space.compact { 1.0 } else { 0.0 }) {
+        ui.FloatingPanel(
+            width: if space.compact { .none } else { .some(360.0) },
+            fill: if space.compact { 1.0 } else { 0.0 },
+        ) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text("Notifications", role: .heading)
@@ -32,11 +35,20 @@ view notices(d: Desk) {
             }
             body: {
                 if all.is_empty() {
-                    ui.EmptyState("Nothing to catch up on", message: "What apps and agents tell you shows here", icon: .bell)
+                    ui.EmptyState(
+                        "Nothing to catch up on",
+                        message: "Apps and agents leave a notice when something needs you",
+                        icon: .bell,
+                    )
                 } else {
                     ui.TextInput(value: query, placeholder: "Search notifications")
                     if shown.is_empty() {
-                        ui.EmptyState("Nothing matches that", message: "Clear the search to see every notice", icon: .search, inline: true)
+                        ui.EmptyState(
+                            "Nothing matches that",
+                            message: "Clear the search to see every notice",
+                            icon: .search,
+                            inline: true,
+                        )
                     }
                     scroll {
                         for g in groups_of(shown) {
@@ -55,7 +67,9 @@ view notices(d: Desk) {
 /// The count is the desk's own (`Desk.unread`), so the centre and the bar's bell never
 /// disagree.
 fn unread_line(d: Desk) -> Text {
-    if d.unread == 0 { "All read" } else if d.unread == 1 { "1 unread" } else { "{d.unread} unread" }
+    if d.unread == 0 {
+        "All read"
+    } else if d.unread == 1 { "1 unread" } else { "{d.unread} unread" }
 }
 
 /// One sender's notices, under its name: each with its title, what it says and its actions.
@@ -117,7 +131,16 @@ view banner(d: Desk) {
 /// A banner on a desk with the room: the notice with its kind's tone and its first action.
 view banner_full(d: Desk, n: Notice) {
     let actions = actions_of(d, n)
-    ui.Banner(n.title, message: .some(banner_line(n)), kind: if n.kind == "error" { .error } else if n.kind == "warning" { .warning } else if n.kind == "success" { .success } else { .info }, action: if actions.is_empty() { .none } else { .some(actions.first()?.label ?? "Open") }) {
+    ui.Banner(
+        n.title,
+        message: .some(banner_line(n)),
+        kind: if n.kind == "error" {
+            .error
+        } else if n.kind == "warning" {
+            .warning
+        } else if n.kind == "success" { .success } else { .info },
+        action: if actions.is_empty() { .none } else { .some(actions.first()?.label ?? "Open") },
+    ) {
         on act: device.act_on_notice(device.desk, notice: n.key, action: actions.first()?.key ?? "")
         on dismiss: device.dismiss_notice(device.desk, notice: n.key)
     }
@@ -128,7 +151,12 @@ view banner_row(d: Desk, n: Notice) {
     stack(gap: .related) {
         ui.ListRow(n.title, secondary: .some(banner_line(n))) {
             trailing: {
-                ui.Badge(dot: true, tone: if n.kind == "error" { .danger } else if n.kind == "warning" { .warning } else { .info })
+                ui.Badge(
+                    dot: true,
+                    tone: if n.kind == "error" {
+                        .danger
+                    } else if n.kind == "warning" { .warning } else { .info },
+                )
             }
         }
         row(gap: .related, wrap: true) {

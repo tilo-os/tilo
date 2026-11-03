@@ -14,7 +14,7 @@ use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
 
-/// Membership set for a workspace on this relay, as the room's governance
+/// Membership set for a workspace on this relay, as the workspace's governance
 /// or an explicit admission set it. Peers listed here get
 /// store-and-forward; peers not listed get their subscribe rejected with
 /// `NotAuthorised`.
@@ -33,7 +33,7 @@ impl Membership {
     /// Replace the membership with a new set. A set that leaves out a device
     /// of the old one wakes the sessions admitted under it to re-check
     /// (`crate::authority_epoch`). One that only adds devices narrows
-    /// nobody's access and wakes nobody: a public room admitting a crowd
+    /// nobody's access and wakes nobody: a public workspace admitting a crowd
     /// re-audited every member's session for every newcomer.
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {
         if self.devices != devices {
@@ -68,23 +68,23 @@ pub struct Subscriber {
     pub disconnect: mpsc::Sender<()>,
 }
 
-/// The standing of each member device of a room, by device key.
+/// The standing of each member device of a workspace, by device key.
 pub type Standings = std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>;
 
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
-    /// The in-process room authority governing this workspace, told of each
+    /// The in-process workspace authority governing this workspace, told of each
     /// retained body a device's admitted delta carries. Bounded; a full queue
     /// drops the notice.
     pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
-    /// The in-process authority governing this workspace's room, if any: it
-    /// answers the room's calls.
-    pub room_authority: Option<crate::rooms::RoomAuthority>,
-    /// This host's replica of a room it hosts for a governor elsewhere, if
-    /// it hosts this workspace's room: what a subscribing device builds its
+    /// The in-process authority governing this workspace, if any: it
+    /// answers the workspace's calls.
+    pub workspace_authority: Option<crate::workspaces::WorkspaceAuthority>,
+    /// This host's replica of a workspace it hosts for a governor elsewhere, if
+    /// it hosts this workspace: what a subscribing device builds its
     /// own replica from.
     pub(crate) hosted_replica: Option<std::sync::Arc<crate::hosted::HostedReplica>>,
-    /// The standing of each member device, as the room's governor projects
+    /// The standing of each member device, as the workspace's governor projects
     /// it: what the relay decides each change's claimed action against.
     /// `None` until a governor projects one; the relay then decides changes
     /// against their app surface alone.
@@ -95,7 +95,7 @@ pub struct WorkspaceRuntime {
     /// state operation; live anti-entropy accesses that owner, never this field.
     pub doc: Option<AutoCommit>,
     pub(crate) persistence: Option<crate::persistence::Persistence>,
-    /// The room left the host's registry ([`crate::workspace_io::evict`]):
+    /// The workspace left the host's registry ([`crate::workspace_io::evict`]):
     /// its files stay, and this runtime writes them no more.
     pub(crate) evicted: bool,
     /// Which of the user's devices are workspace members. Used to
@@ -107,25 +107,25 @@ pub struct WorkspaceRuntime {
     /// Failed/pending replacements cap what an old external file may grant.
     pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
     pub(crate) membership_revision: u64,
-    /// The daemon's watch on this room's membership files, attached on the
+    /// The daemon's watch on this workspace's membership files, attached on the
     /// first fresh read once a watch covers the state root.
     pub(crate) disk_generation: Option<crate::membership_watch::DiskGeneration>,
     /// The watched generation `membership` was last loaded at. `None` until a
     /// live watch vouched for a load, so every read goes to the disk.
     pub(crate) loaded_generation: Option<u64>,
-    /// How the room admits devices beyond its exact membership: explicitly,
+    /// How the workspace admits devices beyond its exact membership: explicitly,
     /// the relay owner's devices on a same-owner home host, or under native
-    /// governance. Read only through [`crate::room_access::decide`].
-    pub(crate) admission: crate::room_access::AdmissionMode,
+    /// governance. Read only through [`crate::workspace_access::decide`].
+    pub(crate) admission: crate::workspace_access::AdmissionMode,
     /// User roots needed only to pass the relay-wide handshake for devices in
-    /// this native-governed room. Exact room admission still uses
+    /// this native-governed workspace. Exact workspace admission still uses
     /// `membership`, so an ungoverned sibling device under the same root
     /// does not join.
     pub governed_user_roots: HashSet<[u8; 32]>,
-    /// Who may watch this room read-only without being one of its members,
+    /// Who may watch this workspace read-only without being one of its members,
     /// when its host lets visitors watch it. Read only through
-    /// [`crate::room_access::decide`].
-    pub spectators: Option<crate::room_access::Spectators>,
+    /// [`crate::workspace_access::decide`].
+    pub spectators: Option<crate::workspace_access::Spectators>,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     pub outbound_leases: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
@@ -148,7 +148,7 @@ pub struct WorkspaceRuntime {
     /// baseline. A device asks on subscribe and whenever it sends a presence
     /// frame (the browser sends presence only for its hello, a `SyncReq`, and a
     /// rejected checkpoint), which resets its served set. The native publishes
-    /// its checkpoint as one set of messages — one per channel (the room plus
+    /// its checkpoint as one set of messages — one per channel (the workspace plus
     /// each record) — so the gate is per channel: a full bootstrap set passes
     /// once, and the next idle set, on the same channels, is withheld from a
     /// device that already holds every delta — see `fanout_delta`.
@@ -186,8 +186,8 @@ pub struct WorkspaceRuntime {
     /// its ledger check until it is admitted and recorded
     /// ([`Self::claim_commit`]): two copies of one commit cannot both be
     /// admitted, while different commits are admitted side by side. One
-    /// gate for the whole room held every commit through the previous one's
-    /// durability and publication, so a busy room committed one change at a
+    /// gate for the whole workspace held every commit through the previous one's
+    /// durability and publication, so a busy workspace committed one change at a
     /// time.
     commit_claims: CommitClaims,
     /// Held from a commit's [`Self::remember_commit`] until its ledger write
@@ -196,7 +196,7 @@ pub struct WorkspaceRuntime {
     pub(crate) commit_ledger_lane: Arc<AsyncMutex<()>>,
 }
 
-/// The commits a room is admitting, by author and operation id, each with
+/// The commits a workspace is admitting, by author and operation id, each with
 /// the lock its copies wait on.
 type CommitClaims = Arc<std::sync::Mutex<HashMap<([u8; 32], [u8; 16]), Arc<AsyncMutex<()>>>>>;
 
@@ -321,14 +321,15 @@ pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
 }
 
 impl WorkspaceRuntime {
-    /// Whether the person whose root is `user` is admitted to this room as
+    /// Whether the person whose root is `user` is admitted to this workspace as
     /// a person of its own, on a relay whose owner is `own_user`: a member
-    /// its governance names, or the relay owner in a room of their own
-    /// devices. What [`crate::room_access`] admits their devices by.
+    /// its governance names, or the relay owner in a workspace of their own
+    /// devices. What [`crate::workspace_access`] admits their devices by.
     #[must_use]
     pub fn admits_person(&self, user: &[u8; 32], own_user: &[u8; 32]) -> bool {
         self.governed_user_roots.contains(user)
-            || (self.admission == crate::room_access::AdmissionMode::SameOwner && user == own_user)
+            || (self.admission == crate::workspace_access::AdmissionMode::SameOwner
+                && user == own_user)
     }
 
     /// Build a runtime for a bound workspace. Loads the snapshot
@@ -370,9 +371,9 @@ impl WorkspaceRuntime {
         let store = WorkspaceStore::open_with_payloads(state_root, workspace_id, pinned, payloads)?;
         let governed_access_record = store.load_governed_access()?;
         let admission = if governed_access_record.is_some() {
-            crate::room_access::AdmissionMode::Governed
+            crate::workspace_access::AdmissionMode::Governed
         } else {
-            crate::room_access::AdmissionMode::Explicit
+            crate::workspace_access::AdmissionMode::Explicit
         };
         let governed_user_roots = governed_access_record.map_or_else(HashSet::new, |access| {
             access.member_user_roots.into_iter().collect()
@@ -425,7 +426,7 @@ impl WorkspaceRuntime {
             presence_mailboxes: HashMap::new(),
             recent_deltas: HashMap::new(),
             governor_tap: None,
-            room_authority: None,
+            workspace_authority: None,
             hosted_replica: None,
             standings: None,
             live_members: HashMap::new(),
@@ -441,7 +442,7 @@ impl WorkspaceRuntime {
         self.commits.by_op.get(&(*author, *op)).copied()
     }
 
-    /// Claim `author`'s commit `op` for admission. Called under the room's
+    /// Claim `author`'s commit `op` for admission. Called under the workspace's
     /// lock right after [`Self::admitted_commit`] found no record of it, so a
     /// copy of the commit either sees the claim or, once the claim is
     /// released after [`Self::remember_commit`], the record. A copy that
@@ -563,7 +564,7 @@ impl WorkspaceRuntime {
     }
 
     fn announce_live_member(&self, device: [u8; 32], workspace_id: u64, active: bool) {
-        let envelope = Envelope::LiveMember {
+        let envelope = Envelope::RetiredLiveMember {
             workspace_id,
             device_public_key: device,
             active,
@@ -580,7 +581,7 @@ impl WorkspaceRuntime {
 
     /// Note that `device` is a host this workspace is attached to.
     /// Idempotent; called as a host announces what it carries, and as a
-    /// device hands one of its rooms to a host to serve.
+    /// device hands one of its workspaces to a host to serve.
     pub fn note_attached_host(&mut self, device: [u8; 32]) {
         self.attached_hosts.insert(device);
     }
@@ -805,7 +806,7 @@ impl WorkspaceRuntime {
     /// live subscribers were fanned out to.
     ///
     /// What an attached host sent is not carried on to another attached
-    /// host, nor queued for one: two hosts serving one room would loop.
+    /// host, nor queued for one: two hosts serving one workspace would loop.
     ///
     /// # Errors
     ///
@@ -860,16 +861,16 @@ impl WorkspaceRuntime {
         //    store-and-forward queue below and the subscriber stays connected.
         //    Only a CLOSED channel (the receiving task is gone) prunes the
         //    subscriber. Dropping slow subscribers here caused the native host
-        //    to be disconnected mid-checkpoint, reconnect, receive the room's
+        //    to be disconnected mid-checkpoint, reconnect, receive the workspace's
         //    retained baselines as a replay, republish, and storm.
         // A retained checkpoint is a bootstrap/compaction artifact. A
         // device that is connected and current holds every delta already, so
         // the native's periodic (idle) full checkpoint — multi-megabyte, and a
-        // >100 ms frame for a browser that must rebuild its room doc — is fanned
+        // >100 ms frame for a browser that must rebuild its workspace doc — is fanned
         // live to a device only while that device needs one: on subscribe (its
         // retained replay may be stale) and after it asks again via presence
         // (hello / SyncReq / rejected checkpoint). An attached host always
-        // receives it so it can carry the room; retention and queues stay.
+        // receives it so it can carry the workspace; retention and queues stay.
         let checkpoint_channel = match &retained {
             Some((channel, crate::coedit::RetentionKind::Checkpoint)) => Some(*channel),
             _ => None,
@@ -1063,7 +1064,7 @@ impl WorkspaceRuntime {
             }
             if let (
                 Some(mailbox),
-                Envelope::Presence {
+                Envelope::RetiredPresence {
                     workspace_id,
                     payload,
                 },
@@ -1118,7 +1119,7 @@ impl WorkspaceRuntime {
     }
 
     /// The outbound queue of the live subscriber `target`, for a caller
-    /// that waits for room in it rather than dropping what does not fit.
+    /// that waits for workspace in it rather than dropping what does not fit.
     pub fn subscriber_queue(&self, target: &[u8; 32]) -> Option<mpsc::Sender<Envelope>> {
         self.subscribers.get(target).map(|sub| sub.tx.clone())
     }
@@ -1785,16 +1786,16 @@ mod tests {
             tx,
             disconnect,
         });
-        let (room, record) = ([9u8; 32], [10u8; 32]);
+        let (workspace, record) = ([9u8; 32], [10u8; 32]);
         assert!(
-            rt.needs_checkpoint(&device, &room),
+            rt.needs_checkpoint(&device, &workspace),
             "a fresh subscriber needs its first live checkpoint"
         );
         assert!(rt.needs_checkpoint(&device, &record));
 
         // The native publishes its checkpoint as one message per channel (the
-        // room plus each record); the whole first set after subscribe passes.
-        let (env, raw) = checkpoint_on(author, 2, room, vec![1]);
+        // workspace plus each record); the whole first set after subscribe passes.
+        let (env, raw) = checkpoint_on(author, 2, workspace, vec![1]);
         assert_eq!(rt.fanout_delta(&author, &env, &raw, 2).unwrap(), 1);
         let (env, raw) = checkpoint_on(author, 3, record, vec![1]);
         assert_eq!(rt.fanout_delta(&author, &env, &raw, 3).unwrap(), 1);
@@ -1803,13 +1804,13 @@ mod tests {
             "every channel of the first set is delivered live"
         );
         assert!(
-            !rt.needs_checkpoint(&device, &room),
+            !rt.needs_checkpoint(&device, &workspace),
             "one fanned checkpoint serves its channel"
         );
         assert!(!rt.needs_checkpoint(&device, &record));
 
         // The next (idle) set on the same channels is NOT fanned to the still-connected device.
-        let (env, raw) = checkpoint_on(author, 4, room, vec![2]);
+        let (env, raw) = checkpoint_on(author, 4, workspace, vec![2]);
         assert_eq!(rt.fanout_delta(&author, &env, &raw, 4).unwrap(), 0);
         let (env, raw) = checkpoint_on(author, 5, record, vec![2]);
         assert_eq!(rt.fanout_delta(&author, &env, &raw, 5).unwrap(), 0);
@@ -1841,14 +1842,14 @@ mod tests {
         // The device asks again (a presence frame: hello / SyncReq / rejected
         // checkpoint): one more checkpoint per channel is delivered, then it stops.
         rt.request_checkpoint(&device);
-        assert!(rt.needs_checkpoint(&device, &room));
-        let (env, raw) = checkpoint_on(author, 7, room, vec![3]);
+        assert!(rt.needs_checkpoint(&device, &workspace));
+        let (env, raw) = checkpoint_on(author, 7, workspace, vec![3]);
         assert_eq!(rt.fanout_delta(&author, &env, &raw, 7).unwrap(), 1);
         assert!(
             rx.try_recv().is_ok(),
             "a requested checkpoint is delivered once"
         );
-        let (env, raw) = checkpoint_on(author, 8, room, vec![4]);
+        let (env, raw) = checkpoint_on(author, 8, workspace, vec![4]);
         assert_eq!(rt.fanout_delta(&author, &env, &raw, 8).unwrap(), 0);
         assert!(
             rx.try_recv().is_err(),
@@ -1877,18 +1878,20 @@ mod tests {
             tx,
             disconnect,
         });
-        let (room, record) = ([9u8; 32], [10u8; 32]);
+        let (workspace, record) = ([9u8; 32], [10u8; 32]);
         // The stale baseline set was replayed on subscribe and rejected by the browser.
-        for (seq, ch) in [(1u64, room), (2, record)] {
+        for (seq, ch) in [(1u64, workspace), (2, record)] {
             let (env, raw) = checkpoint_on(native, seq, ch, b"stale".to_vec());
             rt.fanout_delta(&native, &env, &raw, seq).unwrap();
             rx.try_recv().unwrap();
         }
-        assert!(!rt.needs_checkpoint(&browser, &room) && !rt.needs_checkpoint(&browser, &record));
+        assert!(
+            !rt.needs_checkpoint(&browser, &workspace) && !rt.needs_checkpoint(&browser, &record)
+        );
         // Browser: "checkpoint does not match" -> SyncReq (a presence frame).
         rt.request_checkpoint(&browser);
-        // Native: refresh + publish a fresh SET (room + record) -> the whole set is delivered live, once.
-        for (seq, ch) in [(3u64, room), (4, record)] {
+        // Native: refresh + publish a fresh SET (workspace + record) -> the whole set is delivered live, once.
+        for (seq, ch) in [(3u64, workspace), (4, record)] {
             let (env, raw) = checkpoint_on(native, seq, ch, b"fresh".to_vec());
             assert_eq!(
                 rt.fanout_delta(&native, &env, &raw, seq).unwrap(),
@@ -1903,7 +1906,7 @@ mod tests {
             );
         }
         // The native's next idle set is not fanned to the now-current browser.
-        for (seq, ch) in [(5u64, room), (6, record)] {
+        for (seq, ch) in [(5u64, workspace), (6, record)] {
             let (env, raw) = checkpoint_on(native, seq, ch, b"idle".to_vec());
             assert_eq!(rt.fanout_delta(&native, &env, &raw, seq).unwrap(), 0);
         }
@@ -1984,7 +1987,7 @@ mod tests {
             id: 1,
             motion: false,
         });
-        let presence = Envelope::Presence {
+        let presence = Envelope::RetiredPresence {
             workspace_id: 9,
             payload: b"caret".to_vec(),
         };

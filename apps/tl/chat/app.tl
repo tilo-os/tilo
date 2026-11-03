@@ -94,23 +94,35 @@ default view direct for Direct
 default view thread for Thread
 
 /// Adds a text channel to the sidebar.
-primary action new_channel(all: Channels, name: Text = "new-channel") -> TextChannel (icon: .plus, label: "New channel") {
+primary action new_channel(all: Channels, name: Text = "new-channel") -> TextChannel (
+    icon: .plus,
+    label: "New channel",
+) {
     all.insert(TextChannel(name: name))
 }
 
 /// Adds a category to the sidebar.
-action new_category(all: Channels, name: Text = "New category") -> Category (icon: .folder_plus, label: "New category") {
+action new_category(all: Channels, name: Text = "New category") -> Category (
+    icon: .folder_plus,
+    label: "New category",
+) {
     all.insert(Category(name: name))
 }
 
 /// Adds a text channel to a category.
-action add_channel(c: Category, name: Text = "new-channel") -> TextChannel (icon: .plus, label: "New channel") {
+action add_channel(c: Category, name: Text = "new-channel") -> TextChannel (
+    icon: .plus,
+    label: "New channel",
+) {
     c.channels.insert(TextChannel(name: name))
 }
 
 /// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
 /// person has one conversation, not a new empty one each time.
-action message_person(all: Channels, who: Principal) -> Direct (icon: .message_circle, label: "Message") {
+action message_person(all: Channels, who: Principal) -> Direct (
+    icon: .message_circle,
+    label: "Message",
+) {
     // The one already open with them, else a new one in the sidebar: a person has one
     // conversation, not a new empty one each time.
     for item in all {
@@ -134,7 +146,11 @@ action message_person(all: Channels, who: Principal) -> Direct (icon: .message_c
 
 /// Posts a message in a channel, a thread or a direct conversation as the invoker, answering
 /// another when `reply_to` names one.
-action send(to: TextChannel | Thread | Direct, body: RichText, reply_to: Option<Message> = .none) -> Message (icon: .send, label: "Send") {
+action send(
+    to: TextChannel | Thread | Direct,
+    body: RichText,
+    reply_to: Option<Message> = .none,
+) -> Message (icon: .send, label: "Send") {
     let m = Message(body: body, reply_to: reply_to)
     match to {
         c: TextChannel => c.messages.insert(m),
@@ -145,7 +161,10 @@ action send(to: TextChannel | Thread | Direct, body: RichText, reply_to: Option<
 
 /// Sends a view as a message: its title as what the message says, its definition for anyone
 /// who reads it to add to their own views.
-action send_view(to: TextChannel | Thread | Direct, title: Text, definition: Text) -> Message (icon: .eye, label: "Send a view") {
+action send_view(to: TextChannel | Thread | Direct, title: Text, definition: Text) -> Message (
+    icon: .eye,
+    label: "Send a view",
+) {
     require definition != "" "The view is empty"
     let m = Message(body: RichText(title), sent_view: definition)
     match to {
@@ -165,7 +184,10 @@ action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") 
 /// Deletes a message from the channel or thread it is in. Its author, or anyone the
 /// channel's permissions allow, may: the platform undoes it rather than asking first, and the
 /// removal is a version of the message, so who removed it stays answerable.
-destructive action delete(to: TextChannel | Thread | Direct, m: Message) (icon: .trash, label: "Delete") {
+destructive action delete(to: TextChannel | Thread | Direct, m: Message) (
+    icon: .trash,
+    label: "Delete",
+) {
     match to {
         c: TextChannel => c.messages.remove(m),
         t: Thread => t.messages.remove(m),
@@ -174,7 +196,11 @@ destructive action delete(to: TextChannel | Thread | Direct, m: Message) (icon: 
 }
 
 /// Pins a message to its channel, or unpins it.
-action pin(m: Message, pinned: Bool = not m.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: m.pinned) {
+action pin(m: Message, pinned: Bool = not m.pinned) (
+    label: if pinned { "Pin" } else { "Unpin" },
+    icon: .pin,
+    on: m.pinned,
+) {
     m.pinned = pinned
 }
 
@@ -186,7 +212,10 @@ action react(m: Message, emoji: Text) (icon: .smile_plus, label: "React") {
 
 /// Starts a thread from a message of a channel or a direct conversation, named after what the
 /// message says.
-action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.excerpt) -> Thread (icon: .message_square, label: "Start thread") {
+action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.excerpt) -> Thread (
+    icon: .message_square,
+    label: "Start thread",
+) {
     match c {
         ch: TextChannel => {
             let t = ch.threads.insert(Thread(name: name))
@@ -214,14 +243,26 @@ view sidebar(all: Channels) {
                         c: Category => {
                             ui.NavSection(c.name, collapsible: true) {
                                 for ch in c.channels {
-                                    ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash, item: ch, mentions: mentions(ch)) {
+                                    ui.NavItem(
+                                        "{c.name}/{ch.name}",
+                                        ch.name,
+                                        icon: .hash,
+                                        item: ch,
+                                        mentions: mentions(ch),
+                                    ) {
                                         on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
                                     }
                                 }
                             }
                         }
                         ch: TextChannel => {
-                            ui.NavItem("/{ch.name}", ch.name, icon: .hash, item: ch, mentions: mentions(ch)) {
+                            ui.NavItem(
+                                "/{ch.name}",
+                                ch.name,
+                                icon: .hash,
+                                item: ch,
+                                mentions: mentions(ch),
+                            ) {
                                 on select: set(shown, "/{ch.name}").then(open(ch))
                             }
                         }
@@ -230,11 +271,23 @@ view sidebar(all: Channels) {
                             // presence. The conversation with yourself is your notes, and says
                             // so.
                             if d.person == workspace.me {
-                                ui.NavItem("/dm/{d.name}", "Notes to self", icon: .bookmark, item: d, mentions: mentions(d)) {
+                                ui.NavItem(
+                                    "/dm/{d.name}",
+                                    "Notes to self",
+                                    icon: .bookmark,
+                                    item: d,
+                                    mentions: mentions(d),
+                                ) {
                                     on select: set(shown, "/dm/{d.name}").then(open(d))
                                 }
                             } else {
-                                ui.NavItem("/dm/{d.name}", d.name, person: d.person, item: d, mentions: mentions(d)) {
+                                ui.NavItem(
+                                    "/dm/{d.name}",
+                                    d.name,
+                                    person: d.person,
+                                    item: d,
+                                    mentions: mentions(d),
+                                ) {
                                     on select: set(shown, "/dm/{d.name}").then(open(d))
                                 }
                             }
@@ -250,7 +303,10 @@ view sidebar(all: Channels) {
                             // Your own place is your notes, which the sidebar says above.
                             if p != workspace.me {
                                 ui.NavItem("/person/{p.name()}", p.name(), person: p) {
-                                    on select: set(shown, "/person/{p.name()}").then(message_person(all, p))
+                                    on select: set(shown, "/person/{p.name()}")
+                                        .then(
+                                            message_person(all, p),
+                                        )
                                 }
                             }
                         }
@@ -313,7 +369,13 @@ view direct(d: Direct) {
 }
 
 /// A message of a direct conversation, with what can be done to it on hover.
-view direct_message(d: Direct, m: Message, replying: State<Option<Message>>, editing: State<Option<Message>>, revised: State<RichText>) {
+view direct_message(
+    d: Direct,
+    m: Message,
+    replying: State<Option<Message>>,
+    editing: State<Option<Message>>,
+    revised: State<RichText>,
+) {
     message(m, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
@@ -331,7 +393,13 @@ view direct_message(d: Direct, m: Message, replying: State<Option<Message>>, edi
 }
 
 /// A message of a channel, with what can be done to it on hover.
-view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>>, editing: State<Option<Message>>, revised: State<RichText>) {
+view channel_message(
+    c: TextChannel,
+    m: Message,
+    replying: State<Option<Message>>,
+    editing: State<Option<Message>>,
+    revised: State<RichText>,
+) {
     message(m, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
@@ -364,7 +432,12 @@ view thread(t: Thread) {
 }
 
 /// A message of a thread, with what can be done to it on hover.
-view thread_message(m: Message, replying: State<Option<Message>>, editing: State<Option<Message>>, revised: State<RichText>) {
+view thread_message(
+    m: Message,
+    replying: State<Option<Message>>,
+    editing: State<Option<Message>>,
+    revised: State<RichText>,
+) {
     message(m, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
@@ -379,16 +452,25 @@ view thread_message(m: Message, replying: State<Option<Message>>, editing: State
 }
 
 /// The foot of a conversation: the message being answered, over the input and its send button.
-view composer(to: TextChannel | Thread | Direct, draft: State<RichText>, replying: State<Option<Message>>, placeholder: Text) {
+view composer(
+    to: TextChannel | Thread | Direct,
+    draft: State<RichText>,
+    replying: State<Option<Message>>,
+    placeholder: Text,
+) {
     if let r = replying {
         std.reply_banner(r, cancel: set(replying, .none))
     }
     row {
         rich_input(bind: draft, placeholder: placeholder, fill) {
-            on submit: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
+            on submit: send(to, draft, replying)
+                .then(set(draft, RichText("")))
+                .then(set(replying, .none))
         }
         ui.Button("Send", icon: .send, icon_only: true) {
-            on press: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
+            on press: send(to, draft, replying)
+                .then(set(draft, RichText("")))
+                .then(set(replying, .none))
         }
     }
 }
@@ -400,7 +482,13 @@ view typing_here(of: TextChannel) {
     let typists = lenses(of).filter(l -> l.composing and not l.mine)
     if let first = typists.first() {
         let who = first.who.name()
-        ui.Text(if typists.len() == 1 { "{who} is typing…" } else { "{who} and others are typing…" }, role: .caption, secondary: true)
+        ui.Text(
+            if typists.len() == 1 {
+                "{who} is typing…"
+            } else { "{who} and others are typing…" },
+            role: .caption,
+            secondary: true,
+        )
     }
 }
 
@@ -409,7 +497,13 @@ view direct_typing_here(of: Direct) {
     let typists = lenses(of).filter(l -> l.composing and not l.mine)
     if let first = typists.first() {
         let who = first.who.name()
-        ui.Text(if typists.len() == 1 { "{who} is typing…" } else { "{who} and others are typing…" }, role: .caption, secondary: true)
+        ui.Text(
+            if typists.len() == 1 {
+                "{who} is typing…"
+            } else { "{who} and others are typing…" },
+            role: .caption,
+            secondary: true,
+        )
     }
 }
 
@@ -418,7 +512,13 @@ view thread_typing_here(of: Thread) {
     let typists = lenses(of).filter(l -> l.composing and not l.mine)
     if let first = typists.first() {
         let who = first.who.name()
-        ui.Text(if typists.len() == 1 { "{who} is typing…" } else { "{who} and others are typing…" }, role: .caption, secondary: true)
+        ui.Text(
+            if typists.len() == 1 {
+                "{who} is typing…"
+            } else { "{who} and others are typing…" },
+            role: .caption,
+            secondary: true,
+        )
     }
 }
 
@@ -511,7 +611,10 @@ scenario "a team's channels" -> TextChannel {
         send(design, RichText("The new onboarding build is on the test machines."))
     }
     as mia at 2026-06-29T07:03Z {
-        let launch = send(design, RichText("First launch is down to a second and a half on the old ThinkPad."))
+        let launch = send(
+            design,
+            RichText("First launch is down to a second and a half on the old ThinkPad."),
+        )
         as leo at 2026-06-29T07:05Z {
             react(launch, "🎉")
         }

@@ -272,9 +272,9 @@ impl AdmittedCommit {
     }
 }
 
-/// Why the room refuses `delta`, a page's commit, if it does: decided as a
+/// Why the workspace refuses `delta`, a page's commit, if it does: decided as a
 /// session's delta is ([`super::handle_delta`]), by what the change says it
-/// does against its author's grants, then, for the room's shared desktop,
+/// does against its author's grants, then, for the workspace's shared desktop,
 /// by what it does to what others made.
 async fn commit_refusal(
     ws: &SharedWorkspace,
@@ -295,8 +295,8 @@ async fn commit_refusal(
     desktop_refusal(ws, author, delta).await
 }
 
-/// Hand `delta`, a member's change `ws` kept, to the room's governor, if a
-/// governor follows the room. It follows every change the relay keeps, a
+/// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a
+/// governor follows the workspace. It follows every change the relay keeps, a
 /// committed one as one sent alone (`handle_delta`): a page writes its
 /// records as commits.
 async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {

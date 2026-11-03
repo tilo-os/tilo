@@ -90,7 +90,7 @@ pub(super) fn discover(
                 && r.user_public_key == hex::encode(user)
                 && r.relay_workspace_ids.contains(&workspace)
         })
-        .context("selected room is not registered to this person's enrolled home peer")?;
+        .context("selected workspace is not registered to this person's enrolled home peer")?;
     let service_key = iroh_base::PublicKey::from_bytes(&service_id)?;
     let address = selected
         .relay_endpoint

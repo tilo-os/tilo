@@ -32,8 +32,10 @@ use tilo_contact_directory::ContactDirectory;
 use tilo_messaging::PersonAccounts;
 use tilo_messaging::room::{PrivateAnswer, PrivateDoor, RoomMessaging};
 use tilo_relay_client::https as carrier;
-use tilo_relay_protocol::rooms::private::{PrivateCall, PrivateOperation};
-use tilo_relay_protocol::rooms::{JoinReply, Room, RoomRole, RoomsReply, RoomsRequest};
+use tilo_relay_protocol::workspaces::private::{PrivateCall, PrivateOperation};
+use tilo_relay_protocol::workspaces::{
+    JoinReply, Workspace, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use support::{TestHost, enrol, start_workspace_host};
@@ -53,7 +55,7 @@ impl PrivateDoor for SessionDoor {
     fn ask(&self, operation: PrivateOperation) -> PrivateAnswer {
         let (client, session) = (self.client.clone(), self.session.clone());
         let call = PrivateCall {
-            room: self.workspace.clone(),
+            workspace: self.workspace.clone(),
             operation,
         };
         // The window polls its work off the host's runtime; the request runs on it.
@@ -89,9 +91,9 @@ async fn subscribe(link: &mut HttpsLink, workspace_id: u64) {
     .await;
 }
 
-fn workspace(reply: RoomsReply) -> Room {
+fn workspace(reply: WorkspacesReply) -> Workspace {
     match reply {
-        RoomsReply::Room(workspace) => workspace,
+        WorkspacesReply::Workspace(workspace) => workspace,
         other => panic!("expected a workspace, got {other:?}"),
     }
 }
@@ -195,103 +197,106 @@ fn two_people_message_each_other_through_their_pages_sessions() {
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let page = enrol(&alice, "alice-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let (doors, people, test_host) = runtime.block_on(async {
-        let test_host = start_workspace_host(&alice, &host, state.path(), false).await;
-        let TestHost { web, .. } = &test_host;
-        let https: Arc<dyn HttpClient> =
-            support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
-        let connect = |cert, key: SigningKey| {
-            let https = https.clone();
-            let host = host.cert.device_public_key;
-            async move {
-                HttpsLink::connect(https, &cert, host, &RevocationList::new(), &key)
-                    .await
-                    .unwrap()
-            }
-        };
-        let mut owner = connect(page.cert.clone(), page.key.clone()).await;
-        let ask = |request: RoomsRequest| {
-            let owner = &owner;
-            async move { carrier::rooms(owner.client().as_ref(), owner.session(), &request).await }
-        };
-        let created = workspace(
-            ask(RoomsRequest::Create {
-                name: "Messages".into(),
+    let (doors, people, test_host) =
+        runtime.block_on(async {
+            let test_host = start_workspace_host(&alice, &host, state.path(), false).await;
+            let TestHost { web, .. } = &test_host;
+            let https: Arc<dyn HttpClient> =
+                support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
+            let connect = |cert, key: SigningKey| {
+                let https = https.clone();
+                let host = host.cert.device_public_key;
+                async move {
+                    HttpsLink::connect(https, &cert, host, &RevocationList::new(), &key)
+                        .await
+                        .unwrap()
+                }
+            };
+            let mut owner = connect(page.cert.clone(), page.key.clone()).await;
+            let ask = |request: WorkspacesRequest| {
+                let owner = &owner;
+                async move {
+                    carrier::workspaces(owner.client().as_ref(), owner.session(), &request).await
+                }
+            };
+            let created = workspace(
+                ask(WorkspacesRequest::Create {
+                    name: "Messages".into(),
+                })
+                .await
+                .unwrap(),
+            );
+            workspace(
+                ask(WorkspacesRequest::Enter {
+                    workspace: created.workspace.clone(),
+                })
+                .await
+                .unwrap(),
+            );
+            let WorkspacesReply::Invitation {
+                signed_invitation, ..
+            } = ask(WorkspacesRequest::Invite {
+                workspace: created.workspace.clone(),
+                request_id: [1; 32],
+                role: WorkspaceRole::Editor,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: Some("Alice".into()),
+                wait_list_entry: None,
             })
             .await
-            .unwrap(),
-        );
-        workspace(
-            ask(RoomsRequest::Enter {
-                room: created.room.clone(),
-            })
-            .await
-            .unwrap(),
-        );
-        let RoomsReply::Invitation {
-            signed_invitation, ..
-        } = ask(RoomsRequest::Invite {
-            room: created.room.clone(),
-            request_id: [1; 32],
-            role: RoomRole::Editor,
-            expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
-            inviter_name: Some("Alice".into()),
-            wait_list_entry: None,
-        })
-        .await
-        .unwrap()
-        else {
-            panic!("no invitation");
-        };
-        let bob_root = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let bob_key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let bob = guest_certificate(
-            &bob_root,
-            bob_key.verifying_key().to_bytes(),
-            "Bob",
-            tilo_clock::unix_now_ns(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            ask_to_join(
-                https.as_ref(),
-                &signed_invitation,
-                &bob,
-                &bob_key,
-                [2; 32],
-                "Bob"
+            .unwrap()
+            else {
+                panic!("no invitation");
+            };
+            let bob_root = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let bob_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let bob = guest_certificate(
+                &bob_root,
+                bob_key.verifying_key().to_bytes(),
+                "Bob",
+                tilo_clock::unix_now_ns(),
             )
             .await
-            .unwrap(),
-            JoinReply::Waiting
-        );
-        workspace(
-            ask(RoomsRequest::Admit {
-                room: created.room.clone(),
-                request_id: [2; 32],
-            })
-            .await
-            .unwrap(),
-        );
-        let mut member = connect(bob.clone(), bob_key).await;
-        subscribe(&mut member, created.workspace_id).await;
-        subscribe(&mut owner, created.workspace_id).await;
-        let door = |link: &HttpsLink| SessionDoor {
-            client: link.client().clone(),
-            session: link.session().to_owned(),
-            workspace: created.room.clone(),
-            runtime: tokio::runtime::Handle::current(),
-        };
-        (
-            [door(&owner), door(&member)],
-            [
-                hex::encode(alice.verifying_key().to_bytes()),
-                hex::encode(bob.user_public_key),
-            ],
-            test_host,
-        )
-    });
+            .unwrap();
+            assert_eq!(
+                ask_to_join(
+                    https.as_ref(),
+                    &signed_invitation,
+                    &bob,
+                    &bob_key,
+                    [2; 32],
+                    "Bob"
+                )
+                .await
+                .unwrap(),
+                JoinReply::Waiting
+            );
+            workspace(
+                ask(WorkspacesRequest::Admit {
+                    workspace: created.workspace.clone(),
+                    request_id: [2; 32],
+                })
+                .await
+                .unwrap(),
+            );
+            let mut member = connect(bob.clone(), bob_key).await;
+            subscribe(&mut member, created.workspace_id).await;
+            subscribe(&mut owner, created.workspace_id).await;
+            let door = |link: &HttpsLink| SessionDoor {
+                client: link.client().clone(),
+                session: link.session().to_owned(),
+                workspace: created.workspace.clone(),
+                runtime: tokio::runtime::Handle::current(),
+            };
+            (
+                [door(&owner), door(&member)],
+                [
+                    hex::encode(alice.verifying_key().to_bytes()),
+                    hex::encode(bob.user_public_key),
+                ],
+                test_host,
+            )
+        });
     let [alice_door, bob_door] = doors;
     let [alice_key, bob_key] = people;
     let (mut alice_window, to_bob) = window(&alice_key, &bob_key, alice_door);

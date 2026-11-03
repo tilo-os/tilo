@@ -4,7 +4,10 @@
 use std::path::{Path, PathBuf};
 
 use tilolang::cli::format_package;
-use tilolang::source::{BuildError, Stamp, compile_dirs, dependency_order};
+use tilolang::source::{
+    BuildError, Stamp, catalogue_current, compile_dirs, compile_package, dependency_order,
+    ids_current, search_of,
+};
 use tilolang::{Compiled, Diagnostic, IdsLock, PackageSource, SeededEntropy};
 
 use crate::common::fixture;
@@ -188,7 +191,6 @@ fn fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file() {
         ),
     ]);
     let out = format_package(&messy).unwrap();
-    assert!(out.with_comments.is_empty());
     let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
     let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
     assert!(
@@ -206,14 +208,115 @@ fn fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file() {
 }
 
 #[test]
-fn fmt_leaves_a_file_with_plain_comments_alone_and_names_it() {
+fn fmt_keeps_plain_comments_above_what_they_explain() {
     let out = format_package(&files(&[
-        ("a.tl", HEAD),
-        ("b.tl", "/// Add one.\naction increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n}\n"),
+        (
+            "a.tl",
+            "app so.tilo.counter \"Counter\"\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n",
+        ),
+        (
+            "b.tl",
+            "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n",
+        ),
     ]))
     .unwrap();
-    assert_eq!(out.with_comments, vec![("b.tl".to_string(), 3)]);
-    assert!(out.files.iter().all(|f| f.0 != "b.tl"));
+    let a = &out.files.iter().find(|f| f.0 == "a.tl").unwrap().2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\n// the counter, above its declaration\ntype Counter {\n    /// How far it counts.\n    // merged by adding\n    value: Int merge counter\n}\n"
+    );
+    let b = &out.files.iter().find(|f| f.0 == "b.tl").unwrap().2;
+    assert_eq!(
+        b,
+        "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\n\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n"
+    );
+    // Canonical text formats to itself.
+    let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
+    for (_, old, new) in &again.files {
+        assert_eq!(old, new);
+    }
+}
+
+#[test]
+fn fmt_keeps_a_comment_above_the_require_it_explains() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n"
+    );
+    // Canonical text formats to itself.
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
+fn fmt_keeps_a_paragraph_break_in_a_doc_comment() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n///\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n"
+    );
+    // Canonical text formats to itself.
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
+fn fmt_places_comments_inside_expression_blocks_above_their_statement() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else {\n        text(\"none\")\n    }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let shown = if c.value > 0 {\n        // it counts, so say how far\n        text(\"{c.value}\")\n        // and nothing else\n    } else { text(\"none\") }\n    // a short block stays on one line unless it holds a comment\n    let kept = { 1 }\n    return shown\n}\n"
+    );
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
+fn fmt_places_comments_inside_a_plain_match_above_its_arm() {
+    let out = format_package(&files(&[(
+        "a.tl",
+        "app so.tilo.counter \"Counter\"\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        },\n        // after the last arm\n    }\n}\n",
+    )]))
+    .unwrap();
+    let a = &out.files[0].2;
+    assert_eq!(
+        a,
+        "app so.tilo.counter \"Counter\"\n\nfn label(c: Counter) -> Text {\n    let maybe = .some(c.value)\n    return match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        // and none below\n        .none => {\n            // nothing to say\n            text(\"none\")\n        }\n        // after the last arm\n    }\n}\n"
+    );
+    let again = format_package(&files(&[("a.tl", a)])).unwrap();
+    assert_eq!(&again.files[0].2, a);
+}
+
+#[test]
+fn the_std_package_is_in_canonical_form() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let source = PackageSource::read_dir(&dir).unwrap();
+    let out = format_package(&source).unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
+    assert!(!out.files.is_empty());
+    for (path, old, new) in &out.files {
+        assert_eq!(
+            old,
+            new,
+            "{path} is not in canonical form: run `tilolang fmt {}`",
+            dir.display()
+        );
+    }
 }
 
 #[test]
@@ -222,9 +325,61 @@ fn the_example_packages_are_in_canonical_form() {
         let source = PackageSource::read_dir(&dir).unwrap();
         let out = format_package(&source).unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
         for (path, old, new) in &out.files {
-            assert_eq!(old, new, "{path} is not in canonical form");
+            assert_eq!(
+                old,
+                new,
+                "{path} is not in canonical form: run `tilolang fmt {}`",
+                dir.display()
+            );
         }
     }
+}
+
+/// The packages written against a native app's published types (`use so.tilo.session as
+/// session`): the compiler alone has none to compile against. `tilolang check`, which finds
+/// them, checks these.
+const NEEDS_PUBLISHED_APPS: &[&str] = &["shell"];
+
+/// The files a package's sources derive — its ids lock and its source catalogue — are what the
+/// ones committed beside them say. A change to how they are derived (a description's first
+/// sentence, a name in words, the words a view shows) changes every package that has them, so
+/// it fails here, in the crate the derivation lives in, and not on main once it has landed.
+#[test]
+fn the_example_packages_hold_the_files_their_sources_write() {
+    let dirs = example_dirs();
+    let mut checked = Vec::new();
+    for dir in &dirs {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        if NEEDS_PUBLISHED_APPS.contains(&name.as_str()) {
+            continue;
+        }
+        let built = compile_package(dir, &search_of(dir, &[]), &[], &mut SeededEntropy(0))
+            .unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+        assert_eq!(
+            built.last().map(|b| &b.dir),
+            Some(dir),
+            "the root compiles last"
+        );
+        for package in &built {
+            let package_dir = package.dir.display();
+            assert!(
+                ids_current(package),
+                "{package_dir}/app.ids is not what its sources write; write it with \
+                 `tilolang check --write-ids {package_dir}` and commit it with them"
+            );
+            assert!(
+                catalogue_current(package),
+                "{package_dir}/locales/en-US.ftl is not what its sources write; write it with \
+                 `tilolang check --write-ids {package_dir}` and commit it with them"
+            );
+        }
+        checked.push(name);
+    }
+    assert_eq!(
+        checked.len() + NEEDS_PUBLISHED_APPS.len(),
+        dirs.len(),
+        "every package is checked or named above: {checked:?}"
+    );
 }
 
 // ---- package directories --------------------------------------------------------------------

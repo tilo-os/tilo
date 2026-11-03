@@ -24,9 +24,7 @@ use tilo_render_protocol::patch::{self as wire, Answer, Lane, ToApp, ToUi, Trans
 use ui::tokens::{MotionSource, Rhythm, TextRole};
 use ui::widget::arrange::{Fit, Row, Slot, Stack};
 use ui::widget::toast::ToastKind;
-use ui::widget::{
-    Absent, Button, ButtonRole, DescribedList, Element, NavPane, NavShell, Text, Widget,
-};
+use ui::widget::{Absent, Button, ButtonRole, Element, NavPane, NavShell, Text, Widget};
 
 use crate::i18n::{t, t_args};
 use crate::pane::Pane;
@@ -475,6 +473,8 @@ impl AppWindow {
 
     fn apply(&mut self, messages: Vec<ToUi>) -> Result<(), String> {
         let mut content = false;
+        // Rows the app sent for a list: its selection then names rows it did not hold yet.
+        let mut arrived = false;
         let mut front = None;
         // A view a person's press opened: its first field takes the keyboard.
         let mut opened_for_input = false;
@@ -538,7 +538,10 @@ impl AppWindow {
                     value,
                     acked,
                 } => self.take_bound(lane, &key, value, acked),
-                rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => self.take_rows(rows),
+                rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => {
+                    self.take_rows(rows);
+                    arrived = true;
+                }
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
                 ToUi::Form(form) => self.show_form(form.as_deref()),
@@ -556,6 +559,10 @@ impl AppWindow {
         self.check_budget()?;
         if content {
             self.compose();
+        }
+        if arrived {
+            // The list can name the row of the view shown only now that it holds the rows.
+            self.select_shown();
         }
         self.send_typed_into(opened_for_input);
         if self.fired <= self.took {
@@ -873,7 +880,7 @@ impl AppWindow {
     fn select_shown(&mut self) {
         let shown = self.detail.as_ref().map(|detail| detail.target.id_string());
         if let Some(shell) = self.shell()
-            && let Some(list) = shell.overview_mut::<DescribedList>()
+            && let Some(list) = shell.overview_list_mut()
         {
             list.select_presenting(shown.as_deref());
         }

@@ -174,7 +174,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
     let tasks = format!("tl:so.tilo.lang.tasks:{root}");
-    let add = action_id(&mut app, &tasks, "Add");
+    let add = action_id(&mut app, &tasks, "New task");
     let titled = |title: &str| {
         let mut args = serde_json::Map::new();
         args.insert("title".to_owned(), title.into());
@@ -274,7 +274,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
     let tasks = format!("tl:so.tilo.lang.tasks:{root}");
-    let add = action_id(&mut app, &tasks, "Add");
+    let add = action_id(&mut app, &tasks, "New task");
     let mut titled = serde_json::Map::new();
     titled.insert("title".to_owned(), "Call the landlord".into());
     app.invoke(None, None, &tasks, &add, &titled, false)
@@ -372,21 +372,59 @@ fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
     out
 }
 
-/// Click the node whose accessible name begins with `label` (a sidebar item, its count after).
+/// Click the sidebar's item whose accessible name begins with `label` (its count after). A
+/// list's heading over a day is named the same way and folds its group rather than choosing
+/// the place, so the item clicked is the one the sidebar holds: the tree's.
 fn click_item(app: &mut TestApp<TlApp>, label: &str) {
     let all = accessible(app);
     let found = all.iter().find_map(|node| {
         node.name
             .as_deref()
             .filter(|name| name.starts_with(label))
+            .filter(|_| node.role == ui::a11y::Role::TreeItem)
             .and(node.bounds)
     });
     let Some(b) = found else {
-        let names: Vec<&str> = all.iter().filter_map(|node| node.name.as_deref()).collect();
-        panic!("nothing named `{label}`: {names:?}");
+        let named: Vec<(&str, &ui::a11y::Role)> = all
+            .iter()
+            .filter_map(|node| Some((node.name.as_deref()?, &node.role)))
+            .collect();
+        panic!("no sidebar item named `{label}`: {named:?}");
     };
     app.harness()
         .click_at(f64::midpoint(b.x0, b.x1), f64::midpoint(b.y0, b.y1));
+}
+
+#[test]
+fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
+    let _settled = ui::motion::testing::settled();
+    support::installed("tasks");
+    let mut app =
+        TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
+    settle(&mut app);
+    let names: Vec<Option<String>> = accessible(&mut app)
+        .into_iter()
+        .map(|node| node.name)
+        .collect();
+    for title in [
+        "Buy oat milk and eggs",
+        "Call the landlord about the boiler",
+        "Book a haircut",
+        "Reply to Mia about Sunday lunch",
+    ] {
+        assert!(
+            shows(&mut app, title),
+            "the inbox lists `{title}`: {names:?}"
+        );
+    }
+    assert!(
+        !shows(&mut app, "No tasks here"),
+        "the inbox has tasks in it: {names:?}"
+    );
+    assert!(
+        !shows(&mut app, "Order boxes and tape"),
+        "a task filed in a project is not in the inbox: {names:?}"
+    );
 }
 
 #[test]

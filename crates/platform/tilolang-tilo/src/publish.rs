@@ -1916,7 +1916,10 @@ fn edit_types(meta: &Meta, type_name: &str) -> [Arc<ActionType>; 2] {
                         payload: message.into_bytes(),
                     })
             },
-        );
+        )
+        // The platform runs it for a bound field, and an agent may ask for it; a person
+        // changes the field in the control they see, whose own action they press.
+        .for_audience(tilo_actions::Audience::Agents);
         Arc::clone(spec.action_type())
     };
     [

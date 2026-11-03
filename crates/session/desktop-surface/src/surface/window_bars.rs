@@ -12,7 +12,7 @@
 //! person did there for the app's connection
 //! ([`DesktopHandle::take_bar_events`]).
 
-use super::{DesktopHandle, DesktopSurface, route_of};
+use super::{DesktopHandle, DesktopSurface, descriptor, route_of};
 use crate::navigation::Admitted;
 use ui::hosted_window::HostedWindow;
 use ui::widget::WindowGroup;
@@ -163,7 +163,7 @@ impl DesktopSurface {
     /// written into the tab — the bar, the overview and search all read the
     /// tab's name — and the window's own title only stands where its app
     /// names nothing. Returns whether that changed.
-    fn publish_window_names(&self) -> bool {
+    fn publish_window_names(&mut self) -> bool {
         let mut names = std::collections::BTreeMap::new();
         for group in self.rows.values().flat_map(|row| row.groups.iter()) {
             for tab in group.tabs() {
@@ -178,39 +178,51 @@ impl DesktopSurface {
                 }
             }
         }
-        let mut shared = self.shared.borrow_mut();
-        let named_before = shared.bars.names.clone();
-        let mut changed = shared.bars.take_names(names.clone());
-        if changed {
-            shared.changed();
-        }
-        let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
-            workspace
-                .strips
-                .iter_mut()
-                .flat_map(|strip| strip.window_groups.iter_mut())
-                .flat_map(|group| group.tabs.iter_mut())
-        });
-        // A person's own name for a tab, where they gave one, stands in front
-        // of the app's: the tab keeps it and holds the app's for when the
-        // person clears theirs.
-        for tab in tabs {
-            if let Some(name) = names.get(&tab.id) {
-                changed |= tab.set_window_title(name);
-            } else if named_before
-                .get(&tab.id)
-                .is_some_and(|name| tab.title == *name)
-                && let Some(app) = app_of(tab)
-            {
-                // The app names nothing any more — the note it showed is
-                // closed — so the window goes back to its app's name rather
-                // than keeping a place it has left.
-                changed |= tab.set_window_title(&app);
+        let (changed, renamed) = {
+            let mut shared = self.shared.borrow_mut();
+            let named_before = shared.bars.names.clone();
+            let mut changed = shared.bars.take_names(names.clone());
+            if changed {
+                shared.changed();
             }
-        }
-        if changed {
-            // The rows follow the names the tree now holds.
-            shared.replaced = true;
+            let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
+                workspace
+                    .strips
+                    .iter_mut()
+                    .flat_map(|strip| strip.window_groups.iter_mut())
+                    .flat_map(|group| group.tabs.iter_mut())
+            });
+            // A person's own name for a tab, where they gave one, stands in front
+            // of the app's: the tab keeps it and holds the app's for when the
+            // person clears theirs.
+            let mut renamed = Vec::new();
+            for tab in tabs {
+                let before = tab.title.clone();
+                if let Some(name) = names.get(&tab.id) {
+                    changed |= tab.set_window_title(name);
+                } else if named_before
+                    .get(&tab.id)
+                    .is_some_and(|name| tab.title == *name)
+                    && let Some(app) = app_of(tab)
+                {
+                    // The app names nothing any more — the note it showed is
+                    // closed — so the window goes back to its app's name rather
+                    // than keeping a place it has left.
+                    changed |= tab.set_window_title(&app);
+                }
+                if tab.title != before {
+                    renamed.push(descriptor(tab));
+                }
+            }
+            (changed, renamed)
+        };
+        // A window's name is what it shows, not a window the desk gained or
+        // lost: the rows rename their pills in place, and the desk's layout
+        // stands as it was.
+        for descriptor in renamed {
+            for group in self.rows.values_mut().flat_map(|row| row.groups.iter_mut()) {
+                group.update_tab_descriptor(descriptor.clone());
+            }
         }
         changed
     }

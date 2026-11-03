@@ -440,7 +440,7 @@ mod tests {
             NeighbourMsg::RemoteAction {
                 frame: b"{}".to_vec(),
             },
-            NeighbourMsg::AppPresenceV2 {
+            NeighbourMsg::RetiredAppPresenceV2 {
                 peer: 1,
                 app_id: "app".into(),
                 cluster_id: "workspace".into(),

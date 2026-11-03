@@ -1108,8 +1108,17 @@ impl SharedPermissions {
 
     /// Change the permissions in force in place (a one-use grant spent).
     pub fn update<R>(&self, change: impl FnOnce(&mut PermissionContext) -> R) -> R {
-        let result = change(&mut self.0.borrow_mut());
-        SHARED_REVISION.set(SHARED_REVISION.get().wrapping_add(1));
+        let (result, moved) = {
+            let mut live = self.0.borrow_mut();
+            let before = live.clone();
+            let result = change(&mut live);
+            (result, *live != before)
+        };
+        // A change that changed nothing is no change: nothing drawn from
+        // these permissions is stale.
+        if moved {
+            SHARED_REVISION.set(SHARED_REVISION.get().wrapping_add(1));
+        }
         result
     }
 
@@ -1121,7 +1130,15 @@ impl SharedPermissions {
 
     /// Put `context` in force for everyone sharing these permissions.
     pub fn set(&self, context: PermissionContext) {
-        *self.0.borrow_mut() = context;
+        {
+            let mut live = self.0.borrow_mut();
+            // A sync that hands over the permissions already in force moved
+            // nothing: what was drawn from them stays.
+            if *live == context {
+                return;
+            }
+            *live = context;
+        }
         SHARED_REVISION.set(SHARED_REVISION.get().wrapping_add(1));
     }
 

@@ -101,6 +101,10 @@ pub struct PictureChoice {
     tallest: f64,
     gap: f64,
     label: f64,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl PictureChoice {
@@ -110,6 +114,7 @@ impl PictureChoice {
         let metrics = crate::tokens::Metrics::BASE;
         let spacing = crate::tokens::Spacing::BASE;
         Self {
+            dirty: true,
             id: None,
             cursor: selected.unwrap_or_default(),
             options,
@@ -182,6 +187,7 @@ impl PictureChoice {
 
     /// Change whether it can be chosen from now; see [`Self::with_enabled`].
     pub fn set_enabled(&mut self, enabled: bool) {
+        self.dirty = true;
         self.enabled = enabled;
     }
 
@@ -221,6 +227,7 @@ impl PictureChoice {
 
     /// Show `index` as chosen, without telling anyone.
     pub fn set_selected(&mut self, index: Option<usize>) {
+        self.dirty = true;
         self.selected = index.filter(|index| *index < self.options.len());
     }
 
@@ -390,6 +397,7 @@ impl Widget for PictureChoice {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {
+        self.dirty = true;
         if let Some(index) = self.choice.as_mut().and_then(|choice| (choice.pull)()) {
             self.set_selected(Some(index));
         }
@@ -475,6 +483,7 @@ impl Widget for PictureChoice {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -511,6 +520,14 @@ impl Widget for PictureChoice {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "PictureChoice"
     }
@@ -533,6 +550,7 @@ impl Widget for PictureChoice {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if focused {
             self.cursor = self

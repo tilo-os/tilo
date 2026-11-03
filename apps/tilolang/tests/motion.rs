@@ -150,6 +150,63 @@ fn named(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
         .rect
 }
 
+/// The window's Remove command, as a person reaches it.
+enum Remove {
+    /// A button of the header's own, when the bar has room for it.
+    Button([f64; 4]),
+    /// The row of the header's menu the bar keeps it in, while the menu is open.
+    Row([f64; 4]),
+}
+
+/// The button the window shows under `name`, which a person presses, or nothing when the bar
+/// has no room for it and keeps it behind the header's menu instead.
+fn shown_button(app: &mut TestApp<TlApp>, name: &str) -> Option<[f64; 4]> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .find(|node| {
+            node.widget == "Button"
+                && node.semantics.as_ref().and_then(|s| s.name.as_deref()) == Some(name)
+                && node.rect[2] > 0.0
+                && node.rect[3] > 0.0
+        })
+        .map(|node| node.rect)
+}
+
+/// Bring the window's Remove command within reach: the header's own button, or the row of the
+/// header's menu, opened here so that only the press that follows is what the frames measure.
+fn reach_remove(app: &mut TestApp<TlApp>) -> Remove {
+    if let Some(rect) = shown_button(app, "Remove") {
+        return Remove::Button(rect);
+    }
+    let more = app.harness().targets()["nav-shell-more-content"].center();
+    with_monotonic_time(ui::time::Instant::now(), || {
+        app.harness().click_at(more.x, more.y);
+    });
+    settle(app);
+    let row = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::MenuItem && node.label() == Some("Remove")
+        })
+        .and_then(|(_, node)| node.bounds())
+        .expect("the header's menu offers the command the bar keeps there");
+    Remove::Row([row.x0, row.y0, row.x1 - row.x0, row.y1 - row.y0])
+}
+
+/// Press what `reach_remove` reached, at `at`.
+fn press_remove(app: &mut TestApp<TlApp>, remove: &Remove, at: ui::time::Instant) {
+    let [x, y, w, h] = match remove {
+        Remove::Button(rect) | Remove::Row(rect) => *rect,
+    };
+    with_monotonic_time(at, || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+}
+
 /// Whether the row titled `title` is drawn marked.
 fn marked(app: &mut TestApp<TlApp>, title: &str) -> bool {
     let snapshot = app.harness().inspection();
@@ -392,10 +449,8 @@ fn the_rows_a_person_removes_leave_the_list() {
     assert!(before_rows > 2, "the place holds tasks");
 
     // A first removal teaches the list its rows' order; the next one moves the survivors.
-    let [x, y, w, h] = named(&mut app, "Remove");
-    with_monotonic_time(ui::time::Instant::now(), || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    let remove = reach_remove(&mut app);
+    press_remove(&mut app, &remove, ui::time::Instant::now());
     settle(&mut app);
 
     // A task the person opens, then removes from the pane it opened.
@@ -409,15 +464,14 @@ fn the_rows_a_person_removes_leave_the_list() {
     });
     settle(&mut app);
 
+    // The command reached first, so what is measured is the press and the rows it moves.
+    let remove = reach_remove(&mut app);
     let band = list_band(&mut app);
     let start = ui::time::Instant::now();
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
-    let [x, y, w, h] = named(&mut app, "Remove");
     let pressed = start + ui::time::Duration::from_millis(100);
-    with_monotonic_time(pressed, || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    press_remove(&mut app, &remove, pressed);
 
     let mut series = Vec::new();
     for step in 1..=14 {
@@ -444,30 +498,189 @@ fn the_rows_a_person_removes_leave_the_list() {
     );
 }
 
+/// What one frame costs in work done: the CPU its thread ran it on (a loaded machine stretches
+/// the wall clock of the same work, not this), and what it rebuilt and built.
+struct FrameWork {
+    cpu: std::time::Duration,
+    drew: bool,
+    nodes: u64,
+    rebuilt: u64,
+    marked_dirty: usize,
+}
+
+/// Run the frame due at `at` and draw it, timing the frame itself: the rasterisation that
+/// follows is the harness drawing the window off screen, waits on the GPU, and is no work the
+/// window's frame does.
+fn frame_work(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (FrameWork, Vec<u8>) {
+    let (nodes, rebuilt) = {
+        let harness = app.harness();
+        (harness.layout_nodes_built(), harness.rebuilt_frames())
+    };
+    let started = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
+    let mut cpu = std::time::Duration::ZERO;
+    let (drew, pixels) = with_monotonic_time(at, || {
+        let drew = app.harness().poll_frame().expect("a frame");
+        cpu = ui::rt::thread_cpu_time()
+            .expect("a thread's CPU clock")
+            .saturating_sub(started);
+        (drew, app.harness().render_rgba())
+    });
+    let (nodes, rebuilt, layout) = {
+        let harness = app.harness();
+        (
+            harness.layout_nodes_built() - nodes,
+            harness.rebuilt_frames() - rebuilt,
+            harness.last_relayout(),
+        )
+    };
+    (
+        FrameWork {
+            cpu,
+            drew,
+            nodes,
+            rebuilt,
+            marked_dirty: layout.marked_dirty,
+        },
+        pixels,
+    )
+}
+
+/// The boundaries the window's views have rendered since the window opened: a mark's frames
+/// render none of them again. The visit lays the window out twice, so a test reads it between
+/// frames and never between the frames it costs.
+fn renders(app: &mut TestApp<TlApp>) -> u64 {
+    use tilo_render_protocol::patch::Lane;
+    use ui::framework::testing::with_surface;
+    with_surface::<TlApp, tilolang_app::window::Window, _>(app.harness(), |window| {
+        let instance = window.instance();
+        [Lane::Root, Lane::Detail]
+            .into_iter()
+            .filter_map(|lane| instance.view(lane))
+            .map(|view| view.borrow().stats().renders)
+            .sum()
+    })
+    .expect("the tasks window")
+}
+
+/// The box of the opened task's done toggle: the change mark a person sees fill.
+fn the_mark_box(app: &mut TestApp<TlApp>) -> [f64; 4] {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .find(|node| node.widget == "Checkbox")
+        .map(|node| node.rect)
+        .expect("the opened task's box")
+}
+
 #[test]
 fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     let mut app = staged("a busy week");
-    let title = "Buy oat milk and eggs";
-    let band = row_box(&mut app, title);
+    let mark = the_mark_box(&mut app);
+    assert!(!moving(&mut app), "the window rests before the mark moves");
 
-    // What a still window costs a frame: what the motion is measured against.
-    let still = frame_times(&mut app, 8);
-
+    // What a still window costs a frame: what its frame does in work, not how long a machine
+    // busy with other work takes to run it. It lays out nothing: no rebuild, no node built.
     let start = ui::time::Instant::now();
-    let (x, y) = (band[0] + band[2] / 2.0, band[1] + band[3] / 2.0);
-    with_monotonic_time(start + ui::time::Duration::from_millis(100), || {
-        app.harness().click_at(x, y);
-    });
-    let mut moving = Vec::new();
-    for step in 1..=14 {
-        let at = start + ui::time::Duration::from_millis(16 * step as u64);
-        let began = std::time::Instant::now();
-        let _ = frame_at(&mut app, at);
-        moving.push(began.elapsed());
+    let mut still = Vec::new();
+    let mut rest = Vec::new();
+    let mut still_dirty = 0;
+    for step in 0..8 {
+        let at = start + ui::time::Duration::from_millis(16 * step);
+        let (work, pixels) = frame_work(&mut app, at);
+        assert!(work.drew, "a still window draws the frame it is asked for");
+        assert_eq!(work.rebuilt, 0, "a still frame rebuilds no layout");
+        assert_eq!(work.nodes, 0, "a still frame builds no layout nodes");
+        still_dirty = still_dirty.max(work.marked_dirty);
+        still.push(work.cpu);
+        rest = pixels;
     }
+    let before = pixels_in(&mut app, &rest, mark);
+
+    // Tick the opened task off: its box fills over the frames that follow.
+    let (x, y) = (mark[0] + mark[2] / 2.0, mark[1] + mark[3] / 2.0);
+    let pressed = start + ui::time::Duration::from_millis(120);
+    with_monotonic_time(pressed, || app.harness().click_at(x, y));
+    let mut works = Vec::new();
+    let mut series = Vec::new();
+    let mut playing = Vec::new();
+    let mut step = 0;
+    loop {
+        step += 1;
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let (work, pixels) = frame_work(&mut app, at);
+        series.push(difference(&mut app, &pixels, &before, mark));
+        playing.push(moving(&mut app));
+        let landed = work.rebuilt == 0;
+        works.push(work);
+        if landed {
+            break;
+        }
+        assert!(step <= 3, "the press lands within a few frames");
+    }
+    let landed_at = pressed + ui::time::Duration::from_millis(16 * step);
+    let rendered = with_monotonic_time(landed_at, || renders(&mut app));
+    assert_eq!(
+        playing.last(),
+        Some(&true),
+        "the mark is on its way where the press lands"
+    );
+
+    // The mark's own frames, until it settles.
+    while playing.last() == Some(&true) {
+        step += 1;
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let (work, pixels) = frame_work(&mut app, at);
+        series.push(difference(&mut app, &pixels, &before, mark));
+        playing.push(moving(&mut app));
+        works.push(work);
+        assert!(step <= 16, "the mark settles");
+    }
+    let ended_at = pressed + ui::time::Duration::from_millis(16 * step);
+    assert!(
+        with_monotonic_time(ended_at, || renders(&mut app)) == rendered,
+        "the mark's frames render no boundary of the view again"
+    );
+
+    // What the mark's own frames cost: a repaint. They rebuild no layout, build no node,
+    // mark no more widgets for a measure than a still frame, and render none of the view.
+    let landed = works
+        .iter()
+        .position(|work| work.rebuilt == 0)
+        .expect("the press lands");
+    let mut moving = Vec::new();
+    for (index, work) in works.iter().enumerate().skip(landed) {
+        assert_eq!(
+            work.rebuilt,
+            0,
+            "frame {} of the mark rebuilds no layout",
+            index + 1
+        );
+        assert_eq!(
+            work.nodes,
+            0,
+            "frame {} of the mark builds no layout nodes",
+            index + 1
+        );
+        assert!(
+            work.marked_dirty <= still_dirty,
+            "frame {} of the mark marks {count} widgets for a measure, no more than a still \
+             frame's {still_dirty}",
+            index + 1,
+            count = work.marked_dirty
+        );
+        moving.push(work.cpu);
+    }
+
     let still_ms = median_ms(&still);
     let moving_ms = median_ms(&moving);
-    println!("a frame: {still_ms:.2} ms still, {moving_ms:.2} ms with the mark on its way");
+    println!("a frame: {still_ms:.2} ms CPU still, {moving_ms:.2} ms CPU with the mark on its way");
+    println!("the mark over frames: {series:?}");
+    assert!(
+        partway(&series) >= 3,
+        "the mark is on its way over the frames it is costed on: {series:?}"
+    );
+    assert!(settles(&series), "the mark settles: {series:?}");
     assert!(
         moving_ms < still_ms * 1.5 + 1.0,
         "a frame of the mark costs what a still frame costs: {still_ms:.2} ms still, \
@@ -475,17 +688,118 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     );
 }
 
-/// How long each of the next frames takes, drawn as the window draws it.
-fn frame_times(app: &mut TestApp<TlApp>, count: usize) -> Vec<std::time::Duration> {
+/// A still window is not a frame source: left alone, it produces no frames at all, and a frame
+/// something outside it forces re-measures nothing, syncs nothing and asks no History surface
+/// anything, because nothing it shows moved.
+#[test]
+fn a_still_window_produces_no_frames() {
+    let mut app = staged("a busy week");
+    // The live window's own tick: take up what the app's workers woke it for.
+    app.frame();
+    // The frame that settles the window left the witness the next frame is read against.
+    app.harness().relayout();
+    assert!(
+        !moving(&mut app),
+        "the window rests before it is left alone"
+    );
+
     let start = ui::time::Instant::now();
-    let mut times = Vec::new();
-    for step in 0..count {
-        let at = start + ui::time::Duration::from_millis(16 * step as u64);
-        let began = std::time::Instant::now();
-        let _ = frame_at(app, at);
-        times.push(began.elapsed());
+    let mut produced = 0;
+    let mut cpu = std::time::Duration::ZERO;
+    for step in 0..30 {
+        let at = start + ui::time::Duration::from_millis(16 * step);
+        let began = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
+        if with_monotonic_time(at, || app.frame()) {
+            produced += 1;
+        }
+        cpu += ui::rt::thread_cpu_time()
+            .expect("a thread's CPU clock")
+            .saturating_sub(began);
     }
-    times
+    assert_eq!(
+        produced, 0,
+        "an idle window produces no frame: what it would draw, it already shows"
+    );
+    assert!(
+        cpu < std::time::Duration::from_millis(50),
+        "half a second of idle ticks costs {:.2} ms CPU, not a frame's worth per tick",
+        cpu.as_secs_f64() * 1000.0
+    );
+    assert!(
+        app.harness().queued_work_sources().is_empty(),
+        "an idle window queues no work: {:?}",
+        app.harness().queued_work_sources()
+    );
+    assert_eq!(
+        app.harness().frame_requesters(),
+        Vec::new(),
+        "no widget asks an idle window for a frame"
+    );
+    assert_eq!(
+        app.harness().redraw_sources(),
+        Vec::<String>::new(),
+        "no widget asks an idle window to repaint it"
+    );
+
+    // A frame the window itself asks for while nothing of the app changed — a mark
+    // filling in — costs the paint of what moved: no measure, no sync, no History
+    // surface asked anything.
+    let mark = the_mark_box(&mut app);
+    let (x, y) = (mark[0] + mark[2] / 2.0, mark[1] + mark[3] / 2.0);
+    let pressed = start + ui::time::Duration::from_millis(200);
+    with_monotonic_time(pressed, || app.harness().click_at(x, y));
+    let (samples, drew, layout, quiet) = {
+        let mut step = 0;
+        loop {
+            step += 1;
+            assert!(step <= 20, "the mark settles");
+            let at = pressed + ui::time::Duration::from_millis(16 * step);
+            let quiet_before = app.harness().quiet_frames();
+            let (drew, samples) =
+                ui::tilo_resource::profiling::observe(|| with_monotonic_time(at, || app.frame()));
+            let quiet = app.harness().quiet_frames() > quiet_before;
+            let layout = app.harness().last_relayout();
+            if !moving(&mut app) {
+                break (samples, drew, layout, quiet);
+            }
+        }
+    };
+    assert!(
+        drew,
+        "the frame that ends the mark is one the window asked for"
+    );
+    assert!(
+        quiet,
+        "a still frame syncs and publishes nothing: {samples:?}"
+    );
+    assert_eq!(
+        layout.marked_dirty, 0,
+        "a still frame marks nothing for a measure"
+    );
+    assert!(!layout.rebuilt, "a still frame rebuilds no layout");
+    let calls = |phase: &str| {
+        samples
+            .iter()
+            .filter(|sample| sample.phase == phase)
+            .map(|sample| sample.calls)
+            .sum::<usize>()
+    };
+    assert_eq!(
+        calls("ui.frame_sync"),
+        0,
+        "a still frame syncs no app: {samples:?}"
+    );
+    assert_eq!(
+        calls("ui.history_root_validation"),
+        0,
+        "a still frame asks History nothing: {samples:?}"
+    );
+    let loud: Vec<&str> = samples
+        .iter()
+        .map(|sample| sample.phase)
+        .filter(|phase| phase.starts_with("ui.loud."))
+        .collect();
+    assert!(loud.is_empty(), "a still frame is quiet, not {loud:?}");
 }
 
 fn median_ms(times: &[std::time::Duration]) -> f64 {
@@ -538,10 +852,12 @@ fn the_frames_a_person_sees() {
     let start = ui::time::Instant::now();
     let _ = frame_at(&mut app, start);
     shot(&mut app, "remove-00-rest");
-    let [x, y, w, h] = named(&mut app, "Remove");
-    with_monotonic_time(start + ui::time::Duration::from_millis(100), || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    let remove = reach_remove(&mut app);
+    press_remove(
+        &mut app,
+        &remove,
+        start + ui::time::Duration::from_millis(100),
+    );
     settle(&mut app);
     let [x, y, w, h] = rows(&mut app)
         .into_iter()
@@ -554,11 +870,9 @@ fn the_frames_a_person_sees() {
     settle(&mut app);
     let (_, _) = frame_at(&mut app, ui::time::Instant::now());
     shot(&mut app, "remove-01-opened");
-    let [x, y, w, h] = named(&mut app, "Remove");
+    let remove = reach_remove(&mut app);
     let pressed = ui::time::Instant::now() + ui::time::Duration::from_millis(100);
-    with_monotonic_time(pressed, || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    press_remove(&mut app, &remove, pressed);
     for step in 1..=10 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
         let _ = frame_at(&mut app, at);

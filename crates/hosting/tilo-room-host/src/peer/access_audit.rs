@@ -1,7 +1,7 @@
 //! When a connection's access is next audited.
 //!
 //! The audit ([`super::audit_subscriber_access`]) is what ends a session
-//! whose device was revoked, removed from a room, displaced by a newer
+//! whose device was revoked, removed from a workspace, displaced by a newer
 //! connection, or whose certificate or agent delegation ran out. It runs
 //! when one of those may have happened rather than on a fixed clock:
 //!
@@ -10,14 +10,14 @@
 //! - [`AUDIT_SETTLE`] after the certificate or agent delegation the
 //!   connection holds expires (every frame is already refused from the
 //!   expiry on; the settle lets one in flight be answered before the close);
-//! - every [`UNWATCHED_AUDIT`] while a subscribed room's membership file can
+//! - every [`UNWATCHED_AUDIT`] while a subscribed workspace's membership file can
 //!   only be observed by reading it (no live membership watch covers it);
 //! - otherwise after [`AUDIT_BACKSTOP`], for a writer that forgets to
 //!   announce its change, on a connection of another device.
 //!
-//! The host's own device (the native owner of a device hosting its rooms,
+//! The host's own device (the native owner of a device hosting its workspaces,
 //! connected in process) has no backstop: its connection lasts as long as
-//! the host, and a device hosting its rooms with nobody else connected must
+//! the host, and a device hosting its workspaces with nobody else connected must
 //! wake only on I/O. It is still audited on every announced change and at
 //! its certificate's expiry.
 //!
@@ -33,7 +33,7 @@ use super::AgentRegistry;
 use crate::auth::AuthenticatedPeer;
 use tilo_lock::RwLockRecover as _;
 
-/// Audit cadence while a subscribed room's membership file is not watched:
+/// Audit cadence while a subscribed workspace's membership file is not watched:
 /// reading the disk is then the only way an external edit is seen, so it is
 /// read as often as before the watch existed.
 const UNWATCHED_AUDIT: Duration = Duration::from_secs(1);
@@ -53,13 +53,13 @@ pub(super) struct AccessAudit {
     /// Whether the connection is of another device than the host's own, so
     /// it is audited on [`AUDIT_BACKSTOP`] too.
     backstop: bool,
-    /// The subscribed rooms the last audit found change-notified.
+    /// The subscribed workspaces the last audit found change-notified.
     watched: Vec<u64>,
 }
 
 impl AccessAudit {
     /// A new connection is first audited on the unwatched cadence: until an
-    /// audit has looked, nothing is known about its rooms. `own_device` says
+    /// audit has looked, nothing is known about its workspaces. `own_device` says
     /// it is the host's own device's.
     pub(super) fn new(own_device: bool) -> Self {
         Self {
@@ -83,15 +83,18 @@ impl AccessAudit {
         self.due_by(after(Instant::now(), AUDIT_SETTLE));
     }
 
-    /// A room subscribed since the last audit is not known to be watched.
+    /// A workspace subscribed since the last audit is not known to be watched.
     pub(super) fn cover(&mut self, subscribed: &[u64]) {
-        if subscribed.iter().any(|room| !self.watched.contains(room)) {
+        if subscribed
+            .iter()
+            .any(|workspace| !self.watched.contains(workspace))
+        {
             self.due_by(after(Instant::now(), UNWATCHED_AUDIT));
         }
     }
 
     /// Schedule the next audit after one that passed; `watched` says whether
-    /// every room in `subscribed` had change-notified membership.
+    /// every workspace in `subscribed` had change-notified membership.
     pub(super) fn audited(
         &mut self,
         peer: &AuthenticatedPeer,
@@ -112,7 +115,7 @@ impl AccessAudit {
             .get(&peer.device_public_key)
             .and_then(|delegation| delegation.as_ref().map(|live| live.expires_at_ns));
         // Only a future expiry is a deadline. One already past was judged by
-        // the audit that just passed (a connection without rooms holds no
+        // the audit that just passed (a connection without workspaces holds no
         // access to lose), and must not schedule an audit loop.
         let now_ns = unix_now_ns();
         for expiry in [peer.cert.expires_at_ns, delegation_expiry]
@@ -198,7 +201,7 @@ mod tests {
         audit.changed();
         assert_eq!(audit.due(), Some(Instant::now() + AUDIT_SETTLE));
 
-        // An unwatched room is still read on the unwatched cadence.
+        // An unwatched workspace is still read on the unwatched cadence.
         audit.audited(&peer, &agents, &[7], false);
         assert_eq!(audit.due(), Some(Instant::now() + UNWATCHED_AUDIT));
     }

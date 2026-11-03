@@ -2736,6 +2736,7 @@ mod tests {
     }
     pub mod layout;
     mod ready_focus;
+    mod tour_motion;
     use tilo_onboarding::OnboardingEffect;
     #[test]
     fn completed_browser_continuation_skips_future_first_use_and_rejects_tampering() {
@@ -4430,50 +4431,6 @@ mod tests {
             view.sync(&doc, &automerge::ROOT);
             assert!(view.finished(), "Done closes the reopened tour");
         }
-        // Phase `resumed_tour_preserves_focus_reset_and_reduced_motion_navigation`.
-        {
-            let directory = TempDir::new().expect("progress directory");
-            write_fixture_identity(directory.path());
-            store_progress(directory.path(), PersistedStage::TourOrganise)
-                .expect("organise journal");
-            let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
-
-            assert_eq!(view.tour_page, Some(TourPage::Organise));
-            assert!(
-                view.take_focus_reset(),
-                "a restored page must place keyboard focus inside its rebuilt controls"
-            );
-            assert!(!view.take_focus_reset(), "the focus edge is one-shot");
-
-            let theme = Theme::dark().with_reduce_motion(true);
-            // Mounting setup takes its first frame and one to settle it; an
-            // entrance animation would keep asking for more.
-            for _ in 0..2 {
-                let _ = lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
-            }
-            assert!(
-                !view.needs_animation_frame(),
-                "restoring a tour must not restart entrance animation under reduced motion"
-            );
-
-            let mut document = AutoCommit::new();
-            press(&view, &mut document, KEY_TOUR_NEXT);
-            sync_journaled(&mut view, &document);
-            assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-            assert_eq!(
-                load_progress(directory.path()).expect("updated tour journal"),
-                Some(PersistedStage::TourCollaborate)
-            );
-            assert!(
-                view.take_focus_reset(),
-                "keyboard navigation must move focus into the newly restored stage"
-            );
-            let _ = lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
-            assert!(
-                !view.needs_animation_frame(),
-                "the next stage arrives in one frame under reduced motion"
-            );
-        }
     }
 
     #[test]
@@ -5624,16 +5581,8 @@ mod tests {
             }
         }
         let mut text = ui::text_render::TextRenderer::new();
-        let mut laid = crate::view::tests::layout::lay_out_as_root_with_text(
-            view, width, height, theme, &mut text,
-        );
-        view.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            theme,
-            &ui::presence::PresenceCtx::empty(),
-        );
+        let mut laid =
+            crate::view::tests::layout::draw_until_rest(view, width, height, theme, &mut text, 6);
         // The app lays out its own tree in its own frame: its widgets join
         // the map under nodes of their own, at the window's origin as the
         // app is.

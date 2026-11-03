@@ -109,6 +109,10 @@ pub struct ScreenshotMarkup {
     /// Enter press it); `None` while the keyboard is on the editor itself.
     keyboard: Option<&'static str>,
     focused: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// The editor opening out of the captured shot: one thing becoming another
@@ -184,6 +188,7 @@ impl ScreenshotMarkup {
             .with_fit(ImageFit::Fill)
             .with_alt("Screenshot being marked up");
         Self {
+            dirty: true,
             image,
             original: rgba,
             width,
@@ -230,6 +235,7 @@ impl ScreenshotMarkup {
     /// advances from `Instant`; this only replaces the clock, not geometry.
     #[doc(hidden)]
     pub fn set_entrance_transition_progress(&mut self, permille: u16) {
+        self.dirty = true;
         self.entrance_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
     }
 
@@ -315,6 +321,7 @@ impl ScreenshotMarkup {
     }
 
     fn set_zoom_around(&mut self, zoom: f64, anchor: Point) {
+        self.dirty = true;
         let zoom = zoom.clamp(1.0, 8.0);
         if (zoom - self.zoom).abs() < 0.001 {
             return;
@@ -1220,6 +1227,7 @@ impl Widget for ScreenshotMarkup {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 if self.move_active_gesture(ctx.logical(position)) {
@@ -1352,6 +1360,14 @@ impl Widget for ScreenshotMarkup {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "ScreenshotMarkup"
     }
@@ -1387,6 +1403,7 @@ impl Widget for ScreenshotMarkup {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if !focused {
             self.keyboard = None;

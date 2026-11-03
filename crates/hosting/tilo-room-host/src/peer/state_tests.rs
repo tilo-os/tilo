@@ -402,7 +402,7 @@ async fn ordered_checkpoints_reach_a_device_once_per_channel_until_rearmed() {
     assert!(fixture.recipient_disconnected.try_recv().is_err());
 }
 
-/// The room's own changes reach every live device. A governor that starts
+/// The workspace's own changes reach every live device. A governor that starts
 /// its document over from a base, or rolls its publications over, sends the
 /// commit as checkpoints alone: no delta carries what changed, so a device
 /// that took a checkpoint on the channel this session still takes this one.
@@ -606,7 +606,7 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
     assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
 }
 
-/// Commits are no longer admitted one at a time per room, so a copy of a
+/// Commits are no longer admitted one at a time per workspace, so a copy of a
 /// commit (a resend after a reconnect) can arrive while the first is still
 /// being made durable: it waits for that one and is answered with its host
 /// order, and the change is retained once.
@@ -760,7 +760,7 @@ async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
 
 #[tokio::test]
 async fn bots_and_the_host_are_never_limited() {
-    // A public room's bots are delegated by the host-held root, so they
+    // A public workspace's bots are delegated by the host-held root, so they
     // chain to the relay's own user; a burst must not become refusals.
     let answers = two_commits_with_a_burst_of_one(None).await;
     assert!(
@@ -2272,15 +2272,16 @@ fn delivered_times(fixture: &mut Fixture) -> Vec<u64> {
 }
 
 /// Any participant of a channel admits a device asking for it, so a member's
-/// access request reaches every member, whether this relay governs the room
+/// access request reaches every member, whether this relay governs the workspace
 /// or not.
 #[tokio::test]
 async fn access_requests_reach_every_member() {
     for governed in [false, true] {
         let mut fixture = Fixture::new();
         if governed {
-            fixture.workspace.lock().await.room_authority =
-                Some(crate::rooms::RoomAuthority::governed_by("room", [9; 32]));
+            fixture.workspace.lock().await.workspace_authority = Some(
+                crate::workspaces::WorkspaceAuthority::governed_by("room", [9; 32]),
+            );
         }
         enqueue_state(
             &fixture.workspace,

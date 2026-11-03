@@ -282,6 +282,8 @@ impl ProfileChoice {
 struct CardFocus {
     rect: Rect,
     focused: bool,
+    /// Its paint changed since the last frame drew it.
+    dirty: bool,
     /// What the card is called: theirs, or yours.
     label: String,
 }
@@ -291,12 +293,22 @@ impl CardFocus {
         Self {
             rect: Rect::ZERO,
             focused: false,
+            dirty: true,
             label,
         }
     }
 }
 
 impl Widget for CardFocus {
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -334,6 +346,9 @@ impl Widget for CardFocus {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.dirty = true;
+        }
         self.focused = focused;
     }
 
@@ -1317,7 +1332,7 @@ impl Widget for ProfileCard {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.popover.needs_redraw()
+        self.popover.needs_redraw() || self.popover.needs_animation_frame()
     }
 
     fn name(&self) -> &'static str {
@@ -1603,7 +1618,11 @@ impl Widget for LazyProfileCard {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.opening.is_some() || self.card.as_ref().is_some_and(|card| card.needs_redraw())
+        self.opening.is_some()
+            || self
+                .card
+                .as_ref()
+                .is_some_and(|card| card.needs_redraw() || card.needs_animation_frame())
     }
 
     // Before its code is in, the card is an empty leaf whose size never
@@ -2117,7 +2136,8 @@ mod tests {
         }
 
         fn needs_redraw(&self) -> bool {
-            self.next.borrow().is_some() || self.card.needs_redraw()
+            self.next.borrow().is_some()
+                || (self.card.needs_redraw() || self.card.needs_animation_frame())
         }
 
         fn name(&self) -> &'static str {

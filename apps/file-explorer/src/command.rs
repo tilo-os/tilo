@@ -47,8 +47,15 @@ pub enum FileCommand {
     /// part of a multi-selection, which is preserved so a menu action can
     /// apply to all of it. `None` clears the selection (empty-space menu).
     ContextSelect(Option<usize>),
-    /// Activate entry `index` directly (keyboard Enter / grid double-click).
+    /// Activate entry `index` directly (keyboard Enter / grid double-click,
+    /// and an assistive technology's activation of the entry's row).
     Activate(usize),
+    /// An assistive technology asked for entry `index`'s menu, at `at`: the
+    /// same menu a right-press opens, with no pointer to right-press.
+    ContextMenuAt {
+        index: usize,
+        at: Point,
+    },
     /// Move the collection cursor to an already geometry-resolved item. The
     /// view owns the directional-grid math; the app remains the one owner of
     /// the durable selection model, so pointer, keyboard and accessibility

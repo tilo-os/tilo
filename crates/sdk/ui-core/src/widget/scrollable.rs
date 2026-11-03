@@ -1792,7 +1792,10 @@ impl Widget for Scrollable {
             || self.bar_dirty
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
-            || self.child.as_ref().is_some_and(|c| c.needs_redraw())
+            || self
+                .child
+                .as_ref()
+                .is_some_and(|c| c.needs_redraw() || c.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

@@ -15,7 +15,10 @@ view composer(d: Desk) {
     ui.FloatingPanel {
         header: {
             row(gap: .related, align: .center, wrap: true) {
-                ui.Text(if subject != "" { "Ask about {subject}" } else { "Ask an agent" }, role: .subheading)
+                ui.Text(
+                    if subject != "" { "Ask about {subject}" } else { "Ask an agent" },
+                    role: .subheading,
+                )
                 spacer
                 ui.Badge(count: live.len())
             }
@@ -25,7 +28,12 @@ view composer(d: Desk) {
                 on submit: session.ask(title: words, agent: agent_key(agents)).then(set(words, ""))
             }
             if live.is_empty() {
-                ui.EmptyState("No task is running", message: "What you ask becomes one, and its log stays here", icon: .bot, inline: true)
+                ui.EmptyState(
+                    "No task is running",
+                    message: "What you ask becomes one, and its log stays here",
+                    icon: .bot,
+                    inline: true,
+                )
             } else {
                 ui.Section("Running") {
                     for t in live {
@@ -59,7 +67,11 @@ view composer(d: Desk) {
 
 /// One running task: what it is on, its state, and the way into its log.
 view task_line(d: Desk, t: Task) {
-    ui.ListRow(t.title, secondary: .some(t.state), icon: if t.state == "waiting" { .pause } else { .bot })
+    ui.ListRow(
+        t.title,
+        secondary: .some(t.state),
+        icon: if t.state == "waiting" { .pause } else { .bot },
+    )
 }
 
 /// The agent an ask goes to: the first here that is not done, else the workspace's own.

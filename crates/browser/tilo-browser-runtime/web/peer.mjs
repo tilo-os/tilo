@@ -980,6 +980,10 @@ async function connect({
     onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
     /** The live layer of the joined workspace, or `undefined` without a workspace. */
     get live() { return live; },
+    /** Why this page cannot join the workspace's live plane at all, in the
+     * words shown in the members' place (`here.mjs`), or `null` while it can
+     * (or did): a browser without WebTransport, which has no fallback. */
+    liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
     /** The workspace's agents (`agents.mjs`), or `undefined` without a workspace. */
     get agents() { return agents; },
     /** This person as their presence names them: `{label, color}`. */

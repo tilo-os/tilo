@@ -296,6 +296,29 @@ where
 }
 
 impl Shared {
+    /// This workspace's members and the devices among them that may relay its
+    /// live plane, in the order every device tries them; `None` — after
+    /// withdrawing the plane — when the membership is unknown or names no
+    /// relay.
+    fn relay_candidates(&self, workspace: WorkspaceId) -> Option<(Vec<Member>, Vec<[u8; 32]>)> {
+        let members = match channels::members_of(&self.engine, workspace) {
+            Ok(members) => members,
+            Err(error) => {
+                tracing::debug!(%workspace, %error, "the live plane's membership is unknown");
+                self.withdraw(workspace);
+                return None;
+            }
+        };
+        let candidates = relays_of(&members, now_ns());
+        if candidates.is_empty() {
+            // No member may relay it: the workspace has no live plane.
+            tracing::debug!(%workspace, "no member may relay this workspace's live plane");
+            self.withdraw(workspace);
+            return None;
+        }
+        Some((members, candidates))
+    }
+
     /// Read `workspace` as it is now and join through the first of its relays
     /// this device reaches, move the plane's keys and roster when they changed,
     /// or leave when the workspace names no relay any more.
@@ -305,21 +328,17 @@ impl Shared {
         endpoint: &Endpoint,
         relay: Option<&Relay>,
     ) {
-        let members = match channels::members_of(&self.engine, workspace) {
-            Ok(members) => members,
-            Err(error) => {
-                tracing::debug!(%workspace, %error, "the live plane's membership is unknown");
-                self.withdraw(workspace);
-                return;
-            }
-        };
-        let candidates = relays_of(&members, now_ns());
-        if candidates.is_empty() {
-            // No member may relay it: the workspace has no live plane.
-            tracing::debug!(%workspace, "no member may relay this workspace's live plane");
-            self.withdraw(workspace);
+        let Some((members, candidates)) = self.relay_candidates(workspace) else {
             return;
-        }
+        };
+        // The plane's tracks are sealed under the workspace's media channel:
+        // taking part in it asks the workspace's devices for access, and the
+        // plane opens on the keys arriving.
+        let _ = self.engine.join_channel(
+            workspace,
+            collab_types::scope::MEDIA_APP,
+            collab_types::scope::WORKSPACE_RECORD,
+        );
         let keys = self
             .engine
             .keys()
@@ -366,10 +385,12 @@ impl Shared {
             roster,
             publish: true,
         };
+        let host = self.engine.workspace_host(workspace);
         let reached = reach(&candidates, |chosen| {
             let join = join.clone();
             let endpoint = endpoint.clone();
             let scope = scope.clone();
+            let host = host.clone();
             Box::pin(async move {
                 if chosen == self.device {
                     return relay.map_or(Err(PlaneError::Unavailable), |relay| {
@@ -381,7 +402,14 @@ impl Shared {
                 let grant = self
                     .grant(workspace, &scope, epoch)
                     .map_err(|_| PlaneError::Unavailable)?;
-                let carrier = native::Iroh::new(endpoint, EndpointAddr::new(relay_id));
+                // The member this enrollment pinned is reached at the address
+                // its host signed, which is its endpoint's, not its device
+                // key's.
+                let addr = host
+                    .as_ref()
+                    .filter(|(pinned, _)| *pinned == chosen)
+                    .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
+                let carrier = native::Iroh::new(endpoint, addr);
                 Plane::join_within(&carrier, &grant, join, ATTEMPT).await
             })
         })
@@ -497,6 +525,7 @@ impl Shared {
         self.bridged
             .lock_recover()
             .retain(|(held, device), _| *held != workspace || others.contains(device));
+        let host = self.engine.workspace_host(workspace);
         for other in others {
             if self
                 .bridged
@@ -511,7 +540,11 @@ impl Shared {
             let Ok(grant) = self.grant(workspace, scope, epoch) else {
                 continue;
             };
-            let carrier = native::Iroh::new(endpoint.clone(), EndpointAddr::new(relay_id));
+            let addr = host
+                .as_ref()
+                .filter(|(pinned, _)| *pinned == other)
+                .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
+            let carrier = native::Iroh::new(endpoint.clone(), addr);
             match tilo_live::bridge::Bridge::join(&carrier, &grant, scope, relay, BRIDGE_JOINT)
                 .await
             {
@@ -662,6 +695,18 @@ impl Live {
         plane
             .publish(track, sequence, body)
             .map_err(|error| error.to_string())
+    }
+
+    /// Say `presence` as object `sequence` of `workspace`'s presence track,
+    /// sealed by the plane under the workspace scope's keys.
+    pub fn say(
+        &self,
+        workspace: WorkspaceId,
+        sequence: u32,
+        presence: &collab_types::presence::Presence,
+    ) -> Result<(), String> {
+        let plane = self.plane(workspace)?;
+        tilo_live::presence::say(&plane, sequence, presence).map_err(|error| error.to_string())
     }
 
     /// The next object heard in `workspace`'s live plane, or `None`.

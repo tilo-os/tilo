@@ -468,6 +468,54 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
     );
 }
 
+/// The window declares each published action as the app declared it — what it takes, and
+/// whether it can run now — because that is what its palette lists by.
+#[test]
+fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
+    use tilo_actions::{ActionParam, ActionSpec, ExecutionLocus, ParamType, Pick, ResourceSpec};
+    let spec = ActionSpec::typed(
+        "remove",
+        "Remove",
+        "Remove",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("task", ParamType::Object, "task: Task").picking(
+                Pick::Resource {
+                    kind: "test.tasks.Task".to_owned(),
+                },
+            ),
+        ],
+        |_args| tilo_actions::EncodedAction {
+            type_id: "test.create".to_owned(),
+            payload: Vec::new(),
+        },
+    )
+    .unavailable("nothing_selected", "Choose a task first");
+    let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
+    let published = serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes");
+
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(
+        &mut app,
+        &[ToUi::Actions(wire::ActionCatalogue::All(published))],
+    );
+    window.receive();
+    let catalogue = window.catalogue();
+    let action = &catalogue
+        .first()
+        .and_then(|resource| resource.actions.first())
+        .expect("the app's action is declared for the window");
+    assert!(
+        !action.takes_a_row_answer(),
+        "a task is picked where tasks are, not typed into a row"
+    );
+    assert!(
+        !action.contract.availability.is_available(),
+        "and the app says it cannot run now"
+    );
+}
+
 /// A view whose header offers `Archive` as a button declaring `key`, as `std.header` builds
 /// it for an action with that shortcut: the `key` prop and the button's `press`.
 fn keyed_menu(key: &str) -> Vec<ToUi> {
@@ -879,4 +927,79 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
         }],
         "a turn switches it on"
     );
+}
+
+/// A page whose overview is one list over the rows the app renders, as `std.rows` builds it:
+/// the list inside the page an app docks its composer or bar under.
+fn list_page() -> Vec<ToUi> {
+    let mut list = UiNode::empty("ui.VirtualList", "list");
+    list.props.insert("in_column".to_owned(), Value::Bool(true));
+    let mut docked = UiNode::empty("ui.Docked", "docked");
+    docked.children.push(list);
+    let mut overview = UiNode::empty("slot", "overview");
+    overview
+        .props
+        .insert("name".to_owned(), Value::text("overview"));
+    overview.children.push(docked);
+    let mut shell = UiNode::empty("ui.NavShell", "shell");
+    shell.children.push(overview);
+    vec![ToUi::Open {
+        lane: Lane::Root,
+        target: doc(),
+        tree: shell,
+        front: None,
+    }]
+}
+
+/// The list of the view's overview.
+fn overview_list(window: &mut AppWindow) -> &mut ui::widget::DescribedList {
+    window
+        .shell_mut()
+        .and_then(|shell| shell.overview_list_mut())
+        .expect("the overview's list")
+}
+
+#[test]
+fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(&mut app, &list_page());
+    // The view beside the list opens before the app has rendered any of the list's rows: the
+    // list cannot name the row of the view it shows until they come.
+    send(&mut app, &opened_note("a", "Alpha"));
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the views were taken: {:?}",
+        window.failed()
+    );
+    send(
+        &mut app,
+        &[ToUi::Rows {
+            lane: Lane::Root,
+            list: "list".to_owned(),
+            len: 2,
+            start: 0,
+            keys: vec!["notes/a".to_owned(), "notes/b".to_owned()],
+            rows: vec![
+                UiNode::empty("ui.ListItem", "notes/a"),
+                UiNode::empty("ui.ListItem", "notes/b"),
+            ],
+        }],
+    );
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the rows were taken: {:?}",
+        window.failed()
+    );
+    let list = overview_list(&mut window)
+        .list()
+        .expect("the overview's list");
+    let selection = list.selection();
+    assert!(
+        selection.is_selected(&"notes/a".to_owned()),
+        "the row of the view shown is the selected one"
+    );
+    assert!(!selection.is_selected(&"notes/b".to_owned()), "only it is");
 }

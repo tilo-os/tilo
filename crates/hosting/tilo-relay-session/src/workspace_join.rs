@@ -2,14 +2,14 @@
 //! The client half reaches a governor over its iroh endpoint, or over its
 //! HTTPS route for a host that publishes no iroh address. The server half,
 //! [`WorkspaceJoinProtocol`], is how every governor answers on its iroh
-//! endpoint: a relay for the rooms it governs and a device for its own. The
+//! endpoint: a relay for the workspaces it governs and a device for its own. The
 //! HTTPS route stays in `tilo-relay`; the messages are
 //! `tilo_workspace_join`'s.
 //!
 //! An invitation a host's admission door issued comes with the door's
 //! one-time token. Over HTTPS the client spends it as a page does
 //! (`JoinStep::ProvePreAdmitted`, under the door's limits and with the
-//! notice the room keeps) before it completes; the completion then answers
+//! notice the workspace keeps) before it completes; the completion then answers
 //! that admission's bootstrap.
 
 use std::sync::Arc;
@@ -91,7 +91,7 @@ impl std::fmt::Debug for Carrier {
 
 /// What a host's admission door gave this device's person beside its
 /// invitation: the one-time token that admits them at once, and the name
-/// they give the room.
+/// they give the workspace.
 #[derive(Clone)]
 pub struct DoorAdmission {
     pub token: Vec<u8>,
@@ -340,7 +340,7 @@ async fn spend_door_admission(
     complete: &tilo_workspace_join::JoinCompleteRequest,
     door: &DoorAdmission,
 ) -> Result<(), WorkspaceJoinError> {
-    use tilo_relay_protocol::rooms::{JoinReply, JoinStep};
+    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
     let transport =
         |error: tilo_relay_client::LinkError| WorkspaceJoinError::Transport(error.to_string());
     let challenge = postcard::to_stdvec(&complete.proof.challenge)

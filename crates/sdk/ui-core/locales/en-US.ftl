@@ -306,6 +306,8 @@ close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
 
 block-image-untitled = Picture
+# The title a row shows for an item nobody has named yet.
+list-row-untitled = Untitled
 block-image-missing = Not on this device yet
 notes-image-edit = Edit description
 notes-image-done = Done
@@ -900,6 +902,10 @@ history-preview-now = Back to now
 date-field-none = No date
 date-field-calendar = Calendar
 date-field-clear = Clear date
+
+# A form's person field: what it reads as with nobody picked, and the entry that picks you.
+person-field-none = No one
+person-field-me = Me
 
 # The menu a secondary click or a long press opens on editable words.
 text-menu-cut = Cut

@@ -21,8 +21,8 @@ use std::time::SystemTime;
 use ed25519_dalek::SigningKey;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_relay::rooms::IssueInvitationRequest;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{Relay, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -109,12 +109,15 @@ impl Admitted {
         )
         .await
         .unwrap();
-        let workspaces = relay.rooms().unwrap();
+        let workspaces = relay.workspaces().unwrap();
         let workspace = workspaces.create("Design review").await.unwrap();
-        workspaces.enter(&workspace.room, &laptop).await.unwrap();
+        workspaces
+            .enter(&workspace.workspace, &laptop)
+            .await
+            .unwrap();
         let invitation = workspaces
             .issue(
-                &workspace.room,
+                &workspace.workspace,
                 &laptop,
                 IssueInvitationRequest {
                     request_id: [9; 32],
@@ -148,7 +151,7 @@ impl Admitted {
             relay,
             _state: state,
             _directory: directory,
-            workspace: workspace.room,
+            workspace: workspace.workspace,
             workspace_id: workspace.workspace_id,
             invitation,
             owner,
@@ -162,7 +165,7 @@ impl Admitted {
     /// membership exchange.
     async fn moves_on(&self) {
         self.relay
-            .rooms()
+            .workspaces()
             .unwrap()
             .rename(&self.workspace, "Lounge")
             .await

@@ -169,7 +169,7 @@ impl<W: Widget + 'static> Embedded<W> {
             && let Some((laid, height)) = self.laid
             && laid == rect
             && !self.widget.layout_needs_measure()
-            && !self.widget.needs_redraw()
+            && !(self.widget.needs_redraw() || self.widget.needs_animation_frame())
         {
             return height;
         }

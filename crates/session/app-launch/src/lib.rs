@@ -21,7 +21,8 @@
 //! which hands it to the process it already runs.
 //!
 //! Everything the session knows that the plan needs — the workspace and what was
-//! granted in it ([`Workspace`]), the displays and the person's session variables
+//! granted in it, the policy the person's authority there is projected from
+//! ([`Workspace`]), the displays and the person's session variables
 //! ([`env`]) — is passed in as data, so a plan is assertable without a
 //! process appearing. [`spawner`] is the part that does start something, and
 //! reports how it ended so a crash can be told from a normal exit.
@@ -31,6 +32,7 @@
 //! windows, offers it, and keeps the entry Tilo writes for it — one session
 //! resource the search and the app sheets read.
 
+pub mod authority;
 pub mod doors;
 pub mod downloaded;
 pub mod env;
@@ -41,6 +43,7 @@ pub mod routing;
 pub mod spawner;
 pub mod workspace;
 
+pub use authority::Authority;
 pub use doors::{Connects, Doors, HeldDoor, Routed, StartAlone, WindowConnections};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};

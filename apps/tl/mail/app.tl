@@ -48,7 +48,9 @@ type Thread (origin: imap.thread) {
     muted: Bool = false
 
     search {
-        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now and not muted (icon: .inbox)
+        filter "Inbox" = boxes.contains("inbox")
+            and snoozed_until <= now
+            and not muted (icon: .inbox)
         filter "Snoozed" = snoozed_until > now (icon: .clock)
         filter labels (icon: .tag)
         filter flagged "Flagged" (icon: .flag)
@@ -210,35 +212,83 @@ fn quoted(m: Message) -> Text {
 primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
     let m = root Mail
     let last = t.messages.last()
-    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: signed(m, t.account, if let l = last { quoted(l) } else { "" }), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    m.drafts.insert(
+        Draft(
+            from: t.account,
+            to: last?.from ?? "",
+            subject: re(t.subject),
+            body: signed(m, t.account, if let l = last { quoted(l) } else { "" }),
+            in_reply_to: last?.message_id ?? "",
+            references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+        ),
+    )
 }
 
 /// Answers the conversation's newest message, to everyone it went to, quoting it.
 action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key: "a") {
     let m = root Mail
     let last = t.messages.last()
-    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", cc: if let l = last {
-        if l.cc == "" { l.to } else { "{l.to}, {l.cc}" }
-    } else { "" }, subject: re(t.subject), body: signed(m, t.account, if let l = last { quoted(l) } else { "" }), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    m.drafts.insert(
+        Draft(
+            from: t.account,
+            to: last?.from ?? "",
+            cc: if let l = last {
+                if l.cc == "" { l.to } else { "{l.to}, {l.cc}" }
+            } else { "" },
+            subject: re(t.subject),
+            body: signed(m, t.account, if let l = last { quoted(l) } else { "" }),
+            in_reply_to: last?.message_id ?? "",
+            references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+        ),
+    )
 }
 
 /// Answers one message of the conversation, to whoever wrote it, quoting it.
 action reply_to(m: Message) -> Draft (icon: .reply) {
     let mail = root Mail
-    mail.drafts.insert(Draft(from: m.account, to: m.from, subject: re(m.subject), body: signed(mail, m.account, quoted(m)), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+    mail.drafts.insert(
+        Draft(
+            from: m.account,
+            to: m.from,
+            subject: re(m.subject),
+            body: signed(mail, m.account, quoted(m)),
+            in_reply_to: m.message_id,
+            references: "{m.references} {m.message_id}",
+        ),
+    )
 }
 
 /// Answers one message of the conversation, to everyone it went to but the person answering.
 action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") {
     let mail = root Mail
     let theirs = if m.cc == "" { m.to } else { "{m.to}, {m.cc}" }
-    mail.drafts.insert(Draft(from: m.account, to: m.from, cc: theirs, subject: re(m.subject), body: signed(mail, m.account, quoted(m)), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+    mail.drafts.insert(
+        Draft(
+            from: m.account,
+            to: m.from,
+            cc: theirs,
+            subject: re(m.subject),
+            body: signed(mail, m.account, quoted(m)),
+            in_reply_to: m.message_id,
+            references: "{m.references} {m.message_id}",
+        ),
+    )
 }
 
 /// Sends one message of the conversation on, with its sender, when and what it says.
 action forward_message(m: Message) -> Draft (icon: .forward) {
     let mail = root Mail
-    mail.drafts.insert(Draft(from: m.account, subject: "Fwd: {m.subject}", body: signed(mail, m.account, "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n")))
+    mail.drafts.insert(
+        Draft(
+            from: m.account,
+            subject: "Fwd: {m.subject}",
+            body: signed(
+                mail,
+                m.account,
+                "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n",
+            ),
+        ),
+    )
 }
 
 /// Sends the conversation's newest message on, with its sender and what it says.
@@ -248,7 +298,9 @@ action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let said = if let l = last {
         "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
     } else { "" }
-    m.drafts.insert(Draft(from: t.account, subject: "Fwd: {t.subject}", body: signed(m, t.account, said)))
+    m.drafts.insert(
+        Draft(from: t.account, subject: "Fwd: {t.subject}", body: signed(m, t.account, said)),
+    )
 }
 
 /// Archives the conversation: its messages leave the inbox.
@@ -308,7 +360,12 @@ destructive action delete(t: Thread) (icon: .trash, key: "#") {
 }
 
 /// Flags or unflags the conversation.
-action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Unflag" } else { "Flag" }, icon: .flag, on: t.flagged, key: "s") {
+action flag(t: Thread, flagged: Bool = not t.flagged) (
+    label: if t.flagged { "Unflag" } else { "Flag" },
+    icon: .flag,
+    on: t.flagged,
+    key: "s",
+) {
     if let last = t.messages.last() {
         last.flagged = flagged
     }
@@ -394,7 +451,11 @@ action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
     require at > now "Pick a moment still to come"
-    outside("smtp.send", (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references), at: at)
+    outside(
+        "smtp.send",
+        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references),
+        at: at,
+    )
     d.send_at = at
     d.sent = true
     d.recalled = false
@@ -415,12 +476,21 @@ action mark_all_read(a: Account) (icon: .mail_open, label: "Mark all read") {
 
 /// Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is
 /// brought back, whatever its new messages do.
-action mute(t: Thread, muted: Bool = not t.muted) (label: if t.muted { "Unmute" } else { "Mute" }, icon: .bell_off, on: t.muted) {
+action mute(t: Thread, muted: Bool = not t.muted) (
+    label: if t.muted { "Unmute" } else { "Mute" },
+    icon: .bell_off,
+    on: t.muted,
+) {
     t.muted = muted
 }
 
 /// Marks the conversation read, or unread again.
-action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread, key: "u") {
+action mark_read(t: Thread, unread: Bool = not t.unread) (
+    label: if t.unread { "Mark as read" } else { "Mark as unread" },
+    icon: .mail_open,
+    on: not t.unread,
+    key: "u",
+) {
     if t.unread != unread {
         if unread {
             if let last = t.messages.last() {
@@ -457,7 +527,11 @@ primary action send(d: Draft) proposal compose(d) (icon: .send) {
     require d.to != "" "It goes to nobody yet"
     let m = root Mail
     let at = now + m.hold
-    outside("smtp.send", (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references), at: at)
+    outside(
+        "smtp.send",
+        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references),
+        at: at,
+    )
     d.send_at = at
     d.sent = true
     d.recalled = false
@@ -482,7 +556,16 @@ action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
     let said = if let l = last { quoted(l) } else { "" }
     let signature = signature_of(m, t.account)
     let lead = if signature == "" { body } else { "{body}\n{signature}" }
-    let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{lead}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    let d = m.drafts.insert(
+        Draft(
+            from: t.account,
+            to: last?.from ?? "",
+            subject: re(t.subject),
+            body: "{lead}{said}",
+            in_reply_to: last?.message_id ?? "",
+            references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+        ),
+    )
     send(d)
     d
 }
@@ -505,7 +588,9 @@ fn label_query(name: Text) -> Text {
 /// What the window calls the place `query` shows: the filters' and the labels' names, and
 /// "All mail" for every conversation.
 fn place_title(m: Mail, query: Text) -> Text {
-    filters(Thread).find(f -> f.query == query)?.label ?? m.labels.find(l -> label_query(l.name) == query)?.name ?? "All mail"
+    filters(Thread).find(f -> f.query == query)?.label
+        ?? m.labels.find(l -> label_query(l.name) == query)?.name
+        ?? "All mail"
 }
 
 /// The mail window: every account's mail. The unified inbox is every account's inbox in one
@@ -532,7 +617,12 @@ view unified(m: Mail) {
     let title = place_title(m, query)
     if let a = m.accounts.first() {
         let shown = a.threads.matching(query)
-        ui.NavShell(content_kind: .document, sidebar_title: .some("All accounts"), overview_title: .some(title), overview_count: .some(shown.len())) {
+        ui.NavShell(
+            content_kind: .document,
+            sidebar_title: .some("All accounts"),
+            overview_title: .some(title),
+            overview_count: .some(shown.len()),
+        ) {
             sidebar: {
                 ui.NavList(selected: query) {
                     ui.NavItem("is:inbox", "All inboxes", icon: .inbox) {
@@ -544,7 +634,12 @@ view unified(m: Mail) {
                     if not m.labels.is_empty() {
                         ui.NavSection("Labels") {
                             for l in m.labels {
-                                ui.NavItem(label_query(l.name), l.name, icon: .tag, count: .some(a.threads.matching(label_query(l.name)).len())) {
+                                ui.NavItem(
+                                    label_query(l.name),
+                                    l.name,
+                                    icon: .tag,
+                                    count: .some(a.threads.matching(label_query(l.name)).len()),
+                                ) {
                                     on select: set(query, label_query(l.name))
                                 }
                             }
@@ -576,7 +671,11 @@ view unified(m: Mail) {
                             ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
                                 menu: {
                                     for o in offered {
-                                        ui.MenuItem(o.label, icon: o.icon, destructive: o.destructive) {
+                                        ui.MenuItem(
+                                            o.label,
+                                            icon: o.icon,
+                                            destructive: o.destructive,
+                                        ) {
                                             on choose: o.run
                                         }
                                     }
@@ -605,12 +704,22 @@ view mailboxes(a: Account) {
     let places = filters(Thread).filter(f -> f.toggle)
     let shown = a.threads.matching(query)
     let title = place_title(m, query)
-    ui.NavShell(content_kind: .document, sidebar_title: .some(a.address), overview_title: .some(title), overview_count: .some(shown.len())) {
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: .some(a.address),
+        overview_title: .some(title),
+        overview_count: .some(shown.len()),
+    ) {
         sidebar: {
             ui.NavList(selected: if query == "" { "all" } else { query }) {
                 for p in places {
                     let unread = a.threads.matching("{p.query} is:unread").len()
-                    ui.NavItem(p.query, p.label, icon: p.icon, count: if unread > 0 { .some(unread) } else { .none }) {
+                    ui.NavItem(
+                        p.query,
+                        p.label,
+                        icon: p.icon,
+                        count: if unread > 0 { .some(unread) } else { .none },
+                    ) {
                         on select: set(query, p.query)
                     }
                 }
@@ -620,7 +729,12 @@ view mailboxes(a: Account) {
                 if not m.labels.is_empty() {
                     ui.NavSection("Labels") {
                         for l in m.labels {
-                            ui.NavItem(label_query(l.name), l.name, icon: .tag, count: .some(a.threads.matching(label_query(l.name)).len())) {
+                            ui.NavItem(
+                                label_query(l.name),
+                                l.name,
+                                icon: .tag,
+                                count: .some(a.threads.matching(label_query(l.name)).len()),
+                            ) {
                                 on select: set(query, label_query(l.name))
                             }
                         }
@@ -656,7 +770,9 @@ view inbox(b: Mailbox) {
 /// it in search (`is:inbox`), or those filed in it when no filter names it.
 fn in_mailbox(a: Account, b: Mailbox) -> List<Thread> {
     let query = "is:{b.key}"
-    if filters(Thread).any(f -> f.query == query) { a.threads.matching(query) } else {
+    if filters(Thread).any(f -> f.query == query) {
+        a.threads.matching(query)
+    } else {
         a.threads.filter(t -> t.boxes.any(x -> x == b.key))
     }
 }
@@ -698,19 +814,40 @@ view thread_list(shown: List<Thread>) {
 /// One conversation in a list: who wrote, the subject, the start of the newest message and
 /// when it came.
 view thread_row(t: Thread) {
-    row(t.senders, secondary: t.subject, meta: t.latest, mark: if t.flagged { .flag } else if t.unread { .mail })
+    row(
+        t.senders,
+        secondary: t.subject,
+        meta: t.latest,
+        mark: if t.flagged { .flag } else if t.unread { .mail },
+    )
 }
 
 /// One message being written in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
-    row(d.subject, secondary: if d.sent or d.recalled { delivery_says(d) } else { d.to }, mark: if d.sent and not d.recalled { .send })
+    row(
+        d.subject,
+        secondary: if d.sent or d.recalled { delivery_says(d) } else { d.to },
+        mark: if d.sent and not d.recalled { .send },
+    )
 }
 
 /// How a message stands: sent, sending, waiting to send or to go online (and why), not sent and
 /// why, taken back, or not known.
 fn delivery_says(d: Draft) -> Text {
-    if d.recalled { "Taken back, and a draft again" } else if let s = delivery(d) {
-        if s.state == "sent" { "Sent" } else if s.state == "sending" { "Sending" } else if s.state == "rejected" { "Not sent: {s.reason}" } else if s.state == "unknown" { "Not known whether it was sent" } else if s.state == "held" { "Sending in a moment" } else if s.reason == "" { "Waiting to send" } else { "Waiting to go online: {s.reason}" }
+    if d.recalled {
+        "Taken back, and a draft again"
+    } else if let s = delivery(d) {
+        if s.state == "sent" {
+            "Sent"
+        } else if s.state == "sending" {
+            "Sending"
+        } else if s.state == "rejected" {
+            "Not sent: {s.reason}"
+        } else if s.state == "unknown" {
+            "Not known whether it was sent"
+        } else if s.state == "held" {
+            "Sending in a moment"
+        } else if s.reason == "" { "Waiting to send" } else { "Waiting to go online: {s.reason}" }
     } else { "" }
 }
 
@@ -791,7 +928,10 @@ view message(m: Message) {
         ui.Text("to {m.to}", role: .caption, secondary: true)
         ui.Text(said, role: .reading)
         if at >= 0 {
-            ui.DisclosureRow(if quoting { "Hide quoted text" } else { "Show quoted text" }, icon: .quote) {
+            ui.DisclosureRow(
+                if quoting { "Hide quoted text" } else { "Show quoted text" },
+                icon: .quote,
+            ) {
                 on toggle: set(quoting, not quoting)
                 if quoting {
                     ui.Text(quoted_part, role: .reading, secondary: true)
@@ -816,7 +956,12 @@ view editor(d: Draft) {
             }
         }
         if can_undo(d) {
-            ui.Banner("Sending", message: .some("It goes in a moment. Take it back if you need to."), kind: .info, action: .some("Undo send")) {
+            ui.Banner(
+                "Sending",
+                message: .some("It goes in a moment. Take it back if you need to."),
+                kind: .info,
+                action: .some("Undo send"),
+            ) {
                 on act: undo_send(d)
             }
         }
@@ -849,40 +994,280 @@ view editor(d: Draft) {
 /// archived, sent and junk.
 scenario "a busy inbox" -> Thread {
     let m = root Mail
-    let a = m.accounts.insert(Account(key: "sam@rivera.example", address: "sam@rivera.example", name: "Sam Rivera", online: true))
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
     a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 3, total: 7))
     a.mailboxes.insert(Mailbox(key: "archive", name: "Archive", role: "archive", total: 2))
     a.mailboxes.insert(Mailbox(key: "sent", name: "Sent", role: "sent", total: 1))
     a.mailboxes.insert(Mailbox(key: "drafts", name: "Drafts", role: "drafts"))
     a.mailboxes.insert(Mailbox(key: "junk", name: "Junk", role: "junk", total: 1))
     a.mailboxes.insert(Mailbox(key: "trash", name: "Trash", role: "trash"))
-    let launch = a.threads.insert(Thread(key: "launch@rivera.example", account: a.key, subject: "Launch plan for the autumn release", latest: 2026-06-30T13:40Z, snippet: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.", senders: "Ada Lovelace, Grace Hopper", count: 3, unread: true))
+    let launch = a.threads.insert(
+        Thread(
+            key: "launch@rivera.example",
+            account: a.key,
+            subject: "Launch plan for the autumn release",
+            latest: 2026-06-30T13:40Z,
+            snippet: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.",
+            senders: "Ada Lovelace, Grace Hopper",
+            count: 3,
+            unread: true,
+        ),
+    )
     launch.boxes.add("inbox")
-    launch.messages.insert(Message(key: "launch@rivera.example", account: a.key, subject: "Launch plan for the autumn release", from: "grace@hopper.example", from_name: "Grace Hopper", to: "sam@rivera.example, ada@analytical.example", received: 2026-06-30T09:12Z, snippet: "Here is the draft plan.", body: "Hi both,\n\nHere is the draft plan for the autumn release. The beta goes out on the fifth, the release on the twelfth if nothing turns up.\n\nCould you each look at your part by Wednesday?\n\nGrace", message_id: "launch@rivera.example", mailbox: "inbox"))
-    launch.messages.insert(Message(key: "launch-2@rivera.example", account: a.key, subject: "Re: Launch plan for the autumn release", from: "sam@rivera.example", from_name: "Sam Rivera", to: "grace@hopper.example, ada@analytical.example", received: 2026-06-30T11:02Z, snippet: "The fifth works for the beta.", body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam", message_id: "launch-2@rivera.example", references: "launch@rivera.example", mailbox: "sent"))
-    launch.messages.insert(Message(key: "launch-3@rivera.example", account: a.key, subject: "Re: Launch plan for the autumn release", from: "ada@analytical.example", from_name: "Ada Lovelace", to: "sam@rivera.example, grace@hopper.example", received: 2026-06-30T13:40Z, snippet: "Agreed on the twelfth.", body: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.\n\nAda", message_id: "launch-3@rivera.example", references: "launch@rivera.example launch-2@rivera.example", unread: true, mailbox: "inbox"))
+    launch.messages.insert(
+        Message(
+            key: "launch@rivera.example",
+            account: a.key,
+            subject: "Launch plan for the autumn release",
+            from: "grace@hopper.example",
+            from_name: "Grace Hopper",
+            to: "sam@rivera.example, ada@analytical.example",
+            received: 2026-06-30T09:12Z,
+            snippet: "Here is the draft plan.",
+            body: "Hi both,\n\nHere is the draft plan for the autumn release. The beta goes out on the fifth, the release on the twelfth if nothing turns up.\n\nCould you each look at your part by Wednesday?\n\nGrace",
+            message_id: "launch@rivera.example",
+            mailbox: "inbox",
+        ),
+    )
+    launch.messages.insert(
+        Message(
+            key: "launch-2@rivera.example",
+            account: a.key,
+            subject: "Re: Launch plan for the autumn release",
+            from: "sam@rivera.example",
+            from_name: "Sam Rivera",
+            to: "grace@hopper.example, ada@analytical.example",
+            received: 2026-06-30T11:02Z,
+            snippet: "The fifth works for the beta.",
+            body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
+            message_id: "launch-2@rivera.example",
+            references: "launch@rivera.example",
+            mailbox: "sent",
+        ),
+    )
+    launch.messages.insert(
+        Message(
+            key: "launch-3@rivera.example",
+            account: a.key,
+            subject: "Re: Launch plan for the autumn release",
+            from: "ada@analytical.example",
+            from_name: "Ada Lovelace",
+            to: "sam@rivera.example, grace@hopper.example",
+            received: 2026-06-30T13:40Z,
+            snippet: "Agreed on the twelfth.",
+            body: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.\n\nAda",
+            message_id: "launch-3@rivera.example",
+            references: "launch@rivera.example launch-2@rivera.example",
+            unread: true,
+            mailbox: "inbox",
+        ),
+    )
     launch.boxes.add("sent")
-    let lease = a.threads.insert(Thread(key: "lease@lettings.example", account: a.key, subject: "Your lease renewal", latest: 2026-06-30T10:25Z, snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.", senders: "Mill Lane Lettings", count: 1, unread: true, flagged: true))
+    let lease = a.threads.insert(
+        Thread(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            latest: 2026-06-30T10:25Z,
+            snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.",
+            senders: "Mill Lane Lettings",
+            count: 1,
+            unread: true,
+            flagged: true,
+        ),
+    )
     lease.boxes.add("inbox")
-    lease.messages.insert(Message(key: "lease@lettings.example", account: a.key, subject: "Your lease renewal", from: "office@lettings.example", from_name: "Mill Lane Lettings", to: "sam@rivera.example", received: 2026-06-30T10:25Z, snippet: "The new lease is attached.", body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings", message_id: "lease@lettings.example", attachments: "Lease 2026.pdf", unread: true, flagged: true, mailbox: "inbox"))
-    let dinner = a.threads.insert(Thread(key: "dinner@bo.example", account: a.key, subject: "Dinner on Friday?", latest: 2026-06-30T08:51Z, snippet: "Shall we try the new place on Mill Lane? I can book for eight.", senders: "Bo Chen", count: 1, unread: true))
+    lease.messages.insert(
+        Message(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            from: "office@lettings.example",
+            from_name: "Mill Lane Lettings",
+            to: "sam@rivera.example",
+            received: 2026-06-30T10:25Z,
+            snippet: "The new lease is attached.",
+            body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
+            message_id: "lease@lettings.example",
+            attachments: "Lease 2026.pdf",
+            unread: true,
+            flagged: true,
+            mailbox: "inbox",
+        ),
+    )
+    let dinner = a.threads.insert(
+        Thread(
+            key: "dinner@bo.example",
+            account: a.key,
+            subject: "Dinner on Friday?",
+            latest: 2026-06-30T08:51Z,
+            snippet: "Shall we try the new place on Mill Lane? I can book for eight.",
+            senders: "Bo Chen",
+            count: 1,
+            unread: true,
+        ),
+    )
     dinner.boxes.add("inbox")
-    dinner.messages.insert(Message(key: "dinner@bo.example", account: a.key, subject: "Dinner on Friday?", from: "bo@chen.example", from_name: "Bo Chen", to: "sam@rivera.example", received: 2026-06-30T08:51Z, snippet: "Shall we try the new place?", body: "Shall we try the new place on Mill Lane? I can book for eight.\n\nBo", message_id: "dinner@bo.example", unread: true, mailbox: "inbox"))
-    let review = a.threads.insert(Thread(key: "review@code.example", account: a.key, subject: "Review requested: importer handles merged cells", latest: 2026-06-29T17:05Z, snippet: "Chen asked you to review the change to the table importer.", senders: "Forge", count: 1))
+    dinner.messages.insert(
+        Message(
+            key: "dinner@bo.example",
+            account: a.key,
+            subject: "Dinner on Friday?",
+            from: "bo@chen.example",
+            from_name: "Bo Chen",
+            to: "sam@rivera.example",
+            received: 2026-06-30T08:51Z,
+            snippet: "Shall we try the new place?",
+            body: "Shall we try the new place on Mill Lane? I can book for eight.\n\nBo",
+            message_id: "dinner@bo.example",
+            unread: true,
+            mailbox: "inbox",
+        ),
+    )
+    let review = a.threads.insert(
+        Thread(
+            key: "review@code.example",
+            account: a.key,
+            subject: "Review requested: importer handles merged cells",
+            latest: 2026-06-29T17:05Z,
+            snippet: "Chen asked you to review the change to the table importer.",
+            senders: "Forge",
+            count: 1,
+        ),
+    )
     review.boxes.add("inbox")
-    review.messages.insert(Message(key: "review@code.example", account: a.key, subject: "Review requested: importer handles merged cells", from: "notifications@code.example", from_name: "Forge", to: "sam@rivera.example", received: 2026-06-29T17:05Z, snippet: "Chen asked you to review.", body: "Chen asked you to review the change to the table importer: merged cells are kept, and the column widths follow the source.", message_id: "review@code.example", mailbox: "inbox"))
-    let library = a.threads.insert(Thread(key: "library@city.example", account: a.key, subject: "Two books due next week", latest: 2026-06-29T09:30Z, snippet: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.", senders: "City Library", count: 1))
+    review.messages.insert(
+        Message(
+            key: "review@code.example",
+            account: a.key,
+            subject: "Review requested: importer handles merged cells",
+            from: "notifications@code.example",
+            from_name: "Forge",
+            to: "sam@rivera.example",
+            received: 2026-06-29T17:05Z,
+            snippet: "Chen asked you to review.",
+            body: "Chen asked you to review the change to the table importer: merged cells are kept, and the column widths follow the source.",
+            message_id: "review@code.example",
+            mailbox: "inbox",
+        ),
+    )
+    let library = a.threads.insert(
+        Thread(
+            key: "library@city.example",
+            account: a.key,
+            subject: "Two books due next week",
+            latest: 2026-06-29T09:30Z,
+            snippet: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.",
+            senders: "City Library",
+            count: 1,
+        ),
+    )
     library.boxes.add("inbox")
-    library.messages.insert(Message(key: "library@city.example", account: a.key, subject: "Two books due next week", from: "loans@city.example", from_name: "City Library", to: "sam@rivera.example", received: 2026-06-29T09:30Z, snippet: "Two books are due.", body: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.", message_id: "library@city.example", mailbox: "inbox"))
-    let photos = a.threads.insert(Thread(key: "photos@mia.example", account: a.key, subject: "Photos from the lake", latest: 2026-06-28T19:44Z, snippet: "The sunset ones came out best. I put the rest in the shared album.", senders: "Mia Novak", count: 1))
+    library.messages.insert(
+        Message(
+            key: "library@city.example",
+            account: a.key,
+            subject: "Two books due next week",
+            from: "loans@city.example",
+            from_name: "City Library",
+            to: "sam@rivera.example",
+            received: 2026-06-29T09:30Z,
+            snippet: "Two books are due.",
+            body: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.",
+            message_id: "library@city.example",
+            mailbox: "inbox",
+        ),
+    )
+    let photos = a.threads.insert(
+        Thread(
+            key: "photos@mia.example",
+            account: a.key,
+            subject: "Photos from the lake",
+            latest: 2026-06-28T19:44Z,
+            snippet: "The sunset ones came out best. I put the rest in the shared album.",
+            senders: "Mia Novak",
+            count: 1,
+        ),
+    )
     photos.boxes.add("inbox")
-    photos.messages.insert(Message(key: "photos@mia.example", account: a.key, subject: "Photos from the lake", from: "mia@novak.example", from_name: "Mia Novak", to: "sam@rivera.example", received: 2026-06-28T19:44Z, snippet: "The sunset ones came out best.", body: "The sunset ones came out best. I put the rest in the shared album.\n\nMia", message_id: "photos@mia.example", attachments: "lake-1.jpg\nlake-2.jpg", mailbox: "inbox"))
-    let invoice = a.threads.insert(Thread(key: "invoice@studio.example", account: a.key, subject: "Invoice for June", latest: 2026-06-27T08:00Z, snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.", senders: "North Studio", count: 1))
+    photos.messages.insert(
+        Message(
+            key: "photos@mia.example",
+            account: a.key,
+            subject: "Photos from the lake",
+            from: "mia@novak.example",
+            from_name: "Mia Novak",
+            to: "sam@rivera.example",
+            received: 2026-06-28T19:44Z,
+            snippet: "The sunset ones came out best.",
+            body: "The sunset ones came out best. I put the rest in the shared album.\n\nMia",
+            message_id: "photos@mia.example",
+            attachments: "lake-1.jpg\nlake-2.jpg",
+            mailbox: "inbox",
+        ),
+    )
+    let invoice = a.threads.insert(
+        Thread(
+            key: "invoice@studio.example",
+            account: a.key,
+            subject: "Invoice for June",
+            latest: 2026-06-27T08:00Z,
+            snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
+            senders: "North Studio",
+            count: 1,
+        ),
+    )
     invoice.boxes.add("archive")
-    invoice.messages.insert(Message(key: "invoice@studio.example", account: a.key, subject: "Invoice for June", from: "accounts@studio.example", from_name: "North Studio", to: "sam@rivera.example", received: 2026-06-27T08:00Z, snippet: "The invoice is attached.", body: "Thanks for the work this month. The invoice is attached, payable within thirty days.", message_id: "invoice@studio.example", attachments: "Invoice 0612.pdf", mailbox: "archive"))
-    let offer = a.threads.insert(Thread(key: "offer@deals.example", account: a.key, subject: "You have won a cruise", latest: 2026-06-26T03:12Z, snippet: "Claim your prize within 24 hours by confirming your card details.", senders: "Prize Desk", count: 1))
+    invoice.messages.insert(
+        Message(
+            key: "invoice@studio.example",
+            account: a.key,
+            subject: "Invoice for June",
+            from: "accounts@studio.example",
+            from_name: "North Studio",
+            to: "sam@rivera.example",
+            received: 2026-06-27T08:00Z,
+            snippet: "The invoice is attached.",
+            body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
+            message_id: "invoice@studio.example",
+            attachments: "Invoice 0612.pdf",
+            mailbox: "archive",
+        ),
+    )
+    let offer = a.threads.insert(
+        Thread(
+            key: "offer@deals.example",
+            account: a.key,
+            subject: "You have won a cruise",
+            latest: 2026-06-26T03:12Z,
+            snippet: "Claim your prize within 24 hours by confirming your card details.",
+            senders: "Prize Desk",
+            count: 1,
+        ),
+    )
     offer.boxes.add("junk")
-    offer.messages.insert(Message(key: "offer@deals.example", account: a.key, subject: "You have won a cruise", from: "win@deals.example", from_name: "Prize Desk", to: "sam@rivera.example", received: 2026-06-26T03:12Z, snippet: "Claim your prize.", body: "Claim your prize within 24 hours by confirming your card details.", message_id: "offer@deals.example", mailbox: "junk"))
+    offer.messages.insert(
+        Message(
+            key: "offer@deals.example",
+            account: a.key,
+            subject: "You have won a cruise",
+            from: "win@deals.example",
+            from_name: "Prize Desk",
+            to: "sam@rivera.example",
+            received: 2026-06-26T03:12Z,
+            snippet: "Claim your prize.",
+            body: "Claim your prize within 24 hours by confirming your card details.",
+            message_id: "offer@deals.example",
+            mailbox: "junk",
+        ),
+    )
     launch
 }
 
@@ -890,10 +1275,27 @@ scenario "a busy inbox" -> Thread {
 /// says so far.
 scenario "a reply being written" -> Draft {
     let m = root Mail
-    let a = m.accounts.insert(Account(key: "sam@rivera.example", address: "sam@rivera.example", name: "Sam Rivera", online: true))
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
     a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", total: 1))
     a.mailboxes.insert(Mailbox(key: "drafts", name: "Drafts", role: "drafts"))
-    m.drafts.insert(Draft(from: a.key, to: "grace@hopper.example, ada@analytical.example", cc: "support@rivera.example", subject: "Re: Launch plan for the autumn release", body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam", in_reply_to: "launch@rivera.example", references: "launch@rivera.example"))
+    m.drafts.insert(
+        Draft(
+            from: a.key,
+            to: "grace@hopper.example, ada@analytical.example",
+            cc: "support@rivera.example",
+            subject: "Re: Launch plan for the autumn release",
+            body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
+            in_reply_to: "launch@rivera.example",
+            references: "launch@rivera.example",
+        ),
+    )
 }
 
 /// No account yet: what a first start shows.
@@ -905,14 +1307,76 @@ scenario "no account yet" {
 /// the conversations in it, and an archived one it leaves out.
 scenario "a mailbox on its own" -> Mailbox {
     let m = root Mail
-    let a = m.accounts.insert(Account(key: "sam@rivera.example", address: "sam@rivera.example", name: "Sam Rivera", online: true))
-    let inbox = a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 1, total: 2))
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
+    let inbox = a.mailboxes.insert(
+        Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 1, total: 2),
+    )
     a.mailboxes.insert(Mailbox(key: "archive", name: "Archive", role: "archive", total: 1))
-    let lease = a.threads.insert(Thread(key: "lease@lettings.example", account: a.key, subject: "Your lease renewal", latest: 2026-06-30T10:25Z, snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.", senders: "Mill Lane Lettings", count: 1, unread: true, flagged: true))
+    let lease = a.threads.insert(
+        Thread(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            latest: 2026-06-30T10:25Z,
+            snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.",
+            senders: "Mill Lane Lettings",
+            count: 1,
+            unread: true,
+            flagged: true,
+        ),
+    )
     lease.boxes.add("inbox")
-    lease.messages.insert(Message(key: "lease@lettings.example", account: a.key, subject: "Your lease renewal", from: "office@lettings.example", from_name: "Mill Lane Lettings", to: "sam@rivera.example", received: 2026-06-30T10:25Z, snippet: "The new lease is attached.", body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings", message_id: "lease@lettings.example", unread: true, flagged: true, mailbox: "inbox"))
-    let invoice = a.threads.insert(Thread(key: "invoice@studio.example", account: a.key, subject: "Invoice for June", latest: 2026-06-27T08:00Z, snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.", senders: "North Studio", count: 1))
+    lease.messages.insert(
+        Message(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            from: "office@lettings.example",
+            from_name: "Mill Lane Lettings",
+            to: "sam@rivera.example",
+            received: 2026-06-30T10:25Z,
+            snippet: "The new lease is attached.",
+            body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
+            message_id: "lease@lettings.example",
+            unread: true,
+            flagged: true,
+            mailbox: "inbox",
+        ),
+    )
+    let invoice = a.threads.insert(
+        Thread(
+            key: "invoice@studio.example",
+            account: a.key,
+            subject: "Invoice for June",
+            latest: 2026-06-27T08:00Z,
+            snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
+            senders: "North Studio",
+            count: 1,
+        ),
+    )
     invoice.boxes.add("archive")
-    invoice.messages.insert(Message(key: "invoice@studio.example", account: a.key, subject: "Invoice for June", from: "accounts@studio.example", from_name: "North Studio", to: "sam@rivera.example", received: 2026-06-27T08:00Z, snippet: "The invoice is attached.", body: "Thanks for the work this month. The invoice is attached, payable within thirty days.", message_id: "invoice@studio.example", attachments: "Invoice 0612.pdf", mailbox: "archive"))
+    invoice.messages.insert(
+        Message(
+            key: "invoice@studio.example",
+            account: a.key,
+            subject: "Invoice for June",
+            from: "accounts@studio.example",
+            from_name: "North Studio",
+            to: "sam@rivera.example",
+            received: 2026-06-27T08:00Z,
+            snippet: "The invoice is attached.",
+            body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
+            message_id: "invoice@studio.example",
+            attachments: "Invoice 0612.pdf",
+            mailbox: "archive",
+        ),
+    )
     inbox
 }

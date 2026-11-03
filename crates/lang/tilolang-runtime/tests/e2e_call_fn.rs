@@ -42,6 +42,13 @@ action drop_big(b: Bag) {
     }
 }
 
+/// Sets what every item holds, and nothing else of the bag.
+action set_all(b: Bag, to: Int = 13) {
+    for i in b.items {
+        i.n = to
+    }
+}
+
 view card(b: Bag) {
     text(\"{b.items.len()}\")
 }
@@ -70,6 +77,16 @@ view bag(b: lib.Bag) {
     } else {
         text(\"small\")
     }
+}
+
+/// How many the bag holds, and how many of it are over ten: each reads other parts of the
+/// other package's record.
+view counts(b: lib.Bag) {
+    text(\"{b.items.len()}\")
+}
+
+view bigs(b: lib.Bag) {
+    text(\"{b.items.filter(x -> x.n > 10).len()}\")
 }
 ";
 
@@ -101,6 +118,14 @@ view bag(b: lib.Bag) {
             let add = self.lib.action("add");
             self.rt
                 .invoke_action(&me(), (add.as_str(), vec![res(&self.bag), Value::Int(n)]))
+                .unwrap();
+        }
+
+        /// Sets what every item holds, through the package that writes the record.
+        fn set_all(&self, to: i64) {
+            let set = self.lib.action("set_all");
+            self.rt
+                .invoke_action(&me(), (set.as_str(), vec![res(&self.bag), Value::Int(to)]))
                 .unwrap();
         }
 
@@ -161,6 +186,43 @@ view bag(b: lib.Bag) {
             "the view read the bag through another package's fn: it runs again when it changes"
         );
         assert_eq!(textual(view.tree()), "big");
+    }
+
+    #[test]
+    fn a_view_over_another_packages_record_runs_again_for_the_field_it_read() {
+        let w = world();
+        let mut counts =
+            w.rt.open_view(&me(), &w.caller.view("counts"), vec![res(&w.bag)])
+                .unwrap();
+        let mut bigs =
+            w.rt.open_view(&me(), &w.caller.view("bigs"), vec![res(&w.bag)])
+                .unwrap();
+        assert_eq!(textual(counts.tree()), "0");
+        assert_eq!(textual(bigs.tree()), "0");
+        // A row appears: both read the bag's items, so both run.
+        w.add(20);
+        assert!(
+            !counts.poll_patches().unwrap().is_empty(),
+            "the row it counts appeared"
+        );
+        assert!(
+            !bigs.poll_patches().unwrap().is_empty(),
+            "the items it looks at changed"
+        );
+        assert_eq!(textual(counts.tree()), "1");
+        assert_eq!(textual(bigs.tree()), "1");
+        // The package that owns the record changes what its items hold: the view that counts
+        // them reads none of that, and only the view that reads it runs.
+        w.set_all(3);
+        assert!(
+            counts.poll_patches().unwrap().is_empty(),
+            "no item was added or removed: the count did not move"
+        );
+        assert!(
+            !bigs.poll_patches().unwrap().is_empty(),
+            "the field it reads moved"
+        );
+        assert_eq!(textual(bigs.tree()), "0");
     }
 
     /// A resource, as a call takes it.

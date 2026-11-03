@@ -4166,6 +4166,14 @@ impl FilesState {
             FileCommand::Click { index, ctrl, shift } => self.apply_click(index, ctrl, shift),
             FileCommand::ContextSelect(target) => self.apply_context_select(target),
             FileCommand::Activate(index) => self.apply_activate(index),
+            FileCommand::ContextMenuAt { index, at } => {
+                // Select what the menu acts on, exactly as a right-press does,
+                // then open the one menu the window has at the row.
+                self.apply_context_select(Some(index));
+                self.last_cursor = at;
+                self.open_context_menu(at);
+                true
+            }
             FileCommand::MoveSelection { index, extend } => {
                 if index < self.displayed_entries().len() {
                     self.selection.move_to(index, extend);

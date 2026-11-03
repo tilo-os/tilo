@@ -364,6 +364,12 @@ decorator_trait! {
                 node
             })
         }
+
+        /// Rest what this decorator's frame drew, in the children it lays
+        /// out; a decorator that adds mounted children overrides this.
+        fn mark_children_drawn(&mut self) {
+            crate::widget::defaults::mark_drawn(self.children_mut())
+        }
     }
 
     /// Every decorator is a widget: each method is the decorator's own, which
@@ -435,6 +441,10 @@ decorator_trait! {
 
         fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
             Decorator::accessibility_root(self)
+        }
+
+        fn mark_children_drawn(&mut self) {
+            Decorator::mark_children_drawn(self)
         }
     }
 

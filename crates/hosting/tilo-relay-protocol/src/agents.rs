@@ -4,8 +4,8 @@
 //! An agent is a device of the user. It holds its own device key and a
 //! root-signed `DeviceCert` issued through ordinary device certification
 //! (with no capabilities), and a root-signed
-//! [`crate::delegation::Delegation`] naming it an agent, its label and cursor colour, and the rooms and apps it may act in.
-//! The host refuses an agent device outside its rooms; browsers verify the
+//! [`crate::delegation::Delegation`] naming it an agent, its label and cursor colour, and the workspaces and apps it may act in.
+//! The host refuses an agent device outside its workspaces; browsers verify the
 //! delegation against the user root before drawing the agent as "yours".
 //!
 //! Steering is `tilo_actions::remote` over [`Envelope::RemoteAction`](crate::Envelope::RemoteAction),
@@ -15,7 +15,7 @@
 //! |---|---|---|---|
 //! | [`SUPERVISOR_RESOURCE`] | [`STATUS_ACTION`] | none | [`AgentsStatus`] JSON |
 //! | [`SUPERVISOR_RESOURCE`] | [`REQUEST_GRANT_ACTION`] | [`GrantRequest`] JSON | `{grant, pairingCode}` |
-//! | [`SUPERVISOR_RESOURCE`] | [`SPAWN_ACTION`] | `{grant, task, room?}` | `{agentId, taskId}` |
+//! | [`SUPERVISOR_RESOURCE`] | [`SPAWN_ACTION`] | `{grant, task, workspace?}` | `{agentId, taskId}` |
 //! | `agent:<id>` | [`MESSAGE_ACTION`] | text | `{taskId}` |
 //! | `agent:<id>` | [`CANCEL_TASK_ACTION`] | task id | `{}` |
 //! | `agent:<id>` | [`PAUSE_ACTION`], [`RESUME_ACTION`], [`STOP_ACTION`] | none | `{}` |
@@ -75,8 +75,10 @@ pub struct GrantRequest {
     /// Cursor colour `#rrggbb`; the host picks one when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    /// Room uuids.
-    pub rooms: Vec<String>,
+    /// Workspace uuids. The field keeps the key `rooms`, every build before
+    /// the rename wrote, and the bot host reads.
+    #[serde(rename = "rooms")]
+    pub workspaces: Vec<String>,
     /// App ids; empty is every app.
     #[serde(default)]
     pub apps: Vec<String>,
@@ -112,7 +114,7 @@ pub enum GrantState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
-    /// Joining the room.
+    /// Joining the workspace.
     Starting,
     /// Working on a task.
     Running,
@@ -154,7 +156,7 @@ pub struct AgentStep {
     /// Refusal or failure text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Content the action produced and the room keeps, by address
+    /// Content the action produced and the workspace keeps, by address
     /// (`tilo.content:<hash>`): an export, a look.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<String>,
@@ -210,7 +212,8 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub room: Option<String>,
+    #[serde(rename = "room")]
+    pub workspace: Option<String>,
     /// Newest first is not implied; tasks in the order they were given.
     pub tasks: Vec<AgentTask>,
     /// Conversation in order.
@@ -229,7 +232,9 @@ pub struct AgentGrant {
     pub id: String,
     /// Display name.
     pub label: String,
-    pub rooms: Vec<String>,
+    /// The workspace uuids it covers; the field keeps the key `rooms`.
+    #[serde(rename = "rooms")]
+    pub workspaces: Vec<String>,
     /// Apps it covers; empty is every app.
     pub apps: Vec<String>,
     /// Whether an agent under it is already running.
@@ -295,7 +300,7 @@ mod tests {
                     steps: Vec::new(),
                     error: None,
                 }],
-                room: None,
+                workspace: None,
                 conversation: Vec::new(),
                 delegation: String::new(),
             }],

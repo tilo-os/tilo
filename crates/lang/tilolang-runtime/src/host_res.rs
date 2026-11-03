@@ -64,6 +64,8 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Date
         | Ty::Time
         | Ty::Identifier
+        | Ty::Repeat
+        | Ty::Reminder
         | Ty::Action
         | Ty::View
         | Ty::Length(_)
@@ -90,7 +92,7 @@ pub(crate) fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value,
             .as_bool()
             .map(Value::Bool)
             .ok_or_else(|| "default is not a bool".into()),
-        (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Some(j)) => j
+        (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder, Some(j)) => j
             .as_str()
             .map(Value::text)
             .ok_or_else(|| "default is not text".into()),
@@ -107,9 +109,22 @@ pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
         (Value::Int(i), Ty::Int) => Ok(Scalar::Int(*i)),
         (Value::Float(f), Ty::Float) => Ok(Scalar::Float(*f)),
         (Value::Text(s), Ty::Text) => Ok(Scalar::Text(s.clone())),
-        (Value::Text(s), Ty::Date | Ty::Time | Ty::Identifier) => {
+        (Value::Text(s), Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder) => {
             check_dated(s, ty)?;
             Ok(Scalar::Text(s.clone()))
+        }
+        // A control picking a person hands their identity; none is an empty text.
+        (Value::Text(s), Ty::Principal) => {
+            to_json(&Value::Principal(crate::ids::Principal(s.clone()))).map(Scalar::Json)
+        }
+        (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Principal) => {
+            if s.is_empty() {
+                return to_json(&Value::none()).map(Scalar::Json);
+            }
+            to_json(&Value::some(Value::Principal(crate::ids::Principal(
+                s.clone(),
+            ))))
+            .map(Scalar::Json)
         }
         // A control picking an optional day hands its text, empty for none.
         (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Date | Ty::Time) => {
@@ -138,6 +153,28 @@ pub(crate) fn check_dated(text: &str, ty: &Ty) -> Result<(), String> {
             } else {
                 Err(format!(
                     "`{text}` is not an identifier as it is held; write `{held}`"
+                ))
+            }
+        }),
+        // A repeat and a reminder are held as the text their constructor checked, so text that
+        // reads back differently was written by something that does not keep them.
+        Ty::Repeat => tilolang::repeat::Repeat::parse(text).and_then(|held| {
+            if held.text() == text {
+                Ok(())
+            } else {
+                Err(format!(
+                    "`{text}` is not a repeat as it is held; write `{}`",
+                    held.text()
+                ))
+            }
+        }),
+        Ty::Reminder => tilolang::repeat::Reminder::parse(text).and_then(|held| {
+            if held.text() == text {
+                Ok(())
+            } else {
+                Err(format!(
+                    "`{text}` is not a reminder as it is held; write `{}`",
+                    held.text()
                 ))
             }
         }),

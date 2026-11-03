@@ -66,7 +66,7 @@ pub const SNAPSHOT_FILE: &str = "snapshot.automerge";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
-/// Atomic native-governance projection: exact room devices plus handshake roots.
+/// Atomic native-governance projection: exact workspace devices plus handshake roots.
 pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
@@ -227,7 +227,7 @@ pub struct WorkspaceStore {
     payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
 }
 
-/// One server-local projection of the native room governor. Both sets share a
+/// One server-local projection of the native workspace governor. Both sets share a
 /// single atomic file so a crash cannot pair new roots with old devices (or the
 /// reverse).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -534,7 +534,7 @@ impl WorkspaceStore {
         }))
     }
 
-    /// Atomically replace exact room devices and global-handshake roots in one
+    /// Atomically replace exact workspace devices and global-handshake roots in one
     /// crash-safe record.
     pub(crate) fn save_governed_access(
         &self,

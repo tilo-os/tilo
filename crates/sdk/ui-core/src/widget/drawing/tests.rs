@@ -57,29 +57,31 @@ fn a_shape_reads_from_its_case() {
 /// outside every shape.
 #[test]
 fn a_press_finds_the_topmost_shape() {
-    let mut drawing = Drawing::default();
-    drawing.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-    drawing.shapes = vec![
-        Shape::Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 1.0,
-            h: 1.0,
-            round: 0.0,
-            fill: Some(Ink::Track),
-            stroke: None,
-            weight: Weight::Regular,
-        },
-        Shape::Ellipse {
-            cx: 0.5,
-            cy: 0.5,
-            rx: 0.1,
-            ry: 0.1,
-            fill: Some(Ink::Accent),
-            stroke: None,
-            weight: Weight::Regular,
-        },
-    ];
+    let drawing = Drawing {
+        rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+        shapes: vec![
+            Shape::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+                round: 0.0,
+                fill: Some(Ink::Track),
+                stroke: None,
+                weight: Weight::Regular,
+            },
+            Shape::Ellipse {
+                cx: 0.5,
+                cy: 0.5,
+                rx: 0.1,
+                ry: 0.1,
+                fill: Some(Ink::Accent),
+                stroke: None,
+                weight: Weight::Regular,
+            },
+        ],
+        ..Drawing::default()
+    };
     assert_eq!(drawing.shape_at(Point::new(50.0, 50.0), 1.0), Some(1));
     assert_eq!(drawing.shape_at(Point::new(5.0, 5.0), 1.0), Some(0));
     assert_eq!(drawing.shape_at(Point::new(150.0, 5.0), 1.0), None);

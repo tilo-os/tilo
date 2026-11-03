@@ -525,11 +525,12 @@ impl super::Decorator for ContextMenuArea {
 
     fn needs_redraw(&self) -> bool {
         self.content.needs_redraw()
+            || self.content.needs_animation_frame()
             || self.picker_wanted.is_some()
             || self
                 .picker
                 .as_ref()
-                .is_some_and(|(picker, _)| picker.needs_redraw())
+                .is_some_and(|(picker, _)| picker.needs_redraw() || picker.needs_animation_frame())
     }
 
     fn needs_animation_frame(&self) -> bool {

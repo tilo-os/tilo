@@ -89,6 +89,9 @@ impl Widget for OverviewPane {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // What it paints is the weather core's, which other parts of the
+        // app move: a drawing of it is only current until the next input.
+        ui::outside_paint::note();
         self.core
             .borrow_mut()
             .draw_overview(self.rect, scene, transform, text_renderer, theme);
@@ -104,6 +107,7 @@ impl Widget for OverviewPane {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        ui::outside_paint::note();
         self.core.borrow_mut().draw_overview_overlay(
             scene,
             transform,
@@ -209,6 +213,9 @@ impl Widget for DetailPane {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // The weather core's paint, moved by parts of the app outside this
+        // widget: only current until the next input.
+        ui::outside_paint::note();
         self.core
             .borrow_mut()
             .draw_detail(self.rect, scene, transform, text_renderer, theme);

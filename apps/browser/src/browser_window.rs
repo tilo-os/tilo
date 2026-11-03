@@ -117,6 +117,7 @@ impl BrowserWindow {
 
     pub fn new(page: BrowserWidget, focus_address: bool) -> Self {
         Self {
+            dirty: true,
             page: Box::new(page),
             store: Rc::default(),
             live: None,
@@ -124,7 +125,6 @@ impl BrowserWindow {
             person: None,
             waker: None,
             rect: Rect::ZERO,
-            dirty: true,
             focus_address,
             address_focus_node: None,
             address_focus_pending: false,
@@ -331,7 +331,6 @@ impl BrowserWindow {
     /// Stage a screenshot scenario on the page.
     fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.page.stage(scenario);
-        self.dirty = true;
     }
 
     #[cfg(test)]
@@ -448,6 +447,7 @@ impl Widget for BrowserWindow {
         changed
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.follow_document();
         self.stage_asked();
         if let Some(cancel) = self.exit_choice.get() {
@@ -593,6 +593,7 @@ impl Widget for BrowserWindow {
         self.page.draw(scene, transform, tr, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if *ctx.handled {
             return;
         }
@@ -746,6 +747,14 @@ impl Widget for BrowserWindow {
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.page.cursor_shape(point)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "BrowserWindow"

@@ -21,6 +21,7 @@ use smithay::input::keyboard::{FilterResult, Keysym, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::backend::protocol::ProtocolError;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -37,10 +38,11 @@ use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::seat::SeatUserData;
 use smithay::wayland::selection::data_device::{DataDeviceHandler, DataDeviceState};
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
+use crate::app_liveness;
 use crate::host::SurfaceHost;
 use crate::input::{HostKey, InputEvent, KeyModifiers};
 use crate::keys::{HostKeys, KeyClaim};
@@ -237,6 +239,12 @@ pub struct State {
     /// what it answers `true` to.
     pub(crate) input_observer:
         Option<Arc<dyn Fn(crate::input::ObservedInput) -> bool + Send + Sync>>,
+    /// Pongs counted per `xdg_wm_base`, the only way a client answers a ping.
+    pub(crate) shell_pongs: app_liveness::Pongs,
+    /// The pings in flight, one per client that was given input.
+    pub(crate) app_watches: app_liveness::Watches,
+    /// The windows whose app was not responding at the last look, by id.
+    not_responding: Vec<u64>,
     /// The processes whose clients disconnected since the session last
     /// looked: the apps that exited.
     pub(crate) exited: Arc<std::sync::Mutex<Vec<u32>>>,
@@ -332,6 +340,9 @@ impl State {
             protocols,
             render_node: None,
             icons: crate::toplevel_icon::Icons::default(),
+            shell_pongs: app_liveness::Pongs::default(),
+            app_watches: app_liveness::Watches::default(),
+            not_responding: Vec::new(),
             exited: Arc::default(),
             lock: crate::lock::Lock::new(display),
             text_input: crate::text_input::TextInput::new(display),
@@ -907,6 +918,7 @@ impl State {
                         .and_then(|seat| seat.current_focus())
                 {
                     self.key_delivered(&focus, keycode);
+                    self.note_input_on(&focus);
                 }
             }
         }
@@ -972,9 +984,7 @@ impl State {
             .enumerate()
             .rev()
             .find(|(index, host)| {
-                (!locked || host.above_lock())
-                    && Some(*index) != composing
-                    && host.wants_keyboard()
+                (!locked || host.above_lock()) && Some(*index) != composing && host.wants_keyboard()
             })
             .map(|(index, _)| index)?;
         self.host_keys.press(wanting, key, repeats, now);
@@ -1160,6 +1170,14 @@ impl State {
             },
         );
         pointer.frame(self);
+        if pressed
+            && let Some(focus) = self
+                .seat
+                .get_pointer()
+                .and_then(|seat| seat.current_focus())
+        {
+            self.note_input_on(&focus);
+        }
         if !pressed {
             self.x11_drag_motion(self.pointer);
         }
@@ -1690,6 +1708,14 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
+    fn client_pong(&mut self, client: ShellClient) {
+        self.shell_pongs.note(client);
+    }
+
+    fn client_destroyed(&mut self, client: ShellClient) {
+        self.shell_pongs.forget(&client);
+    }
+
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let id = NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
@@ -1919,6 +1945,133 @@ impl State {
             .lock()
             .map(|mut exited| std::mem::take(&mut *exited))
             .unwrap_or_default()
+    }
+}
+
+impl State {
+    /// The `xdg_wm_base` client of window `window`.
+    fn shell_client_of(&self, window: u64) -> Option<(ShellClient, ClientId)> {
+        self.xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| window_id_of(toplevel.wl_surface()) == Some(window))
+            .and_then(|toplevel| {
+                let id = toplevel.wl_surface().client()?.id();
+                Some((toplevel.client(), id))
+            })
+    }
+
+    /// The pong count of connection `id`'s `xdg_wm_base`; `None` once it
+    /// has no toplevel left.
+    fn pongs_of(&self, id: &ClientId) -> Option<u64> {
+        self.xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                toplevel
+                    .wl_surface()
+                    .client()
+                    .is_some_and(|client| client.id() == *id)
+            })
+            .map(|toplevel| self.shell_pongs.count(&toplevel.client()))
+    }
+
+    /// Input reached the app of window `window`: ask it to answer, so an
+    /// app that stopped answering is told apart from a quiet one.
+    pub(crate) fn note_app_input(&mut self, window: u64) {
+        self.note_app_input_at(window, Instant::now());
+    }
+
+    /// [`State::note_app_input`] as of `now`.
+    pub(crate) fn note_app_input_at(&mut self, window: u64, now: Instant) {
+        let Some((client, id)) = self.shell_client_of(window) else {
+            return;
+        };
+        let pongs = self.shell_pongs.count(&client);
+        self.app_watches.note_input(&client, &id, pongs, now);
+    }
+
+    /// Input reached `surface`: its window's app is pinged, if it has one.
+    pub(crate) fn note_input_on(&mut self, surface: &WlSurface) {
+        if let Some(window) = window_id_of(&root_surface(surface)) {
+            self.note_app_input(window);
+        }
+    }
+
+    /// Judge the pings in flight. Returns whether the set of windows whose
+    /// app is not responding changed, so the desk repaints.
+    pub(crate) fn advance_app_liveness_at(&mut self, now: Instant) -> bool {
+        let mut watches = std::mem::take(&mut self.app_watches);
+        watches.judge(|id| self.pongs_of(id), now);
+        let hung = watches.hung();
+        self.app_watches = watches;
+        let mut windows: Vec<u64> = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .filter(|toplevel| {
+                toplevel
+                    .wl_surface()
+                    .client()
+                    .is_some_and(|client| hung.contains(&client.id()))
+            })
+            .filter_map(|toplevel| window_id_of(toplevel.wl_surface()))
+            .collect();
+        windows.sort_unstable();
+        windows.dedup();
+        let changed = windows != self.not_responding;
+        self.not_responding = windows;
+        changed
+    }
+
+    /// When [`State::advance_app_liveness_at`] next has something to decide.
+    pub(crate) fn app_liveness_deadline(&self) -> Option<Instant> {
+        self.app_watches.deadline()
+    }
+
+    /// The windows whose app is not responding now, by id.
+    pub(crate) fn not_responding(&self) -> &[u64] {
+        &self.not_responding
+    }
+
+    /// The person chose "Wait" on window `window`: its app gets another
+    /// period to answer. Returns whether the windows that say "Not
+    /// responding" changed.
+    pub(crate) fn wait_for_window(&mut self, window: u64) -> bool {
+        let now = Instant::now();
+        if let Some((_, id)) = self.shell_client_of(window) {
+            self.app_watches.wait(&id, now);
+        }
+        self.advance_app_liveness_at(now)
+    }
+
+    /// The person chose "Force quit" on window `window`: the client's
+    /// connection ends, so its windows go, and the desktop is not left with
+    /// a window nobody answers for. The process it was is returned for the
+    /// session to end: a hung app cannot act on its connection closing.
+    pub(crate) fn force_quit_window(&mut self, window: u64) -> Option<u32> {
+        let toplevel = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| window_id_of(toplevel.wl_surface()) == Some(window))?
+            .clone();
+        let client = toplevel.wl_surface().client()?;
+        let pid = client
+            .get_data::<ClientState>()
+            .map_or(0, |data| data.pid.load(Ordering::Relaxed));
+        client.kill(
+            &self.display,
+            ProtocolError {
+                code: 0,
+                object_id: toplevel.wl_surface().id().protocol_id(),
+                object_interface: "wl_surface".to_owned(),
+                message: "the app stopped responding".to_owned(),
+            },
+        );
+        self.app_watches.forget(&client.id());
+        self.advance_app_liveness_at(Instant::now());
+        (pid != 0).then_some(pid)
     }
 }
 

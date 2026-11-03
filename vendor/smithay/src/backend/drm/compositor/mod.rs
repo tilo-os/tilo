@@ -941,7 +941,9 @@ impl From<&PlaneInfo> for PlaneAssignment {
 
 struct PendingFrame<A: Allocator, F: ExportFramebuffer<<A as Allocator>::Buffer>, U> {
     frame: CompositorFrameState<A, F>,
-    user_data: U,
+    /// What the caller attached to the frame; `None` for one committed
+    /// with [`DrmCompositor::commit_frame`].
+    user_data: Option<U>,
 }
 
 impl<A, F, U> std::fmt::Debug for PendingFrame<A, F, U>
@@ -962,7 +964,9 @@ where
 
 struct QueuedFrame<A: Allocator, F: ExportFramebuffer<<A as Allocator>::Buffer>, U> {
     prepared_frame: PreparedFrame<A, F>,
-    user_data: U,
+    /// What the caller attached to the frame; `None` for one committed
+    /// with [`DrmCompositor::commit_frame`].
+    user_data: Option<U>,
 }
 
 impl<A, F, U> std::fmt::Debug for QueuedFrame<A, F, U>
@@ -2455,7 +2459,7 @@ where
 
         self.queued_frame = Some(QueuedFrame {
             prepared_frame,
-            user_data,
+            user_data: Some(user_data),
         });
         if self.pending_frame.is_none() {
             self.submit()?;
@@ -2474,8 +2478,11 @@ where
     /// *Note*: It is your responsibility to synchronize rendering if the [`RenderFrameResult`]
     /// returned by the previous [`render_frame`](DrmCompositor::render_frame) call returns `true` on [`RenderFrameResult::needs_sync`].
     ///
-    /// *Note*: This function should not be followed up with [`DrmCompositor::frame_submitted`]
-    /// and will not generate a vblank event on the underlying device.
+    /// *Note*: The commit is queued, not waited for (see `commit_flags`): the frame stays
+    /// pending until its vblank event, and [`frame_submitted`](DrmCompositor::frame_submitted)
+    /// retires it like any frame queued with [`queue_frame`](DrmCompositor::queue_frame). No
+    /// further frame is submitted for the crtc before that event, so a caller that issues the
+    /// commit that sets a mode does not put a second commit on the same crtc behind it.
     pub fn commit_frame(&mut self) -> FrameResult<(), A, F> {
         if !self.surface.is_active() {
             return Err(FrameErrorType::<A, F>::DrmError(DrmError::DeviceInactive));
@@ -2499,13 +2506,27 @@ where
             }
         }
 
+        // Tilo patch: the crtc takes one commit at a time. While the one
+        // before this frame is in flight, this frame waits for that event
+        // and goes out then, as one queued with `queue_frame` does.
+        if self.pending_frame.is_some() {
+            self.queued_frame = Some(QueuedFrame {
+                prepared_frame,
+                user_data: None,
+            });
+            return Ok(());
+        }
+
+        // Tilo patch: ask for the completion event. This is the commit that
+        // sets a mode when an output is lit, and it is queued rather than
+        // waited for, so the event is the only report that the mode reached
+        // the screen.
         let flip = prepared_frame
             .frame
-            .commit(&self.surface, self.supports_fencing, false, false);
+            .commit(&self.surface, self.supports_fencing, false, true);
 
         if flip.is_ok() {
             self.queued_frame = None;
-            self.pending_frame = None;
         }
 
         self.handle_flip(prepared_frame, None, flip)
@@ -2523,6 +2544,12 @@ where
     pub fn reset_state(&mut self) -> Result<(), DrmError> {
         self.surface.reset_state()?;
         self.reset_pending = true;
+        // Tilo patch: the state is read back from the kernel, so a commit
+        // that was still in flight belongs to the state that is gone: the
+        // frame waiting for its event and the one queued behind it would
+        // never be submitted.
+        self.pending_frame = None;
+        self.queued_frame = None;
         Ok(())
     }
 
@@ -2544,7 +2571,7 @@ where
                 .page_flip(&self.surface, self.supports_fencing, allow_partial_update, true)
         };
 
-        self.handle_flip(prepared_frame, Some(user_data), flip)
+        self.handle_flip(prepared_frame, user_data, flip)
     }
 
     fn handle_flip(
@@ -2559,7 +2586,10 @@ where
                     self.reset_pending = false;
                 }
 
-                self.pending_frame = user_data.map(|user_data| PendingFrame {
+                // Tilo patch: a frame committed without user data is pending
+                // like one queued with it, so the crtc has one commit in
+                // flight at a time and `frame_submitted` retires this one.
+                self.pending_frame = Some(PendingFrame {
                     frame: prepared_frame.frame,
                     user_data,
                 });
@@ -2607,7 +2637,7 @@ where
             if self.queued_frame.is_some() {
                 self.submit()?;
             }
-            Ok(Some(user_data))
+            Ok(user_data)
         } else {
             Ok(None)
         }

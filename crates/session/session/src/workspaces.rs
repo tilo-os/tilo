@@ -230,7 +230,10 @@ fn join_listed(
     key: &str,
 ) {
     let Some(listing) = directory.listing(key) else {
-        tracing::debug!(%key, "the workspace directory was asked to join a listing it has none of");
+        // The row was drawn from a list a later read replaced: answer the
+        // press, rather than leave the row saying nothing.
+        directory.set_note(Some(tilo_sheets::word("directory-listing-gone")));
+        seat.show(directory::view(directory, handle));
         return;
     };
     match directory.joining() {

@@ -1249,9 +1249,56 @@ fn cleanup_args(workspace: &Workspace) -> Json {
     })
 }
 
+/// The titles of the tasks the list holds, in the order they stand.
+fn todo_titles(workspace: &Workspace) -> Vec<String> {
+    let host = workspace.window.current_host().unwrap();
+    let list = host.root_of("so.tilo.lang.tasks").unwrap();
+    let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
+        panic!("the list holds items");
+    };
+    items
+        .into_iter()
+        .map(|item| {
+            let RtValue::Ref(item) = item else {
+                panic!("a task is a resource: {item:?}")
+            };
+            rt_text(&host.runtime().read(&item.target, "title").unwrap())
+        })
+        .collect()
+}
+
+/// The tasks `before` held that the list no longer does: named, they are the finished ones and
+/// nothing else. The week has a task done with a step still open under it — a check from before
+/// steps were tasks of their own, or made while someone else added that step — and clearing
+/// keeps the step, so that task stays too.
+fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
+    let after = todo_titles(workspace);
+    let went: Vec<String> = before
+        .iter()
+        .filter(|title| !after.contains(title))
+        .cloned()
+        .collect();
+    assert_eq!(
+        went,
+        [
+            "Take the bins out",
+            "Pack the books",
+            "Set up the redirects"
+        ],
+        "the done tasks with nothing open under them went"
+    );
+    for title in ["Outline", "Collect the beta quotes"] {
+        assert!(
+            after.contains(&title.to_owned()),
+            "{title}: the branch with open work under it stays, {after:?}"
+        );
+    }
+}
+
 #[test]
 fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
     let (mut workspace, finished) = today_workspace();
+    let before = todo_titles(&workspace);
     let args = cleanup_args(&workspace);
     let output = workspace
         .agent_invokes(HOST, "run-flow", &args)
@@ -1262,6 +1309,7 @@ fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
         output,
         serde_json::json!({"state": "done", "result": finished})
     );
+    assert_the_finished_tasks_went(&workspace, &before);
 }
 
 #[test]
@@ -1339,6 +1387,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
 #[test]
 fn a_person_presses_morning_cleanup_and_the_finished_todos_go() {
     let (mut workspace, finished) = today_workspace();
+    let before = todo_titles(&workspace);
     let todos = workspace.items_of("so.tilo.lang.tasks", "items");
     let notes = workspace.items_of("so.tilo.lang.notes", "items");
     let morning = node_with(
@@ -1367,6 +1416,7 @@ fn a_person_presses_morning_cleanup_and_the_finished_todos_go() {
         todos - finished,
         "the finished ones went"
     );
+    assert_the_finished_tasks_went(&workspace, &before);
     assert_eq!(
         workspace.items_of("so.tilo.lang.notes", "items"),
         notes + 1,

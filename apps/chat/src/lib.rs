@@ -57,6 +57,7 @@ pub mod composer;
 pub mod continuity;
 #[cfg(feature = "samples")]
 pub mod demo;
+pub mod direct;
 pub mod drafts;
 pub mod effects;
 pub mod events;

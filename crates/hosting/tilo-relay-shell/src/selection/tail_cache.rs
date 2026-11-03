@@ -4,8 +4,8 @@
 //! A full [`super::Selection`] re-reads all retained history. For an ordinary
 //! signed route increment that lands after every tail already accepted on its
 //! route, the selection's outcome is already decided by state it computed last
-//! time: the room and every route pair are unchanged (an increment is neither a
-//! room frame nor a snapshot), each older input classifies exactly as before,
+//! time: the workspace and every route pair are unchanged (an increment is neither a
+//! workspace frame nor a snapshot), each older input classifies exactly as before,
 //! and its own route's ordered readiness cursor is the only thing it advances.
 //! That outcome is `Publication::Original`, and the selected generation would
 //! differ only by listing the tail, which replay re-selects before serving.
@@ -18,7 +18,7 @@
 //! and never survives a restart.
 use super::{
     CoeditPayload, CoverageDecision, DIRECTORY, FloorSafety, Frame, OrderedTailReadiness,
-    RoomInput, ShellStore, StoreError, durable, frames,
+    ShellStore, StoreError, WorkspaceInput, durable, frames,
 };
 use tilo_relay_store::shell::{Admission, ShellTail};
 use tilo_relay_store::tail_cache::{Cursor, Lease, SharedTailCache};
@@ -53,7 +53,7 @@ fn incoming_tail(bytes: &[u8], workspace: u64) -> Option<(Frame, String, u64)> {
         source,
         channel,
         body,
-        kind: RoomInput::Delta,
+        kind: WorkspaceInput::Delta,
     };
     let (key, seq) = frame.route()?;
     Some((frame, key, seq))
@@ -97,7 +97,7 @@ pub struct FastTail {
 impl FastTail {
     /// The selected snapshot's view of `bytes`, as `SelectedRead::obsolete`
     /// and the selection's Check phase would decide it. For a signed route
-    /// increment the other two `obsolete` tests cannot hold: the room only
+    /// increment the other two `obsolete` tests cannot hold: the workspace only
     /// covers shell-tree frames and `covers_incoming_snapshot` only snapshot
     /// bodies. Anything that is not such an increment classifies `Unknown`
     /// and is left to the full read.

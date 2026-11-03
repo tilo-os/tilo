@@ -108,7 +108,10 @@ impl Core {
             (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| self.ref_fits(key, r)),
             // A host value (an action, a lens, a type's metadata) is held as its fields.
             (Ty::Record(key), Value::Tuple(_)) => tilolang::host::is_value(key),
-            (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Value::Text(_))
+            (
+                Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder,
+                Value::Text(_),
+            )
             | (Ty::RichText, Value::Rich(_))
             | (Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_), Value::List(_))
             | (Ty::List(_) | Ty::Collection(_), Value::Coll(_))
@@ -1539,7 +1542,9 @@ impl Core {
             Imp::PrincipalNamed => {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;
-                self.ret_h(Value::Principal(Principal(format!("scenario:{name}"))))
+                let who = Principal(format!("scenario:{name}"));
+                self.named_person(who.clone());
+                self.ret_h(Value::Principal(who))
             }
             Imp::InvokerPush => {
                 let who = self.principal_arg(a.h(0)?)?;

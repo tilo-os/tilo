@@ -915,8 +915,8 @@ impl NotesApp {
                 self.outline.collect_damage(&mut sidebar_damage);
             }
         }
-        let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
-            PaintPart::new(key.into(), rect, scene.clone(), damage)
+        let part = |key: &'static str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
+            PaintPart::new(key, rect, scene.clone(), damage)
         };
         Some(PaintFrame::new(
             vec![self.rect, self.main.get_rect(), sidebar.get_rect()],
@@ -3212,6 +3212,7 @@ impl Widget for NotesApp {
             || self.outline.needs_redraw()
             || self.main.needs_redraw()
             || self.shortcuts.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

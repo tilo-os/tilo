@@ -88,6 +88,9 @@ greetd-client = { path = "../greetd-client" }
 # The host's own filesystem moves a paste depends on: a rename that never
 # overwrites a name, and the Trash a replaced name goes to.
 host-fs = { path = "../../system/host-fs" }
+# The filesystem daemon's content store, as this desktop session reaches it:
+# what names an agent as the cause of the writes Files made for a person.
+runtime-fs = { package = "tilo-fs-client", version = "0.1.0", path = "../../runtime/tilo-fs-client" }
 # What the person picks in the emoji picker is remembered between sessions.
 emoji = { path = "../../text/emoji" }
 tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
@@ -338,6 +341,9 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 tilo-test-env = { path = "../../dev/test-env" }
 # A site's entry and directory served over loopback, for what joins list.
 test-http = { path = "../../dev/test-http" }
+# The broker's certified-connection context, for driving a service the way
+# the broker admits Files.
+tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # A site's workspace as a site runs it: the host on this machine that
 # governs the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.

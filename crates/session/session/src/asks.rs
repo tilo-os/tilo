@@ -65,6 +65,17 @@ impl Shared {
                 DesktopAsk::HostAction(action) => self.host_action(&action),
                 DesktopAsk::Music(action) => self.music(action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
+                // A window that stopped answering offers to keep waiting for
+                // its app or to quit it: the same two choices the desk's own
+                // cards make, carried out where the compositor is.
+                DesktopAsk::WaitWindow(tab) => {
+                    self.handle
+                        .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::Wait);
+                }
+                DesktopAsk::ForceQuitApp(tab) => {
+                    self.handle
+                        .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
+                }
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }

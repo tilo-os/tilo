@@ -261,7 +261,7 @@ impl Widget for PlayerHost {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.player.borrow().needs_redraw()
+        self.player.borrow().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

@@ -529,9 +529,9 @@ mod tests {
             wait_until("the first state write", || first.exists());
             idle::assert_stays_asleep(&keeper, "agent host with nothing to write");
             let window = Duration::from_secs(2);
-            let before = idle::context_switches(&keeper);
+            let before = idle::asleep_runs(&keeper);
             std::thread::sleep(window);
-            let woke = idle::context_switches(&keeper).saturating_sub(before);
+            let woke = idle::asleep_runs(&keeper).saturating_sub(before);
             eprintln!("agent host idle wakeups: {woke} in {window:?}");
             assert_eq!(woke, 0, "the idle agent host woke");
         }

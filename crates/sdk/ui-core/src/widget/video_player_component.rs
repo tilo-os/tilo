@@ -148,6 +148,18 @@ impl DeclaredVideo {
 }
 
 impl crate::widget::Widget for DeclaredVideo {
+    fn needs_redraw(&self) -> bool {
+        self.player.needs_redraw() || self.player.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.player.mark_drawn();
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.player.needs_animation_frame()
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

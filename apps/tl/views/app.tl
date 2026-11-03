@@ -63,13 +63,38 @@ row view view_row for WrittenView
 
 /// Keeps the view an agent answered with, written by the invoker, which the host records. It
 /// opens beside what the person pointed at; until they keep it, it is the agent's answer.
-action answer(all: Views, title: Text, question: Text, definition: Text, shows: Text = "") -> WrittenView {
-    all.items.insert(WrittenView(title: title, question: question, definition: definition, author: invoker, shows: shows))
+action answer(
+    all: Views,
+    title: Text,
+    question: Text,
+    definition: Text,
+    shows: Text = "",
+) -> WrittenView {
+    all.items.insert(
+        WrittenView(
+            title: title,
+            question: question,
+            definition: definition,
+            author: invoker,
+            shows: shows,
+        ),
+    )
 }
 
 /// A view the person writes, kept among their own.
-action write(all: Views, title: Text, definition: Text, shows: Text = "") -> WrittenView (icon: .plus, label: "New view") {
-    all.items.insert(WrittenView(title: title, definition: definition, author: invoker, kept: true, shows: shows))
+action write(all: Views, title: Text, definition: Text, shows: Text = "") -> WrittenView (
+    icon: .plus,
+    label: "New view",
+) {
+    all.items.insert(
+        WrittenView(
+            title: title,
+            definition: definition,
+            author: invoker,
+            kept: true,
+            shows: shows,
+        ),
+    )
 }
 
 /// Keeps a view among the person's own.
@@ -87,7 +112,10 @@ destructive action discard(all: Views, v: WrittenView) (icon: .trash, label: "Di
 }
 
 /// Makes a view how the person shows its type on a kind of device.
-action make_default(all: Views, v: WrittenView, device: Device = .desktop) (icon: .star, label: "Show this type with it") {
+action make_default(all: Views, v: WrittenView, device: Device = .desktop) (
+    icon: .star,
+    label: "Show this type with it",
+) {
     require v.shows != "" "This view shows no one type"
     if let d = all.defaults.find(d -> d.shows == v.shows and d.device == device) {
         d.chosen = v
@@ -103,7 +131,9 @@ action add(all: Views, m: chat.Message) -> WrittenView (icon: .plus, label: "Add
     require m.sent_view != "" "The message sends no view"
     require created(m)?.who != .none "Who sent the message is not known"
     let from = created(m)?.who ?? invoker
-    all.items.insert(WrittenView(title: m.body.excerpt, definition: m.sent_view, author: from, kept: true))
+    all.items.insert(
+        WrittenView(title: m.body.excerpt, definition: m.sent_view, author: from, kept: true),
+    )
 }
 
 /// Sends a view to a channel: anyone there can add it to their own views.
@@ -130,5 +160,12 @@ view view_page(v: WrittenView) {
 
 /// An agent's answer to "what's left for the release?", over the workspace's tasks.
 scenario "a release answer" -> WrittenView {
-    views.items.insert(WrittenView(title: "Left for the release", question: "What's left for the release?", definition: "view left_for_the_release() \{\n    ui.Card(item: tasks.tasks, title: meta(tasks.tasks).title, count: tasks.tasks.items.count(t -> not t.done)) \{\n        list(tasks.tasks.items.filter(t -> not t.done)) \{ t ->\n            row(t)\n        \}\n    \}\n\}", author: invoker))
+    views.items.insert(
+        WrittenView(
+            title: "Left for the release",
+            question: "What's left for the release?",
+            definition: "view left_for_the_release() \{\n    ui.Card(item: tasks.tasks, title: meta(tasks.tasks).title, count: tasks.tasks.items.count(t -> not t.done)) \{\n        list(tasks.tasks.items.filter(t -> not t.done)) \{ t ->\n            row(t)\n        \}\n    \}\n\}",
+            author: invoker,
+        ),
+    )
 }

@@ -9,9 +9,11 @@
 //! one refresh with the margin, or a display following the content
 //! (variable refresh), builds at once instead.
 //!
-//! Each output also keeps what the frames cost and how long they took from
-//! build to vblank, logged at debug level every [`WINDOW`] as
-//! `frame pacing`.
+//! Each output also keeps what the frames cost, how long they took from
+//! build to vblank and the longest it went without showing a frame, logged
+//! at debug level every [`WINDOW`] as `frame pacing`. A gap much longer than
+//! a refresh is the output having been held up — by the compositor or by
+//! another display's modeset — not a frame that merely missed its vblank.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -51,6 +53,7 @@ struct Window {
     costs_us: Vec<u32>,
     build_to_vblank_us: Vec<u32>,
     missed: u32,
+    gap_max_us: u32,
 }
 
 impl Pacing {
@@ -110,6 +113,10 @@ impl Pacing {
     /// The output showed a frame (or retired a flip) at `vblank`; when the
     /// next frame is due. `adaptive`: the display follows the content.
     pub(crate) fn shown(&mut self, vblank: Instant, interval: Duration, adaptive: bool) -> Instant {
+        if let Some(previous) = self.vblank {
+            let gap = micros(vblank.saturating_duration_since(previous));
+            self.window.gap_max_us = self.window.gap_max_us.max(gap);
+        }
         self.vblank = Some(vblank);
         if let Some((start, target)) = self.built.take() {
             self.window.started.get_or_insert(vblank);
@@ -175,6 +182,7 @@ impl Pacing {
             lead_us: micros(self.lead(interval)),
             cost: percentiles(&window.costs_us),
             build_to_vblank: percentiles(&window.build_to_vblank_us),
+            gap_max_us: window.gap_max_us,
         })
     }
 }
@@ -191,6 +199,9 @@ pub(crate) struct Summary {
     /// Deadline to the vblank that showed it: the compositor's share of
     /// input to photon.
     pub build_to_vblank: (u32, u32),
+    /// The longest the output went between two shown frames: how long it
+    /// was held up.
+    pub gap_max_us: u32,
 }
 
 fn percentiles(values: &[u32]) -> (u32, u32) {
@@ -287,6 +298,31 @@ mod tests {
         let next = pacing.idle(now, INTERVAL, false);
         assert!(next > now && next <= now + INTERVAL);
         assert_eq!(next.duration_since(due).as_nanos() % INTERVAL.as_nanos(), 0);
+    }
+
+    #[test]
+    fn a_stalled_output_reports_the_longest_it_showed_nothing() {
+        let mut pacing = Pacing::default();
+        let t0 = Instant::now();
+        let mut vblank = t0;
+        pacing.queued(t0, t0 + ms(2), INTERVAL);
+        pacing.shown(vblank, INTERVAL, false);
+        for _ in 0..3 {
+            vblank += INTERVAL;
+            pacing.queued(vblank - ms(3), vblank - ms(1), INTERVAL);
+            pacing.shown(vblank, INTERVAL, false);
+        }
+        // Held up for three seconds, then a frame again.
+        vblank += ms(3_000);
+        pacing.queued(vblank - ms(2), vblank - ms(1), INTERVAL);
+        pacing.shown(vblank, INTERVAL, false);
+        let summary = pacing.take_summary(vblank, INTERVAL).unwrap();
+        assert_eq!(summary.shown, 5);
+        assert_eq!(summary.gap_max_us, micros(ms(3_000)));
+        assert_eq!(
+            summary.missed, 0,
+            "no frame was built for the vblanks it missed"
+        );
     }
 
     #[test]

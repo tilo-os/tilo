@@ -204,8 +204,30 @@ pub async fn here(
     .await
 }
 
+/// Ask the host where the workspace's live plane listens and which
+/// certificate to pin, for a page that the workspace admits now: the answer
+/// is the admission to dial with.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when the workspace does not admit this
+/// session's device.
+pub async fn live(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::web::LiveRequest,
+) -> Result<tilo_relay_protocol::web::LiveInfo, LinkError> {
+    call(
+        client,
+        tilo_relay_protocol::web::LIVE_INFO_PATH,
+        Some(session),
+        encode(request)?,
+    )
+    .await
+}
+
 /// Ask the room's governor for a private operation as this session's
-/// device ([`tilo_relay_protocol::rooms::private`]): the same door a native
+/// device ([`tilo_relay_protocol::workspaces::private`]): the same door a native
 /// device reaches over iroh. A watch is held by the host up to its poll
 /// bound.
 ///
@@ -213,13 +235,15 @@ pub async fn here(
 ///
 /// Returns [`LinkError::Refused`] when the session is gone, and
 /// [`LinkError::Malformed`] for an answer past the reply bound. A refused
-/// operation answers [`PrivateReply::Refused`](tilo_relay_protocol::rooms::private::PrivateReply::Refused).
+/// operation answers [`PrivateReply::Refused`](tilo_relay_protocol::workspaces::private::PrivateReply::Refused).
 pub async fn private(
     client: &dyn HttpClient,
     session: &str,
-    request: &tilo_relay_protocol::rooms::private::PrivateCall,
-) -> Result<tilo_relay_protocol::rooms::private::PrivateReply, LinkError> {
-    use tilo_relay_protocol::rooms::private::{MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PRIVATE_PATH};
+    request: &tilo_relay_protocol::workspaces::private::PrivateCall,
+) -> Result<tilo_relay_protocol::workspaces::private::PrivateReply, LinkError> {
+    use tilo_relay_protocol::workspaces::private::{
+        MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PRIVATE_PATH,
+    };
     let body = encode(request)?;
     if body.len() > MAX_REQUEST_BYTES {
         return Err(LinkError::Malformed("private request exceeds bound".into()));
@@ -254,12 +278,12 @@ pub async fn channel_keys(
     .await
 }
 
-/// Administer the host's rooms as this session's device (`/rooms`).
-pub async fn rooms(
+/// Administer the host's workspaces as this session's device (`/rooms`).
+pub async fn workspaces(
     client: &dyn HttpClient,
     session: &str,
-    request: &tilo_relay_protocol::rooms::RoomsRequest,
-) -> Result<tilo_relay_protocol::rooms::RoomsReply, LinkError> {
+    request: &tilo_relay_protocol::workspaces::WorkspacesRequest,
+) -> Result<tilo_relay_protocol::workspaces::WorkspacesReply, LinkError> {
     call(client, "/rooms", Some(session), encode(request)?).await
 }
 
@@ -274,8 +298,8 @@ pub async fn node(
 /// One step of joining a room with no session (`/join`).
 pub async fn join(
     client: &dyn HttpClient,
-    step: &tilo_relay_protocol::rooms::JoinStep,
-) -> Result<tilo_relay_protocol::rooms::JoinReply, LinkError> {
+    step: &tilo_relay_protocol::workspaces::JoinStep,
+) -> Result<tilo_relay_protocol::workspaces::JoinReply, LinkError> {
     call(client, "/join", None, encode(step)?).await
 }
 
@@ -431,7 +455,7 @@ impl HttpsLink {
 
     /// Whether the host administers rooms and redeems invitations for pages
     /// (`/rooms`, `/join`).
-    pub fn rooms(&self) -> bool {
+    pub fn workspaces(&self) -> bool {
         self.features & tilo_relay_protocol::web::FEATURE_ROOMS != 0
     }
 

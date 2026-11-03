@@ -41,6 +41,28 @@ impl Region {
     }
 }
 
+/// Whether the compositor showing hosted surfaces' frames composes on the
+/// CPU, reading their pixels itself: such a surface rasterizes its frames
+/// where it stands instead of drawing them on a GPU to copy them back every
+/// frame. Said by the compositor as it opens its backend, as there is one
+/// compositor in a process.
+static COMPOSES_ON_CPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set by the compositor when it opens its backend: what
+/// [`hosted_frames_on_cpu`] answers from then on.
+pub(crate) fn composes_on_cpu(composes: bool) {
+    COMPOSES_ON_CPU.store(composes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the compositor that will show a hosted frame reads its pixels
+/// itself, in memory, rather than sampling them as a texture on a GPU: a
+/// surface's frames are then rasterized on the CPU, and a machine with a GPU
+/// never copies them back from it.
+#[must_use]
+pub fn hosted_frames_on_cpu() -> bool {
+    COMPOSES_ON_CPU.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The pixels a hosted surface shows: premultiplied RGBA, kept as the buffer
 /// the compositor draws, so a host only hands over what changed.
 #[derive(Clone, Debug)]

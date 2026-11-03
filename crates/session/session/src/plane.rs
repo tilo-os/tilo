@@ -29,8 +29,8 @@ use tilo_action_broker::services::{
     ApplicationServices, Caller, ContentStoreServices, DisplayControlServices, DriveServices,
     Granted, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
     SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
-    SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
-    WorkspaceMemberships,
+    SpeakerChange, SpeakerServices, WifiContinuityServices, WorkspaceAuthority,
+    WorkspaceAuthorityHandle, WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -352,6 +352,16 @@ pub struct Hosted {
     /// The session's tools service, while it serves one: what Files' waits
     /// for its drive and app lists' changes are answered from.
     pub tools: Option<crate::mount::tools::Handle>,
+    /// The programs the agents working this session's tasks write, which this
+    /// session's door runs as steps of their runs.
+    pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
+    /// This session's Nearby Send: the person's other devices, and the spool
+    /// a file reaches them from. `None` on a session that runs none, where
+    /// Files' send has no route at all.
+    pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
+    /// Files' clipboard: what a person copied or cut there, pasted into a
+    /// folder of this desktop's, and what it put on the desktop's clipboard.
+    pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -692,12 +702,15 @@ fn seams(
         agent_runs,
         sealed,
         own_device,
-        engine: _,
+        engine,
         record_content,
         action_offload,
         journal_root,
         lists,
         tools,
+        task_programs,
+        nearby,
+        file_clipboard,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // The desk decides who may administer a workspace's identity, and the
@@ -731,14 +744,24 @@ fn seams(
             .map(|state| state.join("actions").join("launchable.json"))
     });
     Seams {
+        // No approved-check runner is installed with this session: a check a
+        // project's app asks for has nothing to run it.
         approved_checks: Seam::unserved(
-            "this session hosts no project's checks: no project enforces any here",
+            "no project's approved check runs here: this session installs no check service",
         ),
+        // Resources an app asks to look at are published by the app that
+        // holds them and reached through the action door's own catalogue; the
+        // session reads none of them on an app's behalf.
         resource_views: Seam::unserved(
-            "this session reads no other app's existing resources: search lists them instead",
+            "an app reads another app's resources through the action door's catalogue, over \
+             the holding app's own route",
         ),
+        // A record is held on the collaboration plane of the app that owns
+        // it, in everyone's copy at once; the session keeps no documents of
+        // its own to read one from.
         committed_documents: Seam::unserved(
-            "this session reads no committed document on an app's behalf",
+            "records are read and changed on the collaboration plane each app holds, \
+             not through this session's documents",
         ),
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
@@ -753,7 +776,14 @@ fn seams(
         // What people ask this session's agents to do: a run is the broker's
         // to deliver, and its reports come back to the run.
         tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
-        person_chat: Seam::unserved("this session keeps no chat service for apps"),
+        // A person's private conversations are kept in their workspaces'
+        // private person state, beside the owner's own record: Chat reads and
+        // writes them through the owner this session opened, where this
+        // device is the workspace's host, and follows them by its watch.
+        person_chat: Seam::when(engine.map(|engine| {
+            std::sync::Arc::new(crate::person_chat::PersonChat::new(engine))
+                as tilo_action_broker::services::person_chat::PersonChatService
+        })),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -764,16 +794,26 @@ fn seams(
             std::sync::Arc::new(tilo_identity_authority::NativeLocalPerson)
                 as std::sync::Arc<dyn tilo_action_broker::services::LocalPersonServices>,
         ),
+        // A record's own origin is its app's collaboration plane route, and a
+        // task's change reaches it as the app's action; the session applies
+        // no record change of its own for the door to ask.
         record_changes: Seam::unserved(
-            "no workspace origin here applies an agent's task change to a record",
+            "an agent's change to a record goes through the record's own app, not through \
+             a record origin this session keeps",
         ),
+        // The desk's own migration is the one reader of what an older
+        // session journaled, and it imports it once into this session's
+        // workspaces.
         legacy_workspace: Seam::unserved(
-            "the desk's workspaces are read where they are shown, not through a projection",
+            "older workspaces are imported once by the desk's migration, and no app feeds \
+             their journal through this session",
         ),
         launcher: Seam::served(launches),
         // The resources this session's services publish, which the apps it
         // admits read, watch and invoke.
         published: Seam::served(link),
+        // A workspace's grants are the desk's: the person gives them on its
+        // sheets, and the broker decides against the desk it was started with.
         workspace_governance: Seam::unserved(
             "workspace grants are given in the desk's own sheets, not by an app",
         ),
@@ -784,8 +824,11 @@ fn seams(
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
         keyboard_shortcuts: Seam::served(crate::keyboard_shortcuts::servable()),
+        // What an app had open is its window's on the desk, restored where
+        // the desk shows it; the door keeps no continuation of its own.
         continuations: Seam::unserved(
-            "this session offers no app's unfinished work to another app",
+            "an app's unfinished work stays with its window on the desk, and this session \
+             records no continuation for another app to pick up",
         ),
         // What an app publishes of its own content is found whether or not
         // it runs, once it is closed and after a restart.
@@ -804,7 +847,7 @@ fn seams(
         ),
         realtime: Seam::unserved("this session serves no realtime continuity"),
         // The speaker groups of the fabric this session runs on.
-        speakers: Seam::when(fabric.map(|fabric| {
+        speakers: Seam::when(fabric.clone().map(|fabric| {
             std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
         })),
         // Files waits on the tools service for both lists to change, and asks
@@ -824,15 +867,35 @@ fn seams(
         // Every app shows its live activity (a running timer, a stopwatch)
         // outside its windows on this one board.
         live_activities: Seam::served(live_activities),
-        wifi_continuity: Seam::unserved("this session serves no wifi continuity"),
+        // The network the person is on is the session's own service: Settings
+        // reads where this device can be woken, and shares a passphrase it
+        // learned with the person's other devices — or joins with one they
+        // shared — through the fabric this session runs on.
+        wifi_continuity: Seam::when(fabric.map(|fabric| {
+            std::sync::Arc::new(crate::wifi_continuity::WifiContinuity::new(fabric))
+                as std::sync::Arc<dyn WifiContinuityServices>
+        })),
+        // The Browser app resolves and keeps its own service sessions in its
+        // record, beside its windows.
         browser_service_sessions: Seam::unserved(
-            "this session serves no browser's service sessions",
+            "the Browser app keeps its service sessions itself, in its own record",
         ),
-        nearby_transfer: Seam::unserved("nearby transfer is not served by this session's app door"),
-        file_clipboard: Seam::unserved(
-            "the clipboard belongs to the compositor, which serves it to windows itself",
-        ),
+        // Files offers a file to the person's other devices over the same
+        // device fabric this session already runs: one Nearby Send stages a
+        // screenshot and a file alike, and the receiving device's person
+        // chooses where it lands there.
+        nearby_transfer: Seam::when(nearby.map(|nearby| {
+            nearby as std::sync::Arc<dyn tilo_action_broker::services::NearbyTransferServices>
+        })),
+        // A person copies and cuts in Files and pastes the copy in another
+        // folder or another app: what they copied is offered here, and every
+        // file of it is pasted by the same engine the desktop's own paste of
+        // files runs.
+        file_clipboard: Seam::served(file_clipboard),
         app_action_access: Seam::served(app_action_access),
+        // A grant for an app to take another app's action is kept in a
+        // workspace's own record, which this session's engine commits; the
+        // host records none of them for the door to ask.
         app_action_grants: Seam::unserved(
             "an app's grant for another app's actions is recorded in the workspace's own \
              governance, which no app reaches here",
@@ -860,18 +923,29 @@ fn seams(
         // workspace's activity the Activity app reads, pairing a nearby
         // device, and administering their identities and the devices trusted
         // under them, whose secret stays here.
-        host_steps: Seam::served(vec![
-            activity as std::sync::Arc<dyn HostStepServices>,
-            std::sync::Arc::new(crate::pairing::BrokerDoor {
-                desk: std::sync::Arc::clone(&desk_authority),
-                fabric: steps_fabric,
-                pairing: crate::pairing::Pairing::session(),
-            }),
-            std::sync::Arc::new(crate::identity_admin::BrokerDoor {
-                desk: desk_authority,
-                admin: crate::identity_admin::IdentityAdmin::session(),
-            }),
-        ]),
+        host_steps: Seam::served(
+            [
+                vec![
+                    activity as std::sync::Arc<dyn HostStepServices>,
+                    std::sync::Arc::new(crate::pairing::BrokerDoor {
+                        desk: std::sync::Arc::clone(&desk_authority),
+                        fabric: steps_fabric,
+                        pairing: crate::pairing::Pairing::session(),
+                    }),
+                    std::sync::Arc::new(crate::identity_admin::BrokerDoor {
+                        desk: desk_authority,
+                        admin: crate::identity_admin::IdentityAdmin::session(),
+                    }),
+                ],
+                // An agent's task writes its programs; this session's door runs them as the
+                // steps of the run the task is in.
+                task_programs
+                    .map(|programs| programs as std::sync::Arc<dyn HostStepServices>)
+                    .into_iter()
+                    .collect(),
+            ]
+            .concat(),
+        ),
     }
 }
 
@@ -930,6 +1004,9 @@ pub(crate) struct Plane {
     /// The service apps join a call through, when this session carries
     /// calls at all.
     pub(crate) calls_service: Option<tilo_native_media::NativeMediaService>,
+    /// Files' clipboard, whose copies the loop puts on the desktop's
+    /// clipboard: what the person pastes into any other app.
+    pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
 }
 
 impl Plane {
@@ -1127,12 +1204,17 @@ mod tests {
                 keys: None,
             },
             own_device: None,
+            nearby: None,
             engine: None,
             record_content: None,
             action_offload: None,
             journal_root: None,
             lists,
             tools: None,
+            task_programs: None,
+            file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
+                std::sync::Arc::new(|| ()),
+            )),
         }
     }
 
@@ -1273,10 +1355,101 @@ mod tests {
         );
     }
 
+    /// What each shipped app's sources call of the action door: the seam each
+    /// call reaches, and the apps whose sources make it.
+    fn seams_shipped_apps_call()
+    -> std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>> {
+        fn sources(directory: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, into);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    into.push(path);
+                }
+            }
+        }
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        let mut files = Vec::new();
+        sources(&apps, &mut files);
+        let mut called: std::collections::BTreeMap<
+            &'static str,
+            std::collections::BTreeSet<String>,
+        > = std::collections::BTreeMap::new();
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let app = file
+                .strip_prefix(&apps)
+                .ok()
+                .and_then(|path| path.components().next())
+                .map_or_else(
+                    || file.display().to_string(),
+                    |app| app.as_os_str().to_string_lossy().into_owned(),
+                );
+            for &(marker, seam) in crate::seams::CALLED_SEAMS {
+                if text.contains(marker) {
+                    called.entry(seam).or_default().insert(app.clone());
+                }
+            }
+        }
+        called
+    }
+
+    /// Every seam a shipped app's sources call is served, or named in
+    /// [`crate::seams::UNSERVED_BUT_CALLED`] as one this session still owes
+    /// the app; that list shrinks as each call is served or moved off the
+    /// seam, and a call it does not name fails here.
+    fn shipped_apps_calls_are_served(decisions: &[(&'static str, Option<&'static str>)]) {
+        let served = |name: &str| {
+            decisions
+                .iter()
+                .find(|(seam, _)| *seam == name)
+                .map_or_else(|| panic!("`{name}` is decided"), |(_, why)| why.is_none())
+        };
+        let called = seams_shipped_apps_call();
+        assert!(
+            called.len() >= 4,
+            "the shipped apps' sources are read and their calls found: {called:?}"
+        );
+        for (seam, apps) in &called {
+            let reason = decisions.iter().find(|(name, _)| name == seam).map_or_else(
+                || panic!("`{seam}` is not a seam of the broker"),
+                |(_, why)| *why,
+            );
+            if reason.is_none() {
+                assert!(
+                    !crate::seams::UNSERVED_BUT_CALLED.contains(seam),
+                    "`{seam}` is served now: take it off the list of seams still to serve"
+                );
+                continue;
+            }
+            assert!(
+                crate::seams::UNSERVED_BUT_CALLED.contains(seam),
+                "{apps:?} call `{seam}`, and this session serves nothing of it: {reason:?}"
+            );
+        }
+        for seam in crate::seams::UNSERVED_BUT_CALLED {
+            assert!(
+                called.contains_key(seam),
+                "no shipped app calls `{seam}` any more: take it off the list of seams still to serve"
+            );
+            assert!(
+                !served(seam),
+                "`{seam}` is served now: take it off the list of seams still to serve"
+            );
+        }
+    }
+
     /// Every seam the broker offers is decided here: served, served where
     /// this run has what it carries, or not served with the reason it was
-    /// left out. No shipped app calls a seam this session serves nothing
-    /// of.
+    /// left out. Every seam a shipped app's sources call is served, or named
+    /// as one still to serve — so an app that starts calling a seam this
+    /// session serves nothing of fails this test.
     #[test]
     fn every_seam_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
         let decided = seams(
@@ -1308,11 +1481,7 @@ mod tests {
         for name in crate::seams::EVERY_APP {
             assert!(served(name), "every app calls `{name}` on its connection");
         }
-        for (app, needed) in crate::seams::SHIPPED {
-            for name in *needed {
-                assert!(served(name), "{app} calls `{name}`");
-            }
-        }
+        shipped_apps_calls_are_served(&decisions);
 
         let services = decided.into_host_services();
         assert!(

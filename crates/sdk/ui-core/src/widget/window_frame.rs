@@ -357,7 +357,7 @@ impl Decorator for WindowFrame {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.relayout || self.layers.needs_redraw()
+        self.relayout || (self.layers.needs_redraw() || self.layers.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

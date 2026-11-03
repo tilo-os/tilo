@@ -23,7 +23,7 @@ mod sessions;
 #[cfg(test)]
 mod tests;
 mod tls;
-mod wt;
+pub(crate) mod wt;
 
 pub use fetch::FetchProxySetup;
 use std::convert::Infallible;
@@ -90,7 +90,7 @@ pub struct CountryHeader {
     pub proxies: tilo_relay_protocol::proxies::TrustedProxies,
 }
 
-/// Caps on concurrent browser state. A public room expects hundreds of
+/// Caps on concurrent browser state. A public workspace expects hundreds of
 /// visitors, so its host raises them; the defaults suit a personal host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WebLimits {
@@ -130,7 +130,7 @@ impl WebHandle {
     /// host's presence count and idle-guest pruning. One person on two
     /// devices is one entry; a shared spectator person is one entry whose
     /// count is its sessions, seated or still waiting for a seat (how many
-    /// watch is [`crate::rooms::Rooms::seated_spectators`]).
+    /// watch is [`crate::workspaces::Workspaces::seated_spectators`]).
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         self.sessions.online_users()
@@ -160,8 +160,8 @@ struct Web {
     allowed_origins: Vec<String>,
     /// What `/session/finish` advertises.
     features: u64,
-    /// The rooms this relay governs, for `/rooms` and `/join`.
-    rooms: Option<crate::rooms::Rooms>,
+    /// The workspaces this relay governs, for `/rooms` and `/join`.
+    workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
     /// Members' profiles, for `/profile`.
@@ -342,14 +342,18 @@ impl Relay {
             tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
         let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
         let context = self.web_context().clone();
+        let Some(plane) = self.plane.as_ref() else {
+            return Err(failed("the relay runs no live plane".into()));
+        };
         let sessions = Sessions::with_limits(context.clone(), config.limits);
-        if let Some(rooms) = self.rooms() {
-            let _ = context.relay.carried_calls.set(rooms.downgrade());
+        plane.pages.serve_pages(sessions.clone());
+        if let Some(workspaces) = self.workspaces() {
+            let _ = context.relay.carried_calls.set(workspaces.downgrade());
         }
         let host_cert = context.relay.identity.cert.clone();
         let mut live = wt::Live::start(
+            plane,
             &identity,
-            sessions.clone(),
             &config,
             &public_origin
                 .clone()
@@ -363,7 +367,7 @@ impl Relay {
             host_info: HostInfo { host_cert },
             allowed_origins: config.allowed_origins,
             features: self.web_features() | fetch.features(),
-            rooms: self.rooms().cloned(),
+            workspaces: self.workspaces().cloned(),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
             profiles: envelopes::Envelopes::of(
                 envelopes::Kind::Profile,
@@ -405,15 +409,15 @@ impl Relay {
 }
 
 impl Relay {
-    /// What `/session/finish` advertises: calls and room administration
-    /// only where rooms are governed.
+    /// What `/session/finish` advertises: calls and workspace administration
+    /// only where workspaces are governed.
     fn web_features(&self) -> u64 {
-        let rooms = if self.rooms().is_some() {
+        let workspaces = if self.workspaces().is_some() {
             protocol::FEATURE_VOICE | protocol::FEATURE_ROOMS
         } else {
             0
         };
-        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | rooms
+        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | workspaces
     }
 }
 
@@ -552,7 +556,7 @@ fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }
 
-/// A public workspace's door (`/directory/<room>/join` or `…/report`):
+/// A public workspace's door (`/directory/<workspace>/join` or `…/report`):
 /// JSON in, JSON out, a refusal as `{error}` the person reads.
 #[allow(
     clippy::result_large_err,
@@ -564,11 +568,11 @@ async fn directory_door(
     bytes: &[u8],
 ) -> Result<Response<Body>, Response<Body>> {
     use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin, DoorReport, door_route};
-    let (room, step) =
+    let (workspace, step) =
         door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
-    // A relay that governs no rooms refuses before the request is parsed.
-    governed_rooms(web)?;
-    let refused = |error: crate::rooms::CollaborationError| {
+    // A relay that governs no workspaces refuses before the request is parsed.
+    governed_workspaces(web)?;
+    let refused = |error: crate::workspaces::CollaborationError| {
         json_status(
             StatusCode::FORBIDDEN,
             &serde_json::json!({ "error": error.to_string() }),
@@ -578,8 +582,8 @@ async fn directory_door(
         "join" => {
             let join: DoorJoin = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
-            let (issued, token) = governed_rooms(web)?
-                .admit_listed(room, &join)
+            let (issued, token) = governed_workspaces(web)?
+                .admit_listed(workspace, &join)
                 .await
                 .map_err(refused)?;
             Ok(json(&DoorAnswer {
@@ -594,8 +598,8 @@ async fn directory_door(
         "report" => {
             let report: DoorReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
-            governed_rooms(web)?
-                .report_listed(room, &report)
+            governed_workspaces(web)?
+                .report_listed(workspace, &report)
                 .await
                 .map_err(refused)?;
             Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
@@ -604,15 +608,15 @@ async fn directory_door(
     }
 }
 
-/// The rooms this relay governs, or the answer that it governs none.
+/// The workspaces this relay governs, or the answer that it governs none.
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
 )]
-fn governed_rooms(web: &Web) -> Result<&crate::rooms::Rooms, Response<Body>> {
-    web.rooms
+fn governed_workspaces(web: &Web) -> Result<&crate::workspaces::Workspaces, Response<Body>> {
+    web.workspaces
         .as_ref()
-        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))
 }
 
 fn session_status(error: &SessionError) -> Response<Body> {
@@ -763,7 +767,7 @@ async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
         .values()
         .cloned()
         .collect();
-    // The person this host runs for is its own before any room is bound.
+    // The person this host runs for is its own before any workspace is bound.
     let own_user = web.sessions.context().relay.identity.user_public_key;
     if user == own_user {
         return true;
@@ -782,7 +786,7 @@ fn wait(ms: u32) -> Duration {
 
 /// The devices of `workspace_id`, in no particular order, if `peer` may take
 /// part in the workspace's calls now: its certificate current relay-wide and
-/// admitted by the room, see [`room_access::decide`].
+/// admitted by the workspace, see [`room_access::decide`].
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
@@ -795,11 +799,11 @@ async fn admitted_devices(
     let relay = &web.sessions.context().relay;
     let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned()?;
     let workspace = workspace.lock().await;
-    crate::room_access::decide(
+    crate::workspace_access::decide(
         &workspace,
         &relay.trust(),
         peer,
-        crate::room_access::RoomOperation::Publish,
+        crate::workspace_access::WorkspaceOperation::Publish,
     )
     .admitted()
     .then(|| workspace.membership.devices.clone())
@@ -1037,15 +1041,15 @@ async fn route(
             let request: protocol::ChannelKeysRequest = decode(&bytes)?;
             let relay = &web.sessions.context().relay;
             let keys = web
-                .rooms
+                .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?
                 .spectator_keys(&request, |runtime| {
-                    crate::room_access::decide(
+                    crate::workspace_access::decide(
                         runtime,
                         &relay.trust(),
                         &session.peer,
-                        crate::room_access::RoomOperation::ChannelReadKeys,
+                        crate::workspace_access::WorkspaceOperation::ChannelReadKeys,
                     )
                 })
                 .await
@@ -1057,16 +1061,16 @@ async fn route(
                 keys: keys.to_vec(),
             }))
         }
-        tilo_relay_protocol::rooms::private::PRIVATE_PATH => {
-            use tilo_relay_protocol::rooms::private::{MAX_REQUEST_BYTES, PrivateCall};
+        tilo_relay_protocol::workspaces::private::PRIVATE_PATH => {
+            use tilo_relay_protocol::workspaces::private::{MAX_REQUEST_BYTES, PrivateCall};
             let session = authed()?;
             // The governor's private door, the one a native device reaches
             // over iroh, within the same bounds.
             let door = web
-                .rooms
+                .workspaces
                 .clone()
-                .map(crate::rooms::PrivateProtocol::new)
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .map(crate::workspaces::PrivateProtocol::new)
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             if bytes.len() > MAX_REQUEST_BYTES {
                 return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"));
             }
@@ -1084,7 +1088,7 @@ async fn route(
                 .serve(
                     &session.peer.cert,
                     &device,
-                    &call.room,
+                    &call.workspace,
                     call.operation,
                     poll,
                 )
@@ -1094,31 +1098,31 @@ async fn route(
         }
         "/rooms" => {
             let session = authed()?;
-            let rooms = web
-                .rooms
+            let workspaces = web
+                .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             let request = decode(&bytes)?;
             Ok(encoded(
-                &rooms.page_rooms(&session.peer.cert, request).await,
+                &workspaces.page_rooms(&session.peer.cert, request).await,
             ))
         }
         "/join" => {
-            let rooms = web
-                .rooms
+            let workspaces = web
+                .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             let step = decode(&bytes)?;
-            Ok(encoded(&rooms.page_join(step).await))
+            Ok(encoded(&workspaces.page_join(step).await))
         }
         protocol::WORKSPACE_JOIN_PATH => {
             use tilo_delivery_protocol::workspace_join::{
                 MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceJoinService as _,
             };
-            let rooms = web
-                .rooms
+            let workspaces = web
+                .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             if bytes.len() > MAX_WORKSPACE_JOIN_REQUEST_BYTES {
                 return Err(status(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -1127,16 +1131,18 @@ async fn route(
             }
             let request = decode(&bytes)?;
             let device = joining_device(&request);
-            Ok(encoded(&rooms.join_service().handle(device, request).await))
+            Ok(encoded(
+                &workspaces.join_service().handle(device, request).await,
+            ))
         }
         tilo_relay_protocol::directory::DIRECTORY_PATH => {
-            let rooms = web
-                .rooms
+            let workspaces = web
+                .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             let online = web.sessions.online_users().into_keys().collect();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
-                workspaces: rooms.directory(&online).await,
+                workspaces: workspaces.directory(&online).await,
             }))
         }
         _ if tilo_relay_protocol::directory::door_route(route).is_some() => {

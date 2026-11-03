@@ -284,7 +284,7 @@ impl Checker<'_> {
     /// A binding of the component `d` bound to what `value` names: checked against the binding's
     /// own type, and the node carries the binding's name, which is the name the host merges
     /// under. Of `bindings`, the one whose type the bound place has is the one bound.
-    fn binding_prop(
+    pub(super) fn binding_prop(
         &mut self,
         n: LocalId,
         d: &'static Description,
@@ -1041,6 +1041,8 @@ fn binding_types(ty: &Type) -> Vec<Ty> {
             Ty::Option(Box::new(Ty::Time)),
         ],
         Type::RichText => vec![Ty::RichText],
+        // A person, or nobody: the field holds the identity, and may be cleared.
+        Type::Principal => vec![Ty::Principal, Ty::Option(Box::new(Ty::Principal))],
         _ => Vec::new(),
     }
 }

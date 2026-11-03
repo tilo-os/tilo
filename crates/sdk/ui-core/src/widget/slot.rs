@@ -116,7 +116,9 @@ impl super::Decorator for Slot {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.pending.borrow().is_some() || self.repaint.get() || self.content.needs_redraw()
+        self.pending.borrow().is_some()
+            || self.repaint.get()
+            || (self.content.needs_redraw() || self.content.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {

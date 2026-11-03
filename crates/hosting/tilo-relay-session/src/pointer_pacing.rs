@@ -28,7 +28,7 @@
 //! - **Order where it matters.** Anything but a delta or other latest-state
 //!   presence (a caret, a selection, a typing range) takes every held pointer
 //!   ahead of it, in the same write: an app's `Left` never overtakes its last
-//!   pointer, and nothing is written for a room after its `Unsubscribe`.
+//!   pointer, and nothing is written for a workspace after its `Unsubscribe`.
 //!   Deltas and carets may pass a held pointer, as the relay lets them.
 //!
 //! Only slots the sender itself declares as motion
@@ -44,7 +44,7 @@ pub use crate::coedit::POINTER_GAP;
 use crate::coedit::{AttributedPresence, presence_slot};
 use crate::transport::Envelope;
 
-/// One pointer slot of one room: `(workspace_id, slot id)`.
+/// One pointer slot of one workspace: `(workspace_id, slot id)`.
 pub type PointerKey = (u64, u64);
 
 /// How an outbound message is paced.
@@ -59,7 +59,7 @@ pub enum Pacing {
     Ordered,
 }
 
-/// How presence with `slot` in room `workspace_id` is paced: a motion slot is
+/// How presence with `slot` in workspace `workspace_id` is paced: a motion slot is
 /// held, any other slot passes, and a message without one is an event.
 #[must_use]
 pub fn slot_pacing(workspace_id: u64, slot: Option<neighbour_wire::PresenceSlot>) -> Pacing {
@@ -74,7 +74,7 @@ pub fn slot_pacing(workspace_id: u64, slot: Option<neighbour_wire::PresenceSlot>
 pub(crate) fn pacing(envelope: &Envelope) -> Pacing {
     match envelope {
         Envelope::Delta { .. } => Pacing::Passes,
-        Envelope::Presence {
+        Envelope::RetiredPresence {
             workspace_id,
             payload,
         } => slot_pacing(
@@ -268,7 +268,7 @@ pub(crate) mod tests {
     const ROOM: u64 = 7;
 
     fn presence(message: &NeighbourMsg) -> Envelope {
-        Envelope::Presence {
+        Envelope::RetiredPresence {
             workspace_id: ROOM,
             payload: AttributedPresence {
                 author: [1; 32],
@@ -280,7 +280,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn pointer(key: &str, x: f64) -> Envelope {
-        presence(&NeighbourMsg::PresenceMoved {
+        presence(&NeighbourMsg::RetiredPresenceMoved {
             peer: 3,
             user: "someone".into(),
             key: key.into(),
@@ -291,7 +291,7 @@ pub(crate) mod tests {
     }
 
     fn app(payload: collab_types::PeerPresencePayload) -> Envelope {
-        presence(&NeighbourMsg::AppPresenceV2 {
+        presence(&NeighbourMsg::RetiredAppPresenceV2 {
             peer: 3,
             app_id: "so.tilo.word-processor".into(),
             cluster_id: "room".into(),
@@ -343,7 +343,7 @@ pub(crate) mod tests {
         );
         // A body that is not attributed co-edit presence is an event.
         assert_eq!(
-            pacing(&Envelope::Presence {
+            pacing(&Envelope::RetiredPresence {
                 workspace_id: ROOM,
                 payload: vec![0xff],
             }),
@@ -485,7 +485,7 @@ pub(crate) mod tests {
 
         // The direct path classifies the message it is about to broadcast
         // with the same function the session writer uses.
-        let moved = NeighbourMsg::PresenceMoved {
+        let moved = NeighbourMsg::RetiredPresenceMoved {
             peer: 3,
             user: "someone".into(),
             key: "tile".into(),
@@ -503,7 +503,7 @@ pub(crate) mod tests {
             pacing(&pointer("tile", 1.0)),
             "both paths key a pointer alike"
         );
-        let caret = NeighbourMsg::AppPresenceV2 {
+        let caret = NeighbourMsg::RetiredAppPresenceV2 {
             peer: 3,
             app_id: "so.tilo.word-processor".into(),
             cluster_id: "room".into(),

@@ -4,7 +4,7 @@ use super::*;
 
 /// A newer connection of the same device (a page that reconnected, a second
 /// tab) taking the slot ends the older session as the handover it is, not as
-/// a protocol failure; a device the room no longer lets in ends as the
+/// a protocol failure; a device the workspace no longer lets in ends as the
 /// authorization change it is, replaced or not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room() {
@@ -33,7 +33,7 @@ async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room()
             &*fixture.workspace.lock().await,
             &fixture.recipient,
             &session,
-            RoomOperation::State,
+            WorkspaceOperation::State,
         );
         if revoked {
             assert!(matches!(error, PeerError::Protocol(_)), "{error}");

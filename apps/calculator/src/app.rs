@@ -331,7 +331,6 @@ impl CalculatorApp {
             field.park_caret_at_end();
         }
         self.model_dirty = true;
-        self.dirty = true;
     }
 
     /// Which page this window shows, for a test that checks a switch landed.
@@ -512,7 +511,6 @@ impl CalculatorApp {
         if self.model.deg != degrees {
             self.model.deg = degrees;
             self.model_dirty = true;
-            self.dirty = true;
         }
     }
 

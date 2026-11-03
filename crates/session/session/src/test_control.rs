@@ -238,6 +238,10 @@ pub(crate) struct Desk<'a> {
     pub(crate) doors: &'a Doors,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
+    /// Whether the overview the person sees is up: its pictures' own flag, which the chrome
+    /// writes as it draws and the shell writes as its views show it, so the state says the one
+    /// overview either way.
+    pub(crate) overview: &'a std::cell::Cell<bool>,
     pub(crate) engine: Option<&'a Engine>,
     /// The agents the person admitted at its door, as the desk's bar shows them.
     pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
@@ -632,6 +636,7 @@ impl Control {
         for slot in Slot::ALL {
             desk.overlays.is_open(slot).hash(&mut hasher);
         }
+        desk.overview.get().hash(&mut hasher);
         let stamp = hasher.finish();
         let moved = self.published.get() != Some(stamp);
         if moved {
@@ -2202,7 +2207,8 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
         .collect();
     let mut open = serde_json::Map::new();
     for slot in Slot::ALL {
-        open.insert(slot.as_str().to_owned(), desk.overlays.is_open(slot).into());
+        let up = desk.overlays.is_open(slot) || (slot == Slot::Overview && desk.overview.get());
+        open.insert(slot.as_str().to_owned(), up.into());
     }
     let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
         .unwrap_or(Json::Null);

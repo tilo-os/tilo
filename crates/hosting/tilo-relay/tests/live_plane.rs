@@ -178,15 +178,18 @@ async fn commits_are_acknowledged_and_live_frames_reach_live_members() {
 
     // Live: a and b join, c only subscribes.
     a_client
-        .send(Envelope::LiveJoin { workspace_id: WS })
+        .send(Envelope::RetiredLiveJoin { workspace_id: WS })
         .unwrap();
     b_client
-        .send(Envelope::LiveJoin { workspace_id: WS })
+        .send(Envelope::RetiredLiveJoin { workspace_id: WS })
         .unwrap();
-    let joined = next(&a_client, |env| matches!(env, Envelope::LiveMember { .. })).await;
+    let joined = next(&a_client, |env| {
+        matches!(env, Envelope::RetiredLiveMember { .. })
+    })
+    .await;
     assert_eq!(
         joined,
-        Envelope::LiveMember {
+        Envelope::RetiredLiveMember {
             workspace_id: WS,
             device_public_key: b.device_pubkey(),
             active: true,
@@ -197,7 +200,7 @@ async fn commits_are_acknowledged_and_live_frames_reach_live_members() {
     // real sender.
     for frame in [vec![0xff, 0x00], cleartext_presence(1)] {
         b_client
-            .send(Envelope::Live {
+            .send(Envelope::RetiredLive {
                 workspace_id: WS,
                 from_device_public_key: c.device_pubkey(),
                 frame,
@@ -205,30 +208,34 @@ async fn commits_are_acknowledged_and_live_frames_reach_live_members() {
             .unwrap();
     }
     b_client
-        .send(Envelope::Live {
+        .send(Envelope::RetiredLive {
             workspace_id: WS,
             from_device_public_key: c.device_pubkey(),
             frame: presence(1),
         })
         .unwrap();
-    let Envelope::Live {
+    let Envelope::RetiredLive {
         from_device_public_key,
         frame,
         ..
-    } = next(&a_client, |env| matches!(env, Envelope::Live { .. })).await
+    } = next(&a_client, |env| matches!(env, Envelope::RetiredLive { .. })).await
     else {
         unreachable!()
     };
     assert_eq!(from_device_public_key, b.device_pubkey());
     assert_eq!(frame, presence(1));
-    nothing_matching(&c_client, |env| matches!(env, Envelope::Live { .. })).await;
+    nothing_matching(&c_client, |env| matches!(env, Envelope::RetiredLive { .. })).await;
 
     // Leaving is announced.
     b_client
         .send(Envelope::LiveLeave { workspace_id: WS })
         .unwrap();
     assert!(matches!(
-        next(&a_client, |env| matches!(env, Envelope::LiveMember { .. })).await,
-        Envelope::LiveMember { active: false, .. }
+        next(&a_client, |env| matches!(
+            env,
+            Envelope::RetiredLiveMember { .. }
+        ))
+        .await,
+        Envelope::RetiredLiveMember { active: false, .. }
     ));
 }

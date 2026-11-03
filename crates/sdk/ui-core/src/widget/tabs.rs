@@ -4196,6 +4196,15 @@ impl Widget for TabBar {
         };
         self.lay_out_toolbar_row();
     }
+    /// An undrawn bar repaints, and so does one whose own state moved since
+    /// it drew (every route that changes it says so through `TabBar::touch`)
+    /// or whose people are not the people it drew. Presence comes from the
+    /// frame the host lends, so the answer is right before an event or a
+    /// peek reaches the bar, not only after a draw.
+    fn needs_redraw(&self) -> bool {
+        self.painted_bar_needs_redraw()
+    }
+
     /// A bar at rest whose own state, theme, placement and the people on
     /// its tabs are as when it was last drawn shows that drawing again
     /// (`TabBar::replays`); anything else draws it afresh.

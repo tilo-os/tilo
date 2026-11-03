@@ -35,6 +35,26 @@ impl std::fmt::Debug for Connect {
             .finish()
     }
 }
+
+impl NativeWorkspaceOwner {
+    /// Where `workspace`'s host is reached, with the device its enrollment
+    /// pins: the address a plane of the workspace dials that host's relay at,
+    /// decoded from the hint the host signed. `None` while the workspace is
+    /// not held here or its enrollment names no iroh address.
+    #[must_use]
+    pub fn host_addr(&self, workspace: WorkspaceId) -> Option<([u8; 32], iroh::EndpointAddr)> {
+        let hint = self
+            .with_current(workspace, |view| Ok(view.transport_hint()?.clone()))
+            .ok()?;
+        let (payload, _) =
+            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+                &hint,
+            )
+            .ok()?;
+        Some((hint.host.device_public_key, payload.endpoint_addr))
+    }
+}
+
 impl Connect {
     /// # Errors
     /// `workspace` has no committed enrollment.

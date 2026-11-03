@@ -28,7 +28,11 @@ pub(crate) struct CollSeen {
     pub coll: Rc<CollRef>,
     /// The collection's resource, as [`crate::value::ResourceRef::id_string`] writes it.
     pub resource: String,
+    /// How long it is: the most it can hold while its filter checks items one by one as it
+    /// reads them.
     pub len: Option<usize>,
+    /// How many items a view counted it as holding, where it read the count to show it.
+    pub count: Option<usize>,
     pub first: End,
     pub last: End,
     pub at: Vec<(usize, Rc<str>)>,
@@ -45,6 +49,7 @@ impl CollSeen {
             coll: Rc::clone(coll),
             resource: coll.target.id_string(),
             len: None,
+            count: None,
             first: End::Unread,
             last: End::Unread,
             at: Vec::new(),
@@ -78,6 +83,15 @@ impl CollSeen {
         if self.len.is_some_and(|len| len != listing.len()) {
             return false;
         }
+        // A count is exact where the listing knows its length without reading its run: one that
+        // checks its entries as it reads them was read to its end to say the count, and a
+        // listing that changed is read again rather than trusted.
+        if self
+            .count
+            .is_some_and(|count| !listing.len_is_exact() || count != listing.len())
+        {
+            return false;
+        }
         // This listing is another state of the store, and reads its run again. Where it holds
         // as many items as were seen but is not sure it has them all (a filter that checks
         // them one by one as it reads, [`Listing::len_is_exact`]), where its end is would cost
@@ -107,6 +121,7 @@ impl CollSeen {
             return;
         }
         self.len = self.len.or(other.len);
+        self.count = self.count.or(other.count);
         if matches!(self.first, End::Unread) {
             self.first = other.first;
         }
@@ -201,6 +216,7 @@ fn lit_of_value(v: &Value) -> Option<tilolang::pred::Lit> {
 /// One read of a collection, recorded as what it saw.
 enum Read {
     Len(usize),
+    Count(usize),
     First(Option<Rc<str>>),
     Last(Option<Rc<str>>),
     At(usize, Rc<str>),
@@ -262,6 +278,7 @@ impl Core {
         }
         match read {
             Read::Len(len) => seen.len = Some(len),
+            Read::Count(count) => seen.count = Some(count),
             Read::First(id) => seen.first = End::Read(id),
             Read::Last(id) => seen.last = End::Read(id),
             Read::At(i, id) => {
@@ -392,13 +409,56 @@ impl Core {
         }))
     }
 
-    /// How many items `coll` has: what the listing knows of its length without reading it, the
-    /// most it can have while it still checks items one by one as it reads them
-    /// ([`crate::store::Listing::len_is_exact`]).
+    /// How long `coll` is: what its listing knows of its length without reading it. A filter
+    /// that checks items one by one as it reads them knows only the most it can hold, and says
+    /// that rather than claim it exact ([`crate::store::Listing::len_is_exact`]).
     pub(crate) fn coll_len(&self, coll: &Rc<CollRef>) -> HResult<usize> {
-        let len = self.coll_listing(coll)?.len();
+        let listing = self.coll_listing(coll)?;
+        let len = listing.len();
         self.saw(coll, Read::Len(len), len);
         Ok(len)
+    }
+
+    /// How many items `coll` holds: its listing's count, read to its end where a filter checks
+    /// its items as it reads them ([`crate::store::Listing::count`]). A view pays what the
+    /// collection shows for it, so it counts a collection it draws as a whole, never the
+    /// workspace a filter picks from.
+    ///
+    /// What it depends on is the count itself: it is another one when the listing's length is,
+    /// which the store answers without reading the run, and a listing that has to check its
+    /// entries again is read again rather than trusted.
+    pub(crate) fn coll_count(&self, coll: &Rc<CollRef>) -> HResult<usize> {
+        let listing = self.coll_listing(coll)?;
+        let count = listing.count();
+        self.saw(coll, Read::Count(count), listing.len());
+        Ok(count)
+    }
+
+    /// [`Core::coll_len`] or [`Core::coll_count`], as an import asks for one or the other.
+    pub(crate) fn coll_len_or_count(
+        &self,
+        coll: &Rc<CollRef>,
+        count: bool,
+    ) -> HResult<usize> {
+        if count {
+            self.coll_count(coll)
+        } else {
+            self.coll_len(coll)
+        }
+    }
+
+    /// Record that a view read the whole of `coll`: it depends on the collection's field, or,
+    /// for a filtered or ordered one, on the items it saw, each of which decides whether it is
+    /// in or where.
+    fn read_whole(&self, coll: &Rc<CollRef>, listing: &Listing) {
+        if coll.derived() {
+            self.saw(coll, Read::Len(listing.len()), listing.len());
+            for (i, id) in listing.iter().enumerate() {
+                self.saw(coll, Read::At(i, id), listing.len());
+            }
+        } else if let Some(vs) = self.frames.borrow_mut().view_mut() {
+            vs.reads.push((coll.target.id_string(), coll.field.clone()));
+        }
     }
 
     /// A reference to the item at `index` of `coll`.
@@ -437,6 +497,26 @@ impl Core {
         Ok(value)
     }
 
+    /// The first `n` items of `coll`, as references: the items a `take` shows, and no more, so
+    /// a view that walks a collection up to a count reads that many of its items, not all.
+    ///
+    /// # Errors
+    ///
+    /// A message when the store cannot list the collection.
+    pub(crate) fn coll_take(&self, coll: &Rc<CollRef>, n: usize) -> Result<Vec<Value>, String> {
+        let listing = self.coll_listing(coll)?;
+        let len = listing.len();
+        let mut out = Vec::new();
+        for i in 0..n {
+            let Some(id) = listing.get(i) else {
+                break;
+            };
+            self.saw(coll, Read::At(i, Rc::clone(&id)), len);
+            out.push(self.item_ref(coll, &id));
+        }
+        Ok(out)
+    }
+
     /// Every item of `coll`, as references: the whole collection, which a view running now then
     /// depends on.
     ///
@@ -445,14 +525,7 @@ impl Core {
     /// A message when the store cannot list the collection.
     pub(crate) fn coll_items(&self, coll: &Rc<CollRef>) -> Result<Vec<Value>, String> {
         let listing = self.coll_listing(coll)?;
-        if coll.derived() {
-            self.saw(coll, Read::Len(listing.len()), listing.len());
-            for (i, id) in listing.iter().enumerate() {
-                self.saw(coll, Read::At(i, id), listing.len());
-            }
-        } else if let Some(vs) = self.frames.borrow_mut().view_mut() {
-            vs.reads.push((coll.target.id_string(), coll.field.clone()));
-        }
+        self.read_whole(coll, &listing);
         Ok(listing.iter().map(|id| self.item_ref(coll, &id)).collect())
     }
 

@@ -1651,7 +1651,6 @@ impl Widget for MessageReader {
         if let Some(body) = self.active.and_then(|id| self.bodies.get_mut(&id)) {
             body.input.set_focus(focused && !self.html.is_focused());
         }
-        self.dirty = true;
     }
 
     fn is_focused(&self) -> bool {

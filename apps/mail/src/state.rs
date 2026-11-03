@@ -728,7 +728,6 @@ impl MailState {
         self.all_inboxes = false;
         // The folders show the chosen account's mail.
         self.mailbox.set_account(self.accounts.active_config());
-        self.dirty = true;
     }
 
     pub fn toggle_account_collapsed(&mut self, idx: usize) {
@@ -908,7 +907,6 @@ impl MailState {
             self.bulk_selection.clear();
             self.selecting_all = false;
         }
-        self.dirty = true;
     }
 
     /// Toggle one already-visible loaded message in the local bulk selection.
@@ -1189,7 +1187,6 @@ impl MailState {
                 read,
             }),
         );
-        self.dirty = true;
     }
 
     /// Toggle a message's star through the action path.

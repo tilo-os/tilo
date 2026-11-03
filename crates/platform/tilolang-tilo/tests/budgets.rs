@@ -49,11 +49,16 @@ fn apps() -> PathBuf {
 }
 
 fn bench(app: &str) -> Vec<Record> {
+    bench_at(app, vec![SMALL, LARGE], 3)
+}
+
+/// The bench of `app` over workspaces of `sizes` items, `samples` changes each.
+fn bench_at(app: &str, sizes: Vec<usize>, samples: usize) -> Vec<Record> {
     let config = BenchConfig {
         package: apps().join(app),
-        sizes: vec![SMALL, LARGE],
-        // The first change apart (see `Work::first_of_record`), two steady ones.
-        samples: 3,
+        sizes,
+        // The first change apart (see `Work::first_of_record`), the rest steady ones.
+        samples,
         idle: Duration::ZERO,
         // The engine the suite runs on (`TILOLANG_ENGINE`).
         engine: tilolang_runtime::configured(),
@@ -225,6 +230,46 @@ fn the_runtime_does_the_work_of_what_it_shows(app: &str) {
 #[test]
 fn notes_does_the_work_of_what_it_shows() {
     the_runtime_does_the_work_of_what_it_shows("notes");
+}
+
+/// Typing in a notebook runs the views that read what was typed, and no others: a key costs
+/// the same from the first note to ten thousand.
+#[test]
+fn a_key_reruns_the_same_views_whatever_the_notebook_holds() {
+    let records = bench_at("notes", vec![1, 200, LARGE], 2);
+    let work = |size: &str| {
+        let record = find(&records, "keystroke", size)
+            .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
+        Work::of_record(record).unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
+    };
+    let (one, some, many) = (work("1"), work("200"), work("10k"));
+    let mut misses = Vec::new();
+    let at = |work: Work| shown(work);
+    for ((name, many), (_, some), (_, one)) in at(many)
+        .into_iter()
+        .zip(at(some))
+        .zip(at(one))
+        .map(|((a, b), c)| (a, b, c))
+    {
+        // The views' work, and what they read. Index reads are the store deriving a change
+        // into its columns, held below from 200 up: an only note is a shape of its own.
+        if name == "index_fields" {
+            if some != many {
+                misses.push(format!("{name}: {some} at 200 notes, {many} at 10k"));
+            }
+            continue;
+        }
+        if one != some || one != many {
+            misses.push(format!(
+                "{name}: {one} at 1 note, {some} at 200, {many} at 10k"
+            ));
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "a key does more work in a larger notebook:\n{}",
+        misses.join("\n")
+    );
 }
 
 #[test]

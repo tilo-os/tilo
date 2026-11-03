@@ -1,13 +1,13 @@
 //! Where a pointer is, said relative to what it is over, so every viewer
 //! places it in their own layout.
 //!
-//! People in one room rarely share a screen size: the same window is wider
+//! People in one workspace rarely share a screen size: the same window is wider
 //! on one display than another, and each viewer scrolls a strip on their own.
 //! A point in one page's surface pixels lands somewhere else on every other
 //! page. A pointer therefore travels relative to a window, named by the
 //! record it shows, which every member names alike: a point within the
 //! window it is over, or, over the empty desktop, a point beside the nearest
-//! window. Strips are no common reference: where a room's layout is personal,
+//! window. Strips are no common reference: where a workspace's layout is personal,
 //! every member's strips are their own, with ids of their own. Only on a
 //! desk showing no window at all does a pointer fall back to the strip's own
 //! coordinates, which a member showing the same strip places. Each viewer
@@ -238,7 +238,7 @@ mod tests {
         }
     }
 
-    /// One room on a wide screen and a narrow one whose layout is personal:
+    /// One workspace on a wide screen and a narrow one whose layout is personal:
     /// the same records' windows at other places and sizes, on strips of
     /// each member's own, with ids of their own.
     fn wide() -> PointerLayout {

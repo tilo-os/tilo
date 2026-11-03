@@ -1,10 +1,10 @@
 //! An agent's presence in a workspace: who it shows itself as and where it
-//! acts, said on the workspace's presence
-//! ([`neighbour_wire::NeighbourMsg::AppPresenceV2`]) the way every device
-//! says its own, so every desktop draws it beside the people.
+//! acts, said on the workspace's presence track
+//! ([`collab_types::presence::Presence`]) the way every device says its own,
+//! so every desktop draws it beside the people.
 
 use collab_types::PeerPresencePayload;
-use collab_types::presence::{ShellPresence, ShellSelection, ShellWindow};
+use collab_types::presence::{DESKTOP_APP, Presence, ShellPresence, ShellSelection, ShellWindow};
 use tilo_browser_peer::PeerHandle;
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
 
@@ -52,53 +52,82 @@ fn window(focus: &LiveRecord) -> ShellWindow {
     }
 }
 
-/// Say `view` in `workspace` on `peer`'s session, as the device `device`: one
-/// presence frame, the way every device says its own.
-pub fn say(
-    peer: &PeerHandle,
-    device: &[u8; 32],
-    workspace: &str,
-    workspace_id: u64,
-    view: ShellPresence,
-) {
-    let message = neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(device),
-        workspace,
-        neighbour_wire::workspace_key(workspace),
-        PeerPresencePayload::Shell(Box::new(view)),
-    );
-    let body = match postcard::to_stdvec(&message) {
-        Ok(body) => body,
-        Err(error) => {
-            tracing::warn!(%error, "agent: presence out of bounds");
-            return;
-        }
-    };
-    if let Err(error) = peer.publish_presence(workspace_id, vec![body]) {
+/// Say `view` in `workspace` on `peer`'s session, as the device that session
+/// is: one presence frame on the workspace's plane, the way every device
+/// says its own.
+pub fn say(peer: &PeerHandle, workspace: &str, workspace_id: u64, view: ShellPresence) {
+    let frame = Presence::desktop(workspace, PeerPresencePayload::Shell(Box::new(view)));
+    if let Err(error) = peer.publish_presence(workspace_id, vec![frame]) {
         tracing::warn!(%error, "agent: its presence did not reach the workspace");
     }
 }
 
-/// Another member's view of itself, when `body` (a postcard
-/// `NeighbourMsg` the host stamped with its device) is the shell's presence
-/// of `workspace`.
+/// Another member's view of itself, when `body` is the shell's presence of
+/// `workspace`.
 #[must_use]
 pub fn heard(workspace: &str, body: &[u8]) -> Option<ShellPresence> {
-    let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
-    let neighbour_wire::NeighbourMsg::AppPresenceV2 {
-        app_id,
-        cluster_id,
-        presence,
-        ..
-    } = message
-    else {
-        return None;
-    };
-    if app_id != neighbour_wire::DESKTOP_PRESENCE_APP || cluster_id != workspace {
+    let frame = Presence::decode(body)?;
+    if frame.app != DESKTOP_APP || frame.cluster != workspace {
         return None;
     }
-    match presence.payload {
+    match frame.payload {
         PeerPresencePayload::Shell(shell) => Some(*shell),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+
+    const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+
+    fn view(label: &str) -> ShellPresence {
+        ShellPresence {
+            seq: 1,
+            sent_at_ms: 1,
+            label: label.to_owned(),
+            agent: true,
+            colour: "#7c3aed".into(),
+            activity: Some("New note".into()),
+            place: None,
+            size: [1440, 900],
+            windows: Vec::new(),
+            selection: None,
+            chat: None,
+            reaction: None,
+        }
+    }
+
+    /// The view an agent says of itself is a desktop presence frame, and the
+    /// frame a member hears is that view: the agent speaks the same presence
+    /// a person's devices do.
+    #[test]
+    fn an_agents_view_reads_back_from_its_frame() {
+        let said = view("Writer helper");
+        let frame = Presence::desktop(
+            WORKSPACE,
+            PeerPresencePayload::Shell(Box::new(said.clone())),
+        );
+        let body = frame.encode().expect("a presence frame encodes");
+        assert_eq!(heard(WORKSPACE, &body), Some(said));
+        assert_eq!(heard("07848ffe-1898-4f72-8419-0b54c93e6dad", &body), None);
+    }
+
+    /// A person's pointer on a workspace is not a view of a desk: the agent
+    /// reads no shell out of it.
+    #[test]
+    fn a_pointer_is_not_a_view_of_a_desk() {
+        let body = Presence::pointing(WORKSPACE, 3, 1.0, 2.0)
+            .encode()
+            .expect("a presence frame encodes");
+        assert_eq!(heard(WORKSPACE, &body), None);
     }
 }

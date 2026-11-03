@@ -9,6 +9,7 @@
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value as AmValue};
 use tilo_resource::collection::{collection_entries, in_stored_order, read_entry};
+use tilolang::source::PackageSource;
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
@@ -228,11 +229,12 @@ fn every_item_of_an_older_record_reads_by_its_id_where_it_was_and_nothing_is_rew
 /// Invoke `name` of `app` with `args`, as `ada`, and commit it.
 fn call(replica: &mut Replica, app: &str, name: &str, args: Vec<Value>) -> Value {
     let meta = replica.host.package(app).unwrap().meta;
+    // The actions code may call, as a program does: an internal one (a move the outline's own
+    // drag runs) is never offered in a list, and still callable by name.
     let id = meta
-        .actions
-        .iter()
+        .callable_actions()
         .find(|a| a.name == name)
-        .unwrap()
+        .unwrap_or_else(|| panic!("{name} is not an action `{app}` may call"))
         .id
         .clone();
     let outcome = replica
@@ -287,13 +289,18 @@ fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
     let before = listed(&replica, &list, &items_field);
     assert!(before.len() >= 3);
     let item = |id: &str| Value::resource(&list.item(id, item_ty.clone()));
-    // The last item, moved after the first.
+    // The last item, moved to stand where the second one stands.
     let moving = before.last().unwrap().clone();
     call(
         &mut replica,
         app,
-        "move",
-        vec![Value::resource(&list), item(&moving), item(&before[0])],
+        "move_to",
+        vec![
+            Value::resource(&list),
+            item(&moving),
+            Value::none(),
+            Value::some(item(&before[1])),
+        ],
     );
     let moved = listed(&replica, &list, &items_field);
     assert_eq!(moved[1], moving, "{moved:?}");
@@ -328,7 +335,7 @@ fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
     call(
         &mut replica,
         app,
-        "add",
+        "new_task",
         vec![Value::resource(&list), Value::text("new")],
     );
     let added = listed(&replica, &list, &items_field);
@@ -582,12 +589,11 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
 /// id Todo's records were written under.
 fn todo_as_tasks() -> (String, &'static str) {
     let (source, ids) = app!("tasks");
-    let header = source.lines().next().unwrap();
-    assert!(
-        header.starts_with("app so.tilo.lang.tasks ")
-            && header.contains("previously: so.tilo.lang.todo"),
-        "{header}"
-    );
+    // Read as the compiler reads it: the header's wrapping is the formatter's
+    // business, what it declares is not.
+    let (app, previously, _) = PackageSource::single(source).header_with_previously();
+    assert_eq!(app.as_deref(), Some("so.tilo.lang.tasks"), "{source}");
+    assert_eq!(previously, vec!["so.tilo.lang.todo".to_owned()], "{source}");
     (source.to_owned(), ids)
 }
 
@@ -637,14 +643,19 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
     call(
         &mut replica,
         app,
-        "move",
-        vec![Value::resource(&list), item(&items[2]), item(&items[0])],
+        "move_to",
+        vec![
+            Value::resource(&list),
+            item(&items[2]),
+            Value::none(),
+            Value::some(item(&items[1])),
+        ],
     );
     assert_eq!(listed(&replica, &list, &items_field)[1], items[2]);
     call(
         &mut replica,
         app,
-        "add",
+        "new_task",
         vec![Value::resource(&list), Value::text("after the rename")],
     );
     assert_eq!(listed(&replica, &list, &items_field).len(), items.len() + 1);

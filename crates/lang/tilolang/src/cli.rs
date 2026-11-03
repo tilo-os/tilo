@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use crate::diag::{Diagnostic, diagnostics_json};
 use crate::ids::{OsEntropy, SeededEntropy};
-use crate::lexer::plain_comments;
 use crate::meta::PackageMeta;
 use crate::package::parse_package_files;
 use crate::print::print_file;
@@ -323,9 +322,6 @@ fn build(dir: &Path, o: &Options) -> Result<bool, String> {
 pub struct Formatted {
     /// `(path, old text, canonical text)` for each file.
     pub files: Vec<(String, String, String)>,
-    /// Files with plain `//` comments, which `fmt` leaves alone: the canonical form has only
-    /// `///` doc comments, and rewriting would delete what someone wrote.
-    pub with_comments: Vec<(String, usize)>,
 }
 
 /// Formats a package's sources without writing anything.
@@ -334,10 +330,7 @@ pub struct Formatted {
 /// The package has syntax errors; they name their files.
 pub fn format_package(source: &PackageSource) -> Result<Formatted, Vec<Diagnostic>> {
     let parsed = parse_package_files(source)?;
-    let mut out = Formatted {
-        files: Vec::new(),
-        with_comments: Vec::new(),
-    };
+    let mut out = Formatted { files: Vec::new() };
     for file in parsed {
         let old = source
             .files
@@ -345,14 +338,7 @@ pub fn format_package(source: &PackageSource) -> Result<Formatted, Vec<Diagnosti
             .find(|f| f.path == file.path)
             .map(|f| f.text.clone())
             .unwrap_or_default();
-        let comments = plain_comments(&old);
-        if let Some(first) = comments.first() {
-            let mut d = Diagnostic::new("E000", *first, "");
-            d.locate(&old);
-            out.with_comments.push((file.path.clone(), d.line));
-            continue;
-        }
-        let new = print_file(file.header.as_ref(), &file.items);
+        let new = print_file(file.header.as_ref(), &file.items, &file.comments);
         out.files.push((file.path, old, new));
     }
     Ok(out)
@@ -368,18 +354,15 @@ fn fmt(dir: &Path, o: &Options) -> Result<bool, String> {
         }
     };
     let mut ok = true;
-    for (path, line) in &formatted.with_comments {
-        eprintln!(
-            "{path}:{line}: has `//` comments, which the canonical form drops; make them `///` doc comments on a declaration or remove them, then format again"
-        );
-        ok = false;
-    }
     for (path, old, new) in &formatted.files {
         if old == new {
             continue;
         }
         if o.check {
-            eprintln!("{path}: not in canonical form");
+            eprintln!(
+                "{path}: not in canonical form: run `tilolang fmt {}`",
+                dir.display()
+            );
             ok = false;
         } else {
             std::fs::write(path, new).map_err(|e| format!("{path}: {e}"))?;

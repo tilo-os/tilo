@@ -268,7 +268,7 @@ fn running_on(
         Arc::new(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        Rc::new(Phrases::new("en-US")),
+        &Phrases::new("en-US"),
         wake(),
     );
     host.add(hosted, Some(watched));
@@ -357,7 +357,7 @@ fn opened_from_own_copy_in(
         Arc::new(counter()),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        Rc::new(Phrases::new("en-US")),
+        &Phrases::new("en-US"),
         wake(),
     );
     host.add(hosted, Some(watched));

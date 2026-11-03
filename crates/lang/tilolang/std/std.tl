@@ -3,7 +3,7 @@
 /// same language any app has (action reflection, lenses, resource metadata, enum cases and
 /// events that carry their value), so an app that wants something else composes `ui.*`
 /// itself and loses nothing native.
-
+///
 /// A window that lists resources: the header holds its owner's actions, the primary one as
 /// the Primary button; each item is a row whose actions are on its context menu and its swipe,
 /// a destructive one undone rather than confirmed; with no items it says `empty` and offers
@@ -21,14 +21,15 @@ view list<R, T, S>(
     place: Text = "",
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty"),
-    row: (T) -> View
+    row: (T) -> View,
 ) {
     window query: Text = place
     let kind = meta(T)
     let offered = actions(of)
     let places = filters(T).filter(f -> f.toggle)
     let shown = items.matching(query)
-    let title = places.find(p -> p.query == query)?.label ?? if places.is_empty() { meta(of).title } else { everything }
+    let title = places.find(p -> p.query == query)?.label
+        ?? if places.is_empty() { meta(of).title } else { everything }
     // An empty list offers the primary action while nothing was made yet: on the place a
     // window starts on, or on all of the items. One another filter emptied says only that.
     let primary = if query == "" or query == place { offered.find(a -> a.primary) } else { .none }
@@ -38,7 +39,7 @@ view list<R, T, S>(
         overview_title: if kind.opens { .some(title) } else { .none },
         overview_count: if kind.opens { .some(shown.len()) } else { .none },
         title: if kind.opens { .none } else { .some(title) },
-        count: if kind.opens { .none } else { .some(shown.len()) }
+        count: if kind.opens { .none } else { .some(shown.len()) },
     ) {
         sidebar: {
             if not places.is_empty() {
@@ -47,7 +48,12 @@ view list<R, T, S>(
                         on select: set(query, "")
                     }
                     for p in places {
-                        ui.NavItem(p.query, p.label, icon: p.icon, count: .some(items.matching(p.query).len())) {
+                        ui.NavItem(
+                            p.query,
+                            p.label,
+                            icon: p.icon,
+                            count: .some(items.matching(p.query).len()),
+                        ) {
                             on select: set(query, p.query)
                         }
                     }
@@ -66,14 +72,18 @@ view list<R, T, S>(
         }
         overview: {
             if kind.opens {
-                std.rows(shown, empty, primary, kind.icon) { x -> row(x) }
+                std.rows(shown, empty, primary, kind.icon) { x ->
+                    row(x)
+                }
             }
         }
         content: {
             if kind.opens {
                 ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
             } else {
-                std.rows(shown, empty, primary, kind.icon) { x -> row(x) }
+                std.rows(shown, empty, primary, kind.icon) { x ->
+                    row(x)
+                }
             }
         }
     }
@@ -81,9 +91,11 @@ view list<R, T, S>(
 
 /// The items of a list as the rows of a column, or what it says while it has none. Give
 /// `group` and the list stands under a heading for each run of items it names, the heading held
-/// at the top while the person scrolls it (each item's day, written the platform's way); give
-/// `closed` and the items it is true of stand last, under `closed_title`, folded away until the
-/// person opens them.
+/// at the top while the person scrolls it (each item's day, written the platform's way); the
+/// items that name none stand under a heading of their own, never under the last group that
+/// names one; give `closed` and the items it is true of stand last, under `closed_title`,
+/// folded away until the person opens them. Give `parent` and the items stand as a tree: each
+/// indented under the item it is a subtask of, with a disclosure that folds its subtasks away.
 view rows<T>(
     items: List<T>,
     empty: Text,
@@ -92,7 +104,10 @@ view rows<T>(
     group: Option<(T) -> Option<Date>> = .none,
     closed: Option<(T) -> Bool> = .none,
     closed_title: Text = phrase("tilolang-done"),
-    row: (T) -> View
+    parent: Option<(T) -> Option<T>> = .none,
+    parent_title: Option<(T) -> Option<Text>> = .none,
+    progress: Option<(T) -> Option<Text>> = .none,
+    row: (T) -> View,
 ) {
     if items.is_empty() {
         if let a = primary {
@@ -103,20 +118,48 @@ view rows<T>(
             ui.EmptyState(empty, icon: icon)
         }
     } else {
+        // An item that names no group stands under a heading of its own, in the order the
+        // caller gave, rather than under the last group's heading.
+        let ungrouped: Option<Text> = if let g = group {
+            .some(phrase("tilolang-no-date"))
+        } else { .none }
         // The items done with stand last, under the one heading their group folds: a sort is
         // stable, so the order the caller gave holds among them and among the rest.
         let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
-        ui.VirtualList(selection_follows_focus: true, in_column: true, tail_title: .some(closed_title)) {
+        let nested = if let p = parent { true } else { false }
+        ui.VirtualList(
+            selection_follows_focus: true,
+            in_column: true,
+            tail_title: .some(closed_title),
+            tree: nested,
+            ungrouped_title: ungrouped,
+        ) {
             on select(x: T): open(x, front: false)
             on activate(x: T): open(x)
             for x in shown {
                 let offered = actions(x)
                 let heading: Option<Date> = if let g = group { g(x) } else { .none }
                 let tail = if let c = closed { c(x) } else { false }
-                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who, group: heading, tail: tail) {
+                let under: Option<T> = if let p = parent { p(x) } else { .none }
+                let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
+                let count: Option<Text> = if let c = progress { c(x) } else { .none }
+                ui.ListItem(
+                    item: x,
+                    presence: lenses(x).find(l -> not l.mine)?.who,
+                    group: heading,
+                    tail: tail,
+                    parent: under,
+                    parent_title: belongs,
+                    progress: count,
+                ) {
                     menu: {
                         for a in offered {
-                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
+                            ui.MenuItem(
+                                a.label,
+                                icon: a.icon,
+                                destructive: a.destructive,
+                                key: a.key,
+                            ) {
                                 on choose: a.run
                             }
                         }
@@ -140,9 +183,10 @@ view rows<T>(
 }
 
 /// Items as an outline, each item over its own to any depth, opened and closed where a person
-/// puts them, its row the one `row` draws. A move — a drag, `Tab` and `Shift-Tab`, the
-/// accessibility move actions — is reported with the item it lands under and the item it lands
-/// before, and `place` puts it in the one place they name:
+/// puts them, its row the one `row` draws. The outline is named `name` for a reader; the name
+/// is the page's, not a row over the items, so the page states it once. A move — a drag, `Tab`
+/// and `Shift-Tab`, the accessibility move actions — is reported with the item it lands under
+/// and the item it lands before, and `place` puts it in the one place they name:
 /// `(moved, .none, .none)` is the end of the top level, `(moved, .some(x), .none)` the end of
 /// `x`'s own, and `(moved, .none, .some(x))` where `x` stands. One step, so two people moving
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. An item whose
@@ -158,12 +202,18 @@ view outline<T>(
     toggled: (T) -> Action,
     icon: Option<Text> = .none,
     fill: Bool = true,
-    row: (T) -> View
+    row: (T) -> View,
 ) {
     if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
     } else {
-        ui.TreeView(name: .some(name), fill: fill, reorder: true, tab_indents: true) {
+        ui.TreeView(
+            name: .some(name),
+            fill: fill,
+            reorder: true,
+            tab_indents: true,
+            hide_root: true,
+        ) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
                 let offered = actions(x)
@@ -173,7 +223,12 @@ view outline<T>(
                     on check: toggled(x)
                     menu: {
                         for a in offered {
-                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
+                            ui.MenuItem(
+                                a.label,
+                                icon: a.icon,
+                                destructive: a.destructive,
+                                key: a.key,
+                            ) {
                                 on choose: a.run
                             }
                         }
@@ -188,17 +243,14 @@ view outline<T>(
 }
 
 /// A header's controls, as native headers place them: the sort menu and search first, then
-/// `extra`, then each action in the app's order — one with an icon as an icon button (drawn on
-/// while the state it toggles is), one without as a button labelled with the name the app gave
-/// it, as a desktop bar's menus name it — and the primary action last as the labelled Primary
-/// button. The window's header lays them out: what does not fit gives way to where the system
+/// `extra`, then the window's actions — its primary action as the labelled Primary button, a
+/// command the app marked `frequent` as a button of its own, and all the rest behind the
+/// header's one menu, as a desktop bar holds them. The primary action comes first among
+/// them so that a narrow window gives way with the menus, never with the one main thing to
+/// do. The window's header lays them out: what does not fit gives way to where the system
 /// lists the window's actions (the desktop bar's window menu), else behind the header's own
 /// door, so every action stays reachable at every width.
-view header<S>(
-    offered: List<host.Action>,
-    sort: Option<State<S>> = .none,
-    extra: View
-) {
+view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra: View) {
     if let s = sort {
         ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
             for c in cases(S) {
@@ -211,19 +263,38 @@ view header<S>(
     ui.SearchButton()
     extra
     for a in offered {
-        if not a.primary and a.icon != .none {
-            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
+        if a.primary {
+            ui.Button(a.label, icon: a.icon, role: .primary, key: a.key) {
                 on press: a.run
             }
-        } else if not a.primary {
+        }
+    }
+    for a in offered {
+        if a.frequent and not a.primary and a.icon != .none {
+            ui.Button(
+                a.label,
+                icon: a.icon,
+                icon_only: true,
+                toggled: a.on == .some(true),
+                key: a.key,
+            ) {
+                on press: a.run
+            }
+        } else if a.frequent and not a.primary {
             ui.Button(a.label, toggled: a.on == .some(true), key: a.key) {
                 on press: a.run
             }
         }
     }
     for a in offered {
-        if a.primary {
-            ui.Button(a.label, icon: a.icon, role: .primary, key: a.key) {
+        if not a.primary and not a.frequent {
+            ui.Button(
+                a.label,
+                icon: a.icon,
+                toggled: a.on == .some(true),
+                key: a.key,
+                in_menu: true,
+            ) {
                 on press: a.run
             }
         }
@@ -251,9 +322,18 @@ view document<R>(of: R, content: View) {
 
 /// A window that is a page of `of`: its content at the readable measure, or as a `canvas` at
 /// the window's full width, scrolling under a header of `of`'s actions and `header`, the
-/// page's own controls. A page with nothing on it (`empty`) says so and offers its primary
-/// action.
-view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, content: View) {
+/// page's own controls. A `fill` page is exactly the window's height and scrolls inside its
+/// own parts, which is what a board's lanes need; a page that grows with what it holds (a grid
+/// of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so and offers
+/// its primary action.
+view page<R>(
+    of: R,
+    canvas: Bool = false,
+    fill: Bool = false,
+    empty: Bool = false,
+    header: View,
+    content: View,
+) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of)) {
@@ -272,8 +352,8 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
             } else {
                 ui.Scroll {
                     if canvas {
-                        page(full) {
-                            stack(gap: .section) {
+                        page(full, fill: fill) {
+                            stack(gap: .section, fill: fill) {
                                 content
                             }
                         }
@@ -301,7 +381,13 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
 /// `unread` names the first item the person has not seen (`first_unseen(of)`, or `.none`): the
 /// list draws the "New messages" divider over it, keeps the reader where they are as items
 /// arrive, and offers the way back to it, or to what is new, while they read history.
-view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer: View, row: (T) -> View) {
+view transcript<R, T>(
+    of: R,
+    items: List<T>,
+    unread: Option<T> = .none,
+    composer: View,
+    row: (T) -> View,
+) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of))
@@ -320,7 +406,12 @@ view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
                             menu: {
                                 for a in offered {
-                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
+                                    ui.MenuItem(
+                                        a.label,
+                                        icon: a.icon,
+                                        destructive: a.destructive,
+                                        key: a.key,
+                                    ) {
                                         on choose: a.run
                                     }
                                 }
@@ -369,7 +460,11 @@ view history<R>(of: R) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
                 let single = s.versions.len() == 1
-                let what = if let run = s.task { run.title } else if let v = s.versions.last() { if v.description == "" { v.what } else { v.description } } else { "" }
+                let what = if let run = s.task {
+                    run.title
+                } else if let v = s.versions.last() {
+                    if v.description == "" { v.what } else { v.description }
+                } else { "" }
                 stack(gap: .related) {
                     row(gap: .related, align: .center) {
                         avatar(s.who)
@@ -377,7 +472,11 @@ view history<R>(of: R) {
                             ui.Text(s.who.name(), role: .label)
                             ui.Text(what, role: .caption, secondary: true)
                             if not single {
-                                ui.Text(phrase("tilolang-history-changes", count: s.versions.len()), role: .caption, secondary: true)
+                                ui.Text(
+                                    phrase("tilolang-history-changes", count: s.versions.len()),
+                                    role: .caption,
+                                    secondary: true,
+                                )
                             }
                         }
                         spacer()
@@ -405,7 +504,10 @@ view history<R>(of: R) {
                         for v in s.versions {
                             stack(gap: .tight) {
                                 row(gap: .related, align: .center) {
-                                    ui.Text(if v.description == "" { v.what } else { v.description }, role: .caption)
+                                    ui.Text(
+                                        if v.description == "" { v.what } else { v.description },
+                                        role: .caption,
+                                    )
                                     spacer()
                                     ui.Time(v.at, role: .caption, secondary: true)
                                     if v.mine {

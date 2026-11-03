@@ -739,8 +739,16 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
         let list = w.create("Tasks");
-        let first = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
-        let second = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("eggs")]));
+        let first = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("milk")],
+        ));
+        let second = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("eggs")],
+        ));
         let remove = |item: &ResourceRef| {
             format!(
                 "button(\"Remove\", on: tasks.remove(@tasks.Tasks:{}, @tasks.Task:{}))",
@@ -770,7 +778,11 @@ mod cases {
 
         // Trusting the principal covers every block it writes, from the next one on.
         w.auth.trust_principal("person:stranger");
-        let third = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("bread")]));
+        let third = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("bread")],
+        ));
         post(&w, &apps, &conv, "person:stranger", "", &remove(&third));
         let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(chat_view.tree());
@@ -787,7 +799,7 @@ mod cases {
         w.rt.history(&list.doc)
             .unwrap()
             .iter()
-            .filter(|n| n.action == apps.todo.action("add"))
+            .filter(|n| n.action == apps.todo.action("new_task"))
             .count()
     }
 
@@ -799,7 +811,10 @@ mod cases {
         let (_, conv) = start_chat(&wa, &apps);
         let list = wa.create("Tasks");
         wa.auth.trust_principal("agent:helper");
-        let src = format!("tasks.add(@tasks.Tasks:{}, \"bread\")", list.id_string());
+        let src = format!(
+            "tasks.new_task(@tasks.Tasks:{}, \"bread\")",
+            list.id_string()
+        );
         let message = post(&wa, &apps, &conv, "agent:helper", "", &src);
 
         assert_eq!(
@@ -812,7 +827,7 @@ mod cases {
             .read_invocation(&invocation_of(&wa, &apps, &message))
             .unwrap();
         assert_eq!(record.state, "done");
-        assert_eq!(record.name, "add");
+        assert_eq!(record.name, "new_task");
         assert_eq!(record.author, Principal::new("agent:helper"));
 
         let card_state = |w: &World| {
@@ -846,7 +861,10 @@ mod cases {
         let (_, conv) = start_chat(&w, &apps);
         let list = w.create("Tasks");
         w.auth.trust_principal("agent:helper");
-        let src = format!("tasks.add(@tasks.Tasks:{}, \"spam\")", list.id_string());
+        let src = format!(
+            "tasks.new_task(@tasks.Tasks:{}, \"spam\")",
+            list.id_string()
+        );
 
         let mallory = Principal::new("person:mallory");
         let message = post(&w, &apps, &conv, "person:mallory", "", &src);
@@ -1120,7 +1138,8 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false)] {
-            let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
+            let item =
+                returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }
@@ -1202,7 +1221,7 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.rt.create_root("Tasks").unwrap();
         let add = |title: &str| {
-            returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(title)]))
+            returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(title)]))
         };
         add("Record the demo video");
         add("Update the changelog");
@@ -1292,8 +1311,11 @@ mod cases {
     }
 
     fn add_todo(m: &Morning, apps: &Apps, title: &str, done: bool) {
-        let item =
-            returned_ref(m.w.call(&apps.todo, "add", vec![res(&m.list), Value::text(title)]));
+        let item = returned_ref(m.w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&m.list), Value::text(title)],
+        ));
         if done {
             m.w.call(&apps.todo, "check", vec![res(&item)]);
         }
@@ -1408,14 +1430,19 @@ mod cases {
         let m = morning(&apps);
         add_todo(&m, &apps, "a", false);
         add_todo(&m, &apps, "b", false);
-        // A done task with an unfinished step is not finished either.
+        // A step put under a done task opens it again: there is work under it now.
         let parent =
-            returned_ref(m.w.call(&apps.todo, "add", vec![res(&m.list), Value::text("c")]));
+            returned_ref(m.w.call(&apps.todo, "new_task", vec![res(&m.list), Value::text("c")]));
         m.w.call(&apps.todo, "check", vec![res(&parent)]);
         m.w.call(
             &apps.todo,
             "add_subtask",
             vec![res(&m.list), res(&parent), Value::text("c.1")],
+        );
+        assert_eq!(
+            m.w.rt.read(&parent, "done").unwrap(),
+            Value::Bool(false),
+            "the task opened again for its step"
         );
 
         let flow = apps.today.flow("morning_cleanup");
@@ -1446,7 +1473,7 @@ mod cases {
         assert_eq!(
             items(&m.w, &m.list, "items").len(),
             4,
-            "nothing went: the done task keeps its open step"
+            "nothing went: the task opened again for its step"
         );
         let notes = items(&m.w, &m.notebook, "items");
         assert_eq!(notes.len(), 1, "the note still says how the morning went");
@@ -1517,7 +1544,7 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for t in ["a", "b"] {
-            w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]);
+            w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]);
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
@@ -1562,12 +1589,20 @@ mod cases {
     fn an_action_whose_requirement_fails_is_not_offered_and_is_refused_with_its_reason() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("Tasks");
-        let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
+        // The workspace's one Tasks root: a check reads its tasks from it, as the app does.
+        let list = w.rt.create_root("Tasks").unwrap();
+        let item = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("milk")],
+        ));
+        // The header offers a command as a button or, when it is not the window's main thing
+        // and the app does not mark it frequent, in the one menu the rest go behind.
         let labels = |v: &ViewInstance| -> Vec<String> {
-            of_kind(v.tree(), "ui.Button")
+            ["ui.Button", "ui.MenuItem"]
                 .iter()
-                .map(|button| text_prop(button, "label"))
+                .flat_map(|kind| of_kind(v.tree(), kind))
+                .map(|node| text_prop(node, "label"))
                 .collect()
         };
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
@@ -1586,6 +1621,20 @@ mod cases {
             refused.to_string().contains("Nothing is done yet"),
             "{refused}"
         );
+        // A task's step goes under it while it is open: nothing is done still.
+        w.call(
+            &apps.todo,
+            "add_subtask",
+            vec![res(&list), res(&item), Value::text("milk the cow")],
+        );
+        v.poll_patches().unwrap();
+        assert!(
+            !labels(&v).contains(&"Clear done".to_owned()),
+            "an open step under an open task is nothing done: {:?}",
+            labels(&v)
+        );
+        // Checking the task off takes the step with it, so Clear done is offered exactly when
+        // a clear takes something.
         w.call(&apps.todo, "check", vec![res(&item)]);
         v.poll_patches().unwrap();
         assert!(
@@ -1593,21 +1642,16 @@ mod cases {
             "once an item is done, Clear done is offered: {:?}",
             labels(&v)
         );
-        // A step left open under a done task is unfinished work: a clear would take nothing,
-        // so it is not offered.
-        w.call(
-            &apps.todo,
-            "add_subtask",
-            vec![res(&list), res(&item), Value::text("milk the cow")],
+        let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
+        assert!(
+            matches!(cleared, InvokeOutcome::Done(Value::Int(2))),
+            "the task and its step went: {cleared:?}"
         );
-        let step = items(&w, &list, "items")
-            .into_iter()
-            .find(|i| text_of(&w, i, "title") == "milk the cow")
-            .expect("the step went under the task");
+        assert!(items(&w, &list, "items").is_empty());
         v.poll_patches().unwrap();
         assert!(
             !labels(&v).contains(&"Clear done".to_owned()),
-            "a done task with an open step is not finished: {:?}",
+            "with nothing left to clear it is offered no more: {:?}",
             labels(&v)
         );
         let refused =
@@ -1615,17 +1659,10 @@ mod cases {
                 &me(),
                 (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
             )
-            .expect_err("clear_done is refused while nothing is finished");
+            .expect_err("clear_done is refused again once nothing is done");
         assert!(
             refused.to_string().contains("Nothing is done yet"),
             "{refused}"
-        );
-        w.call(&apps.todo, "check", vec![res(&step)]);
-        v.poll_patches().unwrap();
-        assert!(
-            labels(&v).contains(&"Clear done".to_owned()),
-            "with the step done too, Clear done is offered again: {:?}",
-            labels(&v)
         );
     }
 
@@ -1635,7 +1672,8 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
-            let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
+            let item =
+                returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }

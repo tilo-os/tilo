@@ -385,6 +385,9 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        // What it paints is the files state's, which the app's other parts
+        // move: only current until the next input.
+        ui::outside_paint::note();
         self.with_state(|state, chrome| {
             state.poll_share_result();
             state.poll_history_result();

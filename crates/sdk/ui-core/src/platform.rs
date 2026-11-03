@@ -325,6 +325,34 @@ impl HostShortcut {
         }
     }
 
+    /// The host service an action is, by the action's id: a row that lists one
+    /// of the toolkit's own commands shows the chord pressing it means, read
+    /// from the same table the key press resolves through.
+    #[must_use]
+    pub fn of_action(id: &str) -> Option<Self> {
+        match id {
+            "undo" => Some(Self::Undo),
+            "redo" => Some(Self::Redo),
+            "history" => Some(Self::History),
+            _ => None,
+        }
+    }
+
+    /// The picture a host service is drawn with where a row lists it, beside
+    /// the chord in the same table: an undo is an arrow turning back, whichever
+    /// app lists it.
+    #[must_use]
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Self::Search => Icon::Search,
+            Self::History => Icon::History,
+            Self::Undo => Icon::Undo2,
+            Self::Redo => Icon::Redo2,
+            Self::Sidebar => Icon::PanelLeft,
+        }
+    }
+
     /// Which host service a command-modified character means. Besides each
     /// platform's own spelling, Ctrl+Shift+Z and Ctrl+Y both redo off macOS.
     pub fn resolve(conventions: PlatformConventions, character: &str, shift: bool) -> Option<Self> {
@@ -402,6 +430,25 @@ mod tests {
         assert_eq!(
             HostShortcut::resolve(mac, "y", false),
             Some(HostShortcut::History)
+        );
+    }
+
+    #[test]
+    fn the_toolkits_own_actions_are_listed_on_their_own_chords() {
+        let linux = PlatformConventions::new(Platform::Linux);
+        for (id, service) in [
+            ("undo", HostShortcut::Undo),
+            ("redo", HostShortcut::Redo),
+            ("history", HostShortcut::History),
+        ] {
+            let shortcut = HostShortcut::of_action(id).expect(id);
+            assert_eq!(shortcut, service);
+            assert_eq!(shortcut.shortcut(linux), service.shortcut(linux));
+        }
+        assert_eq!(
+            HostShortcut::of_action("rename").map(|it| it.shortcut(linux)),
+            None,
+            "an app's own action declares its own shortcut"
         );
     }
 

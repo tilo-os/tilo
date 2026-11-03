@@ -81,7 +81,7 @@ fn spans_of(line: &str) -> Vec<Span> {
         }
     }
     for comment in lexer::plain_comments(line) {
-        let (start, end) = (comment.start.min(line.len()), line.len());
+        let (start, end) = (comment.span.start.min(line.len()), line.len());
         if start < end {
             spans.retain(|span| span.range.end <= start);
             spans.push(Span::new(start..end, TokenKind::Comment));

@@ -10,6 +10,13 @@
 //! even when the owner died without cleaning up. A socket left behind by a
 //! dead owner is removed by its successor: nobody can be serving it.
 //!
+//! A resource a child process runs outlives its owner process: the host of a
+//! browser profile, for one, keeps its profile directory open while it shuts
+//! down after the owner that started it is gone. [`Ownership::hold_with`]
+//! hands the lock to that child, so the resource stays owned while either of
+//! them lives and no successor starts a second user of it beside a child that
+//! has not exited yet.
+//!
 //! Local sockets exist on Linux and macOS. In the browser [`Rendezvous::beside`]
 //! reports [`std::io::ErrorKind::Unsupported`].
 
@@ -93,6 +100,18 @@ impl Ownership {
     /// Starts serving other processes.
     pub fn listen(&self) -> io::Result<Listener> {
         self.0.listen().map(Listener)
+    }
+
+    /// Gives the resource's lock to the program `command` starts: it holds
+    /// the resource for as long as it runs, even when this process exits
+    /// without letting go first.
+    ///
+    /// A child that runs the resource must not outlive its owner's claim on
+    /// it. Until it exits, its descriptor keeps the lock held, so a successor
+    /// waits for the child rather than starting a second user of the same
+    /// resource beside a child still shutting down.
+    pub fn hold_with(&self, command: &mut std::process::Command) {
+        self.0.hold_with(command);
     }
 }
 
@@ -181,7 +200,7 @@ mod backend {
     pub struct Ownership {
         socket: PathBuf,
         address: Arc<Address>,
-        _lock: advisory_lock::FileLock,
+        lock: advisory_lock::FileLock,
     }
 
     /// How the socket is bound and reached. A local socket address holds a
@@ -395,7 +414,7 @@ mod backend {
             Ok(Some(Ownership {
                 socket: self.socket.clone(),
                 address: self.address.clone(),
-                _lock: lock,
+                lock,
             }))
         }
     }
@@ -419,6 +438,23 @@ mod backend {
                     let _ = std::fs::remove_file(&self.socket);
                     Err(error)
                 }
+            }
+        }
+
+        pub fn hold_with(&self, command: &mut std::process::Command) {
+            use std::os::unix::process::CommandExt;
+            let fd = self.lock.as_raw_fd();
+            // SAFETY: one async-signal-safe `fcntl` on a descriptor this
+            // ownership keeps open until the child has been spawned. Clearing
+            // close-on-exec in the child alone hands it the open description
+            // the lock belongs to; nothing else in this process inherits it.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
             }
         }
     }
@@ -532,6 +568,10 @@ mod backend {
 
     impl Ownership {
         pub fn listen(&self) -> io::Result<Listener> {
+            match self.0 {}
+        }
+
+        pub fn hold_with(&self, _: &mut std::process::Command) {
             match self.0 {}
         }
     }

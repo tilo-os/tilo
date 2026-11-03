@@ -14,8 +14,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use collab_types::PeerPresence;
-use collab_types::presence::{PointerSpace, PresenceKey};
+use collab_types::presence::{Payload, Presence};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_compositor::OutputConfig;
@@ -133,47 +132,41 @@ fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
     )
 }
 
-/// One presence the other device said: they arrived, how available they are,
-/// and so on.
-fn presence(from: u8, payload: collab_types::PeerPresencePayload) -> NetEvent {
-    let device_key = device(from);
-    said(
-        from,
-        NeighbourMsg::AppPresenceV2 {
-            peer: neighbour_wire::peer_handle(device_key.as_bytes()),
-            app_id: DESKTOP_PRESENCE_APP.to_owned(),
-            cluster_id: WORKSPACE.to_owned(),
-            presence: PeerPresence {
-                key: postcard::to_stdvec(&PresenceKey::Workspace {
-                    id: WORKSPACE.to_owned(),
-                })
-                .expect("a key"),
-                payload,
-            },
-            colour: None,
+/// One presence the other device said on the workspace's live plane: they
+/// arrived, how available they are, and so on.
+fn presence(sync: &Client, from: u8, payload: collab_types::PeerPresencePayload) {
+    let payload = match payload {
+        collab_types::PeerPresencePayload::Arrived => Payload::Arrived,
+        collab_types::PeerPresencePayload::Left => Payload::Left,
+        collab_types::PeerPresencePayload::Status { text, automatic } => {
+            Payload::Status { text, automatic }
+        }
+        collab_types::PeerPresencePayload::Availability {
+            state,
+            call,
+            camera,
+            screen,
+        } => Payload::Availability {
+            state,
+            call,
+            camera,
+            screen,
         },
-    )
+        collab_types::PeerPresencePayload::Following { target } => Payload::Following { target },
+        collab_types::PeerPresencePayload::Wave { seq, target } => Payload::Wave { seq, target },
+        other => panic!("the tests say no {other:?} as a desktop"),
+    };
+    sync.heard_presence(
+        WORKSPACE,
+        device(from),
+        &Presence::desktop(WORKSPACE, payload),
+    );
 }
 
 /// Their pointer, over the Notes window.
-fn pointer(from: u8, x: f64, y: f64) -> NetEvent {
-    said(
-        from,
-        NeighbourMsg::PresenceMoved {
-            peer: neighbour_wire::peer_handle(device(from).as_bytes()),
-            user: String::new(),
-            key: serde_json::to_string(&PresenceKey::Pointer {
-                space: PointerSpace::Tile {
-                    workspace: WORKSPACE.to_owned(),
-                    tab: NOTES,
-                },
-            })
-            .expect("a key"),
-            point: (x, y),
-            ts: 0,
-            colour: neighbour_wire::PresenceColour::default(),
-        },
-    )
+fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
+    let frame = Presence::pointing(WORKSPACE, NOTES, x, y);
+    sync.heard_presence(WORKSPACE, device(from), &frame);
 }
 
 /// A session taking part in the workspace through `sync`, showing `desk`.
@@ -202,9 +195,6 @@ fn press_faces(session: &mut Session) {
         session.step(Duration::from_millis(1)).expect("step");
     }
 }
-
-/// The app id the desk says a bare window carries.
-const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 
 /// The person this test's session is a device of, at another of their
 /// devices too.
@@ -280,8 +270,9 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
 
     // Someone else, here and in the channel's call with their camera on.
     sync.hear(hello(0xaa, "Framework 16"));
-    sync.hear(presence(0xaa, collab_types::PeerPresencePayload::Arrived));
-    sync.hear(presence(
+    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Arrived);
+    presence(
+        &sync,
         0xaa,
         collab_types::PeerPresencePayload::Availability {
             state: "available".to_owned(),
@@ -289,7 +280,7 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
             camera: true,
             screen: false,
         },
-    ));
+    );
     let rows = palette_rows(&mut session);
     assert!(
         rows.contains(&call_row_label()),
@@ -299,8 +290,9 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
     // This person's laptop joins the same call: its presence says so, and
     // this device offers no second join.
     sync.hear(hello_of(QUINTEN, 0xf0, "ThinkPad"));
-    sync.hear(presence(0xf0, collab_types::PeerPresencePayload::Arrived));
-    sync.hear(presence(
+    presence(&sync, 0xf0, collab_types::PeerPresencePayload::Arrived);
+    presence(
+        &sync,
         0xf0,
         collab_types::PeerPresencePayload::Availability {
             state: "available".to_owned(),
@@ -308,7 +300,7 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
             camera: false,
             screen: false,
         },
-    ));
+    );
     let rows = palette_rows(&mut session);
     assert!(
         !rows.contains(&call_row_label()),
@@ -329,8 +321,9 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     // Another person, at their own device, in the same workspace: here, heads
     // down, with their pointer over Notes.
     sync.hear(hello(0xaa, "Framework 16"));
-    sync.hear(presence(0xaa, collab_types::PeerPresencePayload::Arrived));
-    sync.hear(presence(
+    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Arrived);
+    presence(
+        &sync,
         0xaa,
         collab_types::PeerPresencePayload::Availability {
             state: "away".to_owned(),
@@ -338,8 +331,8 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
             camera: false,
             screen: false,
         },
-    ));
-    sync.hear(pointer(0xaa, 12.0, 34.0));
+    );
+    pointer(&sync, 0xaa, 12.0, 34.0);
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -387,8 +380,9 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
         (0xbb, "ThinkPad", "away"),
     ] {
         sync.hear(hello(seed, label));
-        sync.hear(presence(seed, collab_types::PeerPresencePayload::Arrived));
-        sync.hear(presence(
+        presence(&sync, seed, collab_types::PeerPresencePayload::Arrived);
+        presence(
+            &sync,
             seed,
             collab_types::PeerPresencePayload::Availability {
                 state: state.to_owned(),
@@ -396,7 +390,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
                 camera: false,
                 screen: false,
             },
-        ));
+        );
     }
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
@@ -422,7 +416,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     );
 
     // They are back at their machine, and say so: their face lightens.
-    sync.hear(presence(
+    presence(
+        &sync,
         0xbb,
         collab_types::PeerPresencePayload::Availability {
             state: "focusing".to_owned(),
@@ -430,7 +425,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
             camera: false,
             screen: false,
         },
-    ));
+    );
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -442,7 +437,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
 
     // They join a voice channel: the roster says which one, and that is what
     // people read of them rather than how available they are.
-    sync.hear(presence(
+    presence(
+        &sync,
         0xbb,
         collab_types::PeerPresencePayload::Availability {
             state: "available".to_owned(),
@@ -456,7 +452,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
             camera: false,
             screen: false,
         },
-    ));
+    );
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }

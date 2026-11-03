@@ -24,7 +24,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let hosted = start(&owner, &host, state.path()).await;
     let workspace = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create("Remote encrypted resource")
         .await
@@ -32,7 +32,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     admit_person(
         &hosted,
         &host,
-        &workspace.room,
+        &workspace.workspace,
         &writer_device,
         MemberRole::Editor,
     )
@@ -40,16 +40,16 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     admit_person(
         &hosted,
         &host,
-        &workspace.room,
+        &workspace.workspace,
         &reader_device,
         MemberRole::Viewer,
     )
     .await;
-    let publisher = open_admitted_peer(&hosted, &writer_device, &host, &workspace.room).await;
+    let publisher = open_admitted_peer(&hosted, &writer_device, &host, &workspace.workspace).await;
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
-        &workspace.room,
+        &workspace.workspace,
         &hex::encode(writer_device.cert.user_public_key),
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -86,7 +86,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let part = chat::parts::part(0);
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: workspace.room.clone(),
+        cluster_id: workspace.workspace.clone(),
         record: source.wire_record().into(),
     };
     assert!(
@@ -97,7 +97,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         .peer
         .publish(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
-    let part_route = part_route(&workspace.room, &part);
+    let part_route = part_route(&workspace.workspace, &part);
     for (_, mutation) in source.take_record_mutations() {
         publisher
             .peer
@@ -107,7 +107,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
     let retained = hosted
         .relay
-        .room_records()
+        .workspace_records()
         .retained(workspace.workspace_id)
         .await
         .unwrap();
@@ -129,7 +129,8 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         }),
         ..CatalogueQuery::default()
     };
-    let mut warm_reader = open_admitted_peer(&hosted, &reader_device, &host, &workspace.room).await;
+    let mut warm_reader =
+        open_admitted_peer(&hosted, &reader_device, &host, &workspace.workspace).await;
     let warm = warm_reader
         .catalogue(query.clone())
         .await
@@ -144,7 +145,8 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     drop(hosted.web);
     hosted.relay.shutdown().await;
     let restored = start(&owner, &host, state.path()).await;
-    let mut reader = open_admitted_peer(&restored, &reader_device, &host, &workspace.room).await;
+    let mut reader =
+        open_admitted_peer(&restored, &reader_device, &host, &workspace.workspace).await;
     let page = reader
         .catalogue(query)
         .await

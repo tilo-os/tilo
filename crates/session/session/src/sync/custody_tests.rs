@@ -26,7 +26,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use super::{Client, Enrolling, OwnPresence};
 use crate::channels::ChannelLink;
 use crate::engine::Engine;
-use crate::fabric::MediaContinuity;
+use crate::fabric::Continuity;
 
 /// `key`'s certificate as a device of the person whose root key is `root`.
 fn certified(
@@ -53,7 +53,7 @@ fn certified(
 /// clear.
 struct Host {
     relay: Option<tilo_relay::daemon::Relay>,
-    rooms: tilo_relay::rooms::Rooms,
+    workspaces: tilo_relay::workspaces::Workspaces,
     cert: DeviceCert,
     workspace: String,
     runtime: tokio::runtime::Runtime,
@@ -87,7 +87,7 @@ impl Host {
                 ..tilo_user_identity::cloud_enrollment::host_capabilities()
             },
         );
-        let (relay, rooms, workspace) = runtime.block_on(async {
+        let (relay, workspaces, workspace) = runtime.block_on(async {
             let relay = tilo_relay::daemon::Relay::start(
                 tilo_relay::RelayConfig {
                     state_root: state.path().join("host"),
@@ -102,13 +102,20 @@ impl Host {
             )
             .await
             .expect("the host starts");
-            let rooms = relay.rooms().expect("the host governs workspaces").clone();
-            let workspace = rooms.create("Notes").await.expect("the workspace").room;
-            (relay, rooms, workspace)
+            let workspaces = relay
+                .workspaces()
+                .expect("the host governs workspaces")
+                .clone();
+            let workspace = workspaces
+                .create("Notes")
+                .await
+                .expect("the workspace")
+                .workspace;
+            (relay, workspaces, workspace)
         });
         Self {
             relay: Some(relay),
-            rooms,
+            workspaces,
             cert,
             workspace,
             runtime,
@@ -120,7 +127,7 @@ impl Host {
     fn invitation(&self, person: [u8; 32], request: u8) -> String {
         let issued = self
             .runtime
-            .block_on(self.rooms.issue(
+            .block_on(self.workspaces.issue(
                 &self.workspace,
                 &self.cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
@@ -169,7 +176,7 @@ impl Device {
             Some(std::sync::Arc::clone(&engine)),
             OwnPresence::default(),
             Vec::new(),
-            MediaContinuity::default(),
+            Continuity::default(),
             std::sync::Arc::new(|| ()),
             None,
             Vec::new(),

@@ -1,0 +1,28 @@
+[package]
+name = "tilo-recurrence"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "RFC 5545 recurrence rules shared by Tilo apps and the language runtime: RRULE/EXDATE text, expansion in a named zone, and the repeat presets a picker shows."
+
+[dependencies]
+chrono = { workspace = true, features = ["std"] }
+# Recurrence is authored in a named zone, so a series keeps its wall-clock
+# time across that zone's daylight-saving transitions. Shipping the transition
+# database with the rule means every peer expands a stored rule identically,
+# whatever the host's zoneinfo says.
+chrono-tz = "0.10.4"
+# A repeat is a value in a resource: its variants are the stored names.
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# The RFC 5545 expansion. This crate owns the stored rule text and asks this
+# engine for the dates, so a series agrees with every other iCalendar
+# implementation instead of with a second expansion of our own.
+rrule = "0.14"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

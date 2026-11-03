@@ -41,11 +41,16 @@ pub(super) struct RevealToggle {
     /// A finger that went down on the control; it toggles on release.
     touch: Option<u64>,
     test_id: String,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl RevealToggle {
     pub(super) fn new() -> Self {
         Self {
+            dirty: true,
             revealed: false,
             enabled: true,
             rect: Rect::ZERO,
@@ -62,10 +67,12 @@ impl RevealToggle {
     }
 
     pub(super) fn set_revealed(&mut self, on: bool) {
+        self.dirty = true;
         self.revealed = on;
     }
 
     pub(super) fn set_enabled(&mut self, enabled: bool) {
+        self.dirty = true;
         self.enabled = enabled;
         if !enabled {
             self.hovered = false;
@@ -76,6 +83,7 @@ impl RevealToggle {
     }
 
     pub(super) fn set_field_id(&mut self, field_id: &str) {
+        self.dirty = true;
         self.test_id = if field_id.is_empty() {
             "text_input_reveal".to_string()
         } else {
@@ -220,6 +228,7 @@ impl Widget for RevealToggle {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.enabled {
             return;
         }
@@ -289,6 +298,14 @@ impl Widget for RevealToggle {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "PasswordReveal"
     }
@@ -315,6 +332,7 @@ impl Widget for RevealToggle {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused && self.enabled;
     }
 

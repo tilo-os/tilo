@@ -685,6 +685,9 @@ inputs = [
   "crates/sdk/themes/bauhaus/theme.json",
   "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
+  # The catalogue test reads the gallery app's sources: every component the
+  # toolkit describes is shown there, or says at its declaration why it cannot.
+  "apps/tl/gallery/",
   # The ratchets find the checkout by its workspace manifest.
   "Cargo.toml",
 ]
@@ -696,6 +699,7 @@ readers = [
   "crates/sdk/ui-core/src/webview/paint.rs",
   "crates/sdk/ui-core/src/theme_bundle/tests.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
+  "crates/sdk/ui-core/src/component/coverage_tests.rs",
 ]
 # App, shell and framework sources are read only by the look ratchets in the
 # `it` target. A change confined to them runs those ratchets, not the whole
@@ -1393,7 +1397,12 @@ package = "tilo-session"
 # The first-boot unit the image ships, and the components that name where
 # each binary is installed; the shell package it compiles from source.
 inputs = [
+  # The first-boot unit the image ships, and the components that name where
+  # each binary is installed; the shell package it compiles from source.
   "apps/tl/shell/",
+  # Every app's sources: the guard holds each app's calls on the action door
+  # to the seams this session serves.
+  "apps/",
   # The tests' shared fixtures load Notes from its sources beside the shell
   # (the shell's own screen tests and the acceptance path), the session
   # package test checks the session's committed description, and a
@@ -1417,15 +1426,22 @@ inputs = [
   "crates/system/system-stats/src/protocol.rs",
   "crates/platform/tilo-render-protocol/src/broker.rs",
   "apps/*/tilo-app.toml",
+  # Every app's manifest and baseline the app-side ratchet reads: it lists
+  # what each app still does for itself (its own records, identity, sync) and
+  # fails if the list grows.
+  "apps/*/Cargo.toml",
+  "crates/session/session/tests/baselines/app-side-records.txt",
 ]
 readers = [
   "crates/session/session/src/channels/vault.rs",
   "crates/session/session/src/mount/doors.rs",
+  "crates/session/session/src/plane.rs",
   "crates/session/session/src/seeded_apps.rs",
   "crates/session/session/src/shell.rs",
   "crates/session/session/tests/common/mod.rs",
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/session_package.rs",
+  "crates/session/session/tests/app_side_records.rs",
 ]
 
 [[cargo]]

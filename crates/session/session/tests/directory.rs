@@ -44,9 +44,9 @@ use tilo_desktop_model::{
     WorkspaceSlot, shared_record,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::rooms::{PreAdmitRequest, RemoveMemberRequest};
+use tilo_relay::workspaces::{PreAdmitRequest, RemoveMemberRequest};
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
-use tilo_relay_protocol::rooms::{PreAdmission, RoomRole};
+use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceRole};
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
@@ -176,10 +176,10 @@ fn face(name: &str, key: &str) -> Face {
 
 fn community_entry(members: u32, now_ms: u64) -> DirectoryEntry {
     DirectoryEntry {
-        room: COMMUNITY_WORKSPACE.to_owned(),
+        workspace: COMMUNITY_WORKSPACE.to_owned(),
         name: "Tilers".to_owned(),
         description: "Anyone who lays tiles".to_owned(),
-        default_role: RoomRole::Editor,
+        default_role: WorkspaceRole::Editor,
         door: door_path(COMMUNITY_WORKSPACE),
         here: vec![face("Ada", "a1b2"), face("Bo", "c3d4")],
         here_count: 2,
@@ -194,10 +194,10 @@ fn club_entry(now_ms: u64) -> DirectoryEntry {
     const THREE_DAYS_MS: u64 = 259_200_000;
     let week = THREE_DAYS_MS;
     DirectoryEntry {
-        room: CLUB_WORKSPACE.to_owned(),
+        workspace: CLUB_WORKSPACE.to_owned(),
         name: "Book club".to_owned(),
         description: String::new(),
-        default_role: RoomRole::Viewer,
+        default_role: WorkspaceRole::Viewer,
         door: door_path(CLUB_WORKSPACE),
         here: Vec::new(),
         here_count: 0,
@@ -357,6 +357,25 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
 
 /// Press the sheet's button for joining the listing `key`.
 fn ask_to_join(session: &mut Session, key: &str) {
+    // The row is drawn from what the sites list, and other runtimes answer
+    // that: a busy machine takes as long at it as the suite allows. Press a
+    // row that is there, so a press that cannot be carried out says why
+    // instead of waiting out the suite's bound for a join never asked for.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let standing = session
+            .workspace_directory()
+            .expect("the session hosts the workspace directory")
+            .directory();
+        if standing.listings.iter().any(|listing| listing.key == key) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the sheet lists the workspace to join: {standing:?}"
+        );
+        session.step(Duration::from_millis(10)).unwrap();
+    }
     let sheet = publisher(session, "join").expect("the directory sheet publishes joining");
     assert_eq!(
         sheet, "workspace-directory.listing",
@@ -391,10 +410,10 @@ fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
 fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> String {
     let mut entries = vec![community_entry(34, now_ms()), club_entry(now_ms())];
     entries.push(DirectoryEntry {
-        room: held_room.to_owned(),
+        workspace: held_room.to_owned(),
         name: held_name.to_owned(),
         description: "The one on this desk".to_owned(),
-        default_role: RoomRole::Commenter,
+        default_role: WorkspaceRole::Commenter,
         door: door_path(held_room),
         here: Vec::new(),
         here_count: 0,
@@ -738,8 +757,8 @@ const TOKEN: &[u8] = b"the lounge's one-time token";
 /// owner `root` as its door signs one.
 fn grant_for(owner_key: &ed25519_dalek::SigningKey, workspace: &str, label: &str) -> PreAdmission {
     let mut grant = PreAdmission {
-        room: workspace.to_owned(),
-        role: RoomRole::Editor,
+        workspace: workspace.to_owned(),
+        role: WorkspaceRole::Editor,
         token_sha256: sha2::Sha256::digest(TOKEN).into(),
         label: label.to_owned(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
@@ -805,7 +824,7 @@ struct Lounge {
     relay: Option<tilo_relay::daemon::Relay>,
     _door: Responder,
     runtime: tokio::runtime::Runtime,
-    rooms: tilo_relay::rooms::Rooms,
+    workspaces: tilo_relay::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
     /// The certificate of the site's page, the device that recorded in the
     /// workspace before anyone joined.
@@ -848,7 +867,7 @@ impl Lounge {
             relay: Some(host.relay),
             _door: door,
             runtime,
-            rooms: host.rooms,
+            workspaces: host.workspaces,
             host_cert: host.host_cert,
             page_device: host.page_device,
             page_desktop: std::cell::RefCell::new(automerge::AutoCommit::new()),
@@ -865,7 +884,7 @@ impl Lounge {
 /// keeps what its page writes sealed.
 struct LoungeHost {
     relay: tilo_relay::daemon::Relay,
-    rooms: tilo_relay::rooms::Rooms,
+    workspaces: tilo_relay::workspaces::Workspaces,
     /// The key the host's certificates are signed under.
     owner_key: ed25519_dalek::SigningKey,
     host_cert: tilo_user_identity::DeviceCert,
@@ -910,12 +929,15 @@ impl LoungeHost {
             )
             .await
             .expect("the lounge's host");
-            let workspaces = relay.rooms().expect("the host governs workspaces").clone();
+            let workspaces = relay
+                .workspaces()
+                .expect("the host governs workspaces")
+                .clone();
             let workspace = workspaces
                 .create("Lounge")
                 .await
                 .expect("the lounge's workspace")
-                .room;
+                .workspace;
             // The site's page is in its workspace.
             workspaces
                 .enter(&workspace, &page_device)
@@ -925,7 +947,7 @@ impl LoungeHost {
         });
         Self {
             relay,
-            rooms: workspaces,
+            workspaces: workspaces,
             owner_key,
             host_cert,
             page_key,
@@ -997,7 +1019,7 @@ impl LoungeHost {
                 }
             }
             let held = runtime
-                .block_on(self.rooms.record_routes(&self.workspace))
+                .block_on(self.workspaces.record_routes(&self.workspace))
                 .expect("the lounge's records");
             if held
                 .iter()
@@ -1022,10 +1044,10 @@ impl LoungeHost {
         let origin = Arc::new(Mutex::new(String::new()));
         let served_origin = Arc::clone(&origin);
         let page_of_the_site = page_of(vec![DirectoryEntry {
-            room: self.workspace.clone(),
+            workspace: self.workspace.clone(),
             name: "Lounge".to_owned(),
             description: "Where the site's people talk".to_owned(),
-            default_role: RoomRole::Editor,
+            default_role: WorkspaceRole::Editor,
             door: door_path(&self.workspace),
             here: Vec::new(),
             here_count: 0,
@@ -1038,7 +1060,7 @@ impl LoungeHost {
         let answer = runtime.handle().clone();
         let admittances = Arc::new(AtomicU32::new(1));
         let next = Arc::clone(&admittances);
-        let workspaces = self.rooms.clone();
+        let workspaces = self.workspaces.clone();
         let host_cert = self.host_cert.clone();
         let owner_key = self.owner_key.clone();
         let door = Responder::handle(move |request| {
@@ -1154,9 +1176,13 @@ fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
     layout
 }
 
+/// A strip the site holds as a test writes it: its id, its name, and the
+/// windows in it, each window's id and title.
+type HeldStrip<'a> = (u64, &'a str, &'a [(u64, &'a str)]);
+
 /// A workspace's shared desktop, as the people in it left it: `strips` names
 /// each strip with the windows opened in it, all of them `person`'s.
-fn shared_desktop(person: &str, strips: &[(u64, &str, &[(u64, &str)])]) -> SharedDesktop {
+fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
     let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
     let mut authors = std::collections::BTreeMap::new();
     for (strip_id, name, windows) in strips {
@@ -1239,10 +1265,11 @@ impl Lounge {
         loop {
             let held = self
                 .runtime
-                .block_on(
-                    self.rooms
-                        .record_document(&self.workspace, DESKTOP_APP, DESKTOP_RECORD),
-                )
+                .block_on(self.workspaces.record_document(
+                    &self.workspace,
+                    DESKTOP_APP,
+                    DESKTOP_RECORD,
+                ))
                 .expect("the lounge's desktop record");
             let recorded = held
                 .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
@@ -1264,7 +1291,7 @@ impl Lounge {
     fn invitation_link(&self) -> String {
         let issued = self
             .runtime
-            .block_on(self.rooms.issue(
+            .block_on(self.workspaces.issue(
                 &self.workspace,
                 &self.host_cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
@@ -1488,51 +1515,7 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
 
     // Another member opens a window beside one of theirs, and moves one of
     // theirs: the desk here follows without anyone touching it.
-    let mut reopened = laid_out.clone();
-    let work = reopened
-        .tree
-        .workspaces
-        .first_mut()
-        .and_then(|workspace| workspace.strips.get_mut(1))
-        .expect("the work strip");
-    work.window_groups.insert(
-        0,
-        WindowGroup {
-            id: GroupId::from(0x47_u64),
-            tabs: vec![Tab {
-                id: TabId::from(0x46_u64),
-                title: "Files".to_owned(),
-                tile: TileContent::LocalApp {
-                    app_id: "so.tilo.files".to_owned(),
-                    label: "Files".to_owned(),
-                    note: String::new(),
-                },
-                app_title: None,
-            }],
-            active_tab: TabId::from(0x46_u64),
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        },
-    );
-    reopened.authors.insert(0x46, member.clone());
-    reopened.authors.insert(0x47, member.clone());
-    // Chat moves into the work strip, after the files.
-    let talk = reopened
-        .tree
-        .workspaces
-        .first_mut()
-        .and_then(|workspace| workspace.strips.get_mut(0))
-        .expect("the talk strip");
-    let chat = talk.window_groups.remove(0);
-    reopened
-        .tree
-        .workspaces
-        .first_mut()
-        .and_then(|workspace| workspace.strips.get_mut(1))
-        .expect("the work strip")
-        .window_groups
-        .push(chat);
+    let reopened = another_member_edits(laid_out, &member);
     lounge.page_writes_desktop(&reopened);
     lounge.wait_for_desktop(&reopened);
     wait_until_desk(
@@ -1542,63 +1525,8 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
         "the window another member opened and the one they moved arrive here",
     );
 
-    // Their pointer, over a window they work in: the desk draws it there,
-    // wherever the person here is looking, without the roster being opened.
-    // The window is on the strip in front, so its tile is where the pointer
-    // lands.
-    let front = session.handle().read(|tree| {
-        let workspace = tree.active_workspace()?;
-        let strip = tilo_desktop_surface::navigation::active_strip(tree, workspace)?;
-        workspace
-            .strips
-            .iter()
-            .find(|held| held.id == strip)?
-            .window_groups
-            .first()
-            .map(|group| group.active_tab)
-    });
-    let shown = front.expect("the workspace in front shows a strip with a window");
-    other_member_arrives(&lounge);
-    other_member_points_at(&lounge, shown, 12.0, 34.0);
-    wait_until(
-        &mut session,
-        "the other member's pointer is drawn here",
-        |session| {
-            session.drawn_peer_pointers().iter().any(|(_, (x, y))| {
-                tile_here(session, shown).is_some_and(|tile| {
-                    (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5
-                })
-            })
-        },
-    );
-    let drawn = session.drawn_peer_pointers();
-    let tile = tile_here(&session, shown).expect("the window in front draws its tile");
-    assert_eq!(
-        drawn.len(),
-        1,
-        "one other person's pointer is drawn: {drawn:?}"
-    );
-    let (x, y) = drawn[0].1;
-    assert!(
-        (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5,
-        "drawn over the window's tile where they put it: {drawn:?}, tile {tile:?}"
-    );
-    // And it follows them.
-    other_member_points_at(&lounge, shown, 40.0, 55.0);
-    wait_until(
-        &mut session,
-        "the other member's pointer follows where they moved it",
-        |session| {
-            session
-                .drawn_peer_pointers()
-                .first()
-                .is_some_and(|(_, (x, y))| {
-                    tile_here(session, shown).is_some_and(|tile| {
-                        (x - (tile.x0 + 40.0)).abs() < 0.5 && (y - (tile.y0 + 55.0)).abs() < 0.5
-                    })
-                })
-        },
-    );
+    the_pointer_follows(&mut session, &lounge);
+
     // The sheets window is the one the site opened first: it moved with the
     // rest, and is not this computer's to see twice.
     assert!(
@@ -1645,6 +1573,125 @@ fn wait_until_desk(
     }
 }
 
+/// The desktop as another member leaves it: a window they open beside one
+/// of theirs in the work strip, and the chat window they move there from the
+/// talk strip.
+fn another_member_edits(mut reopened: SharedDesktop, member: &str) -> SharedDesktop {
+    let work = reopened
+        .tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.get_mut(1))
+        .expect("the work strip");
+    work.window_groups.insert(
+        0,
+        WindowGroup {
+            id: GroupId::from(0x47_u64),
+            tabs: vec![Tab {
+                id: TabId::from(0x46_u64),
+                title: "Files".to_owned(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.files".to_owned(),
+                    label: "Files".to_owned(),
+                    note: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: TabId::from(0x46_u64),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        },
+    );
+    reopened.authors.insert(0x46, member.to_owned());
+    reopened.authors.insert(0x47, member.to_owned());
+    // Chat moves into the work strip, after the files.
+    let talk = reopened
+        .tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.get_mut(0))
+        .expect("the talk strip");
+    let chat = talk.window_groups.remove(0);
+    reopened
+        .tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.get_mut(1))
+        .expect("the work strip")
+        .window_groups
+        .push(chat);
+    reopened
+}
+
+/// The window the workspace in front shows: the active strip's first.
+fn window_in_front(session: &Session) -> Option<TabId> {
+    session.handle().read(|tree| {
+        let workspace = tree.active_workspace()?;
+        let strip = tilo_desktop_surface::navigation::active_strip(tree, workspace)?;
+        workspace
+            .strips
+            .iter()
+            .find(|held| held.id == strip)?
+            .window_groups
+            .first()
+            .map(|group| group.active_tab)
+    })
+}
+
+/// The pointer of a person working in another member's window: the desk
+/// draws it there, wherever the person here is looking, without the roster
+/// being opened, and follows where they move it.
+fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
+    // Their pointer, over a window they work in: the desk draws it there,
+    // wherever the person here is looking, without the roster being opened.
+    // The window is on the strip in front, so its tile is where the pointer
+    // lands.
+    let front = window_in_front(session);
+    let shown = front.expect("the workspace in front shows a strip with a window");
+    other_member_arrives(lounge);
+    other_member_points_at(lounge, shown, 12.0, 34.0);
+    wait_until(
+        session,
+        "the other member's pointer is drawn here",
+        |session| {
+            session.drawn_peer_pointers().iter().any(|(_, (x, y))| {
+                tile_here(session, shown).is_some_and(|tile| {
+                    (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5
+                })
+            })
+        },
+    );
+    let drawn = session.drawn_peer_pointers();
+    let tile = tile_here(session, shown).expect("the window in front draws its tile");
+    assert_eq!(
+        drawn.len(),
+        1,
+        "one other person's pointer is drawn: {drawn:?}"
+    );
+    let (x, y) = drawn[0].1;
+    assert!(
+        (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5,
+        "drawn over the window's tile where they put it: {drawn:?}, tile {tile:?}"
+    );
+    // And it follows them.
+    other_member_points_at(lounge, shown, 40.0, 55.0);
+    wait_until(
+        session,
+        "the other member's pointer follows where they moved it",
+        |session| {
+            session
+                .drawn_peer_pointers()
+                .first()
+                .is_some_and(|(_, (x, y))| {
+                    tile_here(session, shown).is_some_and(|tile| {
+                        (x - (tile.x0 + 40.0)).abs() < 0.5 && (y - (tile.y0 + 55.0)).abs() < 0.5
+                    })
+                })
+        },
+    );
+}
+
 /// The id of the window titled `title` on `desktop`.
 fn shared_desktop_tab(desktop: &SharedDesktop, title: &str) -> u64 {
     desktop
@@ -1655,8 +1702,10 @@ fn shared_desktop_tab(desktop: &SharedDesktop, title: &str) -> u64 {
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
         .find(|tab| tab.title == title)
-        .map(|tab| tab.id)
-        .unwrap_or_else(|| panic!("the desktop holds a window titled {title}"))
+        .map_or_else(
+            || panic!("the desktop holds a window titled {title}"),
+            |tab| tab.id,
+        )
 }
 
 /// Join the lounge's listed workspace and wait until its content and its
@@ -1673,15 +1722,10 @@ fn other_member_arrives(lounge: &Lounge) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.publish_presence(
         tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
-        vec![
-            postcard::to_stdvec(&neighbour_wire::desktop_presence(
-                neighbour_wire::peer_handle(&lounge.page_device.device_public_key),
-                &lounge.workspace,
-                neighbour_wire::workspace_key(&lounge.workspace),
-                collab_types::PeerPresencePayload::Arrived,
-            ))
-            .expect("a presence body"),
-        ],
+        vec![collab_types::presence::Presence::desktop(
+            &lounge.workspace,
+            collab_types::PeerPresencePayload::Arrived,
+        )],
     )
     .expect("the other member says they are here");
 }
@@ -1690,23 +1734,14 @@ fn other_member_arrives(lounge: &Lounge) {
 /// `tab` in the workspace.
 fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
-    let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
-        space: collab_types::presence::PointerSpace::Tile {
-            workspace: lounge.workspace.clone(),
-            tab,
-        },
-    })
-    .expect("a pointer key");
-    let body = postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(&lounge.page_device.device_public_key),
-        &lounge.workspace,
-        key,
-        collab_types::PeerPresencePayload::Pointer { x, y },
-    ))
-    .expect("a pointer body");
     page.publish_presence(
         tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
-        vec![body],
+        vec![collab_types::presence::Presence::pointing(
+            &lounge.workspace,
+            tab,
+            x,
+            y,
+        )],
     )
     .expect("the other member's pointer moves");
 }
@@ -1732,7 +1767,11 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the lounge's workspace is held here: held {held:?}, people {people:?}"
+            "the lounge's workspace is held here: held {held:?}, people {people:?}, \
+             directory {:?}",
+            session
+                .workspace_directory()
+                .map(tilo_sheets::directory::DirectorySeat::directory)
         );
     }
 }
@@ -1851,7 +1890,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     // The lounge's owner removes this person, and every device of theirs.
     lounge
         .runtime
-        .block_on(lounge.rooms.remove_member(
+        .block_on(lounge.workspaces.remove_member(
             &lounge.workspace,
             &lounge.host_cert,
             RemoveMemberRequest {
@@ -1865,7 +1904,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     // roster are gone.
     let (_generation, members) = lounge
         .runtime
-        .block_on(lounge.rooms.membership(&lounge.workspace))
+        .block_on(lounge.workspaces.membership(&lounge.workspace))
         .expect("the lounge's members");
     let mark = members
         .get(&hex::encode(person))
@@ -1901,7 +1940,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
             .runtime
             .block_on(
                 lounge
-                    .rooms
+                    .workspaces
                     .record_document(&lounge.workspace, CHAT, CHAT_RECORD),
             )
             .expect("the lounge's chat")

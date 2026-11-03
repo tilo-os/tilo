@@ -195,10 +195,9 @@ impl ListSlot {
 
 impl Default for ListSlot {
     fn default() -> Self {
-        Self(Rc::new(RefCell::new(FileTable::new(
-            "file_list",
-            t("files-a11y-list"),
-        ))))
+        Self(Rc::new(RefCell::new(
+            FileTable::new("file_list", t("files-a11y-list")).handles_row_menu(),
+        )))
     }
 }
 
@@ -414,6 +413,12 @@ impl ListSlot {
         ListOutcome {
             sort_key: outcome.sort.map(FileColumn::key),
         }
+    }
+
+    /// What an assistive technology asked of a row since the last read: the
+    /// row it asked to open, and the row and point it asked a menu for.
+    pub(super) fn take_row_requests(&self) -> (Option<usize>, Option<(usize, Point)>) {
+        self.0.borrow_mut().take_row_requests()
     }
 
     /// Whether `at` is over the table's scrollbar, which the table keeps for

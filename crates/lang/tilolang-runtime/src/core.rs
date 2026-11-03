@@ -69,6 +69,9 @@ pub trait NameHost {
     fn name(&self, who: &crate::ids::Principal) -> String;
 }
 
+/// The host's answer for the person's zone name, asked each time a rule is read.
+type NamedZone = Box<dyn Fn() -> Option<String>>;
+
 pub struct Core {
     me: Weak<Core>,
     pub engine: Engine,
@@ -99,6 +102,9 @@ pub struct Core {
     /// How many seconds the person's clock is ahead of UTC, which `dated` reads a day and a
     /// time typed against; UTC until the host says.
     pub zone: RefCell<Option<Box<dyn Fn() -> i64>>>,
+    /// The person's zone as its IANA name (`Europe/Berlin`), which keeps a repeating item's
+    /// wall time of day across a change of clocks; no zone until the host names one.
+    pub zone_name: RefCell<Option<NamedZone>>,
     /// References to collection items built so far: what a view materialized of the
     /// collections it read.
     pub items_built: std::cell::Cell<u64>,
@@ -220,6 +226,7 @@ impl Core {
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),
             zone: RefCell::new(None),
+            zone_name: RefCell::new(None),
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
@@ -301,20 +308,21 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, CallFn, ChangeView,
-            CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere,
-            CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
-            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen, FloatToStr,
-            IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
-            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPushF,
-            ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
-            MapSetAdd, MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside,
-            OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
+            CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove,
+            CollWhere, CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs,
+            EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen,
+            FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
+            IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut,
+            MapRemove, MapSetAdd, MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now,
+            Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
             PrincipalRole, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-            RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd,
-            SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
-            StrCmp, StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, StrToInt,
-            TimeShift, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+            RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
+            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
+            SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp,
+            StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, StrToInt, TimeShift,
+            Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
             TupleSetI, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
             UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
             Versions, Viewer, Withdraw, Word, WorkspaceMembers,
@@ -322,10 +330,10 @@ impl Core {
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
             | StrFind | StrSlice | StrReplace => self.text_import(imp, mem, a),
-            ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
-            | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf | TupleNew
-            | TupleSetI | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH
-            | SomeI | SomeF | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => {
+            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | ListGetI
+            | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf
+            | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH
+            | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => {
                 self.aggregate_import(imp, a)
             }
             CollWhere => {
@@ -351,6 +359,9 @@ impl Core {
             IdentPart => {
                 let part = self.ident_part(a.h(0)?, a.h(1)?)?;
                 self.ret_h(part)
+            }
+            RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | Today => {
+                self.recurrence_import(imp, a)
             }
             RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH

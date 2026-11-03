@@ -370,6 +370,11 @@ impl DrawBounds {
 /// Regions smaller than this many pixels render on the calling thread.
 pub const SINGLE_THREAD_PIXELS: u32 = 128 * 1024;
 
+/// Worker threads a canvas rasterizes its large regions with: a native host
+/// has them, a page has one thread and no pool, where it stays 0 and
+/// [`Options::threads`] does nothing.
+pub const CANVAS_THREADS: u16 = if cfg!(target_arch = "wasm32") { 0 } else { 4 };
+
 /// Construction options for [`CpuRasterizer`].
 #[derive(Clone, Copy, Debug)]
 pub struct Options {

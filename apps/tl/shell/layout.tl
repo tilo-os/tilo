@@ -28,10 +28,24 @@ view layouts(s: Shell) {
 /// What the person's settings stand as: the preset's name, or "Custom, based on" it.
 fn standing(s: Shell) -> Text {
     if s.tuned {
-        if s.based_on == .tilo { "Custom, based on Tilo" } else if s.based_on == .macos { "Custom, based on macOS" } else if s.based_on == .windows { "Custom, based on Windows" } else if s.based_on == .gnome { "Custom, based on GNOME" } else if s.based_on == .windows_desktop {
+        if s.based_on == .tilo {
+            "Custom, based on Tilo"
+        } else if s.based_on == .macos {
+            "Custom, based on macOS"
+        } else if s.based_on == .windows {
+            "Custom, based on Windows"
+        } else if s.based_on == .gnome {
+            "Custom, based on GNOME"
+        } else if s.based_on == .windows_desktop {
             "Custom, based on the traditional desktop"
         } else { "Custom, based on Minimal" }
-    } else if s.preset == .tilo { "Tilo" } else if s.preset == .macos { "Like macOS" } else if s.preset == .windows { "Like Windows" } else if s.preset == .gnome { "Like GNOME" } else { "Minimal" }
+    } else if s.preset == .tilo {
+        "Tilo"
+    } else if s.preset == .macos {
+        "Like macOS"
+    } else if s.preset == .windows {
+        "Like Windows"
+    } else if s.preset == .gnome { "Like GNOME" } else { "Minimal" }
 }
 
 /// One preset's card: its name, what it is, and a miniature of the shell it makes, drawn
@@ -73,12 +87,19 @@ fn describe(preset: Layout) -> Text {
 view preview(preset: Layout) {
     layers {
         row(fill, align: .center, padding: .tight) {
-            if preset == .tilo or preset == .macos or preset == .gnome or preset == .minimal or preset == .windows_desktop {
+            if preset == .tilo
+                or preset == .macos
+                or preset == .gnome
+                or preset == .minimal
+                or preset == .windows_desktop {
                 preview_bar(preset)
             }
         }
         row(at: .bottom, fill, align: .center, padding: .tight) {
-            if preset == .tilo or preset == .macos or preset == .windows or preset == .windows_desktop {
+            if preset == .tilo
+                or preset == .macos
+                or preset == .windows
+                or preset == .windows_desktop {
                 preview_dock(preset)
             }
         }

@@ -36,7 +36,6 @@ use serde_json::Value as Json;
 use tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
 use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Words};
 
-use crate::background::Waker;
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
 use crate::publish::{COMMIT, HOST_RESOURCE};
@@ -102,86 +101,10 @@ pub trait Publication {
     }
 }
 
-/// What an instance asks of whatever runs it.
-pub trait Platform {
-    /// Load what a window of the package runs into `host`: the installed package, or the latest
-    /// later build of it, with the packages it uses. The later build it
-    /// loaded, 0 for the installed package.
-    fn load(&self, host: &Host) -> u64;
+mod platform;
 
-    /// The latest later build of the package, once a development session handed one over.
-    fn latest(&self) -> Option<Update> {
-        None
-    }
+pub use platform::{Platform, PlatformWords};
 
-    /// Wake this instance when a later build arrives. Called once, when it first follows them.
-    fn follow_updates(&self) {}
-
-    /// Whether this process follows later builds at all.
-    fn follows_updates(&self) -> bool {
-        false
-    }
-
-    /// A later build took over: what the package declares on the door is its now.
-    fn surface_changed(&self, app: &str, bundle: &Bundle) {
-        let _ = (app, bundle);
-    }
-
-    /// The platform's phrase `id` with `args`, in the person's language: what the standard
-    /// library's frames say.
-    fn phrase(&self, id: &str, args: &[(String, String)]) -> String;
-
-    /// Takes in a package's catalogues, `(locale, Fluent text)`, so [`Self::phrase`] says its
-    /// messages too (i18n.md). A platform without catalogues of its own shows the source words.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        let _ = catalogues;
-    }
-
-    /// What the words resolve at now: it moves when the person's language, or a catalogue of
-    /// theirs, does, so a package's published labels and nouns are published again in it.
-    fn words_revision(&self) -> u64 {
-        0
-    }
-
-    /// The time now, as `now` reads it: ISO-8601 UTC text.
-    fn now(&self) -> String;
-
-    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
-    /// 9am" in. UTC unless the platform knows the person's.
-    fn zone(&self) -> i64 {
-        0
-    }
-
-    /// What wakes the instance when work it waits for is ready (an index read off the frame).
-    fn waker(&self) -> Waker;
-
-    /// Publish what `host` holds until the returned hold is dropped; `wake` is called when
-    /// records read off the frame are ready to be taken in.
-    fn publish(&self, host: &Host, wake: Waker) -> Option<Box<dyn Publication>> {
-        let _ = (host, wake);
-        None
-    }
-}
-
-/// The words an instance shows, in the person's language: every package's catalogues go to
-/// the platform, and a key says what the platform's phrases say of it, or the source words where
-/// no catalogue holds it (a phrase no catalogue holds is its own key) (i18n.md).
-struct PlatformWords(Rc<dyn Platform>);
-
-impl crate::runtime::Words for PlatformWords {
-    fn add(&self, catalogues: &[(String, String)]) {
-        self.0.add_words(catalogues);
-    }
-
-    fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
-        let said = self.0.phrase(key, args);
-        if said == key { source.to_owned() } else { said }
-    }
-
-    fn revision(&self) -> u64 {
-        self.0.words_revision()
-    }
-}
 /// How an instance starts.
 pub struct Config {
     /// The package the window runs.
@@ -546,6 +469,12 @@ impl Instance {
         Rc::clone(&self.open_requests)
     }
 
+    /// Show what the person's own step made, as a press of the action that made it does: it
+    /// comes to the front as their input does, and takes the keyboard.
+    pub fn opens_what_it_made(&mut self, anchor: String) {
+        self.pressed_opens.push(anchor);
+    }
+
     /// Where the door's answers to effects mark work for the next frame.
     #[must_use]
     pub fn door_work(&self) -> Rc<Cell<bool>> {
@@ -807,6 +736,8 @@ impl Instance {
         host.set_clock(move || platform.now());
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone(move || platform.zone());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_zone_name(move || platform.zone_name());
         host.set_words(PlatformWords(Rc::clone(&self.platform)));
         if let Some(sink) = self.sink.take() {
             host.runtime().set_sink(crate::origin::RoutingSink {

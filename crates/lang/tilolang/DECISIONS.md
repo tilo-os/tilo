@@ -120,6 +120,27 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
+- **Roles say what a surface does with an action, and only `internal` and `scenario` hide one.**
+  `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
+  skips the `scenario` actions and those with a hiding role, so a gesture-only action
+  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in a
+  `std` header or menu, or in an agent's choices, while the app can still name it where the
+  gesture wants it.
+- **A window's header shows its primary action and the commands the app marks `frequent` as
+  buttons, and every other action in the header's one menu.** `std.header` builds them that
+  way: a button per primary and per `frequent` action, and a `ui.Button(..., in_menu: true)`
+  per remaining action, which the shell's own More button holds whatever room the row has.
+  Which commands earn a place in the row is the app's judgement (`frequent: true`), not the
+  window's width, so a narrow window gives way with the menu, never with the one main thing to
+  do; a host that lists a window's actions elsewhere (`WindowBar::lists_actions`) hides the
+  menu's door instead, and nothing is offered twice.
+- **A row is drawn by the view that knows what the place around it says.** `row(title, ...)`
+  stands in a list's item block, as a row view's body, or as the whole body of a view of one
+  item (first parameter a record, body one row after its `let`s). The extra parameters are what
+  only the place knows: a list grouped by a day gives the day, a project's list its project, so
+  the row omits what the heading or the page already states instead of every row repeating it.
+  The type's `row view` stays the item alone, since the system draws it where no page says
+  anything (a result, a notice).
 - Blocks: an expression is checked as a value in view-like context (actions and flows become
   `Action` values); a UI primitive or foreign view call, or a view body, is a `View`. The block module
   is `app agent.block.<run id>` (`main` for `compile_block`) and exports `memory` and `b_main`.
@@ -166,9 +187,12 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   sibling directories, or in `--path` entries (a package directory or a directory of packages),
   and compiles imports first (`source::dependency_order`, `source::compile_dirs`). A cycle is
   refused.
-- **`fmt` keeps what people wrote.** The canonical form drops plain `//` comments (only `///`
-  doc comments are part of the tree), so `fmt` leaves a file that has any unchanged and names
-  it, rather than deleting them.
+- **`fmt` keeps what people wrote.** Plain `//` comments are not part of the tree, but `fmt`
+  keeps them: each prints above the declaration, field, statement or match arm it was written
+  over, at that line's indentation, inside an expression's blocks and its match arms too. One
+  written inside a declaration's head has no line of its own to keep, so it prints above the
+  next statement. `///` is prose: a blank line between two `///` lines is a paragraph break,
+  and the canonical form writes it as a `///` line.
 - **The command line is a library module** (`cli::main`), so the host app's binary can run the
   same commands and add `run`, which needs the platform. The names: `tilolang` is the full build
   tool (the host binary, with `run`); the compiler crate's own binary is `tilolangc`, also
@@ -433,3 +457,33 @@ search.md, "What a type declares" and "Types, references and paths".
   may declare several. So a body is `ui.BlockEditor(bind: doc.body, placeholder: "…")` where
   the document's window draws it; a field marked `(body)` is the document's metadata and says
   nothing about which control edits it, and neither the host nor the compiler places an editor.
+- **`std.Repeat` and `std.Reminder` are built-in value types, held as their RFC 5545 text.** A
+  repeat is its RRULE (`FREQ=WEEKLY;INTERVAL=2`), with `X-FROM=DONE` appended when the next
+  occurrence counts from the day it was completed rather than from the day it was due; a
+  reminder is its TRIGGER duration (`-PT15M`, `PT9H`). Both are written from a string literal,
+  canonicalized as they are held (so what is stored expands unchanged), and normalized again on
+  read, like `Date` and `Time`. They join `Text`, `Date`, `Time` and `std.Identifier` as types
+  that are their own text: a field of one is a text column, an action parameter is text, and code
+  reads a repeat in words only through `.label()` (E020 otherwise), which is the reader's
+  catalogue's phrase and count (`tilolang-repeat-every-weeks` with `count = 2`), never a phrase
+  the compiler bakes in. Expansion is `tilo-recurrence`'s, so a rule Tasks repeats by and one
+  Calendar draws are one reading. `.next(from, done_on)` steps from the due day or, with
+  `X-FROM=DONE`, from the completion day, which is what makes two people completing the same
+  item on the same day write the same next day; completion days on different days are last
+  writer wins on the due field itself. `.next_at(at, day)` keeps a wall time of day across a
+  change of clocks, so it needs the person's zone as its IANA name (`Platform::zone_name`,
+  `Core.zone_name`), falling back to the clock's offset when a host names none
+  (`Europe/Berlin` 09:30 is `08:30Z` before the spring change and `07:30Z` after).
+  `.at(due, at)` places a reminder: from the instant of a timed item, or from the start of the
+  due day for one without a time, so `PT9H` is 09:00 and `-PT15M` a quarter of an hour before
+  midnight, both in the person's zone.
+- **`std.complete(item, done)` advances a repeating item in place.** An app writes one call and
+  its own `done` line (`let again = std.complete(t, done)` then `t.done = done and not again`):
+  the helper adds the completion day to the item's add-wins `Set<Date>` and moves the due day and
+  the time of day to the next occurrence, answering whether it repeats. The type's shape is the
+  contract, as `set`/`open` read their fields: one `std.Repeat` or `Option<std.Repeat>`, one
+  `Set<Date>` of the days it was completed, one `Date` or `Option<Date>` of the day it is due,
+  and at most one `Option<Time>` of the time of day. A type without them gets E118 naming the
+  field to declare, and a view or a function cannot call it (E040). Nothing happens for an item
+  that repeats nowhere or for `done = false`, so a check that does not repeat is the app's own
+  `done` write.

@@ -60,6 +60,21 @@ window opened the data: it is in history, undone like any other, and records in 
 that it ran. A migration is never offered. It cannot delete anything; moving items between
 collections keeps their ids and history.
 
+An `internal action` is never offered either: it is an ordinary action that only the app's own
+gestures run, described as such so that no header, menu or action bar lists it beside the
+commands a person chooses from. It is how an app says what a drag means:
+
+```
+internal action place(t: Task, s: Option<Section>, at: Int) { ... }
+
+ui.TreeView(rows: tasks.items, reorder: true, place: place) { ... }
+```
+
+The action is reachable from the description a gesture names it by — `reorder:`, an entry's
+`add:`, a key a control runs — and from `run(place(...))` in the app's own code. It cannot also
+be a `primary`, `destructive` or `migration` action, which are the other side of the same
+question: what a surface offers.
+
 To start a package, make a directory next to the others with one file:
 
 ```
@@ -378,6 +393,15 @@ A named filter reads only the type's own fields and literals (`not done`, `due !
 is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com")`, a bare
 `jane@x.com` or `+4930…` taken as `mailto:` or `tel:`; `.scheme` and `.value` read its parts.
 
+`std.Repeat` and `std.Reminder` are held as their RFC 5545 text too: a repeat is its rule
+(`std.Repeat("FREQ=WEEKLY;INTERVAL=2")`, `…;X-FROM=DONE` to count from the day it was
+completed) and a reminder its trigger duration (`std.Reminder("-PT15M")`), both from a string
+literal. `.next(from, done_on)`, `.next_at(at, day)` and `.at(due, at)` read them in the
+person's zone, so a wall time of day survives a change of clocks, and `.label()` says what they
+do in the reader's words ("Every 2 weeks", "15 minutes before"). An action completes a repeating
+item in one call: `let again = std.complete(t, done)` adds the day to the item's
+`completed: Set<Date>` and moves `due` and `at` to the next occurrence.
+
 `query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
 that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,
 checked against what each compares: a Bool; a case, or several (`[.open, .blocked]`); a Date
@@ -461,6 +485,10 @@ print(xs, fields: [.title, .due])
 - `xs.first()` and `xs.last()` give an `Option` of the item.
 - A row view may have `let`s before its `row`. `row(r)` with a resource shows that resource's
   row. `ui.Card(item: r, count: n)` shows a count.
+- A view of one item whose whole body is one row is that item's row wherever it is drawn
+  (`view task_row(t: Task, place: RowPlace) { row(t.title, ...) }`), so the parameters after
+  the item are what the place around the row says: a list grouped by a day gives the day, a
+  project's list its project, and the row repeats neither.
 - A card is a summary of its resource: a `list` a `ui.Card` holds shows its first five rows (the
   list node's `preview` property), the count says how many there are, and the card opens the
   resource for the whole list.
@@ -488,9 +516,11 @@ tilolang describe [dir] [--search DIR]    prints what an app publishes as tilola
 whenever a `.tl` file of the package or its imports changes. Exit status: 0 fine, 1 errors in
 the sources, 2 anything else (a missing directory, a bad option).
 
-`fmt` prints the one canonical text projection. It keeps `///` doc comments; plain `//`
-comments are not part of the canonical form, so `fmt` leaves a file that has any alone and
-names it, instead of deleting what someone wrote.
+`fmt` prints the one canonical text projection. It keeps `///` doc comments, and plain `//`
+comments above the declaration, field, statement or match arm they were written over, inside
+expression blocks and match arms as well; one written inside a declaration's head prints above
+the next statement. A blank line between two `///` lines is a paragraph break, kept as a `///`
+line.
 
 ## Packages are apps
 

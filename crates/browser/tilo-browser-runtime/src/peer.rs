@@ -26,11 +26,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use collab_types::presence::Presence;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tilo_browser_peer::{
     DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
+    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture, Track,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
@@ -454,18 +455,18 @@ pub async fn issue_device_cert(
     serde_json::to_string(&cert).map_err(js_error)
 }
 
-fn join_reply_json(reply: tilo_relay_protocol::rooms::JoinReply) -> serde_json::Value {
-    use tilo_relay_protocol::rooms::JoinReply;
+fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_json::Value {
+    use tilo_relay_protocol::workspaces::JoinReply;
     match reply {
         JoinReply::Invitation {
-            room,
+            workspace,
             workspace_id,
             name,
             role,
             expires_at_ns,
             inviter,
         } => serde_json::json!({
-            "kind": "invitation", "room": room, "workspaceId": workspace_id.to_string(),
+            "kind": "invitation", "room": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role, "expiresAtNs": expires_at_ns.to_string(),
             "inviter": inviter.map(|inviter| serde_json::json!({
                 "name": inviter.name, "userPublicKey": hex::encode(inviter.user_public_key),
@@ -474,12 +475,12 @@ fn join_reply_json(reply: tilo_relay_protocol::rooms::JoinReply) -> serde_json::
         JoinReply::Challenge { .. } => serde_json::json!({"kind": "challenge"}),
         JoinReply::Waiting => serde_json::json!({"kind": "waiting"}),
         JoinReply::Admitted {
-            room,
+            workspace,
             workspace_id,
             name,
             role,
         } => serde_json::json!({
-            "kind": "admitted", "room": room, "workspaceId": workspace_id.to_string(),
+            "kind": "admitted", "room": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role,
         }),
         JoinReply::Declined => serde_json::json!({"kind": "declined"}),
@@ -501,7 +502,7 @@ fn request_id(text: &str) -> Result<[u8; 32], JsError> {
 pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
     let reply = tilo_browser_peer::invite::join(
         &PageHttp(post),
-        &tilo_relay_protocol::rooms::JoinStep::Inspect { invitation },
+        &tilo_relay_protocol::workspaces::JoinStep::Inspect { invitation },
     )
     .await
     .map_err(js_error)?;
@@ -631,7 +632,7 @@ pub async fn join_status(
 ) -> Result<String, JsError> {
     let reply = tilo_browser_peer::invite::join(
         &PageHttp(post),
-        &tilo_relay_protocol::rooms::JoinStep::Status {
+        &tilo_relay_protocol::workspaces::JoinStep::Status {
             request_id: request_id(&request_id_hex)?,
             device_public_key: device_key(&device_public_key_hex)?,
         },
@@ -824,7 +825,7 @@ struct JsPresence {
 
 /// The app every shell's presence is published under: the desktop's own,
 /// the one its members name themselves and their screens by.
-const SHELL_APP: &str = neighbour_wire::DESKTOP_PRESENCE_APP;
+const SHELL_APP: &str = collab_types::presence::DESKTOP_APP;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -1007,48 +1008,21 @@ fn shell_from_js(
     }))
 }
 
-/// The workspace's presence key, as every device of it names it.
-fn workspace_key(room: &str) -> Vec<u8> {
-    neighbour_wire::workspace_key(room)
-}
-
-/// One presence message of this page's person in `room`, postcard-encoded:
-/// the body a presence envelope carries.
-fn presence_message(
-    peer: u64,
-    room: &str,
-    key: Vec<u8>,
-    payload: collab_types::PeerPresencePayload,
-) -> Result<Vec<u8>, JsError> {
-    postcard::to_stdvec(&neighbour_wire::desktop_presence(peer, room, key, payload))
-        .map_err(js_error)
-}
-
-/// Everything one presence value says, as the messages the workspace's other
+/// Everything one presence value says, as the frames the workspace's other
 /// devices read it from: the shell's view, its pointer, and its wave and
 /// following (which a native shell reads as its own).
-fn presence_bodies(value: &JsPresence, peer: u64, room: &str) -> Result<Vec<Vec<u8>>, JsError> {
+fn presence_frames(value: &JsPresence, workspace: &str) -> Result<Vec<Presence>, JsError> {
     use collab_types::PeerPresencePayload;
-    let mut bodies = Vec::new();
+    let mut frames = Vec::new();
     if let Some(shell) = shell_from_js(value)? {
-        bodies.push(presence_message(
-            peer,
-            room,
-            workspace_key(room),
+        frames.push(Presence::desktop(
+            workspace,
             PeerPresencePayload::Shell(Box::new(shell)),
-        )?);
+        ));
     }
     match &value.pointer {
         Some(crate::browser::pointers::JsPointer::Tile { tile, at }) => {
-            let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
-                space: collab_types::presence::PointerSpace::Tile {
-                    workspace: room.to_owned(),
-                    tab: tile.tab,
-                },
-            })
-            .map_err(js_error)?;
-            let payload = PeerPresencePayload::Pointer { x: at[0], y: at[1] };
-            bodies.push(presence_message(peer, room, key, payload)?);
+            frames.push(Presence::pointing(workspace, tile.tab, at[0], at[1]));
         }
         Some(_) => {
             return Err(js_error(
@@ -1058,27 +1032,23 @@ fn presence_bodies(value: &JsPresence, peer: u64, room: &str) -> Result<Vec<Vec<
         None => {}
     }
     if let Some(wave) = &value.wave {
-        bodies.push(presence_message(
-            peer,
-            room,
-            workspace_key(room),
+        frames.push(Presence::desktop(
+            workspace,
             PeerPresencePayload::Wave {
                 seq: wave.seq,
                 target: wave.target.clone(),
             },
-        )?);
+        ));
     }
     if let Some(following) = &value.following {
-        bodies.push(presence_message(
-            peer,
-            room,
-            workspace_key(room),
+        frames.push(Presence::desktop(
+            workspace,
             PeerPresencePayload::Following {
                 target: Some(following.clone()),
             },
-        )?);
+        ));
     }
-    Ok(bodies)
+    Ok(frames)
 }
 
 fn ops_to_js(ops: Vec<PreviewOp>) -> Vec<JsPreviewOp> {
@@ -1117,18 +1087,10 @@ fn workspace_number(text: &str) -> Result<u64, JsError> {
     tilo_relay_protocol::room_workspace_id(text).map_err(|_| js_error("not a workspace uuid"))
 }
 
-/// Where the person's pointer is no longer: the message that takes it off
-/// the workspace's other devices.
-fn pointer_cleared(peer: u64, room: &str) -> Result<Vec<u8>, JsError> {
-    let key = serde_json::to_string(&collab_types::presence::PresenceKey::Pointer {
-        space: collab_types::presence::PointerSpace::Tile {
-            workspace: room.to_owned(),
-            tab: 0,
-        },
-    })
-    .map_err(js_error)?;
-    postcard::to_stdvec(&neighbour_wire::NeighbourMsg::PresenceCleared { peer, key })
-        .map_err(js_error)
+/// Where the person's pointer is no longer: the frame that takes it off the
+/// workspace's other devices.
+fn pointer_cleared(workspace: &str) -> Presence {
+    Presence::pointer_left(workspace, 0)
 }
 
 /// One presence message another member published, as the live layer reads
@@ -1199,75 +1161,44 @@ enum JsDurable {
 
 fn presence_event(from: [u8; 32], body: &[u8], now_ms: u64) -> Option<JsPresenceEvent> {
     use collab_types::PeerPresencePayload;
-    let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
+    let said = Presence::decode(body)?;
+    if said.app != SHELL_APP {
+        return None;
+    }
     let publisher = hex::encode(from);
-    match message {
-        neighbour_wire::NeighbourMsg::AppPresenceV2 {
-            app_id,
-            cluster_id: _,
-            presence,
-            ..
-        } if app_id == SHELL_APP => {
-            let key: collab_types::presence::PresenceKey =
-                postcard::from_bytes(&presence.key).ok()?;
-            match (key, presence.payload) {
-                (
-                    collab_types::presence::PresenceKey::Workspace { .. },
-                    PeerPresencePayload::Shell(shell),
-                ) => Some(JsPresenceEvent::Shell {
-                    publisher,
-                    frame: Box::new(shell_to_js(*shell)),
-                }),
-                (_, PeerPresencePayload::Arrived) => Some(JsPresenceEvent::Arrived { publisher }),
-                (_, PeerPresencePayload::Left) => Some(JsPresenceEvent::Left { publisher }),
-                (_, PeerPresencePayload::Wave { seq, target }) => Some(JsPresenceEvent::Wave {
-                    publisher,
-                    wave: JsWave { seq, target },
-                }),
-                (_, PeerPresencePayload::Following { target }) => {
-                    Some(JsPresenceEvent::Following {
-                        publisher,
-                        following: target,
-                    })
-                }
-                // A device's pointer travels as its own payload under the
-                // tile's key; no send time goes with it.
-                (
-                    collab_types::presence::PresenceKey::Pointer {
-                        space: collab_types::presence::PointerSpace::Tile { tab, .. },
-                    },
-                    PeerPresencePayload::Pointer { x, y },
-                ) => Some(JsPresenceEvent::Pointer {
-                    publisher,
-                    tab,
-                    at: [f64::from(x), f64::from(y)],
-                    sent_at_ms: now_ms,
-                    colour: None,
-                }),
-                _ => None,
-            }
-        }
-        neighbour_wire::NeighbourMsg::PresenceMoved {
-            key,
-            point,
-            ts,
-            colour,
-            ..
-        } => match serde_json::from_str(&key).ok()? {
+    match (said.key, said.payload) {
+        (
+            collab_types::presence::PresenceKey::Workspace { .. },
+            PeerPresencePayload::Shell(shell),
+        ) => Some(JsPresenceEvent::Shell {
+            publisher,
+            frame: Box::new(shell_to_js(*shell)),
+        }),
+        (
             collab_types::presence::PresenceKey::Pointer {
                 space: collab_types::presence::PointerSpace::Tile { tab, .. },
-            } => Some(JsPresenceEvent::Pointer {
-                publisher,
-                tab,
-                at: [point.0, point.1],
-                sent_at_ms: ts,
-                colour,
-            }),
-            _ => None,
-        },
-        neighbour_wire::NeighbourMsg::PresenceCleared { .. } => {
+            },
+            PeerPresencePayload::Pointer { x, y },
+        ) => Some(JsPresenceEvent::Pointer {
+            publisher,
+            tab,
+            at: [f64::from(x), f64::from(y)],
+            sent_at_ms: now_ms,
+            colour: None,
+        }),
+        (collab_types::presence::PresenceKey::Pointer { .. }, PeerPresencePayload::Left) => {
             Some(JsPresenceEvent::PointerLeft { publisher })
         }
+        (_, PeerPresencePayload::Arrived) => Some(JsPresenceEvent::Arrived { publisher }),
+        (_, PeerPresencePayload::Left) => Some(JsPresenceEvent::Left { publisher }),
+        (_, PeerPresencePayload::Wave { seq, target }) => Some(JsPresenceEvent::Wave {
+            publisher,
+            wave: JsWave { seq, target },
+        }),
+        (_, PeerPresencePayload::Following { target }) => Some(JsPresenceEvent::Following {
+            publisher,
+            following: target,
+        }),
         _ => None,
     }
 }
@@ -1635,7 +1566,7 @@ struct JsDelegation {
     label: String,
     color: String,
     device: String,
-    rooms: Vec<String>,
+    workspaces: Vec<String>,
     apps: Vec<String>,
     expires_at_ns: u64,
 }
@@ -1678,7 +1609,9 @@ pub fn verify_agent_delegation(
         label: delegation.label,
         color: tilo_relay_protocol::agents::color_hex(delegation.color),
         device: hex::encode(delegation.device_public_key),
-        rooms: delegation.scope.rooms,
+        // The page calls a delegation's workspaces what its own API does; the
+        // protocol spells the scope's as rooms.
+        workspaces: delegation.scope.rooms,
         apps: delegation.scope.apps,
         expires_at_ns: delegation.expires_at_ns,
     })
@@ -1718,8 +1651,8 @@ fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
     if name.trim().is_empty() {
         return;
     }
-    let request = tilo_relay_protocol::rooms::RoomsRequest::Name {
-        room: workspace.to_owned(),
+    let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Name {
+        workspace: workspace.to_owned(),
         name: name.to_owned(),
     };
     let _ = handle.rooms_then(request, Box::new(|_| {}));
@@ -1956,10 +1889,10 @@ impl WasmPeer {
     }
 
     /// Administer the host's workspaces as this device: `request` is a
-    /// `RoomsRequest` as JSON (serde's external tagging, byte arrays as
-    /// arrays of numbers); resolves to the `RoomsReply` as JSON.
+    /// `WorkspacesRequest` as JSON (serde's external tagging, byte arrays as
+    /// arrays of numbers); resolves to the `WorkspacesReply` as JSON.
     pub async fn govern(&self, request: String) -> Result<String, JsError> {
-        let request: tilo_relay_protocol::rooms::RoomsRequest =
+        let request: tilo_relay_protocol::workspaces::WorkspacesRequest =
             serde_json::from_str(&request).map_err(js_error)?;
         let (reply, receipt) = tokio::sync::oneshot::channel();
         self.handle
@@ -2020,7 +1953,7 @@ impl WasmPeer {
     /// the token whose SHA-256 the grant names: `options` is JSON
     /// `{requestId, workspace, role, tokenSha256, label, expiresInSeconds,
     /// inviterName?}` (hex ids, `role` `Viewer`/`Commenter`/`Editor`); the
-    /// owner's `root` signs the grant. Resolves to the `RoomsReply` as JSON.
+    /// owner's `root` signs the grant. Resolves to the `WorkspacesReply` as JSON.
     ///
     /// # Errors
     ///
@@ -2034,7 +1967,7 @@ impl WasmPeer {
         struct Options {
             request_id: String,
             workspace: String,
-            role: tilo_relay_protocol::rooms::RoomRole,
+            role: tilo_relay_protocol::workspaces::WorkspaceRole,
             token_sha256: String,
             label: String,
             expires_in_seconds: u64,
@@ -2043,8 +1976,8 @@ impl WasmPeer {
         let options: Options = serde_json::from_str(&options).map_err(js_error)?;
         let root = PageSigner::from_js(&root)?;
         let now_ns = ui::time::unix_now_ns();
-        let mut grant = tilo_relay_protocol::rooms::PreAdmission {
-            room: options.workspace,
+        let mut grant = tilo_relay_protocol::workspaces::PreAdmission {
+            workspace: options.workspace,
             role: options.role,
             token_sha256: device_key(&options.token_sha256)?,
             label: options.label,
@@ -2058,11 +1991,13 @@ impl WasmPeer {
             .await
             .map_err(|error| js_error(error.0))?;
         self.govern(
-            serde_json::to_string(&tilo_relay_protocol::rooms::RoomsRequest::PreAdmit {
-                request_id: request_id(&options.request_id)?,
-                grant,
-                inviter_name: options.inviter_name,
-            })
+            serde_json::to_string(
+                &tilo_relay_protocol::workspaces::WorkspacesRequest::PreAdmit {
+                    request_id: request_id(&options.request_id)?,
+                    grant,
+                    inviter_name: options.inviter_name,
+                },
+            )
             .map_err(js_error)?,
         )
         .await
@@ -2084,14 +2019,9 @@ impl WasmPeer {
         } else {
             collab_types::PeerPresencePayload::Left
         };
-        let body = presence_message(
-            neighbour_wire::peer_handle(&self.device_key),
-            workspace,
-            workspace_key(workspace),
-            payload,
-        )?;
+        let frame = Presence::desktop(workspace, payload);
         self.handle
-            .publish_presence(workspace_id, vec![body])
+            .publish_presence(workspace_id, vec![frame])
             .map_err(js_error)
     }
 
@@ -2108,16 +2038,12 @@ impl WasmPeer {
     pub fn publish_presence(&self, workspace: &str, value: &str) -> Result<(), JsError> {
         let value: JsPresence = serde_json::from_str(value).map_err(js_error)?;
         let workspace_id = workspace_number(workspace)?;
-        let bodies = presence_bodies(
-            &value,
-            neighbour_wire::peer_handle(&self.device_key),
-            workspace,
-        )?;
-        if bodies.is_empty() {
+        let frames = presence_frames(&value, workspace)?;
+        if frames.is_empty() {
             return Ok(());
         }
         self.handle
-            .publish_presence(workspace_id, bodies)
+            .publish_presence(workspace_id, frames)
             .map_err(js_error)
     }
 
@@ -2130,9 +2056,8 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = pointerLeft)]
     pub fn pointer_left(&self, workspace: &str) -> Result<(), JsError> {
         let workspace_id = workspace_number(workspace)?;
-        let body = pointer_cleared(neighbour_wire::peer_handle(&self.device_key), workspace)?;
         self.handle
-            .publish_presence(workspace_id, vec![body])
+            .publish_presence(workspace_id, vec![pointer_cleared(workspace)])
             .map_err(js_error)
     }
 
@@ -2476,6 +2401,14 @@ impl WasmPeer {
         hex::encode(self.device_key)
     }
 
+    /// Why this page cannot join its workspaces' live plane at all, in the
+    /// words it shows in the members' place, or `null` while it can (or did):
+    /// this browser has no WebTransport, and the plane has no fallback.
+    #[wasm_bindgen(js_name = liveNote)]
+    pub fn live_note(&self) -> Option<String> {
+        self.handle.live_note()
+    }
+
     /// How many changes this page made to its workspace: records it sent, and
     /// windows the person opened, closed or moved on its desktop.
     #[wasm_bindgen(js_name = authoredChanges)]
@@ -2504,7 +2437,12 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Presence { from, body, .. } if from != self.device_key => {
+                PeerEvent::LivePlane {
+                    from,
+                    track: Track::Presence,
+                    body,
+                    ..
+                } if from != self.device_key => {
                     let event = presence_event(from, &body, now_ms)?;
                     serde_json::to_value(event).ok()
                 }

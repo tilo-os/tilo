@@ -2,7 +2,7 @@
 use super::{
     Basis, CoeditPayload, CoverageDecision, DIRECTORY, File, Invariant, PathBuf,
     RetentionAuthority, Seek, ShellStore, Step, StoreError, durable, frame, frames, fs, invalid,
-    read_meta, route_key, verify_room, verify_snapshot,
+    read_meta, route_key, verify_snapshot, verify_workspace,
 };
 
 /// Reads one immutable selected reference per quantum, including prerequisites.
@@ -65,7 +65,7 @@ impl SelectedRead {
         };
         let Some(meta) = read_meta(input)? else {
             self.input = None;
-            if self.basis.room.is_some() && !self.basis.complete() {
+            if self.basis.workspace.is_some() && !self.basis.complete() {
                 return Err(invalid("incomplete selected basis"));
             }
             if let Some(generation) = self.generation.take() {
@@ -80,20 +80,20 @@ impl SelectedRead {
         let value = frame(&self.root.join(&meta.source), self.workspace)?
             .ok_or_else(|| invalid("invalid selected shell frame"))?;
         if meta.key.first().is_some_and(|v| v == "room") {
-            let room = verify_room(
+            let workspace = verify_workspace(
                 &self.authority,
                 value.source,
                 value.channel,
                 &value.body,
                 value.kind,
-                self.basis.room.as_ref(),
+                self.basis.workspace.as_ref(),
             )
             .map_err(|_| invalid("invalid selected room prerequisite"))?;
-            self.basis.set_room(room)?;
+            self.basis.set_workspace(workspace)?;
         } else if meta.key.first().is_some_and(|v| v == "app") {
             let snapshot = verify_snapshot(
                 self.basis
-                    .room
+                    .workspace
                     .as_ref()
                     .ok_or_else(|| invalid("selected application without room"))?,
                 value.source,
@@ -130,8 +130,12 @@ impl SelectedRead {
             CoeditPayload::Checkpoint { channel, body }
             | CoeditPayload::RetainedDelta { channel, body } => (channel, body),
         };
-        let room = self.basis.room.as_ref().invariant("room missing")?;
-        if room.covers_frame(source, channel, &body) == CoverageDecision::Covered {
+        let workspace = self
+            .basis
+            .workspace
+            .as_ref()
+            .invariant("workspace missing")?;
+        if workspace.covers_frame(source, channel, &body) == CoverageDecision::Covered {
             return Ok(true);
         }
         for route in self.basis.routes.values() {
@@ -150,7 +154,7 @@ impl SelectedRead {
                 self.workspace,
             )?
             .ok_or_else(|| invalid("missing selected snapshot"))?;
-            let snapshot = verify_snapshot(room, file.source, file.channel, &file.body)
+            let snapshot = verify_snapshot(workspace, file.source, file.channel, &file.body)
                 .map_err(|_| invalid("invalid selected snapshot"))?;
             return Ok(snapshot.covers_incoming_snapshot(source, channel, &body)
                 || snapshot.classify_tail(source, channel, &body).coverage

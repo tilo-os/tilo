@@ -460,7 +460,7 @@ impl Session {
             Arc::new(package(dir)),
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
-            Rc::new(Phrases::new("en-US")),
+            &Phrases::new("en-US"),
             wake,
         );
         host.add(hosted, Some(watched));
@@ -1597,6 +1597,54 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     );
 }
 
+/// The accessibility node of the window's first virtual list: the headings it carries and the
+/// rows under them.
+fn list_nodes(widget: &dyn Widget) -> Option<ui::a11y::AccessNode> {
+    if widget.name() == "DescribedList"
+        && let Some(list) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::DescribedList>())
+            .and_then(ui::widget::DescribedList::list)
+    {
+        return Widget::accessibility(list);
+    }
+    widget.children().into_iter().find_map(list_nodes)
+}
+
+/// The task open beside the list is the list's selected row, and a task nobody has named yet
+/// shows its place: an "Untitled" row under the heading for the days it does not have.
+#[test]
+fn a_new_task_shows_an_untitled_row_under_no_day_and_the_open_tasks_row_is_selected() {
+    let mut session = Session::tasks();
+    let mut found = Vec::new();
+    named(session.window.root(), "New task", &mut found);
+    let button = *found.last().expect("the window offers New task");
+    session
+        .window
+        .click_at(button.center().x, button.center().y);
+    session.settle();
+
+    let list = list_nodes(session.window.root()).expect("the window shows its list");
+    let heading = list
+        .children
+        .iter()
+        .position(|node| {
+            node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("No date")
+        })
+        .expect("a task with no day stands under the heading for the ones without");
+    let row = &list.children[heading.saturating_add(1)];
+    assert_eq!(row.role, ui::a11y::Role::ListItem);
+    assert_eq!(
+        row.name.as_deref(),
+        Some("Untitled"),
+        "a row of a task nobody has named yet says so"
+    );
+    assert!(
+        row.state.selected,
+        "the row of the task open beside the list is the selected one"
+    );
+}
+
 /// The actions the tasks app offers the person at this window, as the window's catalogue
 /// lists them.
 fn offered(session: &mut Session) -> Vec<(String, Option<String>)> {
@@ -1782,7 +1830,7 @@ fn palette_shots() {
     std::fs::create_dir_all(&dir).unwrap();
     let _settled = ui::motion::testing::settled();
     for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
-        for (what, query) in [("palette", ""), ("palette-search", "New task")] {
+        for (what, query) in [("palette", ""), ("palette-search", "new")] {
             let mut session = Session::tasks();
             session.window.harness().set_theme(theme.clone());
             let request = ui::search::SearchRequest::this_app();
@@ -1797,6 +1845,213 @@ fn palette_shots() {
                 .window
                 .harness()
                 .render_png(&dir.join(format!("{what}-{shade}.png")));
+            // What the palette reads row by row, for a check that cannot look at the image.
+            let labels: Vec<String> = session
+                .window
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect();
+            std::fs::write(dir.join(format!("{what}-{shade}.txt")), labels.join("\n")).unwrap();
         }
     }
+}
+
+type Shown = (String, Option<ui::icons::Icon>, Option<Vec<String>>);
+
+/// What the window's own palette reads for `query`, row by row: the title it
+/// shows, the picture it paints and the chord it names.
+fn palette_rows(session: &mut Session, query: &str) -> Vec<Shown> {
+    if session.window.harness().palette_shown() {
+        session
+            .window
+            .press_key(ui::winit::keyboard::NamedKey::Escape);
+        session.settle();
+    }
+    session
+        .window
+        .open_search(ui::search::SearchRequest::this_app().with_query(query));
+    session.settle();
+    session
+        .window
+        .harness()
+        .palette_rows()
+        .into_iter()
+        .map(|row| {
+            let keycaps = match &row.row {
+                Some(ui::search::SearchRow::Command(command)) => command.keycaps.clone(),
+                _ => None,
+            };
+            (row.title, row.icon, keycaps)
+        })
+        .collect()
+}
+
+/// The modifier a command chord is written with.
+fn command_modifier(conventions: ui::PlatformConventions) -> String {
+    ui::HostShortcut::Search
+        .shortcut(conventions)
+        .keycap_labels(conventions)
+        .first()
+        .cloned()
+        .expect("the command modifier has a name")
+}
+
+#[test]
+fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::tasks();
+    session.settle();
+    let conventions = ui::PlatformConventions::default();
+    an_empty_windows_palette_lists_what_a_person_can_do_now(&mut session, conventions);
+    an_open_tasks_palette_lists_what_the_task_lets_a_person_do(&mut session, conventions);
+}
+
+fn an_empty_windows_palette_lists_what_a_person_can_do_now(
+    session: &mut Session,
+    conventions: ui::PlatformConventions,
+) {
+    // Unasked, an empty window lists the app itself once and each command a
+    // person can take now, drawn from what the action declares. An action that
+    // asks for a pick a row cannot collect (Open, Remove, Move to, Delete
+    // project outside a project) is not a row, and neither is one the app keeps
+    // for agents.
+    let undo = Some(
+        ui::HostShortcut::Undo
+            .shortcut(conventions)
+            .keycap_labels(conventions),
+    );
+    let redo = Some(
+        ui::HostShortcut::Redo
+            .shortcut(conventions)
+            .keycap_labels(conventions),
+    );
+    let command = command_modifier(conventions);
+    let empty = palette_rows(session, "");
+    assert_eq!(
+        empty,
+        vec![
+            ("Tasks".to_owned(), Some(ui::icons::Icon::Layers), None),
+            (
+                "New task".to_owned(),
+                Some(ui::icons::Icon::Plus),
+                Some(vec![command, "N".to_owned()]),
+            ),
+            (
+                "New project".to_owned(),
+                Some(ui::icons::Icon::FolderPlus),
+                None,
+            ),
+            (
+                "Clear done".to_owned(),
+                Some(ui::icons::Icon::CircleCheck),
+                None,
+            ),
+            ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
+            ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
+            (
+                "Checkpoint".to_owned(),
+                Some(ui::icons::Icon::Bookmark),
+                None,
+            ),
+        ],
+        "the empty window's palette"
+    );
+    let labels: Vec<&str> = empty.iter().map(|(title, ..)| title.as_str()).collect();
+    for internal in [
+        "tilolang",
+        "Submit",
+        "Edit a text field",
+        "Set a flag field",
+        "Commit a planned action",
+        "Run a block",
+        "Read a resource's fields",
+        "List the catalogue",
+        "Focus",
+        "Go to",
+        "Quick add",
+        "Add subtask",
+        "Move to",
+    ] {
+        assert!(
+            !labels.contains(&internal),
+            "{internal} is never a person's row: {labels:?}"
+        );
+    }
+    // Typed, only what it names.
+    let new: Vec<String> = palette_rows(session, "new")
+        .into_iter()
+        .map(|(title, ..)| title)
+        .collect();
+    assert_eq!(
+        new,
+        ["New task", "New project"],
+        "the query narrows the list to what it names"
+    );
+}
+
+fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
+    session: &mut Session,
+    conventions: ui::PlatformConventions,
+) {
+    let command = command_modifier(conventions);
+    // With a task open, the palette lists what that task lets a person do, once
+    // each: the task and the app it belongs to, then the actions bound to it.
+    // Picks a row cannot collect (Assign to…, Move to, Open) stay where they
+    // live, and no row repeats another.
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Escape);
+    session.settle();
+    let mut found = Vec::new();
+    named(session.window.root(), "New task", &mut found);
+    let rect = *found.last().expect("the header offers New task");
+    let (x, y) = (rect.center().x, rect.center().y);
+    session.window.click_at(x, y);
+    session.settle();
+    let open = palette_rows(session, "");
+    let titles: Vec<&str> = open.iter().map(|(title, ..)| title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "Task",
+            "Tasks",
+            "New task",
+            "New project",
+            "Clear done",
+            "Task summary",
+            "Complete",
+            "Snooze until…",
+            "Move to inbox",
+            "Set due date",
+            "Prioritize",
+            "Indent",
+            "Outdent",
+            "Undo",
+        ],
+        "the open task's palette"
+    );
+    let task = open
+        .iter()
+        .find(|(title, ..)| title == "Task")
+        .expect("the open task is a row");
+    assert_eq!(
+        task.1,
+        Some(ui::icons::Icon::Layers),
+        "a resource row shows the picture of what it is"
+    );
+    assert!(
+        open.iter().all(|(_, icon, _)| icon.is_some()),
+        "no row is a bare line: {open:?}"
+    );
+    let complete = open
+        .iter()
+        .find(|(title, ..)| title == "Complete")
+        .expect("the open task offers Complete");
+    assert_eq!(
+        complete.2,
+        Some(vec![command, "Enter".to_owned()]),
+        "and its own chord"
+    );
 }

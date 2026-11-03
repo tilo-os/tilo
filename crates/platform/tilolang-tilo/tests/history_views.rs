@@ -174,7 +174,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks, Value::text("Call the landlord")],
     );
     let day = |d: &str| Value::some(Value::text(d));
@@ -433,9 +433,9 @@ fn two_people_typing_one_rich_body_each_entry_shows_its_authors_change() {
     let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
     let page = view_id(&bo);
     let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let input = rich_input(&editors);
+    let body_field = body_editor(&editors);
     editors
-        .edit(&input, &body("Oat milk and sourdough"))
+        .edit(&body_field, &body("Oat milk and sourdough"))
         .unwrap();
     bo.commit();
     drop(editors);
@@ -477,13 +477,32 @@ fn view_id(r: &Replica) -> String {
         .expect("the richtext package has a post_edit view")
 }
 
-/// The key of the window's rich input.
-fn rich_input(view: &ViewInstance) -> String {
+/// The role assistive technology reads a node as, as the component drawing it describes
+/// itself (the body's document, a field, a button): what a person is told of a control, never
+/// the kind string of the widget behind it, which the toolkit changes as its widgets do.
+fn access_role(node: &UiNode) -> Option<&'static str> {
+    let name = node.kind.strip_prefix(tilolang::toolkit::KIND_PREFIX)?;
+    Some(
+        tilolang::toolkit::catalogue()
+            .get(name)?
+            .semantics
+            .role
+            .as_str(),
+    )
+}
+
+/// The key of the window's body: the document a person types the post's body into.
+///
+/// It is the node assistive technology reads as a document that the view bound to the post's
+/// field; the history's own rich text is read-only, so it binds nothing.
+fn body_editor(view: &ViewInstance) -> String {
     nodes(view.tree())
         .into_iter()
-        .find(|n| n.kind == "ui.RichInput")
-        .map(|n| n.key.clone())
-        .expect("the window has a rich input")
+        .find(|node| node.binding.is_some() && access_role(node) == Some("Document"))
+        .map_or_else(
+            || panic!("the window binds the post's body: {:#?}", view.tree()),
+            |node| node.key.clone(),
+        )
 }
 
 /// The work reading one entry's body diff does in a post of `paragraphs` paragraphs: the
@@ -531,8 +550,8 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     }
     let page = view_id(&bo);
     let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let input = rich_input(&editors);
-    editors.edit(&input, &body(&typed.join("\n"))).unwrap();
+    let body_field = body_editor(&editors);
+    editors.edit(&body_field, &body(&typed.join("\n"))).unwrap();
     bo.commit();
     drop(editors);
     ada.sync_with(&mut bo);
@@ -657,4 +676,105 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
             .any(|label| label == "ada" || label == AGENT),
         "no row shows a participant's id"
     );
+}
+
+/// The key of the node bound to `field` in a window.
+fn bound_key(node: &UiNode, field: &str) -> Option<String> {
+    if node
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .is_some_and(|(_, bound)| bound == field)
+    {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| bound_key(child, field))
+}
+
+#[test]
+fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
+    let (mut ada, _notes, tasks) = two_people();
+    let task = call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "new_task",
+        vec![tasks, Value::text("Buy oat milk")],
+    );
+    ada.commit();
+    let at = target(&task);
+    let title =
+        crate::fixtures::field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
+    let page = ada.host.open_resource(&at, None).unwrap();
+    let input = bound_key(page.tree(), &title).expect("the task's title is bound to its input");
+    page.edit(&input, &Value::text("Bring oat milk")).unwrap();
+    ada.commit();
+    drop(page);
+
+    // The entry says what was edited, in words, and never the platform's verb id.
+    let mut page = ada.host.open_resource(&at, None).unwrap();
+    let section = history(&mut page);
+    let said: Vec<&str> = nodes(&section).into_iter().filter_map(text).collect();
+    assert!(
+        said.contains(&"Edited title"),
+        "the entry says what was edited: {said:?}"
+    );
+    assert!(
+        !said.iter().any(|what| what.contains("dit-text")),
+        "no entry shows an action id: {said:?}"
+    );
+}
+
+/// Checking a task off is one entry of history, saying in a sentence what it did: it took the
+/// tasks under it with it, and the step before it is an entry of its own.
+#[test]
+fn checking_a_task_off_is_one_entry_saying_what_it_did() {
+    const SAYS: &str = "Checks a task off with every task under it, or opens it again with the \
+                        tasks it is under.";
+    let (mut ada, _, tasks) = two_people();
+    let parent = call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "new_task",
+        vec![tasks.clone(), Value::text("Write the launch post")],
+    );
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![tasks, parent.clone(), Value::text("Outline")],
+    );
+    ada.commit();
+    // Bo puts it off a day, so Ada's check stands after a step of his.
+    call(
+        &ada,
+        "bo",
+        TASKS_APP,
+        "schedule",
+        vec![parent.clone(), Value::some(Value::text("2026-11-02"))],
+    );
+    ada.commit();
+    call(&ada, "ada", TASKS_APP, "check", vec![parent.clone()]);
+    ada.commit();
+
+    let mut page = ada.host.open_resource(&target(&parent), None).unwrap();
+    let section = history(&mut page);
+    assert_eq!(
+        entries(&section),
+        ["ada", "bo", "ada"],
+        "newest first: the check, then Bo's step, then the making"
+    );
+    assert!(
+        nodes(&section).iter().any(|n| text(n) == Some(SAYS)),
+        "the check's entry says what it did: {section:#?}"
+    );
+    let (label, ..) = changes(&section)
+        .into_iter()
+        .next()
+        .expect("the check's change is shown");
+    assert_eq!(label, "Done");
 }

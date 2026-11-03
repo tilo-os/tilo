@@ -30,7 +30,6 @@ impl PdfApp {
                 self.reflow();
             }
         }
-        self.dirty = true;
     }
 
     /// Arm `colour` for the next mark. A selected mark takes it too, as an
@@ -40,7 +39,6 @@ impl PdfApp {
         if let Some(id) = self.selected_anno.as_deref() {
             self.submit(crate::actions::set_annotation_color_action(id, colour));
         }
-        self.dirty = true;
     }
 
     fn toggle_sidebar(&mut self) {

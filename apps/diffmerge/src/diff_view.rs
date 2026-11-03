@@ -309,7 +309,6 @@ impl DiffView {
         self.scroll_y = 0.0;
         self.across.reset();
         self.active_block = self.model.blocks.first().map(|_| 0);
-        self.dirty = true;
     }
 
     pub(crate) fn set_waker(&mut self, wake: ui::WakeHandle) {
@@ -686,7 +685,6 @@ impl Widget for DiffView {
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
             self.focused = focused;
-            self.dirty = true;
         }
     }
 

@@ -437,6 +437,12 @@ impl Checker<'_> {
             ),
             Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
             Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
+            // Its words, which only the runtime's locale knows.
+            Ty::Repeat | Ty::Reminder => {
+                let t = self.show(&v.ty);
+                self.err("E020", span, format!("a value of type {t} cannot be shown as text; write its label, `….label()`, to show it in words"));
+                Ex::error()
+            }
             other => {
                 let t = self.show(other);
                 self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Date, a Time, a Principal or a record"));
@@ -677,30 +683,31 @@ impl Checker<'_> {
     }
 
     fn equality(&mut self, eq: bool, l: Ex, r: Ex, span: Span) -> Ex {
-        let negate = |e: Ex| Ex::new(Ek::Not(Box::new(e)), Ty::Bool);
         let r = self.coerce(r, &l.ty, span);
-        let (lt, base) = (l.ty.clone(), if eq { ir::BinOp::Eq } else { ir::BinOp::Ne });
-        match lt {
+        let e = self.same(l, r, span);
+        if eq || e.ty.is_error() {
+            e
+        } else {
+            Ex::new(Ek::Not(Box::new(e)), Ty::Bool)
+        }
+    }
+
+    /// Whether two values of one type are equal: what `==` means, for code that compares values
+    /// it holds itself.
+    pub(super) fn same(&mut self, l: Ex, r: Ex, span: Span) -> Ex {
+        match l.ty.clone() {
             Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) => {
-                Ex::new(Ek::Bin(base, Box::new(l), Box::new(r)), Ty::Bool)
+                Ex::new(Ek::Bin(ir::BinOp::Eq, Box::new(l), Box::new(r)), Ty::Bool)
             }
             // Enums, options, results, tuples and lists compare by value, payloads included.
             Ty::Enum(_) | Ty::Option(_) | Ty::Result(..) | Ty::Tuple(_) | Ty::List(_) => {
-                let e = Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool);
-                if eq { e } else { negate(e) }
+                Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool)
             }
-            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => {
-                let e = Ex::host(Imp::StrEq, vec![l, r], Ty::Bool);
-                if eq { e } else { negate(e) }
+            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
+                Ex::host(Imp::StrEq, vec![l, r], Ty::Bool)
             }
-            Ty::Principal => {
-                let e = Ex::host(Imp::PrincipalEq, vec![l, r], Ty::Bool);
-                if eq { e } else { negate(e) }
-            }
-            Ty::Record(_) | Ty::Union(_) => {
-                let e = Ex::host(Imp::RefEq, vec![l, r], Ty::Bool);
-                if eq { e } else { negate(e) }
-            }
+            Ty::Principal => Ex::host(Imp::PrincipalEq, vec![l, r], Ty::Bool),
+            Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefEq, vec![l, r], Ty::Bool),
             Ty::Error => Ex::error(),
             other => {
                 let t = self.show(&other);

@@ -710,7 +710,12 @@ impl Widget for Card {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.parts.children.iter().any(|c| c.needs_redraw())
+        self.dirty
+            || self
+                .parts
+                .children
+                .iter()
+                .any(|c| c.needs_redraw() || c.needs_animation_frame())
     }
 
     fn take_structure_dirty(&mut self) -> bool {

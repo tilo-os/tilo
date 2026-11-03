@@ -103,7 +103,15 @@ view screen(a: Arrangement) {
     let v = viewing
     if (v.showing == .desktop or bar_is_traditional(shell)) and not space.compact {
         layers(fill) {
-            traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
+            traditional_desktop(
+                a,
+                bar_lists_actions(
+                    shell,
+                    root Desk,
+                    space.width_class == .expanded or space.width_class == .wide,
+                ),
+                fill,
+            )
             desk(root Desk, fill)
         }
     } else {

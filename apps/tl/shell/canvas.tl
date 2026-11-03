@@ -21,7 +21,13 @@ view framed_canvas(a: Arrangement) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
-                        ui.MapPin(name: .some(p.key), x: pin_x(a, s, p), y: s.canvas_y, width: pin_width(s), height: pin_height(s)) {
+                        ui.MapPin(
+                            name: .some(p.key),
+                            x: pin_x(a, s, p),
+                            y: s.canvas_y,
+                            width: pin_width(s),
+                            height: pin_height(s),
+                        ) {
                             framed_place(a, p)
                         }
                     }
@@ -40,7 +46,13 @@ view spaces_canvas(a: Arrangement) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
-                        ui.MapPin(name: .some(p.key), x: pin_x(a, s, p), y: s.canvas_y, width: pin_width(s), height: pin_height(s)) {
+                        ui.MapPin(
+                            name: .some(p.key),
+                            x: pin_x(a, s, p),
+                            y: s.canvas_y,
+                            width: pin_width(s),
+                            height: pin_height(s),
+                        ) {
                             space_content(a, p)
                         }
                     }
@@ -113,7 +125,9 @@ fn pin_height(s: ArrangementStrip) -> Int {
 view canvas_entry(a: Arrangement) {
     lens typed: Text = ""
     ui.TextInput(value: typed, placeholder: "Find something, or ask") {
-        on submit: session.conversation(line: typed, x: here_x(a), y: here_y(a)).then(set(typed, ""))
+        on submit: session
+            .conversation(line: typed, x: here_x(a), y: here_y(a))
+            .then(set(typed, ""))
     }
 }
 

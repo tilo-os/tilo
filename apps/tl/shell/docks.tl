@@ -93,7 +93,15 @@ view dock_run(s: Shell, d: Desk) {
 /// name read out says it.
 view dock_tile(s: Shell, d: Desk, item: DockItem) {
     let name = if item.badge == 0 { item.title } else { "{item.title}, {item.badge} new" }
-    ui.Button(name, icon: item.icon, icon_only: true, role: .plain, count: item.badge, dot: item.attention, alert: item.attention) {
+    ui.Button(
+        name,
+        icon: item.icon,
+        icon_only: true,
+        role: .plain,
+        count: item.badge,
+        dot: item.attention,
+        alert: item.attention,
+    ) {
         on press: if item.key == "launcher" {
             device.show_surface(device.desk, surface: "launcher")
         } else {

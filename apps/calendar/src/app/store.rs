@@ -51,6 +51,10 @@ pub(crate) enum Ask {
     ShowView(View),
     /// Show the inbox of tasks.
     ShowTasks,
+    /// Start a new event, as the window's own New event does.
+    StartEvent,
+    /// Start a new task, as the window's own New task does.
+    StartTask,
     /// Open the platform search on the contacts offered for an event.
     SearchContacts,
     /// Say something in the window's bar.
@@ -159,6 +163,8 @@ impl Store {
             CalendarEffect::ShowWeek => self.asks.push(Ask::ShowView(View::Week)),
             CalendarEffect::ShowDay => self.asks.push(Ask::ShowView(View::Day)),
             CalendarEffect::ShowTasks => self.asks.push(Ask::ShowTasks),
+            CalendarEffect::StartEvent => self.asks.push(Ask::StartEvent),
+            CalendarEffect::StartTask => self.asks.push(Ask::StartTask),
             CalendarEffect::ShowAgenda => self.asks.push(Ask::ShowView(View::Agenda)),
             CalendarEffect::Sync => {
                 if self.syncing || self.sync_requested {
