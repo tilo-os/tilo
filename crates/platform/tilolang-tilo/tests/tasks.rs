@@ -315,6 +315,41 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
 }
 
 #[test]
+fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changing() {
+    let (mut ada, root) = workspace();
+    let dated = |title: &str| call(&ada, "add", vec![root.clone(), Value::text(title)]);
+    let today = dated("Buy oat milk");
+    let next = dated("Order a present");
+    ada.commit();
+    for (task, day) in [(&today, "2026-10-29"), (&next, "2026-10-30")] {
+        call(
+            &ada,
+            "schedule",
+            vec![task.clone(), Value::some(Value::text(day))],
+        );
+    }
+    ada.commit();
+    let mut view = ada.view(APP);
+    assert_eq!(count(&view, "Today"), 1, "{:?}", places(&view));
+    assert_eq!(count(&view, "Upcoming"), 1, "{:?}", places(&view));
+    assert!(
+        view.wakes_at().is_some(),
+        "the view read the day it is: it asks to be run again when that reads differently"
+    );
+    // The record did not change; the clock did. The same window runs again and lists the day
+    // it is now.
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-30T10:00:00Z".to_owned());
+    assert!(
+        !view.poll_patches().unwrap().is_empty(),
+        "the window woke for the time it read"
+    );
+    assert_eq!(count(&view, "Today"), 2, "{:?}", places(&view));
+    assert_eq!(count(&view, "Upcoming"), 0, "{:?}", places(&view));
+}
+
+#[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();
     let task = call(

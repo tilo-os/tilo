@@ -154,6 +154,21 @@ view count(bag: Bag) {
         text("{bag.items.len()}")
     }
 }
+
+view tinted(bag: Bag) {
+    section(bag.name) {
+        list(bag.items.filter(item -> not item.done)) { item ->
+            tinted_row(item, bag.name)
+        }
+    }
+}
+
+view tinted_row(item: Item, tint: Text) {
+    row {
+        text(item.title)
+        text(tint)
+    }
+}
 "#;
 
     struct Rows {
@@ -438,6 +453,28 @@ view count(bag: Bag) {
         assert!(view.poll_patches().unwrap().is_empty());
         assert_eq!(view.stats().renders, before);
         assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
+    }
+
+    #[test]
+    fn a_rows_argument_from_outside_its_item_reaches_the_row() {
+        // The rows of the list are the same items, and the row view's other argument changed:
+        // the rows shown stand for the new one, not for the one they were built with.
+        let rows = Rows::new(10);
+        let mut view = rows.view("tinted");
+        let list = list_key(&view);
+        for i in 0..3 {
+            assert!(view.row(&list, i).unwrap().is_some());
+        }
+        let shown = |view: &mut ViewInstance| texts(&view.row(&list, 1).unwrap().unwrap());
+        assert_eq!(shown(&mut view), ["item 1", ""]);
+
+        rows.call(
+            "rename",
+            vec![Value::resource(&rows.bag), Value::text("groceries")],
+        );
+        let patches = view.poll_patches().unwrap();
+        assert!(!patches.is_empty(), "the shown rows ran again");
+        assert_eq!(shown(&mut view), ["item 1", "groceries"]);
     }
 
     #[test]
