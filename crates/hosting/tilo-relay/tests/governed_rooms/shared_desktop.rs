@@ -8,7 +8,7 @@ use std::time::Duration;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
-    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId, shared_record,
+    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot, shared_record,
 };
 use tilo_relay::rooms::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
@@ -18,7 +18,7 @@ use super::*;
 /// The windows of a one-strip desktop: `(tab, group, who opened it)`, in
 /// order, each tab in its own group unless two share one.
 fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
     let mut strip = Strip::new(StripId(10), "Lounge");
     for (tab, group, _) in windows {
         let entry = Tab {
@@ -45,7 +45,7 @@ fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
     }
     workspace.strips.push(strip);
     let tree = DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };

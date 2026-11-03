@@ -566,7 +566,7 @@ impl DesktopHandle {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.id == active)
+            .find(|workspace| workspace.slot == active)
             .ok_or("there is no active workspace")?;
         let before: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
         apply_command(
@@ -674,7 +674,7 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
         workspace.strips.iter().find_map(|strip| {
             strip.window_groups.iter().find_map(|group| {
                 group.tabs.iter().any(|t| t.id == tab).then_some(RouteIds {
-                    workspace: workspace.id,
+                    workspace: workspace.slot,
                     strip: strip.id,
                     group: group.id,
                     tab,
@@ -1032,7 +1032,7 @@ impl DesktopSurface {
                 let (workspace, model) = find_tab(tree, ids.strip, tab)?;
                 match &model.tile {
                     tilo_desktop_model::TileContent::LocalApp { app_id, label, .. } => {
-                        Some((app_id.clone(), label.clone(), Some(workspace.id.raw())))
+                        Some((app_id.clone(), label.clone(), Some(workspace.slot.raw())))
                     }
                     _ => None,
                 }
@@ -2181,7 +2181,7 @@ impl DesktopSurface {
             .tree
             .workspaces
             .iter()
-            .find(|w| w.id == current.workspace)
+            .find(|w| w.slot == current.workspace)
             .and_then(|w| w.strips.iter().find(|s| s.id == current.strip))?;
         let windows: Vec<(GroupId, TabId)> = strip
             .window_groups
@@ -2277,7 +2277,7 @@ impl DesktopSurface {
 
 fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
     for workspace in &tree.workspaces {
-        minter.observe(workspace.id.0);
+        minter.observe(workspace.slot.0);
         for strip in &workspace.strips {
             minter.observe(strip.id.0);
             for group in &strip.window_groups {
@@ -2899,64 +2899,6 @@ impl Widget for DesktopSurface {
     }
 }
 
-impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
-    /// Every tab's application, shown or not, closes with the surface.
-    fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        self.each_host(|host| ui::component_lifecycle::close_components(host))
-    }
-
-    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        let mut reports =
-            self.each_host(|host| ui::component_lifecycle::take_component_close_reports(host));
-        // Windows a row removed itself: pruned after their close, or
-        // dropped by a tree change.
-        for row in self.rows.values_mut() {
-            reports.extend(ui::component_lifecycle::take_component_close_reports(row));
-        }
-        reports
-    }
-}
-
-impl ui::widget::controls::ActionControls for DesktopSurface {
-    /// Bind every tab, shown or not, and keep `domain` for the tabs built
-    /// later; then the overlays the surface currently shows.
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        self.controls = Some(domain.clone());
-        for row in self.rows.values_mut() {
-            for group in &mut row.groups {
-                let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
-                for tab in tabs {
-                    if let Some(host) = group.host_for_tab_mut(tab) {
-                        ui::widget::controls::install_control_custody(host, domain, attachment);
-                    }
-                }
-            }
-        }
-        for child in self.children_mut() {
-            ui::widget::controls::install_control_custody(child, domain, attachment);
-        }
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        self.unrouted_control.is_some()
-            || self
-                .children()
-                .into_iter()
-                .any(ui::widget::controls::has_pending_control_invocation)
-    }
-
-    /// An action row chosen in search outlives search closing on it.
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.unrouted_control
-            .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(self.shown_row()?))
-    }
-}
-
 impl DesktopSurface {
     /// The arrival hints, the banners and the centre over everything the
     /// desk draws.
@@ -2976,26 +2918,9 @@ impl DesktopSurface {
         self.acknowledgement
             .draw(scene, transform, text, theme, presence);
     }
-
-    /// Traversal reaches only active tabs; lifecycle must reach them all.
-    fn each_host(
-        &mut self,
-        mut visit: impl FnMut(&mut TileHost) -> Vec<ui::application::ComponentCloseReport>,
-    ) -> Vec<ui::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.close_reports);
-        for row in self.rows.values_mut() {
-            for group in &mut row.groups {
-                let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
-                for tab in tabs {
-                    if let Some(host) = group.host_for_tab_mut(tab) {
-                        reports.extend(visit(host));
-                    }
-                }
-            }
-        }
-        reports
-    }
 }
+
+mod lifecycle;
 
 #[cfg(test)]
 mod activity_tests;

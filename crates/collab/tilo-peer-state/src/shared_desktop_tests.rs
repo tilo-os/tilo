@@ -6,7 +6,7 @@ use ed25519_dalek::SigningKey;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
-    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId, shared_record,
+    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot, shared_record,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -52,7 +52,7 @@ fn tab(id: u64) -> Tab {
 /// A desktop of one strip holding a window per `(tab, who)`, each in a
 /// group of its own.
 fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Workspace");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
     let mut strip = Strip::new(StripId(10), "Workspace");
     for (id, _) in windows {
         strip.window_groups.push(WindowGroup {
@@ -67,7 +67,7 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
     workspace.strips.push(strip);
     SharedDesktop {
         tree: DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         },

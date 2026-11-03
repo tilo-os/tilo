@@ -364,7 +364,7 @@ mod tests {
     use std::rc::Rc;
     use tilo_desktop_model::{
         AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-        Workspace, WorkspaceId,
+        Workspace, WorkspaceSlot,
     };
     use ui::headless::Framed;
 
@@ -424,7 +424,7 @@ mod tests {
     /// A strip whose one window runs from the leading edge to well under
     /// the ask, so the window's bar and its controls stand right below it.
     fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
         workspace.strips = vec![Strip {
             id: StripId(2),
             name: "Main".into(),
@@ -446,7 +446,7 @@ mod tests {
             }],
         }];
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         }

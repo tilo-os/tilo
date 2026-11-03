@@ -26,7 +26,7 @@ use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE, equalize_widths,
 };
 use tilo_desktop_model::{
-    DesktopTree, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceId,
+    DesktopTree, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceSlot,
 };
 
 use crate::i18n::{t, t_args};
@@ -162,7 +162,7 @@ fn move_to_strip_id(strip: StripId) -> String {
 }
 
 /// The id of the row taking the window into workspace `workspace`.
-fn move_to_workspace_id(workspace: WorkspaceId) -> String {
+fn move_to_workspace_id(workspace: WorkspaceSlot) -> String {
     format!("{MOVE_TO_WORKSPACE}:{}", workspace.0)
 }
 
@@ -300,11 +300,11 @@ fn move_rows(tree: &DesktopTree, route: &RouteIds) -> Vec<Row> {
             t_args("window-menu-move-to-strip-named", &[("place", name.into())]),
         ));
     }
-    let workspaces: Vec<(WorkspaceId, String)> = tree
+    let workspaces: Vec<(WorkspaceSlot, String)> = tree
         .workspaces
         .iter()
-        .filter(|workspace| workspace.id != route.workspace)
-        .map(|workspace| (workspace.id, workspace.name.clone()))
+        .filter(|workspace| workspace.slot != route.workspace)
+        .map(|workspace| (workspace.slot, workspace.name.clone()))
         .collect();
     if workspaces.is_empty() {
         rows.push(Row::refused(
@@ -514,7 +514,7 @@ fn holder_of<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<(&'a Workspa
 fn workspace_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
-        .find(|workspace| workspace.id == route.workspace)
+        .find(|workspace| workspace.slot == route.workspace)
 }
 
 /// The window group at `route`, while the tree still holds it.
@@ -569,7 +569,7 @@ fn move_to_strip(shared: &mut Shared, ids: RouteIds, strip: StripId) -> bool {
     let moved = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.id == ids.workspace)
+        .find(|workspace| workspace.slot == ids.workspace)
         .is_some_and(|workspace| {
             let command = DesktopCommand::MoveGroup {
                 group: ids.group,
@@ -591,7 +591,7 @@ fn move_to_strip(shared: &mut Shared, ids: RouteIds, strip: StripId) -> bool {
 }
 
 /// Carry the tab at `ids` into workspace `to`, with a window of its own.
-fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceId) -> bool {
+fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceSlot) -> bool {
     let Shared { tree, minter, .. } = shared;
     let moved = move_tab_to_workspace(tree, ids.tab, to, &mut || Ok(minter.mint())).is_ok();
     shared.replaced |= moved;
@@ -634,7 +634,7 @@ fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>) -> 
         .tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.id == ids.workspace)
+        .find(|workspace| workspace.slot == ids.workspace)
         .and_then(|workspace| {
             workspace
                 .strips
@@ -689,12 +689,12 @@ fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
     let Some((workspace, app)) = holder_of(&shared.tree, &ids) else {
         return false;
     };
-    let workspace = workspace.id;
+    let workspace = workspace.slot;
     shared
         .tree
         .workspaces
         .iter_mut()
-        .find(|held| held.id == workspace)
+        .find(|held| held.slot == workspace)
         .is_some_and(|held| held.stop_desktop_control(&app))
 }
 

@@ -15,7 +15,7 @@
 
 use std::collections::VecDeque;
 
-use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
 use crate::layout::{Tab, WindowGroup};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -228,12 +228,12 @@ impl DesktopTree {
     /// and focus it, as the person's reopen does: the workspace shows the
     /// strip it lands in, and that strip its group. `None`, changing
     /// nothing, when the workspace is gone or remembers no close.
-    pub fn reopen_closed(&mut self, workspace: WorkspaceId) -> Option<Reopened> {
+    pub fn reopen_closed(&mut self, workspace: WorkspaceSlot) -> Option<Reopened> {
         let focused = self.active_strip.get(&workspace).copied();
         let reopened = self
             .workspaces
             .iter_mut()
-            .find(|candidate| candidate.id == workspace)?
+            .find(|candidate| candidate.slot == workspace)?
             .reopen_closed(focused)?;
         self.active = workspace;
         self.active_strip.insert(workspace, reopened.strip);

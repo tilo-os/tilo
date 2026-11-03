@@ -9,7 +9,7 @@ use tilo_desktop::composition::{DesktopSurface, SurfaceChrome};
 use tilo_desktop::resolver::{TileRequest, TileResolution, TileResolver};
 use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId,
+    WorkspaceSlot,
 };
 use ui::time::testing::with_monotonic_time;
 
@@ -26,7 +26,7 @@ impl TileResolver for Unavailable {
     }
 }
 fn tree() -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
@@ -48,7 +48,7 @@ fn tree() -> DesktopTree {
         }],
     }];
     DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         workspaces: vec![workspace],
         ..Default::default()
     }
@@ -648,11 +648,11 @@ fn navigation_moved_group_and_workspace_rebuild_resolve_current_identity() {
     test.assert_visible(StripId(9), 4);
     assert!(!test.surface().row(StripId(2)).unwrap().groups[0].focused());
     let mut next = navigation_tree().workspaces.remove(0);
-    next.id = WorkspaceId(50);
+    next.slot = WorkspaceSlot(50);
     next.strips[0].id = StripId(51);
     next.strips[0].window_groups[0].id = 52;
     next.strips[0].window_groups[1].id = 53;
-    test.tree.active = next.id;
+    test.tree.active = next.slot;
     test.tree.active_group.insert(StripId(51), 53);
     test.tree.workspaces.push(next);
     unsafe {

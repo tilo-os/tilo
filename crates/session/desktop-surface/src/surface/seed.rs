@@ -2,17 +2,17 @@
 //! one strip, and a window group per tab.
 
 use tilo_desktop_model::{
-    DesktopTree, IdMinter, StripId, Tab, WindowWidth, Workspace, WorkspaceId,
+    DesktopTree, IdMinter, StripId, Tab, WindowWidth, Workspace, WorkspaceSlot,
 };
 
 /// The in-memory desktop a host starts from when it has no stored one: one
 /// workspace, one strip, and a window group per tab in `tabs`.
 pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceId(minter.mint()), workspace_name);
+    let mut workspace = Workspace::new(WorkspaceSlot(minter.mint()), workspace_name);
     // A workspace keeps one identity on every device: the one the person
     // starts from is opened again by the id derived from it, not by an id only
     // this desk knows.
-    workspace.id = WorkspaceId::of_room(workspace.room());
+    workspace.slot = WorkspaceSlot::of_workspace(workspace.room());
     let mut strip = tilo_desktop_model::Strip::new(StripId(minter.mint()), "Main");
     strip.window_groups = tabs
         .into_iter()
@@ -29,10 +29,10 @@ pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) ->
     let strip_id = strip.id;
     workspace.strips = vec![strip];
     let mut tree = DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         ..DesktopTree::default()
     };
-    tree.active_strip.insert(workspace.id, strip_id);
+    tree.active_strip.insert(workspace.slot, strip_id);
     if let Some(group) = first_group {
         tree.set_active_group(strip_id, group);
     }

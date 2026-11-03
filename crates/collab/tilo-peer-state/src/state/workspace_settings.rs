@@ -132,7 +132,7 @@ impl StatePeer {
         let workspace = tilo_desktop_model::ids::RoomId::parse(&self.core.workspace)
             .ok_or("the workspace is not a UUID")?;
         let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-            tilo_desktop_model::ids::WorkspaceId(0),
+            tilo_desktop_model::ids::WorkspaceSlot(0),
             workspace,
             String::new(),
         );

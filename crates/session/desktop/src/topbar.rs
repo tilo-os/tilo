@@ -1106,12 +1106,12 @@ impl TopBarChrome {
 
     pub fn sync_from_tree(&mut self, tree: &DesktopTree) {
         self.workspace_total = tree.workspaces.len().max(1);
-        let active_ws = tree.workspaces.iter().find(|w| w.id == tree.active);
+        let active_ws = tree.workspaces.iter().find(|w| w.slot == tree.active);
         let (idx, name) = tree
             .workspaces
             .iter()
             .enumerate()
-            .find(|(_, w)| w.id == tree.active)
+            .find(|(_, w)| w.slot == tree.active)
             .map_or_else(
                 || (0, t("topbar-workspace-fallback")),
                 |(i, w)| (i, w.name.clone()),

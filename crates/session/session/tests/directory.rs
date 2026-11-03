@@ -41,7 +41,7 @@ use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, shared_record,
+    WorkspaceSlot, shared_record,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::rooms::{PreAdmitRequest, RemoveMemberRequest};
@@ -102,7 +102,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
             .iter()
             .map(|held| {
                 (
-                    held.id.0.to_string(),
+                    held.slot.0.to_string(),
                     held.name.clone(),
                     held.room().to_string(),
                 )
@@ -1157,7 +1157,7 @@ fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
 /// A workspace's shared desktop, as the people in it left it: `strips` names
 /// each strip with the windows opened in it, all of them `person`'s.
 fn shared_desktop(person: &str, strips: &[(u64, &str, &[(u64, &str)])]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
     let mut authors = std::collections::BTreeMap::new();
     for (strip_id, name, windows) in strips {
         let mut strip = Strip::new(StripId::from(*strip_id), *name);
@@ -1186,7 +1186,7 @@ fn shared_desktop(person: &str, strips: &[(u64, &str, &[(u64, &str)])]) -> Share
     }
     SharedDesktop {
         tree: tilo_desktop_model::DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..tilo_desktop_model::DesktopTree::default()
         },

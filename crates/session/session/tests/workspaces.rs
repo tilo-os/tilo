@@ -52,7 +52,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
             .iter()
             .map(|workspace| {
                 (
-                    workspace.id.0.to_string(),
+                    workspace.slot.0.to_string(),
                     workspace.name.clone(),
                     workspace.room().to_string(),
                 )
@@ -119,7 +119,7 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
         let workspace = tilo_desktop_model::RoomId::parse(&workspace).expect("a workspace");
         assert_eq!(
             id,
-            tilo_desktop_model::WorkspaceId::of_room(workspace)
+            tilo_desktop_model::WorkspaceSlot::of_workspace(workspace)
                 .0
                 .to_string(),
             "the workspace the desk starts from is known by that id"

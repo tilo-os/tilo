@@ -68,7 +68,7 @@ fn place(session: &mut Session, resource: &str) -> u64 {
         let tree = session.handle().read(Clone::clone);
         let workspace = tree.active_workspace().expect("a workspace is in front");
         (
-            workspace.id.0.to_string(),
+            workspace.slot.0.to_string(),
             workspace.strips.first().expect("a row").id.0,
             session.handle().mint_id(),
             session.handle().mint_id(),
@@ -283,7 +283,7 @@ fn switching_workspace_through_the_door_shows_it_on_the_shell() {
         tree.workspaces
             .iter()
             .find(|workspace| workspace.name == made)
-            .map(|workspace| workspace.id.0.to_string())
+            .map(|workspace| workspace.slot.0.to_string())
     });
     let made_key = made_key.expect("the workspace made is held");
     session

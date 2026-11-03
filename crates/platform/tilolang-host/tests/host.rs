@@ -12,7 +12,7 @@
 )]
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -109,6 +109,9 @@ struct Window {
     detail_target: Option<patch::ResourceRef>,
     /// The instance asked the window to come forward.
     activated: bool,
+    /// What the instance says each bound control holds, by key: its type is what a window
+    /// reads to know how a field takes typing.
+    bound: BTreeMap<String, patch::Value>,
 }
 
 impl Window {
@@ -150,6 +153,9 @@ impl Window {
                         }
                     }
                     ToUi::Activate => self.activated = true,
+                    ToUi::Bound { key, value, .. } => {
+                        self.bound.insert(key, value);
+                    }
                     _ => {}
                 }
             }
@@ -272,6 +278,7 @@ fn running_on(
         detail: None,
         detail_target: None,
         activated: false,
+        bound: BTreeMap::new(),
     };
     (host, window, sent, inbox, route)
 }
@@ -360,6 +367,7 @@ fn opened_from_own_copy_in(
         detail: None,
         detail_target: None,
         activated: false,
+        bound: BTreeMap::new(),
     };
     (host, window, sent, route)
 }
@@ -821,6 +829,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
         detail: None,
         detail_target: None,
         activated: false,
+        bound: BTreeMap::new(),
     };
 
     // The first instance's window presses +: its next frame comes at once, while the second
@@ -943,6 +952,7 @@ fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
         detail: None,
         detail_target: None,
         activated: false,
+        bound: BTreeMap::new(),
     };
     second.send(&[ToApp::Fire {
         lane: Lane::Root,
@@ -1366,7 +1376,13 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
     )
     .unwrap_or_else(|| panic!("the open note has a field `{field}`"));
     let input = field_node.key.clone();
-    let rich = field_node.kind == "ui.RichInput";
+    // The field's own value says how it takes typing, as a window reads it: a rich text is
+    // edited whole, a text by the splice each key is.
+    let rich = match window.bound.get(&input) {
+        Some(patch::Value::Rich(_)) => true,
+        Some(_) => false,
+        None => panic!("the instance says what the field `{field}` holds"),
+    };
     let target = window.detail_target.clone().expect("the note is open");
     let documents = documents_sent(&sent);
     let (mut built, mut relabeled) = (0, 0);

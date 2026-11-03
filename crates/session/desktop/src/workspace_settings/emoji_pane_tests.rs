@@ -1,5 +1,5 @@
 use super::*;
-use tilo_desktop_model::WorkspaceId;
+use tilo_desktop_model::WorkspaceSlot;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -11,7 +11,7 @@ use crate::workspace_settings::overlay::WorkspaceSettingsOverlay;
 const NOW: u64 = 1_800_000_000;
 
 fn workspace() -> Workspace {
-    let mut ws = Workspace::new(WorkspaceId(71), "Studio");
+    let mut ws = Workspace::new(WorkspaceSlot(71), "Studio");
     ws.set_owner("owner");
     ws.admit("vera".to_string(), CapRole::Viewer);
     ws.admit("cora".to_string(), CapRole::Commenter);
@@ -202,7 +202,7 @@ fn the_lens_paints_the_emoji_tab_and_routes_its_presses() {
     let mut desktop = tilo_desktop_model::DesktopTree::default();
     let ws = workspace();
     desktop.workspaces = vec![ws.clone()];
-    desktop.active = ws.id;
+    desktop.active = ws.slot;
     let entries = entries();
     let me = "eddie".to_string();
     let notice = EmojiNotice::not_chosen("the chooser closed");

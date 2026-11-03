@@ -973,7 +973,7 @@ fn names(text: &str, name: &str) -> bool {
 /// read from a copy of the tree, never written to the workspace's document.
 pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
     let active = tree.active;
-    let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
+    let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.slot == active) else {
         return;
     };
     for person in people {
@@ -1270,7 +1270,7 @@ mod tests {
     /// strip in a workspace of one, and no app their status already names.
     #[test]
     fn where_someone_is_never_repeats_their_status() {
-        use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
+        use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceSlot};
         let chat = Tab {
             id: 7,
             title: "chat".into(),
@@ -1290,10 +1290,10 @@ mod tests {
             maximized: false,
             focus_history: Vec::new(),
         });
-        let mut workspace = Workspace::new(WorkspaceId(1), "Design");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
         workspace.strips = vec![main];
         let mut tree = DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -1802,7 +1802,7 @@ mod tests {
     #[test]
     fn collaborators_overlay_marks_agents_and_keeps_existing_rows() {
         let mut tree = DesktopTree::default();
-        let workspace = tilo_desktop_model::WorkspaceId::default();
+        let workspace = tilo_desktop_model::WorkspaceSlot::default();
         tree.workspaces
             .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
         tree.active = workspace;

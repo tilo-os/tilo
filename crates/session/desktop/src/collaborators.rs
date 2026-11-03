@@ -2391,10 +2391,10 @@ mod tests {
 
     #[test]
     fn a_workspaces_bot_is_tagged_as_a_bot_never_as_a_person() {
-        use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceId};
+        use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceSlot};
 
         let device = "ab".repeat(32);
-        let mut workspace = Workspace::new(WorkspaceId(72), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceSlot(72), "Lounge");
         workspace.bots.push(WorkspaceBot {
             name: "Standup".into(),
             installation: Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into()),
@@ -2412,7 +2412,7 @@ mod tests {
             .collaborators
             .push(Collaborator::new("ada", "Ada"));
         let desktop = DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -2431,9 +2431,9 @@ mod tests {
 
     #[test]
     fn agent_classification_uses_stable_identity_not_display_label() {
-        use tilo_desktop_model::{Workspace, WorkspaceId};
+        use tilo_desktop_model::{Workspace, WorkspaceSlot};
 
-        let mut workspace = Workspace::new(WorkspaceId(71), "Shared");
+        let mut workspace = Workspace::new(WorkspaceSlot(71), "Shared");
         workspace.set_owner("owner");
         assert!(
             !crate::workspace_settings::admit_agent(
@@ -2449,7 +2449,7 @@ mod tests {
             .collaborators
             .push(Collaborator::new("scribe", "Release Notes Agent"));
         let desktop = DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };

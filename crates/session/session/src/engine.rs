@@ -22,7 +22,7 @@ use std::time::SystemTime;
 
 use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
 use tilo_action_policy::WorkspacePolicy;
-use tilo_desktop_model::{RoomId, WorkspaceId};
+use tilo_desktop_model::{RoomId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::MemberRole;
@@ -59,7 +59,7 @@ pub struct Person {
 /// The workspace id each workspace on the desk is held under, as the engine's
 /// record names them and the desk names its own.
 #[derive(Default)]
-struct Slots(std::sync::Mutex<BTreeMap<WorkspaceId, RoomId>>);
+struct Slots(std::sync::Mutex<BTreeMap<WorkspaceSlot, RoomId>>);
 
 impl std::fmt::Debug for Slots {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,13 +68,13 @@ impl std::fmt::Debug for Slots {
 }
 
 impl Slots {
-    fn of(workspaces: impl IntoIterator<Item = (WorkspaceId, RoomId)>) -> Self {
+    fn of(workspaces: impl IntoIterator<Item = (WorkspaceSlot, RoomId)>) -> Self {
         Self(std::sync::Mutex::new(workspaces.into_iter().collect()))
     }
 }
 
 impl FileHost for Slots {
-    fn slot_workspace(&self, slot: WorkspaceId) -> Option<RoomId> {
+    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<RoomId> {
         self.0.lock_recover().get(&slot).copied()
     }
 
@@ -148,7 +148,7 @@ impl Engine {
     pub fn open(
         identity: HostIdentity,
         state: Option<&Path>,
-        workspaces: impl IntoIterator<Item = (WorkspaceId, RoomId)>,
+        workspaces: impl IntoIterator<Item = (WorkspaceSlot, RoomId)>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
         let path = record_path(state);
@@ -173,7 +173,7 @@ impl Engine {
     /// directory to keep its workspaces in.
     pub(crate) fn for_this_device(
         state: Option<&Path>,
-        workspaces: impl IntoIterator<Item = (WorkspaceId, RoomId)>,
+        workspaces: impl IntoIterator<Item = (WorkspaceSlot, RoomId)>,
     ) -> Result<Self, String> {
         let identity = sync::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
@@ -478,13 +478,13 @@ impl Engine {
     /// Name the workspace a join is installing into by the workspace id it
     /// holds: an enrollment only installs into the workspace made for it, and
     /// says so before the host is asked.
-    pub(crate) fn bind(&self, workspace: WorkspaceId, workspace_id: RoomId) {
+    pub(crate) fn bind(&self, workspace: WorkspaceSlot, workspace_id: RoomId) {
         self.slots.0.lock_recover().insert(workspace, workspace_id);
     }
 
     /// Let go of a workspace a join did not install into, so this device
     /// keeps nothing it does not hold.
-    pub(crate) fn unbind(&self, workspace: WorkspaceId) {
+    pub(crate) fn unbind(&self, workspace: WorkspaceSlot) {
         self.slots.0.lock_recover().remove(&workspace);
     }
 }

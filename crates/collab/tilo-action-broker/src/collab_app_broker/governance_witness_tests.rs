@@ -3,7 +3,7 @@
 use super::super::ActionDirectoryRoot;
 use super::*;
 use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
-use crate::test_support::{Grants as _, KindSet, Workspace, WorkspaceId, WorkspaceTree};
+use crate::test_support::{Grants as _, KindSet, Workspace, WorkspaceSlot, WorkspaceTree};
 use std::sync::Mutex;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
@@ -71,7 +71,7 @@ fn broker_with_tree(
     InvokeRequest,
     crate::test_support::WorkspaceTreeHandle,
 ) {
-    let mut workspace = Workspace::new(WorkspaceId(95), "Owner import");
+    let mut workspace = Workspace::new(WorkspaceSlot(95), "Owner import");
     workspace.set_owner("owner");
     workspace.admit_agent("limited", KindSet::ALL);
     let workspace_id = workspace.room().to_string();

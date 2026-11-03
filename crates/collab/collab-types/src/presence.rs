@@ -8,6 +8,7 @@
 mod hue;
 mod key;
 mod payload;
+mod said;
 mod shell;
 
 pub use hue::{
@@ -19,4 +20,10 @@ pub use key::{
     ViewRect, ViewSubset,
 };
 pub use payload::{Availability, Collaborator, IDLE_AFTER, PresencePayload};
+pub use said::{DESKTOP_APP, Presence};
+
+/// What a participant says in one presence frame: the semantics every
+/// publisher and reader of a workspace's presence shares. One enum, so a
+/// frame is read the same wherever it is taken from.
+pub use crate::peer::PeerPresencePayload as Payload;
 pub use shell::{ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow};

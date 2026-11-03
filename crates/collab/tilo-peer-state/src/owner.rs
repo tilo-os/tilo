@@ -74,7 +74,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},
 };
-use tilo_desktop_model::{RoomId, WorkspaceId};
+use tilo_desktop_model::{RoomId, WorkspaceSlot};
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
@@ -118,7 +118,7 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     /// Whether such an uncertain publication may have made `workspace` durable.
     fn uncertain(&self, workspace: RoomId) -> bool;
     /// The workspace a local slot is, where the host has slots.
-    fn slot_workspace(&self, slot: WorkspaceId) -> Option<RoomId>;
+    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<RoomId>;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
     ///

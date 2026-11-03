@@ -111,7 +111,7 @@ fn replace<T: PartialEq>(held: &mut T, next: T) -> bool {
 mod tests {
     use super::adopt_workspace;
     use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
-    use tilo_desktop_model::{Workspace, WorkspaceId, projection};
+    use tilo_desktop_model::{Workspace, WorkspaceSlot, projection};
 
     fn shortcut(id: &str) -> tilo_automation::SavedShortcut {
         tilo_automation::SavedShortcut::encode(&tilo_automation::Shortcut {
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn a_workspace_document_brings_its_name_and_shortcuts_and_keeps_the_owner() {
-        let mut workspace = Workspace::new(WorkspaceId(7), "Old");
+        let mut workspace = Workspace::new(WorkspaceSlot(7), "Old");
         workspace.policy.owner = Some("owner".into());
         let mut doc = workspace_doc(&workspace);
         projection::project_workspace_shortcuts(&mut doc, &[shortcut("water")]).unwrap();
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_shortcut_the_workspace_no_longer_has_goes() {
-        let mut workspace = Workspace::new(WorkspaceId(7), "Garden");
+        let mut workspace = Workspace::new(WorkspaceSlot(7), "Garden");
         workspace.shortcuts = vec![shortcut("water")];
         let doc = workspace_doc(&workspace);
         assert!(adopt_workspace(&mut workspace, &doc, &[]));

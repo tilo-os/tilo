@@ -22,7 +22,7 @@ fn receipt(n: u128) -> WorkspaceEffectReceipt {
 
 /// A desktop whose one workspace has `receipts` effect receipts.
 fn desktop(receipts: u128) -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Home");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
     workspace.set_owner("owner");
     workspace.strips.push(Strip::new(StripId(7), "Main"));
     workspace.effect_receipts = (0..receipts).map(receipt).collect();
@@ -114,8 +114,8 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     assert!(view.ownership_transfer_audit.is_empty());
     assert!(view.ownership_transfer_cancellations.is_empty());
     assert_eq!(
-        (view.id, &view.room(), &view.name),
-        (workspace.id, &workspace.room(), &workspace.name)
+        (view.slot, &view.room(), &view.name),
+        (workspace.slot, &workspace.room(), &workspace.name)
     );
 
     let people = ["owner", "editor", "stranger"];

@@ -4,7 +4,9 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use tilo_desktop_model::{AppKind, DesktopTree, GroupId, StripId, TabId, TileContent, WorkspaceId};
+use tilo_desktop_model::{
+    AppKind, DesktopTree, GroupId, StripId, TabId, TileContent, WorkspaceSlot,
+};
 
 use tilo_app::feedback::{Composer, DurableStore, Error, Outbox, StorageKey};
 pub use tilo_app::feedback::{Control, Destination, FeedbackHost, ShownRecord, Subject};
@@ -147,7 +149,7 @@ pub fn focused_tab(tree: &DesktopTree) -> Option<TabId> {
 fn front_tab(tree: &DesktopTree) -> Option<&tilo_desktop_model::Tab> {
     let workspace = tree.active_workspace()?;
     tree.active_strip
-        .get(&workspace.id)
+        .get(&workspace.slot)
         .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
         .or_else(|| workspace.strips.first())
         .and_then(|strip| {
@@ -192,7 +194,7 @@ pub fn is_composer(tile: &TileContent) -> bool {
 }
 
 /// Where the composer is open, if anywhere: there is only ever one.
-pub fn composer_tab(tree: &DesktopTree) -> Option<(WorkspaceId, StripId, GroupId, TabId)> {
+pub fn composer_tab(tree: &DesktopTree) -> Option<(WorkspaceSlot, StripId, GroupId, TabId)> {
     tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().find_map(|strip| {
             strip.window_groups.iter().find_map(|group| {
@@ -200,7 +202,7 @@ pub fn composer_tab(tree: &DesktopTree) -> Option<(WorkspaceId, StripId, GroupId
                     .tabs
                     .iter()
                     .find(|tab| is_composer(&tab.tile))
-                    .map(|tab| (workspace.id, strip.id, group.id, tab.id))
+                    .map(|tab| (workspace.slot, strip.id, group.id, tab.id))
             })
         })
     })
@@ -229,7 +231,7 @@ mod focus_tests {
     use tilo_desktop_model::{Strip, Tab, WindowGroup, WindowWidth, Workspace};
 
     fn tree(tiles: Vec<TileContent>) -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Here");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Here");
         let mut strip = Strip::new(StripId(2), "Main");
         for (index, tile) in tiles.into_iter().enumerate() {
             let id = 10_u64.saturating_add(u64::try_from(index).unwrap());
@@ -249,7 +251,7 @@ mod focus_tests {
         }
         workspace.strips.push(strip);
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         }
@@ -293,7 +295,7 @@ mod focus_tests {
         assert_eq!(focused(&desktop, none), Focused::Composer);
         assert_eq!(
             composer_tab(&desktop),
-            Some((WorkspaceId(1), StripId(2), 11, 11))
+            Some((WorkspaceSlot(1), StripId(2), 11, 11))
         );
     }
 

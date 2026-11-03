@@ -33,7 +33,7 @@ use ui::widget::{AvatarFace, BadgeFace, Button, ButtonFace, ChipStyle, Segmented
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
-use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
+use tilo_desktop_model::{UserId, Workspace, WorkspaceSlot};
 use ui::TextRole;
 use ui::text_render::TextStyle;
 use ui::widget::ButtonRole;
@@ -1110,16 +1110,16 @@ impl WsTab {
 /// The `WorkspaceSettings` lens state.
 #[derive(Debug)]
 pub struct WorkspaceSettings {
-    pub ws_id: WorkspaceId,
+    pub slot: WorkspaceSlot,
     pub active_tab: WsTab,
     focus_trap: FocusTrap,
 }
 
 impl WorkspaceSettings {
-    pub fn new(ws_id: WorkspaceId) -> Self {
+    pub fn new(slot: WorkspaceSlot) -> Self {
         let members = WsTab::all().into_iter().map(tab_focus_id).collect();
         Self {
-            ws_id,
+            slot,
             active_tab: WsTab::General,
             focus_trap: FocusTrap::new(members),
         }
@@ -1143,7 +1143,7 @@ impl WorkspaceSettings {
         self.active_tab
     }
 
-    /// Does not check `ws.id == self.ws_id`, so the caller can rename
+    /// Does not check `ws.slot == self.slot`, so the caller can rename
     /// any workspace it holds a reference to.
     pub fn rename(&mut self, ws: &mut Workspace, new_name: &str) {
         ws.name = new_name.to_string();
@@ -4568,7 +4568,7 @@ mod tab_tests {
     const VIEWER: &str = "viewer-user";
 
     fn ws_settings_default() -> WorkspaceSettings {
-        WorkspaceSettings::new(WorkspaceId::default())
+        WorkspaceSettings::new(WorkspaceSlot::default())
     }
 
     #[test]
@@ -4630,7 +4630,7 @@ mod tab_tests {
             {
                 // A host who wants to grant something before any grant exists
                 // has to be able to reach the tab that grants it.
-                let ws = Workspace::new(WorkspaceId::default(), "no-grants");
+                let ws = Workspace::new(WorkspaceSlot::default(), "no-grants");
                 assert!(!ws.has_app_grants());
                 assert!(WsTab::all().contains(&WsTab::Permissions));
                 let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
@@ -4760,7 +4760,7 @@ mod members_pane_tests {
 
     use super::*;
     use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet, roles};
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
 
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";
@@ -4769,7 +4769,7 @@ mod members_pane_tests {
     fn people_are_named_as_the_roster_names_them_and_the_owner_sees_no_owner_only_note() {
         use crate::collaborators::{PeopleNames, collaborator_roster_rows_named};
         let owner_key = "fa4834147f".repeat(6) + "0123";
-        let mut ws = Workspace::new(WorkspaceId::from(9), "Studio");
+        let mut ws = Workspace::new(WorkspaceSlot::from(9), "Studio");
         ws.set_owner(owner_key.as_str());
         assert!(
             set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor)
@@ -4778,7 +4778,7 @@ mod members_pane_tests {
         // The roster knows Ada from presence; the workspace's own record of
         // her has no name.
         let desktop = tilo_desktop_model::DesktopTree {
-            active: ws.id,
+            active: ws.slot,
             workspaces: vec![ws.clone()],
             collaborators: vec![tilo_desktop_model::Collaborator::new("ada", "Ada")],
             ..tilo_desktop_model::DesktopTree::default()
@@ -4811,7 +4811,7 @@ mod members_pane_tests {
     }
 
     fn ws_with_two_members() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceId::from(7), "members-test");
+        let mut ws = Workspace::new(WorkspaceSlot::from(7), "members-test");
         ws.set_owner(OWNER);
         assert!(
             set_member_role(
@@ -5042,7 +5042,7 @@ mod members_pane_tests {
                 let (_, recipient_public) = collab_types::generate_keypair();
                 let owner = hex::encode(owner_public.as_bytes());
                 let recipient = hex::encode(recipient_public.as_bytes());
-                let mut ws = Workspace::new(WorkspaceId(91), "Research");
+                let mut ws = Workspace::new(WorkspaceSlot(91), "Research");
                 ws.set_owner(owner.clone());
                 ws.admit(recipient.clone(), CapRole::Editor);
                 ws.pending_ownership_transfer = Some(
@@ -5128,7 +5128,7 @@ mod members_pane_tests {
 
     #[test]
     fn governance_publishes_typed_workspace_actions() {
-        let mut ws = Workspace::new(WorkspaceId(92), "Research");
+        let mut ws = Workspace::new(WorkspaceSlot(92), "Research");
         let owner = "owner".to_string();
         ws.set_owner(owner.clone());
         ws.save_preset_as_at(
@@ -5221,13 +5221,13 @@ mod agents_pane_tests {
     /// Whoever is looking at the pane; never a grantor in these fixtures.
     const VIEWER: &str = "viewer-user";
     use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet};
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
 
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe-agent";
 
     fn ws_with_agent() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceId::from(17), "agents-test");
+        let mut ws = Workspace::new(WorkspaceSlot::from(17), "agents-test");
         ws.set_owner(OWNER);
         assert!(
             !admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer).is_empty(),
@@ -5282,7 +5282,7 @@ mod agents_pane_tests {
             }
 
             {
-                let mut ws = Workspace::new(WorkspaceId::from(18), "profile-test");
+                let mut ws = Workspace::new(WorkspaceSlot::from(18), "profile-test");
                 ws.set_owner(OWNER);
                 let edit = admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer);
                 assert_eq!(
@@ -5426,7 +5426,7 @@ mod agents_pane_tests {
 
         let device = collab_types::Ed25519PublicKey::from_bytes([9; 32]);
         let principal = service_principal(&device);
-        let mut ws = Workspace::new(WorkspaceId::from(20), "service-test");
+        let mut ws = Workspace::new(WorkspaceSlot::from(20), "service-test");
         ws.set_owner(OWNER);
         let deadline = 2_000_000_000;
         let grant = admit_service_member(
@@ -5522,7 +5522,7 @@ mod agents_pane_tests {
 #[cfg(test)]
 mod bots_pane_tests {
     use super::*;
-    use tilo_desktop_model::{WorkspaceBot, WorkspaceId};
+    use tilo_desktop_model::{WorkspaceBot, WorkspaceSlot};
 
     fn bot(name: &str, entry: Option<&str>, requested: bool) -> WorkspaceBot {
         WorkspaceBot {
@@ -5539,7 +5539,7 @@ mod bots_pane_tests {
 
     #[test]
     fn the_workspace_bots_are_listed_under_the_agents_and_only_a_requested_one_is_removed_here() {
-        let mut ws = Workspace::new(WorkspaceId::from(19), "bots-test");
+        let mut ws = Workspace::new(WorkspaceSlot::from(19), "bots-test");
         ws.set_owner("owner-user");
         ws.bots
             .push(bot("Standup", Some("so.tilo.bots.standup"), true));
@@ -5586,13 +5586,13 @@ mod roster_order_tests {
     //! The Members list must not reorder under the pointer.
 
     use super::*;
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
 
     #[test]
     fn changing_a_role_does_not_move_the_row() {
         // A role change rewrites the capability, shifting the raw
         // roster order; the pane's order must not shift with it.
-        let mut ws = Workspace::new(WorkspaceId::from(5), "order");
+        let mut ws = Workspace::new(WorkspaceSlot::from(5), "order");
         ws.set_owner("host");
         for person in ["ada", "bo", "cy"] {
             assert!(
@@ -5647,7 +5647,7 @@ mod default_app_authority_tests {
             let candidates = [candidate("so.tilo.viewer"), candidate("so.tilo.other")];
             let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
             let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
-            let mut ws = Workspace::new(WorkspaceId::from(7), "Docs");
+            let mut ws = Workspace::new(WorkspaceSlot::from(7), "Docs");
             ws.set_owner("owner");
 
             assert!(

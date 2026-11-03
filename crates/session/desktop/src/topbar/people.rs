@@ -342,16 +342,16 @@ impl TopBarChrome {
 mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
-    use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceId};
+    use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceSlot};
 
     fn desk(people: &[(&str, &str)]) -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Hacked");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
         workspace.collaborators = people
             .iter()
             .map(|(id, name)| Collaborator::new(*id, *name))
             .collect();
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         }

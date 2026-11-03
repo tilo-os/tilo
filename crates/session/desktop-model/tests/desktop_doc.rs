@@ -13,7 +13,7 @@ use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::{
     ArrangementKind, CanvasPlace, DesktopTree, DropTarget, IdMinter, RoomId, Strip, StripId, Tab,
-    TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
 };
 
 fn tab(id: u64) -> Tab {
@@ -44,7 +44,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 /// holds group 20 [200].
 fn tree() -> DesktopTree {
     let mut ws = Workspace::in_workspace(
-        WorkspaceId(1),
+        WorkspaceSlot(1),
         RoomId::parse("00000000-0000-4000-8000-000000000042").unwrap(),
         "Desk",
     );
@@ -56,7 +56,7 @@ fn tree() -> DesktopTree {
     ws.strips = vec![a, b];
     DesktopTree {
         workspaces: vec![ws],
-        active: WorkspaceId(1),
+        active: WorkspaceSlot(1),
         ..DesktopTree::default()
     }
 }
@@ -142,15 +142,19 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
             Access::Read,
         )
         .with_id("cap-x");
-        assert!(desktop_doc::insert_sandbox(&mut doc, WorkspaceId(1), &cap));
-        assert!(desktop_doc::set_owner(&mut doc, WorkspaceId(1), "bob"));
+        assert!(desktop_doc::insert_sandbox(
+            &mut doc,
+            WorkspaceSlot(1),
+            &cap
+        ));
+        assert!(desktop_doc::set_owner(&mut doc, WorkspaceSlot(1), "bob"));
         let ws = &read_back(&doc).workspaces[0];
         assert!(ws.sandbox.iter().any(|c| c.id == "cap-x"));
         assert_eq!(ws.owner().map(String::as_str), Some("bob"));
 
         assert!(desktop_doc::revoke_sandbox(
             &mut doc,
-            WorkspaceId(1),
+            WorkspaceSlot(1),
             "cap-x"
         ));
         assert!(
@@ -159,7 +163,7 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
                 .iter()
                 .any(|c| c.id == "cap-x")
         );
-        assert!(!desktop_doc::set_owner(&mut doc, WorkspaceId(9), "eve"));
+        assert!(!desktop_doc::set_owner(&mut doc, WorkspaceSlot(9), "eve"));
     }
 }
 
@@ -170,7 +174,7 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
 #[test]
 fn the_view_of_the_desk_round_trips_with_it() {
     let mut tree = tree();
-    tree.active_strip.insert(WorkspaceId(1), StripId(2));
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
     tree.set_active_group(StripId(2), 20);
     tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(480);
     tree.workspaces[0].strips[0].window_groups[0].active_tab = 101;
@@ -225,9 +229,9 @@ fn the_view_of_the_desk_round_trips_with_it() {
     // Moving the view is all a view change does: the focus moving, a window
     // resized, a workspace switched.
     let before = doc.get_heads();
-    tree.active_strip.insert(WorkspaceId(1), StripId(1));
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(1));
     tree.workspaces[0].strips[0].window_groups[1].maximized = true;
-    tree.active = WorkspaceId(1);
+    tree.active = WorkspaceSlot(1);
     desktop_doc::seed(&mut doc, &tree);
     let written = doc.get_changes(&before);
     assert_eq!(written.len(), 1, "one change of the view");
@@ -250,7 +254,7 @@ fn the_view_of_the_desk_round_trips_with_it() {
 
 #[test]
 fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
-    let id = WorkspaceId(37);
+    let id = WorkspaceSlot(37);
     let identity = RoomId::parse("00000000-0000-4000-8000-000000000037").unwrap();
     let mut doc = AutoCommit::new();
     assert!(desktop_doc::append_workspace(
@@ -259,7 +263,7 @@ fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
     assert!(desktop_doc::set_owner(&mut doc, id, "ada"));
 
     let rebuilt = read_back(&doc);
-    let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
+    let actual = rebuilt.workspaces.iter().find(|ws| ws.slot == id).unwrap();
     let mut expected = Workspace::in_workspace(id, identity, "Research");
     expected.set_owner("ada");
     assert_eq!(actual.room(), identity);
@@ -269,7 +273,7 @@ fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
     assert!(desktop_doc::revoke_grant(&mut doc, id, &revoked));
     assert!(expected.revoke_grant(&revoked));
     let rebuilt = read_back(&doc);
-    let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
+    let actual = rebuilt.workspaces.iter().find(|ws| ws.slot == id).unwrap();
     assert_eq!(actual.policy, expected.policy);
 
     for grant in expected.policy.grants.clone() {
@@ -277,7 +281,7 @@ fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
         assert!(expected.revoke_grant(&grant.id));
     }
     let rebuilt = read_back(&doc);
-    let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
+    let actual = rebuilt.workspaces.iter().find(|ws| ws.slot == id).unwrap();
     assert!(actual.policy.grants.is_empty());
     assert_eq!(actual.policy, expected.policy);
 }
@@ -394,7 +398,7 @@ fn topology_edits_are_mirrored_into_the_document() {
         assert!(desktop_doc::remove_tab(&mut doc, StripId(2), 20, 200, true));
         assert!(desktop_doc::append_tab(
             &mut doc,
-            WorkspaceId(1),
+            WorkspaceSlot(1),
             None,
             300,
             "new".into(),
@@ -464,12 +468,12 @@ fn shortcuts_are_seeded_saved_replaced_and_deleted() {
 
     assert!(desktop_doc::upsert_shortcut(
         &mut doc,
-        WorkspaceId(1),
+        WorkspaceSlot(1),
         &shortcut("evening", "Evening")
     ));
     assert!(desktop_doc::upsert_shortcut(
         &mut doc,
-        WorkspaceId(1),
+        WorkspaceSlot(1),
         &shortcut("morning", "Wake up")
     ));
     assert_eq!(
@@ -482,12 +486,12 @@ fn shortcuts_are_seeded_saved_replaced_and_deleted() {
 
     assert!(desktop_doc::remove_shortcut(
         &mut doc,
-        WorkspaceId(1),
+        WorkspaceSlot(1),
         "morning"
     ));
     assert!(!desktop_doc::remove_shortcut(
         &mut doc,
-        WorkspaceId(1),
+        WorkspaceSlot(1),
         "morning"
     ));
     assert_eq!(
@@ -496,7 +500,7 @@ fn shortcuts_are_seeded_saved_replaced_and_deleted() {
     );
     assert!(!desktop_doc::upsert_shortcut(
         &mut doc,
-        WorkspaceId(9),
+        WorkspaceSlot(9),
         &shortcut("x", "X")
     ));
 }
@@ -569,7 +573,7 @@ fn the_canvas_is_recorded_so_history_can_take_it_back() {
 fn two_workspaces() -> DesktopTree {
     let mut desktop = tree();
     let mut lab = Workspace::in_workspace(
-        WorkspaceId(2),
+        WorkspaceSlot(2),
         RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap(),
         "Lab",
     );
@@ -617,7 +621,7 @@ fn names(desktop: &DesktopTree) -> Vec<(u64, String)> {
     desktop
         .workspaces
         .iter()
-        .map(|ws| (ws.id.raw(), ws.name.clone()))
+        .map(|ws| (ws.slot.raw(), ws.name.clone()))
         .collect()
 }
 
@@ -726,7 +730,7 @@ fn seed_splices_inserted_removed_and_reordered_entries() {
     ws.strips[1].window_groups.push(group(21, &[210, 211]));
     desktop
         .workspaces
-        .push(Workspace::new(WorkspaceId(3), "New"));
+        .push(Workspace::new(WorkspaceSlot(3), "New"));
     desktop.workspaces.swap(0, 1);
     desktop_doc::seed(&mut doc, &desktop);
     doc.commit();
@@ -739,7 +743,7 @@ fn seed_splices_inserted_removed_and_reordered_entries() {
     let desk = back
         .workspaces
         .iter()
-        .find(|w| w.id == WorkspaceId(1))
+        .find(|w| w.slot == WorkspaceSlot(1))
         .unwrap();
     let desk_layout: Layout = desk
         .strips

@@ -27,7 +27,11 @@ impl Device {
         Self {
             key,
             actor: u64::from(actor),
-            workspace: Workspace::in_workspace(WorkspaceId::of_room(identity), identity, "Home"),
+            workspace: Workspace::in_workspace(
+                WorkspaceSlot::of_workspace(identity),
+                identity,
+                "Home",
+            ),
             doc: AutoCommit::new().with_actor(automerge::ActorId::from(vec![actor; 16])),
         }
     }
@@ -376,7 +380,7 @@ fn what_each_device_decides_alone_survives_a_fold() {
     assert_eq!(group.active_tab, NOTES);
     // And none of it reached the record.
     assert!(!desk.write());
-    let mut fresh = Workspace::in_workspace(desk.workspace.id, desk.workspace.room(), "Home");
+    let mut fresh = Workspace::in_workspace(desk.workspace.slot, desk.workspace.room(), "Home");
     fold(&desk.doc, &mut fresh, "dd", &Kept::NOTHING);
     assert_eq!(fresh.strips[0].window_groups[0].width, WindowWidth::Normal);
     assert!(!fresh.strips[0].window_groups[0].maximized);

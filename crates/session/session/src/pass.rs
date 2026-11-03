@@ -196,7 +196,7 @@ impl Session {
         let active = self
             .shared
             .handle
-            .read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
+            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0));
         self.shared
             .wallpapers
             .set_active(active.map(|workspace| workspace.to_string()));

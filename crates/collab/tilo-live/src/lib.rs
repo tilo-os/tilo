@@ -53,6 +53,11 @@ pub mod client;
 #[cfg(feature = "plane")]
 pub mod plane;
 
+/// The presence track: what a participant says, and the board a reader keeps
+/// of everyone's last word.
+#[cfg(feature = "plane")]
+pub mod presence;
+
 /// Where a plane's readers and origin drivers run: the device's own executor
 /// on a desktop, the page's queue in a browser.
 /// `at + age`, or `at` when the clock cannot represent the sum: an

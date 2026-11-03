@@ -1,15 +1,15 @@
 use super::*;
-use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
+use tilo_desktop_model::{RoomId, Workspace, WorkspaceSlot};
 
 /// Three workspaces with the middle one open, so both moves and Delete
 /// are live.
 fn desktop() -> DesktopTree {
     DesktopTree {
-        active: WorkspaceId(2),
+        active: WorkspaceSlot(2),
         workspaces: vec![
-            Workspace::new(WorkspaceId(1), "Home"),
-            Workspace::new(WorkspaceId(2), "Studio"),
-            Workspace::new(WorkspaceId(3), "Garden"),
+            Workspace::new(WorkspaceSlot(1), "Home"),
+            Workspace::new(WorkspaceSlot(2), "Studio"),
+            Workspace::new(WorkspaceSlot(3), "Garden"),
         ],
         ..DesktopTree::default()
     }
@@ -203,8 +203,8 @@ fn the_devices_scroll_into_view_and_their_controls_answer() {
 #[test]
 fn controls_that_take_no_input_answer_no_press() {
     let only = DesktopTree {
-        active: WorkspaceId(1),
-        workspaces: vec![Workspace::new(WorkspaceId(1), "Home")],
+        active: WorkspaceSlot(1),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "Home")],
         ..DesktopTree::default()
     };
     let user = "owner".to_string();

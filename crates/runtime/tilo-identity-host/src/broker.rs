@@ -921,7 +921,7 @@ mod tests {
     use std::io::Read as _;
     use std::os::fd::IntoRawFd;
     use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-    use tilo_desktop_model::{DesktopTree, WorkspaceId};
+    use tilo_desktop_model::{DesktopTree, WorkspaceSlot};
 
     /// A host's committed workspaces, as the tests mutate them between requests.
     #[derive(Default)]
@@ -1082,7 +1082,7 @@ mod tests {
             .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
-        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1359,7 +1359,7 @@ params = []
         let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
-        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1424,7 +1424,7 @@ params = []
             .unwrap()
             .unwrap();
         let original = std::fs::read(&profile.record_path).unwrap();
-        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1530,7 +1530,7 @@ params = []
         let profile = crate::registry::identity_for_workspace(&workspace_id)
             .expect("registry")
             .expect("profile");
-        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1830,7 +1830,7 @@ params = []
         let profile = crate::registry::identity_for_workspace(&fixture.workspace)
             .expect("registry")
             .expect("profile");
-        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1932,7 +1932,7 @@ params = []
 
         // The person this device signs as belongs to the workspace: the
         // operation is signed with the device's key, no identity picked.
-        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1942,7 +1942,7 @@ params = []
         // The same workspace in other people's hands: this device would sign
         // as someone its roster does not hold. That is a membership fault to
         // report, never a question to put to the app.
-        let mut elsewhere = Workspace::in_workspace(WorkspaceId(2), workspace, "Workspace");
+        let mut elsewhere = Workspace::in_workspace(WorkspaceSlot(2), workspace, "Workspace");
         let other_person = match collab_types::caps::Principal::person_from_key(
             collab_types::crypto::Ed25519PublicKey::from_bytes([9; 32]),
         ) {
@@ -1961,7 +1961,7 @@ params = []
         // Two people in the workspace, the other one its owner, and this
         // device's person a member beside them: the signature is theirs,
         // again without anything chosen first.
-        let mut shared = Workspace::in_workspace(WorkspaceId(3), workspace, "Workspace");
+        let mut shared = Workspace::in_workspace(WorkspaceSlot(3), workspace, "Workspace");
         shared.set_owner(other_person);
         shared
             .policy

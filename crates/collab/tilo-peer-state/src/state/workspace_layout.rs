@@ -100,7 +100,7 @@ mod tests {
     use tilo_desktop_model::shared_record::{self, device};
     use tilo_desktop_model::width::WindowWidth;
     use tilo_desktop_model::{
-        GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+        GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceSlot,
     };
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -153,8 +153,11 @@ mod tests {
         let before = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
         let workspace = RoomId::parse(peer.workspace_id()).ok_or("workspace id")?;
-        let mut desktop =
-            Workspace::in_workspace(WorkspaceId::of_room(workspace), workspace, "Workspace");
+        let mut desktop = Workspace::in_workspace(
+            WorkspaceSlot::of_workspace(workspace),
+            workspace,
+            "Workspace",
+        );
         let mut strip = Strip::new(StripId(compose_id(MEMBER, 1)), "Mine");
         strip.window_groups.push(window(MEMBER, 2, title));
         desktop.strips.push(strip);

@@ -554,7 +554,7 @@ impl DesktopPolicy {
             let group = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.id == ids.workspace)?
+                .find(|workspace| workspace.slot == ids.workspace)?
                 .strips
                 .iter()
                 .find(|strip| strip.id == ids.strip)?
@@ -759,7 +759,7 @@ impl DesktopPolicy {
             if let Some(group) = tree
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.id == ids.workspace)
+                .find(|workspace| workspace.slot == ids.workspace)
                 .and_then(|workspace| {
                     workspace
                         .strips
@@ -1171,7 +1171,7 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
                 .iter()
                 .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))?;
             Some(RouteIds {
-                workspace: workspace.id,
+                workspace: workspace.slot,
                 strip: strip.id,
                 group: group.id,
                 tab,

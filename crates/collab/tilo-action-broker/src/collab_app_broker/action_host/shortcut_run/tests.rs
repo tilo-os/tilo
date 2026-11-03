@@ -6,7 +6,7 @@ use crate::collab_app_broker::{BrokerChannels, FanoutState, PeerPublisher};
 use crate::services::{
     HostServices, LocalPersonServices, ShortcutLibraryRequest, ShortcutLibraryServices,
 };
-use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
 use std::sync::Mutex;
 
 struct Library(tokio::runtime::Handle);
@@ -109,7 +109,7 @@ impl Fixture {
         });
         let principal =
             crate::collab_app_broker::principal_id_for_root(certificate.user_public_key);
-        let mut workspace = Workspace::new(WorkspaceId(9), "Shortcuts");
+        let mut workspace = Workspace::new(WorkspaceSlot(9), "Shortcuts");
         workspace.set_owner(principal.clone());
         let workspace_id = workspace.room().to_string();
         let echo: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({

@@ -37,7 +37,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::ContentSources;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
-use tilo_desktop_model::{DesktopTree, RoomId as DeskRoom, TabId, WorkspaceId as DeskWorkspace};
+use tilo_desktop_model::{DesktopTree, RoomId as DeskRoom, TabId, WorkspaceSlot as DeskSlot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
@@ -653,8 +653,8 @@ pub(crate) enum Outgoing {
 /// which is where what the workspace holds arrives.
 #[derive(Debug)]
 pub struct Enrolling {
-    /// The workspace the desk made for it.
-    pub workspace: DeskWorkspace,
+    /// The slot the desk made for it.
+    pub slot: DeskSlot,
     /// The workspace the invitation grants.
     pub workspace_id: DeskRoom,
     /// The invitation itself, verified for this person before it got here.
@@ -664,7 +664,7 @@ pub struct Enrolling {
 /// What became of an enrollment, and the workspace it was for.
 #[derive(Debug)]
 pub struct Enrolled {
-    pub workspace: DeskWorkspace,
+    pub slot: DeskSlot,
     pub workspace_id: DeskRoom,
     /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), String>,
@@ -2305,7 +2305,7 @@ async fn redeem(
             client,
             identity.clone(),
             topic,
-            Some(request.workspace),
+            Some(request.slot),
             request.invitation,
             owner.clone(),
         ),

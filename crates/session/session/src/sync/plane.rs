@@ -126,12 +126,12 @@ pub(super) fn run(
                 // in: it runs beside this loop, which keeps carrying what the
                 // session says meanwhile.
                 Outgoing::Enroll(request) => {
-                    let workspace = request.workspace;
+                    let slot = request.slot;
                     let workspace_id = request.workspace_id;
                     let landed = enrollments.clone();
                     let (Some(engine), Some(identity)) = (engine.clone(), identity.clone()) else {
                         let _ = landed.send(Enrolled {
-                            workspace,
+                            slot,
                             workspace_id,
                             result: Err("this session joins no workspaces".into()),
                         });
@@ -153,7 +153,7 @@ pub(super) fn run(
                         )
                         .await;
                         let _ = landed.send(Enrolled {
-                            workspace,
+                            slot,
                             workspace_id,
                             result,
                         });

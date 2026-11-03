@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use tilo_app_launch::Launch;
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
 use tilo_surface_host::DesktopHost;
 
 use crate::i18n::t_args;
@@ -71,7 +71,7 @@ impl Restore {
     /// person left them.
     pub(crate) fn of(tree: &DesktopTree) -> Self {
         let active = tree.active;
-        let mut saved: Vec<(WorkspaceId, Saved)> = Vec::new();
+        let mut saved: Vec<(WorkspaceSlot, Saved)> = Vec::new();
         for workspace in &tree.workspaces {
             for strip in &workspace.strips {
                 for group in &strip.window_groups {
@@ -89,7 +89,7 @@ impl Restore {
                         };
                         let launch = apps::launch_of(app_id);
                         saved.push((
-                            workspace.id,
+                            workspace.slot,
                             Saved {
                                 tab: tab.id,
                                 app: app_id.clone(),

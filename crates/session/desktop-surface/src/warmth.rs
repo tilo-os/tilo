@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use tilo_desktop_model::DesktopTree;
-use tilo_desktop_model::ids::WorkspaceId;
+use tilo_desktop_model::ids::WorkspaceSlot;
 use ui::Theme;
 use ui::WindowAppearance;
 use ui::tokens::PresenceHue;
@@ -24,8 +24,8 @@ pub const RECHECK: Duration = Duration::from_secs(3);
 /// colour. [`Self::revision`] moves whenever either changes.
 #[derive(Debug)]
 pub struct WindowWarmth {
-    temperatures: HashMap<WorkspaceId, Option<f32>>,
-    active: Option<WorkspaceId>,
+    temperatures: HashMap<WorkspaceSlot, Option<f32>>,
+    active: Option<WorkspaceSlot>,
     your_colour: PresenceHue,
     checked: Option<Instant>,
     revision: u64,
@@ -64,7 +64,7 @@ impl WindowWarmth {
     /// Whether the temperatures are due a look: the active workspace
     /// changed, or [`RECHECK`] passed since the last look.
     #[must_use]
-    pub fn due(&self, active: Option<WorkspaceId>, now: Instant) -> bool {
+    pub fn due(&self, active: Option<WorkspaceSlot>, now: Instant) -> bool {
         self.active != active
             || self
                 .checked
@@ -76,10 +76,10 @@ impl WindowWarmth {
     /// the active workspace's appearance changed.
     pub fn update(
         &mut self,
-        workspaces: &[WorkspaceId],
-        active: Option<WorkspaceId>,
+        workspaces: &[WorkspaceSlot],
+        active: Option<WorkspaceSlot>,
         now: Instant,
-        temperature_of: &mut dyn FnMut(WorkspaceId) -> Option<f32>,
+        temperature_of: &mut dyn FnMut(WorkspaceSlot) -> Option<f32>,
     ) -> bool {
         let before = self.active();
         let mut moved = false;
@@ -98,7 +98,7 @@ impl WindowWarmth {
                 moved = true;
             }
         }
-        let present: HashSet<WorkspaceId> = workspaces.iter().copied().collect();
+        let present: HashSet<WorkspaceSlot> = workspaces.iter().copied().collect();
         self.temperatures.retain(|id, _| present.contains(id));
         self.active = active;
         self.checked = Some(now);
@@ -111,7 +111,7 @@ impl WindowWarmth {
     /// The appearance of a window in workspace `workspace`, or in the active
     /// one when the window has not been placed yet.
     #[must_use]
-    pub fn in_workspace(&self, workspace: Option<WorkspaceId>) -> WindowAppearance {
+    pub fn in_workspace(&self, workspace: Option<WorkspaceSlot>) -> WindowAppearance {
         let workspace = workspace.or(self.active);
         WindowAppearance {
             workspace_hue: workspace
@@ -139,7 +139,7 @@ impl WindowWarmth {
     pub fn appearance_of(&self, tree: &DesktopTree, app: &str, theme: &Theme) -> WindowAppearance {
         let mut appearance = self.in_workspace(
             tree.workspace_holding_app(app)
-                .map(|workspace| workspace.id),
+                .map(|workspace| workspace.slot),
         );
         appearance.corner_radius = Some(theme.tokens.radii.tile);
         appearance
@@ -150,12 +150,12 @@ impl WindowWarmth {
 mod tests {
     use super::*;
 
-    fn workspaces() -> Vec<WorkspaceId> {
-        vec![WorkspaceId(1), WorkspaceId(2)]
+    fn workspaces() -> Vec<WorkspaceSlot> {
+        vec![WorkspaceSlot(1), WorkspaceSlot(2)]
     }
 
-    fn temperature(id: WorkspaceId) -> Option<f32> {
-        (id == WorkspaceId(1)).then_some(40.0)
+    fn temperature(id: WorkspaceSlot) -> Option<f32> {
+        (id == WorkspaceSlot(1)).then_some(40.0)
     }
 
     #[test]
@@ -163,10 +163,10 @@ mod tests {
         let mut warmth = WindowWarmth::new(PresenceHue::Teal);
         let now = Instant::now();
         assert!(
-            warmth.due(Some(WorkspaceId(1)), now),
+            warmth.due(Some(WorkspaceSlot(1)), now),
             "nothing looked at yet"
         );
-        assert!(warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature));
+        assert!(warmth.update(&workspaces(), Some(WorkspaceSlot(1)), now, &mut temperature));
         assert_eq!(
             warmth.active(),
             WindowAppearance {
@@ -176,33 +176,33 @@ mod tests {
             }
         );
         assert_eq!(
-            warmth.in_workspace(Some(WorkspaceId(2))).workspace_hue,
+            warmth.in_workspace(Some(WorkspaceSlot(2))).workspace_hue,
             None,
             "a grey wallpaper leaves its windows neutral"
         );
         assert_eq!(
-            warmth.in_workspace(Some(WorkspaceId(9))).workspace_hue,
+            warmth.in_workspace(Some(WorkspaceSlot(9))).workspace_hue,
             None,
             "an unknown workspace has no temperature"
         );
-        assert!(!warmth.due(Some(WorkspaceId(1)), now));
+        assert!(!warmth.due(Some(WorkspaceSlot(1)), now));
         assert!(
-            warmth.due(Some(WorkspaceId(2)), now),
+            warmth.due(Some(WorkspaceSlot(2)), now),
             "a switch is looked at now"
         );
-        assert!(warmth.due(Some(WorkspaceId(1)), now + RECHECK));
+        assert!(warmth.due(Some(WorkspaceSlot(1)), now + RECHECK));
     }
 
     #[test]
     fn the_revision_moves_only_when_an_appearance_does() {
         let mut warmth = WindowWarmth::new(PresenceHue::Blue);
         let now = Instant::now();
-        warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature);
+        warmth.update(&workspaces(), Some(WorkspaceSlot(1)), now, &mut temperature);
         let first = warmth.revision();
-        assert!(!warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature));
+        assert!(!warmth.update(&workspaces(), Some(WorkspaceSlot(1)), now, &mut temperature));
         assert_eq!(warmth.revision(), first, "the same temperatures again");
         assert!(
-            warmth.update(&workspaces(), Some(WorkspaceId(2)), now, &mut temperature),
+            warmth.update(&workspaces(), Some(WorkspaceSlot(2)), now, &mut temperature),
             "switching workspaces changes what the chrome wears"
         );
         assert_eq!(
@@ -210,8 +210,8 @@ mod tests {
             first,
             "but no window's own workspace moved"
         );
-        let mut cooler = |id: WorkspaceId| (id == WorkspaceId(1)).then_some(200.0);
-        warmth.update(&workspaces(), Some(WorkspaceId(2)), now, &mut cooler);
+        let mut cooler = |id: WorkspaceSlot| (id == WorkspaceSlot(1)).then_some(200.0);
+        warmth.update(&workspaces(), Some(WorkspaceSlot(2)), now, &mut cooler);
         assert_ne!(
             warmth.revision(),
             first,
@@ -230,13 +230,13 @@ mod tests {
     fn a_temperature_within_half_a_degree_is_the_same_one() {
         let mut warmth = WindowWarmth::new(PresenceHue::Teal);
         let now = Instant::now();
-        warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature);
+        warmth.update(&workspaces(), Some(WorkspaceSlot(1)), now, &mut temperature);
         let first = warmth.revision();
-        let mut barely = |id: WorkspaceId| (id == WorkspaceId(1)).then_some(40.4);
-        assert!(!warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut barely));
+        let mut barely = |id: WorkspaceSlot| (id == WorkspaceSlot(1)).then_some(40.4);
+        assert!(!warmth.update(&workspaces(), Some(WorkspaceSlot(1)), now, &mut barely));
         assert_eq!(warmth.revision(), first);
-        let mut justover = |id: WorkspaceId| (id == WorkspaceId(1)).then_some(40.5);
-        assert!(warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut justover));
+        let mut justover = |id: WorkspaceSlot| (id == WorkspaceSlot(1)).then_some(40.5);
+        assert!(warmth.update(&workspaces(), Some(WorkspaceSlot(1)), now, &mut justover));
         assert_ne!(warmth.revision(), first);
     }
 }

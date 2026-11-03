@@ -31,7 +31,7 @@ fn workspace_a_peer_changed() -> (TestTree, u64) {
         .desktop
         .workspaces
         .iter_mut()
-        .find(|candidate| candidate.id == tree.desktop.active)
+        .find(|candidate| candidate.slot == tree.desktop.active)
     {
         workspace.name = "Design review".into();
     }

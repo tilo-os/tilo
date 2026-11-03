@@ -15,7 +15,7 @@ use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record::{self, device};
 use tilo_desktop_model::{
     AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    Workspace, WorkspaceSlot,
 };
 
 const APP: &str = "so.tilo.word-processor";
@@ -46,7 +46,8 @@ fn group_with(tab: Tab) -> WindowGroup {
 }
 
 fn workspace(identity: RoomId, tab: Tab) -> Workspace {
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(identity), identity, "Home");
+    let mut workspace =
+        Workspace::in_workspace(WorkspaceSlot::of_workspace(identity), identity, "Home");
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(group_with(tab));
     workspace.strips.push(strip);
@@ -61,7 +62,7 @@ fn record(identity: RoomId, tab: Tab) -> AutoCommit {
         &mut doc,
         &SharedDesktop {
             tree: DesktopTree {
-                active: workspace.id,
+                active: workspace.slot,
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             },

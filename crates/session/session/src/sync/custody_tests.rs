@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::{RoomId, WorkspaceId};
+use tilo_desktop_model::{RoomId, WorkspaceSlot};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -189,11 +189,11 @@ impl Device {
     /// wait until the workspace is held here.
     fn join(&self, host: &Host, request: u8) -> RoomId {
         let workspace_id = RoomId::parse(&host.workspace).expect("a workspace id");
-        let workspace = WorkspaceId::of_room(workspace_id);
-        self.engine.bind(workspace, workspace_id);
+        let slot = WorkspaceSlot::of_workspace(workspace_id);
+        self.engine.bind(slot, workspace_id);
         self.plane
             .enroll(Enrolling {
-                workspace,
+                slot,
                 workspace_id,
                 invitation: host.invitation(self.person(), request),
             })

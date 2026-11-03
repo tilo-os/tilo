@@ -1116,7 +1116,7 @@ impl Session {
         // the pictures this device kept for them until the setting changes.
         wallpapers.set_active(handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.id.0.to_string())
+                .map(|workspace| workspace.slot.0.to_string())
         }));
         wallpapers.start(&settings_store::load());
         // The apps the person opens read their workspace from this desktop and leave

@@ -11,7 +11,7 @@ use tilo_desktop_model::width::{
 };
 use tilo_desktop_model::{
     Capability, DesktopTree, Display, GRANT_ALWAYS, Strip, StripId, TabId, TileContent,
-    WindowWidth, Workspace, WorkspaceId,
+    WindowWidth, Workspace, WorkspaceSlot,
 };
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
@@ -420,7 +420,7 @@ fn a_window_moves_to_another_workspace_by_its_name() {
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
     tree.workspaces
-        .push(Workspace::new(WorkspaceId(91), "Studio"));
+        .push(Workspace::new(WorkspaceSlot(91), "Studio"));
     handle.replace_tree(tree);
     settle(&mut frame);
 
@@ -437,7 +437,7 @@ fn a_window_moves_to_another_workspace_by_its_name() {
         .choose_window_menu(route.tab, &across.id, None)
         .unwrap();
     settle(&mut frame);
-    let home: Vec<WorkspaceId> = handle.read(|tree| {
+    let home: Vec<WorkspaceSlot> = handle.read(|tree| {
         tree.workspaces
             .iter()
             .filter(|workspace| {
@@ -448,10 +448,10 @@ fn a_window_moves_to_another_workspace_by_its_name() {
                         .any(|group| group.tabs.iter().any(|tab| tab.id == route.tab))
                 })
             })
-            .map(|workspace| workspace.id)
+            .map(|workspace| workspace.slot)
             .collect()
     });
-    assert_eq!(home, vec![WorkspaceId(91)], "the window is there now");
+    assert_eq!(home, vec![WorkspaceSlot(91)], "the window is there now");
 }
 
 /// A window shows on another display, by that display's name, as the

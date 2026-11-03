@@ -8,7 +8,7 @@ use tilo_desktop::composition::{DesktopSurface, SurfaceChrome};
 use tilo_desktop::resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest};
 use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId,
+    WorkspaceSlot,
 };
 use ui::application::{
     ApplicationCatalog, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget,
@@ -98,7 +98,7 @@ fn fixture() -> (
             app_title: None,
         });
     }
-    let mut ws = Workspace::new(WorkspaceId(1), "Work");
+    let mut ws = Workspace::new(WorkspaceSlot(1), "Work");
     ws.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
@@ -112,7 +112,7 @@ fn fixture() -> (
         }],
     }];
     let tree = DesktopTree {
-        active: ws.id,
+        active: ws.slot,
         workspaces: vec![ws],
         ..Default::default()
     };

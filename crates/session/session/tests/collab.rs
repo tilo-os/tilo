@@ -22,7 +22,7 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceId,
+    WindowWidth, Workspace, WorkspaceSlot,
 };
 use tilo_network_actor::{NetEvent, workspace_topic_id};
 use tilo_session::sync::{Client, OwnPresence};
@@ -48,8 +48,8 @@ fn workspace_id() -> RoomId {
 /// Notes: where the other person is working.
 fn desk() -> DesktopTree {
     let workspace = workspace_id();
-    let id = WorkspaceId::of_room(workspace);
-    let mut workspace = Workspace::in_workspace(id, workspace, "Desk");
+    let slot = WorkspaceSlot::of_workspace(workspace);
+    let mut workspace = Workspace::in_workspace(slot, workspace, "Desk");
     let tab = Tab {
         id: TabId::from(NOTES),
         title: "Notes".to_owned(),
@@ -72,7 +72,7 @@ fn desk() -> DesktopTree {
     workspace.strips.push(strip);
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.id,
+        active: workspace.slot,
         ..DesktopTree::default()
     }
 }

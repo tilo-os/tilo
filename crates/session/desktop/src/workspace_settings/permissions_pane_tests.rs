@@ -5,7 +5,7 @@ use super::*;
 /// Whoever is looking at the pane; never a grantor in these fixtures.
 const VIEWER: &str = "viewer-user";
 use collab_types::caps::ResourceRef;
-use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceId};
+use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceSlot};
 
 const OWNER: &str = "owner-user";
 
@@ -14,7 +14,7 @@ fn app_actor(ws: &Workspace, app: &str) -> collab_types::caps::Actor {
 }
 
 fn ws_with_grants() -> Workspace {
-    let mut ws = Workspace::new(WorkspaceId::from(3), "perm-test");
+    let mut ws = Workspace::new(WorkspaceSlot::from(3), "perm-test");
     ws.set_owner(OWNER);
     ws.grant_app(
         "firefox",
@@ -152,7 +152,7 @@ fn permission_rows_list_each_grant_with_its_real_scope_and_subject() {
     {
         let ada = "ad".repeat(32);
         let bea = "be".repeat(32);
-        let mut ws = Workspace::new(WorkspaceId::from(5), "names");
+        let mut ws = Workspace::new(WorkspaceSlot::from(5), "names");
         ws.set_owner(&ada);
         ws.collaborators.push(tilo_desktop_model::Collaborator::new(
             ada.clone(),
@@ -190,7 +190,7 @@ fn permission_rows_list_each_grant_with_its_real_scope_and_subject() {
     }
 
     {
-        let mut ws = Workspace::new(WorkspaceId::from(4), "labels");
+        let mut ws = Workspace::new(WorkspaceSlot::from(4), "labels");
         ws.set_owner(OWNER);
         ws.grant_as(
             &OWNER.to_string(),
@@ -728,7 +728,7 @@ fn a_grant_naming_a_resource_is_listed_by_that_resources_name() {
 fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
     {
         {
-            let ws = Workspace::new(WorkspaceId::default(), "empty");
+            let ws = Workspace::new(WorkspaceSlot::default(), "empty");
             let mut scene = Scene::new();
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -759,7 +759,7 @@ fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
                 Affine::IDENTITY,
                 pane(),
                 (
-                    &Workspace::new(WorkspaceId::default(), "empty"),
+                    &Workspace::new(WorkspaceSlot::default(), "empty"),
                     &NoAppDirectory,
                     VIEWER,
                 ),
@@ -803,7 +803,7 @@ fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
 
     {
         {
-            let mut ws = Workspace::new(WorkspaceId::from(9), "many");
+            let mut ws = Workspace::new(WorkspaceSlot::from(9), "many");
             ws.set_owner(OWNER);
             for i in 0..12 {
                 ws.grant_as(

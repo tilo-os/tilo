@@ -11,7 +11,7 @@ use std::{
 use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
-use tilo_desktop_model::{DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceSlot};
 use tilo_identity_host::broker::WorkspaceMembership;
 
 /// The desktop session's workspace file. Read, never written, here: its
@@ -145,7 +145,7 @@ impl ProfileWorkspace {
     fn record(
         &self,
         workspace: &str,
-        change: impl FnOnce(&mut DesktopTree, WorkspaceId) -> Option<()>,
+        change: impl FnOnce(&mut DesktopTree, WorkspaceSlot) -> Option<()>,
     ) -> Result<(), String> {
         if !self.governs() {
             return Err("the desktop session's workspace is read only in the runtime".into());
@@ -155,7 +155,7 @@ impl ProfileWorkspace {
                 .workspaces
                 .iter()
                 .find(|held| held.room().to_string() == workspace)?
-                .id;
+                .slot;
             change(tree, workspace)
         })
         .ok_or_else(|| {
@@ -234,7 +234,7 @@ impl ProfileGrants {
                 .workspaces
                 .iter()
                 .find(|held| held.room().to_string() == request.workspace)?
-                .id;
+                .slot;
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)
                 .ok()?;
@@ -346,7 +346,7 @@ pub(super) fn read_tree(path: &Path) -> io::Result<DesktopTree> {
 /// One empty home workspace with one strip, as a new desktop starts.
 pub(super) fn bootstrap() -> DesktopTree {
     let mut ids = IdMinter::default();
-    let workspace = WorkspaceId(ids.mint());
+    let workspace = WorkspaceSlot(ids.mint());
     let strip = StripId(ids.mint());
     let home = {
         let mut workspace = Workspace::new(workspace, "Home");

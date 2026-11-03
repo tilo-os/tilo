@@ -166,8 +166,8 @@ fn panel_workspace() -> (
     crate::services::WorkspaceAuthorityHandle,
     String,
 ) {
-    use crate::test_support::{Subject, Workspace, WorkspaceId, WorkspaceTree};
-    let mut workspace = Workspace::new(WorkspaceId(41), "Readings");
+    use crate::test_support::{Subject, Workspace, WorkspaceSlot, WorkspaceTree};
+    let mut workspace = Workspace::new(WorkspaceSlot(41), "Readings");
     workspace.set_owner("owner");
     let workspace_id = workspace.room().to_string();
     workspace.grant(tilo_action_policy::roles::device_panel(

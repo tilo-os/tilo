@@ -499,7 +499,7 @@ impl Panel {
     fn open_activity(&self, author: &str) {
         let workspace = self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.id.0.to_string())
+                .map(|workspace| workspace.slot.0.to_string())
         });
         let Some(workspace) = workspace else {
             return;

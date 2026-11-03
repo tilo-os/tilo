@@ -21,7 +21,7 @@ use automerge::transaction::Transactable as _;
 use ed25519_dalek::Signer as _;
 use runtime_collab::CollabClient;
 use tilo_compositor::OutputConfig;
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceSlot};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
@@ -147,12 +147,12 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
 /// A desk showing the workspace, known by its id, owned by the person.
 fn desk(person: &Keys) -> DesktopTree {
     let workspace = RoomId::parse(WORKSPACE).expect("a workspace id");
-    let id = WorkspaceId::of_room(workspace);
-    let mut workspace = Workspace::in_workspace(id, workspace, "Desk");
+    let slot = WorkspaceSlot::of_workspace(workspace);
+    let mut workspace = Workspace::in_workspace(slot, workspace, "Desk");
     workspace.set_owner(principal(&person.root));
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.id,
+        active: workspace.slot,
         ..DesktopTree::default()
     }
 }
