@@ -25,7 +25,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use ui::framework::WorkspaceRecord;
 use ui::tilo_resource::{self, ActionCx, Collection, Id, JsonSchema, Model, Refusal};
@@ -291,13 +291,6 @@ pub(crate) struct Records {
 }
 
 impl Records {
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(
-            dead_code,
-            reason = "a page reaches its direct conversations through its host"
-        )
-    )]
     pub(crate) fn new(
         handle: ui::framework::WorkspaceHandle,
         workspace: String,
@@ -347,7 +340,7 @@ impl Records {
         let Some(Ok(pairs)) = ui::person_chat::pairs().take() else {
             return;
         };
-        self.asked_pairs.set(Some(Instant::now()));
+        self.asked_pairs.set(Some(ui::time::now()));
         let me = self.root();
         let mut pairs: Vec<_> = pairs
             .into_iter()
@@ -381,7 +374,7 @@ impl Records {
 
     /// The pair id of the conversation with `root`.
     fn pair(&self, root: &str) -> Result<String, String> {
-        collab_types::direct_pair_id(&self.workspace, &self.root(), root)
+        ui::person_chat::direct_pair_id(&self.workspace, &self.root(), root)
             .ok_or_else(|| "no direct conversation in this workspace".to_owned())
     }
 

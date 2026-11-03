@@ -193,6 +193,15 @@ pub fn person_key(person_id: &str) -> String {
     }
 }
 
+/// The id of the record the direct conversation between the root keys `a` and
+/// `b` lives in, in `workspace`: the same id from either person's device, so
+/// both reach the one record they share. `None` where the workspace is not a
+/// UUID, a key is not lowercase hex, or the two are the same person.
+#[must_use]
+pub fn direct_pair_id(workspace: &str, a: &str, b: &str) -> Option<String> {
+    collab_types::direct_pair_id(workspace, a, b)
+}
+
 thread_local! { static ORIGINAL: Cell<Option<uuid::Uuid>> = const { Cell::new(None) }; }
 
 /// Retain the effect context's original invocation around these SDK calls.
