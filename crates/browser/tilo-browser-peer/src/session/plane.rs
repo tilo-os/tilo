@@ -11,6 +11,10 @@
 //! listener whose certificate `/live` names. That join is
 //! [`crate::live::join`]; this module is the session's bookkeeping around it.
 //!
+//! A native peer (an agent, the desktop's page-shaped peers) joins the same
+//! plane over iroh ([`tilo_live::native`]) to the device that serves it, with
+//! the device certificate as its grant.
+//!
 //! The plane lives as long as the page is in the workspace and the session's
 //! grant holds: it is joined again after a reconnect (the grant is the
 //! session's token), its keys and roster follow the channel and the
@@ -21,11 +25,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tilo_call_lane::Roster;
-use tilo_live::plane::Plane;
+use tilo_live::plane::{Join, Plane};
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{Command, Link, PeerEvent, Task, lock};
+use super::{Command, Host, Link, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
 
 /// The wait before a plane this page could not reach is asked for again.
@@ -56,6 +60,10 @@ pub(crate) struct Joined {
     pub(crate) members: BTreeSet<[u8; 32]>,
     /// The channel epoch it seals under.
     pub(crate) epoch: u64,
+    /// The last presence object this page said on the plane.
+    pub(crate) presence_seq: u32,
+    /// The last live-preview object this page said on the plane.
+    pub(crate) activity_seq: u32,
 }
 
 /// Why this page is not in a workspace's plane, and since when.
@@ -229,6 +237,81 @@ pub(crate) fn join(
     });
 }
 
+/// Join `workspace_id`'s plane over iroh, as this device, against the device
+/// that serves it; the outcome comes back as [`Command::PlaneJoined`].
+///
+/// The grant is this device's certificate (the roster every member applies),
+/// so a page-shaped peer reaches the same plane a browser reaches over
+/// WebTransport: it seals and opens as itself, under the workspace scope's
+/// keys, and the serving device copies bytes it cannot open.
+#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one join: the carrier, the host and the plane's own terms"
+)]
+pub(crate) fn join_native(
+    endpoint: iroh::Endpoint,
+    host: iroh_base::EndpointAddr,
+    commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
+    cert: tilo_user_identity::DeviceCert,
+    device: [u8; 32],
+    workspace_id: u64,
+    workspace: String,
+    keys: ChannelContentKeys,
+    members: BTreeSet<[u8; 32]>,
+) {
+    n0_future::task::spawn(async move {
+        let joined = native(&endpoint, host, &cert, device, &workspace, keys, members).await;
+        if let Some(commands) = commands.upgrade() {
+            let _ = commands.send(Command::PlaneJoined(workspace_id, joined));
+        }
+    });
+}
+
+/// The join itself: the grant this device presents, then the plane on the
+/// serving device's carrier.
+#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+async fn native(
+    endpoint: &iroh::Endpoint,
+    host: iroh_base::EndpointAddr,
+    cert: &tilo_user_identity::DeviceCert,
+    device: [u8; 32],
+    workspace: &str,
+    keys: ChannelContentKeys,
+    members: BTreeSet<[u8; 32]>,
+) -> Result<Arc<Plane>, Failed> {
+    use tilo_live::plane::PlaneError;
+    let Some(uuid) = tilo_desktop_model::WorkspaceId::parse(workspace) else {
+        return Err(Failed::Unavailable);
+    };
+    let scope = Scope::workspace(workspace);
+    let certificate = serde_json::to_vec(cert).map_err(|_| Failed::Unavailable)?;
+    let grant = tilo_live::grant::Native::new(
+        *uuid.as_uuid().as_bytes(),
+        &scope.id(),
+        keys.epoch(),
+        certificate,
+    )
+    .map_err(|_| Failed::Unavailable)?;
+    Plane::join(
+        &tilo_live::native::Iroh::new(endpoint.clone(), host),
+        &grant.encode(),
+        Join {
+            scope,
+            device,
+            keys,
+            roster: Roster::new(members),
+            publish: true,
+        },
+    )
+    .await
+    .map(Arc::new)
+    .map_err(|error| match error {
+        PlaneError::Denied => Failed::Refused,
+        _ => Failed::Unavailable,
+    })
+}
+
 // Where a plane waits for the session's command, on the target whose carrier
 // cannot travel in one: a browser's `Plane` holds its WebTransport session,
 // which is not `Send`, while the command channel crosses the toolkit's `Send`
@@ -326,7 +409,7 @@ impl Task {
     /// joined again after a reconnect, and dropped when the page leaves the
     /// workspace.
     pub(super) fn settle_planes(&mut self, client: Option<&Link>) {
-        let Some(Link::Https(link)) = client else {
+        let Some(client) = client else {
             return;
         };
         if self.config.watching {
@@ -386,16 +469,39 @@ impl Task {
                 continue;
             }
             self.planes.began(workspace_id, now, keys.epoch(), &members);
-            join(
-                link.client().clone(),
-                link.session().to_owned(),
-                self.commands.clone(),
-                self.config.cert.device_public_key,
-                workspace_id,
-                workspace,
-                keys,
-                members,
-            );
+            match client {
+                Link::Https(link) => join(
+                    link.client().clone(),
+                    link.session().to_owned(),
+                    self.commands.clone(),
+                    self.config.cert.device_public_key,
+                    workspace_id,
+                    workspace,
+                    keys,
+                    members,
+                ),
+                #[cfg(feature = "iroh")]
+                Link::Iroh { endpoint, .. } => {
+                    let Host::Iroh { addr, relay_url } = &self.config.host else {
+                        continue;
+                    };
+                    let host = match relay_url {
+                        Some(url) => addr.clone().with_relay_url(url.clone()),
+                        None => addr.clone(),
+                    };
+                    join_native(
+                        endpoint.clone(),
+                        host,
+                        self.commands.clone(),
+                        self.config.cert.clone(),
+                        self.config.cert.device_public_key,
+                        workspace_id,
+                        workspace,
+                        keys,
+                        members,
+                    );
+                }
+            }
         }
     }
 
@@ -419,6 +525,8 @@ impl Task {
                         plane,
                         members,
                         epoch,
+                        presence_seq: 0,
+                        activity_seq: 0,
                     },
                 );
             }
@@ -450,16 +558,31 @@ impl Task {
     /// Take what `workspace_id`'s plane heard since the last call: each
     /// member's track object, already opened with the scope's keys, as
     /// [`PeerEvent::LivePlane`].
-    pub(super) fn plane_heard(&self, workspace_id: u64) {
+    pub(super) fn plane_heard(&mut self, workspace_id: u64) {
+        use tilo_live::live::Track;
         let heard: Vec<_> = match self.planes.joined(workspace_id) {
             Some(joined) => std::iter::from_fn(|| joined.plane.try_recv()).collect(),
             None => return,
         };
         for heard in heard {
+            // A record's preview frame is still sealed with that record's
+            // keys inside the plane's own layer: it opens into the canonical
+            // frame the page's live layer reads ([`PeerEvent::Live`]).
+            if heard.track == Track::Activity {
+                self.live_frame(
+                    crate::held_live::Waiting::Receive {
+                        workspace_id,
+                        from: heard.sender,
+                        frame: heard.body,
+                    },
+                    true,
+                );
+                continue;
+            }
             self.emit(&PeerEvent::LivePlane {
                 workspace_id,
                 from: heard.sender,
-                track: tilo_live::live::track(heard.track),
+                track: heard.track,
                 sequence: heard.sequence,
                 body: heard.body,
             });

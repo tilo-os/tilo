@@ -5,9 +5,9 @@
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
-    handle_delta, handle_host_action, handle_host_hello, handle_live, handle_live_join,
-    handle_live_leave, handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
-    handle_sync_request, handle_unsubscribe, handle_voice, route_record_content,
+    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_live,
+    handle_live_join, handle_live_leave, handle_open_record, handle_presence, handle_remote_action,
+    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, route_record_content,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write};
@@ -91,6 +91,9 @@ pub(super) async fn handle_envelope(
         }
         env @ Envelope::Delta { .. } => handle_delta(peer, session, subscribed, env).await,
         env @ Envelope::Presence { .. } => handle_presence(peer, session, subscribed, env).await,
+        env @ Envelope::RecordContentWant { .. } => {
+            handle_content_want(peer, session, subscribed, env).await
+        }
         Envelope::PeerRelayHello { hosted_workspaces } => {
             handle_host_hello(peer, session, hosted_workspaces).await
         }

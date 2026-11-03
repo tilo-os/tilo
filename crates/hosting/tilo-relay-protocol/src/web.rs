@@ -163,6 +163,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::Live { frame, .. }
         | Envelope::RemoteAction { frame, .. }
         | Envelope::HostAction { frame }
+        | Envelope::RecordContentWant { frame, .. }
         | Envelope::RecordContent { frame, .. } => frame.len(),
         Envelope::RoomBootstrap { bootstrap, .. } => bootstrap.len(),
         Envelope::NotAuthorised { reason, .. }

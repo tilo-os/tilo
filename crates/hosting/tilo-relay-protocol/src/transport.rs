@@ -557,6 +557,19 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         bootstrap: Vec<u8>,
     },
+
+    /// A member asks the workspace for content one of its records
+    /// references. The host fans it out to the workspace's other members and
+    /// answers with what it keeps itself; each member answers to the asking
+    /// device alone ([`Self::RecordContent`]). `frame` is the
+    /// `NeighbourMsg::RecordContentWant` that says what is wanted, and
+    /// `from_device_public_key` is the host's stamp of who asked.
+    RecordContentWant {
+        workspace_id: u64,
+        from_device_public_key: [u8; 32],
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
 }
 
 impl Envelope {
@@ -604,6 +617,7 @@ impl Envelope {
             Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
             Self::RoomBootstrap { .. } => "RoomBootstrap",
+            Self::RecordContentWant { .. } => "RecordContentWant",
         }
     }
 
@@ -649,7 +663,8 @@ impl Envelope {
             | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. }
-            | Self::RoomBootstrap { workspace_id, .. } => Some(*workspace_id),
+            | Self::RoomBootstrap { workspace_id, .. }
+            | Self::RecordContentWant { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
         }
     }

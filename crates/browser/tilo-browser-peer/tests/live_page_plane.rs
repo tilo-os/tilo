@@ -374,7 +374,7 @@ async fn a_page_joins_its_workspaces_plane_and_hears_a_device_through_the_relay(
     })
     .await;
     assert_eq!(from, host_device.cert.device_public_key);
-    assert_eq!(track, "presence");
+    assert_eq!(track, tilo_live::live::Track::Presence);
     assert_eq!(body, said);
     assert_eq!(page.live_note(), None, "the page joined live");
 }

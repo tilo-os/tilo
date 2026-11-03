@@ -367,9 +367,8 @@ pub enum PeerEvent {
         /// A `NeighbourMsg::RecordContentPiece`, postcard-encoded.
         frame: Vec<u8>,
     },
-    /// A member asked the workspace on its presence for content a record
-    /// references: answer with [`PeerHandle::send_content`] when this page
-    /// keeps it. The workspace's host asks this way for a copy of what members
+    /// A member asked the workspace for content a record references: answer
+    /// with [`PeerHandle::send_content`] when this page keeps it. The workspace's host asks this way for a copy of what members
     /// post, so a visitor's file stays after they leave.
     ContentWanted {
         /// The workspace id.
@@ -390,9 +389,10 @@ pub enum PeerEvent {
     },
     /// A member's presence, as it published it to the workspace: a
     /// postcard-encoded `NeighbourMsg`, stamped by the host with the device
-    /// that published it. Cursors, a shell's view, chat, reactions, waves
-    /// and following arrive this way; a request for content arrives as
-    /// [`PeerEvent::ContentWanted`] instead.
+    /// that published it. Nothing publishes this any more — a member's
+    /// presence rides its live plane, and reaches this session as
+    /// [`PeerEvent::LivePlane`] — and it is removed with the rest of the
+    /// retired presence path.
     Presence {
         /// The workspace id.
         workspace_id: u64,
@@ -410,9 +410,8 @@ pub enum PeerEvent {
         workspace_id: u64,
         /// The device that sealed it.
         from: [u8; 32],
-        /// The track it came from, as the plane names it (`presence`,
-        /// `audio`, `activity`).
-        track: String,
+        /// The track it came from ([`tilo_live::live::Track`]).
+        track: tilo_live::live::Track,
         /// The object's sequence on that track.
         sequence: u32,
         /// The opened body.
@@ -520,7 +519,6 @@ enum Command {
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
     InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
-    LiveJoin(u64),
     /// What asking the host for `workspace_id`'s live plane, and joining it,
     /// came to: the plane itself, except on wasm, where the page's carrier
     /// cannot travel in a command and waits in [`plane::arrived`].
@@ -540,8 +538,8 @@ enum Command {
     WantContent(u64, Vec<u8>),
     SendContent(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
-    /// Presence bodies (`NeighbourMsg` postcards) for a workspace's members.
-    Presence(u64, Vec<Vec<u8>>),
+    /// Presence frames for the workspace's plane, said as this device.
+    Presence(u64, Vec<collab_types::presence::Presence>),
     VoiceCalls(u64),
     VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
     VoiceJoin(u64, [u8; 32]),
@@ -767,7 +765,6 @@ impl PeerHandle {
             shared: shared.clone(),
             workspaces: BTreeSet::new(),
             placing: BTreeMap::new(),
-            live: BTreeSet::new(),
             planes: plane::Planes::default(),
             outbox: record.outbox.iter().cloned().collect(),
             resending: BTreeSet::new(),
@@ -918,11 +915,6 @@ impl PeerHandle {
         self.send(Command::OpenRoute(route))
     }
 
-    /// Join a workspace's live plane (after [`Self::join`]).
-    pub fn live_join(&self, workspace_id: u64) -> Result<(), String> {
-        self.send(Command::LiveJoin(workspace_id))
-    }
-
     /// Publish one canonical live frame, sealed with the channel keys of the
     /// record it names. Dropped while disconnected (live state is never
     /// queued), and dropped when it names no record or this device holds
@@ -969,11 +961,11 @@ impl PeerHandle {
     }
 
     /// Ask workspace `workspace_id` for content its records reference: `request`
-    /// is a postcard-encoded `NeighbourMsg::RecordContentWant`. It rides
-    /// the workspace's presence, which the host fans out to every member and
-    /// answers itself from what it keeps; the pieces come back to this
-    /// device alone as [`PeerEvent::RecordContent`]. Dropped while
-    /// disconnected: the caller asks again.
+    /// is a postcard-encoded `NeighbourMsg::RecordContentWant`. The host
+    /// fans it out to every member and answers itself from what it keeps;
+    /// the pieces come back to this device alone as
+    /// [`PeerEvent::RecordContent`]. Dropped while disconnected: the caller
+    /// asks again.
     pub fn want_content(&self, workspace_id: u64, request: Vec<u8>) -> Result<(), String> {
         self.send(Command::WantContent(workspace_id, request))
     }
@@ -991,12 +983,16 @@ impl PeerHandle {
         self.send(Command::SendContent(workspace_id, to, frame))
     }
 
-    /// Publish presence to `workspace_id`'s members: one postcard-encoded
-    /// `NeighbourMsg` per body, the way every other device publishes its
-    /// presence. Dropped while disconnected: presence is ephemeral, and the
-    /// next change says where its sender is.
-    pub fn publish_presence(&self, workspace_id: u64, bodies: Vec<Vec<u8>>) -> Result<(), String> {
-        self.send(Command::Presence(workspace_id, bodies))
+    /// Say `frames` on `workspace_id`'s presence track, the way every other
+    /// device says its presence. Dropped where this page holds no plane for
+    /// the workspace: presence is ephemeral, and the next change says where
+    /// its sender is.
+    pub fn publish_presence(
+        &self,
+        workspace_id: u64,
+        frames: Vec<collab_types::presence::Presence>,
+    ) -> Result<(), String> {
+        self.send(Command::Presence(workspace_id, frames))
     }
 
     /// A receipt that completes once every document published before this
@@ -1248,7 +1244,6 @@ struct Task {
     /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<u64, (String, String)>,
-    live: BTreeSet<u64>,
     /// This page's own live plane per joined workspace
     /// ([`crate::session::plane`]).
     planes: plane::Planes,
@@ -1871,41 +1866,39 @@ impl Task {
         }
     }
 
-    /// Ask the workspace for content on its presence ([`PeerHandle::want_content`]);
-    /// nothing while disconnected.
+    /// Ask the workspace for content ([`PeerHandle::want_content`]): the host
+    /// fans the request out and answers with what it keeps. Nothing while
+    /// disconnected.
     fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&Link>) {
         let Some(client) = client else {
             return;
         };
-        let presence = tilo_relay_client::coedit::AttributedPresence {
-            author: self.config.cert.device_public_key,
-            body: request,
-        };
-        if let Ok(payload) = presence.encode() {
-            let _ = client.send(Envelope::Presence {
-                workspace_id,
-                payload,
-            });
-        }
+        let _ = client.send(Envelope::RecordContentWant {
+            workspace_id,
+            from_device_public_key: self.config.cert.device_public_key,
+            frame: request,
+        });
     }
 
-    /// Publish presence bodies to `workspace_id`'s members, stamped as this
-    /// device's: the same envelope every device's presence rides.
-    fn publish_presence(&self, workspace_id: u64, bodies: Vec<Vec<u8>>, client: Option<&Link>) {
-        let Some(client) = client else {
-            return;
-        };
-        for body in bodies {
-            let presence = tilo_relay_client::coedit::AttributedPresence {
-                author: self.config.cert.device_public_key,
-                body,
+    /// Say `frames` as object `sequence` of `workspace_id`'s presence track,
+    /// sealed under the workspace scope's keys by the plane itself.
+    fn publish_presence(
+        &mut self,
+        workspace_id: u64,
+        frames: Vec<collab_types::presence::Presence>,
+    ) {
+        for frame in frames {
+            let Ok(body) = frame.encode() else {
+                continue;
             };
-            if let Ok(payload) = presence.encode() {
-                let _ = client.send(Envelope::Presence {
-                    workspace_id,
-                    payload,
-                });
-            }
+            let Some(joined) = self.planes.joined_mut(workspace_id) else {
+                continue;
+            };
+            let sequence = joined.presence_seq.wrapping_add(1);
+            joined.presence_seq = sequence;
+            let _ = joined
+                .plane
+                .publish(tilo_live::live::Track::Presence, sequence, &body);
         }
     }
 
@@ -1932,10 +1925,6 @@ impl Task {
             Command::OpenRecord(workspace_id, route) => {
                 self.open_record(workspace_id, route, client)
             }
-            Command::LiveJoin(workspace_id) => {
-                self.live.insert(workspace_id);
-                client.is_none_or(|client| client.send(Envelope::LiveJoin { workspace_id }).is_ok())
-            }
             #[cfg(not(target_arch = "wasm32"))]
             Command::PlaneJoined(workspace_id, joined) => {
                 self.plane_joined(workspace_id, joined);
@@ -1955,7 +1944,7 @@ impl Task {
                 true
             }
             command @ (Command::Live(..) | Command::SealLive(..) | Command::OpenLive(..)) => {
-                self.apply_live(command, client);
+                self.apply_live(command);
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
@@ -1979,7 +1968,7 @@ impl Task {
             }
             Command::InstallCipher(route, cipher) => {
                 self.ciphers.insert(route.clone(), cipher);
-                self.release_live(&route, client);
+                self.release_live(&route);
                 true
             }
             Command::InstallChannelKeys(route, keys) => {
@@ -2010,8 +1999,8 @@ impl Task {
                 }
                 true
             }
-            Command::Presence(workspace_id, bodies) => {
-                self.publish_presence(workspace_id, bodies, client);
+            Command::Presence(workspace_id, frames) => {
+                self.publish_presence(workspace_id, frames);
                 true
             }
             Command::Here(request, done) => Self::request_here(request, done, client),
@@ -2065,12 +2054,7 @@ impl Task {
             status.rooms.entry(workspace_id).or_insert(false);
         });
         self.received.clear();
-        client.is_none_or(|client| {
-            client.send(self.subscribe(client, workspace_id)).is_ok()
-                && (self.config.watching
-                    || self.live.insert(workspace_id)
-                        && client.send(Envelope::LiveJoin { workspace_id }).is_ok())
-        })
+        client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
     }
 
     /// Join `workspace` once the host governs it ([`PeerHandle::join_placed`]).
@@ -2122,7 +2106,7 @@ impl Task {
             // Workspaces are administered over HTTPS only: a native peer joins
             // workspaces placed for it otherwise.
             #[cfg(feature = "iroh")]
-            Link::Iroh(_) => placed(),
+            Link::Iroh { .. } => placed(),
         }
         true
     }
@@ -2153,8 +2137,7 @@ impl Task {
             // A watching page still asks the workspace for content its records
             // reference: a public workspace's host answers it. It hands the
             // workspace none of its own.
-            Command::LiveJoin(_)
-            | Command::Live(..)
+            Command::Live(..)
             | Command::Presence(..)
             | Command::Publish(..)
             | Command::Compact(..)
@@ -2207,13 +2190,6 @@ impl Task {
                 .send(Envelope::OpenRecord {
                     workspace_id: *workspace_id,
                     channel: *channel,
-                })
-                .is_ok();
-        }
-        for workspace_id in &self.live {
-            sent_ok &= client
-                .send(Envelope::LiveJoin {
-                    workspace_id: *workspace_id,
                 })
                 .is_ok();
         }
@@ -2308,7 +2284,7 @@ impl Task {
                 });
             }
             #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Err("who is here is served over HTTPS".into())),
+            Some(Link::Iroh { .. }) => done(Err("who is here is served over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
         true
@@ -2331,7 +2307,7 @@ impl Task {
                 });
             }
             #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Err(
+            Some(Link::Iroh { .. }) => done(Err(
                 "a page's private conversations are served over HTTPS".into(),
             )),
             None => done(Err("not connected to the host".into())),
@@ -2355,7 +2331,7 @@ impl Task {
                 });
             }
             #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Err("workspaces are administered over HTTPS".into())),
+            Some(Link::Iroh { .. }) => done(Err("workspaces are administered over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
     }
@@ -2372,19 +2348,18 @@ impl Task {
                 });
             }
             #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Ok(None)),
+            Some(Link::Iroh { .. }) => done(Ok(None)),
             None => done(Err("not connected to the host".into())),
         }
     }
 
     /// Send, seal or open one live frame. Nothing leaves unsealed: a frame
     /// whose record's keys are not here yet waits for them (bounded), and a
-    /// frame that names no record is dropped. Nothing is sent while
-    /// disconnected.
-    fn apply_live(&mut self, command: Command, client: Option<&Link>) {
+    /// frame that names no record is dropped.
+    fn apply_live(&mut self, command: Command) {
         use crate::held_live::Waiting;
         let waiting = match command {
-            Command::Live(workspace_id, frame) if client.is_some() => Waiting::Send {
+            Command::Live(workspace_id, frame) => Waiting::Send {
                 workspace_id,
                 frame,
             },
@@ -2400,17 +2375,12 @@ impl Task {
             },
             _ => return,
         };
-        self.live_frame(waiting, client, true);
+        self.live_frame(waiting, true);
     }
 
     /// Seal or open one live frame and deliver it; with `hold`, keep a
     /// frame whose keys are missing until they arrive.
-    fn live_frame(
-        &mut self,
-        waiting: crate::held_live::Waiting,
-        client: Option<&Link>,
-        hold: bool,
-    ) {
+    fn live_frame(&mut self, waiting: crate::held_live::Waiting, hold: bool) {
         use crate::held_live::Waiting;
         match waiting {
             Waiting::Send {
@@ -2418,12 +2388,18 @@ impl Task {
                 frame,
             } => match self.seal_live(workspace_id, &frame) {
                 Sealing::Sealed(sealed) => {
-                    if let Some(client) = client {
-                        let _ = client.send(Envelope::Live {
-                            workspace_id,
-                            from_device_public_key: self.config.cert.device_public_key,
-                            frame: sealed,
-                        });
+                    // Preview frames ride the workspace's plane, the way the
+                    // document's own frames ride the session: only a member
+                    // of its roster opens the scope's layer, and the frame
+                    // inside it is sealed with the record's keys.
+                    if let Some(joined) = self.planes.joined_mut(workspace_id) {
+                        let sequence = joined.activity_seq.wrapping_add(1);
+                        joined.activity_seq = sequence;
+                        let _ = joined.plane.publish(
+                            tilo_live::live::Track::Activity,
+                            sequence,
+                            &sealed,
+                        );
                     }
                 }
                 Sealing::NoKeys(record) if hold => self.held_live.hold_outbound(
@@ -2494,7 +2470,7 @@ impl Task {
 
     /// `route`'s keys arrived: seal, send and open the live frames that
     /// waited for them.
-    fn release_live(&mut self, route: &DocumentRoute, client: Option<&Link>) {
+    fn release_live(&mut self, route: &DocumentRoute) {
         let Ok(workspace_id) = route.workspace_id() else {
             return;
         };
@@ -2508,7 +2484,7 @@ impl Task {
             .release(workspace_id, record, channel)
             .collect();
         for waiting in released {
-            self.live_frame(waiting, client, false);
+            self.live_frame(waiting, false);
         }
     }
 
@@ -2787,47 +2763,27 @@ impl Task {
                     from: from_device_public_key,
                     frame,
                 },
-                None,
                 true,
             ),
-            Envelope::Presence {
+            Envelope::RecordContentWant {
                 workspace_id,
-                payload,
-            } => self.presence(workspace_id, &payload),
+                from_device_public_key,
+                frame,
+            } => {
+                if from_device_public_key != self.config.cert.device_public_key {
+                    self.emit(&PeerEvent::ContentWanted {
+                        workspace_id,
+                        from: from_device_public_key,
+                        request: frame,
+                    });
+                }
+            }
             envelope => {
                 if let Some(event) = addressed(envelope) {
                     self.emit(&event);
                 }
             }
         }
-    }
-
-    /// A member's presence the host fanned out: its cursors, its shell's
-    /// view, chat, a wave, a follow. A request for content is separated
-    /// here, because a page answers those (or asks them) rather than draws
-    /// them.
-    fn presence(&self, workspace_id: u64, payload: &[u8]) {
-        let Some(presence) = tilo_relay_client::coedit::AttributedPresence::decode(payload) else {
-            return;
-        };
-        if presence.author == self.config.cert.device_public_key {
-            return;
-        }
-        if let Ok(neighbour_wire::NeighbourMsg::RecordContentWant { .. }) =
-            postcard::from_bytes(&presence.body)
-        {
-            self.emit(&PeerEvent::ContentWanted {
-                workspace_id,
-                from: presence.author,
-                request: presence.body,
-            });
-            return;
-        }
-        self.emit(&PeerEvent::Presence {
-            workspace_id,
-            from: presence.author,
-            body: presence.body,
-        });
     }
 
     /// Take this device into `route`'s channel, with the participants its
@@ -3247,7 +3203,7 @@ impl Task {
                     route.clone(),
                     Box::new(tilo_peer_state::document_frame::KeysCipher(keys)),
                 );
-                self.release_live(&route, client);
+                self.release_live(&route);
                 let held = self
                     .held_inbound
                     .get_mut(&route)
@@ -3548,7 +3504,12 @@ fn renew_after(expires_at_ns: u64, now_ns: u64) -> Duration {
 enum Link {
     Https(HttpsLink),
     #[cfg(feature = "iroh")]
-    Iroh(tilo_relay_session::RelayClient),
+    Iroh {
+        client: tilo_relay_session::RelayClient,
+        /// The endpoint the session dialled the host from: the workspace
+        /// planes are joined over it, beside the session.
+        endpoint: iroh::Endpoint,
+    },
 }
 
 impl Link {
@@ -3558,7 +3519,7 @@ impl Link {
         match self {
             Self::Https(link) => link.fetch_proxy().then(|| link.session().to_owned()),
             #[cfg(feature = "iroh")]
-            Self::Iroh(_) => None,
+            Self::Iroh { .. } => None,
         }
     }
 
@@ -3573,7 +3534,7 @@ impl Link {
         match self {
             Self::Https(link) => Some(link.session().to_owned()),
             #[cfg(feature = "iroh")]
-            Self::Iroh(_) => None,
+            Self::Iroh { .. } => None,
         }
     }
 
@@ -3581,7 +3542,7 @@ impl Link {
         match self {
             Self::Https(link) => link.resumable(),
             #[cfg(feature = "iroh")]
-            Self::Iroh(_) => false,
+            Self::Iroh { .. } => false,
         }
     }
 
@@ -3589,7 +3550,7 @@ impl Link {
         match self {
             Self::Https(link) => link.compacts(),
             #[cfg(feature = "iroh")]
-            Self::Iroh(_) => false,
+            Self::Iroh { .. } => false,
         }
     }
 
@@ -3597,7 +3558,7 @@ impl Link {
         match self {
             Self::Https(link) => link.send(envelope),
             #[cfg(feature = "iroh")]
-            Self::Iroh(client) => client.send(envelope),
+            Self::Iroh { client, .. } => client.send(envelope),
         }
     }
 
@@ -3614,7 +3575,7 @@ impl Link {
         match self {
             Self::Https(link) => Some(renew_after(link.expires_at_ns(), now_ns)),
             #[cfg(feature = "iroh")]
-            Self::Iroh(_) => None,
+            Self::Iroh { .. } => None,
         }
     }
 
@@ -3622,7 +3583,7 @@ impl Link {
         match self {
             Self::Https(link) => link.recv().await,
             #[cfg(feature = "iroh")]
-            Self::Iroh(client) => client.recv().await,
+            Self::Iroh { client, .. } => client.recv().await,
         }
     }
 
@@ -3634,7 +3595,7 @@ impl Link {
         match self {
             Self::Https(link) => link.close(),
             #[cfg(feature = "iroh")]
-            Self::Iroh(client) => client.close().await,
+            Self::Iroh { client, .. } => client.close().await,
         }
     }
 }
@@ -3666,6 +3627,7 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
                 Some(url) => addr.clone().with_relay_url(url.clone()),
                 None => addr.clone(),
             };
+            let planes = endpoint.clone();
             RelayClient::connect_with_signer(
                 endpoint,
                 host,
@@ -3676,7 +3638,10 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
                 config.revocations.clone(),
             )
             .await
-            .map(Link::Iroh)
+            .map(|client| Link::Iroh {
+                client,
+                endpoint: planes,
+            })
             .map_err(iroh_link_error)
         }
     }
