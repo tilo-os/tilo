@@ -1192,6 +1192,53 @@ class AppResourceActionContractTests(unittest.TestCase):
         self.assertEqual(counts[("closure_control", "apps/sample/src/tests.rs")], 0)
         self.assertTrue(any("5 found, audited ceiling 0" in item.reason for item in violations))
 
+    def test_a_callback_that_submits_a_published_action_is_the_action_route(self):
+        header = (
+            "use tilo_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        root = self.fixture(
+            header
+            + "fn view(tracker: Tracker, dispatcher: Dispatcher<Tracker>) {\n"
+            " let check_row = row_check(tracker.clone(), dispatcher.clone());\n"
+            " Tree::new()\n"
+            "  .on_check(check_row)\n"
+            "  .on_submit(move |text| dispatcher.submit(Tracker::PLACE.with(Place { text })))\n"
+            "  .on_rename(move |key| dispatcher.submit(Tracker::paths().title.set(key)))\n"
+            "  .on_move(move |key| menu_chosen(&tracker, &dispatcher, key))\n"
+            "  .on_save(move |_| dispatcher.submit_now(&mut edits, Tracker::SAVE.with(())))\n"
+            "  .on_select(move |key| set(key))\n"
+            "  .on_delete(|key| purge(key))\n"
+            "  .on_revert(move |_| dispatcher.submit(invoke()))\n"
+            "  .on_remove(move |key| own_outbox.borrow_mut().push(key));\n"
+            " ListRow::new().action(Icon::X, \"Remove\", move |a, b| dispatcher.submit(Tracker::ERASE.with(a)));\n"
+            " card.swipe_action(Icon::X, \"Erase\", \"left\", move |a, b, c| dispatcher.submit(Tracker::ERASE.with(a)));\n"
+            "}\n"
+            "fn row_check(tracker: Tracker, dispatcher: Dispatcher<Tracker>) -> impl FnMut(u64) {\n"
+            " move |key| change_status(&tracker, &dispatcher, key)\n"
+            "}\n"
+            "fn change_status(tracker: &Tracker, d: &Dispatcher<Tracker>, key: u64) {\n"
+            " d.submit(Tracker::PLACE.with(Place { key }));\n"
+            "}\n"
+            "fn menu_chosen(tracker: &Tracker, d: &Dispatcher<Tracker>, key: u64) {\n"
+            " d.submit(Tracker::PLACE.with(Place { key }));\n"
+            "}\n"
+            "fn purge(key: u64) { store.remove(key); }\n"
+        )
+        counts: dict[tuple[str, str], int] = {}
+        violations, _ = contract.audit(root, counts)
+        # The submit of a published action is written at the call, in a helper
+        # the view binds first, or in a function the callback names: all three
+        # run the shared action route, at any of the dispatcher's doors and for
+        # a composite's closure-run button too. A callback that keeps its own
+        # outbox, a submit whose action the call does not name, and a helper
+        # that submits nothing are still counted.
+        self.assertEqual(counts[("closure_control", "apps/sample/src/lib.rs")], 4)
+        self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 0)
+        self.assertTrue(any("4 found, audited ceiling 0" in item.reason for item in violations))
+
     def test_closure_run_buttons_of_composites_count_by_builder_and_arity(self):
         header = (
             "use tilo_actions::ActionSpec;\n"
