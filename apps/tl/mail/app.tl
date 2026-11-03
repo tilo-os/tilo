@@ -900,3 +900,19 @@ scenario "a reply being written" -> Draft {
 scenario "no account yet" {
     root Mail
 }
+
+/// One mailbox on its own, as a place on someone's canvas shows it: an account, its inbox and
+/// the conversations in it, and an archived one it leaves out.
+scenario "a mailbox on its own" -> Mailbox {
+    let m = root Mail
+    let a = m.accounts.insert(Account(key: "sam@rivera.example", address: "sam@rivera.example", name: "Sam Rivera", online: true))
+    let inbox = a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 1, total: 2))
+    a.mailboxes.insert(Mailbox(key: "archive", name: "Archive", role: "archive", total: 1))
+    let lease = a.threads.insert(Thread(key: "lease@lettings.example", account: a.key, subject: "Your lease renewal", latest: 2026-06-30T10:25Z, snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.", senders: "Mill Lane Lettings", count: 1, unread: true, flagged: true))
+    lease.boxes.add("inbox")
+    lease.messages.insert(Message(key: "lease@lettings.example", account: a.key, subject: "Your lease renewal", from: "office@lettings.example", from_name: "Mill Lane Lettings", to: "sam@rivera.example", received: 2026-06-30T10:25Z, snippet: "The new lease is attached.", body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings", message_id: "lease@lettings.example", unread: true, flagged: true, mailbox: "inbox"))
+    let invoice = a.threads.insert(Thread(key: "invoice@studio.example", account: a.key, subject: "Invoice for June", latest: 2026-06-27T08:00Z, snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.", senders: "North Studio", count: 1))
+    invoice.boxes.add("archive")
+    invoice.messages.insert(Message(key: "invoice@studio.example", account: a.key, subject: "Invoice for June", from: "accounts@studio.example", from_name: "North Studio", to: "sam@rivera.example", received: 2026-06-27T08:00Z, snippet: "The invoice is attached.", body: "Thanks for the work this month. The invoice is attached, payable within thirty days.", message_id: "invoice@studio.example", attachments: "Invoice 0612.pdf", mailbox: "archive"))
+    inbox
+}
