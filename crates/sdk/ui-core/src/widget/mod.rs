@@ -554,7 +554,7 @@ pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mu
 /// The first widget of `root`'s subtree, `root` included, that is a `T`, to change: a view or a
 /// page wraps the widget it places (a row's swipe around its row, a docked page around its
 /// list), so a caller reaches it wherever it sits.
-pub fn find_mut<'a, T: Widget + 'static>(root: &'a mut dyn Widget) -> Option<&'a mut T> {
+pub fn find_mut<T: Widget + 'static>(root: &mut dyn Widget) -> Option<&mut T> {
     if root.as_any_mut().is_some_and(|any| any.is::<T>()) {
         return root.as_any_mut().and_then(|any| any.downcast_mut::<T>());
     }
