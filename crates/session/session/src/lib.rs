@@ -42,6 +42,7 @@ mod bluetooth_handoff;
 mod call_devices;
 mod calls;
 pub mod capture;
+mod capture_grants;
 mod capture_send;
 mod capture_studio;
 mod channels;
@@ -75,6 +76,8 @@ mod emoji;
 mod engine;
 mod env;
 pub mod fabric;
+mod feeds;
+mod fs_authority;
 mod held;
 mod here;
 mod i18n;
@@ -336,6 +339,13 @@ struct Shared {
     /// The desk revision workspace settings was last fed at: its panes are
     /// rebuilt when the desk changed under it.
     ws_settings_fed: Cell<Option<u64>>,
+    /// The desk revision the file access list and what apps may capture were
+    /// last worked out at: both follow every change of the desk, so a
+    /// revocation reaches the running app at once.
+    capabilities_fed: Cell<Option<u64>>,
+    /// What publishes the person's file access list to the Files daemon
+    /// while the session runs; `None` where no Files workspace serves.
+    fs_authority: Option<fs_authority::Publisher>,
     /// The workspace's emoji, which workspace settings shows and changes
     /// through Chat's record of the workspace.
     workspace_emoji: workspace_settings::EmojiTab,
@@ -1690,6 +1700,8 @@ impl Session {
             power,
             workspace_settings,
             ws_settings_fed: Cell::new(None),
+            capabilities_fed: Cell::new(None),
+            fs_authority: fs_authority::Publisher::for_session(),
             workspace_emoji,
             directory,
             directory_store: directory::Store::default(),
@@ -2509,6 +2521,7 @@ impl Session {
             );
         }
         self.feed_portal();
+        self.feed_capabilities();
         self.feed_window_artwork();
         // What the apps copied since the last pass joins the history; a copy
         // chosen in it is pasted once the panel let the keyboard go.
@@ -2640,35 +2653,6 @@ impl Session {
     #[must_use]
     pub fn take_finished_shortcut_runs(&self) -> Vec<FinishedShortcutRun> {
         self.automation.take_finished()
-    }
-
-    /// Tell the portal what it asks of the session about its apps: which
-    /// run and how, which exited, and when the screen locks.
-    fn feed_portal(&mut self) {
-        let Some(desktop) = &self.desktop else {
-            return;
-        };
-        for (window, _) in self.compositor.windows() {
-            if let (Some(pid), Some(app_id)) = (window.pid, window.app_id) {
-                desktop.note_running_app(pid, &app_id);
-                self.pids.insert(pid, app_id);
-            }
-        }
-        let running = running_apps(&self.compositor);
-        if running != self.running {
-            desktop.set_running_apps(running.clone());
-            self.running = running;
-        }
-        let locked = self.compositor.locked();
-        if locked != self.screen_locked {
-            desktop.set_screen_locked(locked);
-            self.screen_locked = locked;
-        }
-        for pid in self.compositor.take_exited_pids() {
-            if let Some(app_id) = self.pids.remove(&pid) {
-                desktop.app_exited(&app_id);
-            }
-        }
     }
 
     /// Hand the desk each window's own icon, which it paints on the window's

@@ -623,8 +623,7 @@ impl Loop {
             .name("tilo-agent-door".into())
             .spawn(move || {
                 serve_connection(
-                    stream, pid, broker, session, &requests, &launches, &wake, &control,
-                    &seats,
+                    stream, pid, broker, session, &requests, &launches, &wake, &control, &seats,
                 );
                 served.fetch_sub(1, Ordering::Relaxed);
                 // A question for a client that is gone is withdrawn on the

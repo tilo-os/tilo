@@ -7,7 +7,7 @@ use tilo_sort::CompactSort as _;
 use serde::{Deserialize, Serialize};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef,
+    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope,
     Subject as SandboxSubject, decide_capability,
 };
 use tilo_action_policy::{
@@ -437,6 +437,24 @@ impl Workspace {
             }
         }
         out
+    }
+
+    /// Whether app `app_id` still holds device `device` ("camera",
+    /// "microphone", as [`Capability::device_scope`] spells it) at `now`.
+    /// A revoke or an expiry answers `false` here at once, which is what
+    /// ends a capture already running: nothing has to restart the app.
+    #[must_use]
+    pub fn grants_device_at(&self, app_id: &str, device: &str, now: u64) -> bool {
+        let live_at = Some(now);
+        self.sandbox.iter().any(|capability| {
+            capability.effect == Effect::Grant
+                && capability.is_live_at(live_at)
+                && matches!(
+                    &capability.subject,
+                    SandboxSubject::Principal(Principal::App(app)) if app == app_id
+                )
+                && matches!(&capability.scope, Scope::Device(scope) if scope == device)
+        })
     }
 
     /// Does any app hold a grant in this workspace? Drives the Permissions

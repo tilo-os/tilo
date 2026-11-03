@@ -299,7 +299,12 @@ impl Shared {
     /// Read `workspace` as it is now and join through the first of its relays
     /// this device reaches, move the plane's keys and roster when they changed,
     /// or leave when the workspace names no relay any more.
-    async fn settle(self: &Arc<Self>, workspace: RoomId, endpoint: &Endpoint, relay: Option<&Relay>) {
+    async fn settle(
+        self: &Arc<Self>,
+        workspace: RoomId,
+        endpoint: &Endpoint,
+        relay: Option<&Relay>,
+    ) {
         let members = match channels::members_of(&self.engine, workspace) {
             Ok(members) => members,
             Err(error) => {
@@ -371,11 +376,11 @@ impl Shared {
                         Plane::local(relay, &join)
                     });
                 }
-                let relay_id = EndpointId::from_bytes(&chosen)
+                let relay_id =
+                    EndpointId::from_bytes(&chosen).map_err(|_| PlaneError::Unavailable)?;
+                let grant = self
+                    .grant(workspace, &scope, epoch)
                     .map_err(|_| PlaneError::Unavailable)?;
-                let grant = self.grant(workspace, &scope, epoch).map_err(|_| {
-                    PlaneError::Unavailable
-                })?;
                 let carrier = native::Iroh::new(endpoint, EndpointAddr::new(relay_id));
                 Plane::join_within(&carrier, &grant, join, ATTEMPT).await
             })
@@ -493,7 +498,11 @@ impl Shared {
             .lock_recover()
             .retain(|(held, device), _| *held != workspace || others.contains(device));
         for other in others {
-            if self.bridged.lock_recover().contains_key(&(workspace, other)) {
+            if self
+                .bridged
+                .lock_recover()
+                .contains_key(&(workspace, other))
+            {
                 continue;
             }
             let Ok(relay_id) = EndpointId::from_bytes(&other) else {
@@ -879,7 +888,11 @@ mod tests {
             })
         })
         .await;
-        assert_eq!(reached, Some(([2; 32], [2; 32])), "the plane opens on the next relay");
+        assert_eq!(
+            reached,
+            Some(([2; 32], [2; 32])),
+            "the plane opens on the next relay"
+        );
     }
 
     #[tokio::test]

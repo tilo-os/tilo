@@ -219,6 +219,8 @@ pub enum CaptureRevocation {
     DeviceLost,
     KillSwitch,
     Expired,
+    /// The workspace stopped letting the app capture this.
+    GrantRevoked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -757,6 +759,41 @@ impl CaptureBroker {
         }
     }
 
+    /// Revoke what `keep` no longer allows: every live lease whose app may no
+    /// longer capture that kind, and every unconsumed authorization asking
+    /// for it. Each revoked lease's stop hook runs, so the stream is fenced
+    /// before this returns; the app itself keeps running, and its next ask is
+    /// the broker's to refuse.
+    pub fn revoke_unkept(
+        &mut self,
+        reason: CaptureRevocation,
+        keep: impl Fn(&str, &str, CaptureKind) -> bool + Copy,
+    ) -> usize {
+        self.authorizations.retain(|_, authorization| {
+            keep(
+                &authorization.binding.app_id,
+                &authorization.binding.workspace_id,
+                authorization.kind,
+            )
+        });
+        let ids: Vec<CaptureLeaseId> = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| {
+                !keep(
+                    &lease.binding.app_id,
+                    &lease.binding.workspace_id,
+                    lease.kind,
+                )
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            self.revoke_one(*id, reason);
+        }
+        ids.len()
+    }
+
     pub fn reap_expired(&mut self, now: Instant) {
         self.authorizations
             .retain(|_, authorization| authorization.expires_at >= now);
@@ -1232,6 +1269,7 @@ mod tests {
                 CaptureRevocation::DeviceLost,
                 CaptureRevocation::KillSwitch,
                 CaptureRevocation::Expired,
+                CaptureRevocation::GrantRevoked,
             ] {
                 let mut broker = broker();
                 let auth = broker
@@ -1252,6 +1290,9 @@ mod tests {
                     }
                     CaptureRevocation::Expired => {
                         broker.reap_expired(now + CAPTURE_LEASE_TTL + Duration::from_millis(1));
+                    }
+                    CaptureRevocation::GrantRevoked => {
+                        broker.revoke_unkept(CaptureRevocation::GrantRevoked, |_, _, _| false);
                     }
                     CaptureRevocation::Released | CaptureRevocation::Stopped => continue,
                 }
