@@ -165,7 +165,7 @@ d-ojzyzzxu = Remove
     .doc = Deletes a task and its subtasks.
 
 d-rjpcv6es = Clear done
-    .doc = Deletes every task that is done.
+    .doc = Deletes every finished task, and answers how many went: a task whose subtasks are still undone stays, so clearing never takes unfinished work with it.
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
@@ -205,8 +205,6 @@ d-7g55zawk = Release~present
 d-day53wfn = Unfile~present
 
 d-mg3c777a = Move to~present
-
-d-wrth4lq3 = Clear done~present
 
 d-swaiyhcf = Show board~present
 

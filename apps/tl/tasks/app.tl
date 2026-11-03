@@ -249,10 +249,14 @@ destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
     }
 }
 
-/// Deletes every task that is done.
+/// Deletes every finished task, and answers how many went: a task whose subtasks are still
+/// undone stays, so clearing never takes unfinished work with it.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
-    require tasks.items.any(.done) "Nothing is done yet"
-    tasks.items.remove_where(.done)
+    let gone = tasks.items.filter(x -> finished(tasks.items, x))
+    for x in gone {
+        tasks.items.remove(x)
+    }
+    gone.len()
 }
 
 /// Deletes a project and its sections; its tasks go back to the inbox.
@@ -324,6 +328,12 @@ fn under(items: List<Task>, x: Task, top: Task) -> Bool {
         }
     }
     found
+}
+
+/// Whether every task under `t` is done too: a done task whose steps are unfinished is not
+/// finished.
+fn finished(items: List<Task>, t: Task) -> Bool {
+    t.done and not items.any(x -> x != t and under(items, x, t) and not x.done)
 }
 
 /// Whether `place` is `top` or one of the tasks over it.

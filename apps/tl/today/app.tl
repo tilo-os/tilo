@@ -16,13 +16,7 @@ default view today for Today
 /// Clears the finished todos and files a note saying how many went. The changes belong to the
 /// todo and notes apps, so each one asks until Today is trusted.
 flow morning_cleanup(list: todo.Tasks, nb: notes.Notes) -> Int {
-    let n = 0
-    for item in list.items {
-        if item.done {
-            todo.remove(list, item)
-            n += 1
-        }
-    }
+    let n = todo.clear_done(list)
     let note = notes.new_note(nb)
     notes.retitle(note, "Morning: {n} done")
     notes.tag(note, "morning")

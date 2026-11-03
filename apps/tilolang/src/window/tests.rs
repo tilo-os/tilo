@@ -13,7 +13,7 @@ use ui::widget::controls::ActionControls as _;
 use ui::widget::{ItemRow, ListItemProps};
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::Answer;
@@ -1186,7 +1186,8 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
 }
 
 /// A workspace of Today with the todo list and the notebook it points at, each with its scenario, and
-/// how many of the todos are done.
+/// how many of the todos are finished: done, with nothing unfinished beneath them, so a cleanup
+/// takes no unfinished work with it.
 fn today_workspace() -> (Workspace, usize) {
     let mut workspace = Workspace::new("today");
     workspace.seed("tasks");
@@ -1196,17 +1197,46 @@ fn today_workspace() -> (Workspace, usize) {
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
-    let done = items
-        .iter()
-        .filter(|item| match item {
-            RtValue::Ref(item) => {
-                host.runtime().read(&item.target, "done").ok() == Some(RtValue::Bool(true))
+    let mut done: HashMap<String, bool> = HashMap::new();
+    let mut over: HashMap<String, Option<String>> = HashMap::new();
+    for item in &items {
+        let RtValue::Ref(item) = item else {
+            continue;
+        };
+        let id = item.target.id_string();
+        let read = |field: &str| host.runtime().read(&item.target, field).ok();
+        done.insert(id.clone(), read("done") == Some(RtValue::Bool(true)));
+        over.insert(
+            id,
+            match read("parent") {
+                Some(RtValue::Opt(Some(held))) => match *held {
+                    RtValue::Ref(parent) => Some(parent.target.id_string()),
+                    _ => None,
+                },
+                _ => None,
+            },
+        );
+    }
+    // Every task over an unfinished one is not finished either.
+    let mut unfinished: HashSet<String> = HashSet::new();
+    for (id, held) in &done {
+        if *held {
+            continue;
+        }
+        let mut at = Some(id.clone());
+        while let Some(here) = at {
+            if !unfinished.insert(here.clone()) {
+                break;
             }
-            _ => false,
-        })
+            at = over.get(&here).cloned().flatten();
+        }
+    }
+    let finished = done
+        .iter()
+        .filter(|(id, held)| **held && !unfinished.contains(*id))
         .count();
-    assert!(done > 0, "the saturday list has done items");
-    (workspace, done)
+    assert!(finished > 0, "the saturday list has finished tasks");
+    (workspace, finished)
 }
 
 fn cleanup_args(workspace: &Workspace) -> Json {
@@ -1221,19 +1251,22 @@ fn cleanup_args(workspace: &Workspace) -> Json {
 
 #[test]
 fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
-    let (mut workspace, done) = today_workspace();
+    let (mut workspace, finished) = today_workspace();
     let args = cleanup_args(&workspace);
     let output = workspace
         .agent_invokes(HOST, "run-flow", &args)
         .unwrap()
         .value
         .unwrap();
-    assert_eq!(output, serde_json::json!({"state": "done", "result": done}));
+    assert_eq!(
+        output,
+        serde_json::json!({"state": "done", "result": finished})
+    );
 }
 
 #[test]
 fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
-    let (mut workspace, done) = today_workspace();
+    let (mut workspace, finished) = today_workspace();
     // The person narrowed this agent in the workspace: changes to the todo app ask first.
     let mut policy = policy::WorkspacePolicy::new("workspace", "ada");
     policy.grants.push(agent_answers::grant(
@@ -1270,21 +1303,21 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "nothing went while it waits"
     );
     let run = waiting["run"].as_str().unwrap().to_owned();
-    // Each removal asks: the flow waits again until the person approved every one.
+    // The clear asks once; the note Today files for itself does not.
     let mut approvals = 0;
-    let finished = loop {
+    let completed = loop {
         let answer = person_decides(&mut workspace, "approve", &run).unwrap();
         approvals += 1;
-        if answer["state"] != "suspended" || approvals > done {
+        if answer["state"] != "suspended" || approvals > 8 {
             break answer;
         }
     };
-    assert_eq!(finished["state"], "done", "{finished}");
-    assert_eq!(approvals, done, "one approval per removal");
+    assert_eq!(completed["state"], "done", "{completed}");
+    assert_eq!(approvals, 1, "one approval for the clear");
     assert_eq!(
         workspace.items_of("so.tilo.lang.tasks", "items"),
-        todos - done,
-        "the done ones went, once"
+        todos - finished,
+        "the finished ones went, once"
     );
     assert_eq!(
         workspace.items_of("so.tilo.lang.notes", "items"),
@@ -1298,9 +1331,47 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     workspace.settle();
     assert_eq!(
         workspace.items_of("so.tilo.lang.tasks", "items"),
-        todos - done
+        todos - finished
     );
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), notes + 1);
+}
+
+#[test]
+fn a_person_presses_morning_cleanup_and_the_finished_todos_go() {
+    let (mut workspace, finished) = today_workspace();
+    let todos = workspace.items_of("so.tilo.lang.tasks", "items");
+    let notes = workspace.items_of("so.tilo.lang.notes", "items");
+    let morning = node_with(
+        &workspace.composed(),
+        "ui.Button",
+        "label",
+        "Morning cleanup",
+    )
+    .expect("Today's cleanup button")
+    .key
+    .clone();
+    workspace
+        .window
+        .act(UiEvent::Fire(morning, "press".to_owned(), None));
+    // The person answers whatever the flow asks, as the ask bar has them.
+    for _ in 0..8 {
+        workspace.settle();
+        let Some(_) = workspace.window.view().asks() else {
+            break;
+        };
+        workspace.window.view().answer(Answer::Allow);
+    }
+    workspace.settle();
+    assert_eq!(
+        workspace.items_of("so.tilo.lang.tasks", "items"),
+        todos - finished,
+        "the finished ones went"
+    );
+    assert_eq!(
+        workspace.items_of("so.tilo.lang.notes", "items"),
+        notes + 1,
+        "and one note says so"
+    );
 }
 
 #[test]
