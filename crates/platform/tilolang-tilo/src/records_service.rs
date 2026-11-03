@@ -124,7 +124,7 @@ impl RecordService {
         self.shared
             .insert(meta.app.clone(), std::sync::Arc::from(share.wasm));
         self.shared_records
-            .insert(meta.app.clone(), std::rc::Rc::clone(share.records));
+            .insert(meta.app, std::rc::Rc::clone(share.records));
         self.publications.settle(&self.host, &self.planner);
         let _ = self.watch.take();
         Ok(())
@@ -305,7 +305,7 @@ impl RecordService {
     fn commit(
         &mut self,
         action: &DynAction,
-        invoker: tilo_actions::ActionInvoker,
+        invoker: &tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
         let context = ActionContext::for_resource(
@@ -365,8 +365,7 @@ impl RecordService {
             serde_json::from_slice(&encoded.payload)
                 .map_err(|error| DoorError::InvalidArguments(error.to_string()))?
         };
-        self.commit(&planned, invoker.clone())
-            .map_err(DoorError::Failed)?;
+        self.commit(&planned, invoker).map_err(DoorError::Failed)?;
         // What it made is published before it is answered, so the caller's next invocation
         // reaches it: a record changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
