@@ -162,7 +162,7 @@ fn the_message_id_is_the_invocation() {
 
 #[test]
 fn reading_to_the_end_marks_the_newest_part_with_the_other_persons_messages() {
-    let (ada, bob) = (
+    let (_ada, bob) = (
         ui::person_chat::person_key(ADA),
         ui::person_chat::person_key(BOB),
     );

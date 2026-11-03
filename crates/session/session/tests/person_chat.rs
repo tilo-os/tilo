@@ -888,3 +888,118 @@ fn chat_imports_the_conversation_the_old_store_holds() {
         proof.kept
     );
 }
+
+/// What the app heard about the pairs it is in: the updates it read from the
+/// channel's context, and whether one repeated, without the app ever asking
+/// the owner for the list.
+struct PairsWakeProof {
+    /// Every pair list the context named, in the order it named them.
+    named: Vec<Vec<String>>,
+    /// Whether the context named the same list again after the change.
+    repeated: bool,
+}
+
+/// Chat subscribes to the workspace's context and announces its pair: the
+/// list of pairs it is in arrives on the subscription, and nothing asks for
+/// it again.
+fn pairs_wake_calls(socket: &PathBuf, keys: &Keys) -> PairsWakeProof {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the app");
+    let pair = collab_types::direct_pair_id(
+        WORKSPACE,
+        &root_hex(keys.root),
+        &root_hex(keys.peer_cert.user_public_key),
+    )
+    .expect("the workspace names a pair of two people");
+    runtime.block_on(async move {
+        let client = connect(socket);
+        let mine = client
+            .join_channel(&channel(), &presentation(&keys.device, &keys.cert))
+            .await
+            .expect("the app the session launched joins the workspace's channel");
+        // The app follows the channel's context: who is here, and which pair
+        // records this person's windows may open.
+        let context = mine
+            .subscribe_context()
+            .await
+            .expect("the channel's context");
+        ask(
+            &mine,
+            serde_json::json!({
+                "operation": "announce",
+                "public_key": root_hex(keys.peer_cert.user_public_key),
+            }),
+        )
+        .await;
+        let mut named = Vec::new();
+        loop {
+            let next = context.read().await.expect("the context as it changed");
+            let Some(pairs) = next.person_pairs else {
+                continue;
+            };
+            let done = pairs.iter().any(|named| *named == pair);
+            named.push(pairs);
+            if done {
+                break;
+            }
+        }
+        // Nothing repeats it: a change is told once, so a window builds its
+        // list from what arrives and never from a clock.
+        let repeated = tokio::time::timeout(std::time::Duration::from_millis(20), context.read())
+            .await
+            .is_ok_and(|next| {
+                next.expect("the context as it changed")
+                    .person_pairs
+                    .is_some()
+            });
+        PairsWakeProof { named, repeated }
+    })
+}
+
+#[test]
+fn chat_learns_its_pair_from_the_workspaces_governance_change() {
+    let home = private_home();
+    let socket = home.path().join("collab.sock");
+    let fixture = fixture();
+    let mut session = session(&socket, &fixture);
+
+    let (done, received) = std::sync::mpsc::channel();
+    let plane = socket;
+    let keys = fixture.keys.clone();
+    let apps = std::thread::spawn(move || {
+        let _ = done.send(pairs_wake_calls(&plane, &keys));
+    });
+    let proof = until_the_apps_are_done(&mut session, &received);
+    let ended = apps.join();
+    let proof = match (proof, ended) {
+        (Some(proof), Ok(())) => proof,
+        (_, Err(panic)) => panic!("the app's calls failed: {panic:?}"),
+        (None, Ok(())) => panic!("the app left without answering"),
+    };
+
+    let pair = collab_types::direct_pair_id(
+        WORKSPACE,
+        &root_hex(fixture.keys.root),
+        &root_hex(fixture.keys.peer_cert.user_public_key),
+    )
+    .expect("the workspace names a pair of two people");
+    assert_eq!(
+        proof.named.last().map(Vec::len),
+        Some(1),
+        "the change names exactly the pair the governance admitted: {:?}",
+        proof.named
+    );
+    assert_eq!(
+        proof.named.last().map(|pairs| pairs[0].clone()),
+        Some(pair.clone()),
+        "the pair is the one the workspace proves: {:?}",
+        proof.named
+    );
+    assert!(
+        !proof.repeated,
+        "the pair is told once, not on a clock: {:?}",
+        proof.named
+    );
+}

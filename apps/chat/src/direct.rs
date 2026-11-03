@@ -600,6 +600,9 @@ impl ui::person_chat::Native for Records {
 }
 
 #[cfg(test)]
+mod acceptance;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming as _;

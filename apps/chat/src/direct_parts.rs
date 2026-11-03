@@ -43,12 +43,14 @@ pub const PART_MESSAGES: usize = 2000;
 pub const PART_TEXT_BYTES: usize = 1024 * 1024;
 
 /// Part `index` of the conversation kept in the pair's record `pair`.
+#[cfg(test)]
 #[must_use]
 pub fn part(pair: &RecordId, index: u64) -> RecordId {
     pair.part(index)
 }
 
 /// The number of `record` when it is a part of the chain kept in `pair`.
+#[cfg(test)]
 #[must_use]
 pub fn part_index(pair: &RecordId, record: &RecordId) -> Option<u64> {
     record
