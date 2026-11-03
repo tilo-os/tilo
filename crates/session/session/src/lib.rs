@@ -2700,9 +2700,7 @@ impl Session {
         // manager's copy does: the person pastes it into any app.
         if let Some(plane) = &self.action_plane {
             for files in plane.file_clipboard.take_published() {
-                self.shared
-                    .clipboard
-                    .offer_files(&mut self.compositor, &files);
+                crate::mount::clipboard::offer_files(&mut self.compositor, &files);
             }
         }
         // What the apps copied since the last pass joins the history; a copy

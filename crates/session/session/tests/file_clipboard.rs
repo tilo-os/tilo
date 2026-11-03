@@ -71,7 +71,7 @@ struct Fixture {
     // The identity's environment and files, restored and removed last: the
     // session and the app read them while they run.
     _env: tilo_test_env::ScopedEnv,
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
 }
 
 fn fixture() -> Fixture {
@@ -103,7 +103,7 @@ fn fixture() -> Fixture {
         cert,
         state,
         _env: env,
-        _root: root,
+        root,
     }
 }
 
@@ -696,12 +696,15 @@ fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
 
     let (notes, received) = std::sync::mpsc::channel();
     let (checked, check) = std::sync::mpsc::channel();
-    let plane = socket.clone();
-    let device = fixture.device.clone();
-    let cert = fixture.cert.clone();
-    let shown = folders.clone();
     let app = std::thread::spawn(move || {
-        files_calls(&plane, &device, &cert, &shown, &notes, &check);
+        files_calls(
+            &socket,
+            &fixture.device,
+            &fixture.cert,
+            &folders,
+            &notes,
+            &check,
+        );
     });
     let proof = until_the_app_is_done(&mut session, &received, &checked);
     if let Err(panic) = app.join() {
@@ -739,7 +742,7 @@ fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
 /// The folders a person works in: where the file is, and the two folders they
 /// paste it into.
 fn folders(fixture: &Fixture) -> (PathBuf, PathBuf, PathBuf) {
-    let root = fixture._root.path().join("files");
+    let root = fixture.root.path().join("files");
     let source = root.join("documents");
     let copied = root.join("archive");
     let cut = root.join("sent");

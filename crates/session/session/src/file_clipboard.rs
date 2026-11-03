@@ -186,7 +186,7 @@ impl NativeFileClipboard {
     ///
     /// # Errors
     /// Refuses a principal that is not an agent, and what the filesystem says.
-    pub(crate) fn attribute(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
+    pub(crate) fn attribute(agent: &str, paths: Vec<String>) -> Result<(), String> {
         let label = ui::history_source::agent_principal_name(agent)
             .ok_or("only an agent is named as the cause of a write")?;
         let (red, green, blue) = ui::presence::user_color(agent);
@@ -239,12 +239,14 @@ impl NativeFileClipboard {
         let now = Instant::now();
         let mut state = self.state.lock_recover();
         state.tickets.retain(|_, ticket| now < ticket.expires);
-        let ticket = state
+        let paths = state
             .tickets
             .get(id)
             .filter(|ticket| ticket.belongs_to(context) && ticket.destination == destination)
+            .map(|ticket| ticket.paths.clone())
             .ok_or("the selected object is no longer held")?;
-        Ok((ticket.paths.clone(), id.to_owned()))
+        drop(state);
+        Ok((paths, id.to_owned()))
     }
 
     /// Capture the selected descriptors as tickets: what Publish takes a copy
@@ -401,6 +403,7 @@ impl NativeFileClipboard {
             // it can.
             .filter(|offer| offer.entries.iter().all(Held::still_there))
             .map(Offer::public);
+        drop(state);
         Reply::Snapshot { offer }
     }
 
@@ -429,12 +432,14 @@ impl NativeFileClipboard {
             let now = Instant::now();
             let mut state = self.state.lock_recover();
             state.offers.retain(|_, offer| now < offer.expires);
-            let offer = state
+            let held = state
                 .offers
                 .get(context.workspace())
                 .filter(|held| held.id == offer)
+                .map(|held| (held.cut, held.entries.clone()))
                 .ok_or("the clipboard offer is no longer there")?;
-            (offer.cut, offer.entries.clone())
+            drop(state);
+            held
         };
         let (folder, _ticket) = self.held(context, destination, true)?;
         let folder = folder
@@ -444,24 +449,8 @@ impl NativeFileClipboard {
         if entries.iter().any(|held| !held.still_there()) {
             return Err("a copied entry was moved or replaced".into());
         }
-        if asked == Asked::Ask {
-            let clashing: Vec<String> = entries
-                .iter()
-                .filter(|held| clashes(held, &folder))
-                .map(|held| {
-                    held.path.file_name().map_or_else(
-                        || held.path.display().to_string(),
-                        |name| name.to_string_lossy().into_owned(),
-                    )
-                })
-                .collect();
-            if !clashing.is_empty() {
-                let count = clashing.len();
-                return Ok(Reply::Conflicts {
-                    names: clashing.into_iter().take(MAX_CONFLICT_NAMES).collect(),
-                    count,
-                });
-            }
+        if let Some(ask) = asked_conflicts(&entries, &folder, asked) {
+            return Ok(ask);
         }
         let conflict = match asked {
             Asked::Skip => Conflict::Skip,
@@ -480,7 +469,7 @@ impl NativeFileClipboard {
                         .map(|held| held.path.to_string_lossy().into_owned()),
                 );
             }
-            if let Err(error) = self.attribute(agent, paths) {
+            if let Err(error) = Self::attribute(agent, paths) {
                 tracing::debug!(%error, "a clipboard transfer stays its person's in file history");
             }
         }
@@ -518,6 +507,7 @@ impl NativeFileClipboard {
                 settled: None,
             },
         );
+        drop(state);
         Ok(Reply::Running {
             operation: operation.to_owned(),
         })
@@ -536,7 +526,9 @@ impl NativeFileClipboard {
             let outcome = running.paste.outcome();
             running.settled = Some((outcome.landed, pasting_error(&outcome)));
         }
-        Ok(running.answer(operation))
+        let answer = running.answer(operation);
+        drop(state);
+        Ok(answer)
     }
 }
 
@@ -602,7 +594,7 @@ impl FileClipboardServices for NativeFileClipboard {
     }
 
     fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
-        self.attribute(agent, paths)
+        Self::attribute(agent, paths)
     }
 }
 
@@ -631,6 +623,28 @@ fn pasting_error(outcome: &clipboard_files::Outcome) -> Option<String> {
             outcome.total,
             names.join(", ")
         )
+    })
+}
+
+/// What a paste asks the person to decide, when the app wanted to be told and
+/// a name it takes is already used: the clashing names, or how many there.
+fn asked_conflicts(entries: &[Held], folder: &Path, asked: Asked) -> Option<Reply> {
+    if asked != Asked::Ask {
+        return None;
+    }
+    let clashing: Vec<String> = entries
+        .iter()
+        .filter(|held| clashes(held, folder))
+        .map(|held| {
+            held.path.file_name().map_or_else(
+                || held.path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    (!clashing.is_empty()).then(|| Reply::Conflicts {
+        count: clashing.len(),
+        names: clashing.into_iter().take(MAX_CONFLICT_NAMES).collect(),
     })
 }
 
@@ -697,14 +711,12 @@ mod blobs {
     ) -> Result<T, String> {
         let socket = launcher::services::blob_socket();
         let mut session = SESSION_BLOBS.lock_recover();
-        let client = match session.as_ref() {
-            Some(client) => client.clone(),
-            None => {
-                let client =
-                    BlobClient::connect_session(&socket).map_err(|error| error.to_string())?;
-                *session = Some(client.clone());
-                client
-            }
+        let client = if let Some(client) = session.as_ref() {
+            client.clone()
+        } else {
+            let client = BlobClient::connect_session(&socket).map_err(|error| error.to_string())?;
+            *session = Some(client.clone());
+            client
         };
         drop(session);
         let result = call(&client);
