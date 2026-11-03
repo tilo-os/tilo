@@ -179,7 +179,7 @@ fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     right_click(&mut app, row.center());
     let items = menu_items(&mut app);
-    for item in ["Snooze until…", "Assign to…"] {
+    for item in ["Snooze until…", "Set due date…"] {
         assert!(items.iter().any(|shown| shown == item), "{item}: {items:?}");
     }
 }

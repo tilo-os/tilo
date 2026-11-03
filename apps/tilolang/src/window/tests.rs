@@ -806,6 +806,12 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
                 "Social".to_owned(),
                 vec!["weekend".to_owned(), "books".to_owned()]
             ),
+            // The people the workspace knows, each a conversation to open: the sidebar keeps
+            // them apart from the channels, under a heading of their own.
+            (
+                "Direct messages".to_owned(),
+                vec!["Mia".to_owned(), "Leo".to_owned(), "Ada".to_owned()]
+            ),
         ],
         "each category's channels under its heading"
     );
@@ -822,7 +828,10 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
             // The conversations with a person, and the one with yourself, which the sidebar
             // labels as your notes: they come after the channels they are listed with.
             "Leo",
-            "Notes to self"
+            "Notes to self",
+            "Mia",
+            "Leo",
+            "Ada"
         ],
         "the channels outside any category first"
     );
@@ -1270,7 +1279,8 @@ fn todo_titles(workspace: &Workspace) -> Vec<String> {
 /// The tasks `before` held that the list no longer does: named, they are the finished ones and
 /// nothing else. The week has a task done with a step still open under it — a check from before
 /// steps were tasks of their own, or made while someone else added that step — and clearing
-/// keeps the step, so that task stays too.
+/// keeps the step, so that task stays too. A task done with an open task above it goes: the
+/// clear reads what stands under a task, never what it stands under.
 fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
     let after = todo_titles(workspace);
     let went: Vec<String> = before
@@ -1282,6 +1292,7 @@ fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
         went,
         [
             "Take the bins out",
+            "Check what is in the fridge",
             "Pack the books",
             "Set up the redirects"
         ],
