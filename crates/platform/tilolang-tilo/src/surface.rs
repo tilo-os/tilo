@@ -296,6 +296,13 @@ pub fn is_destructive(action: &ActionMeta) -> bool {
     action.role.as_deref() == Some("destructive")
 }
 
+/// Whether `action` is declared `primary`: the main thing to do with a resource, whose result
+/// opens beside the list when a person runs it.
+#[must_use]
+pub fn is_primary(action: &ActionMeta) -> bool {
+    action.role.as_deref() == Some("primary")
+}
+
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         id: action.id.clone(),

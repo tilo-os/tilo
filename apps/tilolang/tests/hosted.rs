@@ -1844,6 +1844,8 @@ fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
     for internal in [
         "tilolang",
         "Submit",
+        "Edit a text field",
+        "Set a flag field",
         "Commit a planned action",
         "Run a block",
         "Read a resource's fields",
