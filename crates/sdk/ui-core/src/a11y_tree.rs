@@ -1097,11 +1097,17 @@ impl SemanticTree {
 /// [`accesskit_bridge`](crate::accesskit_bridge) emits, so the retained
 /// tree and the AT-SPI export agree on what a widget can do.
 fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
-    verbs(access.role, &access.state)
+    verbs(
+        access.role,
+        &access.state,
+        access.action_target.is_some() && access.bounds.is_some(),
+    )
 }
 
-/// [`verbs_for`] from the two parts of a node it reads.
-fn verbs(role: Role, s: &AccessState) -> Vec<SemanticAction> {
+/// [`verbs_for`] from the parts of a node it reads. `actionable`: the node
+/// carries a target an activation reaches, which is what makes a table row
+/// activatable however its role is spelled.
+fn verbs(role: Role, s: &AccessState, actionable: bool) -> Vec<SemanticAction> {
     let mut out = Vec::new();
     if s.focusable && !s.disabled {
         out.push(SemanticAction {
@@ -1117,21 +1123,10 @@ fn verbs(role: Role, s: &AccessState) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::ShowContextMenu),
         });
     }
-    if !s.disabled
-        && matches!(
-            role,
-            Role::Button
-                | Role::ToggleButton
-                | Role::Checkbox
-                | Role::RadioButton
-                | Role::Switch
-                | Role::Tab
-                | Role::MenuItem
-                | Role::ListItem
-                | Role::TreeItem
-                | Role::Link
-        )
-    {
+    // A row of a table is activated like the item it stands for, whatever the
+    // role the table gives it; the same rules decide this and the AccessKit
+    // bridge's `Click`.
+    if !s.disabled && (crate::a11y::activation_role(role) || (role == Role::Row && actionable)) {
         out.push(SemanticAction {
             name: "activate".into(),
             label: "Activate".into(),
@@ -1619,7 +1614,11 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
 
         // Disabled/read-only gate the verbs but focus does not, so compute
         // against the focus-updated state.
-        let actions = verbs(access.role, &state);
+        let actions = verbs(
+            access.role,
+            &state,
+            access.action_target.is_some() && access.bounds.is_some(),
+        );
 
         let Level {
             id,
@@ -2285,5 +2284,36 @@ mod tests {
                 "the retained control replaces, rather than duplicates, cell semantics"
             );
         }
+    }
+
+    #[test]
+    fn a_table_row_affords_activation_and_its_menu() {
+        let mut row = crate::a11y::AccessNode::new(Role::Row)
+            .with_name("Quarterly report.pdf")
+            .with_action_target("row:a:0")
+            .with_bounds(Rect::new(0.0, 0.0, 200.0, 24.0));
+        assert!(
+            verbs_for(&row).iter().any(|verb| verb.name == "activate"),
+            "a row an activation reaches is activatable, whatever its role is spelled"
+        );
+        assert!(
+            verbs_for(&row)
+                .iter()
+                .all(|verb| verb.name != "show-context-menu"),
+            "a row with no menu of its own announces none"
+        );
+        row.state.context_menu = true;
+        assert!(
+            verbs_for(&row)
+                .iter()
+                .any(|verb| verb.name == "show-context-menu"),
+            "a row the table opens a menu for announces that menu"
+        );
+
+        let inert = crate::a11y::AccessNode::new(Role::Row).with_name("only a name");
+        assert!(
+            verbs_for(&inert).iter().all(|verb| verb.name != "activate"),
+            "a row with nothing to reach is not offered an activation"
+        );
     }
 }

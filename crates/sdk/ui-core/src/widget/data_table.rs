@@ -4822,6 +4822,9 @@ impl Widget for DataTableCore {
                         selected,
                         busy: matches!(row_state, Some(Arrival::Pending { .. })),
                         invalid: matches!(row_state, Some(Arrival::Failed(_))),
+                        // The row's own menu is the table's, which opens on
+                        // the row's centre exactly as a right-press does.
+                        context_menu: self.on_row_context.is_some(),
                         ..Default::default()
                     })
                     // Only a viewport slice is exported, so its ordinal is not

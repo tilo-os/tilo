@@ -1014,7 +1014,21 @@ impl Widget for FileView {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.mode == ViewMode::List && self.list.update(state, path)
+        if self.mode != ViewMode::List {
+            return false;
+        }
+        // A screen reader, the agent or a test acts on a row through the
+        // accessibility tree, which no pointer event delivers, so the table
+        // hands the request over here: the same commands a double-click and a
+        // right-press push.
+        let (open, menu) = self.list.take_row_requests();
+        if let Some(index) = open {
+            push(&self.sink, FileCommand::Activate(index));
+        }
+        if let Some((index, at)) = menu {
+            push(&self.sink, FileCommand::ContextMenuAt { index, at });
+        }
+        self.list.update(state, path) || open.is_some() || menu.is_some()
     }
 
     fn needs_animation_frame(&self) -> bool {

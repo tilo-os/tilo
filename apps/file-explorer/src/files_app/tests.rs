@@ -2183,6 +2183,7 @@ mod command_path_tests {
         trash_view_menu_offers_restore_and_empty_not_move_to_trash();
         context_menu_exposes_the_sort_section_including_type();
         context_select_targets_the_clicked_row_not_a_stale_selection();
+        a_screen_reader_opens_a_rows_menu_on_the_row_it_names();
         context_menu_gates_new_file_on_templates_existing();
         disappearing_templates_do_not_leave_an_empty_flyout();
         large_text_view_menu_clamps_inside_the_live_window();
@@ -3807,6 +3808,32 @@ mod command_path_tests {
         assert!(
             w.state().selected_indices().is_empty(),
             "empty-space right-click clears selection"
+        );
+    }
+
+    fn a_screen_reader_opens_a_rows_menu_on_the_row_it_names() {
+        // The row menu an assistive technology asks for reaches the same menu
+        // a right-press opens, on the row it named: a reader, an agent and a
+        // person all get one menu, acting on what it was opened for.
+        let (w, _cfg) = hermetic();
+        w.state().entries = vec![
+            ent("a.txt", false, "text/plain"),
+            ent("b.txt", false, "text/plain"),
+            ent("c.txt", false, "text/plain"),
+        ];
+        w.state().selection.select_only(0);
+        assert!(w.state().apply_command(FileCommand::ContextMenuAt {
+            index: 2,
+            at: Point::new(120.0, 200.0),
+        }));
+        assert_eq!(
+            w.state().selected_indices(),
+            vec![2],
+            "the menu acts on the row the reader named"
+        );
+        assert!(
+            w.state().opened_menu().is_some(),
+            "and the window's one menu opened"
         );
     }
 

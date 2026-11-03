@@ -283,10 +283,13 @@ struct Mailbox {
     header_click: Cell<Option<usize>>,
     click: Cell<Option<(usize, bool, bool)>>,
     activate: Cell<Option<usize>>,
+    /// The row an assistive technology asked a menu for, and where it asked
+    /// for it.
+    menu: Cell<Option<(usize, Point)>>,
 }
 
 /// What a host reads after forwarding an event to the list.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FileTableOutcome {
     /// A press landed on the header of this column.
     pub sort: Option<FileColumn>,
@@ -295,6 +298,10 @@ pub struct FileTableOutcome {
     pub click: Option<(usize, bool, bool)>,
     /// A row was opened: double-clicked, or Enter on the selected row.
     pub activate: Option<usize>,
+    /// A row's own menu was asked for, by a right-press or an assistive
+    /// technology: its index and the point the menu opens at. Only a list
+    /// that [`FileTable::handles_row_menu`] reports it.
+    pub menu: Option<(usize, Point)>,
 }
 
 /// What a rebuild puts into the list.
@@ -322,6 +329,7 @@ pub struct FileTable<R: FileRow> {
     id: &'static str,
     accessible_name: String,
     clicks: bool,
+    menu: bool,
     /// The table's width at its last layout, which decides its columns.
     width: f64,
     /// The body height and row height last given to the table.
@@ -375,6 +383,7 @@ impl<R: FileRow> FileTable<R> {
             id,
             accessible_name: accessible_name.into(),
             clicks: false,
+            menu: false,
             width: 0.0,
             viewport: (0.0, 0.0),
             header_h: 0.0,
@@ -389,6 +398,16 @@ impl<R: FileRow> FileTable<R> {
     #[must_use]
     pub fn handles_clicks(mut self) -> Self {
         self.clicks = true;
+        self
+    }
+
+    /// The list reports a row's own menu ([`FileTableOutcome::menu`]) instead
+    /// of opening it: a right-press, and the assistance technology's
+    /// "show context menu" on the same row, both reach the host, which draws
+    /// the one menu it has.
+    #[must_use]
+    pub fn handles_row_menu(mut self) -> Self {
+        self.menu = true;
         self
     }
 
@@ -483,10 +502,18 @@ impl<R: FileRow> FileTable<R> {
             .on_activate_view(format!("{}.open", self.id), move |index| {
                 activate.activate.set(Some(index));
             });
-        if self.clicks {
+        let table = if self.clicks {
             let click = Rc::clone(&self.mailbox);
             table.on_row_click_view(format!("{}.click", self.id), move |index, ctrl, shift| {
                 click.click.set(Some((index, ctrl, shift)));
+            })
+        } else {
+            table
+        };
+        if self.menu {
+            let menu = Rc::clone(&self.mailbox);
+            table.on_row_context_menu(move |index, point, _rect| {
+                menu.menu.set(Some((index, point)));
             })
         } else {
             table
@@ -736,7 +763,17 @@ impl<R: FileRow> FileTable<R> {
             sort,
             click: self.mailbox.click.take(),
             activate: self.mailbox.activate.take(),
+            menu: self.mailbox.menu.take(),
         }
+    }
+
+    /// What an assistive technology asked of a row since the last read: the
+    /// row it asked to open, and the row and point it asked a menu for. No
+    /// pointer event delivers these — they come through the accessibility
+    /// tree — so a host reads them once a frame, before it lays the next one
+    /// out, rather than waiting for the next event.
+    pub fn take_row_requests(&mut self) -> (Option<usize>, Option<(usize, Point)>) {
+        (self.mailbox.activate.take(), self.mailbox.menu.take())
     }
 
     /// Whether `at` is over the table's scrollbar, which the table keeps for
@@ -959,5 +996,76 @@ mod tests {
                 .all(|pair| pair[0].1.y1 <= pair[1].1.y0 + 0.5)
         );
         assert_eq!(table.rows().len(), 3);
+    }
+
+    #[test]
+    fn a_listed_file_is_named_and_answers_an_assistive_technologys_actions() {
+        let theme = Theme::default();
+        let metrics = FileTableMetrics::of(&theme, 1.0);
+        let mut table = FileTable::<Plain>::new("file_list", "Files").handles_row_menu();
+        let selection = SelectionModel::new();
+        table.sync(FileTableInputs {
+            rows: vec![
+                Plain(std::path::PathBuf::from("/home/a/Report.pdf"), false),
+                Plain(std::path::PathBuf::from("/home/a/Photos"), true),
+                Plain(std::path::PathBuf::from("/home/a/Notes.txt"), false),
+            ],
+            selection: &selection,
+            sort: FileColumn::Name,
+            ascending: true,
+            metrics,
+            theme: &theme,
+        });
+        table.place(Rect::new(0.0, 0.0, 600.0, 400.0), &theme);
+
+        let node = table.accessibility().expect("list semantics");
+        let row = node.children.first().expect("first row");
+        assert_eq!(row.role, crate::a11y::Role::Row);
+        assert_eq!(
+            row.name.as_deref(),
+            Some("Report.pdf"),
+            "a row reads as the file it stands for"
+        );
+        assert!(
+            row.action_target.is_some(),
+            "and carries what an assistive technology's activation reaches"
+        );
+        assert!(row.state.context_menu, "the row's menu is announced");
+
+        let mut doc = automerge::AutoCommit::new();
+        // The activation an assistive technology sends is the double-click's:
+        // the host is handed the row, and no pointer went anywhere.
+        assert!(table.perform_action(
+            &crate::a11y::Action::Activate,
+            &[0],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        // The activation publishes the list's own open action; the app answers
+        // it on the way out of the accessibility call, as it does for a press.
+        assert_eq!(
+            crate::testing::answer_controls(table.table.as_mut().expect("the table")),
+            1
+        );
+        let (open, menu) = table.take_row_requests();
+        assert_eq!(open, Some(0), "the file the reader activated opens");
+        assert_eq!(menu, None);
+
+        // Its menu verb hands the host the row and where that row stands.
+        assert!(table.perform_action(
+            &crate::a11y::Action::ShowContextMenu,
+            &[1],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        let (open, menu) = table.take_row_requests();
+        assert_eq!(open, None, "a menu is not an activation");
+        let (index, at) = menu.expect("the menu the row asked for");
+        assert_eq!(index, 1, "for the row the action named");
+        let rect = table.row_rects()[1].1;
+        assert!(
+            rect.contains(at),
+            "opened where that row stands: {at:?} in {rect:?}"
+        );
     }
 }
