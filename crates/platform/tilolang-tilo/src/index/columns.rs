@@ -105,6 +105,14 @@ pub fn after_value(key: &str) -> &str {
     key.split_once(SEP).map_or(key, |(_, rest)| rest)
 }
 
+/// Whether an entry holds no value: the empty value the columns write for an item without one
+/// (a day, a time), which comes first among the values.
+#[must_use]
+pub fn holds_no_value(key: &str) -> bool {
+    key.split_once(SEP)
+        .is_some_and(|(value, _)| value.is_empty())
+}
+
 /// A value written backwards.
 #[must_use]
 pub fn reversed(value: &str) -> String {
