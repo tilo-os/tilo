@@ -17403,6 +17403,7 @@ dependencies = [
 name = "tilo-app-launch"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "collab-types",
  "collaboration",
  "fs-protocol",
@@ -17414,8 +17415,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-actions",
  "tilo-desktop-entry",
+ "tilo-files",
  "tilo-installed-apps",
  "tilo-lock",
  "tilo-mime",

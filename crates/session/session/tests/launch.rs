@@ -24,10 +24,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use tilo_action_policy::{ActionKind, Answer, Context};
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
@@ -325,6 +326,20 @@ const PROBE: &str = "so.tilo.probe";
 /// session starts it through: it records the pid of every start and runs, as
 /// the app would, until the test is over.
 fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
+    installed_probe_package(home);
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\nhold\n",
+            started = started.display(),
+        ),
+    )
+    .unwrap()
+}
+
+/// Install [`PROBE`] in `home`'s own app store: a package whose entrypoint is
+/// the launcher's to start.
+fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
     let store = home.data().join("tilo-apps");
     let payload = store.join("payload").join(PROBE);
     fs::create_dir_all(payload.join("bin")).unwrap();
@@ -371,14 +386,65 @@ fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_t
     )
     .unwrap();
     home.env().set("TILO_APPS_DATA_DIR", &store);
+}
+
+/// This computer's own: a device certified for a person's root key, kept in
+/// an identity root of the test's own, and the person's id — the one their
+/// workspaces' governance names. The root lives as long as the caller keeps
+/// it: the session reads the device's key from it.
+fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, String) {
+    let root = tempfile::tempdir().expect("a directory for this computer's identity");
+    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        &home.config().join("tilo").join("identity"),
+        &paths,
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .expect("this computer's identity");
+    home.env().set("TILO_IDENTITY_ROOT", root.path());
+    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+        .expect("this computer's certificate");
+    (root, hex::encode(cert.user_public_key))
+}
+
+/// A launcher that records the pid of every start and what it was handed, and
+/// runs, as the app would, until the test is over.
+fn recording_launcher(
+    home: &tilo_test_env::TestHome,
+    started: &Path,
+    records: &Path,
+) -> tilo_test_env::StandIn {
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
         &format!(
-            "printf '%s\\n' \"$$\" >> '{started}'\nhold\n",
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             printf '%s\\n' \"$*\" >> '{records}'\n\
+             hold\n",
             started = started.display(),
+            records = records.display(),
         ),
     )
     .unwrap()
+}
+
+/// What the last start the launcher at `records` made was handed for `flag`:
+/// the argument that follows it.
+fn handed(records: &Path, flag: &str) -> String {
+    let recorded = fs::read_to_string(records).expect("the launcher recorded its start");
+    let arguments: Vec<&str> = recorded
+        .lines()
+        .next_back()
+        .expect("a line per start")
+        .split_whitespace()
+        .collect();
+    let at = arguments
+        .iter()
+        .position(|argument| *argument == flag)
+        .unwrap_or_else(|| panic!("the launch carries {flag}: {arguments:?}"));
+    arguments
+        .get(at.saturating_add(1))
+        .unwrap_or_else(|| panic!("{flag} names a value: {arguments:?}"))
+        .to_string()
 }
 
 /// A session whose apps start from `home`'s own app store, the record of the
@@ -407,14 +473,25 @@ fn probe_session_on(
     started: &Path,
     bus: Option<&tilo_test_env::PrivateBus>,
 ) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
-    let socket = home.runtime().join("wayland-7");
     let probe = installed_probe(home, started);
+    let (session, apps, launches) = session_through(home, &probe, bus);
+    (session, apps, launches, probe)
+}
+
+/// A session over `home`'s own app store whose packages start through
+/// `launcher`.
+fn session_through(
+    home: &tilo_test_env::TestHome,
+    launcher: &tilo_test_env::StandIn,
+    bus: Option<&tilo_test_env::PrivateBus>,
+) -> (Session, Rc<Apps>, Arc<Launches>) {
+    let socket = home.runtime().join("wayland-7");
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
     environment.wayland_socket = Some(socket);
     let apps = Rc::new(Apps::with_launcher(
         environment,
         None,
-        Some(probe.path().to_owned()),
+        Some(launcher.path().to_owned()),
     ));
     let launches = Arc::new(Launches::default());
     let wake = tilo_service::LoopWake::default();
@@ -454,7 +531,114 @@ fn probe_session_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    (session, apps, launches, probe)
+    (session, apps, launches)
+}
+
+/// The workspace in front, and who the desk holds as its owner.
+fn front_workspace(session: &Session) -> (String, Option<String>) {
+    session.handle().read(|tree| {
+        tree.active_workspace().map_or_else(
+            || (String::new(), None),
+            |workspace| {
+                (
+                    workspace.id().to_string(),
+                    workspace.owner().map(ToString::to_string),
+                )
+            },
+        )
+    })
+}
+
+/// The person who made a workspace is handed their authority in it, so the
+/// notes they open there are theirs to add to: the app is started with the
+/// projection its window bar asks about, and it says the person may make a
+/// note in the workspace nobody else has joined.
+#[test]
+fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (_identity, person) = this_computer(&mut home);
+    let started = home.home().join("started");
+    let arguments = home.home().join("arguments");
+    installed_probe_package(&mut home);
+    let launcher = recording_launcher(&home, &started, &arguments);
+    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+
+    let (desk, _) = front_workspace(&session);
+    invoke(
+        &mut session,
+        CHROME_RESOURCE,
+        "new-workspace",
+        serde_json::json!({"name": "Fresh"}),
+    );
+    until(
+        &mut session,
+        "the desk holds a workspace of the person's",
+        |session| {
+            let (workspace, owner) = front_workspace(session);
+            workspace != desk && owner.as_deref() == Some(person.as_str())
+        },
+    );
+    let (workspace, owner) = front_workspace(&session);
+    assert_eq!(
+        owner.as_deref(),
+        Some(person.as_str()),
+        "the person who made the workspace owns it"
+    );
+
+    let (_pid, launched_into) = probe_showing(&mut session, &apps, &started);
+    assert_eq!(
+        launched_into, workspace,
+        "the app runs in the workspace the person made"
+    );
+
+    let path = PathBuf::from(handed(&arguments, "--action-authority"));
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("current.json"),
+        "the launcher binds the projection only under the name it reads"
+    );
+    let bytes =
+        tilo_files::native::held::read(&path, collab_types::action_authority::MAX_PROJECTION_BYTES)
+            .expect("the projection is readable")
+            .expect("the session holds it for as long as it runs");
+    let projection: collab_types::action_authority::AppActionAuthorityProjection =
+        serde_json::from_slice(&bytes).expect("a projection");
+    projection
+        .validate()
+        .expect("a projection the launcher admits");
+    assert!(
+        projection.matches(&workspace, PROBE, &person),
+        "the projection is for this app, in this workspace, of this person: {projection:?}"
+    );
+    assert_eq!(
+        projection.policy.owner.as_deref(),
+        Some(person.as_str()),
+        "the workspace's own governance names them its owner"
+    );
+    assert_eq!(
+        may_make_a_note(&projection),
+        Answer::Allow,
+        "the notes window bar offers New note: the person may make a note in the workspace"
+    );
+
+    capture_to(&mut session, "fresh-workspace-new-note");
+}
+
+/// What the projection says about the app's own new-note action: the question
+/// a window bar asks to offer New note.
+fn may_make_a_note(
+    projection: &collab_types::action_authority::AppActionAuthorityProjection,
+) -> Answer {
+    projection
+        .authority(&collab_types::action_authority::foreign_device_bound())
+        .decide(
+            &projection.app_node().action("new-note"),
+            ActionKind::Undoable,
+            &Context::at_secs(tilo_clock::unix_now()),
+        )
+        .answer
 }
 
 /// The window groups of the workspace in front, each with its tabs' titles in

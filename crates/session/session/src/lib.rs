@@ -1153,10 +1153,12 @@ impl Session {
                 .map(|workspace| workspace.slot.0.to_string())
         }));
         wallpapers.start(&settings_store::load());
-        // The apps the person opens read their workspace from this desktop and leave
-        // their notice in it.
+        // The apps the person opens read their workspace from this desktop, leave
+        // their notice in it, and act as the person the workspaces' governance
+        // names.
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
+            launch.set_person(options.person.clone());
         }
         // One process per app per workspace: its later windows open in the
         // process the session started, with connections of their own. A
