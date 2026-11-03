@@ -22776,6 +22776,8 @@ name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "chrono",
+ "chrono-tz",
  "foldhash 0.1.5",
  "regex",
  "serde",
@@ -22785,6 +22787,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-doc",
+ "tilo-recurrence",
  "tilo-reference",
  "tilo-resource",
  "tilolang",

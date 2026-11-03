@@ -746,6 +746,14 @@ impl Runtime {
         *self.core.zone.borrow_mut() = Some(Box::new(zone));
     }
 
+    /// The person's zone as its IANA name (`Europe/Berlin`): a repeating item keeps its wall time
+    /// of day across a change of clocks in it, and a day begins there first. Until it is set, a
+    /// day and a moment are read by [`Runtime::set_zone`]'s offset, and an occurrence keeps the
+    /// time of day that offset gives it.
+    pub fn set_zone_name(&self, zone: impl Fn() -> Option<String> + 'static) {
+        *self.core.zone_name.borrow_mut() = Some(Box::new(zone));
+    }
+
     /// Where the words packages and the platform show come from, in the reader's language
     /// (`phrase(id, ...)`, a declaration's label and noun). It takes every package's catalogues
     /// loaded so far, and those loaded after. Until it is set, the source words stand.

@@ -77,6 +77,14 @@ pub enum Ty {
     /// `std.Identifier`: an account of some service, held as its URI `scheme:value`
     /// (`mailto:jane@x.com`, `tel:+4930123456`); not a `Text` (see [`crate::identifier`]).
     Identifier,
+    /// `std.Repeat`: how a repeating item comes round again, held as its RFC 5545 rule text
+    /// (`FREQ=WEEKLY;INTERVAL=2`), which carries `X-FROM=DONE` when the next occurrence counts
+    /// from the day it was completed (see [`crate::repeat`]); not a `Text`.
+    Repeat,
+    /// `std.Reminder`: how long before a due moment to remind, held as its RFC 5545 `TRIGGER`
+    /// duration (`-PT15M`), read against the person's zone (see [`crate::repeat`]); not a
+    /// `Text`.
+    Reminder,
     /// `RichText`: formatted text in which resources are referenced (a person, a channel, a
     /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of
     /// it merges by splices and marks.
@@ -228,6 +236,8 @@ impl Ty {
             Self::Date => "Date".into(),
             Self::Time => "Time".into(),
             Self::Identifier => "std.Identifier".into(),
+            Self::Repeat => "std.Repeat".into(),
+            Self::Reminder => "std.Reminder".into(),
             Self::RichText => "RichText".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
@@ -487,6 +497,8 @@ impl MetaTy<'_> {
             "Date" => Some(Ty::Date),
             "Time" => Some(Ty::Time),
             "std.Identifier" => Some(Ty::Identifier),
+            "std.Repeat" => Some(Ty::Repeat),
+            "std.Reminder" => Some(Ty::Reminder),
             "RichText" | "std.RichText" => Some(Ty::RichText),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),

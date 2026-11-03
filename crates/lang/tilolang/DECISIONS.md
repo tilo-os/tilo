@@ -457,3 +457,33 @@ search.md, "What a type declares" and "Types, references and paths".
   may declare several. So a body is `ui.BlockEditor(bind: doc.body, placeholder: "…")` where
   the document's window draws it; a field marked `(body)` is the document's metadata and says
   nothing about which control edits it, and neither the host nor the compiler places an editor.
+- **`std.Repeat` and `std.Reminder` are built-in value types, held as their RFC 5545 text.** A
+  repeat is its RRULE (`FREQ=WEEKLY;INTERVAL=2`), with `X-FROM=DONE` appended when the next
+  occurrence counts from the day it was completed rather than from the day it was due; a
+  reminder is its TRIGGER duration (`-PT15M`, `PT9H`). Both are written from a string literal,
+  canonicalized as they are held (so what is stored expands unchanged), and normalized again on
+  read, like `Date` and `Time`. They join `Text`, `Date`, `Time` and `std.Identifier` as types
+  that are their own text: a field of one is a text column, an action parameter is text, and code
+  reads a repeat in words only through `.label()` (E020 otherwise), which is the reader's
+  catalogue's phrase and count (`tilolang-repeat-every-weeks` with `count = 2`), never a phrase
+  the compiler bakes in. Expansion is `tilo-recurrence`'s, so a rule Tasks repeats by and one
+  Calendar draws are one reading. `.next(from, done_on)` steps from the due day or, with
+  `X-FROM=DONE`, from the completion day, which is what makes two people completing the same
+  item on the same day write the same next day; completion days on different days are last
+  writer wins on the due field itself. `.next_at(at, day)` keeps a wall time of day across a
+  change of clocks, so it needs the person's zone as its IANA name (`Platform::zone_name`,
+  `Core.zone_name`), falling back to the clock's offset when a host names none
+  (`Europe/Berlin` 09:30 is `08:30Z` before the spring change and `07:30Z` after).
+  `.at(due, at)` places a reminder: from the instant of a timed item, or from the start of the
+  due day for one without a time, so `PT9H` is 09:00 and `-PT15M` a quarter of an hour before
+  midnight, both in the person's zone.
+- **`std.complete(item, done)` advances a repeating item in place.** An app writes one call and
+  its own `done` line (`let again = std.complete(t, done)` then `t.done = done and not again`):
+  the helper adds the completion day to the item's add-wins `Set<Date>` and moves the due day and
+  the time of day to the next occurrence, answering whether it repeats. The type's shape is the
+  contract, as `set`/`open` read their fields: one `std.Repeat` or `Option<std.Repeat>`, one
+  `Set<Date>` of the days it was completed, one `Date` or `Option<Date>` of the day it is due,
+  and at most one `Option<Time>` of the time of day. A type without them gets E118 naming the
+  field to declare, and a view or a function cannot call it (E040). Nothing happens for an item
+  that repeats nowhere or for `done = false`, so a check that does not repeat is the app's own
+  `done` write.

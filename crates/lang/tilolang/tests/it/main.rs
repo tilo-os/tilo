@@ -20,6 +20,7 @@ mod native;
 mod origins;
 mod outcomes;
 mod principal;
+mod repeats;
 mod roundtrip;
 mod search;
 mod semantics;

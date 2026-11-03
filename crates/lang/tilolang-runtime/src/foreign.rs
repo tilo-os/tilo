@@ -337,7 +337,7 @@ fn pending(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
     match (ty, default) {
         (Ty::Time, None) => Ok(Value::text("1970-01-01T00:00:00Z")),
         (Ty::Date, None) => Ok(Value::text("1970-01-01")),
-        (Ty::Identifier, None) => Ok(Value::text("")),
+        (Ty::Identifier | Ty::Repeat | Ty::Reminder, None) => Ok(Value::text("")),
         _ => crate::host_res::declared_default(ty, default),
     }
 }
@@ -459,6 +459,8 @@ impl Decoder<'_> {
             | Ty::Date
             | Ty::Time
             | Ty::Identifier
+            | Ty::Repeat
+            | Ty::Reminder
             | Ty::Principal
             | Ty::Length(_) => plain(json, ty),
             Ty::Option(inner) => match json {
@@ -585,7 +587,9 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
         Ty::Int => json.as_i64().map(Value::Int),
         Ty::Float | Ty::Length(_) => json.as_f64().map(Value::Float),
         Ty::Bool => json.as_bool().map(Value::Bool),
-        Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => json.as_str().map(Value::text),
+        Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
+            json.as_str().map(Value::text)
+        }
         _ => tagged(json, "principal")
             .unwrap_or(json)
             .as_str()

@@ -16,22 +16,25 @@ impl Checker<'_> {
             ExprKind::Ident(name) => self.call_named(name, callee.span, args, span),
             ExprKind::Field { base, name } => {
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == crate::stdlib::NS)
-                    && name.name == "RichText"
                     && self.lookup(crate::stdlib::NS).is_none()
                 {
-                    return self.builtin_rich_text(args, span);
-                }
-                if matches!(&base.kind, ExprKind::Ident(ns) if ns == crate::stdlib::NS)
-                    && name.name == "Identifier"
-                    && self.lookup(crate::stdlib::NS).is_none()
-                {
-                    return match crate::resolve::identifier_value(args) {
-                        Ok(text) => Ex::str(&text).typed(Ty::Identifier),
-                        Err(msg) => {
-                            self.err("E099", span, msg);
-                            Ex::error()
-                        }
-                    };
+                    if name.name == "RichText" {
+                        return self.builtin_rich_text(args, span);
+                    }
+                    if name.name == "complete" {
+                        return self.builtin_complete(args, span);
+                    }
+                    if let Some(held) =
+                        crate::resolve::std_text_ty(&[crate::stdlib::NS, name.name.as_str()])
+                    {
+                        return match crate::resolve::std_text_value(&held, args) {
+                            Ok(text) => Ex::str(&text).typed(held),
+                            Err(msg) => {
+                                self.err("E099", span, msg);
+                                Ex::error()
+                            }
+                        };
+                    }
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -1041,6 +1044,245 @@ impl Checker<'_> {
         Self::set_action(&state, v)
     }
 
+    /// `std.complete(item, done) -> Bool`: completing a repeating item, in place. When `done` is
+    /// true and the item says how it repeats, this adds the day to the item's `completed` set and
+    /// moves its due day (and its time of day, where it has one) to the next occurrence — on the
+    /// same item, so what it has been stays in one place — and answers `true`: the item comes
+    /// round again. Otherwise it changes nothing and answers `false`.
+    ///
+    /// The fields are the item type's, found by their types: its `std.Repeat` (an
+    /// `Option<std.Repeat>` says it repeats only when it is `.some`), the `Set<Date>` of the days
+    /// it was completed, the day it is due, and, where the type has one, its `Time`. An action
+    /// then needs two lines:
+    ///
+    /// ```text
+    /// action check(t: Task, done: Bool = not t.done) {
+    ///   let again = std.complete(t, done)
+    ///   t.done = done and not again
+    /// }
+    /// ```
+    fn builtin_complete(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if args.len() != 2 || args.iter().any(|a| a.name.is_some()) {
+            self.err(
+                "E022",
+                span,
+                "`std.complete` takes the item and whether it is now done: `let again = std.complete(t, done)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let (Some(item), Some(done)) = (args.first(), args.get(1)) else {
+            return Ex::error();
+        };
+        let item = self.expr(&item.value, None);
+        let done = self.expr_as(&done.value, &Ty::Bool);
+        let Ty::Record(key) = item.ty.clone() else {
+            if !item.ty.is_error() {
+                let t = self.show(&item.ty);
+                self.err("E118", span, format!("`std.complete` completes an item that repeats, so it takes a record; {t} is not one"));
+            }
+            return Ex::error();
+        };
+        if self.st.ctx != Ctx::Action {
+            let who = self.st.ctx.word();
+            self.err("E040", span, format!("{who} cannot complete `{}`: only an action mutates fields. Write an action and apply it", key.name));
+            return Ex::error();
+        }
+        if key.app != self.env.app {
+            self.err("E045", span, format!("`{}` is declared by another app ({}); an action may only change its own module's types. Invoke that app's action from a flow instead", key.name, key.app));
+            return Ex::error();
+        }
+        let Some(info) = self.env.type_info(&key) else {
+            return Ex::error();
+        };
+        let fields = info.fields.clone();
+        let names = info.field_names();
+        let of_ty = |want: &Ty| -> Vec<FieldInfo> {
+            fields
+                .iter()
+                .filter(|f| held_as(&f.ty, want).is_some())
+                .cloned()
+                .collect()
+        };
+        let repeats = of_ty(&Ty::Repeat);
+        let completed = of_ty(&Ty::Set(Box::new(Ty::Date)));
+        let due = of_ty(&Ty::Date);
+        let at = of_ty(&Ty::Time);
+        let mut shape = true;
+        let complain = |self_: &mut Self, found: &[FieldInfo], want: &str, declare: &str| {
+            let named: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+            let what = if named.is_empty() {
+                format!("has no {want} field")
+            } else {
+                format!("has more than one {want} field (`{}`)", named.join("`, `"))
+            };
+            self_.err("E118", span, format!("`{}` {what}, which `std.complete` needs: declare {declare}; its fields: {names}", key.name));
+        };
+        if repeats.len() != 1 {
+            complain(
+                self,
+                &repeats,
+                "`std.Repeat`",
+                "`repeats: Option<std.Repeat>`",
+            );
+            shape = false;
+        }
+        if completed.len() != 1 {
+            complain(
+                self,
+                &completed,
+                "`Set<Date>`",
+                "`completed: Set<Date>` for the days it was completed",
+            );
+            shape = false;
+        }
+        if due.len() != 1 {
+            complain(
+                self,
+                &due,
+                "`Date`",
+                "`due: Option<Date>` for the day it is due",
+            );
+            shape = false;
+        }
+        if at.len() > 1 {
+            complain(self, &at, "`Time`", "one `Option<Time>` of the time of day");
+            shape = false;
+        }
+        if !shape {
+            return Ex::error();
+        }
+        let (rf, cf, df) = (repeats[0].clone(), completed[0].clone(), due[0].clone());
+        let af = at.first().cloned();
+        self.st.facts.mutates = true;
+        let read = |f: &FieldInfo| {
+            Ex::host(
+                Imp::ResGetH,
+                vec![item.clone(), Ex::str(&f.id)],
+                f.ty.clone(),
+            )
+        };
+        let false_ = Ex::new(Ek::Bool(false), Ty::Bool);
+        let again = self.fresh(Ty::Bool);
+        let today = self.fresh(Ty::Date);
+        let rep = self.fresh(Ty::Repeat);
+        let from = self.fresh(Ty::Date);
+        let next = self.fresh(Ty::Date);
+        let today_ex = Ex::local(today, Ty::Date);
+        // Whether it was completed: `done`, and the item repeating at all.
+        let repeats_value = read(&rf);
+        let mut go = done;
+        if held_as(&rf.ty, &Ty::Repeat) == Some(true) {
+            let some = Ex::host(Imp::IsSome, vec![repeats_value.clone()], Ty::Bool);
+            go = Ex::new(
+                Ek::If(Box::new(some), Box::new(go), Box::new(false_.clone())),
+                Ty::Bool,
+            );
+        }
+        let mut body = Vec::new();
+        body.push(Stmt::Set(
+            rep,
+            if held_as(&rf.ty, &Ty::Repeat) == Some(true) {
+                Self::unwrap_opt(repeats_value, &Ty::Repeat)
+            } else {
+                repeats_value
+            },
+        ));
+        body.push(Stmt::Eval(Ex::host(
+            Imp::SetAdd,
+            vec![
+                item.clone(),
+                Ex::str(&cf.id),
+                Self::handle_of(today_ex.clone()),
+            ],
+            Ty::Unit,
+        )));
+        // The day it is due now: from the day it was due, or today when it named none.
+        let due_value = read(&df);
+        let due_now = if held_as(&df.ty, &Ty::Date) == Some(true) {
+            let some = Ex::host(Imp::IsSome, vec![due_value.clone()], Ty::Bool);
+            let held = Self::unwrap_opt(due_value, &Ty::Date);
+            Ex::new(
+                Ek::If(Box::new(some), Box::new(held), Box::new(today_ex.clone())),
+                Ty::Date,
+            )
+        } else {
+            due_value
+        };
+        body.push(Stmt::Set(from, due_now));
+        let next_value = Ex::host(
+            Imp::RepeatNext,
+            vec![
+                Ex::local(rep, Ty::Repeat),
+                Ex::local(from, Ty::Date),
+                today_ex,
+            ],
+            Ty::Date,
+        );
+        body.push(Stmt::Set(next, next_value));
+        // The next occurrence is due (and at its time of day) from now on.
+        let next_ex = Ex::local(next, Ty::Date);
+        let due_next = if held_as(&df.ty, &Ty::Date) == Some(true) {
+            Self::some(next_ex, &df.ty)
+        } else {
+            next_ex
+        };
+        body.push(Stmt::Eval(Ex::host(
+            Imp::ResSetH,
+            vec![item.clone(), Ex::str(&df.id), due_next],
+            Ty::Unit,
+        )));
+        if let Some(af) = &af {
+            let fid = Ex::str(&af.id);
+            let at_value = read(af);
+            // The same local time of day on the day it is next due.
+            let moved = |at: Ex| {
+                Ex::host(
+                    Imp::RepeatNextAt,
+                    vec![Ex::local(rep, Ty::Repeat), at, Ex::local(next, Ty::Date)],
+                    Ty::Time,
+                )
+            };
+            if held_as(&af.ty, &Ty::Time) == Some(true) {
+                let at_now = self.fresh(Ty::Time);
+                let some = Ex::host(Imp::IsSome, vec![at_value.clone()], Ty::Bool);
+                let held = Self::unwrap_opt(at_value, &Ty::Time);
+                let stored = Self::some(moved(Ex::local(at_now, Ty::Time)), &af.ty);
+                body.push(Stmt::If(
+                    some,
+                    vec![
+                        Stmt::Set(at_now, held),
+                        Stmt::Eval(Ex::host(
+                            Imp::ResSetH,
+                            vec![item.clone(), fid, stored],
+                            Ty::Unit,
+                        )),
+                    ],
+                    Vec::new(),
+                ));
+            } else {
+                let stored = moved(at_value);
+                body.push(Stmt::Eval(Ex::host(
+                    Imp::ResSetH,
+                    vec![item.clone(), fid, stored],
+                    Ty::Unit,
+                )));
+            }
+        }
+        body.push(Stmt::Set(again, Ex::new(Ek::Bool(true), Ty::Bool)));
+        let stmts = vec![
+            Stmt::Set(again, false_),
+            Stmt::Set(today, Ex::host(Imp::Today, Vec::new(), Ty::Date)),
+            Stmt::If(go, body, Vec::new()),
+        ];
+        Ex::new(
+            Ek::Seq(stmts, Box::new(Ex::local(again, Ty::Bool))),
+            Ty::Bool,
+        )
+    }
+
     /// The action that sets the view state `state` to `v`.
     pub(super) fn set_action(state: &super::StateRef, v: Ex) -> Ex {
         let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
@@ -1628,6 +1870,52 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // `r.next(from, done)`: the day the item comes round again. Counting from the due
+            // day it steps on by the rule; counting from completion it steps from the day it was
+            // done. Returns the day to be due next.
+            (Ty::Repeat, "next") => {
+                if !self.arity(name, args, 2, span) {
+                    return Ex::error();
+                }
+                let (Some(from), Some(done)) = (args.first(), args.get(1)) else {
+                    return Ex::error();
+                };
+                let from = self.expr_as(&from.value, &Ty::Date);
+                let done = self.expr_as(&done.value, &Ty::Date);
+                Ex::host(Imp::RepeatNext, vec![r, from, done], Ty::Date)
+            }
+            // `r.next_at(at, day)`: the moment on `day` at the same local time of day as `at`,
+            // so a standup at 09:30 stays at 09:30 across a change of clocks.
+            (Ty::Repeat, "next_at") => {
+                if !self.arity(name, args, 2, span) {
+                    return Ex::error();
+                }
+                let (Some(at), Some(day)) = (args.first(), args.get(1)) else {
+                    return Ex::error();
+                };
+                let at = self.expr_as(&at.value, &Ty::Time);
+                let day = self.expr_as(&day.value, &Ty::Date);
+                Ex::host(Imp::RepeatNextAt, vec![r, at, day], Ty::Time)
+            }
+            (Ty::Repeat, "label") if args.is_empty() => {
+                Ex::host(Imp::RepeatLabel, vec![r], Ty::Text)
+            }
+            // `m.at(due, at)`: the moment to remind, from the due day and its time of day: an
+            // item without one is timed from the start of the day.
+            (Ty::Reminder, "at") => {
+                if !self.arity(name, args, 2, span) {
+                    return Ex::error();
+                }
+                let (Some(due), Some(at)) = (args.first(), args.get(1)) else {
+                    return Ex::error();
+                };
+                let due = self.expr_as(&due.value, &Ty::Date);
+                let at = self.expr_as(&at.value, &Ty::Option(Box::new(Ty::Time)));
+                Ex::host(Imp::ReminderAt, vec![r, due, at], Ty::Time)
+            }
+            (Ty::Reminder, "label") if args.is_empty() => {
+                Ex::host(Imp::ReminderLabel, vec![r], Ty::Text)
+            }
             (Ty::Principal, "name") if args.is_empty() => {
                 Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
             }
@@ -1731,6 +2019,8 @@ impl Checker<'_> {
                 let known = match other {
                     Ty::Text => "len, find, slice, replace, to_int",
                     Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
+                    Ty::Repeat => "next, next_at, label",
+                    Ty::Reminder => "at, label",
                     Ty::Int => "to_float, to_text",
                     Ty::Float => "to_int, to_text",
                     Ty::Bool => "to_text",
@@ -2220,5 +2510,19 @@ impl Checker<'_> {
         }
         self.emit(Stmt::If(pred, on_true, on_false));
         (out, out_ty)
+    }
+}
+
+/// Whether a value of type `ty` is a `want`, and whether it holds one as an `Option`:
+/// `Some(true)` for `Option<want>`, `Some(false)` for `want` itself, `None` for anything else.
+fn held_as(ty: &Ty, want: &Ty) -> Option<bool> {
+    if ty.same(want) {
+        Some(false)
+    } else if let Ty::Option(inner) = ty
+        && inner.same(want)
+    {
+        Some(true)
+    } else {
+        None
     }
 }

@@ -828,9 +828,11 @@ impl Lower<'_> {
                     };
                     return Ok((lit, ty));
                 }
-                if let Some(args) = crate::resolve::identifier_call(e) {
+                if let Some((held, args)) = crate::resolve::std_text_call(e)
+                    && held.same(&Ty::Identifier)
+                {
                     let text =
-                        crate::resolve::identifier_value(args).map_err(|why| (e.span, why))?;
+                        crate::resolve::std_text_value(&held, args).map_err(|why| (e.span, why))?;
                     return Ok((Lit::Ident(text), Ty::Identifier));
                 }
                 if let ExprKind::Ident(name) = &callee.kind
