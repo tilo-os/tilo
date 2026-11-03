@@ -396,6 +396,9 @@ struct Shared {
     /// Where everything the session publishes stood when search last read
     /// it.
     observed: RefCell<Option<Vec<(usize, u64)>>>,
+    /// The second search last read who is here: people and the calls they are
+    /// in change with the clock as well as with what arrives.
+    here_at: Cell<u64>,
     /// The title each window had when search last recorded where it was.
     places_seen: RefCell<std::collections::HashMap<u64, String>>,
     /// The daemon's notifications on the desktop, as the session publishes
@@ -1820,6 +1823,7 @@ impl Session {
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,
             observed: RefCell::new(None),
+            here_at: Cell::new(0),
             places_seen: RefCell::default(),
             notifications: Rc::new(RefCell::new(notifications::SessionNotifications::new(
                 options
