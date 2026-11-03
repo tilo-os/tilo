@@ -656,6 +656,15 @@ impl Listing {
         self.paged.as_ref().is_none_or(|paged| paged.len_is_exact())
     }
 
+    /// The items it holds: [`Self::len`] where that is its length, a listing that checks its
+    /// items as it reads them read to its end (which is what saying how many it holds costs).
+    pub fn count(&self) -> usize {
+        if self.len_is_exact() {
+            return self.len();
+        }
+        self.iter().count()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

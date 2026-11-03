@@ -405,6 +405,30 @@ fn a_page_is_bounded_to_its_measure_and_centred() {
 }
 
 #[test]
+fn a_filling_page_takes_the_panes_whole_width_and_keeps_its_height_gutter() {
+    let theme = Theme::dark();
+    let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;
+    let mut plain = Page::full().push(content());
+    let mut filling = Page::full().filling().push(content());
+    solve(&mut plain, &theme, 864.0);
+    solve(&mut filling, &theme, 864.0);
+    let inset = rects(&plain)[0];
+    let surface = rects(&filling)[0];
+    assert!(
+        inset.x0 > surface.x0 + 1.0 && inset.x1 < surface.x1 - 1.0,
+        "a page keeps its gutter at its sides: {inset:?} in {surface:?}"
+    );
+    assert!(
+        (surface.x0 - 0.0).abs() < 1.0 && (surface.x1 - 864.0).abs() < 1.0,
+        "a page that fills its pane is a surface, whole width to whole width: {surface:?}"
+    );
+    assert!(
+        (surface.y0 - inset.y0).abs() < 1.0,
+        "a surface keeps the page's gutter above it: {surface:?} under {inset:?}"
+    );
+}
+
+#[test]
 fn a_page_gutter_grows_with_the_space_class() {
     let theme = Theme::dark();
     let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;

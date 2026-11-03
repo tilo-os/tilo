@@ -1996,4 +1996,62 @@ mod board_lane {
             "the third lane scrolls its thirty cards instead of growing past the window"
         );
     }
+
+    /// The pane is a board's whole width, and the lanes keep a gutter at each end of it: in a
+    /// window no wider than three card measures and the gaps between them, all three lanes
+    /// stand whole, so no lane's heading is cut by the view that scrolls the board.
+    #[test]
+    fn every_lane_of_a_board_stands_inside_the_pane() {
+        tilo_ui_host::i18n::ensure();
+        let packages = packages();
+        let staged = stage::Staged::over(
+            BOARD,
+            &packages,
+            "a board",
+            (864, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the board stages");
+        let root = staged.harness().root_widget();
+        let mut scrolls = Vec::new();
+        named(root, "Scrollable", &mut scrolls);
+        let across = scrolls
+            .into_iter()
+            .find(|scroll| {
+                matches!(
+                    scroll.layout_info(),
+                    Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                        direction: ui::widget::ScrollDirection::Horizontal,
+                    }))
+                )
+            })
+            .expect("the board scrolls across");
+        let pane = across
+            .child_clip_rect()
+            .unwrap_or_else(|| across.get_rect());
+        let lanes: Vec<ui::kurbo::Rect> = across
+            .children()
+            .iter()
+            .flat_map(|content| content.children())
+            .map(Widget::get_rect)
+            .collect();
+        assert_eq!(lanes.len(), 3, "three lanes: {lanes:?}");
+        for lane in &lanes {
+            assert!(
+                inside(pane, *lane),
+                "a lane stands whole in the pane at rest: {lane:?} in {pane:?}"
+            );
+        }
+        let start = lanes[0].x0 - pane.x0;
+        let end = pane.x1 - lanes[2].x1;
+        assert!(
+            start > 1.0,
+            "the first lane keeps clear of the pane's edge: {pane:?}"
+        );
+        assert!(
+            (start - end).abs() < 1.0,
+            "the lanes keep the same gutter at both ends of the pane: {start} before, {end} after"
+        );
+    }
 }

@@ -381,13 +381,18 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
     }
 }
 
-/// The lanes of a board as its window shows them: each lane's title and its cards' tasks.
-fn lanes(view: &ViewInstance) -> Vec<(String, Vec<Option<String>>)> {
-    fn walk(node: &UiNode, out: &mut Vec<(String, Vec<Option<String>>)>) {
+/// The lanes of a board as its window shows them: each lane's title, the count its header
+/// shows, and its cards' tasks.
+fn lanes(view: &ViewInstance) -> Vec<(String, i64, Vec<Option<String>>)> {
+    fn walk(node: &UiNode, out: &mut Vec<(String, i64, Vec<Option<String>>)>) {
         if node.kind == "ui.BoardLane" {
             let title = match node.props.get("title") {
                 Some(Value::Text(title)) => title.clone(),
                 other => panic!("a lane's title: {other:?}"),
+            };
+            let count = match node.props.get("count") {
+                Some(Value::Int(count)) => *count,
+                other => panic!("a lane's count: {other:?}"),
             };
             let mut cards = Vec::new();
             let mut stack: Vec<&UiNode> = node.children.iter().rev().collect();
@@ -398,7 +403,7 @@ fn lanes(view: &ViewInstance) -> Vec<(String, Vec<Option<String>>)> {
                     stack.extend(n.children.iter().rev());
                 }
             }
-            out.push((title, cards));
+            out.push((title, count, cards));
             return;
         }
         for child in &node.children {
@@ -462,9 +467,10 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         [
             (
                 "No section".to_owned(),
+                4,
                 ids(&[&boxes, &van, &books, &bedworkspace])
             ),
-            ("Doing".to_owned(), vec![]),
+            ("Doing".to_owned(), 0, vec![]),
         ]
     );
     let drop = |view: &mut ViewInstance, lane: &str, task: &Value, at: i64| {
@@ -486,12 +492,80 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     assert_eq!(
         lanes(&view),
         [
-            ("No section".to_owned(), ids(&[&bedworkspace])),
-            ("Doing".to_owned(), ids(&[&van, &books, &boxes])),
+            ("No section".to_owned(), 1, ids(&[&bedworkspace])),
+            ("Doing".to_owned(), 3, ids(&[&van, &books, &boxes])),
         ]
     );
     assert_eq!(target(&read(&ada, &van, "section")), target(&doing));
     assert_eq!(read(&ada, &bedworkspace, "section"), Value::none());
+}
+
+/// A lane's header counts the cards the lane holds: the open tasks filed in it, not the
+/// project's tasks, the ones it leaves out (done, or a step under a task), or another
+/// project's.
+#[test]
+fn a_lanes_header_counts_the_cards_it_holds() {
+    let (mut ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    ada.commit();
+    let packing = call(&ada, "new_section", vec![project.clone()]);
+    call(
+        &ada,
+        "rename_section",
+        vec![packing.clone(), Value::text("Packing")],
+    );
+    let booked = call(&ada, "new_section", vec![project.clone()]);
+    call(&ada, "rename_section", vec![booked, Value::text("Booked")]);
+    // Two in no section, one in Packing, and in Booked nothing yet.
+    let boxes = call(&ada, "add_to", vec![project.clone(), Value::none()]);
+    let tape = call(&ada, "add_to", vec![project.clone(), Value::none()]);
+    let kitchen = call(
+        &ada,
+        "add_to",
+        vec![project.clone(), Value::some(packing.clone())],
+    );
+    // A step under the kitchen's task is no card of its own, a done task is no card, and a
+    // task of another project is none here.
+    call(
+        &ada,
+        "add_subtask",
+        vec![
+            root.clone(),
+            kitchen.clone(),
+            Value::text("Wipe the shelves"),
+        ],
+    );
+    let books = call(&ada, "add_to", vec![project.clone(), Value::some(packing)]);
+    call(&ada, "check", vec![books, Value::Bool(true)]);
+    let van = call(&ada, "new_project", vec![root]);
+    call(&ada, "add_to", vec![van, Value::none()]);
+    ada.commit();
+    let Value::Ref(at) = &project else {
+        panic!("a resource: {project:?}")
+    };
+    let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.poll_patches().unwrap();
+    let board = key_of(&view, "ui.Button", &|b| {
+        b.props.get("label") == Some(&Value::text("Board"))
+    });
+    view.press(&board).unwrap();
+    view.poll_patches().unwrap();
+    let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
+    assert_eq!(
+        lanes(&view),
+        [
+            ("No section".to_owned(), 2, ids(&[&boxes, &tape])),
+            ("Packing".to_owned(), 1, ids(&[&kitchen])),
+            ("Booked".to_owned(), 0, vec![]),
+        ]
+    );
+    for (title, count, cards) in lanes(&view) {
+        assert_eq!(
+            usize::try_from(count).unwrap_or(usize::MAX),
+            cards.len(),
+            "the header of `{title}` counts the cards it holds"
+        );
+    }
 }
 
 /// A checklist written before a task's steps were tasks of their own opens with each step a

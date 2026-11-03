@@ -28,7 +28,13 @@ pub(crate) struct CollSeen {
     pub coll: Rc<CollRef>,
     /// The collection's resource, as [`crate::value::ResourceRef::id_string`] writes it.
     pub resource: String,
+    /// How long its run is: the most it can hold while it checks items one by one as it reads
+    /// them.
     pub len: Option<usize>,
+    /// How many items a view read it as holding: among them only the ones a filter keeps,
+    /// which a listing that checks them as it reads them knows by reading them all
+    /// ([`Listing::count`]).
+    pub count: Option<usize>,
     pub first: End,
     pub last: End,
     pub at: Vec<(usize, Rc<str>)>,
@@ -45,6 +51,7 @@ impl CollSeen {
             coll: Rc::clone(coll),
             resource: coll.target.id_string(),
             len: None,
+            count: None,
             first: End::Unread,
             last: End::Unread,
             at: Vec::new(),
@@ -78,6 +85,11 @@ impl CollSeen {
         if self.len.is_some_and(|len| len != listing.len()) {
             return false;
         }
+        // A count is how many it holds, which this listing knows only by reading what its
+        // filter keeps of its run.
+        if self.count.is_some_and(|count| count != listing.count()) {
+            return false;
+        }
         // This listing is another state of the store, and reads its run again. Where it holds
         // as many items as were seen but is not sure it has them all (a filter that checks
         // them one by one as it reads, [`Listing::len_is_exact`]), where its end is would cost
@@ -107,6 +119,7 @@ impl CollSeen {
             return;
         }
         self.len = self.len.or(other.len);
+        self.count = self.count.or(other.count);
         if matches!(self.first, End::Unread) {
             self.first = other.first;
         }
@@ -201,6 +214,7 @@ fn lit_of_value(v: &Value) -> Option<tilolang::pred::Lit> {
 /// One read of a collection, recorded as what it saw.
 enum Read {
     Len(usize),
+    Count(usize),
     First(Option<Rc<str>>),
     Last(Option<Rc<str>>),
     At(usize, Rc<str>),
@@ -262,6 +276,7 @@ impl Core {
         }
         match read {
             Read::Len(len) => seen.len = Some(len),
+            Read::Count(count) => seen.count = Some(count),
             Read::First(id) => seen.first = End::Read(id),
             Read::Last(id) => seen.last = End::Read(id),
             Read::At(i, id) => {
@@ -392,12 +407,12 @@ impl Core {
         }))
     }
 
-    /// How many items `coll` has: what the listing knows of its length without reading it, the
-    /// most it can have while it still checks items one by one as it reads them
-    /// ([`crate::store::Listing::len_is_exact`]).
+    /// How many items `coll` has: its listing's count, read to its end where the store listed it
+    /// as it read it ([`crate::store::Listing::count`]).
     pub(crate) fn coll_len(&self, coll: &Rc<CollRef>) -> HResult<usize> {
-        let len = self.coll_listing(coll)?.len();
-        self.saw(coll, Read::Len(len), len);
+        let listing = self.coll_listing(coll)?;
+        let len = listing.count();
+        self.saw(coll, Read::Count(len), listing.len());
         Ok(len)
     }
 
