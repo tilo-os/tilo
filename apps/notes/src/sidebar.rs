@@ -5,8 +5,12 @@
 //! rename, drag-and-drop, the context menu, hover row actions, scrolling and
 //! semantics. This module owns only what is specific to Notes: the indexed
 //! model the view reads (every page may hold children), the page menu, and
-//! the translation of the tree's signals into [`OutEvent`]s the parent
-//! `NotesApp` applies through its replayable action path.
+//! what its controls mean as the notebook's own
+//! [actions](crate::notebook::Notebook): every one of them is submitted
+//! through the notebook's dispatcher, the one door the palette, agents,
+//! history, undo and the permission check share. Which note is open is the
+//! person's view of the notebook, so choosing a row is kept as a view intent
+//! for the window ([`Wanted`]).
 //!
 //! Keyboard, while the tree holds focus (these keys otherwise belong to the
 //! editor): ↑ / ↓ select, ← / → collapse / expand (or move to the parent /
@@ -24,6 +28,7 @@ use std::rc::Rc;
 #[cfg(test)]
 use ui::widget::Edits;
 
+use ui::framework::Dispatcher;
 use ui::icons::Icon;
 use ui::presence::PresenceKey;
 use ui::reorder::{DropPlacement, ReorderDrop};
@@ -33,43 +38,185 @@ use ui::widget::tree_view::{
 };
 
 use crate::model::{PageId, Workspace};
+use crate::notebook::{self, Notebook};
+use crate::resource::Notebook as NotebookResource;
 
-/// Outbound commands from the sidebar to the parent `NotesApp`. The
-/// parent owns the workspace model and storage — the sidebar can only
-/// *ask* for things to happen.
-#[derive(Debug, Clone)]
-pub enum OutEvent {
-    Select(PageId),
-    Rename {
-        id: PageId,
-        new_title: String,
-    },
-    Delete(PageId),
-    /// Create a child of `parent` (None = root-level).
-    CreateChild {
-        parent: Option<PageId>,
-    },
-    /// Re-parent / reorder `id` to be a child of `new_parent` (None =
-    /// root), inserted immediately before sibling `before` (None =
-    /// append to the group). Backs dragging, Alt-↑ / Alt-↓ and indent /
-    /// outdent.
-    Reparent {
-        id: PageId,
-        new_parent: Option<PageId>,
-        before: Option<PageId>,
-    },
-    /// Deep-copy `id` and its subtree, placing the copy right after it.
-    /// Backs the context menu's "Duplicate".
-    Duplicate(PageId),
+/// The notebook's door, once the window is hosted. A tree shown without one
+/// changes nothing.
+type SharedDoor = Rc<RefCell<Option<Dispatcher<NotebookResource>>>>;
+
+/// What the tree asked of its window, shared with the callbacks.
+type SharedWanted = Rc<RefCell<Wanted>>;
+
+/// What the page tree's controls asked of the window besides the notebook
+/// action they submitted: the view state only the window can take.
+#[derive(Default)]
+pub(crate) struct Wanted {
+    /// Notes to show, in the order they were chosen.
+    open: Vec<PageId>,
+    /// The note a create or a copy this tree submitted makes, opened once
+    /// that submission lands.
+    made: Option<Made>,
+    /// What a deletion this tree submitted says, said once it lands.
+    gone: Option<Gone>,
+    /// A menu's "Rename": the field opens once the menu has closed.
+    rename: Option<NodeId>,
 }
 
+/// A note a submission will make: the landing revision it was submitted
+/// after, so only its own answer opens it, the action that makes it, and
+/// whether its title takes the keyboard first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SidebarTransfer {
-    ImportMarkdown,
-    ImportNotion,
-    CopyLink(PageId),
-    ExportMarkdown(PageId),
-    InsertImage(PageId),
+pub(crate) struct Made {
+    after: u64,
+    action: &'static str,
+    pub(crate) naming: bool,
+}
+
+impl Made {
+    /// The landing revision this make was submitted after.
+    pub(crate) fn after(self) -> u64 {
+        self.after
+    }
+
+    /// The action this make submitted.
+    pub(crate) fn action(self) -> &'static str {
+        self.action
+    }
+}
+
+/// A deletion a submission will make: the note it removes, the landing
+/// revision it was submitted after, and the action it submitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Gone {
+    page: PageId,
+    after: u64,
+    action: &'static str,
+}
+
+impl Gone {
+    /// The note this deletion removes.
+    pub(crate) fn page(self) -> PageId {
+        self.page
+    }
+
+    /// The landing revision this deletion was submitted after.
+    pub(crate) fn after(self) -> u64 {
+        self.after
+    }
+
+    /// The action this deletion submitted.
+    pub(crate) fn action(self) -> &'static str {
+        self.action
+    }
+}
+
+impl Wanted {
+    /// The notes chosen since the last call.
+    pub(crate) fn take_open(&mut self) -> Vec<PageId> {
+        std::mem::take(&mut self.open)
+    }
+
+    /// The note to open once a submission lands, if one is waiting.
+    pub(crate) fn take_made(&mut self) -> Option<Made> {
+        self.made.take()
+    }
+
+    /// The deletion to say once it lands, if one is waiting.
+    pub(crate) fn take_gone(&mut self) -> Option<Gone> {
+        self.gone.take()
+    }
+}
+
+/// Make a note under `parent` (a top-level note when none), as the sidebar's
+/// "+" and the page menu's New note do; the window opens it once the
+/// notebook keeps it.
+fn make_note(door: &SharedDoor, wanted: &SharedWanted, parent: Option<PageId>, naming: bool) {
+    let door = door.borrow();
+    let Some(dispatcher) = door.as_ref() else {
+        return;
+    };
+    let after = dispatcher.landed().revision();
+    let action = if let Some(parent) = parent {
+        dispatcher.submit(Notebook::NEW_CHILD.with(notebook::notebook::NewChild {
+            page: notebook::page_id(parent),
+            title: crate::notebook::UNTITLED.to_owned(),
+        }));
+        Notebook::NEW_CHILD.id()
+    } else {
+        dispatcher.submit(Notebook::NEW_NOTE.with(notebook::notebook::NewNote {
+            title: crate::notebook::UNTITLED.to_owned(),
+            parent: None,
+        }));
+        Notebook::NEW_NOTE.id()
+    };
+    wanted.borrow_mut().made = Some(Made {
+        after,
+        action,
+        naming,
+    });
+}
+
+/// Give `page` a new title.
+fn rename_page(door: &SharedDoor, page: PageId, title: String) {
+    if let Some(dispatcher) = door.borrow().as_ref() {
+        dispatcher.submit(Notebook::RENAME.with(notebook::notebook::Rename {
+            page: notebook::page_id(page),
+            title,
+        }));
+    }
+}
+
+/// Delete `page` and everything inside it; the window says what went, once
+/// the notebook keeps the deletion.
+fn delete_page(door: &SharedDoor, wanted: &SharedWanted, page: PageId) {
+    let door = door.borrow();
+    let Some(dispatcher) = door.as_ref() else {
+        return;
+    };
+    let after = dispatcher.landed().revision();
+    dispatcher.submit(Notebook::DELETE.with(notebook::page_id(page)));
+    wanted.borrow_mut().gone = Some(Gone {
+        page,
+        after,
+        action: Notebook::DELETE.id(),
+    });
+}
+
+/// Copy `page` and everything inside it; the window opens the copy once the
+/// notebook keeps it.
+fn duplicate_page(door: &SharedDoor, wanted: &SharedWanted, page: PageId) {
+    let door = door.borrow();
+    let Some(dispatcher) = door.as_ref() else {
+        return;
+    };
+    let after = dispatcher.landed().revision();
+    dispatcher.submit(Notebook::DUPLICATE.with(notebook::page_id(page)));
+    wanted.borrow_mut().made = Some(Made {
+        after,
+        action: Notebook::DUPLICATE.id(),
+        naming: false,
+    });
+}
+
+/// Put `page` under `parent` (top level when none), before `before` (last
+/// when none): dragging, Alt-↑ / Alt-↓, indent and outdent.
+fn move_page(door: &SharedDoor, page: PageId, parent: Option<PageId>, before: Option<PageId>) {
+    if let Some(dispatcher) = door.borrow().as_ref() {
+        dispatcher.submit(Notebook::MOVE_NOTE.with(notebook::notebook::MoveNote {
+            page: notebook::page_id(page),
+            parent: parent.map(notebook::page_id),
+            before: before.map(notebook::page_id),
+        }));
+    }
+}
+
+/// Ask the window for `effect`, as the menu's link, export and picture rows
+/// do.
+fn ask(door: &SharedDoor, effect: &crate::effect::NotesEffect) {
+    if let Some(dispatcher) = door.borrow().as_ref() {
+        crate::effect::request(dispatcher, effect);
+    }
 }
 
 pub type PageTreeView = TreeView<(), PageTree>;
@@ -309,23 +456,14 @@ impl TreeModel for PageTree {
     }
 }
 
-/// What the tree's callbacks queue for the app to drain.
-#[derive(Default)]
-struct Outbox {
-    events: Vec<OutEvent>,
-    transfer: Option<SidebarTransfer>,
-    /// A menu's "Rename": the field opens once the callback has returned.
-    rename: Option<NodeId>,
-}
-
-type SharedOutbox = Rc<RefCell<Outbox>>;
-
-/// The notes sidebar: the page tree plus the queue its signals land in.
-/// Dereferences to the [`PageTreeView`] it hosts.
+/// The notes sidebar: the page tree, the door its controls submit through,
+/// and what it asked of its window. Dereferences to the [`PageTreeView`] it
+/// hosts.
 pub struct PageSidebar {
     tree: PageTreeView,
     keys: SharedKeys,
-    outbox: SharedOutbox,
+    door: SharedDoor,
+    wanted: SharedWanted,
     /// False until the first sync expands every branch, so the tree opens
     /// showing its structure; after that expansion is the user's.
     did_initial_expand: bool,
@@ -355,19 +493,6 @@ impl Default for PageSidebar {
     }
 }
 
-/// Queue `event` for the page behind `key`.
-fn push_for(
-    outbox: &SharedOutbox,
-    keys: &SharedKeys,
-    key: NodeId,
-    event: impl FnOnce(PageId) -> OutEvent,
-) {
-    let page = keys.borrow().page(key);
-    if let Some(page) = page {
-        outbox.borrow_mut().events.push(event(page));
-    }
-}
-
 impl PageSidebar {
     #[allow(
         clippy::too_many_lines,
@@ -376,14 +501,15 @@ impl PageSidebar {
     pub fn new() -> Self {
         crate::metadata::register_messages();
         let keys = SharedKeys::default();
-        let outbox = SharedOutbox::default();
+        let door = SharedDoor::default();
+        let wanted = SharedWanted::default();
         let model = PageTree::build(&Workspace::default(), &keys);
-        let on_select = (Rc::clone(&outbox), Rc::clone(&keys));
-        let on_rename = (Rc::clone(&outbox), Rc::clone(&keys));
-        let on_delete = (Rc::clone(&outbox), Rc::clone(&keys));
-        let on_reorder = Rc::clone(&outbox);
-        let on_row_action = (Rc::clone(&outbox), Rc::clone(&keys));
-        let on_menu = (Rc::clone(&outbox), Rc::clone(&keys));
+        let on_select = (Rc::clone(&wanted), Rc::clone(&keys));
+        let on_rename = (Rc::clone(&door), Rc::clone(&keys));
+        let on_delete = (Rc::clone(&door), Rc::clone(&wanted), Rc::clone(&keys));
+        let on_reorder = (Rc::clone(&door), Rc::clone(&keys));
+        let on_row_action = (Rc::clone(&door), Rc::clone(&wanted), Rc::clone(&keys));
+        let on_menu = (Rc::clone(&door), Rc::clone(&wanted), Rc::clone(&keys));
         let tree = TreeView::from_model(model)
             .with_accessible_name(ui::i18n!("notes-title"))
             .hide_root()
@@ -422,58 +548,60 @@ impl PageSidebar {
                     let Some(id) = model.page(dropped.source) else {
                         return false;
                     };
-                    let (new_parent, before) = model.placement(&dropped);
-                    on_reorder.borrow_mut().events.push(OutEvent::Reparent {
-                        id,
-                        new_parent,
-                        before,
-                    });
+                    let (parent, before) = model.placement(&dropped);
+                    move_page(&on_reorder.0, id, parent, before);
                     true
                 },
             )
             .on_view("page_tree", move |key| {
-                push_for(&on_select.0, &on_select.1, key, OutEvent::Select);
+                let (wanted, keys) = &on_select;
+                if let Some(page) = keys.borrow().page(key) {
+                    wanted.borrow_mut().open.push(page);
+                }
             })
             .on_rename(move |key, new_title| {
-                push_for(&on_rename.0, &on_rename.1, key, |id| OutEvent::Rename {
-                    id,
-                    new_title,
-                });
+                let (door, keys) = &on_rename;
+                if let Some(page) = keys.borrow().page(key) {
+                    rename_page(door, page, new_title);
+                }
             })
-            .on_delete(move |key| push_for(&on_delete.0, &on_delete.1, key, OutEvent::Delete))
+            .on_delete(move |key| {
+                let (door, wanted, keys) = &on_delete;
+                if let Some(page) = keys.borrow().page(key) {
+                    delete_page(door, wanted, page);
+                }
+            })
             .on_row_action(move |key, _| {
                 // Only the "new child" action reports; "more" opens the menu.
-                push_for(&on_row_action.0, &on_row_action.1, key, |page| {
-                    OutEvent::CreateChild { parent: Some(page) }
-                });
+                let (door, wanted, keys) = &on_row_action;
+                if let Some(page) = keys.borrow().page(key) {
+                    make_note(door, wanted, Some(page), false);
+                }
             })
             .on_context_menu_item(move |target, index| {
-                let (outbox, keys) = &on_menu;
+                let (door, wanted, keys) = &on_menu;
                 let page = target.and_then(|key| keys.borrow().page(key));
-                let mut outbox = outbox.borrow_mut();
                 match (target, page) {
                     (None, _) => match index {
-                        0 => outbox.events.push(OutEvent::CreateChild { parent: None }),
-                        1 => outbox.transfer = Some(SidebarTransfer::ImportMarkdown),
-                        2 => outbox.transfer = Some(SidebarTransfer::ImportNotion),
+                        0 => make_note(door, wanted, None, false),
+                        1 => ask(door, &crate::effect::NotesEffect::ImportMarkdownFile),
+                        2 => ask(door, &crate::effect::NotesEffect::ImportNotionExport),
                         _ => {}
                     },
                     (Some(key), Some(page)) => match index {
-                        menu_row::NEW_CHILD => outbox
-                            .events
-                            .push(OutEvent::CreateChild { parent: Some(page) }),
-                        menu_row::RENAME => outbox.rename = Some(key),
-                        menu_row::DUPLICATE => outbox.events.push(OutEvent::Duplicate(page)),
+                        menu_row::NEW_CHILD => make_note(door, wanted, Some(page), false),
+                        menu_row::RENAME => wanted.borrow_mut().rename = Some(key),
+                        menu_row::DUPLICATE => duplicate_page(door, wanted, page),
                         menu_row::COPY_LINK => {
-                            outbox.transfer = Some(SidebarTransfer::CopyLink(page));
+                            ask(door, &crate::effect::NotesEffect::CopyLink { page });
                         }
                         menu_row::EXPORT => {
-                            outbox.transfer = Some(SidebarTransfer::ExportMarkdown(page));
+                            ask(door, &crate::effect::NotesEffect::ExportMarkdown { page });
                         }
                         menu_row::INSERT_IMAGE => {
-                            outbox.transfer = Some(SidebarTransfer::InsertImage(page));
+                            ask(door, &crate::effect::NotesEffect::InsertImage { page });
                         }
-                        menu_row::DELETE => outbox.events.push(OutEvent::Delete(page)),
+                        menu_row::DELETE => delete_page(door, wanted, page),
                         _ => {}
                     },
                     (Some(_), None) => {}
@@ -482,9 +610,68 @@ impl PageSidebar {
         Self {
             tree,
             keys,
-            outbox,
+            door,
+            wanted,
             did_initial_expand: false,
             last_selection: None,
+        }
+    }
+
+    /// Submit through `dispatcher` from now on: every control in the tree
+    /// reaches the notebook by the one door its actions are published at.
+    pub(crate) fn attach_notebook(&self, dispatcher: Dispatcher<NotebookResource>) {
+        *self.door.borrow_mut() = Some(dispatcher);
+    }
+
+    /// Make a note, as the "+" and New note controls do: inside `parent`
+    /// when given, at the top level otherwise. `naming`: the note opens with
+    /// its title taking the keyboard.
+    pub(crate) fn new_note(&self, parent: Option<PageId>, naming: bool) {
+        make_note(&self.door, &self.wanted, parent, naming);
+    }
+
+    /// Rename `page` to `title`, as the inline field and the title band do.
+    pub(crate) fn rename(&self, page: PageId, title: String) {
+        rename_page(&self.door, page, title);
+    }
+
+    /// Copy `page` and everything inside it, as the menu's Duplicate does.
+    pub(crate) fn duplicate(&self, page: PageId) {
+        duplicate_page(&self.door, &self.wanted, page);
+    }
+
+    /// Delete `page` and everything inside it, as Delete does.
+    pub(crate) fn delete(&self, page: PageId) {
+        delete_page(&self.door, &self.wanted, page);
+    }
+
+    /// Ask the window for `effect`, as the menu's link, export and picture
+    /// rows do.
+    pub(crate) fn request(&self, effect: &crate::effect::NotesEffect) {
+        ask(&self.door, effect);
+    }
+
+    /// The notes chosen since the last call.
+    pub(crate) fn take_open(&self) -> Vec<PageId> {
+        self.wanted.borrow_mut().take_open()
+    }
+
+    /// The note to open once a submission lands, if one is waiting.
+    pub(crate) fn take_made(&self) -> Option<Made> {
+        self.wanted.borrow_mut().take_made()
+    }
+
+    /// The deletion to say once it lands, if one is waiting.
+    pub(crate) fn take_gone(&self) -> Option<Gone> {
+        self.wanted.borrow_mut().take_gone()
+    }
+
+    /// Open the inline rename field a menu's "Rename" asked for, once the
+    /// menu has closed.
+    pub(crate) fn open_menu_rename(&mut self) {
+        let key = self.wanted.borrow_mut().rename.take();
+        if let Some(key) = key {
+            self.tree.begin_rename(key);
         }
     }
 
@@ -495,20 +682,6 @@ impl PageSidebar {
 
     pub fn tree_mut(&mut self) -> &mut PageTreeView {
         &mut self.tree
-    }
-
-    /// Drain the commands the tree queued since the last call. A menu's
-    /// "Rename" opens the inline field here, after the menu has closed.
-    pub fn take_events(&mut self) -> Vec<OutEvent> {
-        let rename = self.outbox.borrow_mut().rename.take();
-        if let Some(key) = rename {
-            self.tree.begin_rename(key);
-        }
-        std::mem::take(&mut self.outbox.borrow_mut().events)
-    }
-
-    pub fn take_transfer(&mut self) -> Option<SidebarTransfer> {
-        self.outbox.borrow_mut().transfer.take()
     }
 
     fn key(&self, page: PageId) -> Option<NodeId> {
@@ -619,6 +792,20 @@ impl PageSidebar {
         self.tree.row_rect(key).map(|rect| rect.center())
     }
 
+    /// Test hook: the centre of row `index`'s affordance `action`, for click
+    /// targeting through the real event path.
+    #[doc(hidden)]
+    pub fn row_action_center_for_test(
+        &self,
+        index: usize,
+        action: usize,
+    ) -> Option<vello::kurbo::Point> {
+        let (key, _, _) = self.row(index)?;
+        self.tree
+            .row_action_rect(key, action)
+            .map(|rect| rect.center())
+    }
+
     /// Test hook: the x of the disclosure column's centre on row `index`.
     #[doc(hidden)]
     pub fn row_disclosure_x_for_test(&self, index: usize) -> Option<f64> {
@@ -652,6 +839,15 @@ impl PageSidebar {
         self.tree
             .rename_field()
             .map(ui::widget::TextInput::is_plain)
+    }
+
+    /// Test hook: the text the open rename field holds. `None` when no
+    /// rename is open.
+    #[doc(hidden)]
+    pub fn rename_draft_for_test(&self) -> Option<String> {
+        self.tree
+            .rename_field()
+            .map(|field| field.value().to_owned())
     }
 
     /// Test hook: whether a drag past the threshold is in flight.
@@ -732,6 +928,20 @@ mod tests {
 
     fn button(state: ElementState) -> WindowEvent {
         ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
+    }
+
+    /// The tree as the window hosts it: its controls submit through a
+    /// detached notebook door, whose queue the test reads.
+    fn with_door() -> (PageSidebar, Dispatcher<NotebookResource>) {
+        let tree = PageSidebar::new();
+        let door = Dispatcher::detached("so.tilo.notes", "test-author");
+        tree.attach_notebook(door.clone());
+        (tree, door)
+    }
+
+    /// The actions `door` was handed since the last call.
+    fn asked(door: &Dispatcher<NotebookResource>) -> Vec<crate::actions::Action> {
+        door.take_asked().expect("what was asked builds")
     }
 
     use ui::synthetic_input::named_key;
@@ -849,7 +1059,7 @@ mod tests {
             let mut ws = Workspace::new();
             let root = ws.create_page(None);
             ws.data.pages[0].title = "Project plan".into();
-            let mut tree = PageSidebar::new();
+            let (mut tree, _door) = with_door();
             tree.sync_from_workspace(&ws);
             place(&mut tree, Rect::new(0.0, 0.0, 200.0, 300.0), 1.0);
 
@@ -873,7 +1083,11 @@ mod tests {
                 Some(key),
                 "AT focus selects the visible page"
             );
-            assert!(matches!(tree.take_events().as_slice(), [OutEvent::Select(id)] if *id == root));
+            assert_eq!(
+                tree.take_open().as_slice(),
+                [root],
+                "choosing a row asks the window to open its note"
+            );
         }
     }
 
@@ -965,44 +1179,49 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_rename_emits_only_on_commit() {
-        eprintln!("phase begin_and_commit_rename_emits_event");
+    fn sidebar_rename_submits_the_notebooks_rename_once_committed() {
+        eprintln!("phase begin_and_commit_rename_submits_one_rename");
         {
             let mut ws = Workspace::new();
             let id = ws.create_page(None);
             ws.data.pages[0].title = "Untitled".into();
-            let mut tree = PageSidebar::new();
+            let (mut tree, door) = with_door();
             tree.sync_from_workspace(&ws);
             assert!(tree.begin_rename(id));
             tree.commit_rename();
-            let events = tree.take_events();
-            assert_eq!(events.len(), 1);
-            match &events[0] {
-                OutEvent::Rename { id: rid, new_title } => {
-                    assert_eq!(*rid, id);
-                    assert_eq!(new_title, "Untitled");
+            let asked = asked(&door);
+            assert_eq!(asked.len(), 1);
+            match &asked[0].operation {
+                crate::notebook::NotebookAction::Rename(rename) => {
+                    assert_eq!(rename.page, notebook::page_id(id));
+                    assert_eq!(rename.title, "Untitled");
                 }
-                _ => panic!("expected Rename event"),
+                other => panic!("expected the notebook's rename, got {other:?}"),
             }
+            assert!(
+                tree.take_open().is_empty(),
+                "a rename moves no note into the window"
+            );
         }
 
-        eprintln!("phase cancel_rename_does_not_emit");
+        eprintln!("phase cancel_rename_submits_nothing");
         {
             let mut ws = Workspace::new();
             let id = ws.create_page(None);
-            let mut tree = PageSidebar::new();
+            let (mut tree, door) = with_door();
             tree.sync_from_workspace(&ws);
             assert!(tree.begin_rename(id));
             event(&mut tree, &named_key(NamedKey::Escape));
             assert!(!tree.is_renaming());
-            assert!(tree.take_events().is_empty());
+            assert!(asked(&door).is_empty());
+            assert!(tree.take_open().is_empty());
         }
 
         eprintln!("phase menu_rename_opens_the_field_once_the_menu_has_closed");
         {
             let mut workspace = Workspace::new();
             let page = workspace.create_page(None);
-            let mut tree = PageSidebar::new();
+            let (mut tree, _door) = with_door();
             tree.sync_from_workspace(&workspace);
             let key = tree.key(page).unwrap();
             tree.open_context_menu(Some(key), Point::ZERO);
@@ -1014,49 +1233,30 @@ mod tests {
                 &mut Edits::lend(&mut AutoCommit::new()),
                 &ObjId::Root
             ));
-            assert!(tree.take_events().is_empty());
+            assert!(
+                !tree.is_renaming(),
+                "the field waits while the menu is still up"
+            );
+            tree.open_menu_rename();
             assert!(tree.is_renaming());
+            let before = tree.rename_draft_for_test().unwrap_or_default();
+            event(&mut tree, &ui::synthetic_input::char_key("H"));
+            assert_eq!(
+                tree.rename_draft_for_test().as_deref(),
+                Some(format!("{before}H").as_str()),
+                "the fresh field takes the typed key"
+            );
         }
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn sidebar_page_menu_and_row_actions_queue_page_scoped_actions() {
-        eprintln!("phase page_menu_copy_link_uses_the_selected_page_identity");
-        {
-            let mut workspace = Workspace::new();
-            let page = workspace.create_page(None);
-            let mut tree = PageSidebar::new();
-            tree.sync_from_workspace(&workspace);
-            let key = tree.key(page).unwrap();
-            assert!(tree.open_context_menu(Some(key), Point::ZERO));
-            let menu = Widget::accessibility(tree.tree()).unwrap();
-            let copy = menu
-                .children
-                .iter()
-                .find(|node| node.role == ui::a11y::Role::Menu)
-                .and_then(|menu| {
-                    menu.children.iter().find(|item| {
-                        item.name.as_deref() == Some(&ui::i18n!("notes-menu-copy-link"))
-                    })
-                })
-                .and_then(|item| item.action_target.clone())
-                .unwrap();
-            assert!(Widget::perform_semantic_action(
-                tree.tree_mut(),
-                &copy,
-                &ui::a11y::Action::Activate,
-                &mut Edits::lend(&mut AutoCommit::new()),
-                &ObjId::Root
-            ));
-            assert_eq!(tree.take_transfer(), Some(SidebarTransfer::CopyLink(page)));
-        }
-
+    fn sidebar_page_menu_and_row_actions_submit_the_notebooks_actions() {
         eprintln!("phase hover_row_actions_create_a_child_or_open_the_existing_note_menu");
         {
             let mut workspace = Workspace::new();
             let page = workspace.create_page(None);
-            let mut tree = PageSidebar::new();
+            let (mut tree, door) = with_door();
             tree.sync_from_workspace(&workspace);
             place(&mut tree, Rect::new(0.0, 0.0, 240.0, 200.0), 1.0);
             let key = tree.key(page).unwrap();
@@ -1066,25 +1266,32 @@ mod tests {
             event(&mut tree, &moved(child.center()));
             assert!(event(&mut tree, &button(ElementState::Pressed)));
             event(&mut tree, &button(ElementState::Released));
-            assert!(matches!(
-                tree.take_events().as_slice(),
-                [OutEvent::CreateChild { parent: Some(id) }] if *id == page
-            ));
+            let created = asked(&door);
+            assert_eq!(created.len(), 1);
+            match &created[0].operation {
+                crate::notebook::NotebookAction::NewChild(new_child) => {
+                    assert_eq!(new_child.page, notebook::page_id(page));
+                }
+                other => panic!("expected the notebook's new-child, got {other:?}"),
+            }
+            let made = tree.take_made().expect("the made note opens once it lands");
+            assert!(!made.naming, "a row's plus leaves naming to the tree");
 
             event(&mut tree, &moved(more.center()));
             assert!(event(&mut tree, &button(ElementState::Pressed)));
             assert!(tree.context_menu_open_for_test());
-            assert!(matches!(
-                tree.take_events().as_slice(),
-                [OutEvent::Select(id)] if *id == page
-            ));
+            assert_eq!(
+                tree.take_open().as_slice(),
+                [page],
+                "the menu's note is the window's note"
+            );
         }
 
-        eprintln!("phase page_menu_semantics_activate_the_same_queued_page_action");
+        eprintln!("phase page_menu_semantics_submit_the_same_page_action");
         {
             let mut workspace = Workspace::new();
             let page = workspace.create_page(None);
-            let mut tree = PageSidebar::new();
+            let (mut tree, door) = with_door();
             tree.sync_from_workspace(&workspace);
             let key = tree.key(page).unwrap();
             tree.open_context_menu(Some(key), Point::ZERO);
@@ -1125,7 +1332,7 @@ mod tests {
                 &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));
-            assert!(tree.take_events().is_empty());
+            assert!(asked(&door).is_empty());
             assert!(Widget::perform_semantic_action(
                 tree.tree_mut(),
                 &target,
@@ -1133,11 +1340,22 @@ mod tests {
                 &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));
-            assert!(matches!(tree.take_events().as_slice(), [OutEvent::Delete(id)] if *id == page));
+            let removed = asked(&door);
+            assert_eq!(removed.len(), 1);
+            match &removed[0].operation {
+                crate::notebook::NotebookAction::Delete(delete) => {
+                    assert_eq!(delete.page, notebook::page_id(page));
+                }
+                other => panic!("expected the notebook's delete, got {other:?}"),
+            }
+            let gone = tree
+                .take_gone()
+                .expect("the deletion is said once it lands");
+            assert_eq!(gone.action(), Notebook::DELETE.id());
             assert_eq!(
                 doc.get_heads(),
                 before,
-                "sidebar activation only queues; app owns document admission"
+                "the tree only submits; the notebook owns admission"
             );
             assert!(
                 !Widget::perform_semantic_action(

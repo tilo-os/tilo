@@ -19,7 +19,6 @@ use ui::headless::Framed;
 use ui::widget::Edits;
 
 use crate::framework_support::{notes, with_note};
-use notes::sidebar::OutEvent;
 use notes::{NotesApp, NotesShell};
 use ui::framework::testing::TestApp;
 use ui::theme::Theme;
@@ -185,7 +184,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // A second root page so a stray delete would visibly "switch" pages.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -348,7 +347,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         // so the space (typed into a non-empty "#") never promoted.
         let mut app = starter();
         // A fresh, empty page so the first block is an empty paragraph.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -383,7 +382,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
 
         // `## ` and `### ` promote to H2 / H3 on their own fresh pages.
         for (hashes, level) in [("##", 2u8), ("###", 3u8)] {
-            n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+            n(&mut app).new_note_for_test(None);
             app.harness().relayout();
             app.harness().relayout();
             app.harness().relayout_at((1200, 800)).unwrap();
@@ -403,7 +402,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
     eprintln!("phase greater_than_space_promotes_paragraph_to_quote_through_the_event_path");
     {
         let mut app = starter();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -733,7 +732,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
     {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let victim = n(&mut app).selected_for_test().unwrap();
         app.harness().relayout();
@@ -768,7 +767,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         // must NOT delete a page — it belongs to the editor. This proves the
         // focus gate is real, not bypassed.
         let mut app = starter();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
         let before = n(&mut app).workspace_pages_for_test().len();
@@ -805,7 +804,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
     {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let second = n(&mut app).selected_for_test().unwrap();
         app.harness().relayout();
@@ -834,10 +833,10 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
     {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let p1 = n(&mut app).selected_for_test().unwrap();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let p2 = n(&mut app).selected_for_test().unwrap();
         app.harness().relayout();
@@ -881,9 +880,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Give `welcome` a child so it becomes a collapsible branch.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild {
-            parent: Some(welcome),
-        });
+        n(&mut app).new_note_for_test(Some(welcome));
         app.harness().relayout();
         app.harness().relayout();
 
@@ -952,7 +949,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Second root page so we can click a DIFFERENT row to blur + commit.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -1066,9 +1063,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Creating a child auto-selects it, so revealing it proves the tree
         // expands its ancestors (not a collapsed flat list).
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild {
-            parent: Some(welcome),
-        });
+        n(&mut app).new_note_for_test(Some(welcome));
         app.harness().relayout();
         app.harness().relayout();
 
@@ -1095,7 +1090,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
     {
         let mut app = starter();
         let first = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let second = n(&mut app)
             .selected_for_test()
@@ -1150,7 +1145,7 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         // ordinals increment and the saved markdown numbers sequentially.
         let mut app = starter();
         // A fresh, empty page so the slash command has a clean paragraph.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -1229,7 +1224,7 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         // and apply the block kind — the old menu had no mouse handler, so a click
         // just dismissed it and left the literal `/` behind.
         let mut app = starter();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 

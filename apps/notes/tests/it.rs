@@ -65,6 +65,8 @@ mod responsive_drawer;
 mod scroll_damage;
 #[path = "scroll_stability.rs"]
 mod scroll_stability;
+#[path = "sidebar_actions.rs"]
+mod sidebar_actions;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]

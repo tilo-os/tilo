@@ -811,13 +811,11 @@ fn profile_writes(app: &mut OwnedApp, pages: &[crate::PageId]) {
     };
     for sample in 0..owned_samples(12) {
         let title = format!("Renamed locally {sample}");
-        let rename = crate::sidebar::OutEvent::Rename {
-            id: pages[5],
-            new_title: title.clone(),
-        };
         let (elapsed, rows) = observe(|| {
-            app.surface(|notes: &mut crate::NotesApp| notes.apply_event_for_test(rename))
-                .unwrap();
+            app.surface(|notes: &mut crate::NotesApp| {
+                notes.rename_page_for_test(pages[5], &title);
+            })
+            .unwrap();
             app.harness().relayout();
         });
         let frames = app.harness().take_profile_samples();
