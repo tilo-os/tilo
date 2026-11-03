@@ -45,11 +45,22 @@ pub trait DeviceSigner: MaybeSendSync {
     fn device_public_key(&self) -> [u8; 32];
     /// Ed25519-sign `message`.
     fn sign(&self, message: Vec<u8>) -> SignFuture<'_>;
+    /// The Ed25519 key itself, when this signer holds it in the clear: the
+    /// key a native carrier dials from, so its handshake names the device its
+    /// certificate does. A signer that keeps the key unextractable (a
+    /// browser's) answers `None` and needs no carrier of its own.
+    fn device_signing_key(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 impl DeviceSigner for ed25519_dalek::SigningKey {
     fn device_public_key(&self) -> [u8; 32] {
         self.verifying_key().to_bytes()
+    }
+
+    fn device_signing_key(&self) -> Option<[u8; 32]> {
+        Some(self.to_bytes())
     }
 
     fn sign(&self, message: Vec<u8>) -> SignFuture<'_> {

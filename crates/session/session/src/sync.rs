@@ -369,17 +369,22 @@ impl Workspace {
         }
     }
 
-    /// Where their pointer moved on the tile of `tab` of this workspace.
+    /// Where their pointer moved on the tile of `tab` of this workspace. A
+    /// pointer over a tile is the device saying it is here: it is drawn
+    /// whether or not the word that first said so reached this device.
     fn point(&mut self, from: EndpointId, tab: u64, point: (f64, f64)) {
         let now = Some((tab, point.0, point.1));
         if let Some(peer) = self.peers.iter_mut().find(|peer| peer.publisher == from) {
-            if peer.pointer != now {
+            let arrived = !peer.here;
+            peer.here = true;
+            if peer.pointer != now || arrived {
                 peer.pointer = now;
                 self.touch();
             }
             return;
         }
         let mut peer = Peer::new(from);
+        peer.here = true;
         peer.pointer = now;
         self.peers.push(peer);
         self.touch();

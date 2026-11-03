@@ -253,7 +253,7 @@ impl Engine {
     /// for access the first time, and its governance answers with the group.
     /// Says whether the keys are here; while they are not, the record reads as
     /// nothing, and the answer arrives as the workspace's other messages do.
-    fn join_channel(
+    pub(crate) fn join_channel(
         &self,
         workspace: WorkspaceId,
         app: &str,
@@ -458,6 +458,15 @@ impl Engine {
     /// The engine's owner, for what holds the workspace's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
+    }
+
+    /// Where `workspace`'s host is reached and the device its enrollment pins:
+    /// the address its live plane is dialled at.
+    pub(crate) fn workspace_host(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<([u8; 32], iroh::EndpointAddr)> {
+        self.owner.host_addr(workspace)
     }
 
     /// Where a read asks the workspaces' hosts for a record they send only

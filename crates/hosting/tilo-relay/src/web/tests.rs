@@ -1011,7 +1011,9 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         fetch_proxy: None,
     };
     let identity = tls::Identity::load(&config.tls).unwrap();
-    let live = wt::Live::start(&identity, sessions.clone(), &config, "https://127.0.0.1").unwrap();
+    let plane = relay.plane.as_ref().expect("the relay runs a live plane");
+    plane.pages.serve_pages(sessions.clone());
+    let live = wt::Live::start(plane, &identity, &config, "https://127.0.0.1").unwrap();
     let answered = live.info.clone();
     let lane = endpoint(&SigningKey::from_bytes(&[76; 32])).await;
     let web = Arc::new(Web {

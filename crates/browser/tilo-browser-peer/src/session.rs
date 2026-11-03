@@ -3611,6 +3611,12 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
         Host::Iroh { addr, relay_url } => {
             use tilo_relay_session::RelayClient;
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
+            // A live plane's admission binds the certificate's device to the
+            // endpoint the handshake names, so a peer that holds the device's
+            // key dials under it, as every device's session does.
+            if let Some(key) = signer.device_signing_key() {
+                builder = builder.secret_key(iroh::SecretKey::from_bytes(&key));
+            }
             if let Some(url) = relay_url {
                 builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
             }
