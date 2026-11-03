@@ -10,12 +10,12 @@ use vello::kurbo::Rect;
 
 use super::{ListModel, VirtualList};
 
-/// How far a tree's rows stand in from their list for each row over them, in logical pixels
-/// ([`VirtualList::with_tree`]): `spacing.s4`, the step an outline indents by.
-pub const TREE_INDENT: f64 = 16.0;
-/// The room a tree row's disclosure takes at its leading edge, and the width of the column that
-/// folds the row's subtasks away, whether or not it has any.
-pub const TREE_DISCLOSURE: f64 = 20.0;
+/// How far a tree's rows stand in from their list for each row over them ([`VirtualList::with_tree`]):
+/// the `s4` step, so a list indents as far as the outline beside it.
+pub const TREE_INDENT: f64 = crate::tokens::Spacing::BASE.s4 as f64;
+/// The room a tree row's disclosure takes at its leading edge: a regular icon's square, the same
+/// room the column keeps for a row with no subtasks to fold away.
+pub const TREE_DISCLOSURE: f64 = crate::tokens::Metrics::BASE.icon_md as f64;
 /// How far up a row's chain of parents the list follows it: deeper than anyone nests a row, so
 /// a chain that loops still ends.
 const TREE_DEPTH_GUARD: u32 = 64;
