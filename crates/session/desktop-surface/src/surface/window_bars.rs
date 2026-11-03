@@ -140,11 +140,11 @@ impl DesktopSurface {
         changed
     }
 
-    /// Tell the desk what each app calls what its window shows: the bar's
-    /// location label, a note's title or a folder's path. A window's name is
-    /// what it shows, so the tab's name — in its bar, the overview and
-    /// search — is this, and the window's own title only stands where its
-    /// app names nothing. Returns whether that changed.
+    /// Name each window by what it shows: the bar's location label, a note's
+    /// title or a folder's path. A window's name is what it shows, so it is
+    /// written into the tab — the bar, the overview and search all read the
+    /// tab's name — and the window's own title only stands where its app
+    /// names nothing. Returns whether that changed.
     fn publish_window_names(&self) -> bool {
         let mut names = std::collections::BTreeMap::new();
         for group in self.rows.values().flat_map(|row| row.groups.iter()) {
@@ -160,7 +160,28 @@ impl DesktopSurface {
                 }
             }
         }
-        self.shared.borrow_mut().take_window_names(names)
+        let mut shared = self.shared.borrow_mut();
+        let mut changed = shared.take_window_names(names.clone());
+        let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
+            workspace
+                .strips
+                .iter_mut()
+                .flat_map(|strip| strip.window_groups.iter_mut())
+                .flat_map(|group| group.tabs.iter_mut())
+        });
+        // A person's own name for a tab, where they gave one, stands in front
+        // of the app's: the tab keeps it and holds the app's for when the
+        // person clears theirs.
+        for tab in tabs {
+            if let Some(name) = names.get(&tab.id) {
+                changed |= tab.set_window_title(name);
+            }
+        }
+        if changed {
+            // The rows follow the names the tree now holds.
+            shared.replaced = true;
+        }
+        changed
     }
 
     /// Take what the apps in processes of their own asked of their windows'
