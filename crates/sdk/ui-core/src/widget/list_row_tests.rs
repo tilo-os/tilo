@@ -1,6 +1,7 @@
 use super::*;
 use crate::component::{Bound, Described, Fired, Intent};
 use crate::headless::{FrameHarness, InspectionNode};
+use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::{Column, Element};
 use std::cell::Cell;
 use std::rc::Rc;
