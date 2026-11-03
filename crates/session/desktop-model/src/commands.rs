@@ -13,7 +13,7 @@ use tilo_sort::CompactSort as _;
 
 use crate::apps::canonical_app_id;
 use crate::closed_tabs::Leaving;
-use crate::ids::{MintIds, StripId, WorkspaceId};
+use crate::ids::{MintIds, StripId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::topology::DropTarget;
 use crate::tree::DesktopTree;
@@ -1012,7 +1012,7 @@ pub fn apply_to_active_workspace(
 /// As [`apply_to_active_workspace`], or the workspace is gone.
 pub fn apply_to_workspace(
     tree: &mut DesktopTree,
-    id: crate::ids::WorkspaceId,
+    id: crate::ids::WorkspaceSlot,
     command: &DesktopCommand,
     mint: &mut impl FnMut() -> Result<u64, String>,
 ) -> Result<Option<StripId>, String> {
@@ -1030,7 +1030,7 @@ pub fn apply_to_workspace(
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.id == active)
+        .find(|workspace| workspace.slot == active)
         .ok_or("the workspace is gone")?;
     let before = workspace.strips.len();
     apply_command(workspace, command, mint, &mut |_, _| {
@@ -1067,7 +1067,7 @@ pub fn apply_to_workspace(
 pub fn move_tab_to_workspace(
     tree: &mut DesktopTree,
     tab: u64,
-    to: WorkspaceId,
+    to: WorkspaceSlot,
     mint: &mut impl FnMut() -> Result<u64, String>,
 ) -> Result<(), String> {
     let (from, source) = tree
@@ -1083,7 +1083,7 @@ pub fn move_tab_to_workspace(
                         .iter()
                         .any(|group| group.tabs.iter().any(|held| held.id == tab))
                 })
-                .map(|strip| (workspace.id, strip.id))
+                .map(|strip| (workspace.slot, strip.id))
         })
         .ok_or("the window is not on this desktop")?;
     // A window sent where it already is would only change strips behind the
@@ -1094,7 +1094,7 @@ pub fn move_tab_to_workspace(
     let destination = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.id == to)
+        .find(|workspace| workspace.slot == to)
         .ok_or("there is no such workspace")?;
     let strip = if let Some(strip) = destination.strips.last() {
         strip.id

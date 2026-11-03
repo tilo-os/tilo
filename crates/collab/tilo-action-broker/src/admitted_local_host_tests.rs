@@ -610,7 +610,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.id,
+                    before.slot,
                     workspace_id,
                     before.name,
                 );
@@ -679,7 +679,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.id,
+                    before.slot,
                     workspace_id,
                     before.name,
                 );
@@ -722,7 +722,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.id,
+                    before.slot,
                     workspace_id,
                     before.name,
                 );

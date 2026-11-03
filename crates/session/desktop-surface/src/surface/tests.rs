@@ -134,7 +134,7 @@ fn workspace_and_strip_commands_run_through_the_models_reduction() {
     handle.read(|tree| {
         let workspace = tree.active_workspace().unwrap();
         assert_eq!(workspace.strips.len(), 2);
-        assert_eq!(tree.active_strip.get(&workspace.id), Some(&made));
+        assert_eq!(tree.active_strip.get(&workspace.slot), Some(&made));
     });
     handle
         .apply_command(&DesktopCommand::RenameWorkspace {
@@ -154,7 +154,7 @@ fn workspace_and_strip_commands_run_through_the_models_reduction() {
         assert_eq!(workspace.name, "Lounge");
         assert_eq!(workspace.strips.len(), 1);
         assert_eq!(
-            tree.active_strip.get(&workspace.id),
+            tree.active_strip.get(&workspace.slot),
             Some(&workspace.strips[0].id)
         );
     });
@@ -1684,7 +1684,7 @@ fn a_window_dragged_out_of_its_strip_moves_to_the_strip_below_it() {
             .map(|strip| strip.id)
             .find(|&strip| strip != second)
             .unwrap();
-        (workspace.id, first)
+        (workspace.slot, first)
     });
     handle
         .dispatch(ChromeEffect::ShowStrip {

@@ -6,7 +6,7 @@
 
 use tilo_desktop_model::{
     DesktopTree, DropTarget, GroupShape, IdMinter, Strip, StripId, Tab, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceId,
+    WindowWidth, Workspace, WorkspaceSlot,
 };
 
 fn tab(id: u64) -> Tab {
@@ -35,7 +35,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 
 /// Strip 1 holds groups 10 [100, 101] and 11 [110]; strip 2 holds 20 [200].
 fn tree() -> DesktopTree {
-    let mut ws = Workspace::new(WorkspaceId(1), "Desk");
+    let mut ws = Workspace::new(WorkspaceSlot(1), "Desk");
     let mut a = Strip::new(StripId(1), "A");
     a.window_groups = vec![group(10, &[100, 101]), group(11, &[110])];
     let mut b = Strip::new(StripId(2), "B");
@@ -43,7 +43,7 @@ fn tree() -> DesktopTree {
     ws.strips = vec![a, b];
     DesktopTree {
         workspaces: vec![ws],
-        active: WorkspaceId(1),
+        active: WorkspaceSlot(1),
         ..DesktopTree::default()
     }
 }

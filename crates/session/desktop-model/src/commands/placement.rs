@@ -127,7 +127,7 @@ impl<'a> OpenContext<'a> {
     ) -> Self {
         let strip = tree.active_workspace().and_then(|ws| {
             tree.active_strip
-                .get(&ws.id)
+                .get(&ws.slot)
                 .filter(|id| ws.strips.iter().any(|s| s.id == **id))
                 .or_else(|| ws.strips.first().map(|s| &s.id))
                 .copied()
@@ -215,7 +215,7 @@ pub fn open_app_placement(
 mod tests {
     use super::*;
     use crate::app::AppKind;
-    use crate::ids::WorkspaceId;
+    use crate::ids::WorkspaceSlot;
     use crate::layout::{Strip, Tab, TileContent, WindowGroup};
     use crate::width::WindowWidth;
 
@@ -223,7 +223,7 @@ mod tests {
 
     /// One strip whose i-th group (id `100 + i`) holds `tab_counts[i]` tabs.
     fn workspace(tab_counts: &[usize]) -> (Workspace, Vec<GroupId>) {
-        let mut workspace = Workspace::new(WorkspaceId(1), "W");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "W");
         let mut ids = Vec::new();
         let mut next = 1001_u64..;
         let window_groups = tab_counts

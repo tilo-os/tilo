@@ -26,7 +26,7 @@ mod paint;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_model::{GroupId, StripId, TabId, WorkspaceId};
+use tilo_desktop_model::{GroupId, StripId, TabId, WorkspaceSlot};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -61,9 +61,9 @@ pub struct OverviewDesk {
     pub colors: HashMap<String, (u8, u8, u8)>,
     /// What a workspace held through a site says in place of who has
     /// access: the site, and how many are there.
-    pub sites: HashMap<WorkspaceId, String>,
+    pub sites: HashMap<WorkspaceSlot, String>,
     /// The workspaces that can be left from here.
-    pub leavable: HashSet<WorkspaceId>,
+    pub leavable: HashSet<WorkspaceSlot>,
     /// The windows the host draws the pictures of itself: the panel leaves
     /// their wells to it.
     pub pictured: HashSet<TabId>,
@@ -93,19 +93,19 @@ pub enum OverviewPick {
     /// Go to this window of the workspace you are in.
     Window(TabId),
     /// Go to another workspace.
-    Workspace(WorkspaceId),
+    Workspace(WorkspaceSlot),
     NewWorkspace,
     /// Open the directory a workspace is joined from.
     JoinWorkspace,
     /// Leave this site's workspace.
-    LeaveWorkspace(WorkspaceId),
+    LeaveWorkspace(WorkspaceSlot),
     /// Close this window; the overview stays up.
     CloseWindow(TabId),
     /// Move this window to another workspace; the overview stays up to
     /// show it leave.
     MoveWindow {
         tab: TabId,
-        to: WorkspaceId,
+        to: WorkspaceSlot,
     },
     /// Move this window's group to another strip of the workspace.
     MoveWindowToStrip {
@@ -491,9 +491,9 @@ impl OverviewPanel {
         } else if target == "overview-join-workspace" && self.desk.can_join {
             self.choose(OverviewPick::JoinWorkspace);
         } else if let Some(id) = number("overview-workspace:") {
-            self.choose(OverviewPick::Workspace(WorkspaceId(id)));
+            self.choose(OverviewPick::Workspace(WorkspaceSlot(id)));
         } else if let Some(id) = number("overview-leave:") {
-            self.choose(OverviewPick::LeaveWorkspace(WorkspaceId(id)));
+            self.choose(OverviewPick::LeaveWorkspace(WorkspaceSlot(id)));
         } else if let Some(tab) = number("overview-window:") {
             self.choose(OverviewPick::Window(tab));
         } else if let Some(id) = number("overview-strip:") {
@@ -539,7 +539,7 @@ impl OverviewPanel {
             }
             self.select_window(tab);
         } else if let Some(index) =
-            number("overview-workspace:").and_then(|id| self.card_index(WorkspaceId(id)))
+            number("overview-workspace:").and_then(|id| self.card_index(WorkspaceSlot(id)))
         {
             self.focus_row(index);
         } else if target == "overview-new-workspace" && self.can_add() {
@@ -898,7 +898,7 @@ mod tests {
 
     fn card(id: u64, name: &str, current: bool, windows: &[&str]) -> WorkspaceCard {
         WorkspaceCard {
-            id: WorkspaceId(id),
+            id: WorkspaceSlot(id),
             name: name.into(),
             is_current: current,
             people: Vec::new(),
@@ -1014,7 +1014,7 @@ mod tests {
         assert!(press(&mut panel, NamedKey::Enter));
         assert_eq!(
             panel.take_pick(),
-            Some(OverviewPick::Workspace(WorkspaceId(3)))
+            Some(OverviewPick::Workspace(WorkspaceSlot(3)))
         );
         assert!(press(&mut panel, NamedKey::Tab));
         assert!(press(&mut panel, NamedKey::Enter));
@@ -1219,7 +1219,7 @@ mod tests {
             panel.take_pick(),
             Some(OverviewPick::MoveWindow {
                 tab: 1000,
-                to: WorkspaceId(2)
+                to: WorkspaceSlot(2)
             })
         );
     }
@@ -1230,7 +1230,7 @@ mod tests {
         assert!(panel.activate("overview-workspace:2"));
         assert_eq!(
             panel.take_pick(),
-            Some(OverviewPick::Workspace(WorkspaceId(2)))
+            Some(OverviewPick::Workspace(WorkspaceSlot(2)))
         );
         assert!(panel.focus("overview-window:1001"));
         assert_eq!(panel.window_selection(), Some(1001));

@@ -1,7 +1,7 @@
 use super::*;
 use crate::collab_app_broker::{BrokerChannels, FanoutState, PeerPublisher};
 use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
-use crate::test_support::WorkspaceId;
+use crate::test_support::WorkspaceSlot;
 use std::sync::Mutex;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
@@ -327,7 +327,7 @@ fn fixture(
     InvokeRequest,
 ) {
     let service = Arc::new(Governance::default());
-    let mut workspace = Workspace::new(WorkspaceId(96), "Governance");
+    let mut workspace = Workspace::new(WorkspaceSlot(96), "Governance");
     workspace.set_owner("owner");
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace.clone());
@@ -499,7 +499,7 @@ impl crate::services::KeyboardShortcutServices for Keyboard {
         address: &tilo_actions::ActionAddress,
     ) -> Option<ActionDescriptor> {
         let mut descriptor = Governance::default()
-            .descriptors(&Workspace::new(WorkspaceId(97), "Keyboard"))
+            .descriptors(&Workspace::new(WorkspaceSlot(97), "Keyboard"))
             .remove(0);
         descriptor.address = address.clone();
         Some(descriptor)

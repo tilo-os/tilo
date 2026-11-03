@@ -2,7 +2,7 @@ use super::clock::clock_overlay_controls;
 use super::*;
 use automerge::AutoCommit;
 use tilo_desktop_model::{
-    DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
 };
 
 #[test]
@@ -56,14 +56,14 @@ fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
 
 fn sample_chrome() -> TopBarChrome {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     TopBarChrome::from_tree(&tree)
 }
 
@@ -130,11 +130,11 @@ fn idle_clock_wakes_and_repaints_when_the_minute_turns() {
 
 fn floating_clock() -> TopBarChrome {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     {
         let mut state = chrome.borrow_mut();
@@ -162,11 +162,11 @@ fn floating_clock() -> TopBarChrome {
 #[test]
 fn the_floating_timers_controls_hand_the_timer_back_to_clocks() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     {
         let mut state = chrome.borrow_mut();
@@ -409,11 +409,11 @@ fn click(bar: &mut TopBarChrome, at: Point) -> bool {
 #[test]
 fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
 
@@ -502,8 +502,8 @@ fn the_unread_count_stays_inside_the_bar() {
         let theme = Theme::dark().with_text_scale(scale);
         for unread in [1, 42, 5000] {
             let tree = DesktopTree {
-                active: WorkspaceId(1),
-                workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+                active: WorkspaceSlot(1),
+                workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
                 ..DesktopTree::default()
             };
             let chrome = fixture::FixtureChrome::new(tree.clone());
@@ -700,14 +700,14 @@ fn large_text_activity_stays_single_line_inside_center_content_lane() {
 #[test]
 fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     // The 960px chrome reserves a 360px centre selector; after its dots
@@ -791,9 +791,9 @@ fn dispatch_topbar_event_with_modifiers(
 }
 
 fn two_workspace_tree() -> DesktopTree {
-    let first = Workspace::new(WorkspaceId(1), "A");
-    let second = Workspace::new(WorkspaceId(2), "B");
-    let active = first.id;
+    let first = Workspace::new(WorkspaceSlot(1), "A");
+    let second = Workspace::new(WorkspaceSlot(2), "B");
+    let active = first.slot;
     DesktopTree {
         workspaces: vec![first, second],
         active,
@@ -882,9 +882,9 @@ fn the_focus_ring_follows_the_keyboard_not_a_click() {
 /// application chose, and Enter does what a click does.
 #[test]
 fn an_applications_tray_icon_is_a_named_control_the_keyboard_reaches() {
-    let workspace = Workspace::new(WorkspaceId(1), "A");
+    let workspace = Workspace::new(WorkspaceSlot(1), "A");
     let tree = DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
@@ -1380,14 +1380,14 @@ fn narrow_topbar_releases_center_width_for_workspace_identity() {
 #[test]
 fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     tree.workspaces[0]
         .collaborators
         .push(tilo_desktop_model::Collaborator::new("alice", "Alice"));
@@ -1457,14 +1457,14 @@ fn the_clock_pill_hugs_the_time_and_holds_its_width() {
 #[test]
 fn new_activity_temporarily_shows_over_the_time() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
 
@@ -1527,14 +1527,14 @@ fn the_time_and_a_live_activity_cross_fade_and_settle() {
 #[test]
 fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     let theme = Theme::default();
@@ -1623,10 +1623,10 @@ fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
 #[test]
 fn the_centre_selector_grows_into_the_lane_and_back() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     let theme = Theme::default();
@@ -1710,14 +1710,14 @@ fn the_centre_selector_grows_into_the_lane_and_back() {
 #[test]
 fn clicking_a_person_opens_people_not_history() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
@@ -1762,14 +1762,14 @@ fn shared_windows(surfaces: &[(u64, &str)]) -> Strip {
 #[test]
 fn live_share_is_persistent_visible_named_and_accessible() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     tree.workspaces[0]
         .collaborators
         .push(tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7));
@@ -1804,11 +1804,11 @@ fn live_share_is_persistent_visible_named_and_accessible() {
 #[test]
 fn disclosure_attributes_each_surface_to_its_actual_viewer() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     tree.workspaces[0].collaborators.extend([
         tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7),
         tilo_desktop_model::Collaborator::new("lin", "Lin").with_session(9),
@@ -1853,11 +1853,11 @@ fn disclosure_attributes_each_surface_to_its_actual_viewer() {
 #[test]
 fn agent_viewer_is_never_described_as_a_person() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let workspace = &mut tree.workspaces[0];
     workspace.set_owner("owner");
     assert!(
@@ -1958,14 +1958,14 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
 #[test]
 fn unread_activity_paints_nothing_on_the_people_control() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let theme = Theme::default();
     let paint = |unread: usize| {
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
@@ -2032,14 +2032,14 @@ fn unread_activity_paints_nothing_on_the_people_control() {
 #[test]
 fn avatar_stack_has_breathing_room_to_tray_pill() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     tree.workspaces[0]
         .collaborators
         .push(tilo_desktop_model::Collaborator::new("alice", "Alice"));
@@ -2092,14 +2092,14 @@ fn avatar_stack_has_breathing_room_to_tray_pill() {
 #[test]
 fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
 
     let mut bar = TopBarChrome::from_tree(&tree);
     let chrome = super::fixture::FixtureChrome::new(tree);
@@ -2186,10 +2186,10 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
 #[test]
 fn spectators_and_marked_agents_read_in_the_avatar_stack() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
     let paint = |bar: &mut TopBarChrome| {
         let theme = Theme::default();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2278,14 +2278,14 @@ fn spectators_and_marked_agents_read_in_the_avatar_stack() {
 #[test]
 fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.active = tree.workspaces[0].slot;
 
     let mut bar = TopBarChrome::from_tree(&tree);
     let theme = Theme::default();
@@ -2346,15 +2346,15 @@ fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
 #[test]
 fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     let empty = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
-        active: WorkspaceId::from(0),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         collaborators: Vec::new(),
         ..Default::default()
     };
     let mut empty = empty;
-    empty.active = empty.workspaces[0].id;
+    empty.active = empty.workspaces[0].slot;
     let bar = TopBarChrome::from_tree(&empty);
     assert!(
         bar.collaborator_initials().is_empty(),

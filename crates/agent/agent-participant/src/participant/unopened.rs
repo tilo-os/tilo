@@ -635,9 +635,9 @@ mod tests {
     /// A desktop of twenty windows, `records` naming theirs.
     fn twenty(records: impl Fn(u64) -> String) -> tilo_desktop_model::ownership::SharedDesktop {
         use tilo_desktop_model::{
-            Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+            Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceSlot,
         };
-        let mut workspace = Workspace::new(WorkspaceId(1), "Workspace");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
         let mut strip = Strip::new(StripId(2), "Main");
         let tabs: Vec<Tab> = (0..20_u64)
             .map(|id| Tab {

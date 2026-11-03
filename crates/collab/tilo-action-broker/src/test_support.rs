@@ -2,7 +2,7 @@
 use crate::services::{LegacyWorkspaceProjection, WorkspaceAuthority};
 use std::sync::Arc;
 pub use tilo_action_policy::{Answer, GrantId, KindSet, Level, Role, Subject, TreePath};
-pub use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
+pub use tilo_desktop_model::{RoomId, Workspace, WorkspaceSlot};
 
 /// The grants fixtures give, in the workspace's own terms.
 pub trait Grants {

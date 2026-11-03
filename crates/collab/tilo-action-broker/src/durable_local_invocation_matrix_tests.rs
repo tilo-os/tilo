@@ -63,7 +63,7 @@ mod durable_local_matrix {
             let (clock, control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();
             let mut workspace = crate::test_support::Workspace::in_workspace(
-                crate::test_support::WorkspaceId(84),
+                crate::test_support::WorkspaceSlot(84),
                 tilo_desktop_model::RoomId::parse(owner.peer().workspace_id()).unwrap(),
                 "Durable actual RPC",
             );

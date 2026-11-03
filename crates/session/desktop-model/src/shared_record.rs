@@ -38,7 +38,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
-use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::tree::DesktopTree;
@@ -245,7 +245,7 @@ impl Parts {
             let Some(mut workspace) = at.json(&entry, WORKSPACE).and_then(workspace_from) else {
                 continue;
             };
-            workspace.id = WorkspaceId(id);
+            workspace.slot = WorkspaceSlot(id);
             workspace.strips.clear();
             workspace.arrangement = Arrangement {
                 kind: at
@@ -321,22 +321,22 @@ impl Parts {
     fn assemble(mut self) -> Option<SharedDesktop> {
         let (workspaces, folded_workspaces) =
             fold(std::mem::take(&mut self.workspaces), &self.blind, |w| {
-                (w.id.0, w.name.as_str())
+                (w.slot.0, w.name.as_str())
             });
         self.workspaces = workspaces;
-        let first_workspace = self.workspaces.first()?.id.0;
-        let workspace_ids: Vec<u64> = self.workspaces.iter().map(|w| w.id.0).collect();
+        let first_workspace = self.workspaces.first()?.slot.0;
+        let slots: Vec<u64> = self.workspaces.iter().map(|w| w.slot.0).collect();
         let mut strips: HashMap<u64, Vec<(f64, u64, Strip)>> = HashMap::new();
         for (parent, list) in self.strips.drain() {
             let parent = parent
                 .map(|id| folded_workspaces.get(&id).copied().unwrap_or(id))
-                .filter(|id| workspace_ids.contains(id))
+                .filter(|id| slots.contains(id))
                 .unwrap_or(first_workspace);
             strips.entry(parent).or_default().extend(list);
         }
         let mut folded_strips = HashMap::new();
         for workspace in &mut self.workspaces {
-            let list = sorted(strips.remove(&workspace.id.0).unwrap_or_default());
+            let list = sorted(strips.remove(&workspace.slot.0).unwrap_or_default());
             let (list, folded) = fold(list, &self.blind, |s| (s.id.0, s.name.as_str()));
             workspace.strips = list;
             folded_strips.extend(folded);
@@ -403,7 +403,7 @@ impl Parts {
             }
         }
         self.records.compact_sort();
-        let active = WorkspaceId(first_workspace);
+        let active = WorkspaceSlot(first_workspace);
         Some(SharedDesktop {
             tree: DesktopTree {
                 workspaces: self.workspaces,
@@ -668,8 +668,8 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
     };
     let mut want = Levels::default();
     let workspaces = &desktop.tree.workspaces;
-    let workspace_ids: Vec<u64> = workspaces.iter().map(|w| w.id.0).collect();
-    let workspace_orders = orders(&workspace_ids, &held_orders(&held.workspaces, None));
+    let slots: Vec<u64> = workspaces.iter().map(|w| w.slot.0).collect();
+    let workspace_orders = orders(&slots, &held_orders(&held.workspaces, None));
     for (workspace, order) in workspaces.iter().zip(workspace_orders) {
         let mut bare = workspace.clone();
         bare.strips.clear();
@@ -683,7 +683,7 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             ));
         }
         want.workspaces.insert(
-            workspace.id.0,
+            workspace.slot.0,
             Entry {
                 parent: None,
                 order,
@@ -691,11 +691,11 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             },
         );
         let ids: Vec<u64> = workspace.strips.iter().map(|s| s.id.0).collect();
-        let strip_orders = orders(&ids, &held_orders(&held.strips, Some(workspace.id.0)));
+        let strip_orders = orders(&ids, &held_orders(&held.strips, Some(workspace.slot.0)));
         for (strip, order) in workspace.strips.iter().zip(strip_orders) {
             let mut fields = vec![(NAME, Field::Text(strip.name.clone()))];
             fields.extend(author(strip.id.0));
-            let parent = Some((WORKSPACE, workspace.id.0));
+            let parent = Some((WORKSPACE, workspace.slot.0));
             want.strips.insert(
                 strip.id.0,
                 Entry {

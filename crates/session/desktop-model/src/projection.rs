@@ -17,7 +17,7 @@ use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
-use crate::ids::{RoomId, StripId, WorkspaceId, peer_salt_of};
+use crate::ids::{RoomId, StripId, WorkspaceSlot, peer_salt_of};
 use crate::layout::{Tab, TileContent};
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
@@ -620,7 +620,7 @@ pub fn declared_workspace(candidate: &AutoCommit) -> Option<RoomId> {
 }
 
 /// Apply one already-admitted workspace document to `tree`: create the workspace's
-/// workspace if the tree has none (under [`WorkspaceId::of_room`]),
+/// workspace if the tree has none (under [`WorkspaceSlot::of_workspace`]),
 /// take the workspace's name and owner, and fold its layout in as a viewer that
 /// shows every window as the workspace does. Existing local workspace identity
 /// and local selection remain untouched. Returns whether anything changed.
@@ -646,13 +646,13 @@ pub fn apply_admitted_workspace(
     };
     let name = text(WORKSPACE_NAME_KEY)?.unwrap_or_default();
     if !tree.workspaces.iter().any(|w| w.room() == identity) {
-        let id = WorkspaceId::of_room(identity);
-        if tree.workspaces.iter().any(|w| w.id == id) {
+        let slot = WorkspaceSlot::of_workspace(identity);
+        if tree.workspaces.iter().any(|w| w.slot == slot) {
             return Err("another workspace holds that workspace id".into());
         }
-        let workspace = Workspace::in_workspace(id, identity, &name);
+        let workspace = Workspace::in_workspace(slot, identity, &name);
         if tree.workspaces.is_empty() {
-            tree.active = workspace.id;
+            tree.active = workspace.slot;
         }
         tree.workspaces.push(workspace);
     }
@@ -821,13 +821,13 @@ pub fn drop_windows_of_others(
         keep
     });
     changed |= !vanished.is_empty();
-    let ws_id = ws.id;
+    let slot = ws.slot;
     if desktop
         .active_strip
-        .get(&ws_id)
+        .get(&slot)
         .is_some_and(|active| vanished.contains(active))
     {
-        desktop.active_strip.remove(&ws_id);
+        desktop.active_strip.remove(&slot);
     }
     for strip in vanished {
         desktop.active_group.remove(&strip);
@@ -1021,13 +1021,13 @@ mod tests {
         strips: Vec<Strip>,
     ) -> crate::tree::DesktopTree {
         let mut w = crate::workspace::Workspace::in_workspace(
-            crate::ids::WorkspaceId(workspace),
+            crate::ids::WorkspaceSlot(workspace),
             identity,
             "Team",
         );
         w.strips = strips;
         crate::tree::DesktopTree {
-            active: w.id,
+            active: w.slot,
             workspaces: vec![w],
             ..crate::tree::DesktopTree::default()
         }
@@ -1078,7 +1078,7 @@ mod tests {
         let mut shared = Strip::new(StripId(compose_id(THEIRS, 6)), "Shared");
         shared.window_groups.push(canvas_group(MINE, 7, "Notes"));
         let mut tree = workspace_desktop(identity, 1, vec![mine, theirs, shared]);
-        let ws = tree.workspaces[0].id;
+        let ws = tree.workspaces[0].slot;
         tree.active_strip.insert(ws, StripId(compose_id(THEIRS, 4)));
 
         let foreign = |tab: &Tab| peer_salt_of(tab.id) == THEIRS;

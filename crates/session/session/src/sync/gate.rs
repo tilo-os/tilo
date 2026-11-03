@@ -72,10 +72,10 @@ impl Client {
     /// as, when the device announced no certificate of its own here.
     fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
         let engine = self.engine.as_ref()?;
-        let workspace_id = DeskRoom::parse(workspace)?;
+        let identity = DeskRoom::parse(workspace)?;
         engine
             .owner()
-            .with_current(workspace_id, |view| {
+            .with_current(identity, |view| {
                 view.peer()
                     .permissions(*device.as_bytes(), SystemTime::now())
                     .map(|member| member.person)

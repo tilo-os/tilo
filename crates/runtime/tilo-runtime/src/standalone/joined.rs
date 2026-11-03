@@ -19,7 +19,7 @@ use tilo_action_broker::{
     collab_core::BrokerChannels,
     collab_inbound::{self, RemoteDocument},
 };
-use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
+use tilo_desktop_model::{RoomId, Workspace, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::{
@@ -326,8 +326,11 @@ impl Joined {
                 .map_err(|error| error.to_string())?
                 .person;
             let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
-            let mut workspace =
-                Workspace::in_workspace(WorkspaceId(view.workspace_id()), workspace, String::new());
+            let mut workspace = Workspace::in_workspace(
+                WorkspaceSlot(view.workspace_id()),
+                workspace,
+                String::new(),
+            );
             tilo_peer_state::workspace::adopt_workspace(&mut workspace, document, &[]);
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
             Ok((workspace, principal))

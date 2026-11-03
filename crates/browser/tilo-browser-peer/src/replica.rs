@@ -61,7 +61,7 @@ impl Store for PageWorkspaces {
         !self.healthy()
     }
 
-    fn slot_workspace(&self, _slot: tilo_desktop_model::WorkspaceId) -> Option<RoomId> {
+    fn slot_workspace(&self, _slot: tilo_desktop_model::WorkspaceSlot) -> Option<RoomId> {
         None
     }
 

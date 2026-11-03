@@ -1141,14 +1141,14 @@ pub fn draw_agent_access(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
 
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe";
     const MAIL: &str = "so.tilo.mail";
 
     fn ws() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceId::from(31), "access");
+        let mut ws = Workspace::new(WorkspaceSlot::from(31), "access");
         ws.set_owner(OWNER);
         let edit = super::super::admit_agent(
             &mut ws,

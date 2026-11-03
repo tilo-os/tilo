@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use automerge::AutoCommit;
 use serde_json::json;
 use tilo_desktop_model::own_arrangement::{self, CONVERSATION_SHELL, Place, Strips};
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceSlot};
 
 /// A desk as a session saved it to `desk.json`, and the records its windows
 /// show.
@@ -150,7 +150,7 @@ fn the_record_round_trips_to_the_desk_it_came_from() {
 
     // The desk it describes names the same workspaces, rows, groups and
     // places, under the same ids.
-    let name = |id: WorkspaceId| match id.0 {
+    let name = |id: WorkspaceSlot| match id.0 {
         10 => Some("Research".to_owned()),
         20 => Some("Other".to_owned()),
         _ => None,
@@ -159,11 +159,11 @@ fn the_record_round_trips_to_the_desk_it_came_from() {
     assert_eq!(
         desk.workspaces
             .iter()
-            .map(|workspace| (workspace.id, workspace.name.clone()))
+            .map(|workspace| (workspace.slot, workspace.name.clone()))
             .collect::<Vec<_>>(),
         vec![
-            (WorkspaceId(10), "Research".to_owned()),
-            (WorkspaceId(20), "Other".to_owned()),
+            (WorkspaceSlot(10), "Research".to_owned()),
+            (WorkspaceSlot(20), "Other".to_owned()),
         ]
     );
     let held: Vec<(StripId, GroupId, Vec<TabId>)> = desk.workspaces[0]
@@ -271,7 +271,7 @@ fn a_shell_that_does_not_know_a_place_leaves_it_alone() {
         rows: mine.rows.clone(),
         strips: vec![tilo_desktop_model::own_arrangement::Strip {
             id: 900,
-            workspace: WorkspaceId(10),
+            workspace: WorkspaceSlot(10),
             row: StripId(11),
             width: WindowWidth::Normal,
             maximized: false,

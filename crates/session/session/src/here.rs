@@ -100,10 +100,10 @@ impl Shared {
                         })
                         .collect();
                     WorkspaceHere {
-                        id: workspace.id.0,
+                        id: workspace.slot.0,
                         workspace: workspace_id,
                         name: workspace.name.clone(),
-                        active: workspace.id == tree.active,
+                        active: workspace.slot == tree.active,
                         people,
                         windows,
                         calls,

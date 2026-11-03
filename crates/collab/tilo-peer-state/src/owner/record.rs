@@ -1,7 +1,7 @@
 use crate::join::TransportHint;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tilo_desktop_model::{RoomId, WorkspaceId};
+use tilo_desktop_model::{RoomId, WorkspaceSlot};
 use tilo_user_identity::DeviceCert;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
@@ -55,14 +55,14 @@ impl NativeAuthorityStorage {
     }
     /// Every workspace whose replica is installed here, with the workspace id the
     /// workspace's record names (the workspace's transport shard).
-    pub fn held(&self) -> impl Iterator<Item = (RoomId, WorkspaceId)> + '_ {
+    pub fn held(&self) -> impl Iterator<Item = (RoomId, WorkspaceSlot)> + '_ {
         self.workspaces
             .iter()
-            .map(|(workspace, stored)| (*workspace, WorkspaceId(stored.workspace_id)))
+            .map(|(workspace, stored)| (*workspace, WorkspaceSlot(stored.workspace_id)))
     }
     /// Every workspace an enrollment is in flight into, with the local workspace
     /// it installs into, where it names one.
-    pub fn joins(&self) -> impl Iterator<Item = (RoomId, Option<WorkspaceId>)> + '_ {
+    pub fn joins(&self) -> impl Iterator<Item = (RoomId, Option<WorkspaceSlot>)> + '_ {
         self.pending
             .iter()
             .map(|(workspace, pending)| (*workspace, pending.target_workspace()))
@@ -210,7 +210,7 @@ pub enum PendingEnrollmentStatus {
 /// never changes its workspace, so installing binds nothing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnrollmentTarget {
-    pub workspace: WorkspaceId,
+    pub workspace: WorkspaceSlot,
     /// The workspace the enrollment is into. Files from before this record
     /// bound it as a placeholder slot, under the stored name it keeps; nothing
     /// reads it back.
@@ -241,7 +241,7 @@ impl StoredPendingEnrollment {
     /// The local workspace the enrollment installs into, where the host has
     /// workspaces.
     #[must_use]
-    pub fn target_workspace(&self) -> Option<WorkspaceId> {
+    pub fn target_workspace(&self) -> Option<WorkspaceSlot> {
         self.target.as_ref().map(|target| target.workspace)
     }
 }

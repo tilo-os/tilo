@@ -1884,7 +1884,7 @@ fn write_windows(
 ) {
     let room = tilo_desktop_model::RoomId::parse(room).unwrap();
     let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-        tilo_desktop_model::WorkspaceId::of_room(room),
+        tilo_desktop_model::WorkspaceSlot::of_workspace(room),
         room,
         "Room",
     );

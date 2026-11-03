@@ -17,7 +17,7 @@ use tilo_desktop_model::projection::{project_workspace_shortcuts, workspace_shor
 use tilo_desktop_model::shared_record::device::{Writer, write};
 use tilo_desktop_model::{
     AppKind, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, compose_id,
+    WorkspaceSlot, compose_id,
 };
 
 const ALICE: u16 = 0x0A11;
@@ -77,7 +77,8 @@ fn acts(before: &AutoCommit, after: &AutoCommit, writer: &str) -> Vec<(u64, Act)
 /// Alice's strip holds her notes and Bob's terminal, side by side.
 fn workspace() -> (AutoCommit, Workspace) {
     let identity = RoomId::new();
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(identity), identity, "Team");
+    let mut workspace =
+        Workspace::in_workspace(WorkspaceSlot::of_workspace(identity), identity, "Team");
     let mut strip = Strip::new(StripId(compose_id(ALICE, 1)), "Main");
     strip.window_groups.push(group(
         compose_id(ALICE, 2),

@@ -93,7 +93,7 @@ fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.id == tree.active)
+        .find(|workspace| workspace.slot == tree.active)
         .expect("a workspace is in front");
     let strip = workspace.strips.first_mut().expect("a strip is in front");
     let group = handle.mint_id();

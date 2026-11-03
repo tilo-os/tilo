@@ -12,7 +12,7 @@ use tilo_desktop_model::*;
 const NOW: u64 = 1_800_000_000;
 
 fn workspace() -> Workspace {
-    let mut ws = Workspace::new(WorkspaceId(1), "Demo");
+    let mut ws = Workspace::new(WorkspaceSlot(1), "Demo");
     ws.set_owner("ada");
     ws
 }

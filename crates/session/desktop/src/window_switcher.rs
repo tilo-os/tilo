@@ -34,7 +34,7 @@ use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::AppKind as UiAppKind;
 
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent, WorkspaceSlot};
 
 use crate::i18n::{t, t_args};
 use ui::TextRole;
@@ -276,7 +276,7 @@ fn workspace_windows(
     };
     let active_strip = desktop
         .active_strip
-        .get(&workspace.id)
+        .get(&workspace.slot)
         .copied()
         .or_else(|| workspace.strips.first().map(|strip| strip.id));
     let mut windows = Vec::new();
@@ -321,11 +321,11 @@ fn workspace_windows(
 }
 
 /// The focused tab of the active workspace, cheaply: no titles or icons.
-fn focused_tab(desktop: &DesktopTree) -> Option<(WorkspaceId, u64)> {
+fn focused_tab(desktop: &DesktopTree) -> Option<(WorkspaceSlot, u64)> {
     let workspace = desktop.active_workspace()?;
     let strip = desktop
         .active_strip
-        .get(&workspace.id)
+        .get(&workspace.slot)
         .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
         .or_else(|| workspace.strips.first())?;
     let group = desktop
@@ -336,14 +336,14 @@ fn focused_tab(desktop: &DesktopTree) -> Option<(WorkspaceId, u64)> {
         .tabs
         .iter()
         .any(|tab| tab.id == group.active_tab)
-        .then_some((workspace.id, group.active_tab))
+        .then_some((workspace.slot, group.active_tab))
 }
 
 /// Which windows were focused most recently, per workspace. Each workspace
 /// is its own workspace with its own windows, so its recency is its own too.
 #[derive(Default)]
 pub struct FocusHistory {
-    recent: HashMap<WorkspaceId, Vec<u64>>,
+    recent: HashMap<WorkspaceSlot, Vec<u64>>,
 }
 
 impl FocusHistory {
@@ -361,7 +361,7 @@ impl FocusHistory {
         recent.truncate(HISTORY_LIMIT);
         if self.recent.len() > tree.workspaces.len() {
             self.recent
-                .retain(|id, _| tree.workspaces.iter().any(|ws| ws.id == *id));
+                .retain(|id, _| tree.workspaces.iter().any(|ws| ws.slot == *id));
         }
     }
 
@@ -369,7 +369,7 @@ impl FocusHistory {
     /// most recent first; windows never focused are not listed.
     pub fn recent_tabs(&self, tree: &DesktopTree) -> Vec<u64> {
         tree.active_workspace()
-            .and_then(|ws| self.recent.get(&ws.id))
+            .and_then(|ws| self.recent.get(&ws.slot))
             .cloned()
             .unwrap_or_default()
     }
@@ -388,7 +388,7 @@ impl FocusHistory {
         let mut rank: HashMap<u64, usize> = HashMap::new();
         if let Some(recent) = tree
             .active_workspace()
-            .and_then(|ws| self.recent.get(&ws.id))
+            .and_then(|ws| self.recent.get(&ws.slot))
         {
             for (index, tab) in recent.iter().enumerate() {
                 rank.entry(*tab).or_insert(index);
@@ -422,7 +422,7 @@ impl FocusHistory {
 }
 
 struct Session {
-    workspace: WorkspaceId,
+    workspace: WorkspaceSlot,
     scope: SwitcherScope,
     windows: Vec<SwitcherWindow>,
     selected: usize,
@@ -1532,7 +1532,7 @@ mod tests {
 
     /// One strip of four single-tab groups (tabs 1..=4), group 10 focused.
     fn tree() -> DesktopTree {
-        let workspace = WorkspaceId(1);
+        let workspace = WorkspaceSlot(1);
         let mut tree = DesktopTree {
             active: workspace,
             workspaces: vec![Workspace::new(workspace, "Home")],
@@ -1593,9 +1593,9 @@ mod tests {
         focus(&mut tree, 40);
         switcher.observe(&tree);
         let home = tree.active;
-        let away = WorkspaceId(2);
+        let away = WorkspaceSlot(2);
         let mut other = tree.workspaces[0].clone();
-        other.id = away;
+        other.slot = away;
         other.strips[0].id = StripId(200);
         tree.workspaces.push(other);
         tree.active = away;

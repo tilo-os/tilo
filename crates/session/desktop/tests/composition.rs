@@ -7,7 +7,7 @@ use tilo_desktop::composition::{DesktopSurface, SurfaceChrome};
 use tilo_desktop::resolver::{TileRequest, TileResolution, TileResolver};
 use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId,
+    WorkspaceSlot,
 };
 
 struct Unavailable;
@@ -20,7 +20,7 @@ impl TileResolver for Unavailable {
     }
 }
 fn tree() -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
@@ -42,7 +42,7 @@ fn tree() -> DesktopTree {
         }],
     }];
     DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         workspaces: vec![workspace],
         ..Default::default()
     }
@@ -265,7 +265,7 @@ fn replacing_the_workspace_requires_fresh_component_contexts() {
     // as a migration that joins a slot to its workspace makes one.
     let before = tree.workspaces[0].clone();
     let mut replaced = tilo_desktop_model::Workspace::in_workspace(
-        before.id,
+        before.slot,
         tilo_desktop_model::RoomId::new(),
         before.name.clone(),
     );
@@ -389,7 +389,7 @@ fn flush_work_area_is_reachable_and_maximized_groups_stay_maximized() {
 /// A workspace of three strips, each with four windows wider than the
 /// display together; strip `n`'s selected window is its `selected[n]`th.
 fn three_strip_tree(selected: [usize; 3]) -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
     let mut active_group = std::collections::HashMap::new();
     workspace.strips = (0..3_u64)
         .map(|s| {
@@ -426,9 +426,9 @@ fn three_strip_tree(selected: [usize; 3]) -> DesktopTree {
         })
         .collect();
     let mut active_strip = std::collections::HashMap::new();
-    active_strip.insert(workspace.id, StripId(10));
+    active_strip.insert(workspace.slot, StripId(10));
     DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         workspaces: vec![workspace],
         active_strip,
         active_group,

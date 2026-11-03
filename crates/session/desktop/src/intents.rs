@@ -1,8 +1,8 @@
 //! Requests only. A session intent is never a receipt or proof of mutation.
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceSlot};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalViewIntent {
-    Workspace(WorkspaceId),
+    Workspace(WorkspaceSlot),
     Strip(StripId),
     Group { strip: StripId, group: GroupId },
     Tab { group: GroupId, tab: TabId },
@@ -61,7 +61,7 @@ pub enum DesktopIntent {
 pub fn apply_local_view(tree: &mut DesktopTree, intent: LocalViewIntent) {
     match intent {
         LocalViewIntent::Workspace(id) => {
-            if tree.workspaces.iter().any(|w| w.id == id) {
+            if tree.workspaces.iter().any(|w| w.slot == id) {
                 tree.active = id;
             }
         }
@@ -69,16 +69,16 @@ pub fn apply_local_view(tree: &mut DesktopTree, intent: LocalViewIntent) {
             if let Some(w) = tree
                 .workspaces
                 .iter()
-                .find(|w| w.id == tree.active && w.strips.iter().any(|s| s.id == id))
+                .find(|w| w.slot == tree.active && w.strips.iter().any(|s| s.id == id))
             {
-                tree.active_strip.insert(w.id, id);
+                tree.active_strip.insert(w.slot, id);
             }
         }
         LocalViewIntent::Group { strip, group } => {
             if tree
                 .workspaces
                 .iter()
-                .filter(|w| w.id == tree.active)
+                .filter(|w| w.slot == tree.active)
                 .flat_map(|w| &w.strips)
                 .any(|s| s.id == strip && s.window_groups.iter().any(|g| g.id == group))
             {
@@ -95,8 +95,8 @@ pub fn apply_local_view(tree: &mut DesktopTree, intent: LocalViewIntent) {
                                 if group == g.id && g.tabs.iter().any(|t| t.id == tab) =>
                             {
                                 g.activate_tab(tab);
-                                if w.id == tree.active {
-                                    tree.active_strip.insert(w.id, s.id);
+                                if w.slot == tree.active {
+                                    tree.active_strip.insert(w.slot, s.id);
                                     tree.active_group.insert(s.id, g.id);
                                 }
                             }

@@ -24,7 +24,7 @@ use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FocusTransition, SavedShortcut, Schedule, Shortcut, TriggerSpec,
 };
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
+use tilo_desktop_model::{RoomId, Workspace, WorkspaceSlot};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
 
@@ -154,7 +154,8 @@ fn show(session: &Session, workspace: Workspace) {
 /// Put a workspace for [`WORKSPACE`] holding `shortcuts` on this session's desk.
 fn show_room(session: &Session, shortcuts: Vec<SavedShortcut>) {
     let workspace = RoomId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(workspace), workspace, "Chat");
+    let mut workspace =
+        Workspace::in_workspace(WorkspaceSlot::of_workspace(workspace), workspace, "Chat");
     workspace.shortcuts = shortcuts;
     show(session, workspace);
 }
@@ -172,7 +173,8 @@ fn show_room_sharing(
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
     let workspace = RoomId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(workspace), workspace, "Chat");
+    let mut workspace =
+        Workspace::in_workspace(WorkspaceSlot::of_workspace(workspace), workspace, "Chat");
     workspace.set_owner(person);
     workspace.sandbox.push(
         CapOverride::grant(

@@ -3,9 +3,9 @@ use ui::headless::Framed;
 
 fn fixture_bar() -> TopBarChrome {
     let workspace =
-        tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
+        tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Design review");
     let tree = DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };

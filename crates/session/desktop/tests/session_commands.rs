@@ -10,13 +10,13 @@ use tilo_desktop_model::commands::{
 };
 use tilo_desktop_model::{
     AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    Workspace, WorkspaceSlot,
 };
 
 fn source() -> (DesktopTree, CommandSource) {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceId(1), "Home")],
-        active: WorkspaceId(1),
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "Home")],
+        active: WorkspaceSlot(1),
         ..DesktopTree::default()
     };
     let workspace = &mut tree.workspaces[0];

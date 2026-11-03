@@ -126,7 +126,7 @@ impl DesktopChromeSource for FixtureChrome {
                     .tree
                     .workspaces
                     .iter()
-                    .position(|w| w.id == state.tree.active)
+                    .position(|w| w.slot == state.tree.active)
                 else {
                     return false;
                 };
@@ -135,7 +135,7 @@ impl DesktopChromeSource for FixtureChrome {
                     .and_then(|index| index.checked_add(i64::from(delta)))
                     .and_then(|next| usize::try_from(next).ok())
                     .and_then(|i| state.tree.workspaces.get(i))
-                    .map(|w| w.id)
+                    .map(|w| w.slot)
                 else {
                     return false;
                 };

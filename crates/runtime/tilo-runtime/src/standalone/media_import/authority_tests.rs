@@ -87,7 +87,7 @@ fn owner_revision_ignores_effect_updates_but_not_ownership() {
         }
     }
     let mut membership = Membership(Workspace::new(
-        tilo_desktop_model::WorkspaceId(1),
+        tilo_desktop_model::WorkspaceSlot(1),
         "Workspace",
     ));
     membership.0.set_owner("owner");

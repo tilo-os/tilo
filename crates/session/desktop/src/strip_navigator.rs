@@ -103,7 +103,7 @@ impl StripFrame {
         };
         let focused_strip = tree
             .active_strip
-            .get(&workspace.id)
+            .get(&workspace.slot)
             .and_then(|id| workspace.strips.iter().position(|s| s.id == *id))
             .unwrap_or(0);
         let strip = workspace.strips.get(focused_strip);
@@ -784,7 +784,7 @@ fn segments_bounds(segments: [Option<Rect>; 2]) -> Option<Rect> {
 mod tests {
     use super::*;
     use tilo_desktop_model::{
-        Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+        Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
     };
     use ui::time::Duration;
 
@@ -810,16 +810,16 @@ mod tests {
     }
 
     fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
         let mut main = Strip::new(StripId(10), "Main");
         main.window_groups = vec![group(1), group(2), group(3)];
         workspace.strips = vec![main, Strip::new(StripId(11), "Later")];
         let mut tree = DesktopTree {
             workspaces: vec![workspace],
-            active: WorkspaceId(1),
+            active: WorkspaceSlot(1),
             ..DesktopTree::default()
         };
-        tree.active_strip.insert(WorkspaceId(1), StripId(10));
+        tree.active_strip.insert(WorkspaceSlot(1), StripId(10));
         tree
     }
 
@@ -927,7 +927,7 @@ mod tests {
         nav.pointer_left(much_later);
 
         let t2 = much_later + Duration::from_secs(10);
-        tree.active_strip.insert(WorkspaceId(1), StripId(11));
+        tree.active_strip.insert(WorkspaceSlot(1), StripId(11));
         let other = frame(&tree, &[], 0.0);
         nav.observe(&other, t2);
         assert_eq!(

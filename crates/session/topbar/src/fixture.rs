@@ -7,7 +7,7 @@ use tilo_desktop::chrome::{
 };
 use tilo_desktop::profile_card::ProfileModel;
 use tilo_desktop::workspace_menu::{WorkspaceAction, WorkspaceChoice, WorkspaceMenuModel};
-use tilo_desktop_model::{Collaborator, DesktopTree, Strip, StripId, Workspace, WorkspaceId};
+use tilo_desktop_model::{Collaborator, DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
 use ui::vello::kurbo::Rect;
 
 use crate::link::{BarFeed, BarPlace, Placement};
@@ -26,7 +26,7 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
 const LOCAL: &str = "me-quinn";
 
 fn tree() -> DesktopTree {
-    let mut studio = Workspace::new(WorkspaceId(1), "Studio");
+    let mut studio = Workspace::new(WorkspaceSlot(1), "Studio");
     studio.strips = vec![
         Strip::new(StripId(11), "Design"),
         Strip::new(StripId(12), "Review"),
@@ -36,15 +36,15 @@ fn tree() -> DesktopTree {
         Collaborator::new("grace", "Grace Hopper"),
         Collaborator::new(LOCAL, "Quinn"),
     ];
-    let mut home = Workspace::new(WorkspaceId(2), "Home");
+    let mut home = Workspace::new(WorkspaceSlot(2), "Home");
     home.strips = vec![Strip::new(StripId(21), "Main")];
     let mut tree = DesktopTree {
-        active: studio.id,
+        active: studio.slot,
         workspaces: vec![studio, home],
         ..DesktopTree::default()
     };
-    tree.active_strip.insert(WorkspaceId(1), StripId(11));
-    tree.active_strip.insert(WorkspaceId(2), StripId(21));
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(11));
+    tree.active_strip.insert(WorkspaceSlot(2), StripId(21));
     tree
 }
 
@@ -80,9 +80,9 @@ fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
             .workspaces
             .iter()
             .map(|workspace| WorkspaceChoice {
-                key: workspace.id.0.to_string(),
+                key: workspace.slot.0.to_string(),
                 name: workspace.name.clone(),
-                current: workspace.id == tree.active,
+                current: workspace.slot == tree.active,
             })
             .collect(),
         host: None,

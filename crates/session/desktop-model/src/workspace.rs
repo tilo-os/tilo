@@ -19,7 +19,7 @@ use crate::app::AppId;
 use crate::arrangement::Arrangement;
 use crate::capability::Capability;
 use crate::collaborator::Collaborator;
-use crate::ids::{RoomId, WorkspaceId};
+use crate::ids::{RoomId, WorkspaceSlot};
 use crate::layout::Strip;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::shared_surfaces::SharedSurfaces;
@@ -27,7 +27,10 @@ use crate::shared_surfaces::SharedSurfaces;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
-    pub id: WorkspaceId,
+    /// The desk's own handle for this workspace, in the salted strip/window
+    /// id space. Stored under `id`, the key it has always been written with.
+    #[serde(rename = "id")]
+    pub slot: WorkspaceSlot,
     /// Durable identity of this workspace: the same value on every device.
     /// Given once, when the workspace is made ([`Self::new`] mints one,
     /// [`Self::in_workspace`] takes the identity of the workspace created or
@@ -123,7 +126,8 @@ pub struct Workspace {
 /// absent for a workspace that names no authority yet.
 #[derive(Deserialize)]
 struct StoredWorkspace {
-    id: WorkspaceId,
+    #[serde(rename = "id")]
+    slot: WorkspaceSlot,
     room: RoomId,
     name: String,
     strips: Vec<Strip>,
@@ -173,7 +177,7 @@ impl From<StoredWorkspace> for Workspace {
             None => WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
         };
         Self {
-            id: stored.id,
+            slot: stored.slot,
             room: identity,
             name: stored.name,
             strips: stored.strips,
@@ -1143,23 +1147,23 @@ pub fn preset_assign_node(workspace: &str, name: &str) -> TreePath {
 impl Workspace {
     /// A workspace whose durable identity is minted here: it exists from the
     /// moment it is made, not lazily.
-    pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
-        Self::in_workspace(id, RoomId::new(), name)
+    pub fn new(slot: WorkspaceSlot, name: impl Into<String>) -> Self {
+        Self::in_workspace(slot, RoomId::new(), name)
     }
 
-    /// A new workspace named `name`, whose durable identity is minted here, under
-    /// the id every device derives from that identity ([`WorkspaceId::of_room`]).
+    /// A new workspace named `name`, whose durable identity is minted here, in
+    /// the slot every device derives from that identity ([`WorkspaceSlot::of_workspace`]).
     pub fn create(name: impl Into<String>) -> Self {
         let identity = RoomId::new();
-        Self::in_workspace(WorkspaceId::of_room(identity), identity, name)
+        Self::in_workspace(WorkspaceSlot::of_workspace(identity), identity, name)
     }
 
-    /// The workspace that is `identity`, created or joined, under the local id
-    /// `id`: new workspaces take [`WorkspaceId::of_room`], an existing one
-    /// keeps the id it was stored under.
-    pub fn in_workspace(id: WorkspaceId, identity: RoomId, name: impl Into<String>) -> Self {
+    /// The workspace that is `identity`, created or joined, in the local slot
+    /// `slot`: new workspaces take [`WorkspaceSlot::of_workspace`], an existing
+    /// one keeps the slot it was stored under.
+    pub fn in_workspace(slot: WorkspaceSlot, identity: RoomId, name: impl Into<String>) -> Self {
         Self {
-            id,
+            slot,
             room: identity,
             name: name.into(),
             strips: Vec::new(),
@@ -1192,7 +1196,7 @@ impl Workspace {
     pub fn policy_view(&self) -> Self {
         // Destructured, so a new field has to be sorted into one side.
         let Self {
-            id,
+            slot,
             room,
             name,
             strips: _,
@@ -1214,7 +1218,7 @@ impl Workspace {
             retired_fields: _,
         } = self;
         Self {
-            id: *id,
+            slot: *slot,
             room: *room,
             name: name.clone(),
             strips: Vec::new(),
@@ -1238,7 +1242,7 @@ impl Workspace {
     }
 
     /// This workspace's collaboration cluster id — [`Self::room`], not the
-    /// local [`Self::id`]. Unminted returns the nil uuid, which
+    /// local [`Self::slot`]. Unminted returns the nil uuid, which
     /// `CrdtRoute::delivers_to` refuses to deliver to.
     pub fn collab_cluster_id(&self) -> uuid::Uuid {
         self.room.as_uuid()
@@ -1278,7 +1282,7 @@ impl Default for Workspace {
     fn default() -> Self {
         let identity = RoomId::new();
         Self {
-            id: WorkspaceId::default(),
+            slot: WorkspaceSlot::default(),
             room: identity,
             name: String::new(),
             strips: Vec::new(),

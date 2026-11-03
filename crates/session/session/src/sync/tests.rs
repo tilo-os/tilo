@@ -22,12 +22,12 @@ fn topic(workspace: &str) -> WorkspaceId {
 /// A desktop showing one workspace, in `workspace`.
 fn desk(workspace: &str) -> DesktopTree {
     let workspace = RoomId::parse(workspace).expect("a workspace id");
-    let id = tilo_desktop_model::WorkspaceId::of_room(workspace);
-    assert_eq!(topic(&workspace.as_uuid().to_string()), id.raw());
-    let workspace = Workspace::in_workspace(id, workspace, "Desk");
+    let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
+    assert_eq!(topic(&workspace.as_uuid().to_string()), slot.raw());
+    let workspace = Workspace::in_workspace(slot, workspace, "Desk");
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.id,
+        active: workspace.slot,
         ..DesktopTree::default()
     }
 }

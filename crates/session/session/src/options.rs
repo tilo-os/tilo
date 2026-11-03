@@ -305,7 +305,7 @@ pub(crate) fn open_engine(
         tree.workspaces
             .iter()
             .filter(|workspace| !workspace.room().is_nil())
-            .map(|workspace| (workspace.id, workspace.room()))
+            .map(|workspace| (workspace.slot, workspace.room()))
             .collect()
     });
     match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {

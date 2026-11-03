@@ -332,7 +332,7 @@ pub(crate) mod signed_test_support {
         PeerPublisher, principal_id_for_root, published_invocation::InvocationCaller,
     };
     use crate::services::HostServices;
-    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use ed25519_dalek::Signer as _;
     use std::sync::{
         Arc, Mutex,
@@ -442,7 +442,7 @@ pub(crate) mod signed_test_support {
             )
             .expect("provision the production receipt signer");
             let mut workspace = Workspace::in_workspace(
-                WorkspaceId(9),
+                WorkspaceSlot(9),
                 tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                     .unwrap(),
                 "Host actions",
@@ -729,7 +729,7 @@ mod identity_admin_tests {
     use super::super::action_host::RowScope;
     use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
-    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
         ActionHostError, Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
@@ -810,7 +810,7 @@ mod identity_admin_tests {
 
     fn broker(host: Arc<Host>) -> (Arc<AppBrokerState>, String, String) {
         let owner = hex::encode([41; 32]);
-        let mut workspace = Workspace::new(WorkspaceId(9), "Identities");
+        let mut workspace = Workspace::new(WorkspaceSlot(9), "Identities");
         workspace.set_owner(owner.clone());
         let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
@@ -851,7 +851,7 @@ mod identity_admin_tests {
     fn a_keyless_agent_or_person_takes_no_host_step_on_a_native_host() {
         let host = Arc::new(Host::default());
         let owner = hex::encode([41; 32]);
-        let mut workspace = Workspace::new(WorkspaceId(9), "Identities");
+        let mut workspace = Workspace::new(WorkspaceSlot(9), "Identities");
         workspace.set_owner(owner.clone());
         workspace.admit_agent_preset(
             "planner",
@@ -1493,7 +1493,7 @@ mod settings_records_tests {
     use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{
-        Grants as _, KindSet, Subject, Workspace, WorkspaceId, WorkspaceTree,
+        Grants as _, KindSet, Subject, Workspace, WorkspaceSlot, WorkspaceTree,
     };
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
@@ -1639,7 +1639,7 @@ mod settings_records_tests {
             minutes: Mutex::new(5),
         });
         let owner = hex::encode([41; 32]);
-        let mut workspace = Workspace::new(WorkspaceId(9), "Settings");
+        let mut workspace = Workspace::new(WorkspaceSlot(9), "Settings");
         workspace.set_owner(owner.clone());
         workspace.admit_agent("scribe", KindSet::READ);
         workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);

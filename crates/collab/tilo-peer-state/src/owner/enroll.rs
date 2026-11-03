@@ -6,7 +6,7 @@ use crate::join::{
 };
 use crate::owner::{
     NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
-    VerifiedNativeEnrollmentIntent, WorkspaceId, enrollment::ns as now_ns,
+    VerifiedNativeEnrollmentIntent, WorkspaceSlot, enrollment::ns as now_ns,
 };
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
@@ -58,7 +58,7 @@ pub async fn prepare_and_complete(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     identity_topic: u64,
-    local: Option<WorkspaceId>,
+    local: Option<WorkspaceSlot>,
     invitation: String,
     owner: NativeWorkspaceOwner,
 ) -> Result<VerifiedNativeEnrollment, String> {

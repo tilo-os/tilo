@@ -23,7 +23,7 @@ use std::time::Duration;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    Workspace, WorkspaceSlot,
 };
 use tilo_desktop_policy::Window;
 use tilo_desktop_surface::notifications::NotificationSeverity;
@@ -89,14 +89,14 @@ fn group(id: u64, tabs: Vec<Tab>, front: u64, width: WindowWidth) -> WindowGroup
 
 /// The one workspace `strips` make up, in front.
 fn on_desk(strips: Vec<Strip>) -> DesktopTree {
-    let mut home = Workspace::new(WorkspaceId(1), "Home");
+    let mut home = Workspace::new(WorkspaceSlot(1), "Home");
     home.strips = strips;
     let mut tree = DesktopTree {
-        active: home.id,
+        active: home.slot,
         workspaces: vec![home],
         ..DesktopTree::default()
     };
-    tree.active_strip.insert(WorkspaceId(1), StripId(1));
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(1));
     tree.set_active_group(StripId(1), 10);
     tree
 }
@@ -128,7 +128,7 @@ fn wide_desk() -> DesktopTree {
         WindowWidth::Normal,
     )];
 
-    let mut away = Workspace::new(WorkspaceId(2), "Away");
+    let mut away = Workspace::new(WorkspaceSlot(2), "Away");
     away.strips = vec![Strip::new(StripId(3), "Later")];
 
     let mut tree = on_desk(vec![writing, reference]);
@@ -329,7 +329,7 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
                     .collect::<Vec<_>>(),
                 home.strips[0].window_groups[1].maximized,
                 tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab),
-                tree.active_strip.get(&WorkspaceId(1)).copied(),
+                tree.active_strip.get(&WorkspaceSlot(1)).copied(),
             )
         });
     assert_eq!(workspaces, 2, "the workspace behind came back too");

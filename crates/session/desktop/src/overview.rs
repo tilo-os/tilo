@@ -14,7 +14,7 @@
 use collab_types::caps::{Access, Effect, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{
-    Collaborator, DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceId,
+    Collaborator, DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceSlot,
 };
 use tilo_sort::CompactSort as _;
 
@@ -37,7 +37,7 @@ pub trait OverviewHost: WindowSource {
 /// Cached, plain-data snapshot of a single workspace for rendering a card.
 #[derive(Clone, Debug)]
 pub struct CardCache {
-    pub id: WorkspaceId,
+    pub id: WorkspaceSlot,
     pub name: String,
     pub strip_count: usize,
 }
@@ -45,7 +45,7 @@ pub struct CardCache {
 /// The overview widget's logical state.
 pub struct OverviewView {
     cards: Vec<CardCache>,
-    active: Option<WorkspaceId>,
+    active: Option<WorkspaceSlot>,
 }
 
 impl OverviewView {
@@ -62,7 +62,7 @@ impl OverviewView {
             .workspaces
             .iter()
             .map(|w| CardCache {
-                id: w.id,
+                id: w.slot,
                 name: w.name.clone(),
                 strip_count: w.strips.len(),
             })
@@ -179,7 +179,7 @@ pub struct OverviewStrip {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceCard {
-    pub id: WorkspaceId,
+    pub id: WorkspaceSlot,
     pub name: String,
     pub is_current: bool,
     /// Owner first.
@@ -267,7 +267,7 @@ pub fn workspace_people(
                 reason = "id == me and ws.id == tree.active are independent identity checks, not a swapped field pair"
             )]
             let present = ws.collaborators.iter().any(|c| c.id == id)
-                || (id == me && ws.id == tree.active);
+                || (id == me && ws.slot == tree.active);
             WorkspacePerson {
                 name: display_name(&id, ws, tree),
                 present,
@@ -360,9 +360,9 @@ pub fn workspace_cards(
     tree.workspaces
         .iter()
         .map(|ws| WorkspaceCard {
-            id: ws.id,
+            id: ws.slot,
             name: ws.name.clone(),
-            is_current: ws.id == tree.active,
+            is_current: ws.slot == tree.active,
             people: workspace_people(ws, tree, host, now),
             shares: workspace_shares(ws, tree, host, now),
             strips: overview_strips(ws, tree, host, now),
@@ -377,7 +377,7 @@ fn overview_strips(
     now: u64,
 ) -> Vec<OverviewStrip> {
     let people = workspace_people(ws, tree, host, now);
-    let active_strip = tree.active_strip.get(&ws.id).copied();
+    let active_strip = tree.active_strip.get(&ws.slot).copied();
     ws.strips
         .iter()
         .map(|strip| {
@@ -385,14 +385,14 @@ fn overview_strips(
             OverviewStrip {
                 id: strip.id,
                 name: strip.name.clone(),
-                is_current: ws.id == tree.active && active_strip == Some(strip.id),
+                is_current: ws.slot == tree.active && active_strip == Some(strip.id),
                 groups: strip
                     .window_groups
                     .iter()
                     .map(|group| OverviewGroup {
                         id: group.id,
                         width_permille: group.width.permille(),
-                        is_current: ws.id == tree.active
+                        is_current: ws.slot == tree.active
                             && active_strip == Some(strip.id)
                             && active_group == Some(group.id),
                         tabs: group
@@ -656,13 +656,13 @@ mod workspace_tests {
     }
 
     fn ws(name: &str) -> Workspace {
-        let mut w = Workspace::new(WorkspaceId(fresh_id()), name);
+        let mut w = Workspace::new(WorkspaceSlot(fresh_id()), name);
         w.set_owner(ME.to_string());
         w
     }
 
     fn tree_with(workspaces: Vec<Workspace>) -> DesktopTree {
-        let active = workspaces.first().map(|w| w.id).unwrap_or_default();
+        let active = workspaces.first().map(|w| w.slot).unwrap_or_default();
         DesktopTree {
             workspaces,
             active,
@@ -874,8 +874,8 @@ mod workspace_tests {
                 }],
             }];
             let mut tree = tree_with(vec![w]);
-            let ws_id = tree.active;
-            tree.active_strip.insert(ws_id, strip_id);
+            let slot = tree.active;
+            tree.active_strip.insert(slot, strip_id);
             tree.set_active_group(strip_id, group_id);
 
             let card = &workspace_cards(&tree)[0];

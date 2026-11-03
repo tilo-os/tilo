@@ -29,7 +29,7 @@ mod owner_commit_tests {
             let device = SigningKey::from_bytes(&[25; 32]);
             let principal = principal_id_for_root(root.verifying_key().to_bytes());
             let mut workspace = crate::test_support::Workspace::new(
-                crate::test_support::WorkspaceId(5), "Durability boundary");
+                crate::test_support::WorkspaceSlot(5), "Durability boundary");
             workspace.set_owner(&principal);
             let route = CrdtRoute::record("so.tilo.word-processor", workspace.room().to_string(), "tab:0000000000000001");
             let mut tree = WorkspaceTree::default();
@@ -104,7 +104,7 @@ mod owner_commit_tests {
                 let device = SigningKey::from_bytes(&[25; 32]);
                 let principal = principal_id_for_root(root.verifying_key().to_bytes());
                 let mut workspace = crate::test_support::Workspace::new(
-                    crate::test_support::WorkspaceId(5),
+                    crate::test_support::WorkspaceSlot(5),
                     "read mode",
                 );
                 workspace.set_owner(&principal);
@@ -401,7 +401,7 @@ mod owner_commit_tests {
     }
     fn owner_tree(owner: &crate::test_owner::SessionOwner) -> WorkspaceTreeHandle {
         let mut workspace = crate::test_support::Workspace::in_workspace(
-            crate::test_support::WorkspaceId(72),
+            crate::test_support::WorkspaceSlot(72),
             uuid::Uuid::parse_str(owner.peer().workspace_id())
                 .unwrap()
                 .into(),
@@ -985,7 +985,7 @@ mod owner_commit_tests {
                     .ok_or("admitted owner governance unavailable")?;
                 let (name, policy) = tilo_peer_state::workspace::extract_governed_fields(doc);
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    tilo_desktop_model::WorkspaceId(72),
+                    tilo_desktop_model::WorkspaceSlot(72),
                     uuid::Uuid::parse_str(peer.workspace_id())
                         .map_err(|e| e.to_string())?
                         .into(),
@@ -1346,7 +1346,7 @@ mod owner_commit_tests {
                 None,
             );
             let mut workspace = crate::test_support::Workspace::new(
-                crate::test_support::WorkspaceId(81),
+                crate::test_support::WorkspaceSlot(81),
                 "Host worker workspace",
             );
             workspace.set_owner(principal_id_for_root(cert.user_public_key));

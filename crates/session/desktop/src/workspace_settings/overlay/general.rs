@@ -290,10 +290,10 @@ pub(super) fn content(model: &super::WorkspaceSettingsModel<'_>) -> GeneralConte
     let workspaces = &model.desktop.workspaces;
     let first = workspaces
         .first()
-        .is_some_and(|workspace| workspace.id == model.desktop.active);
+        .is_some_and(|workspace| workspace.slot == model.desktop.active);
     let last = workspaces
         .last()
-        .is_some_and(|workspace| workspace.id == model.desktop.active);
+        .is_some_and(|workspace| workspace.slot == model.desktop.active);
     GeneralContent {
         identity: group(
             "workspace-settings-identity-title",

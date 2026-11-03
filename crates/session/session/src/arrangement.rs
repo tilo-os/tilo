@@ -27,7 +27,7 @@ use tilo_actions::{
 };
 use tilo_desktop_model::own_arrangement::{self, Place, SHELL, Strips};
 use tilo_desktop_model::{
-    CanvasPlace, DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceId,
+    CanvasPlace, DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceSlot,
 };
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
@@ -394,14 +394,14 @@ impl Arrangement {
             .ok_or("the desk has no workspace in front")?;
         let row = tree
             .active_strip
-            .get(&workspace.id)
+            .get(&workspace.slot)
             .copied()
             .or_else(|| workspace.strips.first().map(|row| row.id))
             .ok_or("the workspace in front has no row")?;
         let strip = self.handle.mint_id();
         let place = self.handle.mint_id();
         Ok(Surface {
-            workspace: workspace.id.0,
+            workspace: workspace.slot.0,
             row: row.0,
             strip,
             place,
@@ -915,7 +915,7 @@ impl Arrangement {
             let held: BTreeMap<u64, tilo_desktop_model::Workspace> = tree
                 .workspaces
                 .iter()
-                .map(|workspace| (workspace.id.0, workspace.clone()))
+                .map(|workspace| (workspace.slot.0, workspace.clone()))
                 .collect();
             let shown = (
                 tree.active,
@@ -931,7 +931,7 @@ impl Arrangement {
         // what in it, its shortcuts and the rest are never the arrangement's.
         // Only its rows, strips and places are the record's.
         for workspace in &mut tree.workspaces {
-            if let Some(kept) = held.get(&workspace.id.0) {
+            if let Some(kept) = held.get(&workspace.slot.0) {
                 let mut kept = kept.clone();
                 kept.strips = std::mem::take(&mut workspace.strips);
                 kept.arrangement = std::mem::take(&mut workspace.arrangement);
@@ -944,7 +944,7 @@ impl Arrangement {
         if tree
             .workspaces
             .iter()
-            .any(|workspace| workspace.id == active)
+            .any(|workspace| workspace.slot == active)
         {
             tree.active = active;
             tree.active_strip = active_strip
@@ -1124,7 +1124,7 @@ fn place_at(
         height: clamp_side(asked.height),
     };
     if strips.place_at_canvas(
-        WorkspaceId(asked.workspace),
+        WorkspaceSlot(asked.workspace),
         StripId(asked.row),
         asked.strip,
         placed,

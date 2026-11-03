@@ -11,10 +11,10 @@ mod workspace_activity {
     fn causal_workspace() -> ActivitySnapshot {
         let mut desktop = DesktopTree {
             workspaces: vec![tilo_desktop_model::Workspace::new(
-                tilo_desktop_model::WorkspaceId(1),
+                tilo_desktop_model::WorkspaceSlot(1),
                 "Home",
             )],
-            active: tilo_desktop_model::WorkspaceId(1),
+            active: tilo_desktop_model::WorkspaceSlot(1),
             ..DesktopTree::default()
         };
         desktop.workspaces[0]
@@ -46,7 +46,7 @@ mod workspace_activity {
                 app_title: None,
             });
             let mut layout = tilo_desktop_model::Workspace::in_workspace(
-                tilo_desktop_model::WorkspaceId(1),
+                tilo_desktop_model::WorkspaceSlot(1),
                 workspace,
                 "Design",
             );

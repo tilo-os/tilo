@@ -28,7 +28,7 @@ pub(crate) fn canonical_record(route_record: &str) -> Result<String, String> {
 mod tests {
     use crate::collab_app_broker::{BrokerActor, PublishedAction, PublishedSurface};
     use crate::route::CrdtRoute;
-    use crate::test_support::{Workspace, WorkspaceId};
+    use crate::test_support::{Workspace, WorkspaceSlot};
     use tilo_action_policy::{Grant, KindSet, Lifetime, Role, Subject};
 
     const OWNER: &str = "owner-person";
@@ -51,7 +51,7 @@ mod tests {
     }
 
     fn workspace() -> Workspace {
-        let mut w = Workspace::new(WorkspaceId(7), "Workspace");
+        let mut w = Workspace::new(WorkspaceSlot(7), "Workspace");
         w.set_owner(OWNER.to_string());
         w
     }

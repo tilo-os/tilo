@@ -2195,7 +2195,7 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
         .filter(|workspace| held.contains(&workspace.room().to_string()))
         .map(|workspace| {
             json!({
-                "workspace": workspace.id.0,
+                "workspace": workspace.slot.0,
                 "room": workspace.room().to_string(),
             })
         })
@@ -2255,8 +2255,8 @@ fn window_rows(tree: &DesktopTree) -> Vec<Json> {
     }
     let mut rows = Vec::new();
     for workspace in &tree.workspaces {
-        let workspace_active = workspace.id == tree.active;
-        let active_strip = tree.active_strip.get(&workspace.id);
+        let workspace_active = workspace.slot == tree.active;
+        let active_strip = tree.active_strip.get(&workspace.slot);
         for strip in &workspace.strips {
             let strip_active = workspace_active && active_strip == Some(&strip.id);
             let active_group = tree.active_group.get(&strip.id);
@@ -2265,7 +2265,7 @@ fn window_rows(tree: &DesktopTree) -> Vec<Json> {
                 for tab in &group.tabs {
                     let (kind, app_id) = tile_kind(&tab.tile);
                     rows.push(json!({
-                        "workspace": named(&workspace.name, workspace.id.0),
+                        "workspace": named(&workspace.name, workspace.slot.0),
                         "strip": named(&strip.name, strip.id.0),
                         "group": group.id,
                         "tab": tab.id,

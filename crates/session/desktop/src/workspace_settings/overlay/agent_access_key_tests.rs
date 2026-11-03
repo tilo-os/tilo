@@ -10,7 +10,7 @@ const AGENT: &str = "scribe";
 
 fn ws(apps: usize) -> tilo_desktop_model::Workspace {
     let mut ws =
-        tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::from(32), "access");
+        tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot::from(32), "access");
     ws.set_owner(OWNER);
     super::super::admit_agent(
         &mut ws,

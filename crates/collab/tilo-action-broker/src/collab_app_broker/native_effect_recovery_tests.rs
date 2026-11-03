@@ -85,7 +85,7 @@ fn fixture() -> Fixture {
         .unwrap();
     let workspace_id = tilo_peer_state::owner::testing::WORKSPACE;
     let mut workspace = crate::test_support::Workspace::in_workspace(
-        crate::test_support::WorkspaceId(1),
+        crate::test_support::WorkspaceSlot(1),
         uuid::Uuid::parse_str(workspace_id).unwrap().into(),
         "Native recovery",
     );

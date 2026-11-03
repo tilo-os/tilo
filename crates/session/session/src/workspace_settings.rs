@@ -573,7 +573,7 @@ fn move_workspace(handle: &DesktopHandle, step: i32) {
     let Some(at) = tree
         .workspaces
         .iter()
-        .position(|workspace| workspace.id == tree.active)
+        .position(|workspace| workspace.slot == tree.active)
     else {
         return;
     };
@@ -646,7 +646,7 @@ fn general(tree: &DesktopTree, personal: Option<&RefCell<Personal>>) -> sheet::G
     let at = tree.active_workspace().and_then(|workspace| {
         tree.workspaces
             .iter()
-            .position(|one| one.id == workspace.id)
+            .position(|one| one.slot == workspace.slot)
     });
     let last = tree.workspaces.len().saturating_sub(1);
     sheet::General {

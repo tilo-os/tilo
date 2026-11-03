@@ -1531,7 +1531,7 @@ mod tests {
                 tree.desktop
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
-                        tilo_desktop_model::WorkspaceId(1),
+                        tilo_desktop_model::WorkspaceSlot(1),
                         "Hosted elsewhere",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
@@ -1605,7 +1605,7 @@ mod tests {
                 tree.desktop
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
-                        tilo_desktop_model::WorkspaceId(1),
+                        tilo_desktop_model::WorkspaceSlot(1),
                         "Made just now",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
@@ -1664,7 +1664,7 @@ mod tests {
                 tree.desktop
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
-                        tilo_desktop_model::WorkspaceId(1),
+                        tilo_desktop_model::WorkspaceSlot(1),
                         "Made just now",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
@@ -1715,7 +1715,7 @@ mod tests {
                 tree.desktop
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
-                        tilo_desktop_model::WorkspaceId(1),
+                        tilo_desktop_model::WorkspaceSlot(1),
                         "Discovery",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
@@ -2069,7 +2069,7 @@ mod tests {
     #[test]
     fn membership_actions_are_admin_only() {
         let workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Membership");
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Membership");
         let actions = membership_actions(&workspace, 0);
         assert!(actions.iter().all(|action| {
             action.contract.kind == tilo_actions::ActionKind::Outside
@@ -2105,7 +2105,7 @@ mod tests {
                 tree.desktop
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
-                        tilo_desktop_model::WorkspaceId(1),
+                        tilo_desktop_model::WorkspaceSlot(1),
                         "Governed",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
@@ -2167,7 +2167,7 @@ mod tests {
                 tree.desktop
                     .workspaces
                     .push(tilo_desktop_model::Workspace::new(
-                        tilo_desktop_model::WorkspaceId(1),
+                        tilo_desktop_model::WorkspaceSlot(1),
                         "Governed",
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();

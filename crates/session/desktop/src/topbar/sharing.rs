@@ -326,7 +326,7 @@ impl TopBarChrome {
                     .map_or_else(
                         || t("topbar-sharing-unknown-window"),
                         |(workspace, tab)| {
-                            if workspace.id == tree.active {
+                            if workspace.slot == tree.active {
                                 tab.title.clone()
                             } else {
                                 t_args(

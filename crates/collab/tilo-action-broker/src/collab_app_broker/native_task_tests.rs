@@ -75,7 +75,7 @@ impl WorkspaceAuthority for Native {
                 .admitted_workspace()
                 .ok_or("native document unavailable")?;
             let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                tilo_desktop_model::WorkspaceId(1),
+                tilo_desktop_model::WorkspaceSlot(1),
                 workspace_id(),
                 "Native execution",
             );
@@ -88,7 +88,7 @@ impl WorkspaceAuthority for Native {
                 .grants
                 .retain(|grant| !self.spent_grants.lock().unwrap().contains(&grant.id));
             let mut tree = tilo_desktop_model::DesktopTree {
-                active: workspace.id,
+                active: workspace.slot,
                 ..Default::default()
             };
             tree.workspaces.push(workspace);

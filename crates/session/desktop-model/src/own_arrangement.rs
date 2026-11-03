@@ -26,7 +26,7 @@ use tilo_automerge::ApplyIncoming as _;
 
 use crate::apps::canonical_app_id;
 use crate::arrangement::{ArrangementKind, CanvasPlace};
-use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
 use crate::layout::{Tab, TileContent, WindowGroup};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -53,7 +53,7 @@ pub fn record_id(person: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Row {
     pub id: StripId,
-    pub workspace: WorkspaceId,
+    pub workspace: WorkspaceSlot,
     pub name: String,
     /// The shell that made it.
     #[serde(default)]
@@ -109,7 +109,7 @@ impl Place {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Strip {
     pub id: GroupId,
-    pub workspace: WorkspaceId,
+    pub workspace: WorkspaceSlot,
     pub row: StripId,
     pub width: WindowWidth,
     #[serde(default)]
@@ -151,7 +151,7 @@ pub struct Strips {
 /// A workspace of the person's arrangement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacedWorkspace {
-    pub id: WorkspaceId,
+    pub id: WorkspaceSlot,
     pub name: String,
 }
 
@@ -164,13 +164,13 @@ impl Strips {
         let mut arrangement = Self::default();
         for workspace in &tree.workspaces {
             arrangement.workspaces.push(PlacedWorkspace {
-                id: workspace.id,
+                id: workspace.slot,
                 name: workspace.name.clone(),
             });
             for row in &workspace.strips {
                 arrangement.rows.push(Row {
                     id: row.id,
-                    workspace: workspace.id,
+                    workspace: workspace.slot,
                     name: row.name.clone(),
                     shell: SHELL.to_owned(),
                 });
@@ -182,7 +182,7 @@ impl Strips {
                         .collect();
                     arrangement.strips.push(Strip {
                         id: group.id,
-                        workspace: workspace.id,
+                        workspace: workspace.slot,
                         row: row.id,
                         width: group.width,
                         maximized: group.maximized,
@@ -202,25 +202,25 @@ impl Strips {
     /// it holds. A place whose tile the record kept shows it; one it did not
     /// opens its app again ([`TileContent::LocalApp`]).
     #[must_use]
-    pub fn to_tree(&self, workspace_name: impl Fn(WorkspaceId) -> Option<String>) -> DesktopTree {
+    pub fn to_tree(&self, workspace_name: impl Fn(WorkspaceSlot) -> Option<String>) -> DesktopTree {
         let mut tree = DesktopTree::default();
         for held in self.workspaces() {
-            let workspace_id = held.id;
+            let slot = held.id;
             let mut workspace = crate::workspace::Workspace::new(
-                workspace_id,
-                workspace_name(workspace_id).unwrap_or_else(|| held.name.clone()),
+                slot,
+                workspace_name(slot).unwrap_or_else(|| held.name.clone()),
             );
             for row in self
                 .rows
                 .iter()
-                .filter(|row| row.workspace == workspace_id && row.is_ours())
+                .filter(|row| row.workspace == slot && row.is_ours())
             {
                 workspace
                     .strips
                     .push(crate::layout::Strip::new(row.id, row.name.clone()));
             }
             for strip in self.strips.iter().filter(|strip| {
-                strip.workspace == workspace_id && strip.is_ours() && !strip.places.is_empty()
+                strip.workspace == slot && strip.is_ours() && !strip.places.is_empty()
             }) {
                 let Some(row) = workspace.strips.iter_mut().find(|row| row.id == strip.row) else {
                     continue;
@@ -255,9 +255,9 @@ impl Strips {
             tree.workspaces.push(workspace);
         }
         if let Some(first) = tree.workspaces.first() {
-            tree.active = first.id;
+            tree.active = first.slot;
             if let Some(row) = first.strips.first() {
-                tree.active_strip.insert(first.id, row.id);
+                tree.active_strip.insert(first.slot, row.id);
             }
         }
         tree
@@ -293,7 +293,7 @@ impl Strips {
 
     /// The row named `id` of `workspace`.
     #[must_use]
-    pub fn row(&self, workspace: WorkspaceId, id: StripId) -> Option<&Row> {
+    pub fn row(&self, workspace: WorkspaceSlot, id: StripId) -> Option<&Row> {
         self.rows
             .iter()
             .find(|row| row.workspace == workspace && row.id == id)
@@ -333,7 +333,7 @@ impl Strips {
     /// last, else a new one `minted` names.
     fn target_strip(
         &mut self,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
         row: StripId,
         before: Option<TabId>,
         minted: GroupId,
@@ -401,7 +401,7 @@ impl Strips {
     /// strip's is taken.
     pub fn place_at_canvas(
         &mut self,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
         row: StripId,
         strip: GroupId,
         place: Place,
@@ -590,7 +590,7 @@ pub fn read_as(doc: &impl ReadDoc, shell: &str) -> Strips {
             number(doc, &entry, ORDER).unwrap_or(0.0),
             id,
             PlacedWorkspace {
-                id: WorkspaceId(id),
+                id: WorkspaceSlot(id),
                 name: text(doc, &entry, NAME).unwrap_or_default(),
             },
         ));
@@ -608,7 +608,7 @@ pub fn read_as(doc: &impl ReadDoc, shell: &str) -> Strips {
             id,
             Row {
                 id: StripId(id),
-                workspace: WorkspaceId(parse(doc, &entry, WORKSPACE).unwrap_or_default()),
+                workspace: WorkspaceSlot(parse(doc, &entry, WORKSPACE).unwrap_or_default()),
                 name: text(doc, &entry, NAME).unwrap_or_default(),
                 shell: text(doc, &entry, SHELL_KEY).unwrap_or_default(),
             },
@@ -624,7 +624,7 @@ pub fn read_as(doc: &impl ReadDoc, shell: &str) -> Strips {
             id,
             Strip {
                 id,
-                workspace: WorkspaceId(parse(doc, &entry, WORKSPACE).unwrap_or_default()),
+                workspace: WorkspaceSlot(parse(doc, &entry, WORKSPACE).unwrap_or_default()),
                 row: StripId(parse(doc, &entry, ROW).unwrap_or_default()),
                 width: json(doc, &entry, WIDTH)
                     .and_then(|json| serde_json::from_str(&json).ok())

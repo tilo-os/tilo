@@ -3341,7 +3341,7 @@ mod launch_content_tests {
 #[cfg(test)]
 mod foreign_caller_tests {
     use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
-    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::roles;
     use tilo_actions::remote::Caller;
@@ -3351,7 +3351,7 @@ mod foreign_caller_tests {
         let user = [27; 32];
         let mut tree = WorkspaceTree::default();
         for id in [7, 8] {
-            let mut workspace = Workspace::new(WorkspaceId(id), "Bot workspace");
+            let mut workspace = Workspace::new(WorkspaceSlot(id), "Bot workspace");
             workspace.set_owner(hex::encode(user));
             tree.workspaces.push(workspace);
         }
@@ -3395,7 +3395,7 @@ mod foreign_caller_tests {
     #[test]
     fn a_foreign_caller_is_capped_only_in_workspaces_its_device_does_not_govern() {
         let user = [26; 32];
-        let mut workspace = Workspace::new(WorkspaceId(6), "Callers");
+        let mut workspace = Workspace::new(WorkspaceSlot(6), "Callers");
         workspace.set_owner(hex::encode(user));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -3435,7 +3435,7 @@ mod app_close_tests {
     };
     use super::RowScope;
     use crate::route::CrdtRoute;
-    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::Caller;
 
@@ -3489,7 +3489,7 @@ mod app_close_tests {
 
     fn broker(launcher: Arc<Launcher>, live: bool) -> (Arc<AppBrokerState>, Caller, String) {
         let user = [31; 32];
-        let mut workspace = Workspace::new(WorkspaceId(8), "Close");
+        let mut workspace = Workspace::new(WorkspaceSlot(8), "Close");
         workspace.set_owner(hex::encode(user));
         let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();

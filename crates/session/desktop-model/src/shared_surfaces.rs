@@ -59,7 +59,7 @@ impl SharedSurfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Workspace, WorkspaceId};
+    use crate::{Workspace, WorkspaceSlot};
 
     #[test]
     fn shared_surface_registry_adds_removes_and_keeps_its_shape() {
@@ -108,7 +108,7 @@ mod tests {
             );
         }
         {
-            let mut workspace = Workspace::new(WorkspaceId(1), "Demo");
+            let mut workspace = Workspace::new(WorkspaceSlot(1), "Demo");
             workspace.share_surface(7, 42);
             workspace.share_surface(7, 99);
             assert!(workspace.is_surface_shared(7));

@@ -139,7 +139,7 @@ impl SharedDesktops {
         sync: Option<&Sync>,
         tree: &DesktopTree,
     ) -> bool {
-        let Some(workspace) = tree.workspaces.iter().find(|held| held.id == tree.active) else {
+        let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == tree.active) else {
             return false;
         };
         let room = workspace.room();
@@ -249,7 +249,7 @@ impl SharedDesktops {
     /// [`tilo_desktop_model::shared_record::device::Writer::mine`] has to
     /// name as the record's next write.
     pub(crate) fn note_unrecorded(&self, engine: &Engine, tree: &DesktopTree) {
-        let Some(workspace) = tree.workspaces.iter().find(|held| held.id == tree.active) else {
+        let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == tree.active) else {
             return;
         };
         let room = workspace.room();

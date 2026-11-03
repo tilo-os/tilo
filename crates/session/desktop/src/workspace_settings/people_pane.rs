@@ -57,7 +57,7 @@ mod tests {
     use super::super::{CapRole, members_pane_rows};
     use super::*;
     use crate::i18n::t_args;
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
 
     fn pane() -> Rect {
         Rect::new(0.0, 0.0, 640.0, 480.0)
@@ -69,7 +69,7 @@ mod tests {
         let (_, recipient_public) = collab_types::generate_keypair();
         let owner = hex::encode(owner_public.as_bytes());
         let recipient = hex::encode(recipient_public.as_bytes());
-        let mut ws = Workspace::new(WorkspaceId(92), "Studio");
+        let mut ws = Workspace::new(WorkspaceSlot(92), "Studio");
         ws.set_owner(owner.clone());
         ws.admit(recipient.clone(), CapRole::Editor);
         let label =
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn a_row_offers_only_what_can_be_done_and_states_facts_apart() {
-        let mut ws = Workspace::new(WorkspaceId(93), "Studio");
+        let mut ws = Workspace::new(WorkspaceSlot(93), "Studio");
         ws.set_owner("owner");
         ws.admit("ada".to_string(), CapRole::Editor);
         let rows = members_pane_rows(&ws, pane());

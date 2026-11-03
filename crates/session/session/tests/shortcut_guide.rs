@@ -231,7 +231,7 @@ fn pair(guide: &Guide, action: &str) -> Pair {
 fn workspace(session: &Session) -> Option<u64> {
     session
         .handle()
-        .read(|tree| tree.active_workspace().map(|workspace| workspace.id.0))
+        .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0))
 }
 
 /// A second workspace, opened the way the bar opens one: the person is then

@@ -99,7 +99,7 @@ impl Windows {
                 let workspaces: Vec<_> = tree
                     .workspaces
                     .iter()
-                    .map(|workspace| workspace.id)
+                    .map(|workspace| workspace.slot)
                     .collect();
                 self.warmth.update(&workspaces, active, now, &mut |id| {
                     let id = id.0.to_string();

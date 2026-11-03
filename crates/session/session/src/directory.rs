@@ -1160,7 +1160,7 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
             .map(|workspace| {
                 (
                     workspace.room().to_string(),
-                    (workspace.id.0.to_string(), workspace.name.clone()),
+                    (workspace.slot.0.to_string(), workspace.name.clone()),
                 )
             })
             .collect();
@@ -1222,7 +1222,7 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
         });
     }
     for workspace in desk_rows {
-        let id = workspace.id.0.to_string();
+        let id = workspace.slot.0.to_string();
         if shown.contains(&id) {
             continue;
         }
