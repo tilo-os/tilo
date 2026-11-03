@@ -1,6 +1,9 @@
 //! The palette as the widget tree sees it.
 
-use super::*;
+use super::{
+    ActionPalette, Affine, ConfirmState, HashMap, ModelPath, NodeId, Point, PresenceCtx, Rect, Scene,
+    Size, Style, TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
+};
 
 impl Widget for ActionPalette {
     fn needs_redraw(&self) -> bool {
