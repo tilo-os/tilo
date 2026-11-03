@@ -17437,6 +17437,7 @@ name = "tilo-app-module"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "workspace-hack",
 ]
 
 [[package]]
