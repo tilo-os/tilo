@@ -164,8 +164,8 @@ fn presence(sync: &Client, from: u8, payload: collab_types::PeerPresencePayload)
 }
 
 /// Their pointer, over the Notes window.
-fn pointer(sync: &Client, from: u8, x: f64, y: f64) {
-    let frame = Presence::pointing(WORKSPACE, NOTES, x as f32, y as f32);
+fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
+    let frame = Presence::pointing(WORKSPACE, NOTES, x, y);
     sync.heard_presence(WORKSPACE, device(from), &frame);
 }
 
@@ -195,8 +195,6 @@ fn press_faces(session: &mut Session) {
         session.step(Duration::from_millis(1)).expect("step");
     }
 }
-
-/// The app id the desk says a bare window carries.
 
 /// The person this test's session is a device of, at another of their
 /// devices too.

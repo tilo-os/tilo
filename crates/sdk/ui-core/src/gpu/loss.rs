@@ -133,8 +133,10 @@ impl LossWatch {
         ));
         // Dropping a queue waits for its last submission and panics when that
         // never finishes, which would take the process down with the GPU. The
-        // queue of a GPU that stopped is kept.
-        std::mem::forget(queue);
+        // queue of a GPU that stopped is kept for the rest of the process:
+        // `ManuallyDrop` says exactly that, and unlike `mem::forget` it means
+        // the same thing on a target whose queue has nothing to drop.
+        let _kept = std::mem::ManuallyDrop::new(queue);
     }
 }
 

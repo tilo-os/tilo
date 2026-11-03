@@ -111,35 +111,44 @@ mod tests {
         }
     }
 
+    /// The surfaces these cases register: what each app may read, and the
+    /// person's own record one of them declares.
+    static NOTES: &[u8] =
+        b"[[resources]]\nkind = \"tl.test.lang-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
+    static BOARD: &[u8] = b"reads = [\"tl.test.lang-notes.Note\"]\n\n[[resources]]\nkind = \"tl.test.lang-board.Card\"\nlabel = \"Card\"\nversion = 1\n";
+    static CHAT: &[u8] =
+        b"[[resources]]\nkind = \"tl.test.lang-chat.Message\"\nlabel = \"Message\"\nversion = 1\n";
+    static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
+
     /// An attested launch changes only its own route. Another app's record
     /// it joins only to read, when its surface declares that it reads that
     /// app's kinds and the person may read the record; it changes such a
     /// record only through the owning app's actions.
     #[test]
     fn an_app_writes_only_its_own_route_and_reads_another_apps_only_as_declared() {
-        static NOTES: &[u8] =
-            b"[[resources]]\nkind = \"tl.test.lang-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
-        static BOARD: &[u8] = b"reads = [\"tl.test.lang-notes.Note\"]\n\n[[resources]]\nkind = \"tl.test.lang-board.Card\"\nlabel = \"Card\"\nversion = 1\n";
-        static CHAT: &[u8] = b"[[resources]]\nkind = \"tl.test.lang-chat.Message\"\nlabel = \"Message\"\nversion = 1\n";
-        static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
         ui::app_surface::register_package("test.lang-notes", NOTES);
         ui::app_surface::register_package("test.lang-board", BOARD);
         ui::app_surface::register_package("test.lang-chat", CHAT);
-        let reads = || true;
-        let unread = || false;
+        workspace_routes_are_the_apps_own_or_declared_reads();
+        person_records_are_read_never_written();
+        pair_records_belong_to_the_app_that_keeps_them();
+    }
 
+    /// Its own route, whatever it reads; another app's only to read, and only
+    /// when it declares that read and the person may read the record.
+    fn workspace_routes_are_the_apps_own_or_declared_reads() {
         assert_eq!(
             attested_route_access(
                 "test.lang-board",
                 &workspace_route("test.lang-board"),
                 false,
-                unread
+                || false
             ),
             Ok(RouteAccess::Own),
             "its own route, whatever it reads"
         );
         assert_eq!(
-            attested_route_access("test.lang-board", &workspace_route(""), false, unread),
+            attested_route_access("test.lang-board", &workspace_route(""), false, || false),
             Ok(RouteAccess::Own),
             "a route of no app is the workspace's"
         );
@@ -148,7 +157,7 @@ mod tests {
                 "test.lang-board",
                 &workspace_route("test.lang-notes"),
                 false,
-                reads
+                || true
             ),
             Ok(RouteAccess::ReadOnly),
             "Board reads the notes it declares, read-only"
@@ -158,7 +167,7 @@ mod tests {
                 "test.lang-board",
                 &workspace_route("test.lang-notes"),
                 false,
-                unread
+                || false
             )
             .is_err(),
             "not when the person may not read the record"
@@ -168,7 +177,7 @@ mod tests {
                 "test.lang-board",
                 &workspace_route("test.lang-chat"),
                 false,
-                reads
+                || true
             )
             .is_err(),
             "nor another app's record it declares no read of"
@@ -178,7 +187,7 @@ mod tests {
             ..workspace_route("so.tilo.chat")
         };
         assert_eq!(
-            attested_route_access("test.lang-board", &emoji, false, unread),
+            attested_route_access("test.lang-board", &emoji, false, || false),
             Ok(RouteAccess::Own),
             "a workspace record is any app's of the workspace, as its grants decide"
         );
@@ -187,7 +196,7 @@ mod tests {
                 "test.lang-chat",
                 &workspace_route("test.lang-notes"),
                 false,
-                reads
+                || true
             )
             .is_err(),
             "an app that reads nothing joins only its own route"
@@ -197,11 +206,16 @@ mod tests {
                 "test.unknown",
                 &workspace_route("test.lang-notes"),
                 false,
-                reads
+                || true
             )
             .is_err(),
             "an app whose surface the broker does not hold reads nothing"
         );
+    }
+
+    /// Another app's record of the person's is joined to be read, never
+    /// written.
+    fn person_records_are_read_never_written() {
         let accounts = collab_types::person_record_id("test-person.accounts");
         ui::app_surface::register_package("test.person-reader", TERMINAL);
         assert_eq!(
@@ -209,11 +223,16 @@ mod tests {
                 "test.person-reader",
                 &person_route("test.person-settings", &accounts),
                 true,
-                reads
+                || true
             ),
             Ok(RouteAccess::ReadOnly),
             "another app's record of the person's is read, never written"
         );
+    }
+
+    /// A pair's record is the app's that keeps the conversation in it: no
+    /// other app joins one, whatever it declares it reads.
+    fn pair_records_belong_to_the_app_that_keeps_them() {
         let pair = collab_types::direct_pair_id(
             "4f2c1a64-0d7e-4b8e-9b55-2a6f3c9d1e10",
             &"11".repeat(32),
@@ -225,16 +244,16 @@ mod tests {
             ..workspace_route("test.lang-chat")
         };
         assert_eq!(
-            attested_route_access("test.lang-chat", &conversation, false, unread),
+            attested_route_access("test.lang-chat", &conversation, false, || false),
             Ok(RouteAccess::Own),
             "the app that keeps a pair's conversation joins its record"
         );
         assert!(
-            attested_route_access("test.lang-notes", &conversation, false, reads).is_err(),
+            attested_route_access("test.lang-notes", &conversation, false, || true).is_err(),
             "no other app joins a pair's record, whatever it declares it reads"
         );
         assert!(
-            attested_route_access("test.lang-board", &conversation, false, reads).is_err(),
+            attested_route_access("test.lang-board", &conversation, false, || true).is_err(),
             "an app that reads another's kinds joins no pair record of them either"
         );
     }

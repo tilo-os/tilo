@@ -59,7 +59,7 @@ use crate::engine::Engine;
 mod gate;
 mod plane;
 
-use plane::{Beside, Bound, Serving, run};
+use plane::{Serving, run};
 
 /// How often this person says again where they are, so someone whose host
 /// session came up after the first word still hears them, and so a workspace never
@@ -861,17 +861,7 @@ impl Client {
                     enrollments,
                     ready,
                     wake,
-                    Serving {
-                        bound: Bound {
-                            endpoint: bound_endpoint,
-                            lane: served_lane,
-                        },
-                        beside: Beside {
-                            link: plane_link,
-                            actions: serving,
-                            protocols: beside,
-                        },
-                    },
+                    Serving::new(bound_endpoint, served_lane, plane_link, serving, beside),
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
@@ -1919,6 +1909,20 @@ impl Client {
     #[must_use]
     pub fn presence_revision(&self) -> u64 {
         self.plane.borrow().revision()
+    }
+
+    /// How many times what any of the person's workspaces knows of its people
+    /// changed, in one number: who is here, which window they are in and the
+    /// call they are in are read again when this moved.
+    #[must_use]
+    pub fn people_revision(&self) -> u64 {
+        self.plane
+            .borrow()
+            .workspaces
+            .iter()
+            .fold(0_u64, |seen, held| {
+                seen.wrapping_mul(31).wrapping_add(held.revision)
+            })
     }
 
     /// Everyone whose pointer is over `tab` of `workspace` now, by publisher. The

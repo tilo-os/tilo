@@ -444,8 +444,9 @@ impl Claim {
     /// host never confirmed its exit, so a second host on the profile could
     /// still meet the first one.
     pub(super) fn keep_while_host_may_run(self) {
-        // Unlocking here would release the profile while the host holds it.
-        std::mem::forget(self);
+        // Unlocking here would release the profile while the host holds it, so
+        // the claim is never dropped.
+        let _kept = std::mem::ManuallyDrop::new(self);
     }
 }
 
