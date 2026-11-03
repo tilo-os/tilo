@@ -6,6 +6,12 @@
 //! folder away stops the app that holds it at its next open — without
 //! closing the app, restarting it, or asking it to notice anything.
 //!
+//! The list is the workspace's own permissions in the mount's terms: the
+//! grants apps hold through portals, and what each member's role lets them
+//! reach in the workspace's files (a viewer reads, an editor writes). Both
+//! follow the desk's replica revision, so a role change or a removed member
+//! reaches the daemon in the same pass, never on a timer.
+//!
 //! The daemon signs nothing itself: `fs publish-authority --acl` signs the
 //! list with the workspace governor key and swaps it into the ACL every
 //! mount reads ([`tilo_files`] mount, `WorkspaceAuthority::apply`). Publishing
@@ -18,7 +24,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use collab_types::caps::{Actor, FsAuthority, Scope, Subject, WorkspaceMember};
+use collab_types::Role;
+use collab_types::caps::{
+    Access, Actor, CapOverride, FsAuthority, Scope, Subject, WorkspaceMember,
+};
 use collab_types::crypto::Ed25519PublicKey;
 use tilo_desktop_model::DesktopTree;
 use tilo_lock::MutexRecover as _;
@@ -54,14 +63,21 @@ pub(crate) fn list(
         for capability in workspace.sandbox.iter().filter(|capability| {
             capability.persists_across_restart() && matches!(capability.scope, Scope::FsPath(_))
         }) {
-            capabilities.push(capability.clone());
-            if let (Some(device), Some(actor)) = (device, actor.as_ref())
-                && capability.subject.matches_actor(actor)
-            {
-                let mut bound = capability.clone();
-                bound.subject = Subject::User(Ed25519PublicKey::from_bytes(device));
-                capabilities.push(bound);
-            }
+            push_with_device(&mut capabilities, capability, actor.as_ref(), device);
+        }
+        // What the workspace's roles let each member reach in its files. The
+        // roles are the workspace's one statement of who may do what, so a
+        // role change rewrites this list and the daemon enforces the new
+        // answer at the next open; a member removed from the workspace holds
+        // nothing here, and their device stops at once without being told.
+        for (member, role) in workspace.roster() {
+            let capability = CapOverride::grant(
+                Subject::person(member.clone()),
+                Scope::FsPath(WORKSPACE_FILES.into()),
+                role_files_access(role),
+            )
+            .with_id(role_capability_id(&workspace.id().to_string(), &member));
+            push_with_device(&mut capabilities, &capability, actor.as_ref(), device);
         }
         // Signed membership is a separate projection from Files access: who
         // the workspace's policy lets read it, per relay shard.
@@ -83,6 +99,46 @@ pub(crate) fn list(
 fn person_key(person: &str) -> Option<Ed25519PublicKey> {
     let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
     Some(Ed25519PublicKey::from_bytes(bytes))
+}
+
+/// Where a workspace's files appear in the mount (see
+/// `fs::WORKSPACE_FILES_PATH`): the path a role's access ranges over.
+const WORKSPACE_FILES: &str = "/var/workspace";
+
+/// What a member's role lets them do to the workspace's files: a viewer and
+/// a commenter read them, an editor and everything above changes them.
+const fn role_files_access(role: Role) -> Access {
+    match role {
+        Role::Viewer | Role::Commenter => Access::Read,
+        Role::Editor | Role::Moderator | Role::Owner => Access::Write,
+    }
+}
+
+/// The id of the capability a workspace's role gives a member, so the same
+/// member's grant is recognisable across revisions and in the daemon's log.
+fn role_capability_id(workspace: &str, member: &str) -> String {
+    format!("role:{workspace}:{member}")
+}
+
+/// Publish `capability` as it stands, and again bound to this device's key
+/// when it is the key of the person sitting here: the mount acts as the
+/// device, so the person's grants must reach it without widening anything.
+fn push_with_device(
+    capabilities: &mut Vec<CapOverride>,
+    capability: &CapOverride,
+    actor: Option<&Actor>,
+    device: Option<[u8; 32]>,
+) {
+    capabilities.push(capability.clone());
+    let (Some(device), Some(actor)) = (device, actor) else {
+        return;
+    };
+    if !capability.subject.matches_actor(actor) {
+        return;
+    }
+    let mut bound = capability.clone();
+    bound.subject = Subject::User(Ed25519PublicKey::from_bytes(device));
+    capabilities.push(bound);
 }
 
 fn member(person: &str, until: Option<u64>) -> Option<WorkspaceMember> {
@@ -401,6 +457,51 @@ mod tests {
             &list.capabilities,
             Some(0),
         ) == collab_types::CapDecision::Allow
+    }
+
+    /// [`may_read`] for a write.
+    fn may_write(list: &FsAuthority, actor: &Actor, path: &str) -> bool {
+        collab_types::decide_capability(
+            actor,
+            &collab_types::ResourceRef::FsPath(path.into()),
+            Access::Write,
+            &list.capabilities,
+            Some(0),
+        ) == collab_types::CapDecision::Allow
+    }
+
+    #[test]
+    fn a_members_role_decides_whether_they_write_the_workspace_files() {
+        const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+        const NOTE: &str = "/var/workspace/brief/plan.md";
+        let member = Actor::signed(person_key(MEMBER).unwrap());
+        let mut tree = tree_with(app_folder_grant());
+        tree.workspaces[0].admit(MEMBER, Role::Viewer);
+        let read_only = list(&tree, PERSON, None, 0);
+        assert!(
+            may_read(&read_only, &member, NOTE),
+            "a member reads the workspace's files"
+        );
+        assert!(
+            !may_write(&read_only, &member, NOTE),
+            "a member with a read-only role cannot write them"
+        );
+
+        tree.workspaces[0].admit(MEMBER, Role::Editor);
+        let editing = list(&tree, PERSON, None, 0);
+        assert!(may_write(&editing, &member, NOTE), "an editor writes them");
+        assert_ne!(
+            editing.capabilities, read_only.capabilities,
+            "a role change is a new list, so the daemon is handed it"
+        );
+
+        tree.workspaces[0].policy.members.remove(MEMBER);
+        let removed = list(&tree, PERSON, None, 0);
+        assert!(
+            !may_read(&removed, &member, NOTE),
+            "a removed member reads nothing"
+        );
+        assert!(!may_write(&removed, &member, NOTE));
     }
 
     #[test]
