@@ -17,6 +17,8 @@ impl FrameHarness {
     /// whose widgets may have been replaced; the next frame rebuilds.
     pub(super) fn discard_layout_tree(&mut self) {
         self.serviced_layout = None;
+        // The tree the window's History was validated against is going.
+        self.history_standing.set(None);
         self.bindings.clear();
         self.node_map.clear();
         self.layout_maps.clear();

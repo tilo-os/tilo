@@ -382,6 +382,10 @@ pub struct FrameHarness {
     search_pending: bool,
     root_lifetime: uuid::Uuid,
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Whether the window's History still holds the owners it registered, as
+    /// this frame last asked: the frame asks several times, and the answer
+    /// only moves when the composition does.
+    history_standing: std::cell::Cell<Option<bool>>,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
     /// Which `node_map` pointers were taken from the live tree
@@ -1405,11 +1409,7 @@ impl FrameHarness {
     /// Invalidate only the managed History surface. The mounted live owner
     /// remains in place and continues its independent lifecycle.
     fn invalidate_unsupported_history_owner(&mut self) -> bool {
-        if self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.validate_root(self.root.as_ref()).is_err())
-        {
+        if !self.history_owner_standing() {
             return self
                 .history
                 .as_mut()
@@ -1559,6 +1559,7 @@ impl FrameHarness {
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
+            history_standing: std::cell::Cell::new(None),
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
             shown_a_frame: false,
@@ -2180,9 +2181,30 @@ impl FrameHarness {
             !history.captures_input()
                 && !history.returning_live()
                 && !history.has_settled_control_return()
-                && history.validate_root(self.root.as_ref()).is_ok()
+                && self.history_owner_standing()
                 && !history.needs_refresh(&self.state.doc, f64::from(self.viewport.0))
         })
+    }
+
+    /// Whether the window's History still holds the owners it registered
+    /// against the live root, asked of the tree at most once a frame: a frame
+    /// reads it to decide what its bookkeeping covers and to invalidate a
+    /// surface whose owner left, and the answer only moves when the
+    /// composition does ([`Self::discard_layout_tree`]).
+    fn history_owner_standing(&self) -> bool {
+        if let Some(standing) = self.history_standing.get() {
+            return standing;
+        }
+        // The frame before proved it of the same composition and documents,
+        // and nothing either reads has moved since: its answer stands
+        // without walking the tree again.
+        let standing = self.history_settled
+            || self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.validate_root(self.root.as_ref()).is_ok());
+        self.history_standing.set(Some(standing));
+        standing
     }
 
     /// The first thing [`Self::bookkeeping_followed`] finds that a witness
@@ -2341,12 +2363,18 @@ impl FrameHarness {
                             &self.state.doc,
                             width,
                         ));
+                // What a settled frame did not ask again: the window's own
+                // History still holds the owners it registered.
+                let standing = self
+                    .history
+                    .as_ref()
+                    .is_none_or(|history| history.validate_root(self.root.as_ref()).is_ok());
                 let before = shown(self);
                 self.host_tick();
                 self.sync_frame();
                 self.publish_undo_status();
                 let replaced = self.composition_changed();
-                (before, shown(self), replaced, resting)
+                (before, shown(self), replaced, resting && standing)
             })
         });
         let consistent = before == after && !replaced && resting;
@@ -3296,6 +3324,9 @@ impl FrameHarness {
     }
 
     fn try_relayout_content(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        // Asked again of the tree this frame draws, after whatever reached
+        // it since the last: the frame reads the answer several times.
+        self.history_standing.set(None);
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
@@ -3439,10 +3470,17 @@ impl FrameHarness {
         // layout map before refreshing so no stale callback target survives,
         // and refresh only then: the History source changes on other threads,
         // so a refresh after a negative check could still replace controls.
-        let refresh_history = self.history.as_ref().is_some_and(|history| {
-            history.validate_root(self.root.as_ref()).is_err()
-                || history.needs_refresh(&self.state.doc, f64::from(self.viewport.0))
-        });
+        // A quiet frame asked every History surface whether it rests and
+        // whether it needs a refresh above, of the same document and width:
+        // `Some(false)` is both answers, so this frame asks neither again. No
+        // surface may have moved since: the update between them reported no
+        // change, the composition kept, and nothing queued a control.
+        let history_holds = quiet && history_at_rest == Some(false);
+        let refresh_history = !history_holds
+            && self.history.as_ref().is_some_and(|history| {
+                history.validate_root(self.root.as_ref()).is_err()
+                    || history.needs_refresh(&self.state.doc, f64::from(self.viewport.0))
+            });
         if refresh_history {
             self.discard_layout_tree();
             history_invalidated = true;
@@ -4197,13 +4235,13 @@ impl FrameHarness {
             self.settled_history_frames = self.settled_history_frames.saturating_add(1);
         }
         // Only a polled frame reads it, and only while it follows everything.
-        if self.polls_frames && !self.bookkeeping_followed() {
+        let followed = self.polls_frames && self.bookkeeping_followed();
+        if self.polls_frames && !followed {
             drop(tilo_resource::profiling::Phase::start(
                 self.unfollowed_bookkeeping(),
             ));
         }
-        let witness =
-            (self.polls_frames && self.bookkeeping_followed()).then(|| self.read_witness());
+        let witness = followed.then(|| self.read_witness());
         // What this quiet frame's History walk answered still stands for the
         // next only if nothing it read moved while the frame ran: the
         // witness it ends with reads what the one it began with read.

@@ -768,6 +768,9 @@ impl Button {
         let size_changed = rect.width().to_bits() != self.rect.width().to_bits()
             || rect.height().to_bits() != self.rect.height().to_bits();
         self.rect = rect;
+        // The caller has just laid it out: whatever asked for a measure is
+        // answered by this geometry.
+        self.layout_dirty = false;
         if size_changed {
             self.dirty = true;
         }
@@ -2306,14 +2309,17 @@ impl Widget for Button {
         self.layout_dirty = false;
     }
 
-    /// The `Rect::ZERO` sentinel keeps the first frame's
-    /// `compute_layout` running so `apply_layout` can populate the rect;
-    /// after that it stays clean (pure translation handled via the
-    /// cache's append transform, no taffy involvement). The sentinel is the
-    /// laid-out rect, not the paint cache's: a button that is not drawn
-    /// (scrolled or panned out of view) has nothing new to measure.
+    /// A missing rect keeps the first frame's `compute_layout` running so
+    /// `apply_layout` can populate it; after that it stays clean (pure
+    /// translation handled via the cache's append transform, no taffy
+    /// involvement). Only a button the solver has *never* placed counts as
+    /// missing: a slot its parent gives no room is placed at zero size, and
+    /// asking for that measure again every frame kept a still window
+    /// recomposing. The rect is the laid-out one, not the paint cache's: a
+    /// button that is not drawn (scrolled or panned out of view) has
+    /// nothing new to measure.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        (!self.solver_placed && self.rect == Rect::ZERO)
             || self.layout_dirty
             || self.i18n_revision != crate::i18n::I18nManager::revision()
     }
@@ -2324,9 +2330,7 @@ impl Widget for Button {
         // A button only its host places has no node for the solver to
         // measure: the host sizes it, however hidden or unplaced it is.
         self.solver_placed
-            && (self.rect == Rect::ZERO
-                || self.layout_dirty
-                || self.i18n_revision != crate::i18n::I18nManager::revision())
+            && (self.layout_dirty || self.i18n_revision != crate::i18n::I18nManager::revision())
     }
 
     fn needs_idle_sync(&self) -> bool {
