@@ -706,16 +706,24 @@ fn tree_row(
     let row_key = key.to_owned();
     let depth = f64::from(marks.depth(&row_key));
     let mut line = Row::row().fill_width().align(Align::Center);
+    // The room the depth takes and the disclosure standing at its end are one column, packed
+    // tight: the chevron then sits exactly where the list reads a fold press.
+    let mut lead = crate::widget::row::Row::new().with_gap(0.0);
     if depth > 0.0 {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "logical pixels are bounded far below f32::MAX"
         )]
         let indent = (depth * TREE_INDENT) as f32;
-        line = line.push(Box::new(Spacer::fixed(indent)));
+        lead = lead.push(Box::new(Spacer::fixed(indent)));
     }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "logical pixels are bounded far below f32::MAX"
+    )]
+    let disclosure = TREE_DISCLOSURE as f32;
     if marks.is_branch(&row_key) {
-        line = line.push(Box::new(
+        lead = lead.push(Box::new(
             IconWidget::new(if marks.is_folded(&row_key) {
                 Icon::ChevronRight
             } else {
@@ -725,13 +733,9 @@ fn tree_row(
             .dim(),
         ));
     } else {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "logical pixels are bounded far below f32::MAX"
-        )]
-        let room = TREE_DISCLOSURE as f32;
-        line = line.push(Box::new(Spacer::fixed(room)));
+        lead = lead.push(Box::new(Spacer::fixed(disclosure)));
     }
+    line = line.push(Box::new(lead));
     let mut slot = Slot::new(row);
     slot.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
     line = line.push_slot(slot);

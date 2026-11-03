@@ -2984,6 +2984,10 @@ mod arriving_tests;
 #[path = "virtual_list_mount_tests.rs"]
 mod mount_tests;
 
+#[cfg(test)]
+#[path = "virtual_list_tree_tests.rs"]
+mod tree_tests;
+
 #[path = "virtual_list_component.rs"]
 mod component;
 pub use component::{DescribedList, DescribedRows, ItemRow, ListItemProps, VirtualListProps};
