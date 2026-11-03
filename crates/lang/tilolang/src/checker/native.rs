@@ -16,7 +16,7 @@ use crate::types::Ty;
 
 /// The named arguments a list row takes, for messages.
 const ROW_ARGS_TEXT: &str =
-    "secondary:, meta:, mark:, icon:, avatar:, badge:, value: and checkbox:";
+    "secondary:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
 
 fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
     Stmt::Eval(Ex::host(imp, args, Ty::Unit))
@@ -397,6 +397,9 @@ impl Checker<'_> {
                         ));
                     }
                 }
+                // What a press on the box does: the app's, so a check can carry more than the
+                // one field the box shows.
+                Some("check") => self.apply_arg(n, "row", "on_check", value),
                 Some(name) if prims::NODE_ARGS.contains(&name) => {
                     self.apply_arg(n, "row", name, value);
                 }

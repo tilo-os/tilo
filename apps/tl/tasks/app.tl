@@ -145,9 +145,19 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
     tasks.projects.insert(Project(name: "New project"))
 }
 
-/// Checks a task off, or opens it again.
+/// Checks a task off together with every task under it, or opens it again together with the
+/// tasks it is under: a task is done exactly when it and everything under it is.
 action check(t: Task, done: Bool = not t.done) (label: if done { "Complete" } else { "Reopen" }, icon: .check, on: t.done, key: "Ctrl+Enter") {
     t.done = done
+    if done {
+        for x in tasks.items.descendants(t, .parent) {
+            x.done = true
+        }
+    } else {
+        for x in tasks.items.ancestors(t, .parent) {
+            x.done = false
+        }
+    }
 }
 
 /// Takes a task on: it is the invoker's to do.
@@ -194,18 +204,21 @@ action prioritize(t: Task, priority: Priority) (icon: .flag) {
     t.priority = priority
 }
 
-/// Adds a subtask under a task: a task of its own, in its project and section. The subtasks
-/// entry is how one is added.
+/// Adds a subtask under a task: a task of its own, in its project and section. A task that was
+/// done opens again: there is work under it now. The subtasks entry is how one is added.
 internal action add_subtask(tasks: Tasks, t: Task, title: Text) {
     if title != "" {
         tasks.items.insert(Task(title: title, parent: .some(t), project: t.project, section: t.section))
+        if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) {
+            check(t, false)
+        }
     }
 }
 
 /// Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level
 /// for none), where `before` stands when it is given, or at the end of the top level. A task
-/// cannot go inside itself. The outline's drag, `Tab` and `Shift-Tab` name it; it is not a
-/// command of its own.
+/// cannot go inside itself, and open work put under a done task opens it. The outline's drag,
+/// `Tab` and `Shift-Tab` name it; it is not a command of its own.
 internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) {
     require not within(tasks.items, parent, moved) and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
     if let b = before {
@@ -214,6 +227,9 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
     } else {
         moved.parent = parent
         if let last = tasks.items.filter(x -> x.parent == parent and x != moved).last() { tasks.items.move(moved, after: last) } else if let p = parent { tasks.items.move(moved, after: p) }
+    }
+    if not moved.done and tasks.items.ancestors(moved, .parent).any(a -> a.done) {
+        check(moved, false)
     }
 }
 
@@ -237,18 +253,17 @@ action outdent(t: Task) (label: "Outdent", icon: .arrow_left) {
 
 /// Deletes a task and its subtasks.
 destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
-    for x in tasks.items.filter(x -> x == t or under(tasks.items, x, t)) {
+    for x in tasks.items.descendants(t, .parent) {
         tasks.items.remove(x)
     }
+    tasks.items.remove(t)
 }
 
-/// Deletes every finished task, and answers how many went: a task whose subtasks are still
-/// undone stays, so clearing never takes unfinished work with it.
+/// Deletes every done task, and answers how many went. A done task's steps are done too, so
+/// clearing takes whole finished branches and never unfinished work with it.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
     require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
-    // Offered while something is done: whether a done task is finished (no open steps under
-    // it) is read once it runs, where a whole list may be walked.
-    let gone = tasks.items.filter(x -> finished(tasks.items, x))
+    let gone = tasks.items.filter(x -> x.done)
     for x in gone {
         tasks.items.remove(x)
     }
@@ -307,35 +322,13 @@ action rename(p: Project, name: Text) {
     p.name = name
 }
 
-/// Whether `top` is `x` or one of the tasks over it: the chain of parents, followed 64 deep —
-/// deeper than anyone nests a task, so a chain that loops still ends.
-fn under(items: List<Task>, x: Task, top: Task) -> Bool {
-    let cur: Option<Task> = .some(x)
-    let found = false
-    for n in items.take(64) {
-        if let at = cur {
-            if at == top {
-                found = true
-            }
-            cur = at.parent
-        }
-    }
-    found
-}
-
-/// Whether every task under `t` is done too: a done task whose steps are unfinished is not
-/// finished.
-fn finished(items: List<Task>, t: Task) -> Bool {
-    t.done and not items.any(x -> x != t and under(items, x, t) and not x.done)
-}
-
 /// Whether `place` is `top` or one of the tasks over it.
 fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
-    let here = false
     if let p = place {
-        here = under(items, p, top)
+        p == top or items.ancestors(p, .parent).any(a -> a == top)
+    } else {
+        false
     }
-    here
 }
 
 /// The tasks of a project, in order.
@@ -514,13 +507,13 @@ view task_card(t: Task, sections: List<Section>) {
 view task_row(t: Task, place: RowPlace) {
     let project: Option<Text> = if place == .project { .none } else { t.project?.name }
     let due: Option<Date> = if place == .day { .none } else { t.due }
-    row(t.title, checkbox: t.done, secondary: project, meta: due, mark: t.priority.icon(), avatar: t.assignee)
+    row(t.title, checkbox: t.done, check: check(t), secondary: project, meta: due, mark: t.priority.icon(), avatar: t.assignee)
 }
 
 /// A task as the system shows it on a surface of its own — a result, a notice — where no page
 /// around it says anything: its row with every fact.
 view task_summary(t: Task) {
-    row(t.title, checkbox: t.done, secondary: t.project?.name, meta: t.due, mark: t.priority.icon(), avatar: t.assignee)
+    row(t.title, checkbox: t.done, check: check(t), secondary: t.project?.name, meta: t.due, mark: t.priority.icon(), avatar: t.assignee)
 }
 
 /// One task in an outline, which counts its done subtasks while it is folded. `project` is the
@@ -536,7 +529,9 @@ view task_page(t: Task) {
     lens step: Text
     std.document(t) {
         row(gap: .related, align: .center) {
-            checkbox(bind: t.done)
+            checkbox(bind: t.done) {
+                on check: check(t)
+            }
             input(bind: t.title, placeholder: "Title", fill)
         }
         field("Due") {
@@ -577,13 +572,10 @@ view task_page(t: Task) {
             }
         }
         section("Subtasks") {
-            // A task with no subtasks puts no tree up, and a tree of one task's subtasks pays
-            // for that walk only.
-            let direct = tasks.items.filter(x -> x.parent == .some(t))
-            if not direct.is_empty() {
-                // Every task under this one, at any depth: the outline nests each under its
-                // parent.
-                let kids = tasks.items.filter(x -> x != t and under(tasks.items, x, t))
+            // A task with no subtasks puts no tree up, and the walk over the tasks under this
+            // one is made only once there is one.
+            if not tasks.items.filter(x -> x.parent == .some(t)).is_empty() {
+                let kids = tasks.items.descendants(t, .parent)
                 std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet", (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x), fill: false) { x ->
                     task_outline_row(x, t.project)
                 }

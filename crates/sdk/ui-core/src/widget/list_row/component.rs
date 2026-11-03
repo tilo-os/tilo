@@ -47,9 +47,14 @@ pub struct ListRowProps {
     /// A control on the trailing edge, which moves under the text when the row is narrow.
     #[component(slot)]
     pub trailing: Option<Element>,
-    /// A checkbox in the leading column, bound to whether the item is done.
+    /// A checkbox in the leading column, bound to whether the item is done. A press on it asks
+    /// the row's `check`, when it names one, instead of changing what it is bound to.
     #[component(bind)]
     pub checkbox: Option<Bound<bool>>,
+    /// The checkbox was pressed: what a check is, in the app's words. A task and every step
+    /// under it are done in one thing to undo; with no `check`, a press changes the bound value.
+    #[component(event)]
+    pub check: Event,
     /// The pace the row's own motion plays at: its mark coming and going, and the row arriving,
     /// leaving and changing places in its list. Unset, the theme's.
     pub motion: Option<crate::motion::Feel>,
@@ -81,6 +86,7 @@ impl ListRowProps {
             avatar: self.avatar.clone(),
             trailing: None,
             checkbox: self.checkbox.clone(),
+            check: self.check.clone(),
             motion: self.motion,
             activate: self.activate.clone(),
         })
@@ -174,6 +180,7 @@ impl ListRow {
             avatar,
             trailing,
             checkbox,
+            check,
             motion,
             activate,
         } = props;
@@ -193,13 +200,16 @@ impl ListRow {
             // agent, an undo) shows in the row rather than only in the state behind it.
             let (checked, binding) = crate::widget::binding::local(&bound.state);
             self.check_binding = Some(binding);
-            Some(Leading::Checkbox {
-                checked,
-                on_toggle: Box::new(move |checked| {
+            let on_toggle: Box<dyn FnMut(bool)> = if check.is_none() {
+                Box::new(move |checked| {
                     bound.state.set(checked);
                     bound.edited(Value::Bool(checked));
-                }),
-            })
+                })
+            } else {
+                // The app says what a press means; the box shows what it did on the next frame.
+                Box::new(move |_| check.fire(None))
+            };
+            Some(Leading::Checkbox { checked, on_toggle })
         } else if let Some(avatar) = avatar {
             let (name, identity) = avatar.name_and_identity();
             Some(Leading::Avatar {
