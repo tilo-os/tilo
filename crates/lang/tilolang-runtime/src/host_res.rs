@@ -111,6 +111,19 @@ pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
             check_dated(s, ty)?;
             Ok(Scalar::Text(s.clone()))
         }
+        // A control picking a person hands their identity; none is an empty text.
+        (Value::Text(s), Ty::Principal) => {
+            to_json(&Value::Principal(crate::ids::Principal(s.clone()))).map(Scalar::Json)
+        }
+        (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Principal) => {
+            if s.is_empty() {
+                return to_json(&Value::none()).map(Scalar::Json);
+            }
+            to_json(&Value::some(Value::Principal(crate::ids::Principal(
+                s.clone(),
+            ))))
+            .map(Scalar::Json)
+        }
         // A control picking an optional day hands its text, empty for none.
         (Value::Text(s), Ty::Option(inner)) if matches!(**inner, Ty::Date | Ty::Time) => {
             if s.is_empty() {

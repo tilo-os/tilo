@@ -22,6 +22,11 @@ fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
     Stmt::Eval(Ex::host(imp, args, Ty::Unit))
 }
 
+/// Whether `a` is a call's `bind:` argument.
+fn is_bind(a: &ast::Arg) -> bool {
+    a.name.as_ref().is_some_and(|name| name.name == "bind")
+}
+
 fn concat(a: Ex, b: Ex) -> Ex {
     Ex::host(Imp::StrConcat, vec![a, b], Ty::Text)
 }
@@ -37,6 +42,9 @@ impl Checker<'_> {
                 Some(self.action_button(&callee, c, args))
             }
             "choice" => Some(self.choice(c, args)),
+            // `field(label, bind: t.assignee)`: the form's labelled row, its control the
+            // toolkit's field for the bound value's type. A person is picked with `PersonField`.
+            "field" if args.iter().any(is_bind) => Some(self.bound_field(p, c, args)),
             _ => None,
         }
     }
@@ -735,6 +743,59 @@ impl Checker<'_> {
     }
 
     // ---- controls -------------------------------------------------------------------------
+
+    /// `field(label, bind: t.assignee)`: a form's field, its label on the row and its control
+    /// the toolkit's component for the bound value's type — a person is the toolkit's
+    /// `PersonField`, offered the workspace's members and the person the view is shown to.
+    /// The app writes the binding once and gets the control the type takes.
+    fn bound_field(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
+        let holder = self.primitive(
+            p,
+            c,
+            &args
+                .iter()
+                .filter(|a| !is_bind(a))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        let Some(d) = self
+            .env
+            .toolkit
+            .and_then(|toolkit| toolkit.get("PersonField"))
+        else {
+            self.err(
+                "E060",
+                c.call.span,
+                "the toolkit describes no `PersonField`, which a field bound to a person is",
+            );
+            return holder;
+        };
+        let key = concat(self.node_key(c), Ex::str("#person"));
+        let n = self.new_node(&crate::toolkit::kind(&d.name), key);
+        for a in args.iter().filter(|a| is_bind(a)) {
+            self.binding_prop(n, d, &a.value, &d.bindings);
+        }
+        // Who may be picked, and which of them is "Me": the workspace's, never a copy the app
+        // keeps.
+        let people = Ty::List(Box::new(Ty::Principal));
+        self.prop(
+            Ex::local(n, Ty::View),
+            "people",
+            Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
+            c.call.span,
+        );
+        self.prop(
+            Ex::local(n, Ty::View),
+            "me",
+            Ex::host(Imp::Viewer, Vec::new(), Ty::Principal),
+            c.call.span,
+        );
+        self.emit(host(
+            Imp::UiChild,
+            vec![Ex::local(holder, Ty::View), Ex::local(n, Ty::View)],
+        ));
+        holder
+    }
 
     /// `choice(bind: s)`: the enum of the view state `s`, its selected variant and a
     /// `pick.<variant>` event per variant.

@@ -3079,6 +3079,39 @@
       }
     },
     {
+      "name": "PersonField",
+      "doc": "A form's person: who is doing it, shown as their avatar and name, and picked from the workspace's members and agents. \"Me\" picks the person the view is shown to, \"No one\" clears it.",
+      "props": [
+        {
+          "name": "people",
+          "doc": "The people to offer, after \"Me\" and \"No one\": the workspace's members and agents, as the platform's membership names them.",
+          "type": {
+            "option": {
+              "list": "principal"
+            }
+          }
+        },
+        {
+          "name": "me",
+          "doc": "The person the view is shown to: the list's \"Me\".",
+          "type": {
+            "option": "principal"
+          }
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The person's identity, as the person a component binds (its identity text, empty for nobody), and where a pick goes.",
+          "type": "principal",
+          "merge": "register"
+        }
+      ],
+      "semantics": {
+        "role": "ComboBox"
+      }
+    },
+    {
       "name": "PictureChoice",
       "doc": "A choice among pictures whose meaning is visual: a text size, a pointer size, a colour filter. Each tile shows its picture over its name, and the chosen tile carries the selection edge.",
       "props": [

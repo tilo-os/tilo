@@ -14,6 +14,8 @@ fn a_menu_button_makes_room_for_its_chevron() {
             icon: None,
             image: None,
             faces: &[],
+            avatar: None,
+            placeholder: false,
             badge: None,
             label,
             hint: None,

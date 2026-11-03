@@ -159,27 +159,10 @@ action check(t: Task, done: Bool = not t.done) (label: if done { "Complete" } el
     }
 }
 
-/// Takes a task on: it is the invoker's to do.
-action take(t: Task) (label: "Assign to me", icon: .user) {
-    require t.assignee == .none "Someone is doing it already"
-    t.assignee = invoker
-}
-
-/// Gives a task to someone in the workspace to do.
-action assign(t: Task, to: Principal) (label: "Assign to…", icon: .user) {
-    t.assignee = to
-}
-
 /// Puts a task off until a day: it is due then.
 action snooze(t: Task, until: Date) (label: "Snooze until…", icon: .clock) {
     require not t.done "It is done already"
     t.due = until
-}
-
-/// Leaves a task for anyone to take.
-action release(t: Task) (label: "Unassign", icon: .user) {
-    require t.assignee != .none "Nobody is doing it"
-    t.assignee = .none
 }
 
 /// Files a task under a project.
@@ -564,19 +547,7 @@ view task_page(t: Task) {
                 }
             }
         }
-        field("Assignee") {
-            if let who = t.assignee {
-                row(gap: .related, align: .center) {
-                    avatar(who)
-                    button(release(t))
-                }
-            } else {
-                row(gap: .related, align: .center) {
-                    button(take(t))
-                    button(assign(t))
-                }
-            }
-        }
+        field("Assignee", bind: t.assignee)
         section("Subtasks") {
             // A task with no subtasks puts no tree up, and the walk over the tasks under this
             // one is made only once there is one.
@@ -614,7 +585,7 @@ scenario "a busy week" -> Task {
     tasks.items.insert(Task(title: "Give notice to the electricity company", project: flat, due: 2026-07-04, priority: .medium))
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
     tasks.items.insert(Task(title: "Pack the books", project: flat, done: true))
-    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
+    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing."), assignee: .some(mia)))
     // Checked off before the step under it was added: a list written by the version that kept
     // steps apart, or a check made while someone else added that step. Clearing keeps the step.
     let outline = tasks.items.insert(Task(title: "Outline", done: true, parent: .some(copy), project: launch))
@@ -623,9 +594,6 @@ scenario "a busy week" -> Task {
     tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
     tasks.items.insert(Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08))
     tasks.items.insert(Task(title: "Set up the redirects", project: launch, done: true))
-    as mia at 2026-06-29T16:00Z {
-        take(copy)
-    }
     call
 }
 

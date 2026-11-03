@@ -62,6 +62,12 @@ pub struct Button {
     /// Who is here, as their faces ([`Self::with_faces`]): the button's whole face, and the
     /// label names them to assistive technology.
     faces: Vec<String>,
+    /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
+    /// as a person field's chip shows who it holds.
+    avatar: Option<(String, String)>,
+    /// The label stands for no value yet (`Self::with_placeholder`): painted in the secondary
+    /// ink a field shows an empty value in.
+    placeholder: bool,
     /// A media transport's control (previous, play/pause, next), drawn as
     /// its [`crate::widget::TransportFace`] at that face's side.
     transport: Option<(crate::widget::TransportControl, f64)>,
@@ -192,6 +198,8 @@ impl Button {
             icon: None,
             image: None,
             faces: Vec::new(),
+            avatar: None,
+            placeholder: false,
             transport: None,
             badge: None,
             count: None,
@@ -389,6 +397,26 @@ impl Button {
     pub fn with_faces(mut self, faces: impl IntoIterator<Item = String>) -> Self {
         self.faces = faces.into_iter().collect();
         self.layout_dirty = true;
+        self.dirty = true;
+        self
+    }
+
+    /// Lead the face with one person's avatar, before the label: a chip that names someone
+    /// shows who they are as well as what they are called. A button with no label draws the
+    /// avatar alone, as its face.
+    #[must_use]
+    pub fn with_avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.avatar = Some((name.into(), identity.into()));
+        self.layout_dirty = true;
+        self.dirty = true;
+        self
+    }
+
+    /// The label stands for no value yet: it is painted in the secondary ink, as a field shows
+    /// an empty value, while the face stays a control the person presses.
+    #[must_use]
+    pub fn with_placeholder(mut self) -> Self {
+        self.placeholder = true;
         self.dirty = true;
         self
     }
@@ -1110,6 +1138,8 @@ impl FaceSizer {
             icon,
             image: None,
             faces: &[],
+            avatar: None,
+            placeholder: false,
             badge: None,
             label,
             hint: None,
@@ -1138,6 +1168,10 @@ struct FaceContent<'a> {
     image: Option<&'a vello::peniko::ImageData>,
     /// Who is here, as their faces; empty for every face that is not a group of people.
     faces: &'a [String],
+    /// One person's avatar before the label, as a person chip leads with it.
+    avatar: Option<(&'a str, &'a str)>,
+    /// The label names no value yet: painted in the secondary ink.
+    placeholder: bool,
     badge: Option<&'a str>,
     label: &'a str,
     hint: Option<String>,
@@ -1165,7 +1199,7 @@ impl FaceContent<'_> {
         }
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
         let mut width = 2.0 * pad;
-        if self.icon.is_some() {
+        if self.icon.is_some() || self.avatar.is_some() {
             width += metrics.icon + metrics.icon_gap;
         }
         if !self.label.is_empty() {
@@ -1264,6 +1298,16 @@ impl FaceContent<'_> {
                 self.draw_faces(ctx, rect);
                 return;
             }
+            if let Some((name, identity)) = self.avatar {
+                let face = Rect::new(
+                    rect.center().x - icon_px / 2.0,
+                    rect.center().y - icon_px / 2.0,
+                    rect.center().x + icon_px / 2.0,
+                    rect.center().y + icon_px / 2.0,
+                );
+                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+                return;
+            }
             if let Some(image) = self.image {
                 let ix = rect.center().x - icon_px / 2.0;
                 let iy = rect.center().y - icon_px / 2.0;
@@ -1286,7 +1330,7 @@ impl FaceContent<'_> {
             return;
         }
         let style = &metrics.label_style;
-        let lead = if self.icon.is_some() {
+        let lead = if self.icon.is_some() || self.avatar.is_some() {
             icon_px + metrics.icon_gap
         } else {
             0.0
@@ -1322,9 +1366,16 @@ impl FaceContent<'_> {
                 ink,
             );
         }
+        if let Some((name, identity)) = self.avatar {
+            let iy = rect.center().y - icon_px / 2.0;
+            let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
+            crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+        }
         let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
         let label_x = start_x + lead;
-        ctx.text(&label, style, ink, Point::new(label_x, text_y), None);
+        // A label that names no value yet reads quieter than one that does.
+        let label_ink = if self.placeholder { hint_ink } else { ink };
+        ctx.text(&label, style, label_ink, Point::new(label_x, text_y), None);
         if let Some((hint, _)) = hint {
             let hint_x = label_x + f64::from(label_w) + metrics.hint_gap;
             ctx.text(hint, style, hint_ink, Point::new(hint_x, text_y), None);
@@ -1703,6 +1754,8 @@ impl<'a> ButtonFace<'a> {
             icon: self.icon,
             image: None,
             faces: &[],
+            avatar: None,
+            placeholder: false,
             badge: None,
             label: &label,
             hint: self.shortcut.as_ref().map(shortcut_text),
@@ -1766,6 +1819,8 @@ impl<'a> ButtonFace<'a> {
                 icon: self.icon,
                 image: None,
                 faces: &[],
+                avatar: None,
+                placeholder: false,
                 badge: None,
                 label,
                 hint: self.shortcut.as_ref().map(shortcut_text),
@@ -1861,6 +1916,11 @@ impl Button {
                 icon: self.icon,
                 image: None,
                 faces: &self.faces,
+                avatar: self
+                    .avatar
+                    .as_ref()
+                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                placeholder: self.placeholder,
                 badge: None,
                 label: &label,
                 hint,
@@ -2192,6 +2252,11 @@ impl Widget for Button {
                 icon: self.icon,
                 image: self.image.as_ref(),
                 faces: &self.faces,
+                avatar: self
+                    .avatar
+                    .as_ref()
+                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                placeholder: self.placeholder,
                 badge: self.badge.as_deref(),
                 label: &label,
                 hint,

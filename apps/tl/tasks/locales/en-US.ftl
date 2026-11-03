@@ -134,17 +134,8 @@ d-zjuy7y7f = New project
 d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
 
-d-baqmaej2 = Assign to me
-    .doc = Takes a task on: it is the invoker's to do.
-
-d-lwodiwbl = Assign to…
-    .doc = Gives a task to someone in the workspace to do.
-
 d-dfu53sij = Snooze until…
     .doc = Puts a task off until a day: it is due then.
-
-d-77umq62t = Unassign
-    .doc = Leaves a task for anyone to take.
 
 d-laxsa3x6 = File
     .doc = Files a task under a project.
@@ -202,11 +193,7 @@ d-kjbukd2o = Rename
 
 d-qwizihx4 = Check~present
 
-d-7ldzywu7 = Take~present
-
 d-gqnya75y = Snooze~present
-
-d-7g55zawk = Release~present
 
 d-day53wfn = Unfile~present
 

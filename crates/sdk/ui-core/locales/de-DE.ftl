@@ -896,6 +896,9 @@ date-field-none = Kein Datum
 date-field-calendar = Kalender
 date-field-clear = Datum entfernen
 
+person-field-none = Niemand
+person-field-me = Ich
+
 # Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
 text-menu-cut = Ausschneiden
 text-menu-copy = Kopieren
