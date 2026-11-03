@@ -299,6 +299,17 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
+    /// The box the row `index` itself takes: the list's width, one bleed in from its edges, at
+    /// its own height. The viewport holds a row that starts a group together with the band of
+    /// the heading over it, so the band comes off the top: a row's lift, focus ring and
+    /// disclosure hang on the row, never on the heading above it.
+    pub(super) fn row_box(&self, index: usize) -> Option<Rect> {
+        let top = self.viewport.item_view_top(index)?;
+        let height = self.viewport.item_height(index)?;
+        let band = self.band_room(index);
+        Some(self.lift_rect(top + band, (height - band).max(0.0)))
+    }
+
     /// Place the band of the group the row `index` starts, if it starts one.
     pub(super) fn place_band(&mut self, index: usize, top: f64) {
         let Some(group) = self.row_group(index) else {

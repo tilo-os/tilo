@@ -58,7 +58,26 @@ impl Chevrons {
         Some((gutter, marks.is_folded(key)))
     }
 
-    /// Paint the row `key`'s chevron into `row`, at its own depth's gutter.
+    /// The box the row `key`'s chevron takes: in its own depth's gutter, centred on the row's
+    /// own box `row`, and how the row folds what stands under it. `None` when the row has no
+    /// subtasks to fold.
+    pub(super) fn rect<K: Clone + Eq + Hash>(
+        &self,
+        marks: &TreeMarks<K>,
+        theme: &Theme,
+        key: &K,
+        row: Rect,
+    ) -> Option<(Rect, bool)> {
+        let (gutter, folded) = self.gutter(marks, key)?;
+        let side = f64::from(theme.tokens.metrics.icon_sm);
+        let cy = row.center().y;
+        Some((
+            Rect::new(gutter, cy - side / 2.0, gutter + side, cy + side / 2.0),
+            folded,
+        ))
+    }
+
+    /// Paint the row `key`'s chevron into the row's own box `row`, at its own depth's gutter.
     pub(super) fn paint<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
@@ -68,22 +87,15 @@ impl Chevrons {
         key: &K,
         row: Rect,
     ) {
-        let Some((gutter, folded)) = self.gutter(marks, key) else {
+        let Some((chevron, folded)) = self.rect(marks, theme, key, row) else {
             return;
         };
-        let side = f64::from(theme.tokens.metrics.icon_sm);
-        let cy = row.center().y;
         let icon = if folded {
             crate::icons::Icon::ChevronRight
         } else {
             crate::icons::Icon::ChevronDown
         };
-        icon.draw(
-            scene,
-            transform,
-            Rect::new(gutter, cy - side / 2.0, gutter + side, cy + side / 2.0),
-            theme.text_dim,
-        );
+        icon.draw(scene, transform, chevron, theme.text_dim);
     }
 }
 
@@ -287,26 +299,18 @@ impl<M: ListModel> VirtualList<M> {
         if !marks.is_branch(key) {
             return false;
         }
-        let Some(top) = self.viewport.item_view_top(index) else {
-            return false;
-        };
-        let Some(height) = self.viewport.item_height(index) else {
-            return false;
-        };
         // The chevron hangs in the gutter left of the row's content column, at the row's own
         // depth: the rows stand `lead` in, and step one disclosure gutter per depth.
-        let chevrons = Chevrons {
-            x0: self.rect.x0,
-            lead: self.lead,
-            step: self.disclosure,
-        };
+        let chevrons = self.chevrons();
         let Some((x0, _)) = chevrons.gutter(marks, key) else {
             return false;
         };
-        // The rows stand where the layout put them, moved by the scroll since, as a press is
-        // read (`Self::row_at`).
-        let y0 = self.rect.y0 + self.end_slack() + top;
-        let rect = Rect::new(x0, y0, x0 + self.disclosure, y0 + height);
+        // The row's own box, below the band of a heading it starts a group under, where the
+        // chevron is drawn.
+        let Some(row) = self.row_box(index) else {
+            return false;
+        };
+        let rect = Rect::new(x0, row.y0, x0 + self.disclosure, row.y1);
         rect.contains(cursor)
     }
 

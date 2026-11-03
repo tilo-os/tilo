@@ -38,13 +38,9 @@ impl<M: ListModel> VirtualList<M> {
             self.apply_selection(key.clone(), false, false);
         }
         self.focus_row(key.clone());
-        let rect = match (
-            self.viewport.item_view_top(index),
-            self.viewport.item_height(index),
-        ) {
-            (Some(top), Some(height)) => self.lift_rect(top, height),
-            _ => self.rect,
-        };
+        // The row's own box, below the band of a heading it starts a group under, or the
+        // list's when the row is not placed.
+        let rect = self.row_box(index).unwrap_or(self.rect);
         if let Some(callback) = &mut self.on_context {
             callback(key, point, rect);
         }

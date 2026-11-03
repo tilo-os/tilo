@@ -43,18 +43,11 @@ impl<M: ListModel> VirtualList<M> {
                 item.description = Some(message.clone());
             }
         }
-        if let (Some(top), Some(height)) = (
-            self.viewport.item_view_top(row.index),
-            self.viewport.item_height(row.index),
-        ) {
-            // The row's own box: one bleed in from the list's edges.
+        if let Some(row_box) = self.row_box(row.index) {
+            // The row's own box, below the band of a heading it starts a group under: one
+            // bleed in from the list's edges.
             let widget = row.widget.get_rect();
-            item = item.with_bounds(Rect::new(
-                widget.x0,
-                self.rect.y0 + top,
-                widget.x1,
-                self.rect.y0 + top + height,
-            ));
+            item = item.with_bounds(Rect::new(widget.x0, row_box.y0, widget.x1, row_box.y1));
         }
         if let Some(encode) = &self.semantic_key {
             item = item.with_action_target(format!("key:{}", encode(&row.key)));

@@ -1330,7 +1330,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// The rect a row's lift takes: the list's width, less the bar's gutter
     /// while the rows stand beside the bar.
-    fn lift_rect(&self, top: f64, height: f64) -> Rect {
+    pub(super) fn lift_rect(&self, top: f64, height: f64) -> Rect {
         let x1 = if self.rows_beside_bar {
             self.rect.x1 - self.gutter
         } else {
@@ -2283,9 +2283,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 if !near.contains(&at) {
                     return None;
                 }
-                let top = self.viewport.item_view_top(row.index)?;
-                let height = self.viewport.item_height(row.index)?;
-                Some(self.lift_rect(top, height))
+                self.row_box(row.index)
             })
             .collect();
         let selections: Vec<RowSelection> = self
@@ -2950,13 +2948,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 true
             }
             Action::ShowContextMenu if self.on_context.is_some() => {
-                let point = match (
-                    self.viewport.item_view_top(index),
-                    self.viewport.item_height(index),
-                ) {
-                    (Some(top), Some(height)) => self.lift_rect(top, height).center(),
-                    _ => self.rect.center(),
-                };
+                let point = self
+                    .row_box(index)
+                    .map_or(self.rect.center(), |row| row.center());
                 self.open_context(index, key, point);
                 true
             }
