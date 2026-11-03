@@ -236,7 +236,9 @@ destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
 /// Deletes every finished task, and answers how many went: a task whose subtasks are still
 /// undone stays, so clearing never takes unfinished work with it.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
-    require tasks.items.any(x -> finished(tasks.items, x)) "Nothing is done yet"
+    // Offered while something is done: whether a done task is finished (no open steps under
+    // it) is read once it runs, where a whole list may be walked.
+    require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
     let gone = tasks.items.filter(x -> finished(tasks.items, x))
     for x in gone {
         tasks.items.remove(x)

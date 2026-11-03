@@ -1593,8 +1593,9 @@ mod cases {
             "once an item is done, Clear done is offered: {:?}",
             labels(&v)
         );
-        // A step left open under a done task is unfinished work: a clear would take nothing,
-        // so it is not offered.
+        // A step left open under a done task leaves that task unfinished: a clear takes
+        // nothing while it stands. The offer reads that when the clear runs, not on every
+        // render, so it stays up.
         w.call(
             &apps.todo,
             "add_subtask",
@@ -1606,26 +1607,31 @@ mod cases {
             .expect("the step went under the task");
         v.poll_patches().unwrap();
         assert!(
-            !labels(&v).contains(&"Clear done".to_owned()),
-            "a done task with an open step is not finished: {:?}",
+            labels(&v).contains(&"Clear done".to_owned()),
+            "something is done, so Clear done is offered: {:?}",
             labels(&v)
         );
-        let refused =
-            w.rt.invoke_action(
-                &me(),
-                (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
-            )
-            .expect_err("clear_done is refused while nothing is finished");
+        let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
         assert!(
-            refused.to_string().contains("Nothing is done yet"),
-            "{refused}"
+            matches!(cleared, InvokeOutcome::Done(Value::Int(0))),
+            "a done task with an open step is not finished, so nothing went: {cleared:?}"
+        );
+        assert_eq!(
+            items(&w, &list, "items").len(),
+            2,
+            "the task keeps its open step"
         );
         w.call(&apps.todo, "check", vec![res(&step)]);
         v.poll_patches().unwrap();
         assert!(
             labels(&v).contains(&"Clear done".to_owned()),
-            "with the step done too, Clear done is offered again: {:?}",
+            "with the step done too, Clear done is offered still: {:?}",
             labels(&v)
+        );
+        let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
+        assert!(
+            matches!(cleared, InvokeOutcome::Done(Value::Int(2))),
+            "now the task and its step are finished: {cleared:?}"
         );
     }
 
