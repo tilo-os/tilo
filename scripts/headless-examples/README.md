@@ -58,6 +58,7 @@ Each script takes the socket path as its first argument (default `$TILO_TEST_CON
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
 | `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down. |
 | `real_apps.py` | A headless session with the tree's own apps installed, launched through the desktop's own launcher: `Session` for a check, `--start --open notes --shot out.png` for a person. Every check of a desktop with apps starts here. |
+| `files-clipboard-e2e.py` | Copy and cut files in Files, paste them into another folder through the session's file clipboard, and read the bytes back off disk. |
 | `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
 | `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 
