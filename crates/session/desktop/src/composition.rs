@@ -86,6 +86,10 @@ pub struct DesktopSurface {
     /// The input generation the last drawn frame read: input handed to the
     /// tree after it makes the next frame due.
     drawn_input: u64,
+    /// Whether the frame on screen stands on a reading from outside the tree
+    /// ([`ui::outside_paint`]): input handed to the tree makes the next one
+    /// due only when it does.
+    drawn_outside: bool,
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
     retained_wakes: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -320,6 +324,7 @@ impl DesktopSurface {
             root,
             context: tree.active_workspace().map(|w| (w.slot, w.id())),
             drawn_input: ui::input_generation::generation(),
+            drawn_outside: false,
             empty_workspace_visible,
             component_wake,
             retained_wakes: vec![],
@@ -1316,10 +1321,14 @@ impl Widget for DesktopSurface {
     fn needs_redraw(&self) -> bool {
         self.has_pending_component_wake()
             || (self.root.needs_redraw() || self.root.needs_animation_frame())
-            || self.drawn_input != ui::input_generation::generation()
+            // Only a drawing that read outside the tree goes stale with
+            // input; one that read inside it changed nothing.
+            || (self.drawn_input != ui::input_generation::generation() && self.drawn_outside)
     }
     fn mark_drawn(&mut self) {
         self.drawn_input = ui::input_generation::generation();
+        self.drawn_outside = ui::outside_paint::on_screen();
+        ui::outside_paint::forget_on_screen();
         self.mark_children_drawn();
     }
     fn build_layout(

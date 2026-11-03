@@ -352,6 +352,10 @@ pub struct FrameHarness {
     /// The input generation the last drawn frame read: input handed to the
     /// tree after it makes the next frame due.
     drawn_input: u64,
+    /// Whether the frame on screen stands on a reading from outside the tree
+    /// ([`crate::outside_paint`]): input handed to the tree makes the next
+    /// one due only when it does.
+    drawn_outside: bool,
     state: Box<State>,
     root: Box<dyn Widget>,
     history: Option<crate::history_mode::host::HistoryChrome>,
@@ -1536,6 +1540,7 @@ impl FrameHarness {
             remount: false,
             layout_requested: false,
             drawn_input: crate::input_generation::generation(),
+            drawn_outside: false,
             state: Box::new(state),
             root,
             taffy: TaffyTree::new(),
@@ -2666,7 +2671,10 @@ impl FrameHarness {
                 .any(|root| root.needs_redraw() || root.needs_animation_frame())
                 || queued_work
                 || self.permissions_moved()
-                || self.drawn_input != crate::input_generation::generation(),
+                // Only a drawing that read outside the tree goes stale with
+                // input; one that read inside it changed nothing.
+                || (self.drawn_input != crate::input_generation::generation()
+                    && self.drawn_outside),
             queued_work,
         })
     }
@@ -4027,6 +4035,8 @@ impl FrameHarness {
             self.root.mark_drawn();
         }
         self.drawn_input = crate::input_generation::generation();
+        self.drawn_outside = crate::outside_paint::on_screen();
+        crate::outside_paint::forget_on_screen();
         if let Some(history) = &mut self.history {
             history.draw_overlay(
                 &mut self.scene,

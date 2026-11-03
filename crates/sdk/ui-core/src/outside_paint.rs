@@ -19,11 +19,28 @@ use std::cell::Cell;
 
 thread_local! {
     static PAINTED: Cell<bool> = const { Cell::new(false) };
+    /// Whether the drawing on screen stood on a reading from outside it.
+    static ON_SCREEN: Cell<bool> = const { Cell::new(false) };
 }
 
 /// This drawing read state that lives outside the widgets that paint it.
 pub fn note() {
     PAINTED.with(|painted| painted.set(true));
+    ON_SCREEN.with(|shown| shown.set(true));
+}
+
+/// Whether the frame on screen stands on a reading from outside the tree,
+/// and so is stale as soon as input reaches it ([`crate::input_generation`]).
+/// A host reads this when it records the frame it drew, then
+/// [`forget_on_screen`]: frames that draw such a part note it again.
+#[must_use]
+pub fn on_screen() -> bool {
+    ON_SCREEN.with(Cell::get)
+}
+
+/// The next frame's drawing has begun: nothing stands on screen yet.
+pub fn forget_on_screen() {
+    ON_SCREEN.with(|shown| shown.set(false));
 }
 
 /// Start recording a drawing: answers whether an enclosing brace had already
@@ -53,13 +70,19 @@ mod tests {
 
     #[test]
     fn a_brace_keeps_what_its_drawing_read() {
-        let above = begin();
-        assert!(!end(above), "a drawing that read nothing outside says so");
+        let enclosing = begin();
+        assert!(
+            !end(enclosing),
+            "a drawing that read nothing outside says so"
+        );
 
-        let above = begin();
+        let enclosing = begin();
         note();
-        assert!(end(above), "the reading reached the drawing's owner");
-        assert!(!begin(), "and the brace that held it is clean again");
+        assert!(end(enclosing), "the reading reached the drawing's owner");
+        assert!(
+            begin(),
+            "and the brace around it answers that it read outside too"
+        );
     }
 
     #[test]
@@ -69,6 +92,9 @@ mod tests {
         let inner = begin();
         assert!(inner, "the inner brace stood on an outer reading");
         assert!(end(inner), "and keeps it");
-        assert!(!end(outer), "the outer brace already held it");
+        assert!(
+            end(outer),
+            "the outer brace answers for the reading it held"
+        );
     }
 }
