@@ -1226,6 +1226,14 @@ pub(crate) struct SessionDoors {
 /// session rather than a wait that should ever reach it.
 const WAIT: Duration = Duration::from_secs(30);
 
+/// A session that did not answer within [`WAIT`]: it is frozen, and nothing is done elsewhere
+/// in its place.
+fn unanswered() -> ActionHostError {
+    ActionHostError::Unavailable {
+        reason: "the session did not answer".to_owned(),
+    }
+}
+
 impl SessionDoors {
     /// The seam `wake` wakes the loop on, shared by every connection that
     /// asks the session's own doors, and the runs' program hosts (`runs`)
@@ -1673,9 +1681,14 @@ impl tilo_actions::remote::RecordReads for ServiceReads {
             app: address.app.clone(),
             done,
         });
-        let kept: Option<Option<tilo_service::Record>> = asked.wait_timeout(WAIT).ok().flatten();
-        if let Some(Some(record)) = kept {
-            return Ok(tilo_actions::remote::RecordCopy::Document(record.document));
+        match asked.wait_timeout(WAIT) {
+            Ok(Some(Some(record))) => {
+                return Ok(tilo_actions::remote::RecordCopy::Document(record.document));
+            }
+            // A session that did not answer keeps the record still: reading the workspace's
+            // copy instead would answer from somewhere else.
+            Err(_) => return Err(unanswered()),
+            Ok(None | Some(None)) => {}
         }
         // Any other app's record is the workspace's, read through the broker.
         let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) else {
@@ -1717,9 +1730,12 @@ impl tilo_actions::remote::RecordChanges for ServiceChanges {
         });
         match answered.wait_timeout(WAIT) {
             Ok(Some(Some(answer))) => return answer,
+            // The session may still make the change: making it at the origin as well would
+            // make it twice.
+            Err(_) => return Err(unanswered()),
             // No service keeps a record of that app: the workspace's own, changed at its
             // origin through the broker.
-            Ok(None) | Ok(Some(None)) | Err(_) => {}
+            Ok(None | Some(None)) => {}
         }
         let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) else {
             return Err(ActionHostError::Unavailable {
