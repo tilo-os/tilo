@@ -144,6 +144,9 @@ impl JoinedChannel {
                 .and_then(|caller| caller.current(&self.state))
                 .map(|caller| self.state.caller_actor(&caller, &workspace))
                 .ok_or("original clipboard caller unavailable")?;
+            // A caller that is not the session's own agent has no agent to
+            // attribute the write to; that is the expected case.
+            // ignored-failure: only an agent acting for this session's person is attributed
             let agent = attributed_agent(&actor, session_person(&self.verified_identity)).ok();
             (actor.id().to_owned(), agent)
         } else {

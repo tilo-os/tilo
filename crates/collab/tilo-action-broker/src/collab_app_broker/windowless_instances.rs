@@ -80,7 +80,10 @@ pub(super) async fn start_failed(
     let why = match ended {
         Ok(Ok(())) => return std::future::pending().await,
         Ok(Err(why)) => why,
-        Err(_) => "the host stopped starting it".into(),
+        Err(error) => {
+            tracing::warn!(%error, app = app_id, "starting the app without a window did not finish");
+            format!("the host stopped starting it ({error})")
+        }
     };
     ActionHostError::Unavailable {
         reason: format!("{app_id} could not run without a window: {why}"),

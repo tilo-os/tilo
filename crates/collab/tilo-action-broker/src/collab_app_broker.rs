@@ -227,7 +227,7 @@ fn cap_applies_in(
     device: Option<&[u8; 32]>,
 ) -> bool {
     let governs = authority
-        .zip(uuid::Uuid::parse_str(workspace).ok()) // optional-decode: a non-uuid workspace is governed by no authority: the stricter bound applies
+        .zip(uuid::Uuid::parse_str(workspace).ok()) // ignored-failure: a non-uuid workspace is governed by no authority: the stricter bound applies
         .is_some_and(|(authority, workspace)| authority.governs(workspace, device));
     // A foreign device is held to the bound only in a workspace it does not govern.
     foreign && !governs
@@ -6936,7 +6936,7 @@ impl AppBrokerState {
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // optional-decode: a JSON-map probe; other text is evaluated as it is
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // ignored-failure: a JSON-map probe; other text is evaluated as it is
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
@@ -8287,14 +8287,14 @@ impl AppBrokerState {
         let surface_failed = self
             .refresh_workspace_membership_services()
             .inspect_err(|error| {
-                tracing::debug!(%error, "native membership surface could not be refreshed");
+                tracing::warn!(%error, "native membership surface could not be refreshed");
             })
             .is_err();
         self.answer_membership_surface_waiters(waiting);
         let context_failed = self
             .refresh_workspace_context_services()
             .inspect_err(|error| {
-                tracing::debug!(%error, "native membership context could not be refreshed");
+                tracing::warn!(%error, "native membership context could not be refreshed");
             })
             .is_err();
         let clocked = surface_failed || context_failed;
@@ -10169,6 +10169,7 @@ impl Drop for SocketStage {
         if !self.published
             && let Some(identity) = self.identity
         {
+            // ignored-failure: the next bind proves a stale socket and unlinks it
             let _ = remove_socket_if_owned(&self.socket, identity);
         } else if !self.published
             && self.bound
@@ -10240,6 +10241,7 @@ struct SocketCustody {
 
 impl Drop for SocketCustody {
     fn drop(&mut self) {
+        // ignored-failure: the next bind proves a stale socket and unlinks it
         let _ = remove_socket_if_owned(&self.path, self.identity);
     }
 }

@@ -940,7 +940,13 @@ impl OriginalInvocation {
             Ok(certificate) => {
                 actor.for_person(super::principal_id_for_root(certificate.user_public_key))
             }
-            Err(_) => actor,
+            Err(error) => {
+                // Without the certificate the agent cannot be tied to the
+                // person who delegated it, so the work it asks for is checked
+                // against the agent alone, and this says why.
+                tracing::warn!(%error, "the original invocation's certificate could not be read; its agent asks without its person");
+                actor
+            }
         };
         if !actor.reads_in(workspace, seconds) {
             return Err("original agent membership expired".into());
@@ -1157,7 +1163,7 @@ fn selected_open_action_matches(
         return false;
     }
     argument
-        // optional-decode: a match predicate; arguments that are not a JSON map name no app, so the action is not the selected open
+        // ignored-failure: a match predicate; arguments that are not a JSON map name no app, so the action is not the selected open
         .and_then(|argument| serde_json::from_str::<serde_json::Value>(argument).ok())
         .is_some_and(|value| {
             value.get("app").and_then(serde_json::Value::as_str)

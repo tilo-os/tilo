@@ -865,7 +865,7 @@ impl ChannelEncryption {
         let event = match received {
             Ok(event) => event,
             Err(error) => {
-                tracing::debug!(%error, %workspace, "channel frame refused");
+                tracing::warn!(%error, %workspace, "channel frame refused");
                 return;
             }
         };
@@ -876,7 +876,7 @@ impl ChannelEncryption {
             self.peers.remove(&channel);
             self.groups_seen.insert(channel);
             if let Err(error) = std::fs::remove_file(ChannelPeer::path_in(&dir, channel)) {
-                tracing::debug!(%error, %workspace, "unwanted channel state could not be removed");
+                tracing::warn!(%error, %workspace, "unwanted channel state could not be removed");
             }
             return;
         }
@@ -957,7 +957,7 @@ impl ChannelEncryption {
         match entry.peer.learn_request(request, &store.vault) {
             Ok(true) => entry.dirty = true,
             Ok(false) => {}
-            Err(error) => tracing::debug!(%error, %workspace, "channel access request refused"),
+            Err(error) => tracing::warn!(%error, %workspace, "channel access request refused"),
         }
     }
 

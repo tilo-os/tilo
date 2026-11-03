@@ -932,7 +932,7 @@ impl JoinedChannel {
         if exhausted {
             let peer_bound = ops
                 .iter()
-                .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // optional-decode: read_scrollback encoded these from typed ops just now
+                .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // ignored-failure: read_scrollback encoded these from typed ops just now
                 .map(|op| op.seq)
                 .min()
                 .unwrap_or(before_seq);
@@ -1068,7 +1068,7 @@ impl JoinedChannel {
     ) -> TaskAnswer {
         let state = self.state.clone();
         let peer_id = self.peer_id;
-        let caller = super::durable_local_invocation::LocalCaller::capture(self).ok();
+        let caller = super::durable_local_invocation::LocalCaller::capture(self);
         let route = self.route();
         let identity = self.verified_identity.clone();
         Box::pin(async move {

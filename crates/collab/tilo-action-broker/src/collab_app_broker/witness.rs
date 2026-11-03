@@ -139,7 +139,7 @@ impl AppBrokerState {
                 })
             })
         } else {
-            // optional-decode: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
+            // ignored-failure: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
             provider.parse::<u64>().ok()
         };
         peer.and_then(|peer| {
@@ -457,7 +457,6 @@ impl AppBrokerState {
         let directory = if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
             self.canonical_token_directory(provider).ok()?
         } else {
-            // optional-decode: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
             let peer = provider.parse::<u64>().ok()?;
             self.action_directory_roots()
                 .into_iter()

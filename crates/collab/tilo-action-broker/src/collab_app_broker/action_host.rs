@@ -793,7 +793,6 @@ impl AppBrokerState {
         {
             return row.app_id == app_id;
         }
-        // optional-decode: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
         let Ok(peer_id) = target.provider.parse::<u64>() else {
             return false;
         };
@@ -1605,7 +1604,7 @@ impl AppBrokerState {
         if let Some(root) = query
             .provider
             .as_deref()
-            // optional-decode: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
+            // ignored-failure: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
             .and_then(|provider| provider.parse::<u64>().ok())
             .and_then(|peer_id| self.directory_root_for(caller, peer_id))
         {
