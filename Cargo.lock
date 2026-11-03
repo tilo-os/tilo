@@ -1817,6 +1817,7 @@ dependencies = [
  "tilo-dav",
  "tilo-document",
  "tilo-files",
+ "tilo-recurrence",
  "tilo-rich-text",
  "tilo-timezone-engine",
  "tilo-vello",
@@ -20585,6 +20586,16 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-recurrence"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]
