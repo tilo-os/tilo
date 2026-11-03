@@ -17,7 +17,6 @@
 pub mod antientropy;
 pub mod client;
 pub mod coedit;
-pub mod pointer_pacing;
 pub mod position;
 mod session_carrier;
 pub mod workspace_join;
@@ -31,7 +30,7 @@ tilo_automerge_isolate::test_worker!();
 // paths (`crate::auth`, `crate::transport`, …); keep those crate-private.
 #[cfg(test)]
 use tilo_relay_protocol::room_workspace_id;
-use tilo_relay_protocol::{auth, live};
+use tilo_relay_protocol::auth;
 
 /// The relay wire messages, under the path the session modules use.
 mod transport {

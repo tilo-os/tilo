@@ -329,8 +329,10 @@ pub enum Envelope {
         workspace_id: u64,
     },
 
-    /// Leave the workspace's live plane.
-    LiveLeave {
+    /// Retired: leave the workspace's live plane. Nothing sends it — the
+    /// plane's own carrier drops a device when it goes — and it stays only
+    /// so every later variant keeps its postcard position.
+    RetiredLiveLeave {
         /// Workspace id.
         workspace_id: u64,
     },
@@ -597,7 +599,7 @@ impl Envelope {
             Self::Committed { .. } => "Committed",
             Self::CommitRefused { .. } => "CommitRefused",
             Self::RetiredLiveJoin { .. } => "LiveJoin",
-            Self::LiveLeave { .. } => "LiveLeave",
+            Self::RetiredLiveLeave { .. } => "LiveLeave",
             Self::RetiredLive { .. } => "Live",
             Self::RetiredLiveMember { .. } => "LiveMember",
             Self::SubscribeFrom { .. } => "SubscribeFrom",
@@ -648,7 +650,7 @@ impl Envelope {
             | Self::Committed { workspace_id, .. }
             | Self::CommitRefused { workspace_id, .. }
             | Self::RetiredLiveJoin { workspace_id }
-            | Self::LiveLeave { workspace_id }
+            | Self::RetiredLiveLeave { workspace_id }
             | Self::RetiredLive { workspace_id, .. }
             | Self::RetiredLiveMember { workspace_id, .. }
             | Self::SubscribeFrom { workspace_id, .. }

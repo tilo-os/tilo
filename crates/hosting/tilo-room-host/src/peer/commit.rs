@@ -188,15 +188,6 @@ async fn admit_commit(
     if let Some(reason) = commit_refusal(&ws, author_device_public_key, &delta).await {
         return refused(&reason);
     }
-    // The caret and typing this device sends next wait for this change, as
-    // for one it sent alone (`super::handle_delta`). A host carrying its
-    // members' changes forgoes it: the caret is a device's own.
-    {
-        let mut runtime = ws.lock().await;
-        if !runtime.attached(&peer.device_public_key) {
-            runtime.note_delta(peer.device_public_key, tokio::time::Instant::now());
-        }
-    }
     let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
         &ws,

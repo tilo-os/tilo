@@ -72,10 +72,7 @@ use compaction::handle_compaction;
 use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 use hello::handle_host_hello;
-use live::{
-    handle_content_want, handle_live, handle_live_join, handle_live_leave, handle_presence,
-    handle_voice, route_record_content,
-};
+use live::{handle_content_want, handle_presence, handle_voice, route_record_content};
 use records::handle_open_record;
 pub use subscribe::get_or_autobind_workspace;
 use subscribe::{Subscription, handle_subscribe, handle_unsubscribe};

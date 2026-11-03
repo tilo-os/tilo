@@ -52,33 +52,6 @@ pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata, retention
 use crate::client::RelayClient;
 use crate::transport::Envelope;
 
-/// The shortest gap between two moves of one pointer slot on any wire: 20 Hz.
-/// Receivers glide a peer's pointer over the gap between two samples
-/// (`ui::presence::POINTER_EASE_MAX` caps the glide at 100 ms), so 20 Hz moves
-/// as smoothly as the 30 Hz producers publish at. The relay forwards a pointer
-/// slot to each connection at most this often, a client writes one to a relay
-/// at most this often, so a move the relay would only coalesce away never
-/// costs a packet, and the shell broadcasts one to its direct
-/// neighbours at most this often too ([`crate::pointer_pacing`]).
-pub const POINTER_GAP: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// The coalescing slot of a co-edit presence body: latest-state presence (a
-/// pointer, a caret) has one, events do not. Only the two `NeighbourMsg`
-/// variants that can have one are decoded, to tell which; the body itself is
-/// sent and forwarded as it came.
-#[must_use]
-pub fn presence_slot(body: &[u8]) -> Option<neighbour_wire::PresenceSlot> {
-    if !body
-        .first()
-        .is_some_and(|tag| neighbour_wire::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
-    {
-        return None;
-    }
-    postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
-        .ok()?
-        .presence_slot()
-}
-
 /// A co-edit session bound to one workspace on one host connection.
 ///
 /// Construct it from an already-connected [`RelayClient`] via
@@ -184,28 +157,6 @@ impl RelayCoeditSession {
         self.client
             .send(Envelope::RetiredLiveJoin {
                 workspace_id: self.workspace_id,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
-    /// Publish one sealed live frame
-    /// ([`SealedLiveFrame`](crate::live::SealedLiveFrame)) to the
-    /// workspace's live members. Lossy: nothing is queued or retained.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Unsealed`] for anything but a canonical sealed
-    /// frame, and [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn publish_live(&self, frame: Vec<u8>) -> Result<(), CoeditError> {
-        if crate::live::SealedLiveFrame::decode(&frame).is_err() {
-            return Err(CoeditError::Unsealed);
-        }
-        self.client
-            .send(Envelope::RetiredLive {
-                workspace_id: self.workspace_id,
-                // The host overwrites it from the authenticated session.
-                from_device_public_key: self.author,
-                frame,
             })
             .map_err(|_| CoeditError::Disconnected)
     }

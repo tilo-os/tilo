@@ -19,12 +19,10 @@ pub mod colorimetry;
 pub mod hdr_metadata;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
-pub mod presence_slot;
 pub mod record_sync;
 pub mod retention;
 pub mod unit_chain;
 
-pub use presence_slot::PresenceSlot;
 pub use record_sync::{RecordSync, on_demand_record, record_part, record_sync};
 pub use retention::{Retention, app_document_channel, audience, retention, standalone};
 

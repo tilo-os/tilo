@@ -165,19 +165,10 @@ pub struct WorkspaceRuntime {
     /// the two the device opened last, so the newer one takes the slot.
     subscribing: HashMap<[u8; 32], Vec<mpsc::WeakSender<Envelope>>>,
     /// The presence mailbox of each subscriber whose connection takes its
-    /// presence coalesced and batched ([`crate::presence_mailbox`]). Set
+    /// presence batched ([`crate::presence_mailbox`]). Set
     /// right after the subscription it belongs to and dropped with it; a
     /// subscriber without one gets each presence on its frame queue.
     presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
-    /// Authors with a delta admitted here and not yet fanned out, and when
-    /// it arrived: the caret and typing that follow it wait up to
-    /// [`crate::presence_mailbox::DELTA_HOLD`] to go with it.
-    /// Published deltas leave at once; entries older than the hold are
-    /// dropped whenever one is noted, so it holds at most the authors typing
-    /// right now.
-    recent_deltas: HashMap<[u8; 32], tokio::time::Instant>,
-    /// Subscribers that joined the live plane, with their rate budgets.
-    live_members: HashMap<[u8; 32], LiveBudget>,
     /// Host order of the last admitted delta.
     last_seq: u64,
     /// Recently admitted commits, for de-duplicating resends.
@@ -277,35 +268,6 @@ impl CommitLedger {
                 self.by_op.remove(&evicted);
             }
         }
-    }
-}
-
-/// Per-publisher live rate budget over one-second windows.
-#[derive(Default)]
-struct LiveBudget {
-    window_start_ns: u64,
-    presence: u32,
-    ops: u32,
-}
-
-impl LiveBudget {
-    fn admit(&mut self, presence: bool, now_ns: u64) -> bool {
-        if now_ns.saturating_sub(self.window_start_ns) >= 1_000_000_000 {
-            *self = Self {
-                window_start_ns: now_ns,
-                ..Self::default()
-            };
-        }
-        let (count, limit) = if presence {
-            (&mut self.presence, crate::live::MAX_PRESENCE_RATE)
-        } else {
-            (&mut self.ops, crate::live::MAX_OPS_RATE)
-        };
-        if *count >= limit {
-            return false;
-        }
-        *count = count.saturating_add(1);
-        true
     }
 }
 
@@ -424,12 +386,10 @@ impl WorkspaceRuntime {
             held_records: HashMap::new(),
             subscribing: HashMap::new(),
             presence_mailboxes: HashMap::new(),
-            recent_deltas: HashMap::new(),
             governor_tap: None,
             workspace_authority: None,
             hosted_replica: None,
             standings: None,
-            live_members: HashMap::new(),
             last_seq: 0,
             commits,
             commit_claims: Arc::default(),
@@ -496,87 +456,6 @@ impl WorkspaceRuntime {
     pub fn next_seq(&mut self, now_ns: u64) -> u64 {
         self.last_seq = now_ns.max(self.last_seq.saturating_add(1));
         self.last_seq
-    }
-
-    /// Add subscriber `device` to the live plane and tell the other live
-    /// members. Returns the members already present. A device that is not
-    /// subscribed cannot join.
-    pub fn live_join(&mut self, device: [u8; 32], workspace_id: u64) -> Option<Vec<[u8; 32]>> {
-        if !self.subscribers.contains_key(&device) {
-            return None;
-        }
-        let existing: Vec<[u8; 32]> = self
-            .live_members
-            .keys()
-            .copied()
-            .filter(|member| *member != device)
-            .collect();
-        if self
-            .live_members
-            .insert(device, LiveBudget::default())
-            .is_none()
-        {
-            self.announce_live_member(device, workspace_id, true);
-        }
-        Some(existing)
-    }
-
-    /// Remove `device` from the live plane and tell the remaining members.
-    pub fn live_leave(&mut self, device: &[u8; 32], workspace_id: u64) {
-        if self.live_members.remove(device).is_some() {
-            self.announce_live_member(*device, workspace_id, false);
-        }
-    }
-
-    pub fn is_live_member(&self, device: &[u8; 32]) -> bool {
-        self.live_members.contains_key(device)
-    }
-
-    /// Relay one validated live envelope from `author` to every other live
-    /// member, within the author's rate budget. Live traffic is lossy: a
-    /// member whose queue is full misses the frame rather than being
-    /// disconnected. Returns how many members received it.
-    pub fn fanout_live(
-        &mut self,
-        author: &[u8; 32],
-        presence: bool,
-        envelope: &Envelope,
-        now_ns: u64,
-    ) -> usize {
-        let Some(budget) = self.live_members.get_mut(author) else {
-            return 0;
-        };
-        if !budget.admit(presence, now_ns) {
-            return 0;
-        }
-        let mut delivered = 0usize;
-        for member in self.live_members.keys() {
-            if member == author {
-                continue;
-            }
-            if let Some(sub) = self.subscribers.get(member)
-                && sub.tx.try_send(envelope.clone()).is_ok()
-            {
-                delivered = delivered.saturating_add(1);
-            }
-        }
-        delivered
-    }
-
-    fn announce_live_member(&self, device: [u8; 32], workspace_id: u64, active: bool) {
-        let envelope = Envelope::RetiredLiveMember {
-            workspace_id,
-            device_public_key: device,
-            active,
-        };
-        for member in self.live_members.keys() {
-            if *member == device {
-                continue;
-            }
-            if let Some(sub) = self.subscribers.get(member) {
-                let _ = sub.tx.try_send(envelope.clone());
-            }
-        }
     }
 
     /// Note that `device` is a host this workspace is attached to.
@@ -750,8 +629,6 @@ impl WorkspaceRuntime {
         }
         self.checkpoint_served.remove(device);
         self.held_records.remove(device);
-        let workspace_id = self.store.workspace_id();
-        self.live_leave(device, workspace_id);
     }
 
     /// Remove only the session that registered this queue. An old connection
@@ -1018,43 +895,16 @@ impl WorkspaceRuntime {
         doc.save_after(&heads)
     }
 
-    /// Note that `author` sent a delta at `now`, before it is admitted: the
-    /// caret and typing it sends next are held to go with it
-    /// ([`Self::fanout_presence`]) until it is published.
-    pub fn note_delta(&mut self, author: [u8; 32], now: tokio::time::Instant) {
-        let hold = crate::presence_mailbox::DELTA_HOLD;
-        self.recent_deltas
-            .retain(|_, at| now.saturating_duration_since(*at) < hold);
-        self.recent_deltas.insert(author, now);
-    }
-
-    /// `author`'s delta is being fanned out: what it sends from now on has
-    /// nothing to wait for.
-    pub fn delta_published(&mut self, author: &[u8; 32]) {
-        self.recent_deltas.remove(author);
-    }
-
     /// Route a presence envelope (no persistence, drop-on-empty).
     /// Same attached-host rule as `fanout_delta`. A subscriber whose
-    /// connection has a presence mailbox gets it there, coalesced under
-    /// `slot` with the author's later presence; the payload is shared by every
-    /// such subscriber, not copied. Presence from an author who sent a delta
-    /// within [`crate::presence_mailbox::DELTA_HOLD`] is posted held, to go
-    /// with that delta.
-    pub fn fanout_presence(
-        &mut self,
-        author: &[u8; 32],
-        envelope: &Envelope,
-        slot: Option<neighbour_wire::PresenceSlot>,
-    ) -> usize {
+    /// connection has a presence mailbox gets it there; the payload is shared
+    /// by every such subscriber, not copied.
+    pub fn fanout_presence(&mut self, author: &[u8; 32], envelope: &Envelope) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
         let mut shared: Option<Arc<[u8]>> = None;
         let from_attached = self.attached(author);
         let now = tokio::time::Instant::now();
-        let held = self.recent_deltas.get(author).is_some_and(|at| {
-            now.saturating_duration_since(*at) < crate::presence_mailbox::DELTA_HOLD
-        });
         for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
@@ -1073,7 +923,7 @@ impl WorkspaceRuntime {
                 let payload = shared
                     .get_or_insert_with(|| Arc::from(payload.as_slice()))
                     .clone();
-                if mailbox.post(*workspace_id, *author, slot, payload, now, held) {
+                if mailbox.post(*workspace_id, payload, now) {
                     delivered = delivered.saturating_add(1);
                 }
                 continue;
@@ -1963,18 +1813,18 @@ mod tests {
         assert_eq!(rt.store.count_pending(&dead_peer).unwrap(), 1);
     }
 
-    /// A keystroke's caret and typing follow its delta from the same author;
-    /// they are held to go with it, and nobody else's are.
+    /// Presence to a subscriber with a mailbox goes there, batched, and the
+    /// subscriber without one gets it on its frame queue.
     #[test]
-    fn presence_after_an_authors_delta_is_held_for_it() {
-        use crate::presence_mailbox::{BATCH_WINDOW, DELTA_HOLD, PresenceMailbox};
+    fn presence_goes_to_the_mailbox_of_the_subscriber_that_has_one() {
+        use crate::presence_mailbox::{BATCH_WINDOW, PresenceMailbox};
         use tokio::time::Instant;
 
         const AUTHOR: [u8; 32] = [1; 32];
         const RECIPIENT: [u8; 32] = [2; 32];
         let tmp = tempfile::tempdir().unwrap();
         let mut rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
-        let (tx, _rx) = mpsc::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
         let (disconnect, _disconnect_rx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: RECIPIENT,
@@ -1983,46 +1833,21 @@ mod tests {
         });
         let mailbox = Arc::new(PresenceMailbox::default());
         rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
-        let caret = Some(neighbour_wire::PresenceSlot {
-            id: 1,
-            motion: false,
-        });
         let presence = Envelope::RetiredPresence {
             workspace_id: 9,
             payload: b"caret".to_vec(),
         };
 
-        // No delta: the caret goes after the batch window.
-        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
-        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
-
-        // Right after the author's delta: held for it.
-        let before = Instant::now();
-        rt.note_delta(AUTHOR, before);
-        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
+        assert_eq!(rt.fanout_presence(&AUTHOR, &presence), 1);
         assert!(
-            mailbox
-                .next_due()
-                .is_some_and(|due| due >= before + DELTA_HOLD)
+            rx.try_recv().is_err(),
+            "the mailbox took it, not the frame queue"
         );
-        assert_eq!(
-            mailbox.take(Instant::now(), true).len(),
-            1,
-            "it rides with the delta"
-        );
-
-        // Once the delta is published, nothing waits for it.
-        rt.note_delta(AUTHOR, Instant::now());
-        rt.delta_published(&AUTHOR);
-        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
         assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
 
-        // Another author's delta holds nothing of this author's.
-        rt.note_delta([3; 32], Instant::now());
-        let other = Instant::now() - DELTA_HOLD;
-        rt.note_delta(AUTHOR, other);
-        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
-        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+        rt.presence_mailboxes.remove(&RECIPIENT);
+        assert_eq!(rt.fanout_presence(&AUTHOR, &presence), 1);
+        assert_eq!(rx.try_recv().unwrap(), presence);
     }
 
     /// A commit's claim is its own: a copy of it waits for the claim and

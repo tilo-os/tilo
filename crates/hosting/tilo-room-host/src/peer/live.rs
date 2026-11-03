@@ -1,80 +1,8 @@
-//! Ephemeral traffic the relay never keeps: the live plane (`LiveJoin`,
-//! `LiveLeave`, `Live`), presence, voice calls and record content handed
-//! to one device. Presence is every device's own, browser pages included.
+//! Ephemeral traffic the relay never keeps: presence, voice calls and record
+//! content handed to one device. Presence is every device's own, browser
+//! pages included.
 
-use super::{
-    Arc, AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, WorkspaceOperation,
-    unix_now_ns, workspace_access,
-};
-
-/// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
-/// and send it one `LiveMember` per member already present.
-pub(super) async fn handle_live_join(
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    subscribed: &[u64],
-    workspace_id: u64,
-) -> Result<Option<Envelope>, PeerError> {
-    const UNSUBSCRIBED: &str = "live join requires a subscription";
-    let refused = |reason: &str| {
-        Ok(Some(Envelope::NotAuthorised {
-            workspace_id,
-            reason: reason.into(),
-        }))
-    };
-    if !subscribed.contains(&workspace_id) {
-        match subscription_refusal(session, peer, workspace_id).await? {
-            Some(reason) => return refused(reason),
-            None => return refused(UNSUBSCRIBED),
-        }
-    }
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused(UNSUBSCRIBED);
-    };
-    let members = {
-        let mut runtime = ws.lock().await;
-        // A spectator neither shows nor sends a cursor.
-        if workspace_access::watches_only(&runtime, peer) {
-            return refused(workspace_access::DenyReason::WatchOnly.reason());
-        }
-        runtime.live_join(peer.device_public_key, workspace_id)
-    };
-    let Some(members) = members else {
-        return refused(UNSUBSCRIBED);
-    };
-    for device in members {
-        // Live state is never authority: a member notice lost to a full
-        // queue costs only a late cursor.
-        let _ = session.outbound.try_send(Envelope::RetiredLiveMember {
-            workspace_id,
-            device_public_key: device,
-            active: true,
-        });
-    }
-    Ok(None)
-}
-
-/// Why the subscription a live join needs was refused, when the host refused
-/// one. A page asks for the live plane right behind its subscription, so a
-/// refused subscription leaves this device unsubscribed too: it must hear the
-/// reason the subscription failed, not that a join needs a subscription it
-/// was never given.
-async fn subscription_refusal(
-    session: &SessionCtx<'_>,
-    peer: &AuthenticatedPeer,
-    workspace_id: u64,
-) -> Result<Option<&'static str>, PeerError> {
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return Ok(None);
-    };
-    let runtime = crate::workspace_io::fresh_membership(&ws).await?;
-    Ok(
-        match session.decide(&runtime, peer, WorkspaceOperation::Subscribe) {
-            Decision::Deny(reason) => Some(reason.reason()),
-            Decision::Admit | Decision::AdmitAndEnrol => None,
-        },
-    )
-}
+use super::{Arc, AuthenticatedPeer, Envelope, PeerError, SessionCtx, workspace_access};
 
 /// Where `peer`'s calls in `workspace_id` are held: by this relay's workspace
 /// authority when it governs the workspace, else by the workspace it carries (a
@@ -228,59 +156,6 @@ pub(super) async fn handle_voice(
     })
 }
 
-/// Handle `LiveLeave`.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
-pub(super) async fn handle_live_leave(
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    workspace_id: u64,
-) -> Result<Option<Envelope>, PeerError> {
-    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
-    if let Some(ws) = ws {
-        let mut ws = ws.lock().await;
-        ws.live_leave(&peer.device_public_key, workspace_id);
-        drop(ws);
-    }
-    Ok(None)
-}
-
-/// Handle an inbound `Live` frame: decode it canonically, stamp the
-/// authenticated sender and relay it within the sender's rate budget.
-/// Invalid, over-budget or non-member frames are dropped: live traffic is
-/// never authority, and dropping it costs only a stale cursor.
-pub(super) async fn handle_live(
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    subscribed: &[u64],
-    workspace_id: u64,
-    frame: Vec<u8>,
-) -> Result<Option<Envelope>, PeerError> {
-    if !subscribed.contains(&workspace_id) {
-        return Ok(None);
-    }
-    // Only a sealed frame is relayed; its content is never read here.
-    // optional-decode: live traffic is never authority; a malformed frame costs a stale cursor (above)
-    let Ok(sealed) = crate::live::SealedLiveFrame::decode(&frame) else {
-        return Ok(None);
-    };
-    let presence = sealed.kind == crate::live::LiveKind::Presence;
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return Ok(None);
-    };
-    let stamped = Envelope::RetiredLive {
-        workspace_id,
-        from_device_public_key: peer.device_public_key,
-        frame,
-    };
-    ws.lock()
-        .await
-        .fanout_live(&peer.device_public_key, presence, &stamped, unix_now_ns());
-    Ok(None)
-}
-
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
 /// Ephemeral, with device attribution stamped from the authenticated session.
 #[expect(
@@ -293,7 +168,6 @@ pub(super) async fn handle_presence(
     subscribed: &[u64],
     mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
-    let mut slot = None;
     // A presence that is no toolkit presence may ask the workspace for content.
     let mut asks = None;
     let Envelope::RetiredPresence { workspace_id, .. } = &env else {
@@ -320,10 +194,7 @@ pub(super) async fn handle_presence(
         // A sender's claim is not transport evidence, even if that other
         // device has a valid certificate in the same workspace.
         attributed.author = peer.device_public_key;
-        slot = crate::coedit::presence_slot(&attributed.body);
-        if slot.is_none() {
-            asks = Some(attributed.body.clone());
-        }
+        asks = Some(attributed.body.clone());
         *payload = attributed
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
@@ -355,7 +226,7 @@ pub(super) async fn handle_presence(
             }
             return Ok(None);
         }
-        wr.fanout_presence(&peer.device_public_key, &env, slot);
+        wr.fanout_presence(&peer.device_public_key, &env);
         let authority = wr.workspace_authority.clone();
         drop(wr);
         if let Some(body) = asks {
@@ -411,7 +282,7 @@ pub(super) async fn handle_content_want(
     let mut wr = ws.lock().await;
     let watching = workspace_access::watches_only(&wr, peer);
     if !watching {
-        wr.fanout_presence(&peer.device_public_key, &env, None);
+        wr.fanout_presence(&peer.device_public_key, &env);
     }
     // In a public workspace a spectator reads what members read, so it may also
     // ask the workspace for the content those records reference.

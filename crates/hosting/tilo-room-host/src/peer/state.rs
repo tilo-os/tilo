@@ -558,14 +558,7 @@ pub(super) async fn handle_delta(
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
     // The tap hands the body to another task, so it needs the one owned copy;
     // it is taken after the workspace lock is released.
-    let governor_tap = {
-        let mut runtime = ws.lock().await;
-        if !attached {
-            // The caret and typing this device sends next wait for this delta.
-            runtime.note_delta(peer.device_public_key, tokio::time::Instant::now());
-        }
-        runtime.governor_tap.clone()
-    };
+    let governor_tap = ws.lock().await.governor_tap.clone();
     let governor = governor_tap.and_then(|tap| Some((tap, governor_notice(&env)?)));
     enqueue_state(&ws, env, Some(source), session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {

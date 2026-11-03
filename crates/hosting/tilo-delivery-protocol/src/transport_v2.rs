@@ -31,8 +31,7 @@ pub use delta::{
     MAX_DELTA_SLOTS, encode_coded_delta,
 };
 pub use presence::{
-    MAX_PRESENCE_SLOTS, MAX_SLOTTED_PRESENCE_BYTES, PresenceEncoder, PresenceItem, PresenceSlotKey,
-    encode_presence_batch,
+    MAX_PRESENCE_SLOTS, MAX_SLOTTED_PRESENCE_BYTES, PresenceItem, encode_presence_batch,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -445,27 +444,21 @@ mod tests {
         );
     }
 
-    fn presence_key(slot: u64) -> PresenceSlotKey {
-        PresenceSlotKey {
-            workspace_id: 300,
-            author: [5; 32],
-            slot,
+    /// One whole-payload presence item, as this relay writes it.
+    fn presence_item(payload: &[u8]) -> PresenceItem {
+        PresenceItem {
+            slot: None,
+            keep_prefix: 0,
+            keep_suffix: 0,
+            middle: payload.to_vec(),
         }
     }
 
     #[tokio::test]
     async fn a_presence_batch_reads_as_one_presence_per_item_in_order() {
-        let pointer = |x: u8| -> std::sync::Arc<[u8]> {
-            std::sync::Arc::from([&[5; 32][..], b"user key ", &[x, x], b" teal"].concat())
-        };
-        let event: std::sync::Arc<[u8]> = std::sync::Arc::from(b"heartbeat".to_vec());
-        let mut encoder = PresenceEncoder::default();
-        let first = vec![
-            encoder.item(Some(presence_key(1)), &pointer(1)),
-            encoder.item(None, &event),
-        ];
-        let second = vec![encoder.item(Some(presence_key(1)), &pointer(2))];
-        assert!(second[0].middle.len() <= 2, "only the coordinates travel");
+        let pointer = |x: u8| [&[5; 32][..], b"user key ", &[x, x], b" teal"].concat();
+        let first = vec![presence_item(&pointer(1)), presence_item(b"heartbeat")];
+        let second = vec![presence_item(&pointer(2))];
         let wire = [
             encode_presence_batch(300, &first).unwrap(),
             encode_state(&Envelope::Ping).unwrap(),
@@ -473,14 +466,14 @@ mod tests {
         ]
         .concat();
         let mut reader = SessionReader::new(std::io::Cursor::new(wire));
-        let presence = |payload: &std::sync::Arc<[u8]>| {
+        let presence = |payload: &[u8]| {
             Some(EnvelopeV2::State(Envelope::RetiredPresence {
                 workspace_id: 300,
                 payload: payload.to_vec(),
             }))
         };
         assert_eq!(reader.read_next().await.unwrap(), presence(&pointer(1)));
-        assert_eq!(reader.read_next().await.unwrap(), presence(&event));
+        assert_eq!(reader.read_next().await.unwrap(), presence(b"heartbeat"));
         assert_eq!(
             reader.read_next().await.unwrap(),
             Some(EnvelopeV2::State(Envelope::Ping))

@@ -5,8 +5,8 @@
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
-    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_live,
-    handle_live_join, handle_live_leave, handle_open_record, handle_presence, handle_remote_action,
+    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_open_record,
+    handle_presence, handle_remote_action,
     handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, route_record_content,
 };
 #[cfg(test)]
@@ -127,17 +127,6 @@ pub(super) async fn handle_envelope(
             Ok(None)
         }
         env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
-        Envelope::RetiredLiveJoin { workspace_id } => {
-            handle_live_join(peer, session, subscribed, workspace_id).await
-        }
-        Envelope::LiveLeave { workspace_id } => {
-            handle_live_leave(peer, session, workspace_id).await
-        }
-        Envelope::RetiredLive {
-            workspace_id,
-            frame,
-            ..
-        } => handle_live(peer, session, subscribed, workspace_id, frame).await,
         env @ (Envelope::CompactVolunteer { .. } | Envelope::Compacted { .. }) => {
             handle_compaction(peer, session, subscribed, env).await;
             Ok(None)
@@ -161,6 +150,9 @@ pub(super) async fn handle_envelope(
         | Envelope::RemoteActionUndeliverable { .. }
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
+        | Envelope::RetiredLiveJoin { .. }
+        | Envelope::RetiredLiveLeave { .. }
+        | Envelope::RetiredLive { .. }
         | Envelope::RetiredLiveMember { .. }
         | Envelope::Position { .. }
         | Envelope::VoiceCallResult { .. }

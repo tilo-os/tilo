@@ -1103,15 +1103,6 @@ impl StatePublisher {
                 self.source.as_ref(),
                 self.host,
             );
-            // Presence the author sent after this delta was held for
-            // it and goes out with it; from here on nothing waits.
-            if let Envelope::Delta {
-                author_device_public_key,
-                ..
-            } = &*envelope
-            {
-                runtime.delta_published(author_device_public_key);
-            }
             LiveFanout {
                 frame: &frame,
                 source: self.source.as_ref(),

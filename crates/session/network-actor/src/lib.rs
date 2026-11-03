@@ -378,13 +378,6 @@ pub enum NetCmd {
         ws: WorkspaceId,
         channel: [u8; 32],
     },
-    /// Publish one canonical live frame (presence, previews) on `ws`'s
-    /// workspace hosts' live planes, where browsers and agents meet this
-    /// device. Lossy.
-    PublishLive {
-        ws: WorkspaceId,
-        frame: Vec<u8>,
-    },
     /// Hold an enrolled workspace's relay session, over its host's HTTPS routes
     /// when given, else over the iroh endpoint its hint names.
     NativeConnect(native_ingress::Connect, Option<HttpsRoute>),
@@ -457,8 +450,7 @@ pub enum NetCmd {
         ws: WorkspaceId,
         devices: Vec<RosterDevice>,
     },
-    /// Publish `msg` on every session of `ws`. Pointer moves are paced by
-    /// each session's writer (`tilo_relay_session::pointer_pacing`).
+    /// Publish `msg` on every session of `ws`.
     Publish {
         ws: WorkspaceId,
         msg: NeighbourMsg,
@@ -1680,13 +1672,6 @@ impl ActorState {
                 }
             }
             Some(NetCmd::OpenRecord { ws, channel }) => self.open_record(ws, channel),
-            Some(NetCmd::PublishLive { ws, frame }) => {
-                for ((session_ws, _), runtime) in &self.host_sessions {
-                    if *session_ws == ws {
-                        let _ = runtime.session.publish_live(frame.clone());
-                    }
-                }
-            }
             Some(NetCmd::Publish { ws, msg }) => {
                 self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
