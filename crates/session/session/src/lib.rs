@@ -38,6 +38,7 @@ pub mod arrangement;
 mod asks;
 mod automation;
 mod bars;
+mod bluetooth_handoff;
 mod call_devices;
 mod calls;
 pub mod capture;
@@ -114,6 +115,7 @@ mod run_programs;
 mod seams;
 mod search;
 mod search_ask;
+mod seats;
 pub mod seeded_apps;
 pub mod session_package;
 mod setup;
@@ -188,6 +190,8 @@ pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use setup::BeforeDesk;
+/// The resource the session's runs of what people ask its agents are read on.
+pub use tilo_agent_runs::wire::RESOURCE as AGENT_RUNS_RESOURCE;
 pub use tilo_service::{Service, Services};
 
 use desk::running_apps;
@@ -206,8 +210,6 @@ use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
-use tilo_sheets::shortcut_guide::GuideSeat;
-use tilo_sheets::uninstall::UninstallSeat;
 use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
 
 pub use os_actions::SessionAction;
@@ -271,6 +273,11 @@ struct Shared {
     triggered: PressedChords,
     /// What the session's own resources asked of the compositor.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
+    /// What the session's own resources read of this device: whether the
+    /// screens are locked, the touchpad is on, the night light is on and how
+    /// far the magnifier zooms. The loop keeps it every pass, and the
+    /// controls' service publishes it.
+    controls: Rc<RefCell<controls::ControlsReading>>,
     /// The readouts of keys whose action a device took and has not answered
     /// yet.
     waiting: RefCell<Vec<keys::PendingReadout>>,
@@ -308,6 +315,10 @@ struct Shared {
     vpn: Option<mount::vpn::Routes>,
     /// The person's devices as the panel was last fed them.
     devices: mount::devices::Devices,
+    /// Moving a Bluetooth accessory between the person's devices: what the
+    /// panel asked for, what their other devices said, and the Bluetooth
+    /// work the move needs.
+    bluetooth: bluetooth_handoff::Handoffs,
     /// The session another of the person's devices handed this one, as the
     /// now-playing card shows it, until they continue it here: published
     /// beside the person's devices.
@@ -1393,24 +1404,25 @@ impl Session {
             portal_shortcuts.clone(),
             Rc::clone(&controller),
         );
-        let (commands, invocations, triggered, readout_place, readout) = mount_controls(
-            &mut compositor,
-            &mut doors,
-            shortcuts,
-            portal_shortcuts,
-            guide_keys,
-            KeyContext {
-                controller: Rc::clone(&controller),
-                controller_keys: Rc::clone(&controller_keys),
-                displays: display_seat
-                    .as_ref()
-                    .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
-                fold,
-                overlays: overlays.clone(),
-                reveals: Rc::clone(&reveals),
-            },
-            options.scale,
-        );
+        let (commands, controls_reading, invocations, triggered, readout_place, readout) =
+            mount_controls(
+                &mut compositor,
+                &mut doors,
+                shortcuts,
+                portal_shortcuts,
+                guide_keys,
+                KeyContext {
+                    controller: Rc::clone(&controller),
+                    controller_keys: Rc::clone(&controller_keys),
+                    displays: display_seat
+                        .as_ref()
+                        .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
+                    fold,
+                    overlays: overlays.clone(),
+                    reveals: Rc::clone(&reveals),
+                },
+                options.scale,
+            );
         // The readout draws in the person's theme like the desk and the shell
         // do: its ground is the theme's floating surface, never a fixed fill.
         readout.borrow_mut().set_theme(presentation.theme);
@@ -1578,6 +1590,15 @@ impl Session {
             service.seated(&options.person, &seat.earlier);
         }
         let services = mount_services(&mut doors, started);
+        // The session's own controls, served beside its services: an app
+        // reads what they are now and invokes what changes them the way it
+        // does every other resource of this device's.
+        services
+            .borrow_mut()
+            .add(Box::new(controls::SessionControls::new(
+                Rc::clone(&commands),
+                Rc::clone(&controls_reading),
+            )));
         services
             .borrow_mut()
             .add(Box::new(tilo_agent_runs::Served::new(
@@ -1648,6 +1669,7 @@ impl Session {
             invocations,
             triggered,
             commands,
+            controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),
             readings,
             services,
@@ -1661,6 +1683,7 @@ impl Session {
             fabric,
             vpn,
             devices: mount::devices::Devices::default(),
+            bluetooth: bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
@@ -1761,6 +1784,7 @@ impl Session {
                     Rc::clone(&shared.devices.chosen),
                     Rc::clone(&shared.handoff),
                     Rc::clone(&shared.devices.pressed),
+                    Rc::clone(&shared.devices.handed),
                 )));
         }
         // The broker decides a granted reading when the app asks, which is
@@ -2334,81 +2358,6 @@ impl Session {
         self.ended
     }
 
-    /// The power menu's seat: the session puts it up.
-    #[must_use]
-    pub fn power_menu(&self) -> Option<&PowerSeat> {
-        self.shared.power.as_ref()
-    }
-
-    /// The add sheet's seat: the program the person is asked about, when
-    /// one is; `None` when the sheet did not mount.
-    #[must_use]
-    pub fn add_app_sheet(&self) -> Option<&tilo_sheets::add_app::AddSeat> {
-        self.shared.app_sheets.add()
-    }
-
-    /// The uninstall sheet's seat: the app the person is asked about, when
-    /// one is; `None` when the sheet did not mount.
-    #[must_use]
-    pub fn uninstall_sheet(&self) -> Option<&UninstallSeat> {
-        self.shared.app_sheets.uninstall()
-    }
-
-    /// Ask the person whether to uninstall `app`, by its entry's id in the
-    /// downloaded programs' registry or by the name they know it by.
-    pub fn ask_uninstall(&self, app: &str) {
-        self.shared.app_sheets.ask_uninstall(app);
-    }
-
-    /// Workspace settings' seat: what it shows, kept current by whoever
-    /// knows the workspace.
-    #[must_use]
-    pub fn workspace_settings(&self) -> Option<&WorkspaceSettingsSeat> {
-        self.shared.workspace_settings.as_ref()
-    }
-
-    /// The workspace directory's seat: the workspaces this computer may
-    /// join or open, shown when the person asks for them.
-    #[must_use]
-    pub fn workspace_directory(&self) -> Option<&DirectorySeat> {
-        self.shared.directory.as_ref()
-    }
-
-    /// The portal sheet's seat: the portal, authentication and
-    /// network-secret services ask through it and read the answers.
-    #[must_use]
-    pub fn portal(&self) -> Option<&PortalSeat> {
-        self.shared.portal.as_ref()
-    }
-
-    /// The file chooser's seat: the portal service asks it for files and
-    /// reads the answer.
-    #[must_use]
-    pub fn file_picker(&self) -> Option<&FilePickerSeat> {
-        self.shared.file_picker.as_ref()
-    }
-
-    /// The shortcut guide's seat: the session puts it up with F1, and it
-    /// shows the chords the session answers.
-    #[must_use]
-    pub fn shortcut_guide(&self) -> Option<&GuideSeat> {
-        self.shared.shortcut_guide.seat()
-    }
-
-    /// The seat of the question about a display change: what it asks now,
-    /// and where it stands.
-    #[must_use]
-    pub fn display_confirm(&self) -> Option<&ConfirmSeat> {
-        self.shared.display_confirm.as_ref()
-    }
-
-    /// The display sheet: the layouts the attached displays allow and the
-    /// wireless displays the desktop can be streamed to, as it shows them.
-    #[must_use]
-    pub fn display_sheet(&self) -> Option<&tilo_sheets::displays::DisplaysSeat> {
-        self.display_sheet.seat()
-    }
-
     /// What stands before the desk runs its own pass: the wait for the clock
     /// finishes itself and gives the layer to what a verified identity opens.
     fn follow_setup(&self) {
@@ -2616,6 +2565,9 @@ impl Session {
             // same fabric: what they set here is offered to it, and what
             // they set there reaches the document this session reads.
             self.shared.settings.sync(fabric.as_ref());
+            // A Bluetooth accessory the person moved to another of their
+            // devices, and what came of the moves under way.
+            self.shared.bluetooth.pump(&self.shared, fabric);
             // The person's sleeping devices, and the probes that follow them.
             self.shared.waking.follow(&self.shared);
             self.shared.follow_device_vpn(fabric);
@@ -2786,7 +2738,7 @@ impl Session {
 
     /// Show a mode change in the readout, said in words: a switch flipped by
     /// a key or a switch has nothing to read as a level.
-    fn hint(&self, kind: OsdKind, on: bool) {
+    pub(crate) fn hint(&self, kind: OsdKind, on: bool) {
         self.show_hint(Hint {
             kind,
             on,
@@ -2796,115 +2748,12 @@ impl Session {
     }
 
     /// Show `hint` in the readout.
-    fn show_hint(&self, hint: Hint) {
+    pub(crate) fn show_hint(&self, hint: Hint) {
         self.shared.show_readout(&Osd::from(hint));
     }
 
-    fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
-        match command {
-            SessionCommand::Lock => self.lock_by_person(),
-            SessionCommand::OpenPowerMenu => {
-                if let Some(power) = &self.shared.power {
-                    power.presentation().open(false);
-                }
-                Ok(())
-            }
-            SessionCommand::Displays { mode } => {
-                let changes = displays::arrange(mode, &self.compositor.outputs());
-                // A refused arrangement leaves the displays as they were.
-                if !changes.is_empty()
-                    && let Err(error) = self.compositor.configure_outputs(&changes)
-                {
-                    tracing::warn!(%error, ?mode, "the displays were not arranged");
-                }
-                Ok(())
-            }
-            SessionCommand::OpenDisplaySheet => {
-                self.display_sheet.open();
-                Ok(())
-            }
-            SessionCommand::CloseDisplaySheet => {
-                self.display_sheet.close();
-                Ok(())
-            }
-            SessionCommand::Magnifier(step) => {
-                let (zoom, remembered) = self.magnifier;
-                self.magnifier = settings_store::magnifier::step(zoom, remembered, step.into());
-                self.compositor.set_zoom(f64::from(self.magnifier.0));
-                self.hint(
-                    OsdKind::Magnifier,
-                    self.magnifier.0 > settings_store::magnifier::OFF,
-                );
-                Ok(())
-            }
-            SessionCommand::LogOut => {
-                // The login wrapper tears the session down once this
-                // process ends; without one, ending is the whole of it. A
-                // session in a window of another desktop has no wrapper of
-                // its own: ending is all logging out is there.
-                if !self.shared.hosted
-                    && let Err(error) = os_actions::request_logout()
-                {
-                    tracing::info!(%error, "no login wrapper to tell of the logout");
-                }
-                // Apps are told the session ends before the loop stops
-                // answering them.
-                if let Some(desktop) = &self.desktop {
-                    desktop.end();
-                }
-                self.ended = true;
-                Ok(())
-            }
-            SessionCommand::End => {
-                self.ended = true;
-                Ok(())
-            }
-            SessionCommand::NightLight { on } => {
-                let (now, kept) = self.night_light;
-                let on = on.unwrap_or(!now);
-                self.night_light.0 = on;
-                self.compositor
-                    .set_night_light(on.then_some(NIGHT_LIGHT_WARMTH))?;
-                if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
-                    tracing::warn!(%error, "the night light setting was not kept");
-                }
-                self.hint(OsdKind::NightLight, on);
-                Ok(())
-            }
-            SessionCommand::PasteFiles { destination } => {
-                self.paste_files(&destination);
-                Ok(())
-            }
-            SessionCommand::NextInputSource => {
-                let Some((sources, name)) = input_sources::next() else {
-                    return Ok(());
-                };
-                self.sources = sources;
-                apply_keyboard(&mut self.compositor, &self.sources.compiled());
-                self.show_hint(Hint {
-                    kind: OsdKind::InputSource,
-                    on: true,
-                    chord: None,
-                    name: Some(name),
-                });
-                Ok(())
-            }
-            SessionCommand::AskUninstall { app } => {
-                self.shared.app_sheets.ask_uninstall(&app);
-                Ok(())
-            }
-            SessionCommand::SetTouchpad { on } => {
-                let enabled = on.unwrap_or(!self.input.touchpad_enabled);
-                self.input.touchpad_enabled = enabled;
-                self.compositor.set_input_config(self.input.clone());
-                self.hint(OsdKind::Touchpad, enabled);
-                Ok(())
-            }
-        }
-    }
-
     /// Paste what was copied into `destination`, beside what is already there.
-    fn paste_files(&self, destination: &str) {
+    pub(crate) fn paste_files(&self, destination: &str) {
         self.shared.clipboard.paste_files(
             std::path::Path::new(destination),
             crate::mount::clipboard_files::Conflict::KeepBoth,

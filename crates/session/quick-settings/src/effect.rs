@@ -389,6 +389,14 @@ pub enum QsEffect {
         #[param("The device's address")]
         address: String,
     },
+    /// Move a Bluetooth accessory to another of your devices.
+    #[effect(own_device)]
+    HandOffBluetooth {
+        #[param("The accessory's address")]
+        address: String,
+        #[param("The device to move it to")]
+        device: String,
+    },
     /// Act on a row of the Devices section.
     #[effect(own_device)]
     PressDevice {
@@ -447,6 +455,12 @@ pub enum QsEffect {
         notification: u64,
         #[param("The action")]
         action: String,
+    },
+    /// Hand a notification to an agent as a task.
+    #[effect(own_device)]
+    HandNotificationToAgent {
+        #[param("The notification")]
+        notification: u64,
     },
     /// Clear all notifications.
     #[effect(own_device)]
@@ -630,6 +644,7 @@ fn radio_statuses(can: crate::actions::QsActionAvailability, pending: bool) -> V
         shown(QsEffect::SCAN_BLUETOOTH, None, lacks(can.bluetooth)),
         shown(QsEffect::PAIR_BLUETOOTH, None, lacks(can.bluetooth)),
         shown(QsEffect::FORGET_BLUETOOTH, None, lacks(can.bluetooth)),
+        shown(QsEffect::HAND_OFF_BLUETOOTH, None, lacks(can.bluetooth)),
     ]
     .into_iter()
     .flatten()

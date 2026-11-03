@@ -339,6 +339,12 @@ pub(crate) struct SessionNotifications {
     /// The Do Not Disturb change since the readout last said one: whoever
     /// flipped the switch, on screen it says so.
     quiet_changed: Cell<Option<bool>>,
+    /// The agent a kept notification can be handed to, where one is live in
+    /// the workspace in front: what the centre's rows offer.
+    taking_agent: Option<String>,
+    /// The kept notifications the person handed to that agent, waiting for
+    /// the loop that asks it.
+    handed: Vec<u64>,
 }
 
 impl SessionNotifications {
@@ -400,6 +406,8 @@ impl SessionNotifications {
             published: None,
             generation: 0,
             quiet_changed: Cell::new(None),
+            taking_agent: None,
+            handed: Vec::new(),
         }
     }
 
@@ -521,7 +529,7 @@ impl SessionNotifications {
                     .unwrap_or(u64::MAX),
                 ),
                 actions: notification.actions.clone(),
-                // No agent is live on this desktop to hand one to.
+                agent: self.taking_agent.clone(),
                 opens: notification.app_id.is_some() || !notification.actions.is_empty(),
             })
             .collect();
@@ -533,6 +541,39 @@ impl SessionNotifications {
             quiet: self.quiet_status(),
             can_undo,
         }
+    }
+
+    /// Say which agent a kept notification can be handed to, where one is
+    /// live here: the workspace in front's first agent, as the runs know it.
+    pub(crate) fn set_taking_agent(&mut self, agent: Option<String>) {
+        self.taking_agent = agent;
+    }
+
+    /// Hand the kept notification `id` to the agent that takes one here,
+    /// waiting for the loop that asks it.
+    pub(crate) fn ask_hand_to_agent(&mut self, id: u64) {
+        self.handed.push(id);
+    }
+
+    /// The notifications handed to that agent since the last look, as the
+    /// agent's name, the title it is told and the body it reads: a
+    /// notification no longer kept is not handed on.
+    pub(crate) fn take_handed(&mut self) -> Vec<(String, String, String)> {
+        let ids = std::mem::take(&mut self.handed);
+        let Some(agent) = self.taking_agent.clone() else {
+            return Vec::new();
+        };
+        let log = self.desktop.log();
+        ids.into_iter()
+            .filter_map(|id| {
+                let notification = log.history_entry(id)?;
+                Some((
+                    agent.clone(),
+                    notification.title.clone(),
+                    notification.body.clone(),
+                ))
+            })
+            .collect()
     }
 
     /// Choose a retained notification in the centre, as the panel asks.
@@ -890,6 +931,13 @@ pub enum CentreAction {
     /// Bring back what the last Clear all took
     #[effect(own_device, idempotent)]
     UndoClear,
+    /// Hand a notification the centre kept to an agent as a task
+    #[effect(own_device)]
+    HandToAgent {
+        /// The notification's id, as the rows carry it.
+        #[param("The notification")]
+        notification: u64,
+    },
     /// Open one of the notifications the centre kept
     #[effect(own_device)]
     Open {
@@ -940,6 +988,7 @@ impl Service for Served {
                 "act" => t("session-notifications-act"),
                 "clear" => t("session-notifications-clear"),
                 "undo-clear" => t("session-notifications-undo-clear"),
+                "hand-to-agent" => t("session-notifications-hand-to-agent"),
                 "open" => t("session-notifications-open"),
                 _ => continue,
             };
@@ -987,6 +1036,11 @@ impl Service for Served {
             CentreAction::Open { notification } => {
                 self.notifications.borrow().ask_open(notification);
             }
+            CentreAction::HandToAgent { notification } => {
+                self.notifications
+                    .borrow_mut()
+                    .ask_hand_to_agent(notification);
+            }
             CentreAction::SetQuiet { on } => {
                 if let Err(error) = self.notifications.borrow().set_do_not_disturb(on) {
                     tracing::warn!(%error, "do not disturb was not kept");
@@ -1021,6 +1075,27 @@ impl crate::Shared {
                 },
                 &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
             );
+        }
+        // What the person handed to an agent becomes the task it acts on, in
+        // the workspace in front: the notification's title is what it is
+        // asked, and the whole of it is what the agent reads.
+        for (agent, title, body) in self.notifications.borrow_mut().take_handed() {
+            let title: String = title.chars().take(240).collect();
+            let body = if body.is_empty() {
+                title.clone()
+            } else {
+                format!("{title}\n\n{body}")
+            };
+            let ask = tilo_agent_runs::Ask {
+                agent,
+                title,
+                body: Some(body),
+                quick: Some(true),
+                ..tilo_agent_runs::Ask::default()
+            };
+            if let Err(error) = self.agent_runs.ask(ask) {
+                tracing::warn!(%error, "a notification was not handed to an agent");
+            }
         }
         for id in self.notifications.borrow().take_opening() {
             let workspace = self.active_workspace_id();

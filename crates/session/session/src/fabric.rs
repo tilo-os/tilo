@@ -372,6 +372,13 @@ impl crate::Session {
         use tilo_device_fabric::PersonalFabricAction;
         if self
             .shared
+            .bluetooth
+            .arrived(&self.shared, fabric, envelope)
+        {
+            return;
+        }
+        if self
+            .shared
             .waking
             .handle_action(&self.shared, fabric, envelope)
         {
@@ -402,14 +409,6 @@ impl crate::Session {
             | PersonalFabricAction::Input { .. }
             | PersonalFabricAction::SpatialInputProtocol { .. }
             | PersonalFabricAction::SpatialInputSequenced { .. }
-            | PersonalFabricAction::BluetoothHandoffPrepare { .. }
-            | PersonalFabricAction::BluetoothHandoffPrepared { .. }
-            | PersonalFabricAction::BluetoothHandoffCommit { .. }
-            | PersonalFabricAction::BluetoothHandoffFinished { .. }
-            | PersonalFabricAction::BluetoothHandoffAccepted { .. }
-            | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
-            | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
-            | PersonalFabricAction::BluetoothHandoffCancel { .. }
             | PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             | PersonalFabricAction::NearbyTransferOffer { .. }
@@ -421,6 +420,17 @@ impl crate::Session {
             | PersonalFabricAction::NotificationRetire { .. }
             | PersonalFabricAction::NotificationDismiss { .. }
             | PersonalFabricAction::NotificationInvoke { .. }
+            // A move of a Bluetooth accessory between devices that was not
+            // addressed to this session's person ([`Shared::bluetooth`]
+            // answers for those) is somebody else's to carry.
+            | PersonalFabricAction::BluetoothHandoffPrepare { .. }
+            | PersonalFabricAction::BluetoothHandoffPrepared { .. }
+            | PersonalFabricAction::BluetoothHandoffCommit { .. }
+            | PersonalFabricAction::BluetoothHandoffFinished { .. }
+            | PersonalFabricAction::BluetoothHandoffAccepted { .. }
+            | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
+            | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
+            | PersonalFabricAction::BluetoothHandoffCancel { .. }
             | PersonalFabricAction::RealtimeOffer { .. }
             | PersonalFabricAction::RealtimeAccept { .. }
             | PersonalFabricAction::RealtimeMediaReady { .. }

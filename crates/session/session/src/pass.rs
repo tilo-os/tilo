@@ -43,6 +43,9 @@ impl Session {
     /// that reads its conversation lent, and the services polled, so the
     /// surfaces below show what they published.
     pub(super) fn serve_runs_and_services(&self) {
+        // What the session's own resources read, before the services poll
+        // the readings this pass hands them.
+        self.read_controls();
         self.shared.feed_agent_runs();
         // The door that decides what a person's line in a run's conversation
         // reads and changes, once this pass's runs know where they are

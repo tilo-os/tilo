@@ -59,6 +59,16 @@ pub enum DevicesAction {
         #[param("The part of the row that was pressed")]
         part: RowPart,
     },
+    /// Move a paired Bluetooth accessory to another of the person's devices
+    #[effect(own_device)]
+    HandOff {
+        /// The accessory's address.
+        #[param("The accessory's address")]
+        address: String,
+        /// The device that takes it, as the reading lists its id.
+        #[param("The device to move it to")]
+        device: String,
+    },
 }
 
 /// The person's devices as the fabric reads them, what plays here that they
@@ -180,6 +190,8 @@ pub(crate) struct Served {
     /// The presses the person made on the rows, waiting for the loop that
     /// holds the fabric, the wakes and the search.
     pressed: Rc<RefCell<Vec<Press>>>,
+    /// The accessories the person asked to move to another device.
+    handed: Rc<RefCell<Vec<HandOff>>>,
     /// The reading last reported, so a pass that changed nothing is no
     /// revision.
     published: RefCell<Option<DevicesReading>>,
@@ -192,6 +204,14 @@ pub(crate) struct Press {
     pub(crate) part: RowPart,
 }
 
+/// One accessory asked to move to another device: its address, and the
+/// device it goes to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HandOff {
+    pub(crate) address: String,
+    pub(crate) device: String,
+}
+
 impl Served {
     /// The service publishing what `fabric`, `readings`, `chosen` and
     /// `handoff` read, whose presses `pressed` carries to the loop.
@@ -201,6 +221,7 @@ impl Served {
         chosen: Rc<RefCell<Option<u64>>>,
         handoff: Rc<RefCell<Option<MediaOffer>>>,
         pressed: Rc<RefCell<Vec<Press>>>,
+        handed: Rc<RefCell<Vec<HandOff>>>,
     ) -> Self {
         Self {
             fabric,
@@ -208,6 +229,7 @@ impl Served {
             chosen,
             handoff,
             pressed,
+            handed,
             published: RefCell::new(None),
         }
     }
@@ -254,6 +276,11 @@ impl Service for Served {
             // the device is managed.
             DevicesAction::Press { row, part } => {
                 self.pressed.borrow_mut().push(Press { row, part });
+            }
+            // Moving an accessory is the session's too: it needs the fabric
+            // and both devices' Bluetooth, so the loop carries it out.
+            DevicesAction::HandOff { address, device } => {
+                self.handed.borrow_mut().push(HandOff { address, device });
             }
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))

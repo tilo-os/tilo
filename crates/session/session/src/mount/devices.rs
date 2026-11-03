@@ -32,6 +32,9 @@ pub(crate) struct Devices {
     pub(crate) chosen: Rc<RefCell<Option<u64>>>,
     /// The presses the published verb took, carried out by the loop.
     pub(crate) pressed: Rc<RefCell<Vec<devices::Press>>>,
+    /// The accessories the person asked to move to another device, carried
+    /// out by the loop.
+    pub(crate) handed: Rc<RefCell<Vec<devices::HandOff>>>,
 }
 
 impl Shared {
@@ -42,6 +45,10 @@ impl Shared {
         let pressed = std::mem::take(&mut *self.devices.pressed.borrow_mut());
         for asked in pressed {
             press(self, &asked.row, asked.part);
+        }
+        let handed = std::mem::take(&mut *self.devices.handed.borrow_mut());
+        for asked in handed {
+            self.bluetooth.ask(&asked.address, &asked.device);
         }
     }
 }

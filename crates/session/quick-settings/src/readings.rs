@@ -19,8 +19,8 @@ use ui::serde_json;
 
 use crate::PowerProfile;
 use crate::session::{
-    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NOTIFICATIONS, SLEEP, SOUND,
-    SYSTEM_UPDATE, VPN,
+    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NIGHT_LIGHT, NOTIFICATIONS, SLEEP,
+    SOUND, SYSTEM_UPDATE, VPN,
 };
 use crate::state::QuickSettingsState;
 
@@ -171,6 +171,7 @@ pub(crate) fn land(readings: &Readings, resource: &str, text: &str) -> bool {
             })
         }
         DEVICES => parse::<crate::hosted::DevicesReading>(readings, resource, text, land_devices),
+        NIGHT_LIGHT => parse::<NightLight>(readings, resource, text, land_night_light),
         _ => false,
     }
 }
@@ -195,6 +196,17 @@ where
             false
         }
     }
+}
+
+/// The session's night light, as its reading says it is: the switch shows
+/// what the session did, so a press that was refused shows as it still is.
+#[derive(Deserialize)]
+struct NightLight {
+    on: bool,
+}
+
+fn land_night_light(state: &mut QuickSettingsState, night_light: &NightLight) {
+    state.night_light = night_light.on;
 }
 
 fn land_network(state: &mut QuickSettingsState, network: &Network) {

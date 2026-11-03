@@ -1,22 +1,34 @@
 //! The session's own resources: what only the session can change, because
 //! it runs the compositor (the touchpad, locking the screen) or holds the
-//! questions about the person's apps, published on the same door as every
-//! hosted surface's.
+//! questions about the person's apps.
+//!
+//! They are served as a service beside every other the session runs, so an
+//! app reaches them the way it reaches each service's resources: reads what
+//! they are now and invokes what changes them through one door. What only the
+//! session holds is published here as its reading — whether the screens are
+//! locked, the touchpad is on, the night light is on and how far the
+//! magnifier zooms — so a resource that only acted would be the one kind of
+//! resource a panel could not open.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionParam, ActionSpec, DoorError, EncodedAction,
     ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
+use tilo_compositor::Error;
+use tilo_desktop::osd::{Hint, OsdKind};
 use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
-use tilo_surface_host::Published;
+use tilo_service::{Service, Started};
 
 use crate::displays::DisplayMode;
+use tilo_sheets::Seat as _;
+
 use crate::i18n::t;
-use ui::host_operation::ResourceOperationStart;
+use crate::{NIGHT_LIGHT_WARMTH, apply_keyboard, displays, input_sources};
 
 /// The operation type the session's own actions carry.
 const OPERATION: &str = "tilo.session.command";
@@ -246,42 +258,220 @@ pub(crate) fn command_of(
         .ok_or_else(|| DoorError::Failed("not a session command".into()))
 }
 
-/// The session's own door: its actions become [`SessionCommand`]s the
-/// session carries out with the compositor.
+/// What the session's own resources read: the state of what only the session
+/// keeps, told to them by the loop every pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlsReading {
+    /// The screens are locked.
+    pub locked: bool,
+    /// The touchpad takes the person's fingers.
+    pub touchpad: bool,
+    /// The screen is warm.
+    pub night_light: bool,
+    /// How far the magnifier zooms, `0` while it is off.
+    pub zoom: u8,
+}
+
+/// The session's own resources and the commands they raise: what only the
+/// session can carry out, served beside its services.
 pub(crate) struct SessionControls {
     commands: Rc<RefCell<Vec<SessionCommand>>>,
+    /// The state the resources read, written by the loop.
+    reading: Rc<RefCell<ControlsReading>>,
+    /// The reading last reported, so a pass that changed nothing is no
+    /// revision.
+    published: RefCell<Option<ControlsReading>>,
 }
 
 impl SessionControls {
-    pub(crate) const fn new(commands: Rc<RefCell<Vec<SessionCommand>>>) -> Self {
-        Self { commands }
+    pub(crate) const fn new(
+        commands: Rc<RefCell<Vec<SessionCommand>>>,
+        reading: Rc<RefCell<ControlsReading>>,
+    ) -> Self {
+        Self {
+            commands,
+            reading,
+            published: RefCell::new(None),
+        }
+    }
+
+    /// What `resource` reads: the part of the session's own state that
+    /// resource changes, or nothing for the questions about apps.
+    fn reading_of(reading: &ControlsReading, resource: &str) -> Option<Value> {
+        match resource {
+            SESSION_RESOURCE => Some(json!({ "locked": reading.locked })),
+            INPUT_RESOURCE => Some(json!({ "touchpad": reading.touchpad })),
+            NIGHT_LIGHT_RESOURCE => Some(json!({ "on": reading.night_light })),
+            MAGNIFIER_RESOURCE => Some(json!({
+                "on": reading.zoom > settings_store::magnifier::OFF,
+                "zoom": reading.zoom,
+            })),
+            APPS_RESOURCE => Some(json!({})),
+            _ => None,
+        }
     }
 }
 
-impl Published for SessionControls {
-    fn resources(&mut self) -> Vec<ResourceSpec> {
+impl Service for SessionControls {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        // What the controls change is this device's own state, not anyone's
+        // content: a grant to read the session's resources reads it.
         resources()
+            .into_iter()
+            .map(ResourceSpec::with_granted_reading)
+            .collect()
     }
 
-    fn revision(&self) -> Option<u64> {
-        // Its actions never change.
-        Some(0)
+    fn read(&self, resource: &str) -> Option<Value> {
+        let published = self.published.borrow().clone();
+        let reading = published.unwrap_or_else(|| self.reading.borrow().clone());
+        Self::reading_of(&reading, resource)
     }
 
     fn invoke(
         &mut self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        let command = command_of(&resources(), address, arguments)?;
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let address = ActionAddress::new(resource, action);
+        let command = command_of(&resources(), &address, arguments)?;
         self.commands.borrow_mut().push(command);
-        Ok(ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 
-    fn accessible_labels(&mut self) -> Vec<String> {
-        Vec::new()
+    fn poll(&mut self) -> bool {
+        let now = self.reading.borrow().clone();
+        let mut published = self.published.borrow_mut();
+        if published.as_ref() == Some(&now) {
+            return false;
+        }
+        *published = Some(now);
+        true
+    }
+}
+
+impl crate::Session {
+    /// Carry out what the session's own resources asked of it: the
+    /// compositor, the sheets and the settings it alone holds.
+    pub(crate) fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
+        match command {
+            SessionCommand::Lock => self.lock_by_person(),
+            SessionCommand::OpenPowerMenu => {
+                if let Some(power) = &self.shared.power {
+                    power.presentation().open(false);
+                }
+                Ok(())
+            }
+            SessionCommand::Displays { mode } => {
+                let changes = displays::arrange(mode, &self.compositor.outputs());
+                // A refused arrangement leaves the displays as they were.
+                if !changes.is_empty()
+                    && let Err(error) = self.compositor.configure_outputs(&changes)
+                {
+                    tracing::warn!(%error, ?mode, "the displays were not arranged");
+                }
+                Ok(())
+            }
+            SessionCommand::OpenDisplaySheet => {
+                self.display_sheet.open();
+                Ok(())
+            }
+            SessionCommand::CloseDisplaySheet => {
+                self.display_sheet.close();
+                Ok(())
+            }
+            SessionCommand::Magnifier(step) => {
+                let (zoom, remembered) = self.magnifier;
+                self.magnifier = settings_store::magnifier::step(zoom, remembered, step.into());
+                self.compositor.set_zoom(f64::from(self.magnifier.0));
+                self.hint(
+                    OsdKind::Magnifier,
+                    self.magnifier.0 > settings_store::magnifier::OFF,
+                );
+                Ok(())
+            }
+            SessionCommand::LogOut => {
+                // The login wrapper tears the session down once this
+                // process ends; without one, ending is the whole of it. A
+                // session in a window of another desktop has no wrapper of
+                // its own: ending is all logging out is there.
+                if !self.shared.hosted
+                    && let Err(error) = os_actions::request_logout()
+                {
+                    tracing::info!(%error, "no login wrapper to tell of the logout");
+                }
+                // Apps are told the session ends before the loop stops
+                // answering them.
+                if let Some(desktop) = &self.desktop {
+                    desktop.end();
+                }
+                self.ended = true;
+                Ok(())
+            }
+            SessionCommand::End => {
+                self.ended = true;
+                Ok(())
+            }
+            SessionCommand::NightLight { on } => {
+                let (now, kept) = self.night_light;
+                let on = on.unwrap_or(!now);
+                self.night_light.0 = on;
+                self.compositor
+                    .set_night_light(on.then_some(NIGHT_LIGHT_WARMTH))?;
+                if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
+                    tracing::warn!(%error, "the night light setting was not kept");
+                }
+                self.hint(OsdKind::NightLight, on);
+                Ok(())
+            }
+            SessionCommand::PasteFiles { destination } => {
+                self.paste_files(&destination);
+                Ok(())
+            }
+            SessionCommand::NextInputSource => {
+                let Some((sources, name)) = input_sources::next() else {
+                    return Ok(());
+                };
+                self.sources = sources;
+                apply_keyboard(&mut self.compositor, &self.sources.compiled());
+                self.show_hint(Hint {
+                    kind: OsdKind::InputSource,
+                    on: true,
+                    chord: None,
+                    name: Some(name),
+                });
+                Ok(())
+            }
+            SessionCommand::AskUninstall { app } => {
+                self.shared.app_sheets.ask_uninstall(&app);
+                Ok(())
+            }
+            SessionCommand::SetTouchpad { on } => {
+                let enabled = on.unwrap_or(!self.input.touchpad_enabled);
+                self.input.touchpad_enabled = enabled;
+                self.compositor.set_input_config(self.input.clone());
+                self.hint(OsdKind::Touchpad, enabled);
+                Ok(())
+            }
+        }
+    }
+
+    /// What the session's own resources read of this device, as this pass
+    /// left it: a key that toggled the touchpad and a command that lit the
+    /// night light are both read here, and the controls' service publishes
+    /// them to the apps that asked.
+    pub(crate) fn read_controls(&self) {
+        let (zoom, _) = self.magnifier;
+        self.shared
+            .controls
+            .borrow_mut()
+            .clone_from(&ControlsReading {
+                locked: self.compositor.locked(),
+                touchpad: self.input.touchpad_enabled,
+                night_light: self.night_light.0,
+                zoom,
+            });
     }
 }
 
@@ -292,32 +482,21 @@ mod tests {
     #[test]
     fn the_session_publishes_its_input_and_lock_actions_and_runs_them_as_commands() {
         let commands = Rc::new(RefCell::new(Vec::new()));
-        let mut controls = SessionControls::new(Rc::clone(&commands));
+        let reading = Rc::new(RefCell::new(ControlsReading::default()));
+        let mut controls = SessionControls::new(Rc::clone(&commands), reading);
         let mut arguments = serde_json::Map::new();
         controls
-            .invoke(
-                &ActionAddress::new(INPUT_RESOURCE, "toggle-touchpad"),
-                &arguments,
-            )
+            .invoke(INPUT_RESOURCE, "toggle-touchpad", &arguments)
             .unwrap();
         arguments.insert("on".into(), true.into());
         controls
-            .invoke(
-                &ActionAddress::new(INPUT_RESOURCE, "toggle-touchpad"),
-                &arguments,
-            )
+            .invoke(INPUT_RESOURCE, "toggle-touchpad", &arguments)
             .unwrap();
         controls
-            .invoke(
-                &ActionAddress::new(SESSION_RESOURCE, "lock"),
-                &serde_json::Map::new(),
-            )
+            .invoke(SESSION_RESOURCE, "lock", &serde_json::Map::new())
             .unwrap();
         controls
-            .invoke(
-                &ActionAddress::new(SESSION_RESOURCE, "power-menu"),
-                &serde_json::Map::new(),
-            )
+            .invoke(SESSION_RESOURCE, "power-menu", &serde_json::Map::new())
             .unwrap();
         assert_eq!(
             *commands.borrow(),
@@ -330,11 +509,43 @@ mod tests {
         );
         assert!(
             controls
-                .invoke(
-                    &ActionAddress::new(INPUT_RESOURCE, "nothing"),
-                    &serde_json::Map::new()
-                )
+                .invoke(INPUT_RESOURCE, "nothing", &serde_json::Map::new())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn every_resource_reads_the_state_its_actions_change() {
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        let reading = ControlsReading {
+            locked: true,
+            touchpad: true,
+            night_light: true,
+            zoom: 3,
+        };
+        let mut controls =
+            SessionControls::new(Rc::clone(&commands), Rc::new(RefCell::new(reading)));
+        // What a reader sees before the loop's first pass is read at once,
+        // not left empty until something changes.
+        assert_eq!(
+            controls.read(SESSION_RESOURCE),
+            Some(json!({ "locked": true }))
+        );
+        assert_eq!(
+            controls.read(INPUT_RESOURCE),
+            Some(json!({ "touchpad": true }))
+        );
+        assert_eq!(
+            controls.read(NIGHT_LIGHT_RESOURCE),
+            Some(json!({ "on": true }))
+        );
+        assert_eq!(
+            controls.read(MAGNIFIER_RESOURCE),
+            Some(json!({ "on": true, "zoom": 3 }))
+        );
+        assert!(controls.read(APPS_RESOURCE).is_some());
+        assert_eq!(controls.read("session:nothing"), None);
+        assert!(controls.poll(), "a reader is told what it was not told");
+        assert!(!controls.poll(), "an unchanged reading is no revision");
     }
 }

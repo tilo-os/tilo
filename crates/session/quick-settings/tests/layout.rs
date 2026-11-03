@@ -604,24 +604,58 @@ fn a_notification_nothing_can_open_is_read_in_full_and_back_returns_to_the_list(
 }
 
 #[test]
-fn an_accessory_shows_where_each_device_stands_and_only_disconnect_acts() {
+fn an_accessory_moves_to_a_device_in_reach_and_disconnects_from_here() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("accessory");
-    // The other devices are there to be read: this device's standing with
-    // the accessory, and whether each is in reach. None of them takes a
-    // press, because nothing here can pair it elsewhere.
+    // This laptop has the accessory and the tablet is out of reach: both are
+    // there to be read, and neither takes the press.
     for device in ["tablet", "laptop", "desk"] {
         assert!(has(&mut app, &format!("qs-accessory-to-{device}")));
+    }
+    for device in ["tablet", "laptop"] {
         click(&mut app, &format!("qs-accessory-to-{device}"));
     }
-    assert!(host.ran().is_empty(), "nothing is handed off from here");
+    assert!(host.ran().is_empty(), "only a device in reach takes it");
+    click(&mut app, "qs-accessory-to-desk");
+    assert_eq!(
+        host.ran(),
+        [QsEffect::HandOffBluetooth {
+            address: "00:1B:66:A1:B2:C3".into(),
+            device: "desk".into(),
+        }],
+        "the desk is online and paired: the accessory moves there"
+    );
     click(&mut app, "qs-accessory-here");
     assert_eq!(
         host.ran(),
-        [QsEffect::DisconnectBluetooth {
-            address: "00:1B:66:A1:B2:C3".into(),
-        }]
+        [
+            QsEffect::HandOffBluetooth {
+                address: "00:1B:66:A1:B2:C3".into(),
+                device: "desk".into(),
+            },
+            QsEffect::DisconnectBluetooth {
+                address: "00:1B:66:A1:B2:C3".into(),
+            },
+        ]
+    );
+}
+
+/// A kept notification of a desktop an agent works on goes to that agent as
+/// the task it acts on.
+#[test]
+fn a_notification_is_handed_to_the_agent_that_takes_it() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("notifications");
+    app.harness()
+        .perform_named("qs-notification-1/action/1", &ui::a11y::Action::Activate)
+        .expect("the notification offers its agent");
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [QsEffect::HandNotificationToAgent { notification: 1 }],
+        "the row's agent action hands the notification on"
     );
 }
 

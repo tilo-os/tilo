@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tilo_compositor::Compositor;
 use tilo_desktop::overlays::Overlays;
 
-use crate::controls::SessionControls;
+use crate::controls::ControlsReading;
 use crate::keys::{
     ControllerKeys, DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys,
 };
@@ -16,8 +16,6 @@ use crate::panels::{Held, Readout, ReadoutPlace, ReadoutPlaces};
 use crate::setup::Setup;
 use crate::{BeforeDesk, Doors, SessionCommand};
 
-/// A sheet lent `seat`, hosted over the desktop and its panels with its
-/// actions behind the door while it is up; the seat, when it mounted.
 /// What stands before the desk, when it stands there at all: above
 /// everything, first to the keyboard, and while it is up the only surface
 /// offering actions.
@@ -59,10 +57,12 @@ pub(crate) struct KeyContext {
 /// resources and the keys it answers wherever the keyboard is: above every
 /// surface, so offered every press first.
 /// What mounting the session's controls hands the session back: the commands
-/// the key surface raises, the invocations it answers, the chords it pressed
-/// through, where the readout stands and the readout itself.
+/// the key surface raises and the state its own resources read, the
+/// invocations it answers, the chords it pressed through, where the readout
+/// stands and the readout itself.
 pub(crate) type Controls = (
     Rc<RefCell<Vec<SessionCommand>>>,
+    Rc<RefCell<ControlsReading>>,
     Invocations,
     PressedChords,
     ReadoutPlaces,
@@ -93,9 +93,10 @@ pub(crate) fn mount_controls(
     let shared: tilo_surface_host::Shared = readout.clone();
     doors.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
-    doors.add(Rc::new(RefCell::new(SessionControls::new(Rc::clone(
-        &commands,
-    )))));
+    // The controls are a service of the session's, mounted beside the other
+    // services so an app reads and invokes them as it does each of those:
+    // what the loop keeps of their state is read here, before that mounts.
+    let controls_reading = Rc::new(RefCell::new(ControlsReading::default()));
     let invocations = Invocations::default();
     let triggered = PressedChords::default();
     // The press that falls outside a surface the session placed closes it,
@@ -117,5 +118,12 @@ pub(crate) fn mount_controls(
         },
         reveals,
     )));
-    (commands, invocations, triggered, places, readout)
+    (
+        commands,
+        controls_reading,
+        invocations,
+        triggered,
+        places,
+        readout,
+    )
 }

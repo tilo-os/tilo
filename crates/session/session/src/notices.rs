@@ -92,7 +92,8 @@ pub struct Notice {
 }
 
 impl Notice {
-    fn new(app: String, urgency: u8, title: String, body: String) -> Self {
+    /// A notice `app` tells the person, at `urgency`.
+    pub(crate) fn new(app: String, urgency: u8, title: String, body: String) -> Self {
         Self {
             app,
             urgency,
