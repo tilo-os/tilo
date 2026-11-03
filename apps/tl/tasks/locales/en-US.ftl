@@ -132,7 +132,7 @@ d-zjuy7y7f = New project
     .doc = Starts a project.
 
 d-vwgro4iv = Complete
-    .doc = Checks a task off, or opens it again.
+    .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
 
 d-baqmaej2 = Assign to me
     .doc = Takes a task on: it is the invoker's to do.
@@ -174,7 +174,7 @@ d-ojzyzzxu = Remove
     .doc = Deletes a task and its subtasks.
 
 d-rjpcv6es = Clear done
-    .doc = Deletes every finished task, and answers how many went: a task whose subtasks are still undone stays, so clearing never takes unfinished work with it.
+    .doc = Deletes every done task, and answers how many went.
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.

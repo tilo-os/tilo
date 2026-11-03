@@ -384,3 +384,100 @@ fn an_agent_run_undone_while_a_person_edited_the_same_note_keeps_the_persons_edi
         );
     }
 }
+
+/// The tasks of the workspace's list, in the order they stand.
+fn tasks_in(r: &Replica) -> Vec<Value> {
+    match r
+        .host
+        .runtime()
+        .read(&target(&root(r, TASKS_APP)), "items")
+        .unwrap()
+    {
+        Value::List(items) => items,
+        other => panic!("a list: {other:?}"),
+    }
+}
+
+/// The task with this title, as its person's list holds it.
+fn task_titled(r: &Replica, title: &str) -> ResourceRef {
+    tasks_in(r)
+        .into_iter()
+        .map(|item| target(&item))
+        .find(|task| text(r, task, "title") == title)
+        .unwrap_or_else(|| panic!("{title}"))
+}
+
+/// Whether a task is done.
+fn done(r: &Replica, task: &ResourceRef) -> Value {
+    r.host.runtime().read(task, "done").unwrap()
+}
+
+/// A check is one step: one person's Undo opens the task and every task it took with it, and
+/// the steps before it stand.
+#[test]
+fn undo_opens_a_checked_task_and_every_task_under_it_at_once() {
+    let (mut ada, _ben) = workspace();
+    let tasks = root(&ada, TASKS_APP);
+    let parent = target(&call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add",
+        vec![tasks.clone(), Value::text("Write the launch post")],
+    ));
+    ada.commit();
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![
+            tasks.clone(),
+            Value::resource(&parent),
+            Value::text("Outline"),
+        ],
+    );
+    ada.commit();
+    let outline = task_titled(&ada, "Outline");
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![
+            tasks,
+            Value::resource(&outline),
+            Value::text("Gather facts"),
+        ],
+    );
+    ada.commit();
+    let facts = task_titled(&ada, "Gather facts");
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "check",
+        vec![Value::resource(&parent)],
+    );
+    ada.commit();
+    for task in [&parent, &outline, &facts] {
+        assert_eq!(done(&ada, task), Value::Bool(true));
+    }
+
+    undo(&mut ada);
+    for task in [&parent, &outline, &facts] {
+        assert_eq!(
+            done(&ada, task),
+            Value::Bool(false),
+            "one undo opens the whole check"
+        );
+    }
+    assert_eq!(tasks_in(&ada).len(), 3, "the tasks are still there");
+    // The adds before it are steps of their own: the next Undo takes the last of them back.
+    undo(&mut ada);
+    assert_eq!(
+        tasks_in(&ada).len(),
+        2,
+        "the check was one step, so the undo before it was the add"
+    );
+}

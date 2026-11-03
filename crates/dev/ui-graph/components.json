@@ -907,6 +907,12 @@
           }
         }
       ],
+      "events": [
+        {
+          "name": "check",
+          "doc": "It was pressed: what a mark is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value."
+        }
+      ],
       "bindings": [
         {
           "name": "value",
@@ -2396,6 +2402,10 @@
       ],
       "events": [
         {
+          "name": "check",
+          "doc": "The checkbox was pressed: what a check is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value."
+        },
+        {
           "name": "activate",
           "doc": "The row was activated (a click, Enter, an assistive technology): open what it shows."
         }
@@ -2403,7 +2413,7 @@
       "bindings": [
         {
           "name": "checkbox",
-          "doc": "A checkbox in the leading column, bound to whether the item is done.",
+          "doc": "A checkbox in the leading column, bound to whether the item is done. A press on it asks the row's `check`, when it names one, instead of changing what it is bound to.",
           "type": "bool",
           "merge": "register"
         }

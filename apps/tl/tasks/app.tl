@@ -145,8 +145,7 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
     tasks.projects.insert(Project(name: "New project"))
 }
 
-/// Checks a task off together with every task under it, or opens it again together with the
-/// tasks it is under: a task is done exactly when it and everything under it is.
+/// Checks a task off with every task under it, or opens it again with the tasks it is under.
 action check(t: Task, done: Bool = not t.done) (label: if done { "Complete" } else { "Reopen" }, icon: .check, on: t.done, key: "Ctrl+Enter") {
     t.done = done
     if done {

@@ -726,3 +726,55 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
         "no entry shows an action id: {said:?}"
     );
 }
+
+/// Checking a task off is one entry of history, saying in a sentence what it did: it took the
+/// tasks under it with it, and the step before it is an entry of its own.
+#[test]
+fn checking_a_task_off_is_one_entry_saying_what_it_did() {
+    const SAYS: &str = "Checks a task off with every task under it, or opens it again with the \
+                        tasks it is under.";
+    let (mut ada, _, tasks) = two_people();
+    let parent = call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add",
+        vec![tasks.clone(), Value::text("Write the launch post")],
+    );
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![tasks, parent.clone(), Value::text("Outline")],
+    );
+    ada.commit();
+    // Bo puts it off a day, so Ada's check stands after a step of his.
+    call(
+        &ada,
+        "bo",
+        TASKS_APP,
+        "schedule",
+        vec![parent.clone(), Value::some(Value::text("2026-11-02"))],
+    );
+    ada.commit();
+    call(&ada, "ada", TASKS_APP, "check", vec![parent.clone()]);
+    ada.commit();
+
+    let mut page = ada.host.open_resource(&target(&parent), None).unwrap();
+    let section = history(&mut page);
+    assert_eq!(
+        entries(&section),
+        ["ada", "bo", "ada"],
+        "newest first: the check, then Bo's step, then the making"
+    );
+    assert!(
+        nodes(&section).iter().any(|n| text(n) == Some(SAYS)),
+        "the check's entry says what it did: {section:#?}"
+    );
+    let (label, ..) = changes(&section)
+        .into_iter()
+        .next()
+        .expect("the check's change is shown");
+    assert_eq!(label, "Done");
+}

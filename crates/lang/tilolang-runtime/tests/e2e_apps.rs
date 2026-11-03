@@ -1430,7 +1430,7 @@ mod cases {
         let m = morning(&apps);
         add_todo(&m, &apps, "a", false);
         add_todo(&m, &apps, "b", false);
-        // A done task with an unfinished step is not finished either.
+        // A step put under a done task opens it again: there is work under it now.
         let parent =
             returned_ref(m.w.call(&apps.todo, "new_task", vec![res(&m.list), Value::text("c")]));
         m.w.call(&apps.todo, "check", vec![res(&parent)]);
@@ -1438,6 +1438,11 @@ mod cases {
             &apps.todo,
             "add_subtask",
             vec![res(&m.list), res(&parent), Value::text("c.1")],
+        );
+        assert_eq!(
+            m.w.rt.read(&parent, "done").unwrap(),
+            Value::Bool(false),
+            "the task opened again for its step"
         );
 
         let flow = apps.today.flow("morning_cleanup");
@@ -1468,7 +1473,7 @@ mod cases {
         assert_eq!(
             items(&m.w, &m.list, "items").len(),
             4,
-            "nothing went: the done task keeps its open step"
+            "nothing went: the task opened again for its step"
         );
         let notes = items(&m.w, &m.notebook, "items");
         assert_eq!(notes.len(), 1, "the note still says how the morning went");
@@ -1584,7 +1589,8 @@ mod cases {
     fn an_action_whose_requirement_fails_is_not_offered_and_is_refused_with_its_reason() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("Tasks");
+        // The workspace's one Tasks root: a check reads its tasks from it, as the app does.
+        let list = w.rt.create_root("Tasks").unwrap();
         let item = returned_ref(w.call(
             &apps.todo,
             "new_task",
@@ -1615,6 +1621,20 @@ mod cases {
             refused.to_string().contains("Nothing is done yet"),
             "{refused}"
         );
+        // A task's step goes under it while it is open: nothing is done still.
+        w.call(
+            &apps.todo,
+            "add_subtask",
+            vec![res(&list), res(&item), Value::text("milk the cow")],
+        );
+        v.poll_patches().unwrap();
+        assert!(
+            !labels(&v).contains(&"Clear done".to_owned()),
+            "an open step under an open task is nothing done: {:?}",
+            labels(&v)
+        );
+        // Checking the task off takes the step with it, so Clear done is offered exactly when
+        // a clear takes something.
         w.call(&apps.todo, "check", vec![res(&item)]);
         v.poll_patches().unwrap();
         assert!(
@@ -1622,45 +1642,27 @@ mod cases {
             "once an item is done, Clear done is offered: {:?}",
             labels(&v)
         );
-        // A step left open under a done task leaves that task unfinished: a clear takes
-        // nothing while it stands. The offer reads that when the clear runs, not on every
-        // render, so it stays up.
-        w.call(
-            &apps.todo,
-            "add_subtask",
-            vec![res(&list), res(&item), Value::text("milk the cow")],
-        );
-        let step = items(&w, &list, "items")
-            .into_iter()
-            .find(|i| text_of(&w, i, "title") == "milk the cow")
-            .expect("the step went under the task");
-        v.poll_patches().unwrap();
-        assert!(
-            labels(&v).contains(&"Clear done".to_owned()),
-            "something is done, so Clear done is offered: {:?}",
-            labels(&v)
-        );
-        let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
-        assert!(
-            matches!(cleared, InvokeOutcome::Done(Value::Int(0))),
-            "a done task with an open step is not finished, so nothing went: {cleared:?}"
-        );
-        assert_eq!(
-            items(&w, &list, "items").len(),
-            2,
-            "the task keeps its open step"
-        );
-        w.call(&apps.todo, "check", vec![res(&step)]);
-        v.poll_patches().unwrap();
-        assert!(
-            labels(&v).contains(&"Clear done".to_owned()),
-            "with the step done too, Clear done is offered still: {:?}",
-            labels(&v)
-        );
         let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
         assert!(
             matches!(cleared, InvokeOutcome::Done(Value::Int(2))),
-            "now the task and its step are finished: {cleared:?}"
+            "the task and its step went: {cleared:?}"
+        );
+        assert!(items(&w, &list, "items").is_empty());
+        v.poll_patches().unwrap();
+        assert!(
+            !labels(&v).contains(&"Clear done".to_owned()),
+            "with nothing left to clear it is offered no more: {:?}",
+            labels(&v)
+        );
+        let refused =
+            w.rt.invoke_action(
+                &me(),
+                (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
+            )
+            .expect_err("clear_done is refused again once nothing is done");
+        assert!(
+            refused.to_string().contains("Nothing is done yet"),
+            "{refused}"
         );
     }
 

@@ -759,3 +759,86 @@ fn a_subtask_indents_over_itself_and_outdents_beside_its_parent() {
         "out again it stands after the task it was under"
     );
 }
+
+/// A task is done exactly when everything under it is: checking it off checks off every step
+/// under it, however deep, and opening a step opens the tasks it is under while the rest stay.
+#[test]
+fn checking_a_task_off_checks_every_task_under_it() {
+    let (mut ada, parent) = launch_post();
+    let tasks = Value::resource(&ada.host.root_of(APP).unwrap());
+    let outline = task(&ada, "Outline");
+    call(
+        &ada,
+        "add_subtask",
+        vec![tasks, outline.clone(), Value::text("Gather facts")],
+    );
+    ada.commit();
+    let facts = task(&ada, "Gather facts");
+
+    call(&ada, "check", vec![parent.clone()]);
+    ada.commit();
+    for t in [
+        &parent,
+        &outline,
+        &task(&ada, "First draft"),
+        &task(&ada, "Screenshots"),
+        &facts,
+    ] {
+        assert_eq!(
+            read(&ada, t, "done"),
+            Value::Bool(true),
+            "{:?} is done with the task over it",
+            read(&ada, t, "title")
+        );
+    }
+
+    // Opening a step at the bottom opens everything over it, and nothing beside it.
+    call(&ada, "check", vec![facts.clone()]);
+    ada.commit();
+    assert_eq!(read(&ada, &facts, "done"), Value::Bool(false));
+    assert_eq!(
+        read(&ada, &outline, "done"),
+        Value::Bool(false),
+        "the task it is a step of opens too"
+    );
+    assert_eq!(
+        read(&ada, &parent, "done"),
+        Value::Bool(false),
+        "and the task that one is under"
+    );
+    for title in ["First draft", "Screenshots"] {
+        assert_eq!(
+            read(&ada, &task(&ada, title), "done"),
+            Value::Bool(true),
+            "{title} stays done"
+        );
+    }
+}
+
+/// A list row's checkbox asks the app's check, so a press on it takes the tasks under the one
+/// it stands for, not the one field the box shows.
+#[test]
+fn a_rows_checkbox_checks_the_tasks_under_it() {
+    let (mut ada, parent) = launch_post();
+    assert_eq!(
+        target(&read(&ada, &parent, "project")),
+        None,
+        "the task is in the inbox, so the home list shows it"
+    );
+    let mut view = ada.view(APP);
+    // Every row, not only the ones the window has room for.
+    view.set_lazy_rows(false).unwrap();
+    let key = key_of(&view, "ui.ListRow", &|node| {
+        node.props.get("title") == Some(&Value::text("Write the launch post"))
+    });
+    view.fire_with(&key, "check", None).unwrap();
+    ada.commit();
+    view.poll_patches().unwrap();
+    for title in ["Write the launch post", "Outline", "First draft"] {
+        assert_eq!(
+            read(&ada, &task(&ada, title), "done"),
+            Value::Bool(true),
+            "{title} is done from the row's box"
+        );
+    }
+}
