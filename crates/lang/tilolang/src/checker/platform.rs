@@ -497,13 +497,7 @@ impl Checker<'_> {
             return Ex::error();
         };
         let id = self.expr_as(&first.value, &Ty::Text);
-        let pair = Ty::Tuple(vec![Ty::Text, Ty::Text]);
-        let list_ty = Ty::List(Box::new(pair.clone()));
-        let list = self.fresh(list_ty.clone());
-        let mut stmts = vec![Stmt::Set(
-            list,
-            Ex::host(Imp::ListNew, Vec::new(), list_ty.clone()),
-        )];
+        let mut pairs = Vec::new();
         for a in rest {
             let Some(name) = &a.name else {
                 self.err(
@@ -518,34 +512,10 @@ impl Checker<'_> {
                 Ty::Text | Ty::Error => v,
                 _ => self.text_of(v, a.value.span),
             };
-            let t = self.fresh(pair.clone());
-            stmts.push(Stmt::Set(
-                t,
-                Ex::host(
-                    Imp::TupleNew,
-                    vec![Ex::new(Ek::I32(2), Ty::Bool)],
-                    pair.clone(),
-                ),
-            ));
-            for (index, item) in [Ex::str(&name.name), v].into_iter().enumerate() {
-                stmts.push(Stmt::Eval(Ex::host(
-                    Imp::TupleSetH,
-                    vec![
-                        Ex::local(t, pair.clone()),
-                        Ex::new(Ek::I32(i32::try_from(index).unwrap_or(0)), Ty::Bool),
-                        item,
-                    ],
-                    Ty::Unit,
-                )));
-            }
-            stmts.push(Stmt::Eval(Ex::host(
-                Imp::ListPushH,
-                vec![Ex::local(list, list_ty.clone()), Ex::local(t, pair.clone())],
-                Ty::Unit,
-            )));
+            pairs.push((name.name.clone(), v));
         }
-        let call = Ex::host(Imp::Phrase, vec![id, Ex::local(list, list_ty)], Ty::Text);
-        Ex::new(Ek::Seq(stmts, Box::new(call)), Ty::Text)
+        let args = self.text_pairs(pairs);
+        Ex::host(Imp::Phrase, vec![id, args], Ty::Text)
     }
 
     /// `v.is(edit)` of a `host.Version` or a `host.Action`: whether the action it names is the

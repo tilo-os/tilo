@@ -37,6 +37,7 @@ mod template;
 mod tests;
 mod ui;
 mod union;
+mod words;
 
 pub use program::{RESOURCE_TYPE_NAME, check_program, resource_key};
 pub use template::is_template;
@@ -106,6 +107,8 @@ struct FnState {
     result: Ty,
     facts: Facts,
     view_id: String,
+    /// The string literals a component shows as words (by span): each is a message.
+    shown: std::collections::HashSet<Span>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
     keys: Vec<LocalId>,
     /// Set while checking the operand of `try`: the next `invoke` reports failure.
@@ -198,6 +201,8 @@ pub(crate) struct Checker<'a> {
     /// The arguments computed from view state made so far ([`ir::AtEventFn`]); their
     /// functions follow the row views'.
     at_event: Vec<(ir::Func, ir::AtEventFn)>,
+    /// The words the views show as written, each once per view and key.
+    words: Vec<crate::meta::WordMeta>,
 }
 
 /// What a checked agent block evaluates to.
@@ -225,6 +230,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         synth_base: declared,
         states: Vec::new(),
         at_event: Vec::new(),
+        words: Vec::new(),
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -305,6 +311,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         views,
         states: c.states,
         at_event,
+        words: c.words,
     }
 }
 
@@ -318,6 +325,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         synth_base: 0,
         states: Vec::new(),
         at_event: Vec::new(),
+        words: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     let ex = c.expr(e, None);
@@ -334,6 +342,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             views: Vec::new(),
             states: Vec::new(),
             at_event: Vec::new(),
+            words: Vec::new(),
         },
         ty,
     }
@@ -349,6 +358,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         synth_base: 0,
         states: Vec::new(),
         at_event: Vec::new(),
+        words: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -359,6 +369,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             views: Vec::new(),
             states: Vec::new(),
             at_event: Vec::new(),
+            words: Vec::new(),
         },
         ty: Ty::View,
     }

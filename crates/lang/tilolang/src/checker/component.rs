@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use super::{Checker, Ex};
+use super::{Checker, Ctx, Ex};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
@@ -231,6 +231,10 @@ impl Checker<'_> {
             return;
         }
         if let Some(p) = d.prop(name) {
+            // The literals a prop of words shows are the view's messages (i18n.md §2).
+            if !p.data && self.st.ctx == Ctx::View && shows_words(&p.ty) {
+                self.mark_shown(value);
+            }
             self.typed_prop(n, d, name, &p.ty, &p.doc, value);
         } else if let Some(b) = d.binding(name)
             && d.event("change").is_some()
@@ -988,6 +992,15 @@ fn offers_actions(ty: &Type) -> bool {
         Type::Action => true,
         Type::Option(inner) | Type::List(inner) | Type::Set(inner) => offers_actions(inner),
         Type::Map { value, .. } => offers_actions(value),
+        _ => false,
+    }
+}
+
+/// Whether a prop of `ty` shows text: text, or an option or list of it.
+fn shows_words(ty: &Type) -> bool {
+    match ty {
+        Type::Text => true,
+        Type::Option(inner) | Type::List(inner) => shows_words(inner),
         _ => false,
     }
 }

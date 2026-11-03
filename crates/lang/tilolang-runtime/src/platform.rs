@@ -305,7 +305,7 @@ impl Core {
                 self.ret_h(meta)
             }
             Imp::Dated => self.dated(a),
-            Imp::Phrase => {
+            Imp::Phrase | Imp::Word => {
                 let id = self.text(a.h(0)?)?;
                 let args = match self.val(a.h(1)?)? {
                     Value::List(items) => items
@@ -322,7 +322,14 @@ impl Core {
                         .collect::<Vec<_>>(),
                     _ => Vec::new(),
                 };
-                let text = self.words.borrow().word(&id, &args, &id);
+                // A phrase is the platform's, known by its id; a view's words fall back to the
+                // text as the view wrote it.
+                let source = if imp == Imp::Word {
+                    self.text(a.h(2)?)?
+                } else {
+                    id.clone()
+                };
+                let text = self.words.borrow().word(&id, &args, &source);
                 self.ret_h(Value::Text(text))
             }
             _ => trap("not a platform import"),

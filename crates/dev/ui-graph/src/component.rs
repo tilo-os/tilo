@@ -213,6 +213,10 @@ pub struct Prop {
     /// Whether it may be given by position, in declaration order.
     #[serde(default, skip_serializing_if = "is_false")]
     pub positional: bool,
+    /// Whether its text is data the component reads (a key, an address, an emoji) rather than
+    /// words it shows: a view's literal given to it is never a message to translate.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub data: bool,
 }
 
 /// Child content a component takes.
@@ -391,7 +395,9 @@ pub enum Type {
     Action,
     /// One case of the catalogue's closed set `name` whose cases carry fields
     /// ([`Catalogue::enums`]): a drawing's shape.
-    Cases { name: String },
+    Cases {
+        name: String,
+    },
 }
 
 impl Type {
@@ -452,7 +458,10 @@ pub enum Value {
     /// An action offered to the person.
     Action(Offered),
     /// A case of a [`Type::Cases`] set, with its fields' values in the case's order.
-    Case { case: String, fields: Vec<(String, Value)> },
+    Case {
+        case: String,
+        fields: Vec<(String, Value)>,
+    },
 }
 
 /// A picture a component shows, by where its bytes are. The address is opaque to the toolkit: a

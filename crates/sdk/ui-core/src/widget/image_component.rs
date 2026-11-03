@@ -19,6 +19,7 @@ crate::component::choice!(ImageFit, "ImageFit", {
 pub struct ImageProps {
     /// Where the picture's bytes are: a content address (`tilo-blob://<hash>`) or a URL.
     #[component(required, positional)]
+    #[component(data)]
     pub src: String,
     /// What the picture shows, as assistive technology announces it; without one it is
     /// decorative.

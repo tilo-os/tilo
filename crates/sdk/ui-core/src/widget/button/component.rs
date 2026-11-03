@@ -50,6 +50,7 @@ pub struct ButtonProps {
     /// while that row is selected), as the app declared it (`key: "e"`): the host answers it
     /// beside the pressed control's own event. Never drawn here; the header shows it at the
     /// action's menu row.
+    #[component(data)]
     pub key: Option<String>,
     /// How many new things wait behind it (unread notifications, new mail), on an icon-only
     /// button: a count standing on its icon's top-trailing corner, as an app icon's does, and

@@ -125,6 +125,7 @@ impl Checker<'_> {
                 self.opt_chain(base, name, args.as_deref(), e.span)
             }
             ExprKind::Bool(b) => Ex::new(Ek::Bool(*b), Ty::Bool),
+            ExprKind::Str(parts) if self.shows(e.span) => self.words(parts),
             ExprKind::Str(parts) => self.string(parts),
             ExprKind::Ref(r) => self.ref_lit(r, e.span),
             ExprKind::Ident(name) => self.ident(name, e.span, exp),
@@ -401,7 +402,7 @@ impl Checker<'_> {
         }
     }
 
-    fn string(&mut self, parts: &[StrPart]) -> Ex {
+    pub(super) fn string(&mut self, parts: &[StrPart]) -> Ex {
         let mut acc: Option<Ex> = None;
         for part in parts {
             let piece = match part {

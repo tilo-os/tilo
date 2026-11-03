@@ -12,6 +12,7 @@ use super::ColorSwatchPicker;
 pub struct ColorSwatchPickerProps {
     /// The swatches, as hex colours, in order.
     #[component(required)]
+    #[component(data)]
     pub swatches: Vec<String>,
     /// How many stand in a row.
     pub columns: i64,

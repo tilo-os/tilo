@@ -82,6 +82,42 @@ fn label(name: &str) -> String {
     }
 }
 
+/// The keys a catalogue defines: each message (`d-x`) and each attribute (`d-x.doc`).
+#[must_use]
+pub fn keys(catalogue: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut message: Option<String> = None;
+    for line in catalogue.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, _)) = trimmed.split_once(" =") else {
+            continue;
+        };
+        if line.starts_with(char::is_whitespace) {
+            if let (Some(attr), Some(message)) = (name.strip_prefix('.'), &message) {
+                out.push(format!("{message}.{attr}"));
+            }
+        } else {
+            message = Some(name.to_owned());
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
+/// The keys `translation` has that `source` does not: words whose source changed or went, so
+/// their translation is never shown.
+#[must_use]
+pub fn stale_keys(source: &str, translation: &str) -> Vec<String> {
+    let known = keys(source);
+    keys(translation)
+        .into_iter()
+        .filter(|key| !known.contains(key))
+        .collect()
+}
+
 /// The package's source catalogue: one message per declaration, in declaration order.
 #[must_use]
 pub fn source_catalogue(meta: &PackageMeta) -> String {
@@ -106,8 +142,12 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         message(&mut out, &action.id, &action.label, &action.doc);
     }
     // A view's doc comment says how it draws, for its author; a person sees its label.
+    // The words it shows as written are its attributes (i18n.md §2).
     for view in &meta.views {
         message(&mut out, &view.id, &label(&view.name), "");
+        for word in meta.words.iter().filter(|word| word.view == view.id) {
+            attribute(&mut out, &word.key, &pattern(&word.text));
+        }
     }
     out
 }
@@ -205,7 +245,18 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{pattern, refined_blocks, summary, variable};
+    use super::{pattern, refined_blocks, stale_keys, summary, variable};
+
+    /// A translation of words the source no longer has is reported by its key; a current one
+    /// is not.
+    #[test]
+    fn a_translation_of_words_gone_from_the_source_is_stale() {
+        let source = "d-a = Inbox\n    .w-new = { $n } new\n\nd-b = Notes\n";
+        let translation =
+            "d-a = Eingang\n    .w-new = { $n } neu\n    .w-unread = ungelesen\n\nd-gone = Weg\n";
+        assert_eq!(stale_keys(source, translation), ["d-a.w-unread", "d-gone"]);
+        assert!(stale_keys(source, "# a comment\nd-b = Notizen\n").is_empty());
+    }
 
     #[test]
     fn a_description_is_the_first_sentence_unwrapped() {

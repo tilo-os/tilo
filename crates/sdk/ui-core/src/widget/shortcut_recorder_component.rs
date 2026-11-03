@@ -13,6 +13,7 @@ pub struct ShortcutRecorderProps {
     #[component(bind)]
     pub value: Bound<String>,
     /// The chord it started as, which its reset puts back.
+    #[component(data)]
     pub default: Option<String>,
     /// Its spoken name: the command the shortcut runs.
     pub label: Option<String>,
