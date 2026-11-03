@@ -21,6 +21,12 @@ every claim back off that session rather than off the thing that asked for it.
 | `agent-seats-proof.py` | Two agents at the session's agent door, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
 | `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
 
+`notes-persist-proof.py` is the same kind of proof for a desktop with the
+tree's own apps: it opens Notes, types into a page, stops the session and starts
+it again, and reads the text back off the record on disk. It needs the session
+and its apps built (`dist/dev/nested-session-build.sh`) and so is not part of
+`tools/ci/session-proofs.sh`.
+
 For examples that connect to an existing compositor, start it once with:
 
 ```bash
