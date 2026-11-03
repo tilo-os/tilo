@@ -1335,10 +1335,101 @@ mod tests {
         );
     }
 
+    /// What each shipped app's sources call of the action door: the seam each
+    /// call reaches, and the apps whose sources make it.
+    fn seams_shipped_apps_call()
+    -> std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>> {
+        fn sources(directory: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, into);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    into.push(path);
+                }
+            }
+        }
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        let mut files = Vec::new();
+        sources(&apps, &mut files);
+        let mut called: std::collections::BTreeMap<
+            &'static str,
+            std::collections::BTreeSet<String>,
+        > = std::collections::BTreeMap::new();
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let app = file
+                .strip_prefix(&apps)
+                .ok()
+                .and_then(|path| path.components().next())
+                .map_or_else(
+                    || file.display().to_string(),
+                    |app| app.as_os_str().to_string_lossy().into_owned(),
+                );
+            for &(marker, seam) in crate::seams::CALLED_SEAMS {
+                if text.contains(marker) {
+                    called.entry(seam).or_default().insert(app.clone());
+                }
+            }
+        }
+        called
+    }
+
+    /// Every seam a shipped app's sources call is served, or named in
+    /// [`crate::seams::UNSERVED_BUT_CALLED`] as one this session still owes
+    /// the app; that list shrinks as each call is served or moved off the
+    /// seam, and a call it does not name fails here.
+    fn shipped_apps_calls_are_served(decisions: &[(&'static str, Option<&'static str>)]) {
+        let served = |name: &str| {
+            decisions
+                .iter()
+                .find(|(seam, _)| *seam == name)
+                .map_or_else(|| panic!("`{name}` is decided"), |(_, why)| why.is_none())
+        };
+        let called = seams_shipped_apps_call();
+        assert!(
+            called.len() >= 4,
+            "the shipped apps' sources are read and their calls found: {called:?}"
+        );
+        for (seam, apps) in &called {
+            let reason = decisions.iter().find(|(name, _)| name == seam).map_or_else(
+                || panic!("`{seam}` is not a seam of the broker"),
+                |(_, why)| *why,
+            );
+            if reason.is_none() {
+                assert!(
+                    !crate::seams::UNSERVED_BUT_CALLED.contains(seam),
+                    "`{seam}` is served now: take it off the list of seams still to serve"
+                );
+                continue;
+            }
+            assert!(
+                crate::seams::UNSERVED_BUT_CALLED.contains(seam),
+                "{apps:?} call `{seam}`, and this session serves nothing of it: {reason:?}"
+            );
+        }
+        for seam in crate::seams::UNSERVED_BUT_CALLED {
+            assert!(
+                called.contains_key(seam),
+                "no shipped app calls `{seam}` any more: take it off the list of seams still to serve"
+            );
+            assert!(
+                !served(seam),
+                "`{seam}` is served now: take it off the list of seams still to serve"
+            );
+        }
+    }
+
     /// Every seam the broker offers is decided here: served, served where
     /// this run has what it carries, or not served with the reason it was
-    /// left out. No shipped app calls a seam this session serves nothing
-    /// of.
+    /// left out. Every seam a shipped app's sources call is served, or named
+    /// as one still to serve — so an app that starts calling a seam this
+    /// session serves nothing of fails this test.
     #[test]
     fn every_seam_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
         let decided = seams(
@@ -1370,11 +1461,7 @@ mod tests {
         for name in crate::seams::EVERY_APP {
             assert!(served(name), "every app calls `{name}` on its connection");
         }
-        for (app, needed) in crate::seams::SHIPPED {
-            for name in *needed {
-                assert!(served(name), "{app} calls `{name}`");
-            }
-        }
+        shipped_apps_calls_are_served(&decisions);
 
         let services = decided.into_host_services();
         assert!(

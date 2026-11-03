@@ -251,13 +251,43 @@ pub(crate) fn declared_access(
 #[cfg(test)]
 pub(crate) const EVERY_APP: &[&str] = &["published", "settings", "launcher"];
 
-/// What a shipped app calls beyond [`EVERY_APP`], by package id.
+/// How a shipped app's source reaches a seam of the action door: a marker in
+/// its code, and the seam that answers the call. A marker here is a call, so
+/// an app that starts calling a seam it did not is found by the guard.
 #[cfg(test)]
-pub(crate) const SHIPPED: &[(&str, &[&str])] = &[
-    // Its Display pane reads and changes the displays.
-    ("so.tilo.settings", &["display_control"]),
-    // A timer or a stopwatch shows while its window is not.
-    ("so.tilo.clocks", &["live_activities"]),
+pub(crate) const CALLED_SEAMS: &[(&str, &str)] = &[
+    (
+        "ui::collaboration::wifi_continuity_command",
+        "wifi_continuity",
+    ),
+    ("ui::collaboration::speaker_command", "speakers"),
+    ("ui::collaboration::display_control", "display_control"),
+    (
+        "ui::collaboration::browser_service_sessions",
+        "browser_service_sessions",
+    ),
+    ("ui::collaboration::record_content", "record_content"),
+    (
+        "ui::collaboration::channel_live_activity",
+        "live_activities",
+    ),
+    ("ui::collaboration::open_selected", "file_clipboard"),
+    ("ui::collaboration::file_clipboard", "file_clipboard"),
+    ("ui::collaboration::write_attribution", "file_clipboard"),
+    ("NearbyTransferCommand", "nearby_transfer"),
+    ("ui::person_chat::", "person_chat"),
+];
+
+/// The seams shipped apps still call that this session serves nothing of: a
+/// list that only shrinks, each entry a call that does not work yet. Serving
+/// one, or moving the app off it, removes its line; a call to a seam this
+/// session leaves unserved and this list does not name fails the guard.
+#[cfg(test)]
+pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[
+    "browser_service_sessions",
+    "file_clipboard",
+    "nearby_transfer",
+    "person_chat",
 ];
 
 #[cfg(test)]

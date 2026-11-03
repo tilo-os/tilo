@@ -1393,7 +1393,12 @@ package = "tilo-session"
 # The first-boot unit the image ships, and the components that name where
 # each binary is installed; the shell package it compiles from source.
 inputs = [
+  # The first-boot unit the image ships, and the components that name where
+  # each binary is installed; the shell package it compiles from source.
   "apps/tl/shell/",
+  # Every app's sources: the guard holds each app's calls on the action door
+  # to the seams this session serves.
+  "apps/",
   # The tests' shared fixtures load Notes from its sources beside the shell
   # (the shell's own screen tests and the acceptance path), the session
   # package test checks the session's committed description, and a
@@ -1421,6 +1426,7 @@ inputs = [
 readers = [
   "crates/session/session/src/channels/vault.rs",
   "crates/session/session/src/mount/doors.rs",
+  "crates/session/session/src/plane.rs",
   "crates/session/session/src/seeded_apps.rs",
   "crates/session/session/src/shell.rs",
   "crates/session/session/tests/common/mod.rs",
