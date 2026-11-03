@@ -1539,7 +1539,9 @@ impl Core {
             Imp::PrincipalNamed => {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;
-                self.ret_h(Value::Principal(Principal(format!("scenario:{name}"))))
+                let who = Principal(format!("scenario:{name}"));
+                self.named_person(who.clone());
+                self.ret_h(Value::Principal(who))
             }
             Imp::InvokerPush => {
                 let who = self.principal_arg(a.h(0)?)?;

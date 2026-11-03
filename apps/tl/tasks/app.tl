@@ -600,8 +600,9 @@ scenario "a busy week" -> Task {
 /// A launch post half written: its window, with the subtasks it was broken into, one of them
 /// broken into its own.
 scenario "a task's subtasks" -> Task {
+    let mia = person("Mia")
     let launch = tasks.projects.insert(Project(name: "Website launch"))
-    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
+    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing."), assignee: .some(mia)))
     // Checked off before the step under it was added: a list written by the version that kept
     // steps apart, or a check made while someone else added that step. Clearing keeps the step.
     let outline = tasks.items.insert(Task(title: "Outline", done: true, parent: .some(copy), project: launch))

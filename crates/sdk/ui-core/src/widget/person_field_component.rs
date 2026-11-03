@@ -7,7 +7,7 @@ use super::PersonField;
 /// A form's person: who is doing it, shown as their avatar and name, and picked from the
 /// workspace's members and agents. "Me" picks the person the view is shown to, "No one" clears
 /// it.
-#[derive(Component)]
+#[derive(Component, Default)]
 #[component(name = "PersonField", role = "ComboBox")]
 pub struct PersonFieldProps {
     /// The person's identity, as the person a component binds (its identity text, empty for
@@ -19,16 +19,6 @@ pub struct PersonFieldProps {
     pub people: Option<Vec<Person>>,
     /// The person the view is shown to: the list's "Me".
     pub me: Option<Person>,
-}
-
-impl Default for PersonFieldProps {
-    fn default() -> Self {
-        Self {
-            value: Bound::default(),
-            people: None,
-            me: None,
-        }
-    }
 }
 
 impl Described for PersonField {
