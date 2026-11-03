@@ -2248,7 +2248,7 @@ impl FrameHarness {
         if changed {
             // What the model moved reaches widgets that paint it without a
             // flag of their own.
-            crate::input_generation::note();
+            crate::input_generation::note_model();
         }
         changed
     }

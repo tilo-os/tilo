@@ -62,6 +62,11 @@ pub(super) struct Flow {
     /// input. One that read nothing outside keeps across it.
     cache_input: u64,
     cache_outside: bool,
+    /// The model generation the cache was painted at
+    /// ([`crate::input_generation::model`]): a sync hands the tree a changed
+    /// document without a widget flag of its own, so a cache from another
+    /// generation holds a drawing of what changed.
+    cache_model: u64,
     cache_present: bool,
     descendant_caches_released: bool,
     /// The cache holds floating surfaces over the blurred material. A reused
@@ -163,6 +168,7 @@ impl Flow {
             cache_permissions: 0,
             cache_input: 0,
             cache_outside: false,
+            cache_model: 0,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
@@ -497,11 +503,13 @@ impl Flow {
         let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
         let input_moved =
             self.cache_outside && self.cache_input != crate::input_generation::generation();
+        let model_moved = self.cache_model != crate::input_generation::model();
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
             || permissions_moved
             || input_moved
+            || model_moved
             || any_child_dirty
             || self.cache_carries_material
             || self.drawn_shifted
@@ -617,6 +625,7 @@ impl Flow {
             }
             self.cache_permissions = presence.paint_permission_generation();
             self.cache_input = crate::input_generation::generation();
+            self.cache_model = crate::input_generation::model();
             self.cache_present = true;
             self.descendant_caches_released = false;
             presence.viewport.set(prev_vp);
@@ -688,9 +697,14 @@ impl Flow {
         self.cache_present = false;
         self.descendant_caches_released = false;
         self.drawn_shifted = false;
+        // A changed document reaches the children through the sync pass, so
+        // each of them paints other pixels: none of what the frame keeps is
+        // still what it drew before.
+        let model_moved = self.cache_model != crate::input_generation::model();
         for child in self.children.get_mut(near).unwrap_or_default() {
             // What the frame keeps on screen, unchanged, is not drawn again.
-            if !child.needs_redraw()
+            if !model_moved
+                && !child.needs_redraw()
                 && !child.needs_animation_frame()
                 && crate::draw_cull::kept(scene, transform, child.paint_bounds())
             {
@@ -707,6 +721,9 @@ impl Flow {
             // What it paints now, should that have grown since its layout.
             self.reach = self.reach.max(paint_reach(child.as_ref()));
         }
+        // The children this frame kept stand for a drawing of the model it
+        // read; the next frame rests on the same document.
+        self.cache_model = crate::input_generation::model();
         true
     }
 

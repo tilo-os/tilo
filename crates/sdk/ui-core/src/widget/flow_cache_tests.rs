@@ -156,6 +156,86 @@ fn a_cache_that_read_outside_state_repaints_once_input_arrives() {
     );
 }
 
+/// Paints a width it holds itself and keeps no flag of its own: the sync
+/// pass hands it a changed document, and nothing in the tree marks it.
+struct Gauge {
+    value: Rc<Cell<f32>>,
+    rect: Rect,
+}
+
+impl Widget for Gauge {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: Size::from_lengths(200.0, 40.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+    crate::rect_geometry!();
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text: &mut crate::text_render::TextRenderer,
+        _theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        let width = f64::from(self.value.get());
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            vello::peniko::Color::BLACK,
+            None,
+            &Rect::new(0.0, 0.0, width, 40.0),
+        );
+    }
+    fn name(&self) -> &'static str {
+        "Gauge"
+    }
+}
+
+#[test]
+fn a_cache_repaints_what_a_sync_handed_the_tree() {
+    let t0 = crate::time::now();
+    let mut frame = ShotFrame::new((320, 120), Theme::dark());
+    let value = Rc::new(Cell::new(40.0f32));
+    let mut column = Column::new().push(Box::new(Gauge {
+        value: Rc::clone(&value),
+        rect: Rect::ZERO,
+    }));
+
+    let first = frame_at(&mut frame, &mut column, t0);
+    crate::widget::Widget::mark_drawn(&mut column);
+    let at_rest = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(16));
+    assert!(
+        first.encoding_eq(&at_rest),
+        "a frame that nothing reached replays the drawing the cache kept"
+    );
+
+    value.set(140.0);
+    let unreported = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(32));
+    assert!(
+        at_rest.encoding_eq(&unreported),
+        "a widget that keeps no flag of its own reports nothing by itself"
+    );
+
+    crate::input_generation::note_model();
+    let synced = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(48));
+    assert!(
+        !at_rest.encoding_eq(&synced),
+        "the sync handed the tree a changed document: the cache holds a \
+         drawing of the one before it, so it draws again"
+    );
+    crate::widget::Widget::mark_drawn(&mut column);
+    let rested = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(64));
+    assert!(synced.encoding_eq(&rested), "and it rests on that document");
+}
+
 #[test]
 fn a_cache_that_read_nothing_outside_keeps_its_drawing_across_input() {
     let t0 = crate::time::now();

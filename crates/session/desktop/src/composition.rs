@@ -1309,7 +1309,7 @@ impl Widget for DesktopSurface {
         if changed {
             // What the model moved reaches widgets that paint it without a
             // flag of their own.
-            ui::input_generation::note();
+            ui::input_generation::note_model();
         }
         changed
     }

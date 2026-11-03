@@ -354,7 +354,7 @@ impl super::App {
         }
         // What the model moved reaches widgets that paint it without a flag
         // of their own, so drawings kept from the last frame are stale.
-        crate::input_generation::note();
+        crate::input_generation::note_model();
         self.invalidate_widget_resource_cache();
         self.needs_sync = true;
         self.layout.layout_dirty = true;
