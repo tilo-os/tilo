@@ -60,8 +60,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // takes a finger's room on touch (`small_target` is laid out right).
             Kind::ClippedText | Kind::SmallHitTarget => "",
             Kind::ScrollsSideways => "sideways",
-            // Layout snaps every edge, broken or not.
-            Kind::OffPixel => "(no view)",
+            // Layout snaps every edge, broken or not; and a window gives a view that composes
+            // no shell its page, so no page anywhere is one bare row.
+            Kind::OffPixel | Kind::BareRow => "(no view)",
         };
         assert_eq!(
             finding.view,
