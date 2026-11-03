@@ -446,7 +446,13 @@ impl crate::Published for DesktopHost {
     }
 
     fn revision(&self) -> Option<u64> {
-        Some(self.desk.borrow().host.revision())
+        // What the desk publishes — the windows it holds and what can be done
+        // with them — is the desk model's, so it is the model's revision that
+        // says it changed. The hosted tree's own revision counts the frames it
+        // drew, and the desk draws every frame of a drag or a resize: read as
+        // that, everything publishing here was read again every frame of
+        // every gesture.
+        Some(self.desk.borrow().policy.handle().revision())
     }
 
     fn invoke(
