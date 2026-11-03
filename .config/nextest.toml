@@ -129,6 +129,14 @@ filter = 'package(tilo-call-lane) and binary(tone)'
 threads-required = "num-cpus"
 priority = 100
 
+# Every app's every view laid out at every window size, display scale and text
+# size: each window is laid out on a core of its own, so the sweep takes the
+# runner's CPUs rather than sharing them with the tests beside it.
+[[profile.default.overrides]]
+filter = 'package(tilolang-cli) and test(=the_apps_show_no_layout_problem_their_allow_list_does_not_name)'
+threads-required = "num-cpus"
+priority = 100
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
 threads-required = 16
