@@ -150,23 +150,20 @@ impl<M: ListModel> VirtualList<M> {
             let at = parent
                 .as_ref()
                 .and_then(|parent| over.iter().rposition(|(row, _, _)| row == parent));
-            let (found, away) = match at {
-                // The row it follows is the row it names, or a row over that one: it stands
-                // under its parent, as deep as its parent plus one.
-                Some(at) => {
-                    let parent = parent.clone().expect("a row over it is its parent");
-                    let (_, depth, hidden) = over[at];
-                    branches.push(parent.clone());
-                    nested.push(key.clone());
-                    over.truncate(at + 1);
-                    (depth + 1, hidden || self.folded(&parent))
-                }
+            // The row it follows is the row it names, or a row over that one: it stands under
+            // its parent, as deep as its parent plus one.
+            let beneath = at.zip(parent.clone());
+            let (found, away) = if let Some((at, parent)) = beneath {
+                let (_, depth, hidden) = over[at];
+                branches.push(parent.clone());
+                nested.push(key.clone());
+                over.truncate(at + 1);
+                (depth + 1, hidden || self.folded(&parent))
+            } else {
                 // The list holds its order, not a tree: a row whose parent the sort put
                 // elsewhere stands on its own, and names the parent instead.
-                None => {
-                    over.clear();
-                    (0, false)
-                }
+                over.clear();
+                (0, false)
             };
             let found = found.min(TREE_DEPTH_GUARD);
             depth.insert(key.clone(), found);

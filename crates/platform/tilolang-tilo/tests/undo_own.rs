@@ -570,4 +570,3 @@ fn a_task_indented_under_another_is_put_back_in_one_undo() {
     assert_eq!(under(&ada, &ring), None);
     assert_eq!(order(&ada, &tasks), [id(&book), id(&find), id(&ring)]);
 }
-}
