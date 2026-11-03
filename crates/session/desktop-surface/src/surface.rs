@@ -41,8 +41,7 @@ use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
     self, ActivityView, Admitted, Application, ChromeEffect, DesktopPan, HistoryDirection,
-    HistoryState, NotificationsState, Presentation, RouteIds, ScrollAction, ScrollState, Snapshot,
-    Verb,
+    HistoryState, NotificationsState, Presentation, RouteIds, ScrollState, Snapshot, Verb,
 };
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
@@ -672,41 +671,32 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
     })
 }
 
-/// A widget-side follow-up to a command already applied to the tree.
-enum RowOp {
-    Show(StripId, GroupId, TabId),
-    Width(StripId, GroupId, WindowWidth),
-    ToggleMaximized(StripId, GroupId),
-    /// A launched window, already in the tree at `index` of `strip`.
-    Open {
-        strip: StripId,
-        group: GroupId,
-        index: usize,
-        tab: Tab,
-    },
-    /// A tab opened into a group that is already there, at `index` of its
-    /// tabs, with the tab that ends up in front.
-    TabInGroup {
-        strip: StripId,
-        group: GroupId,
-        index: usize,
-        tab: Tab,
-        front: TabId,
-        background: bool,
-    },
-    Close {
-        strip: StripId,
-        group: GroupId,
-        tab: TabId,
-        group_removed: bool,
-    },
-    Pan(StripId, f64),
-    Scroll(StripId, GroupId, ScrollAction),
-    History(StripId, GroupId, TabId, HistoryDirection),
-    /// The share row of a window: share it with its workspace's people, or
-    /// stop sharing it.
-    WindowShare(TabId, bool),
-}
+mod row_op;
+
+/// What one app may ask of its host in one frame; more waits for the next.
+const MAX_HOST_INTENTS: usize = 8;
+
+/// Time the update pass may spend building deferred tabs in one frame. At
+/// least one tab is built per frame, however long it takes.
+const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// A pause in wheel input this long ends a swipe. A trackpad keeps
+/// reporting while the fingers move and through the momentum after they
+/// lift, and a spun mouse wheel's notches come 0 to 50 ms apart, all well
+/// inside this; the pauses between spins are mostly longer.
+const SWIPE_GAP: Duration = Duration::from_millis(200);
+/// How soon search looks again for an app's answer that is still coming.
+const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
+
+/// Sideways travel that steps focus one window on a strip that cannot pan
+/// that way. About the width of a window: a Normal one is two thirds of a
+/// 1280 px strip, so a spin steps about as many windows on a strip that fits
+/// as it pans past on one that overflows. A notch of the native wheel (a
+/// line) is a sixteenth of it, a spin of about twenty notches a window or
+/// two.
+const STEP_TRAVEL_PX: f64 = 640.0;
+
+use row_op::RowOp;
 
 pub struct DesktopSurface {
     shared: Rc<RefCell<Shared>>,
@@ -791,29 +781,6 @@ pub struct DesktopSurface {
     /// The windows shared live, and the views windows embed of them.
     live_shares: live_shares::LiveShares,
 }
-
-/// What one app may ask of its host in one frame; more waits for the next.
-const MAX_HOST_INTENTS: usize = 8;
-
-/// Time the update pass may spend building deferred tabs in one frame. At
-/// least one tab is built per frame, however long it takes.
-const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
-
-/// A pause in wheel input this long ends a swipe. A trackpad keeps
-/// reporting while the fingers move and through the momentum after they
-/// lift, and a spun mouse wheel's notches come 0 to 50 ms apart, all well
-/// inside this; the pauses between spins are mostly longer.
-const SWIPE_GAP: Duration = Duration::from_millis(200);
-/// How soon search looks again for an app's answer that is still coming.
-const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
-
-/// Sideways travel that steps focus one window on a strip that cannot pan
-/// that way. About the width of a window: a Normal one is two thirds of a
-/// 1280 px strip, so a spin steps about as many windows on a strip that fits
-/// as it pans past on one that overflows. A notch of the native wheel (a
-/// line) is a sixteenth of it, a spin of about twenty notches a window or
-/// two.
-const STEP_TRAVEL_PX: f64 = 640.0;
 
 /// One horizontally dominant wheel gesture, from its first event until
 /// wheel input pauses for [`SWIPE_GAP`]: a trackpad swipe and its momentum,
@@ -2822,6 +2789,11 @@ impl Widget for DesktopSurface {
                 || !shared.queue.is_empty()
                 || shared.search_revision != self.seen_search
                 || shared.replaced
+                // An app that arrived is built by a pass
+                // (`Self::build_deferred`), so it asks for the frame that
+                // takes its component rather than waiting for an unrelated
+                // one.
+                || !shared.rebuild.is_empty()
         };
         // The desk asks its search sources a frame at a time, and cuts its
         // rows to the card once the card gives its room: a search with such
@@ -2836,6 +2808,7 @@ impl Widget for DesktopSurface {
         self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
             || !self.shared.borrow().queue.is_empty()
             || self.shared.borrow().replaced
+            || !self.shared.borrow().rebuild.is_empty()
             || self
                 .children()
                 .into_iter()
