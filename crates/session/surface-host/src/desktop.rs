@@ -467,12 +467,52 @@ impl crate::Published for DesktopHost {
         crate::Published::accessible_labels(&mut self.desk.borrow_mut().host)
     }
 
+    /// The desk's own controls — its strips, its windows' bars — and, behind
+    /// them, the controls the apps that draw the windows describe of their
+    /// own content ([`ui::window_targets`]): a window's app keeps its widget
+    /// tree to itself, so this is the one place they are named.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
-        crate::Published::controls(&mut self.desk.borrow_mut().host)
+        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
+            crate::Published::controls(&mut self.desk.borrow_mut().host)
+                .into_iter()
+                .collect();
+        for (name, rect) in self.desk.borrow().policy.handle().window_controls() {
+            // A name the desk's own chrome shows keeps meaning there: what a
+            // window adds are the names the desk does not have.
+            shown.entry(name).or_insert(rect);
+        }
+        shown.into_iter().collect()
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
-        crate::Published::press(&mut self.desk.borrow_mut().host, name)
+        self.press_action(name, ui::window_targets::TargetAction::Activate)
+    }
+
+    fn press_action(
+        &mut self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        let mut desk = self.desk.borrow_mut();
+        // A name the desk's own chrome shows keeps meaning there, as
+        // `controls` says.
+        if crate::Published::controls(&mut desk.host)
+            .iter()
+            .any(|(shown, _)| shown == name)
+        {
+            return crate::Published::press_action(&mut desk.host, name, action);
+        }
+        // The control is one a window's app draws: the press reaches it as its
+        // own assistive technology's activation does.
+        let handle = desk.policy.handle();
+        if handle
+            .window_controls()
+            .iter()
+            .any(|(shown, _)| shown == name)
+        {
+            return handle.press_window_control(name, action);
+        }
+        Err(format!("no control named {name}"))
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {

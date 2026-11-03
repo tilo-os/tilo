@@ -480,4 +480,18 @@ impl ListSlot {
     pub(super) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.0.borrow().accessibility()
     }
+
+    /// Run an assistive technology's `action` on the row the semantic target
+    /// `target` names, which the table's forwarded access node addresses.
+    pub(super) fn perform_semantic_action(
+        &self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        self.0
+            .borrow_mut()
+            .perform_semantic_action(target, action, state, path)
+    }
 }

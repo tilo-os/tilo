@@ -158,6 +158,7 @@ mod wallpapers;
 mod wifi_continuity;
 mod window_motion;
 mod window_share;
+mod window_targets;
 mod window_warmth;
 mod workspace_gate;
 mod workspace_settings;

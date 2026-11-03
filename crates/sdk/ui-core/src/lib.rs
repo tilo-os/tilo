@@ -371,6 +371,7 @@ pub mod window_name;
 pub mod window_pictures;
 pub mod window_share;
 pub mod window_slots;
+pub mod window_targets;
 pub mod window_toolbar;
 pub mod workspace_emoji;
 #[cfg(feature = "native")]

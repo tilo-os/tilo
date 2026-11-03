@@ -63,6 +63,23 @@ pub trait Published {
         Err(format!("no control named {name}"))
     }
 
+    /// Act on the control `name` it shows as `action` says: the activation
+    /// [`Self::press`] performs, or the context menu a person opens on it.
+    ///
+    /// # Errors
+    /// It shows no control by that name, it answers nothing of `action`, or
+    /// the control refused.
+    fn press_action(
+        &mut self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        if action == ui::window_targets::TargetAction::Activate {
+            return self.press(name);
+        }
+        Err(format!("no control named {name} answers {action:?}"))
+    }
+
     /// What an assistive technology reads of it now: its semantic tree, the
     /// same one the toolkit exports for an app's window. `None` while it
     /// shows nothing (down, gone, or a surface with no tree of its own).
@@ -291,15 +308,28 @@ impl Doors {
     }
 
     /// Press the control `name` on the surface showing it, as an assistive
-    /// technology activates it.
+    /// technology activates it: [`Self::press_action`] of its activation.
     ///
     /// # Errors
     /// No offered surface shows it, or the surface refused the press.
     pub fn press(&self, name: &str) -> Result<(), String> {
+        self.press_action(name, ui::window_targets::TargetAction::Activate)
+    }
+
+    /// Act on the control `name` on the surface showing it as `action` says,
+    /// as an assistive technology does.
+    ///
+    /// # Errors
+    /// No offered surface shows it, or the surface refused.
+    pub fn press_action(
+        &self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
         for (_, surface) in self.offered() {
             let mut surface = surface.borrow_mut();
             if surface.controls().iter().any(|(shown, _)| shown == name) {
-                return surface.press(name);
+                return surface.press_action(name, action);
             }
         }
         Err(format!("no control named {name}"))

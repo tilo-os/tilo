@@ -1993,6 +1993,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ActivateTestId { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::PressTarget { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {

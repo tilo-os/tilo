@@ -294,6 +294,9 @@ impl AppTabs {
         // What the person did in the windows' bars goes back to the app whose
         // connection declared the slots there.
         answered.deliver_bar_events();
+        // A control of a window's own content, pressed where the desk lists
+        // it, goes to the app drawing that window.
+        answered.deliver_target_presses();
         // The person may have answered a question about the device's own
         // shell since the last pass.
         self.host_shell.settle(services);
@@ -447,6 +450,17 @@ impl Answers<'_> {
                 match anchor {
                     Some(tab) => self.desktop.with_policy(|policy| {
                         policy.handle().declare_bar(tab, connection, toolbar);
+                    }),
+                    None => refuse(&reply, &app, &name, NO_WINDOW),
+                }
+            }
+            FloatingSurfaceClientMessage::WindowTargets { targets, .. } => {
+                // The controls of the window's own content, where its window
+                // is a tab of the desktop's, so a session names and presses
+                // them as it names the bar's.
+                match anchor {
+                    Some(tab) => self.desktop.with_policy(|policy| {
+                        policy.handle().declare_targets(tab, connection, targets);
                     }),
                     None => refuse(&reply, &app, &name, NO_WINDOW),
                 }
@@ -627,6 +641,26 @@ impl Answers<'_> {
                     event,
                     after_input: None,
                 },
+                &link.app,
+            );
+        }
+    }
+
+    /// Write the controls pressed in the windows' own content to the apps
+    /// whose connections described them
+    /// ([`ui::floating_surface::FloatingSurfaceClientMessage::WindowTargets`]),
+    /// which answer as an assistive technology's activation does.
+    fn deliver_target_presses(&self) {
+        let presses = self
+            .desktop
+            .with_policy(|policy| policy.handle().take_target_presses());
+        for (connection, name, role, action) in presses {
+            let Some(link) = self.links.get(&connection) else {
+                continue;
+            };
+            tell(
+                &link.writer,
+                &FloatingSurfaceHostMessage::PressTarget { name, role, action },
                 &link.app,
             );
         }

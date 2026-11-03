@@ -1306,6 +1306,23 @@ impl Widget for FileView {
         self.is_focused
     }
 
+    /// The rows a file's list names are the table's, and the actions an
+    /// assistive technology addresses to them are the table's too: the node
+    /// this view forwards stands for the table, so the target it carries is
+    /// answered here.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        self.mode == ViewMode::List
+            && self
+                .list
+                .perform_semantic_action(target, action, state, path)
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         #[cfg(test)]

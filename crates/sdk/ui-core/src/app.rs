@@ -72,6 +72,7 @@ include!("app/host_core.rs");
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
+include!("app/window_targets.rs");
 include!("app/touch_exploration.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
@@ -2970,6 +2971,10 @@ fn humanize_ident(ident: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+#[path = "app/window_targets_tests.rs"]
+mod window_targets_tests;
 
 #[cfg(test)]
 #[path = "app/manual_composition_tests.rs"]

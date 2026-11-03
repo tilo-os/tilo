@@ -344,3 +344,90 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
         "a window whose app names nothing is called by its app"
     );
 }
+
+/// A window's app describes the controls of its own content over its
+/// connection: the desk lists them where they are drawn, a press goes back on
+/// that connection, and they go with it.
+#[test]
+fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connection() {
+    use ui::window_targets::{TargetAction, WindowTarget};
+
+    let (surface, handle) = crate::surface::tests::desktop(1);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 800),
+        ui::Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (front, _) = shown_tabs(&frame)[0];
+
+    // Nothing of a window's own content is named until its app says so.
+    assert!(handle.window_controls().is_empty());
+
+    handle.declare_targets(
+        front,
+        41,
+        vec![WindowTarget {
+            role: "ListItem".to_owned(),
+            name: "Documents".to_owned(),
+            rect: [10.0, 20.0, 110.0, 40.0],
+            actions: vec![TargetAction::Activate, TargetAction::ShowContextMenu],
+        }],
+    );
+    for _ in 0..3 {
+        frame.relayout();
+    }
+
+    let content = handle
+        .shown_tabs()
+        .into_iter()
+        .find(|(tab, _)| *tab == front)
+        .map(|(_, content)| content)
+        .expect("the window is drawn");
+    let listed = handle.window_controls();
+    let (name, (x, y, w, h)) = listed.first().expect("the window's control is listed");
+    assert_eq!(name, "Documents");
+    assert_eq!(
+        (*x, *y),
+        (content.x0 + 10.0, content.y0 + 20.0),
+        "listed where it is drawn in its window"
+    );
+    assert_eq!((*w, *h), (100.0, 20.0));
+
+    assert_eq!(
+        handle.press_window_control("Documents", TargetAction::ShowContextMenu),
+        Ok(())
+    );
+    assert_eq!(
+        handle.take_target_presses(),
+        vec![(
+            41,
+            "Documents".to_owned(),
+            "ListItem".to_owned(),
+            TargetAction::ShowContextMenu
+        )],
+        "the press goes back on the connection that described the control"
+    );
+
+    // A control nobody drew, and one the app answers nothing of, is not
+    // pressed.
+    assert!(
+        handle
+            .press_window_control("Nowhere", TargetAction::Activate)
+            .is_err()
+    );
+    assert!(handle.take_target_presses().is_empty());
+
+    // The app's connection closes: what it described goes with it.
+    handle.bar_connection_closed(41);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert!(
+        handle.window_controls().is_empty(),
+        "nothing of the closed app's is listed"
+    );
+}

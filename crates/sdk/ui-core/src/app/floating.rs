@@ -98,6 +98,13 @@ pub(super) struct FloatingRuntime {
     /// The [`crate::window_toolbar::revision`] of the slots last sent to
     /// the shell on this connection.
     pub toolbar_sent: Option<u64>,
+    /// The controls of the window's content last told the shell on this
+    /// connection ([`crate::window_targets`]), so a pass whose tree changed
+    /// nothing tells it nothing.
+    pub window_targets_sent: Told<Vec<crate::window_targets::WindowTarget>>,
+    /// The [`crate::a11y_tree`] revision the window's controls were last read
+    /// at, so a pass over the same tree reads nothing.
+    pub window_targets_told: Option<u64>,
     /// The window bar's search and History control for this app
     /// ([`window_bar`]).
     pub window_bar: window_bar::WindowBarRuntime,
@@ -175,6 +182,8 @@ impl FloatingRuntime {
             window_resource_sent: Told::Nothing,
             close_window_requested: false,
             toolbar_sent: None,
+            window_targets_sent: Told::Nothing,
+            window_targets_told: None,
             window_bar: window_bar::WindowBarRuntime::default(),
             window_record: None,
             window_share_sent: WindowShareSent::default(),
@@ -650,6 +659,7 @@ impl App {
             )?;
             self.floating.window_resource_sent = Told::Was(window);
         }
+        self.send_window_targets(client, instance)?;
         self.send_window_share(client, instance)?;
         for request in crate::shared_selection::take_agent_requests() {
             let ask = request.ask.clone();
@@ -1055,6 +1065,9 @@ impl App {
                         );
                     }
                 }
+                FloatingSurfaceHostMessage::PressTarget { name, role, action } => {
+                    self.press_window_target(name, role, *action);
+                }
                 FloatingSurfaceHostMessage::ActivateTestId { test_id } => {
                     if self.input.window_focused && !self.activate_test_id(test_id) {
                         tracing::warn!(
@@ -1145,6 +1158,9 @@ impl App {
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;
+        // A new connection is told the window's controls afresh.
+        self.floating.window_targets_sent = Told::Nothing;
+        self.floating.window_targets_told = None;
         self.floating.window_resource_sent = Told::Nothing;
         // Nothing draws the embeds or lists the windows any more; a new
         // shell is told the embeds, the shares and the record afresh.

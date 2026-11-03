@@ -534,6 +534,113 @@ fn session_through(
     (session, apps, started)
 }
 
+/// What a window's app describes of its own content reaches the session by
+/// name, and the press the session makes there goes back to the app on its
+/// own connection.
+#[test]
+fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
+    use ui::window_targets::{TargetAction, WindowTarget};
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+
+    let mut connection = ask(
+        &launches,
+        PROBE,
+        &workspace,
+        pid,
+        &FloatingSurfaceClientMessage::WindowTargets {
+            targets: vec![WindowTarget {
+                role: "ListItem".to_owned(),
+                name: "Documents".to_owned(),
+                rect: [4.0, 6.0, 44.0, 24.0],
+                actions: vec![TargetAction::Activate, TargetAction::ShowContextMenu],
+            }],
+            instance: None,
+        },
+    );
+    until(
+        &mut session,
+        "the window's own control is listed",
+        |session| {
+            session
+                .controls()
+                .iter()
+                .any(|(name, _)| name == "Documents")
+        },
+    );
+    let (_, (x, y, width, height)) = session
+        .controls()
+        .into_iter()
+        .find(|(name, _)| name == "Documents")
+        .expect("the control the app described");
+    assert_eq!(
+        (width, height),
+        (40.0, 18.0),
+        "listed at the size it is drawn, on the desk"
+    );
+    assert!(
+        (x, y) != (4.0, 6.0),
+        "listed where the window stands, not at the window's own origin"
+    );
+    capture_to(&mut session, "app-window-controls-listed");
+
+    session
+        .press_action("Documents", TargetAction::ShowContextMenu)
+        .expect("the window's own control is pressed");
+
+    // The press reaches the app on the connection that described it, as the
+    // control's own context menu, not as a point aimed at.
+    connection
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    let mut seen = Vec::new();
+    let mut pressed = false;
+    for _ in 0..400 {
+        session.step(Duration::from_millis(1)).unwrap();
+        let mut chunk = [0u8; 512];
+        match std::io::Read::read(&mut connection, &mut chunk) {
+            Ok(read) => seen.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("the connection broke: {error}"),
+        }
+        if seen.contains(&b'\n') {
+            let whole = seen
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(&seen[..0], |end| &seen[..end]);
+            pressed = String::from_utf8(whole.to_vec())
+                .expect("frames are text")
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .any(|line| {
+                    serde_json::from_str::<ui::floating_surface::FloatingSurfaceHostMessage>(
+                        line.trim(),
+                    )
+                    .is_ok_and(|frame| {
+                        frame
+                            == ui::floating_surface::FloatingSurfaceHostMessage::PressTarget {
+                                name: "Documents".to_owned(),
+                                role: "ListItem".to_owned(),
+                                action: TargetAction::ShowContextMenu,
+                            }
+                    })
+                });
+            if pressed {
+                break;
+            }
+            seen.clear();
+        }
+    }
+    assert!(
+        pressed,
+        "the app is told which of its controls was pressed, and how"
+    );
+}
+
 /// The workspace in front, and who the desk holds as its owner.
 fn front_workspace(session: &Session) -> (String, Option<String>) {
     session.handle().read(|tree| {

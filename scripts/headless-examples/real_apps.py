@@ -390,8 +390,9 @@ class Session:
         self.control({"op": "pointer_button", "pressed": True, "button": "right"})
         self.control({"op": "pointer_button", "pressed": False, "button": "right"})
 
-    def click_named(self, name: str) -> dict:
-        return self.control({"op": "click_named", "name": name})
+    def click_named(self, name: str, verb: str = "activate") -> dict:
+        """Press the control `name`; `verb` is `activate` or `show-context-menu`."""
+        return self.control({"op": "click_named", "name": name, "verb": verb})
 
     def targets(self) -> list:
         return self.control({"op": "list_targets"})["targets"]

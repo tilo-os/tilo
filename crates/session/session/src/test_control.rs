@@ -32,9 +32,10 @@
 //!   mints the throwaway identity a development session opens its desk with instead of first-use
 //!   setup, as the shell's does for a dev image;
 //! - `list_targets` and `click_named`: every control the session's hosted surfaces show, by the
-//!   name they go by (a tab's pill, a place's switch, `onboarding.create.button`), and a press of
-//!   one of them through the same action route an assistive technology activates it with — never
-//!   a point aimed at;
+//!   name they go by (a tab's pill, a place's switch, `onboarding.create.button`, a row of an
+//!   app's own window), and a press of one of them through the same action route an assistive
+//!   technology activates it with — never a point aimed at; `click_named` with `"verb":
+//!   "show-context-menu"` opens that control's context menu the same way;
 //! - the pointer: `pointer_move`, `pointer_button` (left, right or middle), `click_at` and
 //!   `scroll`;
 //! - `drag`: a press at one place, interpolated motion, and the release at another, which is how
@@ -1084,7 +1085,20 @@ fn asked_of_desk(
             let Some(name) = request.get("name").and_then(Json::as_str) else {
                 return Some(refusal("parse_error", "`click_named` takes `name`"));
             };
-            match desk.doors.press(name) {
+            // The verb names the action to take on the control: a press
+            // (`activate`, the default) or the context menu it opens without a
+            // point aimed at where it is drawn.
+            let action = match request.get("verb").and_then(Json::as_str) {
+                None | Some("activate") => ui::window_targets::TargetAction::Activate,
+                Some("show-context-menu") => ui::window_targets::TargetAction::ShowContextMenu,
+                Some(other) => {
+                    return Some(refusal(
+                        "parse_error",
+                        &format!("`click_named` does not know the verb {other}"),
+                    ));
+                }
+            };
+            match desk.doors.press_action(name, action) {
                 Ok(()) => json!({"ok": {}}),
                 Err(error) => refusal("unknown_target", &error),
             }
