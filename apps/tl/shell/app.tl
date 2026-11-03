@@ -304,6 +304,14 @@ fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     return not roomy and (part.slot == .strip or part.slot == .app_menu)
 }
 
+/// Whether the bar is too narrow to hold its parts at their roomiest: a phone, or a short window
+/// with large text. Room enough for the menu, the workspace's name, the clock and the status
+/// beside each other starts at about this width; below it the parts pack a tighter gap apart and
+/// the workspace keeps only its icon, so the person's own face at the end never goes off the bar.
+fn bar_is_narrow(width: Float) -> Bool {
+    return width < 26.0
+}
+
 /// One part of the bar, drawn from what it is. Who is here is its faces alone, one button that
 /// opens the roster of everyone here and names them to assistive technology (`people_button`);
 /// a question put to the person stands beside them, their answer or their putting it off, never
@@ -357,7 +365,7 @@ view bar_part(d: Desk, part: BarPart) {
             agent_chip(d, a)
         }
     } else if part.slot == .status {
-        row(gap: .sibling, align: .center) {
+        row(gap: if bar_is_narrow(space.width) { .tight } else { .sibling }, align: .center) {
             if not space.compact and not d.tray.is_empty() {
                 row(gap: .tight, align: .center) {
                     for item in d.tray {
@@ -380,12 +388,8 @@ view bar_part(d: Desk, part: BarPart) {
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu(d: Desk) {
     let name = if d.workspace != "" { d.workspace } else { "Workspaces" }
-    ui.MenuButton(
-        name,
-        icon: if space.width < 18.0 { .layers },
-        icon_only: space.width < 18.0,
-        role: .bar,
-    ) {
+    let icon_only = bar_is_narrow(space.width)
+    ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)
