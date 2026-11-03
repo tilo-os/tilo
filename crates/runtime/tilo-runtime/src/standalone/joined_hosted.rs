@@ -3,9 +3,9 @@
 //! The runtime runs the same workspace host every device runs
 //! ([`HostMode::Device`](tilo_room_host::host::HostMode::Device)), in
 //! process: the host creates the profile's workspace and issues this device the
-//! invitation its replica redeems ([`RoomHost::place_own_workspace`]), and from
+//! invitation its replica redeems ([`WorkspaceHost::place_own_workspace`]), and from
 //! then on the workspace is one of the workspaces this profile joined, its session
-//! carried in process ([`RoomHost::connect_local`]). The host takes part in
+//! carried in process ([`WorkspaceHost::connect_local`]). The host takes part in
 //! the workspace's channels as this device's one peer, asking this device's own
 //! channel service for their keys.
 //!
@@ -24,7 +24,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
-use tilo_room_host::host::RoomHost;
+use tilo_room_host::host::WorkspaceHost;
 
 /// How long a write waits for the workspace's session and for its host to keep it.
 const KEPT_WITHIN: Duration = Duration::from_secs(10);
@@ -53,7 +53,7 @@ impl RecordCreation {
 
 /// The workspace host this profile runs, and what it lets apps create there.
 pub(super) struct OwnHost {
-    host: Arc<RoomHost>,
+    host: Arc<WorkspaceHost>,
     creation: RecordCreation,
 }
 
@@ -66,7 +66,7 @@ impl Joined {
     /// A host is already running.
     pub(in crate::standalone) fn install_host(
         &self,
-        host: Arc<RoomHost>,
+        host: Arc<WorkspaceHost>,
         creation: RecordCreation,
     ) -> Result<(), String> {
         self.own_host
@@ -74,7 +74,7 @@ impl Joined {
             .map_err(|_| "this profile runs one workspace host".into())
     }
 
-    fn room_host(&self) -> Option<&Arc<RoomHost>> {
+    fn room_host(&self) -> Option<&Arc<WorkspaceHost>> {
         self.own_host.get().map(|own| &own.host)
     }
 
@@ -207,7 +207,7 @@ impl Joined {
             // which signs the workspace's history under this device's key.
             own_host
                 .host
-                .rooms()
+                .workspaces()
                 .commit_own_membership(
                     &workspace.to_string(),
                     &self.custody.device_cert,
@@ -318,7 +318,7 @@ impl Joined {
         let ws = super::workspace_topic(workspace).ok()?;
         let retained = tilo_rt::app()
             .handle()
-            .block_on(async move { host.room_records().retained(ws).await })
+            .block_on(async move { host.workspace_records().retained(ws).await })
             .ok()?;
         let route = collab_types::ChannelRoute::new(app, record);
         let keys = self

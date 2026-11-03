@@ -971,7 +971,7 @@ fn place_own_workspace(
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
     let host = tilo_rt::app()
         .handle()
-        .block_on(tilo_room_host::host::RoomHost::open(
+        .block_on(tilo_room_host::host::WorkspaceHost::open(
             tilo_room_host::host::HostConfig::new(
                 profile.join(HOST_STORE),
                 tilo_room_host::host::HostMode::Device,
