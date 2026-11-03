@@ -3,7 +3,8 @@
 //! is every device's own, browser pages included.
 
 use super::{
-    Arc, AuthenticatedPeer, Decision, Envelope, PeerError, WorkspaceOperation, SessionCtx, workspace_access,
+    Arc, AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, WorkspaceOperation,
+    workspace_access,
 };
 
 /// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live

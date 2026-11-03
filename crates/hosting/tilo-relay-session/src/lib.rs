@@ -28,9 +28,9 @@ tilo_automerge_isolate::test_worker!();
 
 // The session modules address the protocol crate under the daemon's historic
 // paths (`crate::auth`, `crate::transport`, …); keep those crate-private.
+use tilo_relay_protocol::auth;
 #[cfg(test)]
 use tilo_relay_protocol::room_workspace_id;
-use tilo_relay_protocol::auth;
 
 /// The relay wire messages, under the path the session modules use.
 mod transport {
