@@ -201,17 +201,23 @@ pub struct FileView {
     list: ListSlot,
     /// Room kept clear under the list for the floating status bubble.
     bottom_inset: f64,
-    /// A layout found the list's columns should change with its width.
-    rebuild: bool,
+    /// What the view owes the next frame.
+    due: Due,
     /// What the view painted, this frame and last: what it paints follows
     /// the pointer, the selection, focus, scrolling and previews landing,
     /// and a frame that changed none of them (a hover in the sidebar beside
     /// it) leaves it as it was.
     own: OwnPaint,
+}
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
-    dirty: bool,
+/// What the view owes the next frame: its columns laid out again, and its
+/// paint drawn again once.
+#[derive(Default)]
+struct Due {
+    /// A layout found the list's columns should change with its width.
+    layout: bool,
+    /// Input or a new document value changed what the view paints.
+    paint: bool,
 }
 
 /// Pointer travel (logical px) past which a held directory press becomes a
@@ -224,7 +230,10 @@ pub fn drag_threshold() -> f64 {
 impl FileView {
     pub fn new(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Self {
         Self {
-            dirty: true,
+            due: Due {
+                layout: false,
+                paint: true,
+            },
             entries: entries.to_vec(),
             selection: selection.clone(),
             mode: ViewMode::List,
@@ -251,7 +260,6 @@ impl FileView {
             workspace_roots: Rc::from([]),
             list: ListSlot::default(),
             bottom_inset: 0.0,
-            rebuild: false,
             own: OwnPaint::default(),
         }
     }
@@ -1019,7 +1027,7 @@ impl Widget for FileView {
 
     fn take_structure_dirty(&mut self) -> bool {
         self.list.discard_structure_dirty();
-        std::mem::take(&mut self.rebuild)
+        std::mem::take(&mut self.due.layout)
     }
 
     fn build_layout(
@@ -1094,7 +1102,7 @@ impl Widget for FileView {
         {
             let base = Point::new(self.rect.x0, self.rect.y0);
             if self.list.apply_layout(taffy, table, base) {
-                self.rebuild = true;
+                self.due.layout = true;
             }
         }
         self.publish_drop_targets(None);
@@ -1126,12 +1134,12 @@ impl Widget for FileView {
     }
 
     fn mark_drawn(&mut self) {
-        self.dirty = false;
+        self.due.paint = false;
         self.own.present();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.dirty = true;
+        self.due.paint = true;
         match event {
             // A list's up/down movement is linear and remains app-level. An
             // icon grid, however, must use its *live measured* columns or a
@@ -1253,7 +1261,7 @@ impl Widget for FileView {
     }
 
     fn needs_redraw(&self) -> bool {
-        ui::widget::redraw_or_children(self.dirty, self)
+        ui::widget::redraw_or_children(self.due.paint, self)
     }
 
     fn name(&self) -> &'static str {

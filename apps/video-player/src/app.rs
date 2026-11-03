@@ -1440,7 +1440,7 @@ impl PlayerState {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.player.needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
+        self.dirty || self.player.needs_redraw() || self.needs_animation_frame()
     }
 
     fn mark_drawn(&mut self) {

@@ -162,7 +162,7 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
             // Each window showing the note re-measures its own editor's leaf
             // and that window's ancestors: those paths, not every widget.
             assert!(
-                stats.marked_leaves <= windows && stats.marked_dirty <= 10 * windows,
+                stats.marked_leaves <= windows && stats.marked_dirty <= windows.saturating_mul(10),
                 "a keystroke re-measured more than the editor it edits: {stats:?}, asked by {:?}",
                 harness.layout_measure_requesters()
             );
