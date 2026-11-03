@@ -275,7 +275,6 @@ fn step_5_an_inline_edit_of_a_placed_record_commits() {
 /// Step 6: asking an agent places the conversation on the canvas, and a reference it printed
 /// opens on press.
 #[test]
-#[ignore = "step 6: an ask records the run and the desk publishes its conversation, but nothing places \"agent-run:<id>\" on the arrangement — the ask's run never reaches `shell:arrangement`'s `place`, so the conversation is only a desk surface until a person or an agent places it by hand"]
 fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
@@ -286,17 +285,17 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
     });
     let note = seeded_note(&session, "Groceries");
 
-    // The person asks through the door, as the composer does, naming the run so the place can be
-    // looked for by it.
+    // The person types a question on the canvas, as its entry sends it: what it finds nothing
+    // for is a question to the agent, and its conversation stands where they typed.
     session
         .invoke(
-            wire::RESOURCE,
-            "ask",
-            json!({"id": "tidy", "title": "Tidy the launch notes", "agent": "agent:claude"})
+            "shell:arrangement",
+            "conversation",
+            json!({"line": "Tidy the launch notes", "x": 120, "y": 80})
                 .as_object()
                 .unwrap(),
         )
-        .expect("the session queues the ask");
+        .expect("the canvas takes the question");
 
     // Asking places the conversation on the canvas.
     until(&mut session, "the conversation placed", |session| {
@@ -305,15 +304,22 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
             .borrow()
             .strips()
             .places()
-            .any(|place| place.record == "agent-run:tidy")
+            .any(|place| place.record.starts_with("agent-run:"))
     });
+    let run = session
+        .arrangement()
+        .borrow()
+        .strips()
+        .places()
+        .find_map(|place| place.record.strip_prefix("agent-run:").map(str::to_owned))
+        .expect("the conversation's run");
     until(&mut session, "the conversation drawn", |session| {
         session.shell_says("Tidy the launch notes")
     });
 
     // Its agent runs a program that prints the note: a reference row.
     runs.record_step(
-        "tidy",
+        &run,
         ProgramStep {
             program: "find(notes.Note, \"Groceries\")".into(),
             outcome: StepOutcome::Done,
