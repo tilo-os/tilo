@@ -11,8 +11,10 @@ fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
     eprintln!("CATALOGUE-BEGIN\n{generated}CATALOGUE-END");
     assert!(
         shipped == generated,
-        "crates/dev/ui-graph/components.json is stale; write it again with \
-         `cargo run -p tilo-ui --example component-catalogue > crates/dev/ui-graph/components.json`"
+        "crates/dev/ui-graph/components.json is stale: a widget's description changed after it \
+         was last written, and tilolang and the tools read that file as the package `ui`. Write \
+         it again and commit it:\n\
+         \x20   cargo run -p tilo-ui --example component-catalogue > crates/dev/ui-graph/components.json"
     );
 }
 
