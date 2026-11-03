@@ -6,19 +6,86 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
 
-use vello::kurbo::Rect;
+use vello::Scene;
+use vello::kurbo::{Affine, Rect};
 
 use super::{ListModel, VirtualList};
+use crate::theme::Theme;
 
-/// How far a tree's rows stand in from their list for each row over them ([`VirtualList::with_tree`]):
-/// the `s4` step, so a list indents as far as the outline beside it.
-pub const TREE_INDENT: f64 = crate::tokens::Spacing::BASE.s4 as f64;
-/// The room a tree row's disclosure takes at its leading edge: a regular icon's square, the same
-/// room the column keeps for a row with no subtasks to fold away.
-pub const TREE_DISCLOSURE: f64 = crate::tokens::Metrics::BASE.icon_md as f64;
+/// One step of a tree's nesting ([`VirtualList::with_tree`]): the disclosure gutter a row's
+/// content stands in by, and where the chevron that folds what stands under it hangs, left of
+/// its own depth's column.
+pub const TREE_INDENT: f64 =
+    (crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related) as f64;
+/// The room a tree row's disclosure marker takes at its leading edge.
+pub const TREE_DISCLOSURE: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
 /// How far up a row's chain of parents the list follows it: deeper than anyone nests a row, so
 /// a chain that loops still ends.
 const TREE_DEPTH_GUARD: u32 = 64;
+
+/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where its rows stand in
+/// from it, and `step` one depth's disclosure gutter.
+#[derive(Clone, Copy)]
+pub(super) struct Chevrons {
+    pub(super) x0: f64,
+    pub(super) lead: f64,
+    pub(super) step: f64,
+}
+
+impl<M: ListModel> VirtualList<M> {
+    /// The chevrons of a row draw placed where this list's rows stand.
+    pub(super) fn chevrons(&self) -> Chevrons {
+        Chevrons {
+            x0: self.rect.x0,
+            lead: self.lead,
+            step: self.disclosure,
+        }
+    }
+}
+
+impl Chevrons {
+    /// The gutter the row `key`'s chevron hangs in, when it has subtasks: left of its own
+    /// depth's content column, saying whether they show.
+    pub(super) fn gutter<K: Clone + Eq + Hash>(
+        &self,
+        marks: &TreeMarks<K>,
+        key: &K,
+    ) -> Option<(f64, bool)> {
+        if !marks.is_branch(key) {
+            return None;
+        }
+        let gutter = self.x0 + self.lead + f64::from(marks.depth(key)) * self.step - self.step;
+        Some((gutter, marks.is_folded(key)))
+    }
+
+    /// Paint the row `key`'s chevron into `row`, at its own depth's gutter.
+    pub(super) fn paint<K: Clone + Eq + Hash>(
+        &self,
+        marks: &TreeMarks<K>,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        key: &K,
+        row: Rect,
+    ) {
+        let Some((gutter, folded)) = self.gutter(marks, key) else {
+            return;
+        };
+        let side = f64::from(theme.tokens.metrics.icon_sm);
+        let cy = row.center().y;
+        let icon = if folded {
+            crate::icons::Icon::ChevronRight
+        } else {
+            crate::icons::Icon::ChevronDown
+        };
+        icon.draw(
+            scene,
+            transform,
+            Rect::new(gutter, cy - side / 2.0, gutter + side, cy + side / 2.0),
+            theme.text_dim,
+        );
+    }
+}
 
 /// What a row is in a tree of rows: the row of the item it is a subtask of, when that item is
 /// one of the list's rows.
@@ -226,11 +293,20 @@ impl<M: ListModel> VirtualList<M> {
         let Some(height) = self.viewport.item_height(index) else {
             return false;
         };
-        let x0 = self.rect.x0 + f64::from(marks.depth(key)) * TREE_INDENT;
+        // The chevron hangs in the gutter left of the row's content column, at the row's own
+        // depth: the rows stand `lead` in, and step one disclosure gutter per depth.
+        let chevrons = Chevrons {
+            x0: self.rect.x0,
+            lead: self.lead,
+            step: self.disclosure,
+        };
+        let Some((x0, _)) = chevrons.gutter(marks, key) else {
+            return false;
+        };
         // The rows stand where the layout put them, moved by the scroll since, as a press is
         // read (`Self::row_at`).
         let y0 = self.rect.y0 + self.end_slack() + top;
-        let rect = Rect::new(x0, y0, x0 + TREE_DISCLOSURE, y0 + height);
+        let rect = Rect::new(x0, y0, x0 + self.disclosure, y0 + height);
         rect.contains(cursor)
     }
 

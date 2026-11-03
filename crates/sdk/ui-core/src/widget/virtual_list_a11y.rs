@@ -125,7 +125,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// How many rows the band's group holds, as the model says.
-    fn heading_rows(&self, band: &Band) -> usize {
+    pub(super) fn heading_rows(&self, band: &Band) -> usize {
         let len = self.model.len();
         let tail = self.tail_title.as_deref();
         let same = |index: usize| {

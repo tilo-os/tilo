@@ -356,6 +356,19 @@ impl<M: ListModel> VirtualList<M> {
         self.groups.in_view(held, viewport)
     }
 
+    /// The box the heading at `top` (the list's own coordinates) stands its content in: the
+    /// column its rows' content stands in, to the edge their facts end on, so a heading reads
+    /// on the same grid as the rows under it.
+    pub(super) fn header_rect(&self, top: f64) -> Rect {
+        let band = self.band_rect(top);
+        Rect::new(
+            band.x0 + self.lead,
+            band.y0,
+            (self.rect.x1 - self.trailing_inset()).max(band.x0 + self.lead),
+            band.y1,
+        )
+    }
+
     /// The box the band at `top` (the list's own coordinates) is drawn in.
     pub(super) fn band_rect(&self, top: f64) -> Rect {
         let x1 = if self.rows_beside_bar {
@@ -426,11 +439,15 @@ impl<M: ListModel> VirtualList<M> {
             let hovered = cursor.is_some_and(|point| rect.contains(point));
             let held = self.groups.held() == Some(band.heading.as_str());
             let has_keyboard = focused.as_deref() == Some(band.heading.as_str());
+            // The heading reads in the column its rows stand in, its chevron in the gutter
+            // left of it, and how many rows it holds on the edge their facts end on.
+            let count = self.heading_rows(band);
             SectionHeaderFace::group(&band.heading)
                 .disclosure(!band.closed)
+                .trailing_count(count)
                 .paint(
                     &mut ctx,
-                    rect,
+                    self.header_rect(band.top),
                     Interaction {
                         hovered,
                         pressed: hovered && held,

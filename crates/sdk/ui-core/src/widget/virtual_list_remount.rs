@@ -104,7 +104,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     /// place changed is touched, so taffy keeps every other row's layout.
     pub(super) fn place_rows(&mut self, taffy: &mut TaffyTree<()>) {
         self.rows_beside_bar = self.scroll_metrics().overflows();
-        let left = length(px(self.bleed));
+        let left = length(px(self.lead));
         let right = length(px(self.trailing_inset()));
         let places = self
             .mounted

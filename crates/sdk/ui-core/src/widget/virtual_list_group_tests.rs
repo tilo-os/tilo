@@ -42,6 +42,10 @@ impl ListModel for Grouped {
         self.asked.set(self.asked.get() + 1);
         self.groups.get(index).cloned().flatten()
     }
+
+    fn discloses(&self) -> bool {
+        self.groups.iter().any(Option::is_some)
+    }
 }
 
 fn heading(name: &str) -> Option<RowGroup> {
@@ -517,5 +521,48 @@ fn the_heading_holding_the_keyboard_wears_a_focus_ring() {
     assert!(
         ring_pixels(&focused, &theme, middle) >= 2,
         "the heading the keyboard is on wears its ring on both its sides"
+    );
+}
+
+#[test]
+fn a_lists_headings_and_rows_share_one_column_and_one_trailing_edge() {
+    let mut list = week();
+    let _ = settle(&mut list);
+    let rect = list.rect;
+    let gutter = crate::chrome::disclosure_gutter(&Theme::dark());
+    assert!(
+        (list.lead - list.bleed.max(gutter)).abs() < 0.5,
+        "a list whose headings fold keeps the chevron gutter before its column: {}",
+        list.lead
+    );
+    let header = list.header_rect(0.0);
+    let row = list.mounted.first().expect("a mounted row");
+    let row = row.widget.get_rect();
+    assert!(
+        (row.x0 - header.x0).abs() < 0.5,
+        "rows stand in their heading's column: {} and {}",
+        row.x0,
+        header.x0
+    );
+    assert!(
+        (row.x1 - header.x1).abs() < 0.5,
+        "the heading's count ends on the rows' trailing edge: {} and {}",
+        header.x1,
+        row.x1
+    );
+    assert!(
+        (header.x0 - (rect.x0 + list.lead)).abs() < 0.5,
+        "the column starts one lead in from the list's edge"
+    );
+}
+
+#[test]
+fn a_list_with_nothing_to_disclose_keeps_no_chevron_room() {
+    let mut list = grouped(vec![None, None]);
+    let _ = settle(&mut list);
+    assert!(
+        (list.lead - list.bleed).abs() < 0.5,
+        "no heading or parent to fold reserves no gutter: {}",
+        list.lead
     );
 }

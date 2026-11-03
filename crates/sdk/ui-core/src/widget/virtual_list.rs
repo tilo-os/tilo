@@ -177,6 +177,11 @@ pub trait ListModel {
     fn tree_at(&self, _index: usize) -> Option<TreeRow<Self::Key>> {
         None
     }
+
+    /// Whether the list heads or nests its rows, keeping a disclosure gutter left of its column.
+    fn discloses(&self) -> bool {
+        false
+    }
 }
 
 /// The row's place in a group of the list ([`ListModel::group_at`]): the heading the run of
@@ -360,6 +365,10 @@ pub struct VirtualList<M: ListModel> {
     /// last drew: its bars keep out of them.
     corners: crate::widget::scrollbar::SurfaceCorners,
     bleed: f64,
+    /// Where the rows' content starts in from the list's edge: its bleed, or a disclosure gutter.
+    lead: f64,
+    /// The gutter a disclosure chevron hangs in, one step of nesting.
+    disclosure: f64,
     /// How far a row's lift bleeds past its text ([`crate::chrome::row_bleed`]).
     lift: f64,
     /// Where the rows stand between the list's edges ([`Self::flush`], [`Self::in_column`]).
@@ -531,6 +540,10 @@ impl<M: ListModel> VirtualList<M> {
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
+            lead: f64::from(crate::tokens::Spacing::BASE.s2),
+            disclosure: f64::from(
+                crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
+            ),
             lift: f64::from(crate::tokens::Spacing::BASE.s2),
             stance: RowStance::Bleed,
             edges: None,
@@ -689,7 +702,7 @@ impl<M: ListModel> VirtualList<M> {
     /// Bring the space above the first row and below the last in line with
     /// the rows' width. Whether it changed.
     fn update_edges(&mut self) -> bool {
-        let width = (self.rect.width() - self.bleed - self.trailing_inset()).max(0.0);
+        let width = (self.rect.width() - self.lead - self.trailing_inset()).max(0.0);
         let Some(edges) = self.edges.as_mut() else {
             return false;
         };
@@ -708,7 +721,7 @@ impl<M: ListModel> VirtualList<M> {
         };
         match self.stance {
             RowStance::Column => self.bleed.max(bar + self.lift),
-            RowStance::Bleed | RowStance::Flush => self.bleed + bar,
+            RowStance::Bleed | RowStance::Flush => self.lead + bar,
         }
     }
 
@@ -1340,7 +1353,6 @@ impl<M: ListModel> VirtualList<M> {
             selected: selected(Some(index)),
             above: selected(index.checked_sub(1)),
             below: selected(index.checked_add(1)),
-            has_next: index.saturating_add(1) < self.model.len(),
         }
     }
 
@@ -2025,6 +2037,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             RowStance::Column => crate::chrome::column_gutter(theme),
         };
         self.lift = crate::chrome::row_bleed(theme);
+        self.disclosure = crate::chrome::disclosure_gutter(theme);
+        // A chevron hangs left of the column so the column never moves: one left edge.
+        let gutter = if self.tree.is_some() || self.model.discloses() {
+            self.disclosure
+        } else {
+            0.0
+        };
+        self.lead = self.bleed.max(gutter);
         self.pill_height =
             crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);
         self.pill_width = f64::from(
@@ -2282,6 +2302,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .map(|row| self.row_motion.pose(&row.key, now))
             .collect();
         let pending_shape = self.pending_shape();
+        // The tree's chevrons are the list's own, over the rows of any view: one place folds.
+        let tree = self.tree.clone();
+        let chevrons = self.chevrons();
         let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
         for (((row, row_rect), selection), (dy, alpha)) in self
@@ -2352,6 +2375,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         .draw(ctx.scene, row_transform, ctx.text, theme, presence);
                 },
             );
+            if let Some(marks) = tree.as_ref() {
+                chevrons.paint(marks, scene, transform, theme, &row.key, row_rect);
+            }
             if faded {
                 scene.pop_layer();
             }

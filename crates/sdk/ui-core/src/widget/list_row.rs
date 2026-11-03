@@ -14,7 +14,7 @@
 //! Hover (or keyboard focus) swaps the meta for the row's actions. The row
 //! height comes from the measured line boxes of its text, never a constant,
 //! so it grows with the text scale. Selection is the lift (HIG §9.3), and
-//! the inset separator between two rows hides beside a selected row.
+//! rows sit edge to edge, with no rule between them.
 //!
 //! **One content edge.** The row's text starts on its column's content
 //! edge; the hover and selection lift bleed [`row_bleed`] past it on both
@@ -222,6 +222,8 @@ struct RowMetrics {
     dot: f64,
     radius: f64,
     tag_gap: f64,
+    /// One step of nesting: the gutter a disclosure chevron hangs in, left of its content.
+    nest: f64,
 }
 
 impl RowMetrics {
@@ -250,6 +252,7 @@ impl RowMetrics {
             dot: f64::from(spacing.s2),
             radius: f64::from(theme.tokens.radii.item),
             tag_gap: f64::from(spacing.s1),
+            nest: crate::chrome::disclosure_gutter(theme),
         }
     }
 
@@ -371,6 +374,9 @@ pub struct ListRowFace<'a> {
     leading_column: Option<f64>,
     /// Indented one leading column under the row above it.
     nested: bool,
+    /// How many rows over it the row stands: its content indents one
+    /// disclosure gutter per depth, while its lift fills the row.
+    depth: u32,
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
@@ -426,6 +432,7 @@ impl<'a> ListRowFace<'a> {
             leading: None,
             leading_column: None,
             nested: false,
+            depth: 0,
             status: None,
             change: None,
             struck: false,
@@ -606,6 +613,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn nested(mut self, nested: bool) -> Self {
         self.nested = nested;
+        self
+    }
+
+    /// Indent the row's content `depth` steps in, one disclosure gutter each, as a
+    /// subtree's rows stand under their parents; its chevron hangs in its own gutter.
+    #[must_use]
+    pub fn depth(mut self, depth: u32) -> Self {
+        self.depth = depth;
         self
     }
 
@@ -941,7 +956,9 @@ impl<'a> ListRowFace<'a> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) -> RowGeometry {
-        let left = rect.x0 + m.bleed;
+        // A nested row indents its content one step per depth, its lift still filling the row:
+        // the list paints the chevron its depth hangs in the gutter left of here.
+        let left = rect.x0 + m.bleed + f64::from(self.depth) * m.nest;
         let mut right = rect.x1 - m.bleed;
         let cy = rect.center().y;
         let mut geo = RowGeometry::default();
@@ -1956,6 +1973,9 @@ pub struct ListRow {
     leading: Option<Leading>,
     leading_column: Option<f64>,
     nested: bool,
+    /// How many rows over it the row stands, indenting its content one
+    /// disclosure gutter each ([`ListRowFace::depth`]).
+    depth: u32,
     /// Every badge of the row's list, measured into `leading_column` at
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
@@ -2050,6 +2070,7 @@ impl ListRow {
             leading: None,
             leading_column: None,
             nested: false,
+            depth: 0,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -2392,6 +2413,13 @@ impl ListRow {
         self
     }
 
+    /// See [`ListRowFace::depth`].
+    #[must_use]
+    pub fn depth(mut self, depth: u32) -> Self {
+        self.depth = depth;
+        self
+    }
+
     /// The leading column fits every badge in `badges`, measured when the
     /// row is laid out: the rows of a
     /// [`VirtualList`](crate::widget::virtual_list::VirtualList), which
@@ -2580,14 +2608,6 @@ impl ListRow {
     #[cfg(test)]
     pub(crate) fn separator_state(&self) -> (bool, bool) {
         (self.separator, self.next_selected)
-    }
-
-    pub(crate) fn set_separator(&mut self, below: bool, next_selected: bool) {
-        if (self.separator, self.next_selected) != (below, next_selected) {
-            self.separator = below;
-            self.next_selected = next_selected;
-            self.dirty = true;
-        }
     }
 
     /// Set by the list: which selected neighbours this row's lift joins.
@@ -2914,6 +2934,7 @@ impl ListRow {
             face = face.leading_column(width);
         }
         face = face.nested(self.nested);
+        face = face.depth(self.depth);
         if let Some(leading) = &self.leading {
             face = face.leading(match leading {
                 Leading::Avatar {
@@ -3139,7 +3160,6 @@ impl crate::widget::RowSelectionSink for ListRow {
     fn take_selection(&mut self, selection: crate::widget::RowSelection) {
         self.set_selected(selection.selected);
         self.set_join(selection.join());
-        self.set_separator(selection.has_next, selection.below);
     }
 }
 

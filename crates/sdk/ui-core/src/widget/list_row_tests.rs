@@ -1322,3 +1322,28 @@ fn a_row_that_says_still_marks_at_once_where_brisk_still_moves() {
         "a still row's mark lands at once"
     );
 }
+
+#[test]
+fn a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_column() {
+    let theme = Theme::dark();
+    let step = crate::chrome::disclosure_gutter(&theme);
+    let rect = Rect::new(0.0, 0.0, 300.0, 40.0);
+    let top = geometry(&ListRowFace::new("Top"), rect);
+    let nested = geometry(&ListRowFace::new("Under").depth(2), rect);
+    assert!(
+        (nested.leading.x0 - (top.leading.x0 + 2.0 * step)).abs() < 0.5,
+        "the nested row's content stands two gutters in: {} from {}",
+        nested.leading.x0,
+        top.leading.x0
+    );
+    assert!(
+        (nested.text_x - (top.text_x + 2.0 * step)).abs() < 0.5,
+        "its title moves with its content"
+    );
+    assert!(
+        (nested.value_right - top.value_right).abs() < 0.5,
+        "depth never moves the row's trailing facts: {} and {}",
+        nested.value_right,
+        top.value_right
+    );
+}

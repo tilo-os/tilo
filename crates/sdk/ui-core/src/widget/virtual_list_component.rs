@@ -18,18 +18,17 @@ use crate::component::{
     Accepts, Component, Described, Event, Moment, Person, ResourceId, SharedRows, SlotType, Source,
     Value,
 };
-use crate::icons::Icon;
 use crate::selection::KeySelection;
 use crate::tokens::{Rhythm, TextRole};
 use crate::widget::arrange::{Align, Fit, Page, Row, Slot, Stack, TranscriptEdges};
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
-    Attachments, Avatar, ContextMenuArea, Decorator, Element, IconSize, IconWidget, ListRow,
-    ListRowProps, MenuEntry, MenuPart, Spacer, SwipeActionProps, Text, Widget,
+    Attachments, Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry,
+    MenuPart, Spacer, SwipeActionProps, Text, Widget,
 };
 
-use super::{ListModel, ListModelChange, TREE_DISCLOSURE, TREE_INDENT, TreeMarks, VirtualList};
+use super::{ListModel, ListModelChange, TREE_INDENT, TreeMarks, VirtualList};
 use crate::widget::ChangeMarkProps;
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
@@ -547,6 +546,18 @@ impl ListModel for DescribedRows {
         })
     }
 
+    /// Whether any row stands under a heading, or was given a parent: the list keeps a
+    /// disclosure gutter for its headings' and parents' chevrons then.
+    fn discloses(&self) -> bool {
+        self.ungrouped.is_some()
+            || match &self.held {
+                Held::Given(items) => items.iter().any(|item| {
+                    item.tail || item.group.as_ref().is_some_and(|group| !group.is_empty())
+                }),
+                Held::Nothing | Held::Rendered(_) => false,
+            }
+    }
+
     fn label(&self, index: usize) -> Option<String> {
         let key = self.key_at(index)?;
         self.with_item(&key, |item| match item.row {
@@ -704,49 +715,19 @@ fn row_of(
     }
 }
 
-/// The row of an item in a tree, indented by how deep it stands: the room its depth takes, a
-/// disclosure that folds its subtasks away while it has any, the row, and how many of those
-/// subtasks are still open.
-fn tree_row(
-    row: Element,
-    key: &str,
-    marks: &TreeMarks<String>,
-    progress: Option<String>,
-) -> Element {
-    let row_key = key.to_owned();
-    let depth = f64::from(marks.depth(&row_key));
+/// A row of a tree that is a view of the app's own: its content stands `depth` steps in, one
+/// disclosure gutter each, and how far its branch got follows it.
+fn indent_view(view: Element, depth: u32, progress: Option<String>) -> Element {
     let mut line = Row::row().fill_width().align(Align::Center);
-    // The room the depth takes and the disclosure standing at its end are one column, packed
-    // tight: the chevron then sits exactly where the list reads a fold press.
-    let mut lead = crate::widget::row::Row::new().with_gap(0.0);
-    if depth > 0.0 {
+    if depth > 0 {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "logical pixels are bounded far below f32::MAX"
         )]
-        let indent = (depth * TREE_INDENT) as f32;
-        lead = lead.push(Box::new(Spacer::fixed(indent)));
+        let indent = (f64::from(depth) * TREE_INDENT) as f32;
+        line = line.push(Box::new(Spacer::fixed(indent)));
     }
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "logical pixels are bounded far below f32::MAX"
-    )]
-    let disclosure = TREE_DISCLOSURE as f32;
-    if marks.is_branch(&row_key) {
-        lead = lead.push(Box::new(
-            IconWidget::new(if marks.is_folded(&row_key) {
-                Icon::ChevronRight
-            } else {
-                Icon::ChevronDown
-            })
-            .sized(IconSize::Regular)
-            .dim(),
-        ));
-    } else {
-        lead = lead.push(Box::new(Spacer::fixed(disclosure)));
-    }
-    line = line.push(Box::new(lead));
-    let mut slot = Slot::new(row);
+    let mut slot = Slot::new(view);
     slot.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
     line = line.push_slot(slot);
     if let Some(progress) = progress {
@@ -798,6 +779,8 @@ fn bare_row(
                 // The list activates its rows itself, by key: a row of it is not a target of
                 // its own.
                 props.activate = Event::None;
+                // The row's own figure stands unless the tree's count takes that column.
+                let value_free = props.value.is_none();
                 let mut row = ListRow::from_props(key, *props);
                 if let Some(person) = presence {
                     row = row.presence(person.identity);
@@ -809,19 +792,29 @@ fn bare_row(
                     row = row.change(mark.identity, mark.name, mark.spoken, mark.show);
                 }
                 row = row.shortcuts(shortcuts);
+                // A tree indents the row's content one disclosure gutter per depth, its lift
+                // still filling the row; how far its branch got is its trailing figure.
+                if let Some(marks) = tree {
+                    row = row.depth(marks.depth(&key.to_owned()));
+                    if value_free && let Some(progress) = progress.clone() {
+                        row = row.value(progress);
+                    }
+                }
                 Box::new(row) as Element
             }
-            ItemRow::View(view) => with_mark(
-                view,
-                change.and_then(|change| change.face(&format!("{key}~change"))),
-            ),
+            ItemRow::View(view) => {
+                let view = with_mark(
+                    view,
+                    change.and_then(|change| change.face(&format!("{key}~change"))),
+                );
+                match tree {
+                    Some(marks) => {
+                        indent_view(view, marks.depth(&key.to_owned()), progress.clone())
+                    }
+                    None => view,
+                }
+            }
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
-        };
-        // A list that is a tree indents its rows by how deep they stand, and says what their
-        // subtasks come to.
-        let row = match tree {
-            Some(marks) => tree_row(row, key, marks, progress),
-            None => row,
         };
         (row, swipe, attached)
     })
