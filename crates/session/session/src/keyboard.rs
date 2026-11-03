@@ -215,7 +215,11 @@ impl crate::Session {
         // The lock screen draws its own keyboard over a locked session, and
         // takes every key: nothing of the session's stands over it.
         let unlocked = !self.compositor.locked();
-        let runs = unlocked && crate::a11y_settings::keyboard_runs(preference, entry);
+        // An engine of the active source owns the seat's input method: its
+        // keys compose characters, which a keyboard's committed text cannot,
+        // and one field broken between two input methods belongs to neither.
+        let composing = crate::input_method::composes(&self.sources.active);
+        let runs = unlocked && !composing && crate::a11y_settings::keyboard_runs(preference, entry);
         if !runs {
             self.stop_keyboard();
             // Wanted again later, the keyboard is asked afresh: its tries

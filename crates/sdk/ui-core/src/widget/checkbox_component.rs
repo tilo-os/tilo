@@ -13,6 +13,7 @@ pub struct CheckboxProps {
     #[component(bind)]
     pub value: Bound<bool>,
     /// What it is for, beside the box: the whole row chooses it.
+    #[component(positional)]
     pub label: Option<String>,
     /// Some of what it stands for is chosen: a mixed mark. The value stays `false`, so the next
     /// choose marks all of it.

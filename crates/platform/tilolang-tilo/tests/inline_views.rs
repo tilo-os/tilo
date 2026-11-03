@@ -28,7 +28,7 @@ action done(x: Item) {
 default view b_card for Item
 
 view b_card(x: Item) {
-  column {
+  stack {
     text("Item")
     text(x.title)
   }
@@ -49,14 +49,14 @@ const CALLER: &str = r#"app test.a "A"
 use test.b as b
 
 view a_main(x: b.Item) {
-  column {
+  stack {
     text("Shopping")
     b.b_row(x)
   }
 }
 
 view a_canvas() {
-  column {
+  stack {
     if let r = resource("item-1") {
       show(r, view: "b_row")
       show(r)

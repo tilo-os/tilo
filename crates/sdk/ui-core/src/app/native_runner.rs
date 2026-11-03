@@ -201,9 +201,9 @@ struct AppHandler {
     /// Lives for the event loop so an idle app still hears Theme Studio
     /// and compositor appearance writes.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
-    /// The workspace's identity was chosen while this window waited for it
-    /// ([`crate::workspace_identity`]): the loop ends with the window kept
-    /// for the launch to open the app in.
+    /// What this window held the launch's place for arrived (its
+    /// workspace's join): the loop ends with the window kept for the launch
+    /// to open the app in.
     handing_over: bool,
     /// The window is done: the last window of the process ends its loop, any
     /// other closes alone ([`process_windows`]).
@@ -3940,13 +3940,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.closing.set(true);
             return;
         }
-        // Someone chose who works in this workspace while the window waited
-        // for it, or the workspace's join the window showed its loading
-        // state for is over: save what it holds and leave the loop, keeping
-        // the window, so the launch opens the app in it.
-        if !self.handing_over
-            && (crate::workspace_identity::chosen() || crate::launch::window_gives_place())
-        {
+        // The workspace's join the window showed its loading state for is
+        // over: save what it holds and leave the loop, keeping the window, so
+        // the launch opens the app in it.
+        if !self.handing_over && crate::launch::window_gives_place() {
             self.handing_over = true;
             for error in self.app.checkpoint_before_close() {
                 tracing::error!(%error, "could not save before opening the workspace");

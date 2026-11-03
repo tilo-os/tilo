@@ -172,6 +172,10 @@ pub struct State {
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
     pub(crate) protocols: crate::protocols::Protocols,
+    /// The GPU clients import their dma-bufs on, as `linux-dmabuf` told
+    /// them ([`crate::State::enable_dmabuf`]); a render service allocates
+    /// there too, so the compositor imports its frames like any client's.
+    pub(crate) render_node: Option<smithay::backend::drm::DrmNode>,
     /// The icon each window shows, by window id.
     pub(crate) icons: crate::toplevel_icon::Icons,
     pub(crate) lock: crate::lock::Lock,
@@ -309,6 +313,7 @@ impl State {
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
+            render_node: None,
             icons: crate::toplevel_icon::Icons::default(),
             exited: Arc::default(),
             lock: crate::lock::Lock::new(display),
@@ -691,7 +696,7 @@ impl State {
         self.route_input(event);
     }
 
-    fn route_input(&mut self, event: InputEvent) {
+    pub(crate) fn route_input(&mut self, event: InputEvent) {
         self.note_input();
         // What a capture takes never reaches the desktop.
         if let Some(observed) = event.clone().observed((self.pointer.x, self.pointer.y))
@@ -806,20 +811,10 @@ impl State {
                     // held modifier's release reaches what it opened. Otherwise it goes on to
                     // the client as any release does. A client holding the desktop's
                     // shortcuts had the press, so it has the release too.
-                    if state.shortcut_inhibit.is_active() {
-                        return FilterResult::Forward;
-                    }
-                    let locked = state.locked();
-                    for index in (0..state.hosts.len()).rev() {
-                        let claim = state
-                            .hosts
-                            .get_mut(index)
-                            .map_or(KeyClaim::Pass, |host| host.claim_key(&key, locked, false));
-                        if claim != KeyClaim::Pass {
-                            return FilterResult::Intercept((index, key));
-                        }
-                    }
-                    return FilterResult::Forward;
+                    return match state.release_host(&key) {
+                        Some(host) => FilterResult::Intercept((host, key)),
+                        None => FilterResult::Forward,
+                    };
                 }
                 // Typing is what arms the rule that nothing moves under it:
                 // a key that types something, modifiers and chords aside.
@@ -830,29 +825,12 @@ impl State {
                 // A client holding the desktop's shortcuts keeps them: only
                 // what must never be given up is still taken below.
                 let inhibited = state.shortcut_inhibit.is_active();
-                let now = Instant::now();
-                for index in (0..state.hosts.len()).rev() {
-                    let claim = state.hosts.get_mut(index).map_or(KeyClaim::Pass, |host| {
-                        host.claim_key(&key, locked, inhibited)
-                    });
-                    if claim != KeyClaim::Pass {
-                        let repeats = claim == KeyClaim::TakeRepeating;
-                        state.host_keys.press(index, &key, repeats, now);
-                        return FilterResult::Intercept((index, key));
-                    }
-                }
-                // The topmost hosted surface that wants the keyboard takes
-                // keys from every client. While locked, the lock client has
-                // it, and no hosted surface takes one.
-                let wanting = state
-                    .hosts
-                    .iter()
-                    .rposition(|host| !locked && host.wants_keyboard());
-                let Some(index) = wanting else {
+                let repeats = !handle.modified_sym().is_modifier_key();
+                let Some(index) =
+                    state.press_host(&key, locked, inhibited, repeats, Instant::now())
+                else {
                     return FilterResult::Forward;
                 };
-                let repeats = !handle.modified_sym().is_modifier_key();
-                state.host_keys.press(index, &key, repeats, now);
                 FilterResult::Intercept((index, key))
             },
         );
@@ -861,6 +839,71 @@ impl State {
         {
             host.key(&key);
         }
+    }
+
+    /// The hosted surface a released key belongs to: one that claims it, from
+    /// the top of the stack down. A held modifier's release reaches what it
+    /// opened; a client holding the desktop's shortcuts has its releases too.
+    fn release_host(&mut self, key: &HostKey) -> Option<usize> {
+        if self.shortcut_inhibit.is_active() {
+            return None;
+        }
+        let locked = self.locked();
+        let composing = self.composing();
+        for index in (0..self.hosts.len()).rev() {
+            if composing == Some(index) {
+                continue;
+            }
+            let claim = self
+                .hosts
+                .get_mut(index)
+                .map_or(KeyClaim::Pass, |host| host.claim_key(key, locked, false));
+            if claim != KeyClaim::Pass {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    /// The hosted surface a pressed key belongs to, its press recorded: one
+    /// that claims it, else the topmost that wants the keyboard. While locked
+    /// the lock client has it, and no hosted surface takes one.
+    ///
+    /// The field an input method composes in takes no key itself: the method
+    /// has the keyboard, and gives back what it leaves (see
+    /// [`State::handle_ime_key`]). Every other surface still answers its
+    /// chords.
+    fn press_host(
+        &mut self,
+        key: &HostKey,
+        locked: bool,
+        inhibited: bool,
+        repeats: bool,
+        now: Instant,
+    ) -> Option<usize> {
+        let composing = self.composing();
+        for index in (0..self.hosts.len()).rev() {
+            if composing == Some(index) {
+                continue;
+            }
+            let claim = self.hosts.get_mut(index).map_or(KeyClaim::Pass, |host| {
+                host.claim_key(key, locked, inhibited)
+            });
+            if claim != KeyClaim::Pass {
+                self.host_keys
+                    .press(index, key, claim == KeyClaim::TakeRepeating, now);
+                return Some(index);
+            }
+        }
+        let wanting = self
+            .hosts
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(index, host)| !locked && Some(*index) != composing && host.wants_keyboard())
+            .map(|(index, _)| index)?;
+        self.host_keys.press(wanting, key, repeats, now);
+        Some(wanting)
     }
 
     /// What pressing the key with `keysym` types into a hosted surface's

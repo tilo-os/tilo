@@ -490,6 +490,7 @@ desktop-app-identity-unavailable = Application identity unavailable
 desktop-app-integration-unavailable = { $app }: application integration or required service unavailable
 desktop-app-no-adapter = No semantic application adapter; process-local pixels cannot be reconstructed
 desktop-search-copied = Copied
+desktop-search-searching = Searching…
 desktop-view-switch-workspace = Switch to { $workspace }
 desktop-view-review-activity = Review workspace activity
 desktop-view-explore-activity = Explore workspace activity
@@ -771,6 +772,9 @@ workspace-settings-member-extra = { $count ->
 }
 workspace-settings-remove = Remove
 workspace-settings-owner-only = Only the workspace owner can change permissions.
+workspace-settings-refused = The workspace refused that change
+workspace-settings-refused-own-role = Nobody changes their own role.
+workspace-settings-refused-own-membership = Nobody removes themselves from the workspace.
 workspace-settings-agents-count = { $count ->
     [one] 1 agent collaborator
    *[other] { $count } agent collaborators

@@ -106,11 +106,23 @@ impl<M: ListModel + 'static> VirtualList<M> {
         self.rows_beside_bar = self.scroll_metrics().overflows();
         let left = length(px(self.bleed));
         let right = length(px(self.trailing_inset()));
-        for row in &self.mounted {
-            let Some(child) = row.node else {
+        let places = self
+            .mounted
+            .iter()
+            .map(|row| {
+                let top =
+                    self.viewport.item_top(row.index).unwrap_or_default() - self.layout_offset;
+                (row.index, top, row.node)
+            })
+            .collect::<Vec<_>>();
+        // The bands of the groups in view stand where their first row's place is, folded ones
+        // too: their rows take no room, and the band stands where the row would.
+        self.place_bands(places.iter().map(|(index, _, _)| *index));
+        for (index, top, node) in places {
+            let Some(child) = node else {
                 continue;
             };
-            let top = self.viewport.item_top(row.index).unwrap_or_default() - self.layout_offset;
+            let top = top + self.band_room(index);
             let Ok(current) = taffy.style(child) else {
                 continue;
             };

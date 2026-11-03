@@ -123,12 +123,14 @@ impl State {
             return;
         }
         let display = self.display.clone();
-        let feedback = device.and_then(|node| {
-            // Clients allocate on the render node of the same GPU.
-            let render = node
-                .node_with_type(NodeType::Render)
+        // Clients allocate on the render node of the same GPU.
+        let render = device.map(|node| {
+            node.node_with_type(NodeType::Render)
                 .and_then(Result::ok)
-                .unwrap_or(node);
+                .unwrap_or(node)
+        });
+        self.render_node = render;
+        let feedback = render.and_then(|render| {
             DmabufFeedbackBuilder::new(render.dev_id(), formats.iter().copied())
                 .build()
                 .map_err(|error| tracing::warn!(?error, "dmabuf feedback"))

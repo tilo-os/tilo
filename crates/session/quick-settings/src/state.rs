@@ -152,6 +152,11 @@ pub struct QuickSettingsState {
     /// The session another of the person's devices hands this one, as the
     /// `session:devices` reading publishes it.
     pub offer: Option<crate::MediaOffer>,
+    /// Why the last press did not reach the device: the session publishes no
+    /// answer to it, or it refused the action. `None` while every press has
+    /// landed; the person puts it away with [`crate::QsEffect::DismissRefusal`]
+    /// or the next press.
+    pub refusal: Option<String>,
 }
 
 impl Default for QuickSettingsState {
@@ -191,6 +196,7 @@ impl Default for QuickSettingsState {
             handoff_targets: None,
             now_playing: None,
             offer: None,
+            refusal: None,
         }
     }
 }

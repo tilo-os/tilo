@@ -1240,6 +1240,112 @@ fn a_rich_body_is_a_document_and_markdown_typed_into_it_becomes_its_paragraphs()
     );
 }
 
+/// A document typed one marker after another stays on the page's level: a list item, a task or a
+/// quote typed after leaving a list does not nest one deeper for each line, and every block
+/// paints inside the rect the layout gave it — a stack that ends short of its editor cuts the
+/// text it paints.
+#[test]
+fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() {
+    let mut session = Session::rich();
+    new_note(&mut session, "Errands");
+    let enter = ui::winit::keyboard::NamedKey::Enter;
+    for line in [
+        "# Errands",
+        "- milk",
+        "- eggs",
+        "[ ] coffee",
+        "> Ask whether Tuesday morning works",
+        "```rust",
+    ] {
+        session.window.type_text(line);
+        session.settle();
+        session.window.press_key(enter);
+        session.settle();
+        // A list, a checklist and a quote each take the Enter on their empty line after them.
+        if matches!(line.chars().next(), Some('-' | '[' | '>')) {
+            session.window.press_key(enter);
+            session.settle();
+        }
+    }
+    session.window.type_text("fn main() {}");
+    session.settle();
+    let blocks = match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
+        other => panic!("a rich body: {other:?}"),
+    };
+    let int_attr = |block: &tilo_render_protocol::patch::rich::Block, name: &str| match block
+        .attrs
+        .get(name)
+    {
+        Some(tilo_render_protocol::patch::rich::Attr::Int(value)) => Some(*value),
+        _ => None,
+    };
+    let written: Vec<(&str, Option<i64>)> = blocks
+        .iter()
+        .map(|block| (block.kind.as_str(), int_attr(block, "level")))
+        .collect();
+    assert_eq!(
+        written,
+        [
+            ("heading", Some(1)),
+            ("list_item", Some(0)),
+            ("list_item", Some(0)),
+            ("list_item", Some(0)),
+            ("quote", None),
+            ("paragraph", None),
+        ],
+        "each marker starts its block on the page, not inside the list above it"
+    );
+    assert!(
+        blocks
+            .iter()
+            .all(|block| int_attr(block, "nesting").is_none()),
+        "no block carries a level from the list before it: {blocks:?}"
+    );
+    assert!(
+        matches!(
+            blocks.last().map(|block| block.attrs.get("code")),
+            Some(Some(tilo_render_protocol::patch::rich::Attr::Bool(true)))
+        ),
+        "the fence made a code block: {blocks:?}"
+    );
+    let (editor, rects) = session
+        .window
+        .harness()
+        .widget_mut::<tilo_ui_host::body::BodyEditor>()
+        .map(|body| {
+            let editor: &ui::widget::BlockEditor = ui::widget::Decorator::inner(body);
+            let rects: Vec<ui::kurbo::Rect> = editor
+                .blocks()
+                .iter()
+                .map(|block| block.line.get_rect())
+                .collect();
+            (editor.get_rect(), rects)
+        })
+        .expect("the body is the block editor");
+    assert_eq!(rects.len(), 6, "one rect per block");
+    let list_lane = rects[1].x0;
+    assert!(
+        rects.iter().all(|rect| rect.x0 <= list_lane),
+        "no block starts right of a top-level list item's line, so a quote or a code block \
+         typed after the list sits on the page and not inside it: {rects:?}"
+    );
+    assert!(
+        rects.windows(2).all(|pair| pair[0].y1 <= pair[1].y0 + 0.5),
+        "no block is drawn over the one after it: {rects:?}"
+    );
+    assert!(
+        rects
+            .iter()
+            .all(|rect| rect.y0 >= editor.y0 - 0.5 && rect.y1 <= editor.y1 + 0.5),
+        "every block sits inside the editor: {editor:?} {rects:?}"
+    );
+    assert!(
+        (editor.y1 - rects.last().expect("the last block").y1).abs() < 0.5,
+        "the blocks fill the editor: the height each block got is the height its text took"
+    );
+}
+
 /// What a note's body was written as comes back when its note is opened again: the document is
 /// the field's value, kept in the record, not a draft the window holds.
 #[test]

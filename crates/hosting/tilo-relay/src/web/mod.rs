@@ -23,6 +23,7 @@ mod sessions;
 #[cfg(test)]
 mod tests;
 mod tls;
+mod wt;
 
 pub use fetch::FetchProxySetup;
 use std::convert::Infallible;
@@ -177,6 +178,10 @@ struct Web {
     /// The pages' calls: the lane member this host takes part as, answering
     /// `/call/lane`.
     calls: Arc<call_lane::CallLane>,
+    /// The pages' live plane: the WebTransport listener they join, and the
+    /// authority that admits their session tokens. `None` in a host that
+    /// serves the browser routes without it.
+    live: Option<Arc<wt::Live>>,
 }
 
 /// Checks the published origins against the listeners they front.
@@ -342,6 +347,16 @@ impl Relay {
             let _ = context.relay.carried_calls.set(rooms.downgrade());
         }
         let host_cert = context.relay.identity.cert.clone();
+        let mut live = wt::Live::start(
+            &identity,
+            sessions.clone(),
+            &config,
+            &public_origin
+                .clone()
+                .unwrap_or_else(|| format!("https://{addr}")),
+        )
+        .map_err(failed)?;
+        let live_tasks = std::mem::take(&mut live.tasks);
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             calls: carried_calls(&context, lane),
@@ -357,8 +372,9 @@ impl Relay {
             here: Arc::new(here::Here::new(here::from_env())),
             country: config.country.and_then(country_header),
             fetch: fetch.proxy,
+            live: Some(Arc::new(live)),
         });
-        let mut tasks = Vec::new();
+        let mut tasks = live_tasks;
         tasks.extend(fetch.metrics);
         let mut plain_origin = None;
         if let Some(plain) = config.plain_listen {
@@ -882,6 +898,42 @@ async fn route(
                 .hello(&hello)
                 .map(|challenge| encoded(&challenge))
                 .map_err(|error| session_status(&error))
+        }
+        "/live" => {
+            let session = authed()?;
+            let request: tilo_relay_protocol::web::LiveRequest = decode(&bytes)?;
+            let live = web
+                .live
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "no live plane"))?;
+            if !tilo_relay_protocol::room_workspace_id_matches(
+                &request.workspace,
+                request.workspace_id,
+            ) {
+                return Err(status(
+                    StatusCode::BAD_REQUEST,
+                    "not a workspace of this relay",
+                ));
+            }
+            if !web
+                .sessions
+                .admits(&session.peer, request.workspace_id)
+                .await
+            {
+                return Err(status(
+                    StatusCode::FORBIDDEN,
+                    "not admitted to this workspace",
+                ));
+            }
+            live.pages.issue(
+                tilo_relay_protocol::web::LiveGrant {
+                    workspace_id: request.workspace_id,
+                    token: session.token(),
+                },
+                &request.workspace,
+                &session.peer,
+            );
+            Ok(encoded(&live.info))
         }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;

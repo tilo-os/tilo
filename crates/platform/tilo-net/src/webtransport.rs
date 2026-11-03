@@ -23,13 +23,26 @@ pub struct Options {
     /// Accept exactly the server certificates with these SHA-256 hashes
     /// instead of verifying against the system trust bundle.
     pub cert_hashes: Vec<[u8; 32]>,
+    /// The subprotocols to offer, most preferred first. A server picks one
+    /// or answers none, and [`Session::protocol`] reports what it picked.
+    pub protocols: Vec<String>,
 }
 
 impl Options {
     /// Pin the server certificate by its SHA-256.
     #[must_use]
     pub fn pinned(cert_hashes: Vec<[u8; 32]>) -> Self {
-        Self { cert_hashes }
+        Self {
+            cert_hashes,
+            protocols: Vec::new(),
+        }
+    }
+
+    /// Offer `protocols` as the session's subprotocols.
+    #[must_use]
+    pub fn with_protocols(mut self, protocols: Vec<String>) -> Self {
+        self.protocols = protocols;
+        self
     }
 }
 
@@ -63,6 +76,7 @@ pub fn connect(
 
 /// An open WebTransport session. Methods take `&self`, so one task can
 /// accept streams while another opens them.
+#[derive(Clone)]
 pub struct Session {
     inner: backend::Session,
 }
@@ -162,9 +176,129 @@ impl Session {
     pub fn close(&self, code: u32, reason: &str) {
         self.inner.close(code, reason);
     }
+
+    /// The subprotocol the server selected, if it selected one.
+    #[must_use]
+    pub fn protocol(&self) -> Option<&str> {
+        self.inner.protocol()
+    }
+
+    /// The largest datagram the path currently carries, in bytes.
+    #[must_use]
+    pub fn max_datagram_size(&self) -> usize {
+        self.inner.max_datagram_size()
+    }
+}
+
+impl web_transport_trait::poll::Session for Session {
+    type SendStream = SendStream;
+    type RecvStream = RecvStream;
+    type Error = NetError;
+
+    fn poll_accept_uni(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<RecvStream, NetError>> {
+        self.inner
+            .poll_accept_uni(cx)
+            .map(|stream| stream.map(RecvStream))
+    }
+
+    fn poll_accept_bi(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(SendStream, RecvStream), NetError>> {
+        self.inner
+            .poll_accept_bi(cx)
+            .map(|pair| pair.map(|(send, recv)| (SendStream(send), RecvStream(recv))))
+    }
+
+    fn poll_open_uni(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<SendStream, NetError>> {
+        self.inner
+            .poll_open_uni(cx)
+            .map(|stream| stream.map(SendStream))
+    }
+
+    fn poll_open_bi(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(SendStream, RecvStream), NetError>> {
+        self.inner
+            .poll_open_bi(cx)
+            .map(|pair| pair.map(|(send, recv)| (SendStream(send), RecvStream(recv))))
+    }
+
+    fn poll_send_datagram(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        payload: &[u8],
+    ) -> std::task::Poll<Result<(), NetError>> {
+        self.inner.poll_send_datagram(cx, payload)
+    }
+
+    fn poll_recv_datagram(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Bytes, NetError>> {
+        self.inner.poll_recv_datagram(cx)
+    }
+
+    fn max_datagram_size(&self) -> usize {
+        self.inner.max_datagram_size()
+    }
+
+    fn protocol(&self) -> Option<&str> {
+        self.inner.protocol()
+    }
+
+    fn close(&mut self, code: u32, reason: &str) {
+        self.inner.close(code, reason);
+    }
+
+    fn poll_closed(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<NetError> {
+        self.inner.poll_closed(cx)
+    }
+
+    fn stats(&self) -> impl web_transport_trait::Stats {
+        self.inner.stats()
+    }
 }
 
 pub struct SendStream(backend::SendStream);
+
+impl web_transport_trait::poll::SendStream for SendStream {
+    type Error = NetError;
+
+    fn poll_write(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, NetError>> {
+        self.0.poll_write(cx, buf)
+    }
+
+    fn set_priority(&mut self, order: u8) {
+        self.0.set_priority(order);
+    }
+
+    fn finish(&mut self) -> Result<(), NetError> {
+        self.0.finish()
+    }
+
+    fn reset(&mut self, code: u32) {
+        self.0.reset(code);
+    }
+
+    fn poll_closed(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), NetError>> {
+        self.0.poll_closed(cx)
+    }
+}
 
 impl std::fmt::Debug for SendStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -192,12 +326,35 @@ impl SendStream {
     ///
     /// [`NetError::Closed`] when the stream had already ended.
     pub async fn finish(mut self) -> Result<(), NetError> {
-        self.0.finish().await
+        self.0.finish_stream().await
     }
 }
 
 /// The receiving half of a stream.
 pub struct RecvStream(backend::RecvStream);
+
+impl web_transport_trait::poll::RecvStream for RecvStream {
+    type Error = NetError;
+
+    fn poll_read(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        dst: &mut [u8],
+    ) -> std::task::Poll<Result<Option<usize>, NetError>> {
+        self.0.poll_read(cx, dst)
+    }
+
+    fn stop(&mut self, code: u32) {
+        self.0.stop(code);
+    }
+
+    fn poll_closed(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), NetError>> {
+        self.0.poll_closed(cx)
+    }
+}
 
 impl std::fmt::Debug for RecvStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

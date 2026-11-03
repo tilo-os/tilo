@@ -67,6 +67,25 @@ mod virtual_keyboard_handle;
 
 pub use virtual_keyboard_handle::VirtualKeyboardUserData;
 
+/// What a compositor does with the keys its virtual keyboards send.
+///
+/// A virtual keyboard is a trusted client (the on-screen keyboard, an input
+/// method): what it sends are keys the person pressed, coming back. Left
+/// unrouted they reach only the focused client's `wl_keyboard`, which is
+/// nothing when the focused field is the compositor's own.
+pub trait VirtualKeyboardHandler {
+    /// A key sent through a virtual keyboard, `key` in the protocol's key
+    /// codes (the evdev one 8 higher, as `wl_keyboard` takes them) and
+    /// `pressed` whether it went down. Answering `true` says the compositor
+    /// routed it itself, through the same input it routes a device's keys by
+    /// (so its own focused field hears it too); `false` sends it to the
+    /// focused client's `wl_keyboard`, as upstream does.
+    fn virtual_key(&mut self, key: u32, pressed: bool, time: u32) -> bool {
+        let _ = (key, pressed, time);
+        false
+    }
+}
+
 /// State of wp misc virtual keyboard protocol
 #[derive(Debug)]
 pub struct VirtualKeyboardManagerState {

@@ -47,6 +47,9 @@ pub enum NetError {
     /// The connection or stream has ended.
     #[error("the connection is closed")]
     Closed,
+    /// The peer closed the connection with an application code and reason.
+    #[error("the connection closed ({code}): {reason}")]
+    ClosedWith { code: u32, reason: String },
     /// The peer broke a protocol (WebSocket, WebTransport, TLS, JSON).
     #[error("{0}")]
     Protocol(String),
@@ -100,6 +103,16 @@ impl NetError {
     pub fn status(&self) -> Option<http::StatusCode> {
         match self {
             Self::Status(status) => Some(*status),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "webtransport")]
+impl web_transport_trait::Error for NetError {
+    fn session_error(&self) -> Option<(u32, String)> {
+        match self {
+            Self::ClosedWith { code, reason } => Some((*code, reason.clone())),
             _ => None,
         }
     }

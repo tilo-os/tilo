@@ -104,8 +104,8 @@ action plan(t: Task) {
 view task(t: Task) {
     stack {
         text(t.start)
-        date(bind: t.due)
-        date(bind: t.start)
+        ui.DateField(bind: t.due, optional: true)
+        ui.DateField(bind: t.start)
         facts {
             "Due": t.due
             "Done": t.done_at
@@ -189,7 +189,7 @@ view rows(l: Tasks) {
         assert_eq!(text_prop(facts[0], "value"), "", "none is the empty text");
         assert_eq!(text_prop(facts[0], "value:as"), "date");
         assert_eq!(text_prop(facts[1], "value:as"), "time");
-        let dates = of_kind(view.tree(), "date");
+        let dates = of_kind(view.tree(), "ui.DateField");
         assert_eq!(
             dates[0].props.get("optional"),
             Some(&Value::Int(1)),
@@ -249,7 +249,7 @@ view tasks(l: Tasks) {
 }
 
 view summary(l: Tasks) {
-    card(l, count: l.items.len()) {
+    ui.Card(item: l, title: meta(l).title, count: l.items.len()) {
         text(l.name)
     }
 }

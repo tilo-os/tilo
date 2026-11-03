@@ -49,7 +49,9 @@ terse views make agent answers cheaper and more reliable.
 3. **Optional chaining and fallback:** `c.messages.last()?.said ?? "No messages yet"`.
 4. **`if let`, with several bindings:** `if let todos = b.todos, nb = b.notebook { ... }`, in
    actions and views.
-5. **`let` in view bodies,** so a row doesn't need helper functions for derived values.
+5. **`let` in view bodies,** so a row doesn't need helper functions for derived values; the
+   type is written where a branch has nothing to say what it is
+   (`let heading: Option<Date> = if let g = group { g(x) } else { .none }`).
 6. **Date and time literals:** `2026-06-29`, `2026-06-29T07:02Z`, `2026-08`, matching search's
    literals. Duration literals (`15m`) already exist.
 

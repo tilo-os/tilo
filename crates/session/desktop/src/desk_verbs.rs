@@ -71,6 +71,20 @@ pub fn chrome_resource() -> ResourceSpec {
     ))
 }
 
+/// The open search as the desk publishes it: what is typed, the rows it
+/// shows, and whether it is still filling in.
+#[derive(Clone, Copy)]
+pub struct OpenSearch<'a> {
+    /// What is typed, or empty for the empty field.
+    pub query: &'a str,
+    /// The rows it shows, in the order the person sees them.
+    pub rows: &'a [tilo_desktop_surface::SearchRow],
+    /// Whether a source has still to answer for the query, or the rows the
+    /// card shows are not cut to its room yet: the search says it is still
+    /// searching, and its rows will change.
+    pub searching: bool,
+}
+
 /// The desk's resource: its own verbs, with each tab of `tabs`
 /// (`(tab, title)`) a resource of its own that can be focused and closed,
 /// across several displays each of `displays` (in reading order) one that
@@ -79,7 +93,7 @@ pub fn chrome_resource() -> ResourceSpec {
 pub fn desk_resource(
     tabs: &[(u64, String)],
     displays: &[u32],
-    search: Option<(&str, &[tilo_desktop_surface::SearchRow])>,
+    search: Option<OpenSearch<'_>>,
 ) -> ResourceSpec {
     let screens = displays.iter().enumerate().map(|(index, display)| {
         let number = index.saturating_add(1).to_string();
@@ -118,7 +132,7 @@ pub fn desk_resource(
                 Some(t_args("desk-close-window", names_the_window)),
             ))
     });
-    let search = search.map(|(query, rows)| search_resource(query, rows));
+    let search = search.map(search_resource);
     offer::<DeskEffect>(ResourceSpec::new(
         DESK_RESOURCE,
         "desktop",
@@ -149,8 +163,16 @@ pub fn launchpad_resource() -> ResourceSpec {
 }
 
 /// The open search: what is typed, and each row it shows, which can be
-/// chosen.
-fn search_resource(query: &str, rows: &[tilo_desktop_surface::SearchRow]) -> ResourceSpec {
+/// chosen. Its detail says it is still searching until every source has
+/// answered and its rows are cut to the card: a reader of the desk (a
+/// script, an agent, assistive technology) knows the rows are final once
+/// it is gone.
+fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
+    let OpenSearch {
+        query,
+        rows,
+        searching,
+    } = search;
     let rows = rows.iter().enumerate().map(|(at, row)| {
         let index = u64::try_from(at).unwrap_or(u64::MAX);
         let choose = bound_asking(
@@ -178,9 +200,16 @@ fn search_resource(query: &str, rows: &[tilo_desktop_surface::SearchRow]) -> Res
         query.to_owned()
     };
     let typed = bound_asking(&DeskEffect::Search { query: None }, &["query"], None);
-    ResourceSpec::new(SEARCH_RESOURCE, SEARCH_KIND, label)
+    let resource = ResourceSpec::new(SEARCH_RESOURCE, SEARCH_KIND, label)
         .with_action(typed)
-        .with_children(rows)
+        .with_children(rows);
+    if searching {
+        return resource.with_presentation(ResourcePresentation {
+            detail: Some(t("desktop-search-searching")),
+            ..ResourcePresentation::default()
+        });
+    }
+    resource
 }
 
 /// `verb` as the action its row offers, named `label` when one is given.

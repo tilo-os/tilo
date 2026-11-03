@@ -16,6 +16,7 @@
 
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
+use tilo_action_policy::Refusal;
 use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -2569,30 +2570,38 @@ pub fn draft_subject(ws: &Workspace, draft: &GrantDraft) -> Option<GrantSubject>
 
 // Authority-checked mutations
 
-/// What a panel mutation changed, so the caller can mirror it into the
-/// workspace document and to disk. Empty means either the actor lacked
-/// authority, or there was nothing to change.
+/// What a panel mutation changed, for the caller that applies it to the
+/// desktop. Empty means there was nothing to change.
 pub use tilo_desktop_model::grants::PolicyEdit;
 
 /// Grant what `draft` names, as `actor`, through the workspace's governance:
 /// the same check every door and the workspace's host make.
-pub fn apply_grant_draft(ws: &mut Workspace, actor: &UserId, draft: &GrantDraft) -> PolicyEdit {
+///
+/// # Errors
+/// The workspace refused the grant, saying why.
+pub fn apply_grant_draft(
+    ws: &mut Workspace,
+    actor: &UserId,
+    draft: &GrantDraft,
+) -> Result<PolicyEdit, Refusal> {
     let now = tilo_clock::unix_now();
     match draft_capability(ws, draft) {
         Some(DraftGrant::Sandbox(cap)) => ws.grant_sandbox_as_at(actor, cap, now),
         Some(DraftGrant::Grant(grant)) => {
             ws.govern_all_at(actor, vec![tilo_action_policy::Change::Grant(grant)], now)
         }
-        None => return PolicyEdit::default(),
+        None => Ok(PolicyEdit::default()),
     }
-    .unwrap_or_default()
 }
 
 /// Revoke the grant or sandbox capability with id `id`, as `actor`.
-pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, id: &str) -> PolicyEdit {
+///
+/// # Errors
+/// The workspace refused the revocation, saying why.
+pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, id: &str) -> Result<PolicyEdit, Refusal> {
     let now = tilo_clock::unix_now();
     if ws.sandbox.iter().any(|cap| cap.id == id) {
-        return ws.revoke_sandbox_as_at(actor, id, now).unwrap_or_default();
+        return ws.revoke_sandbox_as_at(actor, id, now);
     }
     ws.govern_all_at(
         actor,
@@ -2601,7 +2610,6 @@ pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, id: &str) -> PolicyEdit 
         )],
         now,
     )
-    .unwrap_or_default()
 }
 
 /// The roles a member's role chip cycles through. Owner is not in the
@@ -2622,14 +2630,25 @@ pub fn next_role(role: CapRole) -> CapRole {
 
 /// Move `member` to `role`, as `actor`, through the workspace's governance. The
 /// owner's role is structural and nobody changes their own.
+///
+/// # Errors
+/// The workspace refused the change, saying why.
 pub fn set_member_role(
     ws: &mut Workspace,
     actor: &UserId,
     member: &UserId,
     role: CapRole,
-) -> PolicyEdit {
-    if role == CapRole::Owner || actor == member || ws.is_owner(member) {
-        return PolicyEdit::default();
+) -> Result<PolicyEdit, Refusal> {
+    if role == CapRole::Owner {
+        return Err(Refusal::OwnerRole);
+    }
+    if actor == member {
+        return Err(Refusal::NotPermitted(crate::i18n::t(
+            "workspace-settings-refused-own-role",
+        )));
+    }
+    if ws.is_owner(member) {
+        return Err(Refusal::Owner);
     }
     let change = if ws.policy.members.contains_key(member) {
         tilo_action_policy::Change::SetRole {
@@ -2643,26 +2662,35 @@ pub fn set_member_role(
         }
     };
     ws.govern_all_at(actor, vec![change], tilo_clock::unix_now())
-        .unwrap_or_default()
 }
 
 /// Remove `member` and every grant naming them, as `actor`.
-pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> PolicyEdit {
+///
+/// # Errors
+/// The workspace refused the removal, saying why.
+pub fn remove_member(
+    ws: &mut Workspace,
+    actor: &UserId,
+    member: &UserId,
+) -> Result<PolicyEdit, Refusal> {
     // The owner is the workspace's root of trust; removing them would leave a
     // workspace nobody governs.
-    if ws.is_owner(member) || actor == member {
-        return PolicyEdit::default();
+    if ws.is_owner(member) {
+        return Err(Refusal::Owner);
+    }
+    if actor == member {
+        return Err(Refusal::NotPermitted(crate::i18n::t(
+            "workspace-settings-refused-own-membership",
+        )));
     }
     let now = tilo_clock::unix_now();
-    let Ok(mut edit) = ws.govern_all_at(
+    let mut edit = ws.govern_all_at(
         actor,
         vec![tilo_action_policy::Change::RemoveMember {
             person: member.clone(),
         }],
         now,
-    ) else {
-        return PolicyEdit::default();
-    };
+    )?;
     // What the sandbox let them reach goes too.
     let held: Vec<String> = ws
         .sandbox
@@ -2679,7 +2707,7 @@ pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> Pol
     if !edit.is_empty() {
         ws.collaborators.retain(|c| c.id != member.as_str());
     }
-    edit
+    Ok(edit)
 }
 
 fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
@@ -4744,7 +4772,8 @@ mod members_pane_tests {
         let mut ws = Workspace::new(WorkspaceId::from(9), "Studio");
         ws.set_owner(owner_key.as_str());
         assert!(
-            !set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor).is_empty()
+            set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor)
+                .is_ok_and(|edit| !edit.is_empty())
         );
         // The roster knows Ada from presence; the workspace's own record of
         // her has no name.
@@ -4785,13 +4814,13 @@ mod members_pane_tests {
         let mut ws = Workspace::new(WorkspaceId::from(7), "members-test");
         ws.set_owner(OWNER);
         assert!(
-            !set_member_role(
+            set_member_role(
                 &mut ws,
                 &OWNER.to_string(),
                 &PEER.to_string(),
                 CapRole::Viewer
             )
-            .is_empty(),
+            .is_ok_and(|edit| !edit.is_empty()),
             "owner may admit a member"
         );
         ws
@@ -4842,7 +4871,8 @@ mod members_pane_tests {
                 &OWNER.to_string(),
                 &PEER.to_string(),
                 CapRole::Editor,
-            );
+            )
+            .expect("the owner may set a role");
             assert!(!edit.is_empty());
             assert_eq!(
                 ws.role_of(PEER),
@@ -4859,14 +4889,16 @@ mod members_pane_tests {
                 &OWNER.to_string(),
                 &PEER.to_string(),
                 CapRole::Editor,
-            );
+            )
+            .expect("the owner may set a role");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Editor));
             set_member_role(
                 &mut ws,
                 &OWNER.to_string(),
                 &PEER.to_string(),
                 CapRole::Viewer,
-            );
+            )
+            .expect("the owner may set a role");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
             assert!(
                 !may_write(&ws, PEER),
@@ -4876,14 +4908,14 @@ mod members_pane_tests {
 
         {
             let mut ws = ws_with_two_members();
-            let edit = set_member_role(
+            let refusal = set_member_role(
                 &mut ws,
                 &PEER.to_string(),
                 &PEER.to_string(),
                 CapRole::Owner,
             );
             assert!(
-                edit.is_empty(),
+                refusal.is_err(),
                 "a viewer must not be able to promote itself"
             );
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
@@ -4891,13 +4923,13 @@ mod members_pane_tests {
 
         {
             let mut ws = ws_with_two_members();
-            let edit = set_member_role(
+            let refusal = set_member_role(
                 &mut ws,
                 &OWNER.to_string(),
                 &OWNER.to_string(),
                 CapRole::Viewer,
             );
-            assert!(edit.is_empty());
+            assert!(refusal.is_err(), "nobody changes their own role");
             assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
         }
 
@@ -4910,13 +4942,13 @@ mod members_pane_tests {
 
         {
             let mut ws = ws_with_two_members();
-            let edit = set_member_role(
+            let refusal = set_member_role(
                 &mut ws,
                 &OWNER.to_string(),
                 &PEER.to_string(),
                 CapRole::Owner,
             );
-            assert!(edit.is_empty());
+            assert!(refusal.is_err(), "ownership is transferred, not handed out");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
             assert_eq!(ws.owner().map(String::as_str), Some(OWNER));
         }
@@ -4942,9 +4974,9 @@ mod members_pane_tests {
                     &PEER.to_string(),
                     CapRole::Viewer,
                 )
-                .is_empty()
+                .is_err()
             );
-            assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_empty());
+            assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_err());
             assert_eq!(ws.policy, before);
             assert!(ws.may_administer(&PEER.to_string()));
         }
@@ -4980,7 +5012,8 @@ mod members_pane_tests {
                     1
                 );
 
-                let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string());
+                let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string())
+                    .expect("the owner may remove a member");
                 assert_eq!(edit.members, vec![PEER.to_string()]);
                 assert_eq!(edit.revoked.len(), 1, "the app grant");
                 assert_eq!(edit.sandbox_revoked.len(), 1, "the file grant");
@@ -4997,8 +5030,8 @@ mod members_pane_tests {
 
             {
                 let mut ws = ws_with_two_members();
-                let edit = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
-                assert!(edit.is_empty());
+                let refusal = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
+                assert!(refusal.is_err(), "the owner cannot be removed");
                 assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
             }
         }
@@ -5563,13 +5596,13 @@ mod roster_order_tests {
         ws.set_owner("host");
         for person in ["ada", "bo", "cy"] {
             assert!(
-                !set_member_role(
+                set_member_role(
                     &mut ws,
                     &"host".to_string(),
                     &person.to_string(),
                     CapRole::Viewer
                 )
-                .is_empty(),
+                .is_ok_and(|edit| !edit.is_empty()),
                 "owner may admit"
             );
         }
@@ -5585,7 +5618,8 @@ mod roster_order_tests {
             &"host".to_string(),
             &"ada".to_string(),
             CapRole::Editor,
-        );
+        )
+        .expect("the owner may set a role");
         let after: Vec<UserId> = members_pane_rows(&ws, pane)
             .into_iter()
             .map(|r| r.user)

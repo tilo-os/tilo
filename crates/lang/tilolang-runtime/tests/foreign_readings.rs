@@ -38,7 +38,7 @@ mod cases {
 use desktop as desktop
 
 view menu(m: desktop.WindowMenu) {
-  column {
+  stack {
     for item in m.rows {
       row {
         text(item.label)
@@ -91,7 +91,7 @@ view menu(m: desktop.WindowMenu) {
 use desktop as desktop
 
 view state(m: desktop.MenuState) {
-  column {
+  stack {
     if m.state == .open {
       text("open")
     } else {

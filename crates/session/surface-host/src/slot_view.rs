@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_compositor::{CursorIcon, HostKey, HostLayer, SurfaceHost};
+use tilo_compositor::{CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost};
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
@@ -728,6 +728,16 @@ impl SurfaceHost for SlotView {
     fn key(&mut self, key: &HostKey) {
         if let Some(open) = self.open.as_mut() {
             open.widgets.key(key);
+        }
+    }
+
+    fn text_input(&self) -> Option<HostTextInput> {
+        self.open.as_ref()?.widgets.text_input()
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        if let Some(open) = self.open.as_mut() {
+            open.widgets.ime(event);
         }
     }
 

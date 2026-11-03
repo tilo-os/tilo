@@ -879,9 +879,10 @@ impl App {
 
     /// The platform IME contract for the focused widget. A field opts in via
     /// [`Widget::ime_content`]; buttons and other focusable controls therefore
-    /// never activate `text-input-v3` accidentally.
+    /// never activate `text-input-v3` accidentally. A host that draws the app
+    /// as a surface of a compositor serves the field the same way.
     #[cfg(feature = "native")]
-    fn ime_window_state(&self) -> Option<ImeWindowState> {
+    pub fn ime_window_state(&self) -> Option<ImeWindowState> {
         self.inspect_node(self.focused_node?, ImeWindowState::from_widget)
             .ok()
             .flatten()

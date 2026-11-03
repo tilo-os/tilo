@@ -13,7 +13,7 @@ mod cases {
 type Album {\n    title: Text\n    artist: Text\n}\n\
 type Library {\n    albums: Collection<Album>\n}\n\
 action add(l: Library, title: Text, artist: Text) {\n    l.albums.insert(Album(title: title, artist: artist))\n}\n\
-view album_card(a: Album) {\n    layers {\n        image(a.title, aspect: 16/9)\n        text(a.artist, at: .bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
+view album_card(a: Album) {\n    layers {\n        image(a.title, alt: \"The cover\", aspect: 16/9)\n        text(a.artist, at: .bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
 view library(l: Library) {\n    page {\n        text(\"Albums\", role: .title)\n        grid(min: 11rem) {\n            for a in l.albums {\n                album_card(a, fill(2))\n            }\n        }\n    }\n}\n\
 view detail(a: Album) {\n    page(full) {\n        split(side: .leading, collapse: .drawer) {\n            primary(min: 18rem) {\n                text(a.title)\n            }\n            secondary(min: 22rem) {\n                scroll {\n                    text(a.artist, min: 4dp, max: 1.5rem)\n                }\n            }\n        }\n    }\n}\n\
 view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) { text(a.title); spacer }\n    } else {\n        row(gap: .section) {\n            text(a.title)\n            spacer\n            text(a.artist, fill)\n        }\n    }\n}";
@@ -59,7 +59,8 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
             assert_eq!(card.kind, "fragment");
             assert_eq!(card.props["fill"], Value::Float(2.0), "{}", dump(tree));
         }
-        let image = first(tree, "image");
+        let image = first(tree, "ui.Image");
+        assert_eq!(image.props["alt"], Value::Text("The cover".into()));
         assert!(matches!(image.props["aspect"], Value::Float(f) if (f - 16.0 / 9.0).abs() < 1e-9));
         let layered_text = first(first(tree, "layers"), "ui.Text");
         assert_eq!(text_prop(layered_text, "at"), "bottom_trailing");

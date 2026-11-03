@@ -522,15 +522,15 @@ fn resolve_chooser_bind_at(
     }))
 }
 
-/// Connect the compositor's render broker on the app's behalf and name the
-/// app and its workspace before the sandboxed app can write to it: the broker
-/// picks the render service that draws the app from this, never from the
-/// app (`tilo_render_protocol::broker`). The app finds the connection in
+/// Connect the session's render broker on the app's behalf and name the app
+/// and its workspace before the sandboxed app can write to it: the broker
+/// picks the render service that draws the app from this, never from the app
+/// (`tilo_render_protocol::broker`). The app finds the connection in
 /// `TILO_SVC_RENDER_FD`.
 ///
 /// Only for an app that draws through a render service — one without the
-/// `gpu` capability. A session whose compositor serves no broker degrades to
-/// `Ok(None)`, and the app draws on its own device as before.
+/// `gpu` capability. A session that serves no broker degrades to `Ok(None)`,
+/// and the app's toolkit draws its frames in its own process.
 ///
 /// # Errors
 ///

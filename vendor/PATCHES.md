@@ -830,9 +830,16 @@ seat gains pads (`zwp_tablet_pad_v2`): announced with their groups, rings and
 strips, focused on a surface, their buttons, rings, strips and mode switches
 sent to that client. A drop on a target the compositor serves itself (a
 hosted surface, a bridged X11 window) can complete instead of cancelling the
-source (`ClientDndGrabHandler::drop_target_action`). Five imports and a cast
-are fixed so it builds without warnings. See `vendor/smithay/TILO-PATCH.md`
-for the details and when to drop each change.
+source (`ClientDndGrabHandler::drop_target_action`). An input method can
+compose for a text field the compositor draws itself: `InputMethodHandler`
+gains `commit_to_host` and `preedit_to_host`, and
+`InputMethodHandle::activate_without_text_input` activates the method for a
+caret the compositor reports, its popup standing there. The keys an input
+method sends back through its virtual keyboard go through
+`VirtualKeyboardHandler::virtual_key` first, so the compositor routes them as
+the person's own. Five imports and a cast are fixed so it builds without
+warnings. See `vendor/smithay/TILO-PATCH.md` for the details and when to drop
+each change.
 
 ## `vendor/winit`: a window on a layer of an output
 

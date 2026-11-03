@@ -17,6 +17,7 @@ pub(crate) mod host_shell;
 pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod power;
+pub(crate) mod render;
 pub(crate) mod search;
 pub(crate) mod services;
 pub(crate) mod settings_sync;

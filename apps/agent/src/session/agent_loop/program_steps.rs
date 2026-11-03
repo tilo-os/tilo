@@ -237,7 +237,7 @@ impl Session {
                 _ => {
                     return Ok(Err(
                         "Not finished: `view.source` is not a `view` declaration. Write one, \
-                         as an app declares a view: `view left() { column { ... } }`."
+                         as an app declares a view: `view left() { stack { ... } }`."
                             .into(),
                     ));
                 }

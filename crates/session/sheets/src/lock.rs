@@ -466,7 +466,6 @@ impl ResourceApp for LockApp {
     // The lock screen belongs to no workspace and opens before anyone is
     // signed in: it shows what the session told it, and nothing it writes
     // outlives the lock.
-    const OPENS_WITHOUT_IDENTITY: bool = true;
     const ATTACHES_RUNTIME: bool = false;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

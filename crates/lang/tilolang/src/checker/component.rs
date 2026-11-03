@@ -111,6 +111,30 @@ impl Checker<'_> {
         self.dead_node()
     }
 
+    /// A primitive that is a component of the toolkit under a shorter name (`text` is
+    /// `ui.Text`): its call is that component's call, exactly.
+    pub(super) fn component_prim(
+        &mut self,
+        component: &str,
+        c: &UiCall,
+        args: &[ast::Arg],
+    ) -> LocalId {
+        match self.env.toolkit.and_then(|toolkit| toolkit.get(component)) {
+            Some(d) => self.component(d, c, args),
+            None => {
+                self.err(
+                    "E060",
+                    c.call.span,
+                    format!("the toolkit describes no component `{component}`"),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                self.dead_node()
+            }
+        }
+    }
+
     /// A call of the component `d`: its node, with its props, bindings, slots and events.
     pub(super) fn component(
         &mut self,
@@ -194,7 +218,18 @@ impl Checker<'_> {
         name: &str,
         value: &ast::Expr,
     ) {
-        let node = Ex::local(n, Ty::View);
+        if let Some(msg) = super::ui::removed_arg(&d.name, name) {
+            self.err("E096", value.span, msg);
+            return;
+        }
+        // `bind:` names the component's bindable value whatever it is called: the binding is the
+        // description's, its type and its merge.
+        if name == "bind" && d.binding(name).is_none() {
+            if let Some(b) = self.only_binding(d, value.span) {
+                self.binding_prop(n, d, value, b);
+            }
+            return;
+        }
         if let Some(p) = d.prop(name) {
             self.typed_prop(n, d, name, &p.ty, &p.doc, value);
         } else if let Some(b) = d.binding(name)
@@ -206,29 +241,7 @@ impl Checker<'_> {
             // view's `on change(v)`, which asks whoever holds the value to change it.
             self.typed_prop(n, d, name, &b.ty, &b.doc, value);
         } else if let Some(b) = d.binding(name) {
-            let want: Vec<Ty> = match &b.ty {
-                Type::Text => vec![Ty::Text],
-                Type::Bool => vec![Ty::Bool],
-                Type::Int => vec![Ty::Int],
-                Type::Float => vec![Ty::Float],
-                // A moment is a Date, a Time, or one that may be none.
-                Type::Time => vec![
-                    Ty::Date,
-                    Ty::Time,
-                    Ty::Option(Box::new(Ty::Date)),
-                    Ty::Option(Box::new(Ty::Time)),
-                ],
-                Type::RichText => vec![Ty::RichText],
-                _ => Vec::new(),
-            };
-            // A document's title is drawn by a control that declares it, as TextInput does.
-            let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
-            if self.bind_typed(&node, value, &want, titled).is_some() {
-                self.emit(host(
-                    Imp::UiPropH,
-                    vec![node, Ex::str("bind"), Ex::str(name)],
-                ));
-            }
+            self.binding_prop(n, d, value, b);
         } else if let Some(s) = d.state(name) {
             self.typed_prop(n, d, name, &s.ty, &s.doc, value);
         } else if prims::NODE_ARGS.contains(&name) {
@@ -251,6 +264,76 @@ impl Checker<'_> {
                 ),
             );
             let _ = self.expr(value, None);
+        }
+    }
+
+    /// `bind:` to the component's binding `b`: what it binds is checked against the binding's own
+    /// type, and the node carries the binding's name, which is the name the host merges under.
+    fn binding_prop(
+        &mut self,
+        n: LocalId,
+        d: &'static Description,
+        value: &ast::Expr,
+        b: &'static tilo_ui_graph::component::Binding,
+    ) {
+        let node = Ex::local(n, Ty::View);
+        let want: Vec<Ty> = match &b.ty {
+            Type::Text => vec![Ty::Text],
+            Type::Bool => vec![Ty::Bool],
+            Type::Int => vec![Ty::Int],
+            Type::Float => vec![Ty::Float],
+            // A moment is a Date, a Time, or one that may be none.
+            Type::Time => vec![
+                Ty::Date,
+                Ty::Time,
+                Ty::Option(Box::new(Ty::Date)),
+                Ty::Option(Box::new(Ty::Time)),
+            ],
+            Type::RichText => vec![Ty::RichText],
+            _ => Vec::new(),
+        };
+        // A document's title is drawn by a control that declares it, as TextInput does.
+        let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
+        if self.bind_typed(&node, value, &want, titled).is_some() {
+            self.emit(host(
+                Imp::UiPropH,
+                vec![node, Ex::str("bind"), Ex::str(&b.name)],
+            ));
+        }
+    }
+
+    /// The binding a `bind:` argument names: a component's single bindable value.
+    fn only_binding(
+        &mut self,
+        d: &'static Description,
+        span: Span,
+    ) -> Option<&'static tilo_ui_graph::component::Binding> {
+        match d.bindings.as_slice() {
+            [one] => Some(one),
+            [] => {
+                self.err(
+                    "E063",
+                    span,
+                    format!(
+                        "{} binds nothing; `bind:` names a component's bindable value",
+                        shown(d)
+                    ),
+                );
+                None
+            }
+            many => {
+                self.err(
+                    "E063",
+                    span,
+                    format!(
+                        "{} binds {}; name the one it edits: {}",
+                        shown(d),
+                        listed(many.iter().map(|b| format!("`{}`", b.name))),
+                        listed(many.iter().map(|b| format!("`{}: <field>`", b.name)))
+                    ),
+                );
+                None
+            }
         }
     }
 
@@ -505,62 +588,6 @@ impl Checker<'_> {
         }
     }
 
-    /// `text(x, role: .caption)`: the language's text roles are the toolkit's `Text` roles,
-    /// and `.numeric` is a title in tabular figures, so a changing number does not jitter.
-    pub(super) fn text_role(&mut self, n: LocalId, e: &ast::Expr) {
-        let roles = prims::choice("text_role").map_or(&[][..], |c| c.variants);
-        let node = Ex::local(n, Ty::View);
-        match &e.kind {
-            ExprKind::Variant { name, args: None } if roles.contains(&name.name.as_str()) => {
-                let role = if name.name == "numeric" {
-                    self.emit(host(
-                        Imp::UiPropI,
-                        vec![node.clone(), Ex::str("numeric"), Ex::int(1)],
-                    ));
-                    "title"
-                } else {
-                    name.name.as_str()
-                };
-                self.emit(host(
-                    Imp::UiPropH,
-                    vec![node, Ex::str("role"), Ex::str(role)],
-                ));
-            }
-            ExprKind::If { cond, then, els } => {
-                let c = self.expr_as(cond, &Ty::Bool);
-                self.push_sink();
-                if let [
-                    ast::Stmt {
-                        kind: ast::StmtKind::Expr(x),
-                        ..
-                    },
-                ] = then.stmts.as_slice()
-                {
-                    self.text_role(n, x);
-                }
-                let t = self.pop_sink();
-                self.push_sink();
-                if let Some(els) = els {
-                    self.text_role(n, els);
-                }
-                let f = self.pop_sink();
-                self.emit(Stmt::If(c, t, f));
-            }
-            ExprKind::Block(b) => {
-                if let [
-                    ast::Stmt {
-                        kind: ast::StmtKind::Expr(x),
-                        ..
-                    },
-                ] = b.stmts.as_slice()
-                {
-                    self.text_role(n, x);
-                }
-            }
-            _ => self.apply_arg(n, "text", "role", e),
-        }
-    }
-
     /// The block of a component call: its named slots, its events, and the content of its
     /// default slot.
     fn component_block(
@@ -599,13 +626,17 @@ impl Checker<'_> {
             return;
         };
         self.slot_accepts(d, slot, &content);
+        // A list inside a card is the card's summary of its resource: it shows the first rows.
+        let outer = self.st.ui.in_card;
+        self.st.ui.in_card |= d.name == "Card";
         self.child_block("slot", &content, n);
+        self.st.ui.in_card = outer;
     }
 
     /// `on <event>: <action>` in the block of the component `d`, whose node is `n`: the action
-    /// runs when the event fires. A primitive the toolkit's component draws (`rich_input`,
-    /// `button`) takes its component's events the same way, so both spellings share one
-    /// contract.
+    /// runs when the event fires. A primitive that is a component (`rich_input`) or builds one
+    /// (`button`) takes its events the same way: `ui.*` written out and the shorter name share
+    /// one contract.
     pub(super) fn component_event(
         &mut self,
         n: LocalId,

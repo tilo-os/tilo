@@ -618,16 +618,6 @@ fn content(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, key: &PaneKey) -> Eleme
 
 /// The body of `category`'s pane: see [`content`].
 fn pane_body(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, category: Category) -> Element {
-    if category.needs_workspace_identity() && ui::workspace_identity::missing() {
-        app.pane_waits().set(false);
-        app.keyboard_partial().set(false);
-        return Box::new(
-            ui::workspace_identity::required_state(
-                <crate::resource::SettingsShell as ui::framework::ResourceApp>::TITLE,
-            )
-            .inline(),
-        );
-    }
     let reading = app.pane_reading();
     app.pane_waits().set(reading);
     app.keyboard_partial().set(

@@ -61,7 +61,7 @@ fn describe(s: Shape) -> Text {
 
 view drawing(c: Canvas) {
     lens query: Text
-    window zoom: Int = 1
+    window zoom: Float = 1.0
     page {
         if let s = c.shape {
             text(describe(s))
@@ -72,7 +72,7 @@ view drawing(c: Canvas) {
             text("was a dot")
         }
         input(bind: query, placeholder: "Find")
-        input(bind: zoom, placeholder: "Zoom")
+        ui.NumberInput(bind: zoom)
         text("{query} at {zoom}")
     }
 }
@@ -191,14 +191,18 @@ view drawing(c: Canvas) {
                 .map(|i| i.key.clone())
                 .collect()
         };
-        let (query, zoom) = {
-            let keys = inputs(&va);
-            (keys[0].clone(), keys[1].clone())
+        let numbers = |v: &tilolang_runtime::ViewInstance| -> Vec<String> {
+            of_kind(v.tree(), "ui.NumberInput")
+                .into_iter()
+                .map(|i| i.key.clone())
+                .collect()
         };
+        let query = inputs(&va)[0].clone();
+        let zoom = numbers(&va)[0].clone();
         assert_eq!(va.bound_value(&query), Some(Value::text("")));
         assert_eq!(
             va.bound_value(&zoom),
-            Some(Value::Int(1)),
+            Some(Value::Float(1.0)),
             "the default shows"
         );
 

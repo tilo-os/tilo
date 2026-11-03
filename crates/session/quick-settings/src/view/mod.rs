@@ -14,8 +14,12 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::framework::{Effected, Upkeep, ViewCx};
+use ui::icons::Icon;
 use ui::tokens::Rhythm;
-use ui::widget::{Container, Element, FloatingPanel, PageSlide, Scrollable};
+use ui::widget::{
+    Button, ButtonRole, Column, Container, Element, FloatingPanel, IconWidget, PageSlide, Row,
+    Scrollable, Section, Spacer, Text,
+};
 
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
@@ -44,9 +48,12 @@ pub(crate) struct Parts {
     /// What plays: the transport's song and playhead, and the choices
     /// around it.
     now_playing: now_playing::Parts,
+    /// Why the last press did not reach the device, while it stands.
+    refusal: LocalState<Option<String>>,
 }
 
-/// The accessories and the person's devices one can move to.
+/// The Bluetooth accessories and the person's devices, as the readings
+/// publish them.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Accessory {
     devices: Vec<connectivity::model::Accessory>,
@@ -103,6 +110,7 @@ impl Parts {
             query: LocalState::new(String::new()),
             folded: LocalState::new(Vec::new()),
             now_playing: now_playing::Parts::new(readings),
+            refusal: readings.project(|state| state.refusal.clone()),
         }
     }
 
@@ -147,7 +155,7 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         // way.
         Box::new(PageSlide::new(
             usize::from(showing.is_deeper()),
-            page(cx, showing, &parts),
+            with_refusal(cx, showing, &parts),
         ))
     });
     // One inset for the whole page, so the tiles, the sliders and the rows
@@ -178,6 +186,45 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         }),
         panel,
     )
+}
+
+/// `page`, told why the last press did not reach the device when it did not:
+/// the reason stands over the page it belongs to until the next press or
+/// the person puts it away.
+fn with_refusal(cx: &ViewCx<QuickSettings>, showing: &Showing, parts: &Parts) -> Element {
+    let refusal = parts.refusal.clone();
+    let showing = showing.clone();
+    let parts = parts.clone();
+    cx.switch(&refusal, move |cx, refusal| {
+        let page = page(cx, &showing, &parts);
+        let Some(reason) = refusal.as_ref() else {
+            return page;
+        };
+        let dismiss = cx.actions().bind_effect_invocation(
+            Button::icon_only(
+                "qs-refusal-dismiss",
+                Icon::X,
+                &crate::i18n::t("qs-refused-dismiss"),
+            )
+            .role(ButtonRole::Plain),
+            &QsEffect::DismissRefusal,
+        );
+        let row = Row::new()
+            .no_wrap()
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .with_rhythm(Rhythm::Related)
+            .push(Box::new(IconWidget::new(Icon::TriangleAlert)))
+            .push(Box::new(Text::new(reason).with_id("qs-refusal")))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(dismiss));
+        Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_rhythm(Rhythm::Related)
+            .push(Box::new(Section::new(vec![Box::new(row)])))
+            .push(page)
+            .into_widget()
+    })
 }
 
 /// The page `showing` names.

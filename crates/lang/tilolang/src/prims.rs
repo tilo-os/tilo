@@ -1,5 +1,7 @@
 //! The UI primitives a view can build (layout.md, "Primitives"), the sizing arguments every node
-//! takes, the built-in enums of their options, and the built-in free functions.
+//! takes, the built-in enums of their options, and the built-in free functions. A primitive that
+//! is a toolkit component (`text`, `input`, `toggle`) is only its shorter name: its arguments,
+//! slots, events and bindings are the component's description's.
 
 /// A UI primitive: its positional properties, the named properties it accepts and the bare
 /// flags it accepts.
@@ -8,6 +10,14 @@ pub struct Prim {
     pub positional: &'static [&'static str],
     pub named: &'static [&'static str],
     pub flags: &'static [&'static str],
+    /// The toolkit component this primitive is a shorter name for, when it is one: its call is
+    /// that component's call, checked and lowered from the component's description, and adds
+    /// nothing of its own.
+    pub component: Option<&'static str>,
+    /// The toolkit component whose kind this primitive builds, when that is not its own name:
+    /// `button` builds a `ui.Button` and `facts` a `ui.PropertyList`, each with arguments of its
+    /// own.
+    pub builds: Option<&'static str>,
 }
 
 const fn prim_of(
@@ -20,10 +30,57 @@ const fn prim_of(
         positional,
         named,
         flags: &[],
+        component: None,
+        builds: None,
+    }
+}
+
+/// A primitive that takes arguments of its own and builds the toolkit component `component`.
+const fn prim_as(
+    name: &'static str,
+    component: &'static str,
+    positional: &'static [&'static str],
+    named: &'static [&'static str],
+) -> Prim {
+    Prim {
+        name,
+        positional,
+        named,
+        flags: &[],
+        component: None,
+        builds: Some(component),
+    }
+}
+
+/// A primitive that is the toolkit component `component` under a shorter name (`text` is
+/// `ui.Text`): it takes exactly the component's arguments, slots, events and bindings.
+const fn shorthand(name: &'static str, component: &'static str) -> Prim {
+    Prim {
+        name,
+        positional: &[],
+        named: &[],
+        flags: &[],
+        component: Some(component),
+        builds: None,
     }
 }
 
 pub const PRIMS: &[Prim] = &[
+    // The toolkit's components, under the names a view writes most: each is that component's
+    // call and nothing more.
+    shorthand("text", "Text"),
+    shorthand("rich_text", "RichText"),
+    shorthand("section", "Section"),
+    shorthand("avatar", "Avatar"),
+    shorthand("progress", "ProgressBar"),
+    shorthand("toggle", "Toggle"),
+    shorthand("checkbox", "Checkbox"),
+    shorthand("input", "TextInput"),
+    // Rich text typed, bound to a `RichText`: what a completion picks goes in as a reference
+    // (`ui.RichInput`). Bound to the field marked `(body)`, the document editor draws it: its
+    // paragraphs, lists, quotes and tables, with what is typed as Markdown becoming them.
+    shorthand("rich_input", "RichInput"),
+    shorthand("image", "Image"),
     // A list of resources in the content (a window's own list is `std.list`), and a page:
     // content at the readable measure, or the column's full width with `full`.
     prim_of("list", &["items"], &[]),
@@ -32,21 +89,18 @@ pub const PRIMS: &[Prim] = &[
         positional: &[],
         named: &[],
         flags: &["full"],
+        component: None,
+        builds: None,
     },
-    // Content groups and native controls.
-    prim_of("section", &["title"], &[]),
-    prim_of("facts", &[], &[]),
+    // The facts of a resource, one `"Label": value` per line, as a `ui.PropertyList` of them.
+    prim_as("facts", "PropertyList", &[], &[]),
+    // Native controls that are no component: a form's fields, and the control for a view state
+    // of an enum's cases.
     prim_of("form", &[], &[]),
     prim_of("field", &["label"], &[]),
-    prim_of("toggle", &["label"], &["bind", "enabled"]),
     prim_of("choice", &[], &["bind"]),
-    prim_of("date", &[], &["bind"]),
-    prim_of("card", &["item"], &["count"]),
-    prim_of("avatar", &["who"], &[]),
     // Layout for content.
     prim_of("stack", &[], &["gap", "align"]),
-    // `column` is the older name of `stack`.
-    prim_of("column", &[], &["gap", "padding", "align"]),
     // With a block, a layout row; with a title and no block, a list row (`ListRow`).
     prim_of("row", &[], LAYOUT_ROW_ARGS),
     prim_of("grid", &[], &["min", "columns", "gap"]),
@@ -59,22 +113,9 @@ pub const PRIMS: &[Prim] = &[
     prim_of("scroll", &[], &["axis", "across", "both"]),
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
-    prim_of("text", &["value"], &["role"]),
-    // Rich text shown, each reference as the reader's inline view of it (`ui.RichText`).
-    prim_of("rich_text", &["value"], &[]),
-    prim_of("button", &["label"], &["on", "enabled"]),
-    prim_of("checkbox", &["label"], &["bind", "on_change", "enabled"]),
-    prim_of(
-        "input",
-        &[],
-        &["bind", "placeholder", "on_change", "enabled"],
-    ),
-    // Rich text typed, bound to a `RichText`: what a completion picks goes in as a reference
-    // (`ui.RichInput`). Bound to the field marked `(body)`, the document editor draws it: its
-    // paragraphs, lists, quotes and tables, with what is typed as Markdown becoming them.
-    prim_of("rich_input", &[], &["bind", "placeholder", "enabled"]),
-    prim_of("image", &["src"], &["alt", "width", "height"]),
-    prim_of("progress", &["value"], &[]),
+    // A button for a declared action, whose label, icon and role are the action's; or a plain
+    // button with its own label and `on:`.
+    prim_as("button", "Button", &["label"], &["on", "enabled"]),
     prim_of("divider", &[], &[]),
     // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
@@ -87,7 +128,7 @@ pub const PRIMS: &[Prim] = &[
     prim_of("show", &["of"], &["view"]),
 ];
 
-/// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it
+/// How many rows a `list` inside a `ui.Card` shows: a card is a summary of its resource, which it
 /// opens for the whole list. The list node carries it as its `preview` property.
 pub const PREVIEW_ROWS: i64 = 5;
 
@@ -159,11 +200,6 @@ pub const CHOICES: &[Choice] = &[
         variants: &["vertical", "horizontal", "both"],
     },
     Choice {
-        kind: "text_role",
-        name: "TextRole",
-        variants: &["body", "title", "label", "caption", "numeric"],
-    },
-    Choice {
         kind: "width_class",
         name: "WidthClass",
         variants: &["compact", "medium", "expanded", "wide"],
@@ -200,7 +236,6 @@ pub fn arg_choice(prim: &str, arg: &str) -> Option<&'static str> {
         (_, "side") => "side",
         (_, "at") => "at",
         (_, "axis") => "axis",
-        ("text", "role") => "text_role",
         _ => return None,
     })
 }

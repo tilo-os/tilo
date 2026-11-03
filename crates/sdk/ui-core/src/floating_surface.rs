@@ -885,7 +885,7 @@ impl FloatingSurfaceServiceClient {
     /// Keep this connection for the next window the process opens, instead
     /// of closing it with this one: the launcher hands each process one
     /// connection, and a window that gives its place to the next
-    /// (`crate::workspace_identity`) gives it its connection too.
+    /// (`crate::window_door`) gives it its connection too.
     #[cfg(feature = "local-daemons")]
     #[cfg_attr(
         not(feature = "native"),
@@ -896,8 +896,8 @@ impl FloatingSurfaceServiceClient {
     }
 
     /// Hand this connection to the next window of the process: the window a
-    /// launch opens in place of one that waited for its workspace's identity
-    /// (`crate::workspace_identity`). The connection, and the version it
+    /// launch opens in place of one that held its place (`crate::window_door`).
+    /// The connection, and the version it
     /// said, carry over; the shell's unprompted messages wake the window in
     /// front from now on, and it hears the appearance the last one was told.
     #[cfg(feature = "local-daemons")]

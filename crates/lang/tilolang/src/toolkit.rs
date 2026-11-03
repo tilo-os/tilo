@@ -26,27 +26,6 @@ pub fn kind(name: &str) -> String {
     format!("{KIND_PREFIX}{name}")
 }
 
-/// The node kind a primitive of the language builds, when it builds a described component:
-/// `text` is the toolkit's `Text`, `row(title)` its `ListRow`.
-#[must_use]
-pub fn prim_component(prim: &str) -> Option<&'static str> {
-    Some(match prim {
-        "text" => "Text",
-        "rich_text" => "RichText",
-        "button" => "Button",
-        "input" => "TextInput",
-        "rich_input" => "RichInput",
-        "section" => "Section",
-        "card" => "Card",
-        "facts" => "PropertyList",
-        "fact" => "Property",
-        "avatar" => "Avatar",
-        "list_row" => "ListRow",
-        "progress" => "ProgressBar",
-        _ => return None,
-    })
-}
-
 /// The language's enums the toolkit declares: each closed set whose cases carry fields
 /// (`ui.Shape`), and each set of roles or tokens one of their fields names (`ui.Ink`), as the
 /// package `ui`'s enums. A value of one is written `.arc(cx: 0.5, ...)` like any enum's.

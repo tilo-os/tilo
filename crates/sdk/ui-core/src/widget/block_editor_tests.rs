@@ -2,6 +2,9 @@ use super::*;
 use crate::testing::{Dispatch, dispatch};
 use automerge::transaction::Transactable as _;
 
+#[path = "block_editor_marker_tests.rs"]
+mod marker_tests;
+
 #[test]
 fn retained_block_batches_include_empty_rows_and_refuse_interleaved_peers() {
     let rows = vec![

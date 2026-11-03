@@ -211,9 +211,10 @@ pub struct Presentation {
     /// `on: n.pinned`: whether the state it toggles is on, read where the action is applied: a
     /// button for it shows as toggled.
     pub on: Option<Expr>,
-    /// `key: "e"`: the plain key that runs the action while its window has the keyboard, and
-    /// (on a row's action) while that row is selected. Read through the person's keymap, never
-    /// as a key code, so it is layout-correct on any keyboard.
+    /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard,
+    /// and (on an item's action) while that item is selected or its view shows. One spelling
+    /// (`Ctrl+Shift+enter`: modifiers in one order, then the key's token), read through the
+    /// person's keymap and the platform's own command modifier, never as a key code.
     pub key: Option<String>,
     /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names
     /// it. A surface that shows the resource's actions — a window bar, the desktop's action
@@ -223,6 +224,16 @@ pub struct Presentation {
     /// `frequent`: a command the person reaches for on most things of this type, which the
     /// desktop's action bar shows directly rather than behind its menu of the rest.
     pub frequent: bool,
+}
+
+/// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in
+/// one order and the key's own token (`Ctrl+Shift+enter`), so `Ctrl+Enter` and `control+Return`
+/// are one shortcut. The error says what is wrong with it, for the person who wrote it.
+fn declared_key(e: &Expr) -> Result<String, String> {
+    let text = plain_text(e).unwrap_or_default();
+    tilo_ui_graph::keys::Chord::parse(&text)
+        .map(|chord| chord.text())
+        .map_err(|said| format!("`key:` takes a shortcut: {said}"))
 }
 
 /// `new_note` as "New note".
@@ -717,6 +728,7 @@ pub fn resolve(
         }
     }
     r.package_decls(module);
+    r.one_shortcut_each(module);
     r.env
 }
 
@@ -2008,23 +2020,18 @@ impl Resolver<'_> {
                     "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`, or an `if` over the subject: `label: if n.pinned { \"Unpin\" } else { \"Pin\" }`",
                 ),
                 ("on", _) => out.on = Some(opt.value.clone()),
-                // `key: "e"`: one plain key, read through the person's keymap.
+                // `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the
+                // keyboard, and (on a row's action) while that row is selected.
                 ("key", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
-                    let key = plain_text(&opt.value).unwrap_or_default();
-                    if key.chars().count() != 1 || key.chars().any(char::is_whitespace) {
-                        self.err(
-                            "E090",
-                            opt.value.span,
-                            "`key:` takes one character, the key pressed on its own: `key: \"e\"`, `key: \"/\"`",
-                        );
-                    } else {
-                        out.key = Some(key);
+                    match declared_key(&opt.value) {
+                        Ok(key) => out.key = Some(key),
+                        Err(said) => self.err("E090", opt.value.span, said),
                     }
                 }
                 ("key", _) => self.err(
                     "E090",
                     opt.value.span,
-                    "`key:` takes one character in quotes, without `{ }`: `key: \"e\"`",
+                    "`key:` takes a shortcut in quotes, without `{ }`: `key: \"Ctrl+Enter\"`, `key: \"F2\"`, `key: \"e\"`",
                 ),
                 // `group: "Reply"`: the run of the resource's actions this one stands in, by
                 // the app's own name for it.
@@ -2098,6 +2105,51 @@ impl Resolver<'_> {
             }
             seen.push((subject, a.name.name.clone()));
         }
+    }
+
+    /// Two actions of one subject that declare the same shortcut: one would silently take the
+    /// other's key wherever both are offered, so the app is told which action holds it. An
+    /// action on an item is answered where that item is selected or its window shows it; one on
+    /// the app's root is answered window-wide.
+    fn one_shortcut_each(&mut self, module: &ast::Module) {
+        let mut seen: Vec<(Option<TypeKey>, String, String)> = Vec::new();
+        for item in &module.items {
+            let Item::Action(a) = item else { continue };
+            let Some(opt) = a.opts.iter().find(|o| o.name.name == "key") else {
+                continue;
+            };
+            let Ok(key) = declared_key(&opt.value) else {
+                continue;
+            };
+            let scope = self
+                .env
+                .own_callable(&a.name.name)
+                .and_then(|c| self.shortcut_scope(c));
+            if let Some((_, _, holder)) = seen.iter().find(|(s, k, _)| *s == scope && *k == key) {
+                let said = match &scope {
+                    Some(ty) => format!(
+                        "`{key}` is already `{holder}`'s shortcut on `{}`: two of its actions cannot answer the same keys",
+                        ty.name
+                    ),
+                    None => format!(
+                        "`{key}` is already `{holder}`'s shortcut: two actions of the window cannot answer the same keys"
+                    ),
+                };
+                self.err("E090", opt.value.span, said);
+                continue;
+            }
+            seen.push((scope, key, a.name.name.clone()));
+        }
+    }
+
+    /// What an action's shortcut is answered on: the first record it takes that is not the app's
+    /// root, or `None` for one offered on the root alone, which its window answers wherever the
+    /// person is.
+    fn shortcut_scope(&self, c: &Callable) -> Option<TypeKey> {
+        c.params.iter().find_map(|p| match &p.ty {
+            Ty::Record(key) if !self.env.roots.contains(key) => Some(key.clone()),
+            _ => None,
+        })
     }
 
     /// The `window` and `lens` declarations at the top of a view body.

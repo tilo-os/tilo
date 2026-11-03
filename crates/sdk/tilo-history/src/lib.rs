@@ -31,6 +31,27 @@ const SOURCE_LOCALE: &str = "en-US";
 const SOURCE: (&str, &str) = (SOURCE_LOCALE, include_str!("../locales/en-US.ftl"));
 const FRAMEWORK: &[(&str, &str)] = &[SOURCE, ("de-DE", include_str!("../locales/de-DE.ftl"))];
 
+/// Format the message `key` of `bundle`, or the attribute it names (`message.attribute`:
+/// Fluent keys hold no `.`), with whether it formatted without errors (a missing variable, an
+/// unknown reference).
+pub fn format_message<R: std::borrow::Borrow<FluentResource>>(
+    bundle: &FluentBundle<R>,
+    key: &str,
+    args: Option<&FluentArgs<'_>>,
+) -> Option<(String, bool)> {
+    let pattern = if let Some(message) = bundle.get_message(key) {
+        message.value()?
+    } else {
+        let (name, attribute) = key.rsplit_once('.')?;
+        bundle.get_message(name)?.get_attribute(attribute)?.value()
+    };
+    let mut errors = Vec::new();
+    let text = bundle
+        .format_pattern(pattern, args, &mut errors)
+        .into_owned();
+    Some((text, errors.is_empty()))
+}
+
 /// A catalogue of messages in one locale: the app's, for its own entries.
 pub trait Messages {
     /// The message `key` formatted with `args`; `None` when the catalogue has
@@ -94,19 +115,8 @@ impl Messages for Catalogue {
     }
 
     fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
-        // `message.attribute` names an attribute: Fluent keys hold no `.`.
-        let pattern = if let Some(message) = self.bundle.get_message(key) {
-            message.value()?
-        } else {
-            let (name, attribute) = key.rsplit_once('.')?;
-            self.bundle
-                .get_message(name)?
-                .get_attribute(attribute)?
-                .value()
-        };
-        let mut errors = Vec::new();
-        let text = self.bundle.format_pattern(pattern, Some(args), &mut errors);
-        errors.is_empty().then(|| text.into_owned())
+        let (text, clean) = format_message(&self.bundle, key, Some(args))?;
+        clean.then_some(text)
     }
 }
 

@@ -39,6 +39,11 @@ view contact_row(c: Contact) {
 - A new ui-core widget is usable from tilolang as soon as it lands.
 - One generic adapter turns descriptions into widgets and patches. There's no per-widget
   mapping, and Rust apps can use the same descriptions.
+- Bindings are the description's, so `bind:` works on any component that declares one
+  (`ui.TextInput(bind: t.title)`, `ui.Checkbox(bind: t.done)`, `ui.DatePicker(bind: t.due)`,
+  `ui.RichInput(bind: t.notes)`), with the type and the merge it declares; no widget has binding
+  code of its own. A primitive that is a component (`text`, `input`, `checkbox`, ...) is its
+  shorter name and nothing else.
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or
@@ -77,6 +82,22 @@ pages, forms. It relies on general language features any author can use:
 - resource metadata: title field, type name, icon.
 
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
+
+A list groups without a second widget: `std.rows` takes `group:`, naming each item's heading,
+and the list draws a section band for each run and holds it at the top while its items scroll
+past (dates arrive formatted: Today, Tomorrow, a weekday, a day). Only the rows in view are
+built and asked for their group, so a heading costs nothing on a long list. `closed:` names the
+items done with: they stand last under `closed_title`, folded away until the person presses the
+band. The heading is a date the platform writes, never a string an app formats:
+
+```
+std.rows(shown, "No tasks here", .none, .some("list-checks"),
+         group: .due, closed: .done) { t -> task_row(t) }
+```
+
+The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.ListItem` carry it
+(`group:` and `tail:` on a row, `tail_title:` on the list), so a view composed from `ui.*`
+groups as `std.rows` does.
 
 ## 4. Custom widgets: a ladder
 

@@ -667,6 +667,8 @@ pub enum UiKind {
     },
     Let {
         name: Ident,
+        /// The type the value is read as, when it is written: `let shown: Option<Date> = ...`.
+        ty: Option<TypeExpr>,
         value: Expr,
     },
     /// `if let a = x, b = y { ... } else { ... }` in a view body.

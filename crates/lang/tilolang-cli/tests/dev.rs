@@ -14,23 +14,9 @@ use tilolang_cli::package::{self, BuildOptions};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::upgrade::{Upgrade, compare};
 
-fn packages() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
-}
+mod support;
 
-/// Copy the package at `from` into `to`, created.
-fn copy_package(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_package(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
+use support::{copy_package, packages};
 
 #[test]
 fn a_saved_build_is_the_generation_the_app_reads() {

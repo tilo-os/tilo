@@ -71,10 +71,10 @@ type ArrangementPlace (origin: session.arrangement_place) {
     record: Text merge register
     /// The title it is shown under.
     title: Text merge register (title)
-    /// What this place is called, on every surface: its window's title with its app's own name,
-    /// or the app's name alone when the window has no title. The session
-    /// resolves it, so the bar, the chips, the switcher, the overview and search never disagree,
-    /// and none of them falls back to an app id.
+    /// What this place is called, on every surface: its window's title and its app's own name
+    /// (`Groceries` in `Notes`, the one the person picked), or the app's name alone when the
+    /// window has no title. The session resolves it, so the bar, the chips, the switcher, the
+    /// overview and search never disagree, and none of them falls back to an app id.
     name: Text merge register
     /// Whether the person pinned it: an agent's arrangement leaves it alone (§5).
     pinned: Bool

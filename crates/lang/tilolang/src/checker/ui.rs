@@ -156,8 +156,15 @@ impl Checker<'_> {
                 UiKind::Call(c) => {
                     self.ui_call(c, Some(parent));
                 }
-                UiKind::Let { name, value } => {
-                    let v = self.expr(value, None);
+                UiKind::Let { name, ty, value } => {
+                    let v = match ty {
+                        Some(written) => {
+                            let types = self.st.types.clone();
+                            let want = self.type_in(written, &types);
+                            self.expr_as(value, &want)
+                        }
+                        None => self.expr(value, None),
+                    };
                     let id = self.declare(&name.name, v.ty.clone());
                     self.emit(Stmt::Set(id, v));
                 }
@@ -395,9 +402,13 @@ impl Checker<'_> {
                     return self.dead_node();
                 }
                 if let Some(p) = prims::prim(name) {
-                    match self.native(p, c, args) {
-                        Some(n) => n,
-                        None => self.primitive(p, c, args),
+                    if let Some(component) = p.component {
+                        self.component_prim(component, c, args)
+                    } else {
+                        match self.native(p, c, args) {
+                            Some(n) => n,
+                            None => self.primitive(p, c, args),
+                        }
                     }
                 } else if let Some(v) = self.own_callable(name).cloned() {
                     self.view_call(&v, c, args, span)
@@ -510,28 +521,14 @@ impl Checker<'_> {
 
     pub(super) fn primitive(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
-        let kind = crate::toolkit::prim_component(p.name)
+        let kind = p
+            .builds
             .map_or_else(|| p.name.to_string(), crate::toolkit::kind);
         let n = self.new_node(&kind, key);
         let mut pos = 0usize;
         for a in args {
             if a.name.is_none() && self.is_flag(Some(p), &a.value) {
                 self.flag_arg(n, &a.value);
-                continue;
-            }
-            // An input edits its text through the binding the toolkit's `TextInput` calls
-            // `value`.
-            if matches!(p.name, "input" | "rich_input")
-                && a.name.as_ref().is_some_and(|name| name.name == "bind")
-            {
-                self.emit(Stmt::Eval(Ex::host(
-                    Imp::UiPropH,
-                    vec![Ex::local(n, Ty::View), Ex::str("bind"), Ex::str("value")],
-                    Ty::Unit,
-                )));
-            }
-            if p.name == "text" && a.name.as_ref().is_some_and(|name| name.name == "role") {
-                self.text_role(n, &a.value);
                 continue;
             }
             self.prim_arg(p, n, pos, a);
@@ -549,40 +546,10 @@ impl Checker<'_> {
                 "`show` takes the resource to draw: `show(r)`",
             );
         }
-        if p.name == "rich_input" {
-            self.drawer_props(n);
-        }
         if let Some(block) = &c.block {
-            self.primitive_block(p.name, block, n);
+            self.child_block(p.name, block, n);
         }
         n
-    }
-
-    /// The block of the primitive `prim`, whose node is `n`: its children, and, for a primitive
-    /// a toolkit component draws (`rich_input` is `ui.RichInput`), that component's events
-    /// (`on submit: ...`), as the component written out takes them.
-    fn primitive_block(&mut self, prim: &'static str, block: &[UiStmt], n: LocalId) {
-        let described = crate::toolkit::prim_component(prim)
-            .and_then(|name| self.env.toolkit.and_then(|t| t.get(name)));
-        let Some(d) = described else {
-            self.child_block(prim, block, n);
-            return;
-        };
-        let mut children = Vec::new();
-        for s in block {
-            match &s.kind {
-                UiKind::On {
-                    event,
-                    param,
-                    at,
-                    action,
-                } => self.component_event(n, d, event, (param.as_ref(), at.as_ref()), action),
-                _ => children.push(s.clone()),
-            }
-        }
-        if !children.is_empty() {
-            self.child_block(prim, &children, n);
-        }
     }
 
     /// The people of a rich input's `@` drawer, which no view declares: the system gives them
@@ -810,7 +777,9 @@ impl Checker<'_> {
             self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
             return;
         }
-        if self.typed_arg(p.name, n, &name, &a.value) {
+        if p.name == "field" && name == "label" {
+            let v = self.expr_as(&a.value, &Ty::Text);
+            self.prop(Ex::local(n, Ty::View), "label", v, a.value.span);
             return;
         }
         self.apply_arg(n, p.name, &name, &a.value);
@@ -822,10 +791,6 @@ impl Checker<'_> {
         let node = Ex::local(n, Ty::View);
         if let Some(kind) = prims::arg_choice(prim, name) {
             self.choice_arg(node, kind, name, value);
-        } else if name == "bind" && prim == "rich_input" {
-            let _ = self.bind_typed(&node, value, &[Ty::RichText], false);
-        } else if name == "bind" {
-            self.bind_arg(&node, value);
         } else if name == "on" || name.starts_with("on_") {
             let act = self.expr_as(value, &Ty::Action);
             let event = if name == "on" {
@@ -973,11 +938,6 @@ impl Checker<'_> {
                 )));
             }
         }
-    }
-
-    /// `bind:` on a primitive: its text fields draw a document's title.
-    pub(super) fn bind_arg(&mut self, node: &Ex, value: &ast::Expr) {
-        let _ = self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text], true);
     }
 
     /// `bind:` to a field or view state whose type is one of `allowed`; `titled` when the
@@ -1206,6 +1166,13 @@ fn removed_prim(name: &str) -> Option<&'static str> {
         "list_row" => {
             "`list_row` is now `row(title, secondary: ...)`, inside a list's item block (`list(xs) { x -> row(x.title) }`) or as a `row view`"
         }
+        "column" => "`column` is `stack`: a column of content",
+        "card" => {
+            "`card(x)` is `ui.Card(item: x, title: meta(x).title)`: a card is the toolkit's component"
+        }
+        "date" => {
+            "`date(bind: x)` is `ui.DateField(bind: x)`, or `ui.DatePicker` for a calendar; a date field is the toolkit's component"
+        }
         _ => return None,
     })
 }
@@ -1213,11 +1180,14 @@ fn removed_prim(name: &str) -> Option<&'static str> {
 /// What replaced an argument that is gone, for its error.
 pub(super) fn removed_arg(prim: &str, arg: &str) -> Option<&'static str> {
     Some(match (prim, arg) {
-        ("text", "style") => {
-            "text has a role, not a style: `text(x, role: .title)`; the roles are .body, .title, .caption and .numeric"
+        ("text" | "Text", "style") => {
+            "`text` is `ui.Text`: give it a `role:` (`.body`, `.title`, `.caption`, ...), `numeric: true` for figures, and `secondary: true` for quiet text; there is no `style:`"
         }
         ("button", "style" | "size") => {
-            "a button takes its look from its action: mark the action `primary action` or `destructive action` and write `button(act(x))`; there is no `style:` or `size:`"
+            "a button for an action takes its look from the action: mark the action `primary action` or `destructive action` and write `button(act(x))`; a button of its own writes `ui.Button(label, role: .primary, on: ...)`"
+        }
+        ("image" | "Image", "width" | "height") => {
+            "an image takes its size from the layout, never in pixels: `fill`, `min:`/`max:` or `aspect: 16/9`"
         }
         _ => return None,
     })

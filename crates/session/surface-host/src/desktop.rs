@@ -14,8 +14,8 @@ use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, HostKey, HostLayer, LayoutPoint, LayoutRect, SurfaceHost,
-    TouchSample, WindowInfo, WindowPolicy, WindowRequest,
+    Arrangement, GestureEvent, HostIme, HostKey, HostLayer, HostTextInput, LayoutPoint, LayoutRect,
+    SurfaceHost, TouchSample, WindowInfo, WindowPolicy, WindowRequest,
 };
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
@@ -426,6 +426,14 @@ impl SurfaceHost for DesktopHost {
 
     fn key(&mut self, key: &HostKey) {
         self.desk.borrow_mut().host.key(key);
+    }
+
+    fn text_input(&self) -> Option<HostTextInput> {
+        self.desk.borrow().host.text_input()
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        self.desk.borrow_mut().host.ime(event);
     }
 
     fn prepare_frame(&mut self) -> bool {

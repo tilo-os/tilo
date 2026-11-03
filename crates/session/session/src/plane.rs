@@ -26,10 +26,10 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    Caller, ContentStoreServices, Granted, HostServices, HostStepServices, PublishedResources,
-    Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices,
-    ShortcutStore, SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
-    WorkspaceMemberships,
+    Caller, ContentStoreServices, DisplayControlServices, Granted, HostServices, HostStepServices,
+    PublishedResources, Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest,
+    ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices, WorkspaceAuthority,
+    WorkspaceAuthorityHandle, WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -38,6 +38,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::activity_provider::ActivityWire;
 use crate::launches::Launches;
+use crate::lists::Lists;
+use crate::seams::{Seam, Seams};
 
 /// A watch the loop keeps: the resource an app connection watches, and what
 /// that connection was last sent.
@@ -343,6 +345,9 @@ pub struct Hosted {
     /// change is recorded before it runs, and answered from its record when it
     /// is asked again.
     pub journal_root: Option<PathBuf>,
+    /// The apps this device has, as search last read them: what the broker
+    /// admits an app's declared actions against, by its signed manifest.
+    pub lists: Lists,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -397,8 +402,14 @@ pub fn serve(
                 certificate_authority: std::sync::Arc::clone(&certificates) as _,
             });
     let engine = hosted.engine.clone();
-    let mut services = host_services(link, launches, fabric, hosted, Some(certificates));
-    services.workspace_memberships = memberships;
+    let services = host_services(
+        link,
+        launches,
+        fabric,
+        hosted,
+        Some(certificates),
+        memberships,
+    );
     let publisher = owner_publisher(engine);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
@@ -496,6 +507,9 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 /// moved, and the broker reads the copy.
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
+    /// Counts the desk's publications, so a reader that only cares whether
+    /// the desk changed since it last looked asks one atomic.
+    generation: std::sync::atomic::AtomicU64,
     revocations: crate::engine::Revocations,
     journal: Option<std::path::PathBuf>,
 }
@@ -513,6 +527,7 @@ impl DeskAuthority {
     ) -> Self {
         Self {
             tree: Mutex::new(tree),
+            generation: std::sync::atomic::AtomicU64::new(0),
             revocations,
             journal,
         }
@@ -521,6 +536,14 @@ impl DeskAuthority {
     /// The desk as the loop shows it now, for the broker's next decision.
     pub fn publish(&self, tree: tilo_desktop_model::DesktopTree) {
         *self.tree.lock_recover() = tree;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// How many times the desk was published; equal values mean the desk
+    /// did not change between the two reads.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -625,12 +648,40 @@ fn host_services(
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
+    memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
 ) -> HostServices {
+    let decided = seams(link, launches, fabric, hosted, certificates, memberships);
+    // What this session serves nothing of, and why: a session start leaves
+    // every decision in its log, so a seam an app found missing can be found
+    // here with the reason it was left out.
+    for (seam, why) in decided.decisions() {
+        if let Some(why) = why {
+            tracing::debug!(seam, why, "this session serves nothing of this seam");
+        }
+    }
+    decided.into_host_services()
+}
+
+/// This session's decision for every seam of the broker's [`HostServices`]:
+/// what it serves, and for what it serves nothing, the reason it was left
+/// out (see [`crate::seams`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one seam per line, in the broker's order: a reviewer reads every decision at once"
+)]
+fn seams(
+    link: std::sync::Arc<Link>,
+    launches: std::sync::Arc<Launches>,
+    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    hosted: Hosted,
+    certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
+    memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
+) -> Seams {
     let Hosted {
         live_activities,
         native_media,
         content,
-        desk: _,
+        desk,
         shortcuts,
         activity,
         agent_runs,
@@ -639,14 +690,9 @@ fn host_services(
         engine: _,
         record_content,
         action_offload,
-        journal_root: _,
+        journal_root,
+        lists,
     } = hosted;
-    let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
-        std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
-    });
-    let search_index: Option<std::sync::Arc<dyn SearchIndexServices>> = content.map(|content| {
-        std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
-    });
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
@@ -654,61 +700,146 @@ fn host_services(
         .unwrap_or_else(|| {
             std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default())
         });
-    HostServices {
-        published: Some(link),
-        launcher: Some(launches),
-        speakers,
-        // Every app shows its live activity (a running timer, a stopwatch)
-        // outside its windows on this one board.
-        live_activities: Some(live_activities),
-        // What an app publishes of its own content is found whether or not
-        // it runs, once it is closed and after a restart.
-        search_index,
-        // A shortcut a person saves lands on the desk, and a shortcut's run
-        // executes on the session's runtime.
-        shortcut_library: Some(shortcut_library),
-        // The workspace's activity: what the Activity app shows, served by
-        // the desk's own model.
-        host_steps: vec![activity as std::sync::Arc<dyn HostStepServices>],
-        // What people ask this session's agents to do: a run is the broker's
-        // to deliver, and its reports come back to the run.
-        tracker_runs: agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>),
-        // An app's action on another of the person's own devices is carried
-        // there by the collaboration plane.
-        own_device,
+    // This person's settings on this device: each app reaches its own entries
+    // and the shared sections, and a display change is written here too.
+    let settings = settings_store::source();
+    let display_control: Option<std::sync::Arc<dyn DisplayControlServices>> =
+        settings.as_ref().map(|source| {
+            std::sync::Arc::new(crate::display_control::DisplayControl::native(
+                std::sync::Arc::clone(source),
+                &desk,
+            )) as std::sync::Arc<dyn DisplayControlServices>
+        });
+    // What each installed app's signed manifest declares it may do on the
+    // action door: a ceiling the broker decides an app's calls against.
+    let app_action_access = crate::seams::declared_access(lists);
+    // Where the broker keeps the actions of apps that are closed, beside the
+    // journal of what it admitted: a closed app's actions survive a restart.
+    let launchable_catalogue = journal_root.as_ref().and_then(|journal| {
+        journal
+            .parent()
+            .map(|state| state.join("actions").join("launchable.json"))
+    });
+    Seams {
+        approved_checks: Seam::unserved(
+            "this session hosts no project's checks: no project enforces any here",
+        ),
+        resource_views: Seam::unserved(
+            "this session reads no other app's existing resources: search lists them instead",
+        ),
+        committed_documents: Seam::unserved(
+            "this session reads no committed document on an app's behalf",
+        ),
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
-        native_media: native_media.map(|media| {
+        native_media: Seam::when(native_media.map(|media| {
             std::sync::Arc::new(media)
                 as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
-        }),
+        })),
+        audio_output: Seam::unserved(
+            "the sound service publishes its outputs as a resource of its own",
+        ),
+        workspace_memberships: Seam::when(memberships),
+        // What people ask this session's agents to do: a run is the broker's
+        // to deliver, and its reports come back to the run.
+        tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
+        person_chat: Seam::unserved("this session keeps no chat service for apps"),
+        // Which devices this person's identity certifies now: what the broker
+        // admits a join with, and what it decides a retained action against.
+        native_certificates: Seam::served(certificates),
+        // The certificate this device acts under when the person starts
+        // something here themselves — a shortcut's press, a schedule's fire
+        // time — rather than an app or a peer asking for it.
+        local_person: Seam::served(
+            std::sync::Arc::new(tilo_identity_authority::NativeLocalPerson)
+                as std::sync::Arc<dyn tilo_action_broker::services::LocalPersonServices>,
+        ),
+        record_changes: Seam::unserved(
+            "no workspace origin here applies an agent's task change to a record",
+        ),
+        legacy_workspace: Seam::unserved(
+            "the desk's workspaces are read where they are shown, not through a projection",
+        ),
+        launcher: Seam::served(launches),
+        // The resources this session's services publish, which the apps it
+        // admits read, watch and invoke.
+        published: Seam::served(link),
+        workspace_governance: Seam::unserved(
+            "workspace grants are given in the desk's own sheets, not by an app",
+        ),
+        // A shortcut a person saves lands on the desk, and a shortcut's run
+        // executes on the session's runtime.
+        shortcut_library: Seam::served(shortcut_library),
+        keyboard_shortcuts: Seam::unserved(
+            "the shortcut catalogue is not published on this session's action door",
+        ),
+        continuations: Seam::unserved(
+            "this session offers no app's unfinished work to another app",
+        ),
+        // What an app publishes of its own content is found whether or not
+        // it runs, once it is closed and after a restart.
+        search_index: Seam::when(content.map(|content| {
+            std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
+        })),
+        // Content a record references is kept on this device beside the
+        // workspace's records, and asked of the workspace's other devices.
+        content_store: Seam::when(
+            record_content
+                .as_ref()
+                .map(|content| content.puts() as std::sync::Arc<dyn ContentStoreServices>),
+        ),
+        workspace_control: Seam::unserved(
+            "the person creates and joins workspaces from the desk, not on an app's behalf",
+        ),
+        realtime: Seam::unserved("this session serves no realtime continuity"),
+        // The speaker groups of the fabric this session runs on.
+        speakers: Seam::when(fabric.map(|fabric| {
+            std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
+        })),
+        drives: Seam::unserved(
+            "no drive list is told to Files from here: the session's own sheet shows them",
+        ),
+        applications: Seam::unserved("no app list is told to Files from here"),
+        settings: Seam::when(settings),
+        display_control: Seam::when(display_control),
+        // Every app shows its live activity (a running timer, a stopwatch)
+        // outside its windows on this one board.
+        live_activities: Seam::served(live_activities),
+        wifi_continuity: Seam::unserved("this session serves no wifi continuity"),
+        browser_service_sessions: Seam::unserved(
+            "this session serves no browser's service sessions",
+        ),
+        nearby_transfer: Seam::unserved("nearby transfer is not served by this session's app door"),
+        file_clipboard: Seam::unserved(
+            "the clipboard belongs to the compositor, which serves it to windows itself",
+        ),
+        app_action_access: Seam::served(app_action_access),
+        app_action_grants: Seam::unserved(
+            "an app's grant for another app's actions is recorded in the workspace's own \
+             governance, which no app reaches here",
+        ),
+        launchable_catalogue: Seam::when(launchable_catalogue),
+        record_content: Seam::when(record_content.map(|content| content.route())),
         // This session's channel keys, when it holds workspaces: a route's keys
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
-        channel_keys: sealed.keys,
-        // Content a record references is kept on this device beside the
-        // workspace's records, and asked of the workspace's other devices: an
-        // app's attachment survives its process and reaches every member.
-        content_store: record_content
-            .as_ref()
-            .map(|content| content.puts() as std::sync::Arc<dyn ContentStoreServices>),
-        record_content: record_content.map(|content| content.route()),
-        // Which devices this person's identity certifies now: what the broker
-        // admits a join with, and what it decides a retained action against.
-        native_certificates: Some(certificates),
-        // The certificate this device acts under when the person starts
-        // something here themselves — a shortcut's press, a schedule's fire
-        // time — rather than an app or a peer asking for it. The broker takes
-        // no action without one once it can check certificates: the seat is
-        // where the identity store says which device that is.
-        local_person: Some(std::sync::Arc::new(
-            tilo_identity_authority::NativeLocalPerson,
-        )),
+        channel_keys: Seam::when(sealed.keys),
         // An offloadable action runs where the workspace's devices would run
-        // it sooner, and what they produced is kept where this app reads its
-        // output.
-        action_offload,
-        ..HostServices::default()
+        // it sooner.
+        action_offload: Seam::when(action_offload),
+        // An app's action on another of the person's own devices is carried
+        // there by the collaboration plane.
+        own_device: Seam::when(own_device),
+        workspace_nodes: Seam::unserved(
+            "a node's workspace is reached through the desk's own sharing, not by an app",
+        ),
+        personal: Seam::unserved(
+            "this session keeps no personal-scope store: the person's records travel with \
+             their workspaces",
+        ),
+        // The workspace's activity: what the Activity app shows, served by
+        // the desk's own model.
+        host_steps: Seam::served(vec![activity as std::sync::Arc<dyn HostStepServices>]),
     }
 }
 
@@ -934,12 +1065,19 @@ mod tests {
             fabric,
             hosted(None),
             None,
+            None,
         )
     }
 
     /// What a session with no index and no desk of its own hands the broker:
     /// the services under test, and the empty desk it decides against.
     fn hosted(content: Option<std::sync::Arc<AppContentIndex>>) -> Hosted {
+        hosted_with(content, Lists::default())
+    }
+
+    /// The same, over the app lists the test reads: what each app declared it
+    /// may do on the action door is served out of them.
+    fn hosted_with(content: Option<std::sync::Arc<AppContentIndex>>, lists: Lists) -> Hosted {
         Hosted {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
             content,
@@ -961,6 +1099,7 @@ mod tests {
             record_content: None,
             action_offload: None,
             journal_root: None,
+            lists,
         }
     }
 
@@ -992,6 +1131,7 @@ mod tests {
             std::sync::Arc::new(Launches::default()),
             None,
             hosted(Some(std::sync::Arc::clone(&content))),
+            None,
             None,
         );
         let search_index = services
@@ -1047,6 +1187,7 @@ mod tests {
                 ..hosted(None)
             },
             None,
+            None,
         );
         assert!(
             with.record_content.is_some(),
@@ -1096,6 +1237,173 @@ mod tests {
         assert!(
             speakers.changed(0).is_some(),
             "and it tells Settings when that changes"
+        );
+    }
+
+    /// Every seam the broker offers is decided here: served, served where
+    /// this run has what it carries, or not served with the reason it was
+    /// left out. No shipped app calls a seam this session serves nothing
+    /// of.
+    #[test]
+    fn every_seam_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
+        let decided = seams(
+            Link::new(std::sync::Arc::new(|| ())),
+            std::sync::Arc::new(Launches::default()),
+            None,
+            hosted(None),
+            None,
+            None,
+        );
+        let decisions = decided.decisions();
+        assert_eq!(decisions.len(), 42, "the broker's seams, each decided");
+        let mut names = std::collections::BTreeSet::new();
+        for (name, why) in &decisions {
+            assert!(names.insert(*name), "`{name}` is decided once");
+            if let Some(why) = why {
+                assert!(
+                    why.len() > 20,
+                    "`{name}` says why it is not served: {why:?}"
+                );
+            }
+        }
+        let served = |name: &str| {
+            decisions
+                .iter()
+                .find(|(seam, _)| *seam == name)
+                .map_or_else(|| panic!("`{name}` is decided"), |(_, why)| why.is_none())
+        };
+        for name in crate::seams::EVERY_APP {
+            assert!(served(name), "every app calls `{name}` on its connection");
+        }
+        for (app, needed) in crate::seams::SHIPPED {
+            for name in *needed {
+                assert!(served(name), "{app} calls `{name}`");
+            }
+        }
+
+        let services = decided.into_host_services();
+        assert!(
+            services.settings.is_some(),
+            "this person's settings are served to their apps"
+        );
+        assert!(
+            services.app_action_access.is_some(),
+            "what each installed app declared it may do is served"
+        );
+        assert!(
+            services.published.is_some() && services.launcher.is_some(),
+            "the resources an app reads and the launch it is admitted by"
+        );
+        assert_eq!(
+            services.host_steps.len(),
+            1,
+            "the workspace's activity is served as the step it is"
+        );
+        assert_eq!(
+            services.display_control.is_some(),
+            services.settings.is_some(),
+            "a display change is written where this person's settings are kept"
+        );
+        assert!(
+            services.drives.is_none() && services.applications.is_none(),
+            "nothing is told to Files from a session that serves it nothing"
+        );
+        assert!(
+            services.workspace_memberships.is_none(),
+            "a session on no workspace engine has no memberships to serve"
+        );
+    }
+
+    /// An app's settings are this session's own document: the call the
+    /// broker answers through its settings server reads and writes what this
+    /// device keeps, scoped to that app.
+    #[test]
+    fn an_apps_settings_are_the_document_this_session_keeps() {
+        let dir = tempfile::tempdir().expect("a profile of the test's own");
+        let records: std::sync::Arc<dyn settings_store::SettingsSource> =
+            std::sync::Arc::new(settings_store::Store::open(dir.path()).expect("a settings store"));
+        let _scoped = settings_store::scoped_source(Some(std::sync::Arc::clone(&records)));
+
+        let settings = services(None)
+            .settings
+            .expect("this person's settings are served to their apps");
+        assert!(
+            std::sync::Arc::ptr_eq(&settings, &records),
+            "the app writes where the session keeps settings, not a copy"
+        );
+
+        let notes = runtime_collab::settings::host::AppSettingsServer::new(
+            "so.tilo.notes",
+            settings,
+            std::sync::Arc::new(|| Ok(())),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime for the app's calls");
+        let local = tokio::task::LocalSet::new();
+        let (_, written) = notes
+            .update(
+                "app_personal",
+                br#"{"so.tilo.notes": {"font": "serif"}}"#,
+                Some("set-font"),
+            )
+            .expect("the app writes its own setting");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&written).expect("a settings view"),
+            serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}})
+        );
+        assert_eq!(
+            serde_json::Value::Object(records.load()),
+            serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}}),
+            "and the write lands in this device's settings document"
+        );
+        let (_, read) = local
+            .block_on(&runtime, notes.read(0))
+            .expect("the app reads its setting back");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&read).expect("a settings view"),
+            serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}})
+        );
+    }
+
+    /// What an app declared it may do on the action door is served out of the
+    /// lists this device read: its own declaration, and nothing for an app
+    /// that declared nothing.
+    #[test]
+    fn an_apps_declared_access_is_what_this_device_read() {
+        use tilo_action_broker::app_actions::AppActionAccess;
+
+        let mut lists = crate::lists::AppLists::default();
+        lists.declared.insert(
+            "so.tilo.notes".into(),
+            AppActionAccess {
+                query: true,
+                invoke: false,
+            },
+        );
+        let services = host_services(
+            Link::new(std::sync::Arc::new(|| ())),
+            std::sync::Arc::new(Launches::default()),
+            None,
+            hosted_with(None, Lists::fixed(lists)),
+            None,
+            None,
+        );
+        let access = services
+            .app_action_access
+            .expect("what an installed app declared is served");
+        assert_eq!(
+            access("so.tilo.notes"),
+            AppActionAccess {
+                query: true,
+                invoke: false
+            }
+        );
+        assert_eq!(
+            access("so.tilo.not-installed"),
+            AppActionAccess::default(),
+            "an app this device did not read declared nothing"
         );
     }
 }

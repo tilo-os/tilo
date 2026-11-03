@@ -132,11 +132,7 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 && let Some(binding) =
                     actions.invocation(QuickSettings::SHOW_ACCESSORY.with(device.address.clone()))
             {
-                row = row.action_binding(
-                    Icon::ChevronRight,
-                    t("qs-bluetooth-use-elsewhere"),
-                    binding,
-                );
+                row = row.action_binding(Icon::ChevronRight, t("qs-bluetooth-accessory"), binding);
             }
             if let Some(forget) = actions.effect(&QsEffect::ForgetBluetooth {
                 address: device.address.clone(),

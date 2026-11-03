@@ -53,11 +53,29 @@ use tilo_session::{Backend, Reach, SessionEnvironment};
 #[used]
 static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1";
 
+/// Byte string stamped into a session built with `--features dev-overrides` in
+/// a release profile: the dev image's session (os/Containerfile.dev, whose
+/// components carry `dev-overrides`, os/components.toml), which opens the
+/// test-control socket `tilo-vm` and the capture harnesses drive a desktop
+/// through. The marker above is a debug build's and a release build never
+/// carries it, so the dev image had nothing to prove that the session it ships
+/// is the one it built rather than the base image's.
+///
+/// `#[used]` keeps the linker from discarding a static nothing reads.
+#[cfg(all(feature = "dev-overrides", not(debug_assertions)))]
+#[used]
+static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--";
+
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // An app's workspace render service is this binary in its own mode: it
+    // opens no display and starts no session (`tilo-render-service`).
+    if let Some(code) = tilo_render_service::dispatch(&args) {
+        return code;
+    }
     let (ours, command) = split_command(&args);
     // `--firstboot` is the host package's wrapper hook, which goes on to the
     // session it was starting.
@@ -558,6 +576,10 @@ fn run(
     } else {
         start_x11(session.compositor())
     };
+    // X11 apps on this display compose through the input method's XIM: the
+    // engine opens the display once it runs, as the session's own Xwayland
+    // accepts this login's X clients.
+    session.set_x11_display(x11_display.clone());
     // The apps opened from now on connect where the person's windows are.
     // X11 needs the authority file Xwayland was started with as well, which
     // the compositor does not hand out yet.
@@ -567,6 +589,7 @@ fn run(
             x11_display.clone().map(|display| (display, None)),
             session_bus.map(str::to_owned),
         );
+        launch.set_render_node(session.compositor().render_node());
     }
     let environment = SessionEnvironment {
         wayland_display: socket,

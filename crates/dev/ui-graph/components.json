@@ -833,7 +833,8 @@
           "doc": "What it is for, beside the box: the whole row chooses it.",
           "type": {
             "option": "text"
-          }
+          },
+          "positional": true
         },
         {
           "name": "indeterminate",
@@ -4486,7 +4487,8 @@
           "doc": "The setting's name, read beside its state by assistive technology.",
           "type": {
             "option": "text"
-          }
+          },
+          "positional": true
         },
         {
           "name": "enabled",
@@ -4869,6 +4871,13 @@
           "name": "transcript",
           "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
           "type": "bool"
+        },
+        {
+          "name": "tail_title",
+          "doc": "The title over the list's tail group: the rows whose item says it is one of those done with ([`ListItemProps::tail`]) stand after every group, under it, closed until the person opens them. `None` leaves those rows among the others.",
+          "type": {
+            "option": "text"
+          }
         },
         {
           "name": "unread",
@@ -6532,6 +6541,18 @@
           "type": {
             "option": "time"
           }
+        },
+        {
+          "name": "group",
+          "doc": "The group the row is in, as the platform reads it over the group's first row: a day for a date. Rows of one group stand together under its heading, in the order they come.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tail",
+          "doc": "The row is one of the items done with: they stand after every group, under the list's tail title, closed until the person opens them.",
+          "type": "bool"
         },
         {
           "name": "removed",

@@ -109,6 +109,21 @@ pub trait InputMethodHandler {
 
     /// Sets the parent location so the popup surface can be placed correctly
     fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, Logical>;
+
+    /// Text the input method composed, for a field no `text-input-v3`
+    /// client serves: the compositor writes it into the field it activated
+    /// the input method for (`InputMethodHandle::activate_without_text_input`).
+    /// Never called while a client holds the active field.
+    fn commit_to_host(&mut self, text: &str) {
+        let _ = text;
+    }
+
+    /// The composition in progress, for a field no `text-input-v3` client
+    /// serves: the text, and the byte offsets its cursor and selection stand
+    /// at (`-1` for no selection).
+    fn preedit_to_host(&mut self, text: &str, cursor_begin: i32, cursor_end: i32) {
+        let _ = (text, cursor_begin, cursor_end);
+    }
 }
 
 /// Extends [Seat] with input method functionality
