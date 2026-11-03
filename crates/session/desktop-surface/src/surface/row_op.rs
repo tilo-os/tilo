@@ -1,12 +1,19 @@
 //! A widget-side follow-up to a command already applied to the tree.
 
 use tilo_desktop_model::{GroupId, StripId, Tab, TabId, WindowWidth};
+use ui::widget::TabDescriptor;
 
 use crate::navigation::{HistoryDirection, ScrollAction};
 
 /// A widget-side follow-up to a command already applied to the tree.
 pub(super) enum RowOp {
     Show(StripId, GroupId, TabId),
+    /// A window renamed in the tree, as the row names its pill.
+    Rename {
+        strip: StripId,
+        group: GroupId,
+        tab: TabDescriptor,
+    },
     Width(StripId, GroupId, WindowWidth),
     ToggleMaximized(StripId, GroupId),
     /// A launched window, already in the tree at `index` of `strip`.

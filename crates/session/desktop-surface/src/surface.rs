@@ -1570,8 +1570,14 @@ impl DesktopSurface {
                             && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
                             && tab.rename(&name)
                         {
-                            // The renamed window is a new tree the rows follow.
-                            shared.replaced = true;
+                            // A name is what the window shows, not a window
+                            // the desk gained or lost: the row renames its
+                            // pill where it stands.
+                            ops.push(RowOp::Rename {
+                                strip: ids.strip,
+                                group: ids.group,
+                                tab: descriptor(tab),
+                            });
                         }
                     }
                     Admitted::Close(ids) if live(&shared.tree, ids) => {
@@ -1688,6 +1694,11 @@ impl DesktopSurface {
                         if self.settle.take() != Some(group) {
                             row.scroll_group_into_view(group);
                         }
+                    }
+                }
+                RowOp::Rename { strip, group, tab } => {
+                    if let Some(widget) = self.group_widget(strip, group) {
+                        widget.update_tab_descriptor(tab);
                     }
                 }
                 RowOp::Width(strip, group, width) => {
