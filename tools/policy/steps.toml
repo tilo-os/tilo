@@ -111,9 +111,9 @@ label = "Local sockets bind and connect at any path length"
 run = "python3 tools/policy/check_socket_paths.py"
 
 [[step]]
-name = "swallowed-decodes"
-label = "Session and app-hosting code hears its decode and parse errors"
-run = "python3 tools/policy/check_swallowed_decodes.py"
+name = "swallowed-failures"
+label = "Session, collaboration and app-hosting code hears its failures"
+run = "python3 tools/policy/check_swallowed_failures.py"
 
 [[step]]
 name = "app-toolbars"

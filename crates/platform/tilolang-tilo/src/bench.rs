@@ -1469,7 +1469,7 @@ fn context_switches() -> (u64, u64) {
             .lines()
             // A wakeup is a voluntary switch; the kernel preempting a running thread is not one.
             .filter(|l| l.starts_with("voluntary_ctxt_switches"))
-            // optional-decode: a benchmark probe of /proc: a line without a count adds nothing
+            // ignored-failure: a benchmark probe of /proc: a line without a count adds nothing
             .filter_map(|l| l.split(':').nth(1)?.trim().parse::<u64>().ok())
             .sum::<u64>()
     };
@@ -1690,7 +1690,7 @@ fn anon_mib() -> Option<f64> {
         .trim()
         .strip_suffix("kB")?
         .trim()
-        // optional-decode: a benchmark probe of /proc: a kernel without the field measures nothing
+        // ignored-failure: a benchmark probe of /proc: a kernel without the field measures nothing
         .parse::<u32>()
         .ok()?;
     Some(f64::from(kib) / 1024.0)
@@ -1739,7 +1739,7 @@ fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
     let mib = stdout
         .lines()
         .find_map(|line| line.trim().strip_prefix(MEMORY_LINE))
-        // optional-decode: a line that is not the measurement is reported below as nothing measured
+        // ignored-failure: a line that is not the measurement is reported below as nothing measured
         .and_then(|v| v.parse::<f64>().ok())
         .ok_or_else(|| {
             format!(

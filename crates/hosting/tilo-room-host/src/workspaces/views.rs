@@ -174,7 +174,7 @@ fn replay_source(
     let mut bytes = 0usize;
     let mut found = false;
     for retained in retained {
-        // optional-decode: a retained write that does not decode is reported where the governor takes it in (Workspaces::absorb) and when it is replayed (recall_retained)
+        // ignored-failure: a retained write that does not decode is reported where the governor takes it in (Workspaces::absorb) and when it is replayed (recall_retained)
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             cluster_id,

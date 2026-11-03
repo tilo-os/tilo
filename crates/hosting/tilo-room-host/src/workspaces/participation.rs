@@ -207,7 +207,7 @@ impl Routes {
             let Some(channel) = path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
-                // optional-decode: a `.route` file not named for a channel is not one
+                // ignored-failure: a `.route` file not named for a channel is not one
                 .and_then(|stem| uuid::Uuid::parse_str(stem).ok())
                 .map(ChannelId)
             else {

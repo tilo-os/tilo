@@ -1,5 +1,0 @@
-# Decode and parse results whose error is discarded, per file, in session and
-# app-hosting code. Counts may only fall; tools/policy/check_swallowed_decodes.py
-# --update records a file that shed some. Report the error, or mark a genuinely
-# optional read with `// optional-decode: <why>`.
-[files]

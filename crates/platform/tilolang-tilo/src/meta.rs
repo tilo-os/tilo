@@ -93,7 +93,7 @@ pub trait MetaExt {
 fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
     // A loaded package's field types all parse (`unreadable_types`, checked where it is
     // loaded); a hand-built one that does not is kept whole, as a composite register.
-    // optional-decode: checked where the package is loaded
+    // ignored-failure: checked where the package is loaded
     let Ok(ty_of_field) = parse_ty(&field.ty, &meta.app) else {
         return FieldSchema::new(&field.id, MergeKind::Register).composite();
     };
@@ -261,7 +261,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         {
             continue;
         }
-        // optional-decode: a loaded package's filter types all parse (`unreadable_types`).
+        // ignored-failure: a loaded package's filter types all parse (`unreadable_types`).
         let parsed = parse_ty(&f.ty, &meta.app).ok();
         let (kind, cases) = match f.kind {
             FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),
@@ -299,7 +299,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             MergeKind::Counter | MergeKind::Set => true,
             _ => false,
         };
-        // optional-decode: a loaded package's field types all parse (`unreadable_types`).
+        // ignored-failure: a loaded package's field types all parse (`unreadable_types`).
         let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
             .ok()
             .filter(|_| columned)

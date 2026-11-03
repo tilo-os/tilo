@@ -83,7 +83,7 @@ pub(super) enum LayoutWrite {
 /// Whether `body`, a member's retained write to `workspace`, changes the workspace's
 /// shared layout, and how: what a door asks before deciding it.
 pub(super) fn layout_write(workspace: &str, body: &[u8]) -> Option<LayoutWrite> {
-    // optional-decode: a classifier; a write that does not decode is reported where the governor takes it in (Workspaces::absorb)
+    // ignored-failure: a classifier; a write that does not decode is reported where the governor takes it in (Workspaces::absorb)
     match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body).ok()? {
         neighbour_wire::NeighbourMsg::SyncResp { room: named, .. } if named == workspace => {
             Some(LayoutWrite::Topology)
@@ -382,7 +382,7 @@ impl Workspaces {
     /// workspace's shared layout as it was where its writer made it: a change to
     /// its membership alone.
     async fn only_membership(&self, workspace: &str, body: &[u8]) -> bool {
-        // optional-decode: only called once layout_write decoded this body
+        // ignored-failure: only called once layout_write decoded this body
         let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
             postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
         else {

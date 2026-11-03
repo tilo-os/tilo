@@ -252,7 +252,7 @@ impl TaskSession {
             .filter(|s| s.kind == SignatureKind::Type)
             .map(|s| (s.app.clone(), s.name.clone()))
             .collect();
-        // optional-decode: a session without its description lists its actions by their ids
+        // ignored-failure: a session without its description lists its actions by their ids
         let addresses = crate::platform_apps::session_addresses().unwrap_or_default();
         let mut apps = serde_json::Map::new();
         for signature in signatures {
@@ -535,7 +535,7 @@ fn declared_flag(meta: &Meta, action: &str, name: &str) -> bool {
         .iter()
         .find(|declared| declared.id == action)
         .and_then(|declared| declared.params.iter().find(|param| param.name == name))
-        // optional-decode: a type this cannot read is no flag; the action still checks the value
+        // ignored-failure: a type this cannot read is no flag; the action still checks the value
         .and_then(|param| parse_ty(&param.ty, &meta.app).ok())
         .is_some_and(|ty| match ty {
             tilolang_runtime::meta::Ty::Bool => true,

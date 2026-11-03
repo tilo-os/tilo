@@ -135,7 +135,7 @@ fn str_at(bytes: &[u8], at: usize) -> Option<(&str, usize)> {
     let start = at.checked_add(4)?;
     let end = start.checked_add(len)?;
     // `PageBuf::decode` checks every entry before `get` reads one.
-    // optional-decode: `None` is `Corrupt` to `PageBuf::decode`
+    // ignored-failure: `None` is `Corrupt` to `PageBuf::decode`
     let text = std::str::from_utf8(bytes.get(start..end)?).ok()?;
     Some((text, end))
 }
