@@ -1152,9 +1152,9 @@ fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
     out
 }
 
-/// What each row of the home list presents: the task, the task it stands under, and what its row
-/// says of the task's subtasks.
-fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>)> {
+/// What each row of the home list presents: the task, the task it stands under, what its row says
+/// of the task's subtasks, and whether it stands in the folded tail.
+fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>, bool)> {
     view.poll_patches().unwrap();
     let list = all(view.tree(), "ui.VirtualList")
         .first()
@@ -1181,13 +1181,14 @@ fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<Str
             at.target.id_string(),
             item.props.get("parent").and_then(target),
             count,
+            item.props.get("tail") == Some(&Value::Bool(true)),
         ));
     }
     out
 }
 
 /// The home list is a tree: a task's subtasks stand under it, and its row says how many of them
-/// are still open.
+/// are done, of all of them.
 #[test]
 fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
     let (ada, parent) = launch_post();
@@ -1201,21 +1202,21 @@ fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
     );
     let rows = home_rows(&mut view);
     let of = |item: &Value| target(item).expect("a task");
-    let (_, above, count) = rows
+    let (_, above, count, _) = rows
         .iter()
-        .find(|(item, _, _)| *item == of(&parent))
+        .find(|(item, _, _, _)| *item == of(&parent))
         .expect("the task's row");
     assert_eq!(above, &None, "the task stands at the top");
     assert_eq!(
         count.as_deref(),
-        Some("3/3"),
-        "its row says all three of its subtasks are still open, of the three it has"
+        Some("0/3"),
+        "its row says none of the three subtasks it has is done"
     );
     for title in ["Outline", "First draft", "Screenshots"] {
         let subtask = task(&ada, title);
-        let (_, under, count) = rows
+        let (_, under, count, _) = rows
             .iter()
-            .find(|(item, _, _)| *item == of(&subtask))
+            .find(|(item, _, _, _)| *item == of(&subtask))
             .unwrap_or_else(|| panic!("{title}'s row"));
         assert_eq!(
             under,
@@ -1224,4 +1225,87 @@ fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
         );
         assert_eq!(count, &None, "{title} has no subtasks of its own");
     }
+}
+
+/// A subtask done with under a task still open stands under it, checked and muted, rather than
+/// folding away into the Done group: the list and the task's outline say the same count of a
+/// row, so both read "1/3", and they hold the same subtasks in the same order.
+#[test]
+fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
+    let (mut ada, root) = workspace();
+    let post = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Write the launch post")],
+    );
+    ada.commit();
+    call(
+        &ada,
+        "add_subtask",
+        vec![root.clone(), post.clone(), Value::text("Draft the post")],
+    );
+    ada.commit();
+    let draft = task(&ada, "Draft the post");
+    for title in ["Outline", "First draft", "Screenshots"] {
+        call(
+            &ada,
+            "add_subtask",
+            vec![root.clone(), draft.clone(), Value::text(title)],
+        );
+        ada.commit();
+    }
+    call(&ada, "check", vec![task(&ada, "Outline")]);
+    ada.commit();
+
+    let mut view = ada.view(APP);
+    let rows = home_rows(&mut view);
+    let of = |item: &Value| target(item).expect("a task");
+    let at = |item: &Value| {
+        rows.iter()
+            .position(|(row, _, _, _)| *row == of(item))
+            .unwrap_or_else(|| panic!("the row of {:?}", of(item)))
+    };
+    assert_eq!(
+        rows[at(&draft)].2.as_deref(),
+        Some("1/3"),
+        "the row says one of the three subtasks of the task is done"
+    );
+    let done = at(&task(&ada, "Outline"));
+    assert_eq!(
+        done,
+        at(&draft) + 1,
+        "the subtask done with stands right under the task it is under"
+    );
+    assert_eq!(
+        rows[done].1,
+        target(&draft),
+        "under it, not at the top where a folded row stands"
+    );
+    assert!(!rows[done].3, "and not folded away into the Done group");
+
+    let view = task_page(&ada, &post);
+    let node = node_of(view.tree(), &row_of(&view, &draft)).expect("the draft's node");
+    assert_eq!(
+        node.props.get("progress"),
+        Some(&Value::text("1/3")),
+        "the outline says the same count of the same subtasks"
+    );
+    let subtask = node_of(view.tree(), &row_of(&view, &task(&ada, "Outline"))).expect("its node");
+    assert_eq!(
+        subtask.props.get("parent").and_then(target),
+        target(&draft),
+        "the subtask done with stands under the task it is under, in the outline too"
+    );
+    // Both hold the same subtasks of the step, in the same order.
+    let listed: Vec<String> = rows
+        .iter()
+        .filter(|(_, above, _, _)| above == &target(&draft))
+        .map(|(row, _, _, _)| row.clone())
+        .collect();
+    let outlined: Vec<String> = all(view.tree(), "ui.TreeViewNode")
+        .iter()
+        .filter(|node| node.props.get("parent").and_then(target) == target(&draft))
+        .filter_map(|node| node.props.get("item").and_then(target))
+        .collect();
+    assert_eq!(listed, outlined, "the list and the outline agree");
 }

@@ -370,20 +370,27 @@ fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
     } else { false }
 }
 
-/// The tasks of a project, in order.
-fn tasks_of(p: Project) -> List<Task> {
-    tasks.items.filter(t -> t.project == p)
+/// Whether a task folds away in a list of these: it is done, and so is every task it stands
+/// under. A task done with under one still open stays where it stands, checked and muted under
+/// its task, so every row that counts its subtasks has them under it to fold.
+fn folded(items: List<Task>, t: Task) -> Bool {
+    t.done and items.ancestors(t, .parent).all(a -> a.done)
 }
 
-/// How many of a task's subtasks are still open, of all of them, as its row says ("1/3"): the
-/// list asks the index for the task's subtasks, not for every task's.
-fn open_subtasks(t: Task) -> Option<Text> {
-    let kids = tasks.items.filter(x -> x.parent == .some(t))
+/// How many of a task's subtasks are done, of all of them ("1/3"): its row in a list and its
+/// node in the page's outline read the one count of the one set of subtasks.
+fn subtask_count(t: Task) -> Option<Text> {
+    let kids = tasks.items.filter(k -> k.parent == .some(t))
     if kids.is_empty() {
         .none
     } else {
-        .some("{kids.count(k -> not k.done)}/{kids.len()}")
+        .some("{kids.count(k -> k.done)}/{kids.len()}")
     }
+}
+
+/// The tasks of a project, in order.
+fn tasks_of(p: Project) -> List<Task> {
+    tasks.items.filter(t -> t.project == p)
 }
 
 /// The sections of a project, in order.
@@ -458,10 +465,10 @@ view home(t: Tasks) {
                     .none,
                     .some("list-checks"),
                     group: .due,
-                    closed: .done,
+                    closed: x -> folded(shown, x),
                     parent: .parent,
                     parent_title: x -> x.parent?.title,
-                    progress: x -> open_subtasks(x),
+                    progress: x -> subtask_count(x),
                 ) { x ->
                     task_row(x, .day)
                 }
@@ -507,7 +514,7 @@ view project_list(p: Project, draft: State<Text>) {
                     .some("folder"),
                     parent: .parent,
                     parent_title: x -> x.parent?.title,
-                    progress: x -> open_subtasks(x),
+                    progress: x -> subtask_count(x),
                 ) { x ->
                     task_row(x, .project)
                 }
@@ -671,6 +678,7 @@ view task_page(t: Task) {
                     "No subtasks yet",
                     (moved, parent, before) -> move_to(tasks, moved, parent, before),
                     x -> check(x),
+                    progress: x -> subtask_count(x),
                     fill: false,
                 ) { x ->
                     task_outline_row(x, t.project)

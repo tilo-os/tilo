@@ -6700,7 +6700,7 @@
         },
         {
           "name": "progress",
-          "doc": "How far the branch got while it is folded, just before the trailing text: a done count among its children (\"2/5\"), counted from their checkboxes when the row gives none. Shown only when the branch is closed.",
+          "doc": "How far the branch got while it is folded, just before the trailing text: a done count among its children (\"2/5\"). Its node's [`TreeViewNodeProps::progress`] says it where the row gives none. Shown only when the branch is closed.",
           "type": {
             "option": "text"
           }
@@ -6753,6 +6753,13 @@
           "name": "branch",
           "doc": "Whether it opens to show the nodes under it. A node with children says so unless it says otherwise.",
           "type": "bool"
+        },
+        {
+          "name": "progress",
+          "doc": "How far the branch got while it is folded (\"1/3\"), which the owner counts of its own children: the same count names a list row and an outline node, so both say one thing. The row's own [`TreeViewRowProps::progress`] says it instead where the row gives one.",
+          "type": {
+            "option": "text"
+          }
         },
         {
           "name": "selected",

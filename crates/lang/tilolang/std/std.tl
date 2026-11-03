@@ -189,9 +189,10 @@ view rows<T>(
 /// and the item it lands before, and `place` puts it in the one place they name:
 /// `(moved, .none, .none)` is the end of the top level, `(moved, .some(x), .none)` the end of
 /// `x`'s own, and `(moved, .none, .some(x))` where `x` stands. One step, so two people moving
-/// items at once never leave one in two places. A row's checkbox asks `toggled`. An item whose
-/// parent is not among `items` stands at the top, so a deleted parent never hides what was
-/// inside it.
+/// items at once never leave one in two places. A row's checkbox asks `toggled`. Give `progress`
+/// and a row with items under it says how far its branch got ("1/3"), as the list of the same
+/// items says it. An item whose parent is not among `items` stands at the top, so a deleted
+/// parent never hides what was inside it.
 view outline<T>(
     name: Text,
     items: List<T>,
@@ -200,6 +201,7 @@ view outline<T>(
     empty: Text,
     place: (T, Option<T>, Option<T>) -> Action,
     toggled: (T) -> Action,
+    progress: Option<(T) -> Option<Text>> = .none,
     icon: Option<Text> = .none,
     fill: Bool = true,
     row: (T) -> View,
@@ -217,7 +219,8 @@ view outline<T>(
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
                 let offered = actions(x)
-                ui.TreeViewNode(x, label(x), parent: parent(x)) {
+                let count: Option<Text> = if let c = progress { c(x) } else { .none }
+                ui.TreeViewNode(x, label(x), parent: parent(x), progress: count) {
                     on drop(moved: T): place(moved, .none, .some(x))
                     on into(moved: T): place(moved, .some(x), .none)
                     on check: toggled(x)

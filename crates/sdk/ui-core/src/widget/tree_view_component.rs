@@ -34,8 +34,8 @@ pub struct TreeViewRowProps {
     /// Trailing text: a count, a kind, a size.
     pub trailing: Option<String>,
     /// How far the branch got while it is folded, just before the trailing text: a done
-    /// count among its children ("2/5"), counted from their checkboxes when the row gives
-    /// none. Shown only when the branch is closed.
+    /// count among its children ("2/5"). Its node's [`TreeViewNodeProps::progress`] says it
+    /// where the row gives none. Shown only when the branch is closed.
     pub progress: Option<String>,
     /// A checkbox at the start of the row: a task's done state, a selection. A press on it
     /// asks the node's [`TreeViewNodeProps::check`] instead of selecting the row.
@@ -83,6 +83,10 @@ pub struct TreeViewNodeProps {
     /// What the row shows besides its label.
     #[component(slot)]
     pub row: Option<TreeViewRowProps>,
+    /// How far the branch got while it is folded ("1/3"), which the owner counts of its own
+    /// children: the same count names a list row and an outline node, so both say one thing.
+    /// The row's own [`TreeViewRowProps::progress`] says it instead where the row gives one.
+    pub progress: Option<String>,
     /// Whether it is the selected node.
     pub selected: bool,
     /// A node was dropped just before this one, or moved here by the keyboard: carries the
@@ -182,6 +186,7 @@ struct Part {
     parent: Option<String>,
     branch: bool,
     row: Option<TreeViewRowProps>,
+    progress: Option<String>,
     menu: Vec<MenuItemProps>,
     drop: Event,
     into: Event,
@@ -240,7 +245,7 @@ pub struct Layout {
     parents: HashMap<String, Option<String>>,
     order: HashMap<String, Vec<String>>,
     rows: HashMap<String, TreeViewRowProps>,
-    /// How much of each branch is done, of its children's checkboxes: "2/5".
+    /// How far each branch got, as its node says of it: "1/3".
     progress: HashMap<String, String>,
     menus: HashMap<String, Vec<Command>>,
     drops: HashMap<String, Event>,
@@ -273,6 +278,7 @@ impl Layout {
                 parent: node.parent.map(|parent| parent.0),
                 branch: node.branch,
                 row: node.row,
+                progress: node.progress,
                 menu: node.menu,
                 drop: node.drop,
                 into: node.into,
@@ -288,6 +294,7 @@ impl Layout {
         let mut parents = HashMap::new();
         let mut order: HashMap<String, Vec<String>> = HashMap::new();
         let mut rows = HashMap::new();
+        let mut progress = HashMap::new();
         let mut menus = HashMap::new();
         let mut drops = HashMap::new();
         let mut intos = HashMap::new();
@@ -331,6 +338,9 @@ impl Layout {
             if let Some(row) = part.row {
                 rows.insert(part.key.clone(), row);
             }
+            if let Some(text) = part.progress {
+                progress.insert(part.key.clone(), text);
+            }
             if !part.menu.is_empty() {
                 menus.insert(
                     part.key.clone(),
@@ -349,20 +359,8 @@ impl Layout {
             labels.insert(part.key.clone(), part.label);
             items.insert(part.key, part.item);
         }
-        // A branch whose children each say whether they are done counts them: a folded branch
-        // says how much of it is done, in the rows the app did not give a wording of its own.
-        // The count is of the children the tree holds, read once here rather than by the app.
-        let progress = order
-            .iter()
-            .filter(|(parent, _)| parent.as_str() != TOP_LEVEL)
-            .filter_map(|(parent, children)| {
-                let mut done = 0;
-                for child in children {
-                    done += usize::from(rows.get(child)?.checkbox?);
-                }
-                Some((parent.clone(), format!("{done}/{}", children.len())))
-            })
-            .collect();
+        // How far a branch got is the owner's to count, of the items it holds: it says it of
+        // the node, and the tree shows it in the rows the app gave no wording of its own.
         Self {
             ids,
             items,
@@ -388,8 +386,8 @@ impl Layout {
             .map(|(key, _)| key.as_str())
     }
 
-    /// The rows' props, by widget id: a branch says how much of it is done where its row does
-    /// not say it itself.
+    /// The rows' props, by widget id: a branch says how far it got where its row does not say
+    /// it itself.
     fn rows(&self) -> HashMap<crate::widget::tree_view::NodeId, TreeViewRowProps> {
         self.rows
             .iter()
@@ -946,40 +944,34 @@ mod tests {
         );
     }
 
-    /// A branch whose children each say whether they are done counts them itself: the app gives
-    /// the checkboxes, not the count.
+    /// How far a branch got is the owner's count, said of the node: the row shows it, and a
+    /// row the app worded itself keeps its own.
     #[test]
-    fn a_folded_branch_counts_the_children_that_are_done() {
+    fn a_node_says_how_far_its_branch_got() {
         let queue = crate::Intents::default();
-        let checked = |key: &str, parent: Option<&str>, done: Option<bool>| {
-            let mut node = node(key, parent, false, &queue);
-            node.row = Some(TreeViewRowProps {
-                checkbox: done,
-                ..TreeViewRowProps::default()
-            });
-            node
-        };
-        let layout = Layout::of(
-            vec![
-                checked("a", None, Some(false)),
-                checked("b", Some("a"), Some(true)),
-                checked("c", Some("a"), Some(false)),
-                // A child that says nothing of being done leaves its parent's count unsaid.
-                checked("d", None, Some(false)),
-                node("e", Some("d"), false, &queue),
-            ],
-            Event::None,
-        );
+        let mut said = node("a", None, true, &queue);
+        said.progress = Some("1/3".into());
+        said.row = Some(TreeViewRowProps::default());
+        // Its children say nothing of a count: the node is asked, not counted.
+        let mut child = node("b", Some("a"), false, &queue);
+        child.row = Some(TreeViewRowProps {
+            checkbox: Some(true),
+            ..TreeViewRowProps::default()
+        });
+        let mut worded = node("c", Some("a"), false, &queue);
+        worded.progress = Some("1/3".into());
+        worded.row = Some(TreeViewRowProps {
+            progress: Some("2/5".into()),
+            ..TreeViewRowProps::default()
+        });
+        let layout = Layout::of(vec![said, child, worded], Event::None);
         let rows = layout.rows();
+        assert_eq!(rows[&layout.ids["a"]].progress.as_deref(), Some("1/3"));
+        assert_eq!(rows[&layout.ids["b"]].progress, None, "nothing says it");
         assert_eq!(
-            rows[&layout.ids["a"]].progress.as_deref(),
-            Some("1/2"),
-            "one of two"
-        );
-        assert_eq!(rows[&layout.ids["b"]].progress, None, "no children");
-        assert_eq!(
-            rows[&layout.ids["d"]].progress, None,
-            "a child says nothing"
+            rows[&layout.ids["c"]].progress.as_deref(),
+            Some("2/5"),
+            "the row's own wording stands"
         );
     }
 
