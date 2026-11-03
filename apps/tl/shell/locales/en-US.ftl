@@ -1032,8 +1032,6 @@ d-f5tl6n63 = Rooms here
 
 d-7nxhynyj = Picture
 
-d-u2b66n4a = Window group
-
 d-nxpbvfox = Window place
 
 d-6l3wldtm = Window menu
@@ -1222,9 +1220,13 @@ d-wh7n4fhq-row0 = Banner row for a
 
 d-f5tl6n63-row0 = Rooms here for r
 
-d-u2b66n4a-row0 = Window group for v
+d-7nxhynyj-row0-row0 = Picture for v
 
-d-u2b66n4a-row1 = Window group for v
+d-7nxhynyj-row0 = Picture for w
+
+d-7nxhynyj-row1-row0 = Picture for v
+
+d-7nxhynyj-row1 = Picture for w
 
 d-6l3wldtm-row0 = Window menu for s
     .w-move-to = Move to { $strip_name }

@@ -7,37 +7,41 @@
 /// The picture is the desk's: each strip top to bottom, its windows left to right at the share
 /// of the strip's width they keep on the desk, a group's other tabs as narrower slices beside
 /// the tab in front, under the strip's name. Each place shows the window's own live picture
-/// (`ui.WindowPreview`), the compositor's, and names it below; it is a surface of the desk: the
-/// desk's bar stays above it, so it holds no sidebar of its own.
+/// (`ui.WindowPreview`), the compositor's, under its name in the card's head and the app it
+/// shows below it; it is a surface of the desk: the desk's bar stays above it, so it holds no
+/// sidebar of its own. The page keeps its gutter, so the overview stands inside the desk the way
+/// every other page does.
 view overview(d: Desk) {
     lens query: Text = d.spotlight
     let windows = d.windows.sort_by(w -> w.place)
     let here = windows.filter(w -> w.workspace_key == front_workspace(d))
-    stack(gap: .section) {
-        row(gap: .related, align: .center, wrap: true) {
-            ui.Text("Overview", role: .heading)
-            ui.Text(d.workspace, role: .caption, secondary: true)
-            spacer
-            ui.Button("New workspace", icon: .plus, size: .small) {
-                on press: session.new_workspace()
+    page(full) {
+        stack(gap: .section) {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text("Overview", role: .heading)
+                ui.Text(d.workspace, role: .caption, secondary: true)
+                spacer
+                ui.Button("New workspace", icon: .plus, size: .small) {
+                    on press: session.new_workspace()
+                }
+                ui.Button("Join a workspace", icon: .users, size: .small) {
+                    on press: session.join_workspace()
+                }
             }
-            ui.Button("Join a workspace", icon: .users, size: .small) {
-                on press: session.join_workspace()
+            ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
+                on submit: session.search(query: .some(query))
             }
-        }
-        ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
-            on submit: session.search(query: .some(query))
-        }
-        rooms_here(d)
-        if query == "" {
-            if here.is_empty() {
-                ui.EmptyState("No windows", message: "Open something to see its window", icon: .app_window, inline: true)
+            rooms_here(d)
+            if query == "" {
+                if here.is_empty() {
+                    ui.EmptyState("No windows", message: "Open something to see its window", icon: .app_window, inline: true)
+                }
+                for s in window_strips(here) {
+                    picture(d, here, s)
+                }
+            } else {
+                found(d, windows.matching(query))
             }
-            for s in window_strips(here) {
-                picture(d, here, s)
-            }
-        } else {
-            found(d, windows.matching(query))
         }
     }
 }
@@ -69,41 +73,24 @@ view picture(d: Desk, windows: List<Win>, strip: Text) {
         if space.compact {
             stack(gap: .related) {
                 for w in fronts {
-                    window_group(d, windows, w)
+                    window_place(d, w, 0.0, peek: false)
+                    for v in behind_tabs(windows, w) {
+                        window_place(d, v, 0.0, peek: false)
+                    }
                 }
             }
         } else {
             row(gap: .related, align: .start) {
                 for w in fronts {
-                    window_group(d, windows, w)
+                    window_place(d, w, w.share, peek: false)
+                    for v in behind_tabs(windows, w) {
+                        // A tab behind stands 0.75 as wide as its picture is tall, and a picture
+                        // is 1.6 times as wide as it is tall: beside the window in front, that is
+                        // 0.469 of its width, a slice that keeps its picture and its name and no
+                        // commands of its own.
+                        window_place(d, v, w.share * 0.469, peek: true)
+                    }
                 }
-            }
-        }
-    }
-}
-
-/// One window of the desk with the tabs behind it: the tab in front at the window's share of
-/// the strip, each tab behind it a narrower slice beside it, as the window stands on the desk. A
-/// slice that narrow holds the tab's picture and name and no commands, so a compact output, which
-/// has the room for every window's own commands, stacks the group's windows one under the other
-/// instead.
-view window_group(d: Desk, windows: List<Win>, w: Win) {
-    let behind = behind_tabs(windows, w)
-    if space.compact {
-        stack(gap: .related) {
-            window_place(d, w, 1.0, peek: false)
-            for v in behind {
-                window_place(d, v, 1.0, peek: false)
-            }
-        }
-    } else {
-        row(fill(group_weight(w, behind)), gap: .tight, align: .start) {
-            window_place(d, w, 1.0, peek: false)
-            for v in behind {
-                // A tab behind stands 0.75 as wide as its picture is tall, and a picture is 1.6
-                // times as wide as it is tall: beside the front tab, that is 0.469 of its width,
-                // a slice that keeps its picture and its name and no commands of its own.
-                window_place(d, v, 0.469, peek: true)
             }
         }
     }
@@ -112,12 +99,6 @@ view window_group(d: Desk, windows: List<Win>, w: Win) {
 /// The tabs standing behind `w` on the desk, in their order.
 fn behind_tabs(windows: List<Win>, w: Win) -> List<Win> {
     return windows.filter(v -> v.group_key == w.group_key and v.tab_index > 0).sort_by(v -> v.tab_index)
-}
-
-/// How much of the strip a window with `behind` tabs behind it takes: the window's share, and
-/// the slice each tab behind it stands in.
-fn group_weight(w: Win, behind: List<Win>) -> Float {
-    return w.share * (1.0 + 0.469 * behind.len().to_float())
 }
 
 /// One window's place: its live picture, the app it shows and the device it runs on when that is
@@ -130,15 +111,16 @@ fn group_weight(w: Win, behind: List<Win>) -> Float {
 ///
 /// A `peek` is a tab standing beside the window in front of it, in a slice in which the window's
 /// commands and the buttons of an app that stopped answering would not fit: it keeps the
-/// picture and its name, and its commands are the window's own when it comes forward.
+/// picture and its name, and its commands are the window's own when it comes forward. It is
+/// pictured no wider than its 0.469 slice of what a place may take, so a row of places never
+/// hands a tab behind more width than the window it stands behind.
 view window_place(d: Desk, w: Win, weight: Float, peek: Bool) {
-    let cap = if space.compact { 100rem } else if space.width_class == .expanded or space.width_class == .wide { 26rem } else { 20rem }
+    let cap = if space.compact { 100rem } else if space.width_class == .expanded or space.width_class == .wide { if peek { 12rem } else { 26rem } } else if peek { 9rem } else { 20rem }
     ui.Card(item: w, title: w.title, selected: w.focused, fill(if space.compact { 0.0 } else { weight }), max: cap) {
         stack(gap: .tight) {
             layers(aspect: 1.6) {
                 window_picture(w)
             }
-            ui.Text(w.title, role: .label, lines: 1, truncate)
             if peek {
                 ui.Text(app_line(w), role: .caption, secondary: true, lines: 1, truncate)
             } else {
