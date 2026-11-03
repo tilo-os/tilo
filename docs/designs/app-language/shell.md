@@ -379,50 +379,22 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
 
 ## 8.4 Apps written in Rust on the canvas
 
-A place shows a resource, whatever language its app is written in. An app written in Rust
-reaches the canvas, the strips and the desktop exactly as a tilolang app does. It differs only
-in who draws the place: the app's own process, in a surface the compositor gives it for that
-place, which the SDK fills for it. Both stay: apps keep being ported to tilolang, and a ported app and its Rust original
-are interchangeable to every shell.
+A place shows a resource, whatever language its app is written in. There is one app model,
+not a tilolang one and a Rust one with a bridge between them. A Rust app declares the same
+things a tilolang package does: types (resources, with noun and app), actions, and named views
+of a type that return described components the host draws. Its model and actions run where a
+tilolang package's do, in the session's document host, over the same storage. The shell owns
+windows and places for both. So a Rust app's channel page stands on the canvas exactly as
+Mail's inbox does, with nothing the app does for it.
 
-**What the person sees.** They type "youtube videos of mkbhd" on the canvas. A frame stands
-where they typed, showing that creator's page as Tube draws it: their videos, their name, the
-subscribe action. There is no Tube sidebar or Tube window around it. The frame's bar carries
-the channel's own actions, read from what Tube publishes. Pressing a video places the video
-beside it, as pressing a reference in a conversation does. Closing the frame closes that view
-only. Tube may keep running for other places, or stop if no place shows anything of it.
+What a person sees: they type "youtube videos of mkbhd" on the canvas, and a frame stands where
+they typed, showing that creator's page: their videos, their name, the subscribe action. There
+is no Tube window or sidebar around it. Pressing a video places the video beside it.
 
-**Interop is the default.** A Rust app does nothing special to reach a shell, and neither does
-a tilolang app. Every part below comes from what every app already declares, and the SDK and
-the session do the rest once, for all apps.
-
-1. **Types.** Every published resource already has a kind (`tube.channel`) and its app, and
-   its type's name. The publication path (`tilo-resource`'s `ResourceSpec`, built by the SDK
-   for every row and resource) carries them as the `ResourceType`: its noun is the type's name
-   in words, its plural is derived, and its app is the app's. This is the same type a tilolang
-   package publishes from its declarations. The one search then matches "youtube videos"
-   against Tube's channels and videos exactly as "my mails" matches Mail's root (search.md).
-   An app may refine a noun as words in its catalogue (i18n.md), never as code.
-2. **Views.** Every app can already be opened at one of its resources: that is how "open" works
-   today. The SDK answers the view-mount action (`ResourceViewMountSpec`) for every resource of
-   every app with that same opening, drawn in a surface on the mount it is handed. The SDK owns
-   the app's window chrome (its navigation, sidebar and app bar), so it leaves that out and draws
-   the resource's page alone. A tilolang app is the same: its resource's default view. One
-   process serves many mounts.
-3. **Placing.** When the arrangement places a resource whose app has no tilolang view in the
-   shell's runtime, the session invokes the resource's mount action with a compositor mount
-   keyed by the place, as the person (the place is theirs). The place draws
-   `ui.WindowWell(place: p.key)`, which already shows a compositor surface by its key. Removing
-   the place revokes the mount.
-
-**Window state and lens.** The mounted view's scroll and selection are the app's own, kept per
-mount the way a window keeps them. The person's lens on the resource (workspace-model.md §2) is
-published by the app as for any of its windows.
-
-**Not done here.** The view's looks follow the theme through the toolkit: a Rust app draws with
-the same `ui` components and theme roles, so switching theme changes the mounted view too. A
-Rust app that draws without the toolkit (a video surface, a browser engine) keeps its own looks
-inside the place.
+The Rust SDK becomes another way to write that model. Its `ResourceApp`, `#[resource]` models,
+`LiveRow` rows and per-app windows today differ from it in views, item resources, storage,
+windows, search and permission checks. The SDK and every Rust app change once to the one
+model. The design maps each piece onto the code: [one-app-model.md](one-app-model.md).
 
 ## 9. Open
 
