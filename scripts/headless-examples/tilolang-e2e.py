@@ -60,8 +60,13 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-SESSION = REPO / "dist/dev/nested-session.sh"
-BIN = REPO / "target/nested-session/bin"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The session this checks and the tools that act in it: one harness for every
+# check of a desktop with the tree's apps (scripts/headless-examples/real_apps.py).
+from real_apps import (BUILD, Failed, Session, app_id, prepare, run,  # noqa: E402
+                       start_session, stop_session, until)
+
+BIN = BUILD / "bin"
 APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
@@ -73,82 +78,6 @@ PROBE_ROUTES = {
     "todo": ["so.tilo.lang.notes"],
 }
 
-
-def app_id(name: str) -> str:
-    return f"so.tilo.lang.{name}"
-
-
-class Failed(Exception):
-    pass
-
-
-def run(argv, **kwargs) -> str:
-    result = subprocess.run(argv, text=True, capture_output=True, **kwargs)
-    if result.returncode != 0:
-        raise Failed(f"{' '.join(map(str, argv))} failed ({result.returncode}): {result.stderr.strip()[-2000:]}")
-    return result.stdout
-
-
-def until(what: str, check, deadline: float = 60.0, step: float = 0.25):
-    end = time.monotonic() + deadline
-    while time.monotonic() < end:
-        value = check()
-        if value:
-            return value
-        time.sleep(step)
-    raise Failed(f"timed out waiting for {what}")
-
-
-class Session:
-    """One headless nested session and the environment its tools act in."""
-
-    def __init__(self, state: Path, ready: dict):
-        self.pid = 0
-        self.state = state
-        self.control = ready["control"]
-        self.runtime = ready["runtime"]
-
-    def env(self) -> dict:
-        state = self.state
-        env = dict(os.environ)
-        env.update(
-            HOME=str(state / "home"),
-            XDG_CONFIG_HOME=str(state / "config"),
-            XDG_DATA_HOME=str(state / "data"),
-            XDG_STATE_HOME=str(state / "state"),
-            XDG_CACHE_HOME=str(state / "cache"),
-            TILO_IDENTITY_ROOT=str(state / "identity"),
-            TILO_APPS_DATA_DIR=str(state / "apps"),
-            TILO_RUNTIME_BUNDLE_DIR=str(state / "runtimes"),
-            TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=str(state / "keys/runtime-publishers.txt"),
-            TILO_TEST_CONTROL=self.control,
-            XDG_RUNTIME_DIR=self.runtime,
-        )
-        env.pop("TILO_APPS_SYSTEM_DIR", None)
-        return env
-
-    def control_cmd(self, *args: str) -> str:
-        return run([BIN / "tilo-control", *args], env=self.env())
-
-    def control_json(self, *args: str):
-        return json.loads(self.control_cmd(*args))
-
-    def actions(self, query: str = "") -> list:
-        # As an agent or a script lists them: with the actions listed for agents alone
-        # ("Show this window"), which a person's palette leaves out.
-        return self.control_json("actions", "list", query, "--json", "--programmatic").get("actions", [])
-
-    def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
-        argv = ["actions", "invoke", provider, ident, "--wait"]
-        if args is not None:
-            argv += ["--args-json", json.dumps(args)]
-        return self.control_json(*argv)
-
-    def windows(self) -> list:
-        return self.control_json("windows", "--json")
-
-    def log(self) -> str:
-        return (self.state / "logs/session.log").read_text(errors="replace")
 
 # --- /proc --------------------------------------------------------------------
 
@@ -581,32 +510,6 @@ def check_routes(session: Session) -> dict:
     return result
 
 
-def start_session(state: Path, out: Path, tapps: list[Path], tag: str, native: str = "",
-                  fresh: bool = True):
-    ready = out / f"ready-{tag}.json"
-    argv = [SESSION, "--no-build", "--headless", "--software", "--apps", native,
-            "--state", state, "--ready", ready]
-    if fresh:
-        argv.append("--fresh-desktop")
-    for tapp in tapps:
-        argv += ["--install-tapp", tapp]
-    print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
-    log = open(out / f"session-{tag}.log", "w")
-    proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                            env={**os.environ, "RUST_LOG": os.environ.get(
-        "RUST_LOG", "warn,tilo::launch_latency=info,tilo_network_actor::workspace_sync=info")})
-    until("the session", lambda: ready.is_file() or proc.poll() is not None, 300, 0.5)
-    if proc.poll() is not None:
-        raise Failed(f"the session ended ({proc.returncode}); see {out / f'session-{tag}.log'}")
-    return proc, Session(state, json.loads(ready.read_text()))
-
-
-def stop_session(proc) -> None:
-    if proc is not None and proc.poll() is None:
-        os.kill(proc.pid, signal.SIGTERM)
-        proc.wait(60)
-
-
 def run_checks(summary: dict, checks) -> bool:
     for name, check in checks:
         print(f"==> {name}", file=sys.stderr)
@@ -624,8 +527,7 @@ def run_checks(summary: dict, checks) -> bool:
 
 def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     """The apps in a session of their own, then the route checks in a second start of it."""
-    proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps",
-                                  native="notes")
+    proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps", apps="notes")
     running["proc"] = proc
     pid = proc.pid
     ok = run_checks(summary, [
@@ -674,9 +576,9 @@ def main() -> int:
     os.environ.setdefault("TMPDIR", str(Path.home() / "tmp"))
     Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 
-    build = [] if not args.no_build else ["--no-build"]
     print("==> preparing the session", file=sys.stderr)
-    run([SESSION, *build, "--prepare-only", "--apps", "notes", "--state", state])
+    prepare(state, apps="notes", built=not args.no_build,
+            remote=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"))
     if not args.no_build:
         print("==> building the tilolang tool and the probe", file=sys.stderr)
         run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang",

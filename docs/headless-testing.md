@@ -497,6 +497,59 @@ kill $COMP_PID
 rm -f $TILO_TEST_CONTROL
 ```
 
+## A session with the tree's own apps
+
+The recipes above start the compositor alone: it lists no applications, so a
+click on Notes in the desk finds nothing to start. Showing a real app's window
+with real content needs a session that has the apps *installed* and starts them
+through `tilo-launcher` and its sandbox, as an image does. One harness does
+that, `scripts/headless-examples/real_apps.py`; the checks that drive apps
+(`tilolang-e2e.py`, `canvas-e2e.py`) are built on it.
+
+```bash
+# Once per tree: the session's programs, the apps, and the runtime they link.
+# Through a remote-exec prefix when this machine has no toolchain for it:
+export TILO_NESTED_SESSION_BUILD_EXEC="…"   # optional
+python3 scripts/headless-examples/real_apps.py --start --build --open notes --shot /tmp/notes.png
+
+# Afterwards every start reuses that build (seconds) and installs nothing twice:
+python3 scripts/headless-examples/real_apps.py --start --open notes --shot /tmp/notes.png
+python3 scripts/headless-examples/real_apps.py --start --open file-explorer --open chat --keep
+```
+
+`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone
+(`--software`: it never opens this machine's GPU and never touches a live
+desktop) on a private runtime directory and a throwaway identity. The apps it
+installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed
+with the session's own key and installed through `tilo-install` into the
+session's store — the same path the image's `/usr/share/tilo-apps` is built
+through. `--open APP` launches it through the desktop's own launcher
+(`applications so.tilo.<app>`) and waits until its window presents a frame;
+`--shot` writes a PNG of the whole desktop. `--keep` leaves the session running
+and prints its ready JSON — the control socket, the runtime directory and the
+state directory — so `tilo-control` drives it from anywhere:
+
+```bash
+TILO_TEST_CONTROL=<control from the ready line> <build>/bin/tilo-control actions list
+kill -TERM -<pid>   # the session's own process group: its apps, services and bus too
+```
+
+Never start an app binary by hand and never run `tilo-launcher` outside a
+session: an app launched that way has no window to show (`no runtime host
+found`), and the launcher refuses one that is not in a session's scope. From
+Python, mount the same harness instead of a second one:
+
+```python
+from real_apps import Session, prepare
+
+prepare(state, apps="notes", built=False)          # idempotent
+with Session(state) as session:                    # fresh desktop, headless
+    session.start()
+    session.launch("notes")                        # through the launcher
+    session.presented("notes")                     # its window paints
+    session.snapshot(out / "notes.png")
+```
+
 ## Measuring the frame loop
 
 The compositor carries per-tick instrumentation — cadence, per-phase
