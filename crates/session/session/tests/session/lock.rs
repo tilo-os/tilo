@@ -1121,6 +1121,31 @@ pub(super) fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
     cells
 }
 
+/// The box every pixel `after` changed from `before` covers, `None` when the
+/// two pictures are the same.
+pub(super) fn changed(
+    before: &tilo_compositor::Screenshot,
+    after: &tilo_compositor::Screenshot,
+) -> Option<(usize, usize, usize, usize)> {
+    let (width, height) = (after.width as usize, after.height as usize);
+    let mut box_of: Option<(usize, usize, usize, usize)> = None;
+    for y in 0..height {
+        for x in 0..width {
+            let at = (y * width + x) * 4;
+            if before.rgba[at..at + 4] == after.rgba[at..at + 4] {
+                continue;
+            }
+            box_of = Some(match box_of {
+                None => (x, y, x + 1, y + 1),
+                Some((left, top, right, bottom)) => {
+                    (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1))
+                }
+            });
+        }
+    }
+    box_of
+}
+
 /// A level key pressed on the lock screen is answered there: the readout shows
 /// over the lock, on the display the person is at, and the lock keeps every
 /// key and pointer press it always did.
@@ -1128,6 +1153,10 @@ pub(super) fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
 fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     const DISPLAY: &str = "HEADLESS-1";
     let _settled = ui::motion::testing::settled();
+    // The screen's clock is the machine's, and it turns over when it does:
+    // held, the pictures either side of the key show the same minute, and
+    // what changed between them is what the key drew.
+    let _clock = tilo_test_env::held_wall_clock();
     let home = private_home();
     let held = std::sync::Arc::new(Held::new());
     let asked = Rc::new(RefCell::new(Vec::new()));
@@ -1157,6 +1186,10 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
         .compositor()
         .screenshot(DISPLAY)
         .expect("screenshot");
+    assert!(
+        apart(&picture(&before), &locked[0]) < CLOSE,
+        "the locked screen is still the one drawn under the key"
+    );
 
     // The sound key works here: it changes a level and reveals nothing behind
     // the lock. Its readout answers on the screen the key was pressed at.
@@ -1166,10 +1199,15 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
         "Speakers, Muted",
         "the locked session answers the device key, naming the output"
     );
-    // The frame the answer is drawn in, over the lock's own.
-    for _ in 0..3 {
-        session.step(REFRESH).expect("a turn of the session");
-    }
+    // The frame the answer is drawn in, over the lock's own: step until it
+    // is drawn, rather than counting the turns it takes.
+    pump(&mut session, &mut [], |session, _| {
+        let after = session
+            .compositor()
+            .screenshot(DISPLAY)
+            .expect("screenshot");
+        changed(&before, &after).is_some()
+    });
     let after = session
         .compositor()
         .screenshot(DISPLAY)
@@ -1180,23 +1218,8 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     );
     // The lock's own frame stays: what changed is the readout drawn over it,
     // across the middle of the display's foot.
-    let (width, height) = (after.width as usize, after.height as usize);
-    let mut changed: Option<(usize, usize, usize, usize)> = None;
-    for y in 0..height {
-        for x in 0..width {
-            let at = (y * width + x) * 4;
-            if before.rgba[at..at + 4] == after.rgba[at..at + 4] {
-                continue;
-            }
-            changed = Some(match changed {
-                None => (x, y, x + 1, y + 1),
-                Some((left, top, right, bottom)) => {
-                    (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1))
-                }
-            });
-        }
-    }
-    let (left, top, right, bottom) = changed.expect("the readout paints over the lock");
+    let (left, top, right, bottom) =
+        changed(&before, &after).expect("the readout paints over the lock");
     assert!(
         (500..=780).contains(&left) && (500..=780).contains(&right),
         "the readout is across the middle of the screen: {left}..{right}"
@@ -1204,10 +1227,5 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     assert!(
         (640..=760).contains(&top) && (640..=800).contains(&bottom),
         "the readout is on the screen's foot, over the lock: {top}..{bottom}"
-    );
-    assert_eq!(
-        pictures(&mut session, &[DISPLAY])[0].len(),
-        locked[0].len(),
-        "the locked screen is still the one drawn under it"
     );
 }
