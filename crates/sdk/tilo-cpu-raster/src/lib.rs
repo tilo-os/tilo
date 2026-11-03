@@ -8,9 +8,11 @@
 //! layers, and glyph runs, whose outlines it resolves and caches itself.
 //!
 //! The output is premultiplied RGBA8 written into a caller-owned buffer with
-//! an arbitrary row stride, either whole or limited to damaged regions. Draws
-//! whose bounds miss a region are not recorded at all, so a small damage
-//! region costs little regardless of how much the scene contains.
+//! an arbitrary row stride, either whole or limited to damaged regions. The
+//! scene is walked once per frame and each draw listed for the regions it can
+//! paint, so a frame costs what changed: a small damage region costs little
+//! regardless of how much the scene contains, and so does a change in many
+//! places.
 //!
 //! [`vello::Scene`]: https://docs.rs/vello/latest/vello/struct.Scene.html
 #![allow(
@@ -33,6 +35,7 @@ mod decode;
 mod diff;
 mod glyph;
 mod image;
+mod plan;
 mod record;
 
 use std::time::Duration;
@@ -436,6 +439,8 @@ pub struct CpuRasterizer {
     glyphs: glyph::GlyphCache,
     images: image::ImageCache,
     scratch: record::Scratch,
+    /// Which draws each region of the frame last prepared paints.
+    plan: plan::Plan,
 }
 
 impl std::fmt::Debug for CpuRasterizer {
@@ -465,6 +470,7 @@ impl CpuRasterizer {
             glyphs: glyph::GlyphCache::default(),
             images: image::ImageCache::default(),
             scratch: record::Scratch::new(options.cached_blur),
+            plan: plan::Plan::default(),
         }
     }
 
@@ -542,6 +548,10 @@ impl CpuRasterizer {
 
     /// Render the scene last given to [`Self::prepare`], like
     /// [`Self::render`]. The decode fields of the returned stats are zero.
+    ///
+    /// The scene is walked once, listing each draw for the regions it can
+    /// paint; every region then draws only its own draws, so a frame costs
+    /// what it changed rather than its regions times its draws.
     pub fn render_prepared(
         &mut self,
         target: &mut Target<'_>,
@@ -551,12 +561,18 @@ impl CpuRasterizer {
         let mut stats = Stats::default();
         self.scratch.blurs.begin_frame();
         let full = [Region::new(0, 0, target.width, target.height)];
-        let regions = regions.unwrap_or(&full);
-        for region in regions {
-            let Some(region) = region.clamp_to(target.width, target.height) else {
-                continue;
-            };
-            self.render_region(target, region, base, &mut stats);
+        let asked: Vec<Region> = regions
+            .unwrap_or(&full)
+            .iter()
+            .filter_map(|region| region.clamp_to(target.width, target.height))
+            .collect();
+        self.plan
+            .build(&self.list, &asked, target.width, target.height);
+        for index in 0..self.plan.regions().len() {
+            let region = self.plan.regions()[index];
+            let ops = self.plan.take(index);
+            self.render_region(target, region, &ops, base, &mut stats);
+            self.plan.give_back(index, ops);
         }
         self.scratch.blurs.end_frame();
         stats
@@ -566,6 +582,7 @@ impl CpuRasterizer {
         &mut self,
         target: &mut Target<'_>,
         region: Region,
+        ops: &[u32],
         base: AlphaColor<Srgb>,
         stats: &mut Stats,
     ) {
@@ -603,6 +620,7 @@ impl CpuRasterizer {
         let recorded = record::record(
             ctx,
             &self.list,
+            ops,
             region.to_rect(),
             base,
             &mut self.scratch,
