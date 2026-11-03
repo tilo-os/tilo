@@ -5251,6 +5251,11 @@
           "accepts": "view"
         },
         {
+          "name": "tabs",
+          "doc": "The places the window shows, as its tabs: the bar is theirs while there are any, and the content is the tab in front. Empty for a window of one place, whose bar is the place's own header or the frame's.",
+          "accepts": "view"
+        },
+        {
           "name": "body",
           "doc": "The window's content, filling the window.",
           "accepts": "view",

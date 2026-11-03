@@ -852,7 +852,7 @@ d-moh3hzne = Bell
 
 d-fniigjed = Viewing settings
     .w-desk = Desk
-    .w-the-same-places-shown-three-ways = The same places, shown three ways. Switching keeps every window where it is.
+    .w-the-same-places-shown-four-ways = The same places, shown four ways. Switching keeps every window where it is.
 
 d-j2fnnt4g = Show preset~present
 
@@ -927,7 +927,7 @@ d-gctjtdv7 = Desk
 d-6jkhhsvr = Desk around
     .w-dock = Dock
 
-d-w3f6bqf5 = Screen
+d-p2yoggx4 = Screen
 
 d-bhxvwkho = Shown preset
 
@@ -1034,6 +1034,8 @@ d-f5tl6n63 = Rooms here
 
 d-7nxhynyj = Picture
 
+d-u2b66n4a = Window group
+
 d-nxpbvfox = Window place
 
 d-6l3wldtm = Window menu
@@ -1124,32 +1126,38 @@ d-r34xb7ak = Preset switch
     .w-spaces = Spaces
     .w-desktop = Desktop
 
+d-2qcr3c5b = Preset menu
+    .w-strips = Strips
+    .w-frames = Frames
+    .w-spaces = Spaces
+    .w-desktop = Desktop
+
 d-qrahog47 = Strips view
 
 d-xwdhqtyz = Row of
     .w-no-window-here-yet = No window here yet
     .w-open-something-into-this-strip = Open something into this strip.
 
-d-7oiz3phb = Strip column
+d-rkxghzb3 = Strip window
     .w-nothing-here = Nothing here
+    .w-open-something-into-this-strip = Open something into this strip.
 
-d-scru4wch = Strip controls
+d-ns5lwawo = Window controls
     .w-width = Width
     .w-narrow = Narrow
     .w-normal = Normal
     .w-wide = Wide
-
-d-so5z33zr = Tab chip
-
-d-oyjbbzbk = Place content
-
-d-43am22do = Place view
+    .w-bring-to-front = Bring to front
+    .w-restore = Restore
+    .w-maximize = Maximize
 
 d-z4vc77e6 = Place controls
     .w-pinned = Pinned
     .w-pin = Pin
-    .w-close-place = Close place
     .w-move-to-row = Move to row
+    .w-close = Close
+
+d-43am22do = Place view
 
 d-fziuz57n = Switcher
     .w-no-windows = No windows
@@ -1224,13 +1232,7 @@ d-wh7n4fhq-row0 = Banner row for a
 
 d-f5tl6n63-row0 = Rooms here for r
 
-d-7nxhynyj-row0-row0 = Picture for v
-
-d-7nxhynyj-row0 = Picture for w
-
-d-7nxhynyj-row1-row0 = Picture for v
-
-d-7nxhynyj-row1 = Picture for w
+d-u2b66n4a-row0 = Window group for v
 
 d-6l3wldtm-row0 = Window menu for s
     .w-move-to = Move to { $strip_name }
@@ -1240,7 +1242,9 @@ d-6l3wldtm-row1 = Window menu for r
 
 d-qrahog47-row0 = Strips view for workspace
 
-d-7oiz3phb-row0 = Strip column for p
+d-xwdhqtyz-row0 = Row of for s
+
+d-rkxghzb3-row0 = Strip window for p
 
 d-z4vc77e6-row0 = Place controls for r
 

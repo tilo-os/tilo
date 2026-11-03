@@ -49,6 +49,7 @@ use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 pub struct WindowFrameProps {
     /// The window's name: what assistive technology reads, and the title of the frame's own
     /// bar when the content has no header row to hold the controls.
+    #[component(data)]
     pub name: Option<String>,
     /// Whether it is the window in front, the one the keyboard goes to.
     pub focused: bool,

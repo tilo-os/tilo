@@ -141,7 +141,7 @@ default view viewing_settings for Viewing
 view viewing_settings(v: Viewing) {
     page {
         section("Desk") {
-            ui.Text("The same places, shown three ways. Switching keeps every window where it is.")
+            ui.Text("The same places, shown four ways. Switching keeps every window where it is.")
             preset_switch(v)
         }
     }

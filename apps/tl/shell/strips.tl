@@ -201,9 +201,10 @@ fn place_in_front(s: ArrangementStrip) -> Option<session.Place> {
 }
 
 /// Shows the place `place` and brings its strip forward with it: what choosing a tab does, and
-/// the same arranging action a script or an agent runs.
-action show_place(v: Viewing, strip: Text, place: session.Place) (icon: .app_window, label: "Show the place") {
-    v.focused = strip
+/// the same arranging action a script or an agent runs. The strip's own reading moves first, the
+/// desk then brings the place in front of its strip.
+flow show_place(v: Viewing, strip: Text, place: session.Place) {
+    focus_strip(v, strip)
     session.activate(place: place)
 }
 
@@ -231,11 +232,11 @@ view window_controls(a: Arrangement, v: Viewing, s: ArrangementStrip, shown: Opt
         }
         if s.maximized {
             ui.Button("Restore", icon: .minimize_2, icon_only: true, role: .plain) {
-                on press: session.maximize(strip: the_strip(s.key), maximized: false)
+                on press: session.maximize(group: s.key, on: false)
             }
         } else {
             ui.Button("Maximize", icon: .maximize_2, icon_only: true, role: .plain) {
-                on press: session.maximize(strip: the_strip(s.key), maximized: true)
+                on press: session.maximize(group: s.key, on: true)
             }
         }
         if let p = shown {

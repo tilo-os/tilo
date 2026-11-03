@@ -767,6 +767,11 @@ kind = "undoable"
 params = []
 
 [[resources.verbs]]
+id = "activate"
+kind = "undoable"
+params = []
+
+[[resources.verbs]]
 id = "move"
 kind = "undoable"
 
