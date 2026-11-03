@@ -664,6 +664,18 @@ impl Live {
             .map_err(|error| error.to_string())
     }
 
+    /// Say `presence` as object `sequence` of `workspace`'s presence track,
+    /// sealed by the plane under the workspace scope's keys.
+    pub fn say(
+        &self,
+        workspace: WorkspaceId,
+        sequence: u32,
+        presence: &collab_types::presence::Presence,
+    ) -> Result<(), String> {
+        let plane = self.plane(workspace)?;
+        tilo_live::presence::say(&plane, sequence, presence).map_err(|error| error.to_string())
+    }
+
     /// The next object heard in `workspace`'s live plane, or `None`.
     #[must_use]
     pub fn try_recv(&self, workspace: WorkspaceId) -> Option<Heard> {

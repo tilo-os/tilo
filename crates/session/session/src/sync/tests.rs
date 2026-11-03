@@ -658,6 +658,48 @@ fn a_pointer_landing_draws_a_frame_and_a_resting_one_draws_none() {
     );
 }
 
+/// An agent is on the desk the way a person's device is: its shell frame on
+/// the workspace's presence track says its face, that it works here, and
+/// what it is doing, and the People panel draws that.
+#[test]
+fn an_agents_shell_frame_puts_its_face_on_the_desk() {
+    let (sync, _said) = session("Quinten", Some(0x04));
+    let said = collab_types::presence::ShellPresence {
+        seq: 1,
+        sent_at_ms: 1,
+        label: "Writer helper".to_owned(),
+        agent: true,
+        colour: "#7c3aed".to_owned(),
+        activity: Some("Editing the notes".to_owned()),
+        place: Some("Notes".to_owned()),
+        size: [1440, 900],
+        windows: Vec::new(),
+        selection: None,
+        chat: None,
+        reaction: None,
+    };
+    let frame = Presence::desktop(WORKSPACE, PeerPresencePayload::Shell(Box::new(said)));
+    sync.heard_presence(WORKSPACE, device(1), &frame);
+
+    let mut tree = desk(WORKSPACE);
+    let people = sync.show(&mut tree, &|_| None);
+    assert_eq!(people.len(), 1, "the agent is a member here");
+    assert_eq!(people[0].label, "Writer helper");
+    assert!(people[0].agent, "an agent draws as one, not as a person");
+    assert_eq!(
+        people[0].status.as_ref().map(|line| line.text.clone()),
+        Some("Editing the notes".to_owned()),
+        "what it is doing reads as its line: {:?}",
+        people[0].status
+    );
+
+    // The same frame said again draws nothing: an agent resting at its work
+    // asks no redraw.
+    let drawn = sync.presence_revision();
+    sync.heard_presence(WORKSPACE, device(1), &frame);
+    assert_eq!(sync.presence_revision(), drawn);
+}
+
 #[test]
 fn a_wave_reaches_the_person_it_is_for() {
     let (sync, _said) = session("Quinten", Some(0x04));

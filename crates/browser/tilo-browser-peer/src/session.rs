@@ -1888,17 +1888,12 @@ impl Task {
         frames: Vec<collab_types::presence::Presence>,
     ) {
         for frame in frames {
-            let Ok(body) = frame.encode() else {
-                continue;
-            };
             let Some(joined) = self.planes.joined_mut(workspace_id) else {
                 continue;
             };
             let sequence = joined.presence_seq.wrapping_add(1);
             joined.presence_seq = sequence;
-            let _ = joined
-                .plane
-                .publish(tilo_live::live::Track::Presence, sequence, &body);
+            let _ = tilo_live::presence::say(&joined.plane, sequence, &frame);
         }
     }
 

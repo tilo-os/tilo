@@ -1814,12 +1814,9 @@ impl Client {
         let Some(live) = &self.live else {
             return;
         };
-        let Ok(body) = frame.encode() else {
-            return;
-        };
         let sequence = self.presence_seq.get().wrapping_add(1);
         self.presence_seq.set(sequence);
-        if let Err(error) = live.publish(ws, Track::Presence, sequence, &body) {
+        if let Err(error) = live.say(ws, sequence, frame) {
             tracing::debug!(%error, "presence was not said on the live plane");
         }
     }
