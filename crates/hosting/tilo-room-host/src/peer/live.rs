@@ -119,6 +119,10 @@ async fn call_host(
 /// Handle a call envelope for a subscribed workspace: its calls are held
 /// by this relay's workspace authority, or as a workspace it carries; see
 /// [`crate::workspaces`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "one envelope's arms, each answering a variant of the call frame above"
+)]
 pub(super) async fn handle_voice(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -488,7 +492,7 @@ pub(super) async fn route_record_content(
         if let Some((workspaces, workspace)) = host {
             let from = peer.device_public_key;
             tokio::task::spawn_blocking(move || {
-                workspaces.content_for_host(&workspace, from, &frame)
+                workspaces.content_for_host(&workspace, from, &frame);
             });
         }
         return;
