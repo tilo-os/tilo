@@ -217,6 +217,12 @@ impl ResourceApp for ChatShell {
             app
         };
         app.attach_framework(cx.dispatcher());
+        // A live window keeps its direct conversations in the pair's own
+        // record, in the workspace it shares with its people. A capture, a
+        // past version and a window without workspace records keep none.
+        if live && let (Some(handle), Some(workspace)) = (cx.workspace_handle(), cx.workspace()) {
+            app.attach_direct(handle, workspace);
+        }
         if let Some(chain) = cx.chain::<crate::parts::ChatPart>() {
             app.attach_chain(chain);
         }

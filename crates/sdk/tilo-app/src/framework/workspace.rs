@@ -394,6 +394,40 @@ fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
     }
 }
 
+/// The records of the window's workspace, for what settles after the view
+/// that asked for them: a reply, or a message another device sent
+/// ([`RecordEnv::workspace_handle`](super::RecordEnv::workspace_handle)).
+#[derive(Clone)]
+pub struct WorkspaceHandle {
+    state: Rc<WorkspaceState>,
+}
+
+impl WorkspaceHandle {
+    /// The record the two people of `pair` share, of `P` that `owner` keeps:
+    /// opened, created where nothing holds it yet, and followed change by
+    /// change. `None` where it cannot be opened.
+    pub fn direct<P: Resource>(
+        &self,
+        owner: &'static str,
+        pair: &str,
+    ) -> Option<WorkspaceRecord<P>> {
+        self.state.open_direct::<P>(owner, pair)
+    }
+
+    /// Whether `pair`'s record of `P` that `owner` keeps is held already,
+    /// without opening or creating it.
+    #[must_use]
+    pub fn holds_direct<P: Resource>(&self, owner: &'static str, pair: &str) -> bool {
+        self.state.holds_direct(owner, pair, P::KIND)
+    }
+
+    /// What wakes the window: for an answer that arrives later.
+    #[must_use]
+    pub fn wake(&self) -> Option<&WakeHandle> {
+        self.state.wake()
+    }
+}
+
 /// A record open in a window: its owner and kind, and which record of them
 /// (the workspace's one of the kind, or a pair's).
 type OpenKey = (&'static str, &'static str, String);
@@ -438,9 +472,25 @@ impl WorkspaceState {
         self.wake.as_ref()
     }
 
+    /// This state as the window's views hold it on
+    /// ([`RecordEnv::workspace_handle`](super::RecordEnv::workspace_handle)).
+    pub(crate) fn handle(self: &Rc<Self>) -> WorkspaceHandle {
+        WorkspaceHandle {
+            state: Rc::clone(self),
+        }
+    }
+
     /// The window's app.
     pub(crate) fn app_id(&self) -> &'static str {
         self.app_id
+    }
+
+    /// Whether `pair`'s record of `kind` that `owner` keeps is held already,
+    /// without opening or creating it: what a list asks.
+    pub(crate) fn holds_direct(&self, owner: &str, pair: &str, kind: &str) -> bool {
+        self.records
+            .holds_direct(owner, pair, kind)
+            .is_ok_and(|held| held)
     }
 
     /// The record `P` that `owner` keeps in the workspace, opened on first use

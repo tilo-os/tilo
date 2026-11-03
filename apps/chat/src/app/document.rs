@@ -114,6 +114,24 @@ impl ChatApp {
             .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
         self.search_users = chat.user_rows();
+        // The people a conversation can be had with: the workspace's people
+        // as the chat holds them, under the key a direct conversation keeps
+        // them. Agents and this window's own person are not one of them.
+        self.direct_people = chat
+            .people
+            .iter()
+            .filter(|person| {
+                !person.agent
+                    && person.id.0.len() == 64
+                    && person.id.0.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && person.id.0 != self.me.id
+            })
+            .map(|person| crate::direct::Person {
+                root: person.id.0.clone(),
+                key: ui::person_chat::person_key(&person.id.0),
+                name: person.name.clone(),
+            })
+            .collect();
         self.reports = chat
             .feedback
             .iter()

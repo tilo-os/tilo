@@ -99,6 +99,23 @@ impl PersonChatServices for PersonChat {
                     }))
                     .collect::<Vec<_>>()
             ),
+            // The records this person's conversations live in, so a device
+            // that never opened one still syncs it. Only their own pairs:
+            // who else talks with whom is not this door's.
+            PersonChatCommand::Pairs => {
+                let me = hex::encode(caller.user_public_key);
+                serde_json::json!(
+                    owner
+                        .direct_pairs(workspace, now)?
+                        .into_iter()
+                        .filter(|(_, people)| people.contains(&me))
+                        .map(|(pair, people)| serde_json::json!({
+                            "pair": pair,
+                            "people": people,
+                        }))
+                        .collect::<Vec<_>>()
+                )
+            }
             PersonChatCommand::Open { public_key } => {
                 owner.open_direct_conversation(workspace, &public_key, &authority, now)?;
                 conversation(whole(owner, workspace, &public_key, &authority, now)?)
@@ -126,16 +143,46 @@ impl PersonChatServices for PersonChat {
             PersonChatCommand::Announce { public_key } => {
                 use tilo_action_broker::owner_commits::OwnerCustody as _;
                 let other = peer_key(&public_key)?;
+                // Chat names people by their root public key; the private
+                // store hashed each person to name its conversations. The
+                // pair is the same one either way.
+                let stored = tilo_peer_state::owner::person_store_key(other);
                 if !owner
                     .direct_contacts(workspace, &authority, now)?
                     .iter()
-                    .any(|contact| contact.public_key == public_key)
+                    .any(|contact| contact.public_key == stored)
                 {
                     return Err("a conversation is opened with a person of this workspace".into());
                 }
                 let key = self.engine.signing_key(owner, workspace)?;
                 owner.commit_direct_pair(workspace, caller, &other, &key, now)?;
                 serde_json::json!({})
+            }
+            // One page of a conversation still in the old private store, so
+            // the pair's record can take it over. Reading only: an empty
+            // answer means this person holds no such conversation.
+            PersonChatCommand::Import {
+                public_key,
+                after_sequence,
+            } => {
+                let page = DirectConversationPage {
+                    after_sequence,
+                    limit: PAGE,
+                };
+                let read =
+                    owner.read_direct_conversation(workspace, &public_key, &authority, page, now);
+                match read {
+                    Ok(value) => import_page(value),
+                    Err(error) if error == PRIVATE_CONVERSATION_NOT_OPENED => {
+                        serde_json::json!({
+                            "peer": public_key,
+                            "messages": [],
+                            "has_more": false,
+                            "next_sequence": after_sequence,
+                        })
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         };
         let mut reply = BoundedReply(Vec::new());
@@ -240,6 +287,43 @@ fn check_bound(messages: usize, bytes: usize) -> Result<(), String> {
         return Err("private conversation snapshot exceeds bound".into());
     }
     Ok(())
+}
+
+/// What the owner says when the person has no conversation with this peer.
+const PRIVATE_CONVERSATION_NOT_OPENED: &str = "private conversation not opened";
+/// How much text one import page carries, so a page of long messages stays
+/// well inside the reply bound once JSON escapes it.
+const IMPORT_TEXT_BYTES: usize = 128 * 1024;
+
+/// One import page as Chat reads it: the stored messages it carries, and
+/// where the next page starts.
+fn import_page(value: DirectConversation) -> serde_json::Value {
+    let mut carried = 0usize;
+    let mut next_sequence = value.next_sequence;
+    let mut has_more = value.has_more;
+    let mut messages = Vec::new();
+    for message in value.messages {
+        let grown = carried.saturating_add(message.text.len());
+        if !messages.is_empty() && grown > IMPORT_TEXT_BYTES {
+            // Stop at the last message that fits; the rest is the next page.
+            has_more = true;
+            break;
+        }
+        carried = grown;
+        next_sequence = message.sequence;
+        messages.push(serde_json::json!({
+            "id": message.id,
+            "author": message.sender,
+            "text": message.text,
+            "at": message.received_at,
+        }));
+    }
+    serde_json::json!({
+        "peer": value.peer,
+        "messages": messages,
+        "has_more": has_more,
+        "next_sequence": next_sequence,
+    })
 }
 
 /// The conversation as Chat reads it: who it is with, and its messages.

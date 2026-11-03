@@ -110,6 +110,13 @@ impl Default for PrivateDirectConversationStore {
 fn key(bytes: [u8; 32]) -> String {
     blake3::Hash::from_bytes(bytes).to_hex().to_string()
 }
+
+/// How the private store names a person from its root public key. The same
+/// hash names the conversations' pairs, so a caller holding the root key can
+/// find the person's conversations.
+pub fn person_store_key(bytes: [u8; 32]) -> String {
+    key(bytes)
+}
 fn validate_key(value: &str) -> Result<(), String> {
     if value.len() != 64
         || !value

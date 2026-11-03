@@ -58,7 +58,7 @@ pub use join_service::OwnerJoinWorkspaces;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use private_direct_conversations::{
     DirectContact, DirectConversation, DirectConversationPage, DirectMessage, DirectMessageReceipt,
-    DirectMessageSend, DirectMessageStatus, PrivateDirectConversationStore,
+    DirectMessageSend, DirectMessageStatus, PrivateDirectConversationStore, person_store_key,
 };
 pub use publication::{
     NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, validate_file_layout,

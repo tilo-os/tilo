@@ -162,7 +162,11 @@ impl ChatApp {
         people
             .into_iter()
             .map(|(name, contact)| {
-                NavItem::new(person_place(&contact.public_key), name).icon(Icon::User)
+                let unread = self.direct_unread(&contact.public_key);
+                NavItem::new(person_place(&contact.public_key), name)
+                    .icon(Icon::User)
+                    .unread(unread > 0)
+                    .live_count(unread)
             })
             .collect()
     }

@@ -27,6 +27,8 @@ pub trait PersonChatServices: Send + Sync {
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PersonChatCommand {
     Contacts,
+    /// The pairs this person is in, which the workspace proves.
+    Pairs,
     Open {
         public_key: String,
     },
@@ -43,6 +45,12 @@ pub enum PersonChatCommand {
     Announce {
         public_key: String,
     },
+    /// One page of a conversation still held in the person's old private
+    /// store, read so that pair records can import it. Never a write.
+    Import {
+        public_key: String,
+        after_sequence: u64,
+    },
 }
 // An internally tagged unit variant accepts extra fields even with
 // deny_unknown_fields. Decode Contacts as an empty struct to close that door.
@@ -50,6 +58,7 @@ pub enum PersonChatCommand {
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 enum ClosedPersonChatCommand {
     Contacts {},
+    Pairs {},
     Open {
         public_key: String,
     },
@@ -64,6 +73,10 @@ enum ClosedPersonChatCommand {
     Announce {
         public_key: String,
     },
+    Import {
+        public_key: String,
+        after_sequence: u64,
+    },
 }
 
 impl<'de> serde::Deserialize<'de> for PersonChatCommand {
@@ -71,6 +84,7 @@ impl<'de> serde::Deserialize<'de> for PersonChatCommand {
         Ok(
             match <ClosedPersonChatCommand as serde::Deserialize>::deserialize(deserializer)? {
                 ClosedPersonChatCommand::Contacts {} => Self::Contacts,
+                ClosedPersonChatCommand::Pairs {} => Self::Pairs,
                 ClosedPersonChatCommand::Open { public_key } => Self::Open { public_key },
                 ClosedPersonChatCommand::Read { public_key } => Self::Read { public_key },
                 ClosedPersonChatCommand::Send {
@@ -83,6 +97,13 @@ impl<'de> serde::Deserialize<'de> for PersonChatCommand {
                     invocation,
                 },
                 ClosedPersonChatCommand::Announce { public_key } => Self::Announce { public_key },
+                ClosedPersonChatCommand::Import {
+                    public_key,
+                    after_sequence,
+                } => Self::Import {
+                    public_key,
+                    after_sequence,
+                },
             },
         )
     }
@@ -100,10 +121,12 @@ impl PersonChatCommand {
     pub fn action(&self) -> &'static str {
         match self {
             Self::Contacts => "contacts",
+            Self::Pairs => "pairs",
             Self::Open { .. } => "open-direct-conversation",
             Self::Read { .. } => "read-direct-conversation",
             Self::Send { .. } => "send-direct-message",
             Self::Announce { .. } => "announce-direct-pair",
+            Self::Import { .. } => "import-direct-conversation",
         }
     }
 }

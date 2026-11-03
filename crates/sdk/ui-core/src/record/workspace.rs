@@ -128,6 +128,28 @@ impl WorkspaceRecords {
         self.open_at(owner, id, kind, initialize)
     }
 
+    /// Whether `owner`'s store holds the record the two people of `pair`
+    /// share, of `kind`, without opening or creating it: a list asks this to
+    /// show the conversations that exist, not to make one per person.
+    ///
+    /// # Errors
+    /// `pair` names no pair, or the record could not be read.
+    pub fn holds_direct(
+        &self,
+        owner: &str,
+        pair: &str,
+        kind: &str,
+    ) -> Result<bool, RecordOpenError> {
+        let id = RecordId::of_direct(pair).ok_or(RecordOpenError::IdentityMismatch)?;
+        let store = (self.open)(owner)?;
+        let checkout = RecordCheckout::new(id, RecordKind::new(kind));
+        match store.try_open_record(&checkout) {
+            Ok(_) => Ok(true),
+            Err(RecordOpenError::MissingRecord) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Open `id` in the store `owner` keeps, and in this app's, so that every
     /// replica of the app publishes it.
     fn open_at(

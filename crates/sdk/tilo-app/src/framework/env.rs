@@ -344,6 +344,18 @@ impl<R: Resource> RecordEnv<R> {
             .map(ui_core::record::RecordStore::home)
     }
 
+    /// The records every app of the window's workspace opens, held for what
+    /// settles after the view that asked for one (an action's reply, a
+    /// message from another device): a conversation's record is opened and
+    /// followed through it, in a view that is built once. `None` in a past
+    /// version and where the window keeps no workspace records.
+    pub fn workspace_handle(&self) -> Option<super::WorkspaceHandle> {
+        if self.is_past() {
+            return None;
+        }
+        self.storage.workspace_handle()
+    }
+
     /// What the view is built for: a window someone uses, a past version in
     /// History, or a screenshot. Start work that reaches outside the process
     /// (an engine, a socket, a probe) only when it [is live](RunMode::is_live).

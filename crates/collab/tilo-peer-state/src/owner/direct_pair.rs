@@ -9,6 +9,23 @@ use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
 impl NativeWorkspaceOwner {
+    /// The pairs the workspace holds a proof of that lasts at `now`, by pair
+    /// id, each with its two people in canonical hex: which conversation
+    /// records there are to open. Anyone here may know them; only the two
+    /// people's devices read or change a record.
+    ///
+    /// # Errors
+    /// The workspace is not the owner's current one.
+    pub fn direct_pairs(
+        &self,
+        workspace: WorkspaceId,
+        now: SystemTime,
+    ) -> Result<std::collections::BTreeMap<String, [String; 2]>, String> {
+        self.with_current(workspace, |view| {
+            Ok(view.peer().governance().direct_pairs(now))
+        })
+    }
+
     /// Announce the pair this device's person shares with `other`, in
     /// `workspace`, signed by `key`, this device's key: from then on the
     /// pair's record is read and changed by the two people's devices and by

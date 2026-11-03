@@ -376,6 +376,13 @@ pub struct ChatApp {
     /// The message the composer is sending, until the workspace accepts it.
     pub(crate) person_sending: Option<crate::person_conversation::Sending>,
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
+    /// The direct conversations as the pair's own records, in a live window
+    /// of a workspace that keeps them: what answers [`ui::person_chat`]
+    /// here, and what the import of the old private store writes into.
+    pub(crate) direct: Option<std::rc::Rc<crate::direct::Records>>,
+    /// The workspace's people as the record last read them, in the shape a
+    /// direct conversation keeps them (the people a chat can be had with).
+    pub(crate) direct_people: Vec<crate::direct::Person>,
     /// Retained direct conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
     /// The person's reduced-motion setting, applied to every floating
@@ -808,6 +815,8 @@ impl ChatApp {
             staged_scenario: None,
             #[cfg(test)]
             last_read: std::rc::Rc::default(),
+            direct: None,
+            direct_people: Vec::new(),
             pending_call: None,
             sharing_context: false,
             following_context: false,
@@ -1074,6 +1083,21 @@ impl ChatApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
     ) {
         self.dispatch = Some(dispatcher);
+    }
+
+    /// Keep the direct conversations in the pair's own records, in the
+    /// workspace `workspace` whose records `handle` opens: from now on
+    /// [`ui::person_chat`] answers from them in this window.
+    pub(crate) fn attach_direct(
+        &mut self,
+        handle: ui::framework::WorkspaceHandle,
+        workspace: String,
+    ) {
+        let records = crate::direct::Records::new(handle, workspace, &self.me.id);
+        ui::person_chat::install_native(Some(
+            std::rc::Rc::clone(&records) as std::rc::Rc<dyn ui::person_chat::Native>
+        ));
+        self.direct = Some(records);
     }
 
     /// Keep the composers' drafts in the person's own `record`: theirs

@@ -17,6 +17,18 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
         };
         let now = std::time::SystemTime::now();
         let peer = match command {
+            PersonChatCommand::Pairs => {
+                let me = hex::encode(caller.user_public_key);
+                let pairs = self.0.direct_pairs(workspace, now)?;
+                return serde_json::to_vec(
+                    &pairs
+                        .into_iter()
+                        .filter(|(_, people)| people.contains(&me))
+                        .map(|(pair, people)| serde_json::json!({"pair": pair, "people": people}))
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|error| error.to_string());
+            }
             PersonChatCommand::Contacts => {
                 let contacts = self.0.direct_contacts(workspace, &authority, now)?;
                 return serde_json::to_vec(&contacts).map_err(|error| error.to_string());
@@ -25,6 +37,49 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
                 self.0
                     .open_direct_conversation(workspace, &public_key, &authority, now)?;
                 public_key
+            }
+            PersonChatCommand::Import {
+                public_key,
+                after_sequence,
+            } => {
+                let page = tilo_peer_state::owner::DirectConversationPage {
+                    after_sequence,
+                    limit: 50,
+                };
+                let (peer, has_more, next_sequence, messages) = match self
+                    .0
+                    .read_direct_conversation(workspace, &public_key, &authority, page, now)
+                {
+                    Ok(conversation) => (
+                        conversation.peer,
+                        conversation.has_more,
+                        conversation.next_sequence,
+                        conversation.messages,
+                    ),
+                    // A person with no old conversation has nothing to import.
+                    Err(error) if error == "private conversation not opened" => {
+                        return serde_json::to_vec(&serde_json::json!({
+                            "peer": public_key,
+                            "has_more": false,
+                            "next_sequence": after_sequence,
+                            "messages": [],
+                        }))
+                        .map_err(|error| error.to_string());
+                    }
+                    Err(error) => return Err(error),
+                };
+                return serde_json::to_vec(&serde_json::json!({
+                    "peer": peer,
+                    "has_more": has_more,
+                    "next_sequence": next_sequence,
+                    "messages": messages.into_iter().map(|message| serde_json::json!({
+                        "id": message.id,
+                        "author": message.sender,
+                        "text": message.text,
+                        "at": message.received_at,
+                    })).collect::<Vec<_>>(),
+                }))
+                .map_err(|error| error.to_string());
             }
             PersonChatCommand::Read { public_key } => public_key,
             // This double holds the workspace owner, not the caller's device
