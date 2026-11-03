@@ -301,6 +301,9 @@ pub struct CalendarApp {
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
     /// renderer can capture the New-Event form. No effect on live runtime.
     staged_new_event: bool,
+    /// What an effect asked for that writes a fresh event, so the window
+    /// starts it when it next has the document to write.
+    wanted_new_event: bool,
     /// Shots-only: open this popover once the form is bound.
     staged_popover: Option<FormPopover>,
     /// Shots-only: open the calendar dropdown once the form is bound.
@@ -515,6 +518,7 @@ impl CalendarApp {
             bar_entries: ui::framework::BarCommands::new(),
             search_opener: ui::search::SearchOpener::new(),
             staged_new_event: false,
+            wanted_new_event: false,
             staged_popover: None,
             shots_pending_calendar_menu: false,
             shots_detail_scroll_to_end: false,
@@ -3976,6 +3980,10 @@ impl Widget for CalendarApp {
             self.new_event(edits);
             self.status.dismiss();
         }
+        // An effect's New event: the same event the window's own button starts.
+        if std::mem::take(&mut self.wanted_new_event) {
+            self.new_event(edits);
+        }
         self.poll_sync(edits);
         self.commit_choices(edits, path);
         self.announce_answers();
@@ -4674,6 +4682,8 @@ impl CalendarApp {
                 store::Ask::ShowAllCalendars => self.show_all_calendars(),
                 store::Ask::ShowView(view) => self.show_view(view),
                 store::Ask::ShowTasks => self.show_tasks(),
+                store::Ask::StartEvent => self.wanted_new_event = true,
+                store::Ask::StartTask => self.start_new_task(),
                 store::Ask::SearchContacts => self.search_contacts(),
                 store::Ask::Stage(scenario) => self.stage_scenario(scenario.as_deref()),
                 store::Ask::Say(text, kind) => {
