@@ -190,8 +190,8 @@ view outline<T>(
 
 /// A header's controls, as native headers place them: the sort menu and search first, then
 /// `extra`, then the window's actions — its primary action as the labelled Primary button, a
-/// command the app marked `frequent` as a button of its own, and all the rest behind one
-/// "More actions" menu, as a desktop bar holds them. The primary action comes first among
+/// command the app marked `frequent` as a button of its own, and all the rest behind the
+/// header's one menu, as a desktop bar holds them. The primary action comes first among
 /// them so that a narrow window gives way with the menus, never with the one main thing to
 /// do. The window's header lays them out: what does not fit gives way to where the system
 /// lists the window's actions (the desktop bar's window menu), else behind the header's own
@@ -230,14 +230,10 @@ view header<S>(
             }
         }
     }
-    if offered.any(a -> not a.primary and not a.frequent) {
-        ui.MenuButton(phrase("tilolang-more"), icon: .more_horizontal, icon_only: true) {
-            for a in offered {
-                if not a.primary and not a.frequent {
-                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key, checked: a.on == .some(true)) {
-                        on choose: a.run
-                    }
-                }
+    for a in offered {
+        if not a.primary and not a.frequent {
+            ui.Button(a.label, icon: a.icon, toggled: a.on == .some(true), key: a.key, in_menu: true) {
+                on press: a.run
             }
         }
     }

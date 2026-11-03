@@ -19,7 +19,9 @@
 //! - [`OverflowDoor`] — the button and the menu of what the plan put behind
 //!   it. `NavShell`'s header row uses the same door for actions that do not
 //!   fit ([`crate::widget::NavShell`]), so an app's own row and the shell's
-//!   header overflow the same way, into the same face.
+//!   header overflow the same way, into the same face. While the menu is up
+//!   its rows are named to assistive technology, so a command a row keeps
+//!   behind the door stays reachable without a pointer.
 //!
 //! A composed row usually wants the shared [`Toolbar`](crate::widget::Toolbar)
 //! instead, which does its own overflow; this door is for the rows a painted
@@ -129,10 +131,12 @@ pub struct OverflowDoor {
 }
 
 impl OverflowDoor {
-    /// A shut door with `id` on its button, named "More actions".
+    /// A shut door with `id` on its button, named by the toolkit's own
+    /// `window-toolbar-more` message, so the door reads in the window's
+    /// language like the rest of the chrome and the commands behind it.
     #[must_use]
     pub fn new(id: &str) -> Self {
-        Self::with_label(id, "More actions")
+        Self::with_label(id, &crate::i18n!("window-toolbar-more"))
     }
 
     /// [`Self::new`] with the name assistive technology reads, and the
@@ -314,6 +318,47 @@ impl Widget for OverflowDoor {
         self.menu.is_open()
     }
 
+    /// The button, and while its menu is up, the commands behind it: the menu
+    /// paints its rows itself, so a person using a screen reader reaches those
+    /// commands here rather than nowhere.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = Widget::accessibility(&self.button)?;
+        node.state.expanded = Some(self.menu.is_open());
+        if self.menu.is_open()
+            && let Some(menu) = Widget::accessibility(&self.menu)
+        {
+            node.children.push(menu);
+        }
+        Some(node)
+    }
+
+    /// The door's node is its button's, so the button is not exported again
+    /// beside it: assistive technology hears "More actions" once.
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        child_index == 0
+    }
+
+    /// A command chosen from the menu by assistive technology, which sends no
+    /// pointer event: the row is the door's choice, as a click on it is.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if self
+            .menu
+            .perform_semantic_action(target, action, state, path)
+        {
+            if let Some(row) = self.menu.take_selection() {
+                self.chosen = Some(row);
+            }
+            return true;
+        }
+        Widget::perform_semantic_action(&mut self.button, target, action, state, path)
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if self.shown {
             vec![&self.button]
@@ -407,5 +452,37 @@ mod tests {
     #[test]
     fn an_empty_row_has_no_door() {
         assert_eq!(plan(0.0, [], 8.0, 40.0), 0);
+    }
+
+    #[test]
+    fn the_commands_behind_the_door_are_named_to_assistive_technology() {
+        let mut door = OverflowDoor::new("more");
+        door.set_shown(true);
+        let shut = door.accessibility().expect("the button names itself");
+        assert_eq!(shut.role, crate::a11y::Role::Button);
+        assert_eq!(shut.name.as_deref(), Some("More actions"));
+        assert_eq!(shut.state.expanded, Some(false));
+        assert!(shut.children.is_empty(), "a shut door names no command");
+        assert!(
+            door.accessibility_represents_child(0),
+            "the door is the button: the button is not named again beside it"
+        );
+
+        door.open(
+            vec![
+                MenuItem::selection("Snooze until…"),
+                MenuItem::selection("Remove"),
+            ],
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        let open = door.accessibility().expect("the button names itself");
+        assert_eq!(open.state.expanded, Some(true));
+        let menu = open.children.first().expect("the menu is named while up");
+        let rows: Vec<Option<&str>> = menu
+            .children
+            .iter()
+            .map(|row| row.name.as_deref())
+            .collect();
+        assert_eq!(rows, [Some("Snooze until…"), Some("Remove")]);
     }
 }

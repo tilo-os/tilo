@@ -422,7 +422,7 @@ impl crate::services::RecordChangeServices for Origin {
     }
 }
 
-/// A run changes a record outside its app (a program's `tasks.add`, from
+/// A run changes a record outside its app (a program's `tasks.new_task`, from
 /// the door's REPL or a launched task agent): the run admits it as it admits
 /// its other steps, the change goes to the record's origin as the run's task
 /// agent, and once the run stops it is refused.

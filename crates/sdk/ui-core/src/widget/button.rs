@@ -40,6 +40,9 @@ pub struct Button {
     /// this button icon-first. Kept separately so an app's explicit tooltip
     /// and accessible name are restored exactly when space returns.
     compact_presentation: Option<(String, Option<String>, Option<String>)>,
+    /// It belongs in its header's menu, not in the row: the row's More
+    /// button holds it, whatever room the row has.
+    menu_only: bool,
     rect: Rect,
     is_hovered: bool,
     /// The press this button took, carried to a rebuilt button in its place.
@@ -180,6 +183,7 @@ impl Button {
             accessible_name: None,
             tooltip: None,
             compact_presentation: None,
+            menu_only: false,
             rect: Rect::ZERO,
             is_hovered: false,
             press: crate::pointer_replay::HeldPress::default(),
@@ -354,6 +358,16 @@ impl Button {
     #[must_use]
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// A header action that belongs in its header's menu rather than in the row: the row's
+    /// More button holds it, whatever room the row has, so a header keeps its everyday
+    /// actions in reach and the rest one press away (a row of every action reads as noise).
+    /// Its label, icon, checked state and enabled state are the menu row's.
+    #[must_use]
+    pub fn in_menu(mut self) -> Self {
+        self.menu_only = true;
         self
     }
 
@@ -708,6 +722,12 @@ impl Button {
     /// Whether the button is shown icon-only by a responsive toolbar.
     pub(crate) fn is_compact_presentation(&self) -> bool {
         self.compact_presentation.is_some()
+    }
+
+    /// A header action that stands in its header's menu rather than in the row
+    /// ([`Self::in_menu`]).
+    pub(crate) fn is_menu_only(&self) -> bool {
+        self.menu_only
     }
 
     /// The counterpart to `TextInput::apply_layout_external` for an app

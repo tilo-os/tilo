@@ -107,17 +107,26 @@ d-clxahlh2 = High
 
 d-d6avlyc5 = Urgent
 
+d-3776c5yx = Row place
+    .doc = What the place a task's row stands in already says, and the row therefore leaves out.
+
+d-63qticzp = Nothing: a plain list, a card, a surface of the system's own
+    .doc = Nothing: a plain list, a card, a surface of the system's own.
+
+d-u4wzi4k4 = The day it is grouped under, as a list of a day is
+    .doc = The day it is grouped under, as a list of a day is.
+
+d-ifftrju4 = Its project, as a project's list is of one
+    .doc = Its project, as a project's list is of one.
+
 d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
-
-d-dypqwvdm = Add
-    .doc = Adds a task with this title to the inbox.
 
 d-u7a3fue4 = Quick add
     .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`.
 
 d-rs3ubifz = New task
-    .doc = Starts a task in the inbox.
+    .doc = Starts a task in the inbox: one to type into, or one under the title a program or an agent gives it. The entry is how a person says what the task is.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
@@ -183,13 +192,10 @@ d-vi6srojh = Delete section
     .doc = Deletes a section; its tasks go to the project's first lane.
 
 d-pcn3xgni = New task
-    .doc = Adds a task at the end of a lane of a project's board.
+    .doc = Adds a task at the end of a lane of a project's board: `s` names the lane, none for the first.
 
 d-scjlkb6d = Place
     .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
-
-d-ekvchj3n = Move
-    .doc = Moves a task to just after another.
 
 d-kjbukd2o = Rename
     .doc = Renames a project.
@@ -229,6 +235,8 @@ d-hc5ndp4x = Task card
     .w-move-to = Move to { $name }
 
 d-w63ba6ad = Task row
+
+d-rj4l44km = Task summary
 
 d-ypbiaiq3 = Task outline row
 

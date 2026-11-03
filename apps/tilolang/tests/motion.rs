@@ -150,6 +150,63 @@ fn named(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
         .rect
 }
 
+/// The window's Remove command, as a person reaches it.
+enum Remove {
+    /// A button of the header's own, when the bar has room for it.
+    Button([f64; 4]),
+    /// The row of the header's menu the bar keeps it in, while the menu is open.
+    Row([f64; 4]),
+}
+
+/// The button the window shows under `name`, which a person presses, or nothing when the bar
+/// has no room for it and keeps it behind the header's menu instead.
+fn shown_button(app: &mut TestApp<TlApp>, name: &str) -> Option<[f64; 4]> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .find(|node| {
+            node.widget == "Button"
+                && node.semantics.as_ref().and_then(|s| s.name.as_deref()) == Some(name)
+                && node.rect[2] > 0.0
+                && node.rect[3] > 0.0
+        })
+        .map(|node| node.rect)
+}
+
+/// Bring the window's Remove command within reach: the header's own button, or the row of the
+/// header's menu, opened here so that only the press that follows is what the frames measure.
+fn reach_remove(app: &mut TestApp<TlApp>) -> Remove {
+    if let Some(rect) = shown_button(app, "Remove") {
+        return Remove::Button(rect);
+    }
+    let more = app.harness().targets()["nav-shell-more-content"].center();
+    with_monotonic_time(ui::time::Instant::now(), || {
+        app.harness().click_at(more.x, more.y);
+    });
+    settle(app);
+    let row = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::MenuItem && node.label() == Some("Remove")
+        })
+        .and_then(|(_, node)| node.bounds())
+        .expect("the header's menu offers the command the bar keeps there");
+    Remove::Row([row.x0, row.y0, row.x1 - row.x0, row.y1 - row.y0])
+}
+
+/// Press what `reach_remove` reached, at `at`.
+fn press_remove(app: &mut TestApp<TlApp>, remove: &Remove, at: ui::time::Instant) {
+    let [x, y, w, h] = match remove {
+        Remove::Button(rect) | Remove::Row(rect) => *rect,
+    };
+    with_monotonic_time(at, || {
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+    });
+}
+
 /// Whether the row titled `title` is drawn marked.
 fn marked(app: &mut TestApp<TlApp>, title: &str) -> bool {
     let snapshot = app.harness().inspection();
@@ -392,10 +449,8 @@ fn the_rows_a_person_removes_leave_the_list() {
     assert!(before_rows > 2, "the place holds tasks");
 
     // A first removal teaches the list its rows' order; the next one moves the survivors.
-    let [x, y, w, h] = named(&mut app, "Remove");
-    with_monotonic_time(ui::time::Instant::now(), || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    let remove = reach_remove(&mut app);
+    press_remove(&mut app, &remove, ui::time::Instant::now());
     settle(&mut app);
 
     // A task the person opens, then removes from the pane it opened.
@@ -409,15 +464,14 @@ fn the_rows_a_person_removes_leave_the_list() {
     });
     settle(&mut app);
 
+    // The command reached first, so what is measured is the press and the rows it moves.
+    let remove = reach_remove(&mut app);
     let band = list_band(&mut app);
     let start = ui::time::Instant::now();
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
-    let [x, y, w, h] = named(&mut app, "Remove");
     let pressed = start + ui::time::Duration::from_millis(100);
-    with_monotonic_time(pressed, || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    press_remove(&mut app, &remove, pressed);
 
     let mut series = Vec::new();
     for step in 1..=14 {
@@ -538,10 +592,12 @@ fn the_frames_a_person_sees() {
     let start = ui::time::Instant::now();
     let _ = frame_at(&mut app, start);
     shot(&mut app, "remove-00-rest");
-    let [x, y, w, h] = named(&mut app, "Remove");
-    with_monotonic_time(start + ui::time::Duration::from_millis(100), || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    let remove = reach_remove(&mut app);
+    press_remove(
+        &mut app,
+        &remove,
+        start + ui::time::Duration::from_millis(100),
+    );
     settle(&mut app);
     let [x, y, w, h] = rows(&mut app)
         .into_iter()
@@ -554,11 +610,9 @@ fn the_frames_a_person_sees() {
     settle(&mut app);
     let (_, _) = frame_at(&mut app, ui::time::Instant::now());
     shot(&mut app, "remove-01-opened");
-    let [x, y, w, h] = named(&mut app, "Remove");
+    let remove = reach_remove(&mut app);
     let pressed = ui::time::Instant::now() + ui::time::Duration::from_millis(100);
-    with_monotonic_time(pressed, || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
+    press_remove(&mut app, &remove, pressed);
     for step in 1..=10 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
         let _ = frame_at(&mut app, at);

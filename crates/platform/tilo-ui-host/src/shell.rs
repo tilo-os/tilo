@@ -203,10 +203,17 @@ pub fn header_rules(mut shell: UiNode) -> UiNode {
                 let mut menu = node.clone();
                 menu.children
                     .retain(|item| item.kind != kind("MenuItem") || !repeated(item, "choose"));
-                let commands = menu
-                    .children
-                    .iter()
-                    .any(|item| item.kind == kind("MenuItem"));
+                // The commands the menu holds, wherever the view's calls and loops put them
+                // (a loop of commands stands in a fragment), and those it is given as actions
+                // of the resource it offers.
+                let commands = crate::adapter::description_of(node).is_some_and(|description| {
+                    crate::adapter::slot_parts(node, description, "items")
+                        .iter()
+                        .any(|item| item.kind == kind("MenuItem") && !repeated(item, "choose"))
+                }) || matches!(
+                    node.props.get("actions"),
+                    Some(Value::List(items)) if !items.is_empty()
+                );
                 return commands.then_some(menu);
             }
             Some(node.clone())

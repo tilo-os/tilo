@@ -739,8 +739,16 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
         let list = w.create("Tasks");
-        let first = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
-        let second = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("eggs")]));
+        let first = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("milk")],
+        ));
+        let second = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("eggs")],
+        ));
         let remove = |item: &ResourceRef| {
             format!(
                 "button(\"Remove\", on: tasks.remove(@tasks.Tasks:{}, @tasks.Task:{}))",
@@ -770,7 +778,11 @@ mod cases {
 
         // Trusting the principal covers every block it writes, from the next one on.
         w.auth.trust_principal("person:stranger");
-        let third = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("bread")]));
+        let third = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("bread")],
+        ));
         post(&w, &apps, &conv, "person:stranger", "", &remove(&third));
         let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(chat_view.tree());
@@ -787,7 +799,7 @@ mod cases {
         w.rt.history(&list.doc)
             .unwrap()
             .iter()
-            .filter(|n| n.action == apps.todo.action("add"))
+            .filter(|n| n.action == apps.todo.action("new_task"))
             .count()
     }
 
@@ -799,7 +811,10 @@ mod cases {
         let (_, conv) = start_chat(&wa, &apps);
         let list = wa.create("Tasks");
         wa.auth.trust_principal("agent:helper");
-        let src = format!("tasks.add(@tasks.Tasks:{}, \"bread\")", list.id_string());
+        let src = format!(
+            "tasks.new_task(@tasks.Tasks:{}, \"bread\")",
+            list.id_string()
+        );
         let message = post(&wa, &apps, &conv, "agent:helper", "", &src);
 
         assert_eq!(
@@ -812,7 +827,7 @@ mod cases {
             .read_invocation(&invocation_of(&wa, &apps, &message))
             .unwrap();
         assert_eq!(record.state, "done");
-        assert_eq!(record.name, "add");
+        assert_eq!(record.name, "new_task");
         assert_eq!(record.author, Principal::new("agent:helper"));
 
         let card_state = |w: &World| {
@@ -846,7 +861,10 @@ mod cases {
         let (_, conv) = start_chat(&w, &apps);
         let list = w.create("Tasks");
         w.auth.trust_principal("agent:helper");
-        let src = format!("tasks.add(@tasks.Tasks:{}, \"spam\")", list.id_string());
+        let src = format!(
+            "tasks.new_task(@tasks.Tasks:{}, \"spam\")",
+            list.id_string()
+        );
 
         let mallory = Principal::new("person:mallory");
         let message = post(&w, &apps, &conv, "person:mallory", "", &src);
@@ -1120,7 +1138,8 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false)] {
-            let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
+            let item =
+                returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }
@@ -1202,7 +1221,7 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.rt.create_root("Tasks").unwrap();
         let add = |title: &str| {
-            returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(title)]))
+            returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(title)]))
         };
         add("Record the demo video");
         add("Update the changelog");
@@ -1292,8 +1311,11 @@ mod cases {
     }
 
     fn add_todo(m: &Morning, apps: &Apps, title: &str, done: bool) {
-        let item =
-            returned_ref(m.w.call(&apps.todo, "add", vec![res(&m.list), Value::text(title)]));
+        let item = returned_ref(m.w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&m.list), Value::text(title)],
+        ));
         if done {
             m.w.call(&apps.todo, "check", vec![res(&item)]);
         }
@@ -1410,7 +1432,7 @@ mod cases {
         add_todo(&m, &apps, "b", false);
         // A done task with an unfinished step is not finished either.
         let parent =
-            returned_ref(m.w.call(&apps.todo, "add", vec![res(&m.list), Value::text("c")]));
+            returned_ref(m.w.call(&apps.todo, "new_task", vec![res(&m.list), Value::text("c")]));
         m.w.call(&apps.todo, "check", vec![res(&parent)]);
         m.w.call(
             &apps.todo,
@@ -1517,7 +1539,7 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for t in ["a", "b"] {
-            w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]);
+            w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]);
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
@@ -1563,7 +1585,11 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
-        let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
+        let item = returned_ref(w.call(
+            &apps.todo,
+            "new_task",
+            vec![res(&list), Value::text("milk")],
+        ));
         // The header offers a command as a button or, when it is not the window's main thing
         // and the app does not mark it frequent, in the one menu the rest go behind.
         let labels = |v: &ViewInstance| -> Vec<String> {
@@ -1644,7 +1670,8 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
-            let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
+            let item =
+                returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }

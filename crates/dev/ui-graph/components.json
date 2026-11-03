@@ -514,6 +514,11 @@
           "name": "alert",
           "doc": "It needs the person: the count or the dot in the warning tone, not in your colour.",
           "type": "bool"
+        },
+        {
+          "name": "in_menu",
+          "doc": "It belongs in its header's menu rather than in the row ([`crate::widget::Button::in_menu`]).",
+          "type": "bool"
         }
       ],
       "events": [

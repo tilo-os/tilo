@@ -223,7 +223,7 @@ fn a_task_retitled_by_somebody_else_since_keeps_their_title_when_its_first_title
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![root(&ada, TASKS_APP), Value::text("")],
     ));
     ada.commit();
@@ -275,14 +275,14 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks.clone(), Value::text("Milk")],
     ));
     let eggs = target(&call(
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks.clone(), Value::text("Eggs")],
     ));
     ada.commit();

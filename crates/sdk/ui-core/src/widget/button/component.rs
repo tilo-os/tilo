@@ -61,6 +61,9 @@ pub struct ButtonProps {
     pub dot: bool,
     /// It needs the person: the count or the dot in the warning tone, not in your colour.
     pub alert: bool,
+    /// It belongs in its header's menu rather than in the row
+    /// ([`crate::widget::Button::in_menu`]).
+    pub in_menu: bool,
     /// It was pressed (a click, Enter or Space, an assistive technology).
     #[component(event)]
     pub press: Event,
@@ -82,6 +85,7 @@ impl Default for ButtonProps {
             count: None,
             dot: false,
             alert: false,
+            in_menu: false,
             press: Event::None,
         }
     }
@@ -105,6 +109,7 @@ impl Described for Button {
             count,
             dot,
             alert,
+            in_menu,
             press,
         } = props;
         let enabled = enabled && !press.is_none();
@@ -137,6 +142,7 @@ impl Described for Button {
             };
             button = button.with_count(content, style);
         }
+        let button = if in_menu { button.in_menu() } else { button };
         let button = button.with_enabled(enabled);
         match press {
             Event::None => button,
@@ -173,6 +179,7 @@ impl Described for Button {
             && size == self.control_size
             && props.toggled.is_some() == self.toggled.is_some()
             && self.shows_count(count_content(props.count, props.dot).as_ref(), props.alert)
+            && props.in_menu == self.is_menu_only()
             && props.press.is_none() == (self.action.is_none() && self.on_click.is_none());
         if !same_face || matches!(props.press, Event::Action(_)) {
             return false;

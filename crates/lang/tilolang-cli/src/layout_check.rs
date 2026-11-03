@@ -1029,14 +1029,24 @@ impl AppCheck<'_> {
         let mut pressed = false;
         for layout in layouts() {
             let viewport = (layout.size.width, layout.size.height);
-            staged.lay_out(viewport, layout.theme(), layout.input(), layout.display_scale)?;
+            staged.lay_out(
+                viewport,
+                layout.theme(),
+                layout.input(),
+                layout.display_scale,
+            )?;
             if !pressed && !self.keys.is_empty() && Some(viewport) == read_at {
                 // The window a person reaches by keyboard leaves it laid out differently: a
                 // group folded away, a control focused and wearing its ring.
                 for key in self.keys {
                     staged.key(key);
                 }
-                staged.lay_out(viewport, layout.theme(), layout.input(), layout.display_scale)?;
+                staged.lay_out(
+                    viewport,
+                    layout.theme(),
+                    layout.input(),
+                    layout.display_scale,
+                )?;
                 pressed = true;
             }
             self.audit(staged, layout, label)?;
@@ -1328,6 +1338,17 @@ mod traditional_desktop {
             platform,
         ));
         (app, packages)
+    }
+
+    /// The tasks app and every package it uses, staged from `apps/tl/tasks`.
+    fn tasks_packages() -> Rc<stage::Packages> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+        let search = vec![dir.parent().expect("apps/tl").to_path_buf()];
+        let (built, platform) = super::build(&dir, &search).expect("the tasks app compiles");
+        Rc::new(stage::Packages(
+            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+            platform,
+        ))
     }
 
     /// Every widget under `root` named `name`, with its rect, in drawing order.
@@ -1661,21 +1682,89 @@ mod traditional_desktop {
         said
     }
 
+    /// Whether `node` is a shell header's overflow door, whatever language the window it
+    /// frames reads in: the door is known by its id, not by the words on it.
+    fn is_shell_door(node: &ui::headless::InspectionNode) -> bool {
+        let [_, _, w, h] = node.rect;
+        w > 0.0
+            && h > 0.0
+            && node
+                .test_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("nav-shell-more-"))
+    }
+
+    /// The columns each window under `node` heads with a menu, one list per window: a header
+    /// row of a column holds the rest of that column's actions in one menu, and one only.
+    fn menus_per_window(node: &ui::headless::InspectionNode, out: &mut Vec<Vec<String>>) {
+        if matches!(node.widget.as_str(), "WindowFrame" | "TilolangWindow") {
+            out.push(Vec::new());
+        }
+        if is_shell_door(node)
+            && let (Some(doors), Some(id)) = (out.last_mut(), node.test_id.as_deref())
+            && let Some(column) = id.strip_prefix("nav-shell-more-")
+        {
+            doors.push(column.to_owned());
+        }
+        for child in &node.children {
+            menus_per_window(child, out);
+        }
+    }
+
+    /// The shell door on the window, by its test id.
+    fn shown_door(node: &ui::headless::InspectionNode) -> Option<String> {
+        if is_shell_door(node) {
+            return node.test_id.clone();
+        }
+        node.children.iter().find_map(shown_door)
+    }
+
     #[test]
-    fn a_windows_header_holds_the_apps_own_actions_and_no_generated_menu() {
-        // The desktop's bar lists the window's actions (its window menu), so what does not
-        // fit in a window's header gives way to it: no "More actions" door in a window, on a
-        // desk or on a phone, and never a list made up for the header.
-        for size in [(1280, 800), (320, 568)] {
-            let said = desktop_read_out(size);
-            let generated: Vec<&String> = said
-                .iter()
-                .filter(|(in_window, name)| *in_window && name == "More actions")
-                .map(|(_, name)| name)
-                .collect();
+    fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
+        // A column's header draws its owner's main actions as buttons and keeps the rest
+        // behind one menu: never every action as a button of its own, and one menu per
+        // column at most, on a desk or on a phone.
+        let columns = ["overview", "content", "sidebar"];
+        for size in [(1280, 800), (390, 844)] {
+            tilo_ui_host::i18n::ensure();
+            let packages = tasks_packages();
+            let mut staged = stage::Staged::over(
+                "so.tilo.lang.tasks",
+                &packages,
+                "a busy week",
+                size,
+                ui::Theme::light(),
+                None,
+            )
+            .expect("the scenario stages");
+            let input = if size.0 < 600 {
+                ui::interaction::InteractionEnvironment::TOUCH
+            } else {
+                ui::interaction::InteractionEnvironment::POINTER
+            };
+            staged
+                .lay_out(size, ui::Theme::light(), input, 1.0)
+                .expect("the app lays out");
+            let mut windows = Vec::new();
+            menus_per_window(&staged.harness().inspection().root, &mut windows);
+            assert!(!windows.is_empty(), "the app shows a window at {size:?}");
+            let mut menus = 0;
+            for (window, doors) in windows.iter().enumerate() {
+                for door in doors {
+                    assert!(
+                        columns.contains(&door.as_str()),
+                        "window {window} heads a menu of {door:?} at {size:?}"
+                    );
+                    assert!(
+                        doors.iter().filter(|held| *held == door).count() == 1,
+                        "window {window} heads its {door:?} column with two menus at {size:?}"
+                    );
+                }
+                menus += doors.len();
+            }
             assert!(
-                generated.is_empty(),
-                "a window offers {generated:?} at {size:?}"
+                menus > 0,
+                "a window's header keeps the rest of its actions in a menu at {size:?}"
             );
         }
     }
@@ -1724,7 +1813,7 @@ mod traditional_desktop {
             if shown_named(&root, "Untag…").is_some() {
                 continue;
             }
-            let door = shown_named(&root, "More actions")
+            let door = shown_door(&root)
                 .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a door at {size:?}"));
             staged.press(&door, size.0 < 600).expect("the door opens");
             let mut said = Vec::new();

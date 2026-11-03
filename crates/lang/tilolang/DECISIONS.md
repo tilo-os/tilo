@@ -126,6 +126,14 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in a
   `std` header or menu, or in an agent's choices, while the app can still name it where the
   gesture wants it.
+- **A window's header shows its primary action and the commands the app marks `frequent` as
+  buttons, and every other action in the header's one menu.** `std.header` builds them that
+  way: a button per primary and per `frequent` action, and a `ui.Button(..., in_menu: true)`
+  per remaining action, which the shell's own More button holds whatever room the row has.
+  Which commands earn a place in the row is the app's judgement (`frequent: true`), not the
+  window's width, so a narrow window gives way with the menu, never with the one main thing to
+  do; a host that lists a window's actions elsewhere (`WindowBar::lists_actions`) hides the
+  menu's door instead, and nothing is offered twice.
 - **A row is drawn by the view that knows what the place around it says.** `row(title, ...)`
   stands in a list's item block, as a row view's body, or as the whole body of a view of one
   item (first parameter a record, body one row after its `let`s). The extra parameters are what

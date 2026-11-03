@@ -98,7 +98,7 @@ fn a_task_is_made_filed_under_a_project_and_checked_off() {
     let (mut ada, root) = workspace();
     let task = call(
         &ada,
-        "add",
+        "new_task",
         vec![root.clone(), Value::text("Book a haircut")],
     );
     ada.commit();
@@ -230,7 +230,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
-    let dated = |title: &str| call(&ada, "add", vec![root.clone(), Value::text(title)]);
+    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
     let late = dated("Pay the electricity bill");
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
@@ -354,7 +354,7 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();
     let task = call(
         &ada,
-        "add",
+        "new_task",
         vec![root.clone(), Value::text("Call the landlord")],
     );
     ada.commit();
@@ -439,7 +439,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         "Pack the books",
         "Measure the bedworkspace",
     ] {
-        let t = call(&ada, "add", vec![root.clone(), Value::text(title)]);
+        let t = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
         call(&ada, "file", vec![t.clone(), project.clone()]);
         made.push(t);
     }
@@ -622,7 +622,7 @@ fn launch_post() -> (Replica, Value) {
     let (mut ada, root) = workspace();
     let parent = call(
         &ada,
-        "add",
+        "new_task",
         vec![root.clone(), Value::text("Write the launch post")],
     );
     ada.commit();

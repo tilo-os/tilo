@@ -174,7 +174,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks, Value::text("Call the landlord")],
     );
     let day = |d: &str| Value::some(Value::text(d));

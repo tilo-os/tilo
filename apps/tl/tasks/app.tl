@@ -122,12 +122,6 @@ migration action adopt_steps(tasks: Tasks) {
     }
 }
 
-/// Adds a task with this title to the inbox: the way a program or an agent adds one, not a
-/// command of the window, whose entry and New task are how a person adds.
-internal action add(tasks: Tasks, title: Text) -> Task {
-    tasks.items.insert(Task(title: title))
-}
-
 /// Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
 /// when ("Call the landlord tomorrow 9am"), that is its due day and moment and the rest its
 /// title; without, a task added `today` is due today. An empty entry adds nothing. It is the
@@ -140,9 +134,10 @@ internal action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none,
     }
 }
 
-/// Starts a task in the inbox.
-primary action new_task(tasks: Tasks) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
-    tasks.items.insert(Task(title: ""))
+/// Starts a task in the inbox: one to type into, or one under the title a program or an agent
+/// gives it. The entry is how a person says what the task is.
+primary action new_task(tasks: Tasks, title: Text = "") -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
+    tasks.items.insert(Task(title: title))
 }
 
 /// Starts a project.
@@ -250,9 +245,9 @@ destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
 /// Deletes every finished task, and answers how many went: a task whose subtasks are still
 /// undone stays, so clearing never takes unfinished work with it.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
+    require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
     // Offered while something is done: whether a done task is finished (no open steps under
     // it) is read once it runs, where a whole list may be walked.
-    require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
     let gone = tasks.items.filter(x -> finished(tasks.items, x))
     for x in gone {
         tasks.items.remove(x)
@@ -589,9 +584,7 @@ view task_page(t: Task) {
                 // Every task under this one, at any depth: the outline nests each under its
                 // parent.
                 let kids = tasks.items.filter(x -> x != t and under(tasks.items, x, t))
-                std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet",
-                    (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x),
-                    fill: false) { x ->
+                std.outline("Subtasks", kids, x -> x.parent, x -> x.title, "No subtasks yet", (moved, parent, before) -> move_to(tasks, moved, parent, before), x -> check(x), fill: false) { x ->
                     task_outline_row(x, t.project)
                 }
             }

@@ -280,6 +280,16 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
     );
 }
 
+/// The key of the button labelled `label` anywhere in `node`.
+fn button_named(node: &tilolang_runtime::UiNode, label: &str) -> Option<String> {
+    if node.kind == "ui.Button"
+        && node.props.get("label") == Some(&tilolang_runtime::Value::text(label))
+    {
+        return Some(node.key.clone());
+    }
+    node.children.iter().find_map(|c| button_named(c, label))
+}
+
 #[test]
 fn a_new_version_of_a_package_keeps_the_workspace_and_its_views_run_the_new_code() {
     let (mut ada, _grace, meta) = counter_workspace();
@@ -304,18 +314,11 @@ fn a_new_version_of_a_package_keeps_the_workspace_and_its_views_run_the_new_code
         "the workspace kept its state"
     );
     let view = ada.view(APP);
-    // The window's header keeps its main action (Increment) as a button and the rest behind
-    // its one menu, so the relabelled decrement is a menu item there.
-    fn take_one(node: &tilolang_runtime::UiNode) -> Option<String> {
-        if node.kind == "ui.MenuItem"
-            && node.props.get("label") == Some(&tilolang_runtime::Value::text("Take one"))
-        {
-            return Some(node.key.clone());
-        }
-        node.children.iter().find_map(take_one)
-    }
-    let take_one = take_one(view.tree()).expect("the decrement is in the window's menu");
-    view.fire_with(&take_one, "choose", None).unwrap();
+    // The window's header keeps its main action (Increment) in the row and the rest behind
+    // its one menu, so the relabelled decrement is a header action of the views the new code
+    // built, and pressing it runs that code.
+    let take_one = button_named(view.tree(), "Take one").expect("the decrement is in the header");
+    view.press(&take_one).unwrap();
     ada.commit();
     assert_eq!(count(&ada.root(APP), &meta), 0);
 }
