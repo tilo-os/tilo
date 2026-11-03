@@ -1872,3 +1872,128 @@ mod traditional_desktop {
         assert!(why.contains("no such scenario"), "{why}");
     }
 }
+
+#[cfg(test)]
+mod board_lane {
+    use std::path::Path;
+    use std::rc::Rc;
+
+    use ui::kurbo::Rect;
+    use ui::widget::Widget;
+
+    use super::stage;
+
+    const BOARD: &str = "so.tilo.lang.layoutboard";
+
+    fn packages() -> Rc<stage::Packages> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/layout_check/board");
+        let search = vec![dir.parent().expect("tests/layout_check").to_path_buf()];
+        let (built, platform) = super::build(&dir, &search).expect("the board fixture compiles");
+        let app = built.last().expect("the fixture").compiled.meta.app.clone();
+        assert_eq!(app, BOARD, "the fixture's app id");
+        Rc::new(stage::Packages(
+            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+            platform,
+        ))
+    }
+
+    /// Every widget under `node` named `name`, in drawing order.
+    fn named<'a>(node: &'a dyn Widget, name: &str, out: &mut Vec<&'a dyn Widget>) {
+        if node.name() == name {
+            out.push(node);
+        }
+        for child in node.children() {
+            named(child, name, out);
+        }
+    }
+
+    /// Whether `rect` stands whole inside `clip`: a card cut by the view that scrolls its lane
+    /// is not one a person sees.
+    fn inside(clip: Rect, rect: Rect) -> bool {
+        /// `layout` places edges on fractions of a pixel.
+        const SLACK: f64 = 1.0;
+        rect.height() > SLACK
+            && rect.x0 >= clip.x0 - SLACK
+            && rect.y0 >= clip.y0 - SLACK
+            && rect.x1 <= clip.x1 + SLACK
+            && rect.y1 <= clip.y1 + SLACK
+    }
+
+    /// The cards `node` holds that stand whole inside `clip`, in drawing order.
+    fn whole_cards(node: &dyn Widget, clip: Rect, out: &mut Vec<Rect>) {
+        let rect = node.get_rect();
+        if node.name() == "Card" && inside(clip, rect) {
+            out.push(rect);
+        }
+        let clip = node.child_clip_rect().map_or(clip, |own| {
+            Rect::new(
+                clip.x0.max(own.x0),
+                clip.y0.max(own.y0),
+                clip.x1.min(own.x1),
+                clip.y1.min(own.y1),
+            )
+        });
+        for child in node.children() {
+            whole_cards(child, clip, out);
+        }
+    }
+
+    /// A board's page stands the window's height, so its lanes are as tall as the window: a lane
+    /// holding as many cards as the window shows draws every one of them under its heading, and
+    /// a lane holding more keeps them inside the view that scrolls it. A page that grows with
+    /// its lanes instead pushes the board past the window, and its first lane cuts the cards the
+    /// window had room for.
+    #[test]
+    fn a_lane_draws_every_card_the_window_has_room_for() {
+        tilo_ui_host::i18n::ensure();
+        let packages = packages();
+        let staged = stage::Staged::over(
+            BOARD,
+            &packages,
+            "a board",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the board stages");
+        let root = staged.harness().root_widget();
+        let window = root.get_rect();
+        let mut pages = Vec::new();
+        named(root, "Page", &mut pages);
+        assert_eq!(pages.len(), 1, "the board is one page");
+        let page = pages[0].get_rect();
+        assert!(
+            page.y1 <= window.y1 + 1.0,
+            "the board's page stands the window's height: {page:?} in {window:?}"
+        );
+        let mut whole = Vec::new();
+        whole_cards(root, window, &mut whole);
+        assert!(!whole.is_empty(), "the board draws its cards");
+        // Lanes stand side by side: the leftmost holds six cards, which the window shows at
+        // once, and the rightmost thirty, more than its lane has room for.
+        let left = whole
+            .iter()
+            .map(|rect| rect.x0)
+            .fold(f64::INFINITY, f64::min);
+        let right = whole
+            .iter()
+            .map(|rect| rect.x0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(right > left + 1.0, "the board shows more than one lane");
+        let lane = |x: f64| {
+            whole
+                .iter()
+                .filter(|rect| (rect.x0 - x).abs() < 1.0)
+                .count()
+        };
+        assert_eq!(
+            lane(left),
+            6,
+            "the first lane draws all six cards the window has room for"
+        );
+        assert!(
+            lane(right) < 30,
+            "the third lane scrolls its thirty cards instead of growing past the window"
+        );
+    }
+}

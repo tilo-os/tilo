@@ -242,9 +242,11 @@ view document<R>(of: R, content: View) {
 
 /// A window that is a page of `of`: its content at the readable measure, or as a `canvas` at
 /// the window's full width, scrolling under a header of `of`'s actions and `header`, the
-/// page's own controls. A page with nothing on it (`empty`) says so and offers its primary
-/// action.
-view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, content: View) {
+/// page's own controls. A `fill` page is exactly the window's height and scrolls inside its
+/// own parts, which is what a board's lanes need; a page that grows with what it holds (a grid
+/// of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so and offers
+/// its primary action.
+view page<R>(of: R, canvas: Bool = false, fill: Bool = false, empty: Bool = false, header: View, content: View) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of)) {
@@ -263,8 +265,8 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
             } else {
                 ui.Scroll {
                     if canvas {
-                        page(full) {
-                            stack(gap: .section) {
+                        page(full, fill: fill) {
+                            stack(gap: .section, fill: fill) {
                                 content
                             }
                         }

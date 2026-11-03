@@ -389,12 +389,30 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 if grown.flex_grow == 0.0 {
                     grown.flex_grow = 1.0;
                 }
+                // A slot whose height the layout gives (a page that fills, a filled layer)
+                // holds its child to it; the mark is read before the wrapper below takes a
+                // height of its own.
+                let given = style.size.height;
+                // A view that clips what it holds (a scroll view, a table) asks for the whole
+                // height because that height is its viewport: through a wrapper that hugs its
+                // content it would never see it. The wrapper takes the height the container
+                // gives its slots, and the view scrolls inside it. Where the container has
+                // none, both stay as tall as the content.
+                let full = taffy::style_helpers::percent(1.0_f32);
+                let clips = current.overflow.x != taffy::Overflow::Visible
+                    || current.overflow.y != taffy::Overflow::Visible;
+                if current.size.height == full
+                    && clips
+                    && style.size.height == taffy::Dimension::auto()
+                {
+                    style.size.height = full;
+                }
                 // A wrapper whose height is given (a filled layer, a filled share of a stack)
                 // holds the child to it: the child shrinks to that height, and what it holds
                 // scrolls or overflows inside it rather than pushing past the wrapper. A layer
                 // straddling an edge stands in a wrapper of no height and keeps its own.
                 let zero = taffy::style_helpers::length(0.0_f32);
-                let filled_layer = style.size.height == taffy::style_helpers::percent(1.0_f32);
+                let filled_layer = given == taffy::style_helpers::percent(1.0_f32);
                 let filled_share = style.flex_grow > 0.0
                     && style.flex_basis == zero
                     && style.min_size.height == zero

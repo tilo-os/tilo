@@ -468,7 +468,7 @@ view project_list(p: Project, draft: State<Text>) {
 /// its menu, which also holds its actions, and opens in a window of its own.
 view project_board(p: Project) {
     let sections = sections_of(p)
-    std.page(p, canvas: true) {
+    std.page(p, canvas: true, fill: true) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
                 let loose = lane_of(p, .none)

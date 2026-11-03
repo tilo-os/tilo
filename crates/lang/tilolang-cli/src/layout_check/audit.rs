@@ -19,6 +19,9 @@ pub enum Kind {
     SmallHitTarget,
     /// Content is wider than the window or its scroll view, so the page scrolls sideways.
     ScrollsSideways,
+    /// A scroll view with no room on the way it scrolls: what it holds cannot be scrolled into
+    /// view, so it is lost (a board lane whose height came from its content).
+    LostContent,
     /// An edge between two device pixels at the display's scale, drawn blurred across both.
     OffPixel,
     /// A page whose content is one row stretched over the column: a row is a line, and the page
@@ -33,6 +36,7 @@ impl Kind {
         Self::Overlap,
         Self::SmallHitTarget,
         Self::ScrollsSideways,
+        Self::LostContent,
         Self::OffPixel,
         Self::BareRow,
     ];
@@ -44,6 +48,7 @@ impl Kind {
             Self::Overlap => "overlap",
             Self::SmallHitTarget => "small-hit-target",
             Self::ScrollsSideways => "scrolls-sideways",
+            Self::LostContent => "lost-content",
             Self::OffPixel => "off-pixel",
             Self::BareRow => "bare-row",
         }
@@ -381,6 +386,9 @@ impl Walk<'_> {
         if scrolling && !scrolls.across && geometric {
             self.sideways(node, keys, node.child_clip.map_or(own, rect));
         }
+        if scrolling {
+            self.lost(node, keys, own);
+        }
         if geometric {
             self.overlaps(node, keys, inner_clip);
         }
@@ -519,6 +527,39 @@ impl Walk<'_> {
                 ),
             );
         }
+    }
+
+    /// A scroll view with no room on the way it scrolls, holding more than that: nothing under
+    /// it can be scrolled into view, so a card or a line the person was promised is gone.
+    fn lost(&mut self, node: &InspectionNode, keys: &[String], shown: Rect) {
+        let content = node
+            .children
+            .iter()
+            .map(|child| rect(child.rect))
+            .filter(|r| has_area(*r))
+            .reduce(|a, b| a.union(b));
+        let Some(content) = content else {
+            return;
+        };
+        let scrolls = scrolls(node);
+        let lost = [
+            (scrolls.down, shown.height(), content.height(), "tall"),
+            (scrolls.across, shown.width(), content.width(), "wide"),
+        ]
+        .into_iter()
+        .find(|(scrolls, shown, content, _)| *scrolls && *shown <= EPSILON && *content > EPSILON);
+        let Some((_, shown, content, axis)) = lost else {
+            return;
+        };
+        self.push(
+            Kind::LostContent,
+            node,
+            keys,
+            format!(
+                "content {content:.0} {axis} in a scroll view {shown:.0} {axis}, which cannot \
+                 scroll it into view"
+            ),
+        );
     }
 
     /// Something to press smaller than the minimum.
@@ -786,6 +827,48 @@ mod tests {
         ]);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].keys.first().map(String::as_str), Some("new"));
+    }
+
+    /// A column of a board as a height it did not get leaves it: the view scrolling its cards
+    /// has no room, so the cards under its heading cannot be brought into view. Given the room
+    /// of a pane, the same view holds them and nothing is lost.
+    #[test]
+    fn a_scroll_view_with_no_room_loses_the_cards_it_holds() {
+        let lane = |height: f64| {
+            let mut scrolling = stack_node(
+                "lane",
+                [0.0, 40.0, 240.0, height],
+                (0..7)
+                    .map(|index| {
+                        stack_node(
+                            "card",
+                            [0.0, 40.0 + 76.0 * f64::from(index), 240.0, 68.0],
+                            vec![],
+                        )
+                    })
+                    .collect(),
+            );
+            scrolling.layout = Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                direction: ui::widget::ScrollDirection::Vertical,
+            }));
+            stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![scrolling])
+        };
+        let lost = |root: &InspectionNode| {
+            inspect(root, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::LostContent)
+                .map(|problem| problem.keys)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lost(&lane(0.0)),
+            vec![vec!["lane".to_owned(), "window".to_owned()]],
+            "a scroll view with no height holds seven cards in none of it"
+        );
+        assert!(
+            lost(&lane(600.0)).is_empty(),
+            "given the room of a pane, the same cards are there to scroll through"
+        );
     }
 
     fn inspected(root: &InspectionNode) -> Vec<Problem> {

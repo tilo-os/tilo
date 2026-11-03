@@ -71,7 +71,7 @@ action rename_column(col: Column, title: Text) {
 /// its notes. A card is dragged to another place or column, or moved from its menu, which also
 /// holds its actions, and opens in a page of its own.
 view board(b: Board) {
-    std.page(b, canvas: true, empty: b.columns.is_empty()) {
+    std.page(b, canvas: true, fill: true, empty: b.columns.is_empty()) {
         ui.Scroll(across: true) {
             ui.Board {
                 for col in b.columns {
