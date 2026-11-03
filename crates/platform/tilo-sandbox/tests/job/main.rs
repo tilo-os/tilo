@@ -24,6 +24,8 @@ mod isolation;
 #[cfg(target_os = "linux")]
 mod limits;
 #[cfg(target_os = "linux")]
+mod mount_ns;
+#[cfg(target_os = "linux")]
 mod overlays;
 #[cfg(target_os = "linux")]
 mod seccomp;

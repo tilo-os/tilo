@@ -75,6 +75,7 @@ pub fn spawn(h: Helper<'_>) -> Result<libc::pid_t, SpawnError> {
     let mode = runner::Mode {
         status: Some(h.status),
         netns: h.netns,
+        mount_ns: None,
     };
     let job = runner::spawn(&plan, spec.ids, fds, Some(h.cgroup), None, mode)?;
     Ok(job.into_detached().0)
