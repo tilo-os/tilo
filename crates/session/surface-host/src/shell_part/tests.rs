@@ -726,10 +726,20 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
     let labels = crate::Published::accessible_labels(&mut part);
-    for name in ["Notifications", "Strips", "Frames", "Spaces"] {
+    for name in ["Notifications", "Strips"] {
         assert!(
             labels.iter().any(|label| label == name),
             "the screen shows {name}: {labels:?}"
+        );
+    }
+    // The preset switch is the bar's own menu, named by the preset in use: the ways of showing
+    // the same arrangement are its items, offered when the person opens it.
+    click(&mut part, "Strips");
+    let labels = crate::Published::accessible_labels(&mut part);
+    for name in ["Frames", "Spaces"] {
+        assert!(
+            labels.iter().any(|label| label == name),
+            "the preset menu offers {name}: {labels:?}"
         );
     }
     let well = wells

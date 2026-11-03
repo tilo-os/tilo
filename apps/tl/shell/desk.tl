@@ -16,11 +16,11 @@ view desk(d: Desk) {
     desk_around(d, .none, fill)
 }
 
-/// The desk, with the arrangement `front` filling the room between its bar and its dock when
-/// there is one, as its preset shows it (`shown_preset`). On a compact output, where a desk of
-/// windows standing where they were left would show their corners cut off, the traditional
-/// desktop shows the window the person is in that way, and the dock takes its own room at the
-/// foot rather than standing over the window, as a phone's does.
+/// The desk, with the arrangement `front` filling the room between its bar and its foot, as its
+/// preset shows it (`shown_preset`): the dock stands over that room on its own edge, as the
+/// chrome's does, so a window is as tall as the desk rather than stopping short of the dock. On a
+/// compact output that room is a phone's, too little for a window's bar to lose to a floating
+/// dock, so the dock takes its own room at the foot instead and the window fills what is left.
 ///
 /// The switcher is a panel over the desk rather than a page of it: it takes that room and
 /// centres itself there, where the surfaces that go on past a display are given the same room
@@ -29,11 +29,8 @@ view desk(d: Desk) {
 /// nothing over either.
 view desk_around(d: Desk, front: Option<Arrangement>) {
     let s = shell
-    let docked = front != .none and dock_shows(s, d) and s.dock_edge == .bottom
-    let resting = d.here == ""
-        or d.here == "none"
-        or d.here == "desk"
-        or d.here == "switcher" and not d.switcher_revealed
+    let dock_takes_room = front != .none and dock_shows(s, d) and s.dock_edge == .bottom and space.compact
+    let resting = d.here == "" or d.here == "none" or d.here == "desk" or d.here == "switcher" and not d.switcher_revealed
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {
@@ -63,66 +60,28 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
                     surface(d)
                 }
             }
-            if docked {
+            if dock_takes_room {
                 row(align: .center, distribute: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .bottom,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                        fill: if s.dock_fit == .full { 1 } else { 0 },
-                    ) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .bottom)
                 }
             }
         }
-        if dock_shows(s, d) and not docked {
+        if dock_shows(s, d) and not dock_takes_room {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, distribute: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .bottom,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                        fill: if s.dock_fit == .full { 1 } else { 0 },
-                    ) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .bottom)
                 }
             } else if s.dock_edge == .top {
                 row(at: .top, fill, align: .center, distribute: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .top,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                        fill: if s.dock_fit == .full { 1 } else { 0 },
-                    ) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .top)
                 }
             } else if s.dock_edge == .left {
                 stack(at: .leading, fill, align: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .leading,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                    ) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .left)
                 }
             } else {
                 stack(at: .trailing, fill, align: .center) {
-                    ui.Chrome(
-                        name: "Dock",
-                        shape: if s.dock_fit == .full { .square } else { .rounded },
-                        edge: .trailing,
-                        material: if s.dock_finish == .translucent { .glass } else { .calm },
-                    ) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .right)
                 }
             }
         }
@@ -155,6 +114,21 @@ view screen(a: Arrangement) {
         }
     } else {
         desk_around(root Desk, .some(a), fill)
+    }
+}
+
+/// The dock's ground on `edge`: the theme's material for the style the person picked, edge to
+/// edge along a top or a foot and inset with rounded corners on a floating dock, which `edge`
+/// as `ui.Chrome` names it. What stands on it is the dock's own run (`dock`).
+view dock_ground(s: Shell, d: Desk, edge: Edge) {
+    if edge == .top or edge == .bottom {
+        ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: if edge == .top { .top } else { .bottom }, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+            dock(s, d)
+        }
+    } else {
+        ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: if edge == .left { .leading } else { .trailing }, material: if s.dock_finish == .translucent { .glass } else { .calm }) {
+            dock(s, d)
+        }
     }
 }
 

@@ -925,6 +925,8 @@ d-2u2ny6gr = Outcome badge
 d-gctjtdv7 = Desk
 
 d-6jkhhsvr = Desk around
+
+d-gb3g4lte = Dock ground
     .w-dock = Dock
 
 d-bhxvwkho = Shown preset
