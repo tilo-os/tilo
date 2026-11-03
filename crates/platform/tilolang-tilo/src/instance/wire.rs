@@ -124,7 +124,15 @@ impl Convert<'_> {
             Value::Opt(held) => {
                 wire::Value::Opt(held.as_deref().map(|held| Box::new(self.value(held))))
             }
-            Value::Enum(case) => wire::Value::Enum(case.variant.clone()),
+            Value::Enum(case) if case.fields.is_empty() => wire::Value::Enum(case.variant.clone()),
+            Value::Enum(case) => wire::Value::Case {
+                case: case.variant.clone(),
+                fields: case
+                    .fields
+                    .iter()
+                    .map(|(field, held)| (field.clone(), self.value(held)))
+                    .collect(),
+            },
             Value::Ref(reference) => wire::Value::Ref(resource(&reference.target)),
             Value::Principal(who) => wire::Value::Principal(wire::Principal {
                 id: who.0.clone(),
@@ -296,7 +304,8 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         | wire::Value::Error(_)
         | wire::Value::Map(_)
         | wire::Value::Action(_)
-        | wire::Value::Picture(_) => {
+        | wire::Value::Picture(_)
+        | wire::Value::Case { .. } => {
             return None;
         }
     })

@@ -21,7 +21,8 @@ use syn::{
 /// Each field is one part of the description, with its doc text:
 ///
 /// - no attribute, or `#[component(required)]`, `#[component(positional)]`: a **prop**, whose
-///   type implements `PropType`;
+///   type implements `PropType`; `#[component(data)]` says its text is data the component
+///   reads (a key, an address), not words it shows, so a view's literal there is no message;
 /// - `#[component(slot)]`, `#[component(slot(default))]`: a **slot**, whose type implements
 ///   `SlotType` (`Option<Element>`, `Vec<Element>`, or `Option<P>` of another component's props:
 ///   the slot accepts only that component);
@@ -117,6 +118,7 @@ enum Part {
     Prop {
         required: bool,
         positional: bool,
+        data: bool,
     },
     Slot {
         default: bool,
@@ -225,6 +227,7 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
     let mut part = None;
     let mut required = false;
     let mut positional = false;
+    let mut data = false;
     let set = |part: &mut Option<Part>, new: Part, span: proc_macro2::Span| {
         if part.is_some() {
             return Err(syn::Error::new(span, "a field is one part of a component"));
@@ -243,6 +246,8 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                 required = true;
             } else if meta.path.is_ident("positional") {
                 positional = true;
+            } else if meta.path.is_ident("data") {
+                data = true;
             } else if meta.path.is_ident("slot") {
                 let mut default = false;
                 if meta.input.peek(syn::token::Paren) {
@@ -296,24 +301,25 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                 set(&mut part, Part::Skip, span)?;
             } else {
                 return Err(meta.error(
-                    "a component field is `required`, `positional`, `slot`, `event`, `bind`, `state`, `key` or `skip`",
+                    "a component field is `required`, `positional`, `data`, `slot`, `event`, `bind`, `state`, `key` or `skip`",
                 ));
             }
             Ok(())
         })?;
     }
     match part {
-        Some(other) if required || positional => Err(syn::Error::new(
+        Some(other) if required || positional || data => Err(syn::Error::new(
             field.span(),
             match other {
                 Part::Skip | Part::Key => "a skipped field or the key is not a prop",
-                _ => "only a prop is `required` or `positional`",
+                _ => "only a prop is `required`, `positional` or `data`",
             },
         )),
         Some(part) => Ok(part),
         None => Ok(Part::Prop {
             required,
             positional,
+            data,
         }),
     }
 }
@@ -490,6 +496,7 @@ impl Generated {
             Part::Prop {
                 required,
                 positional,
+                data,
             } => self.prop(
                 k,
                 name,
@@ -497,7 +504,7 @@ impl Generated {
                 ty,
                 &key,
                 &field_doc,
-                (required, positional),
+                (required, positional, data),
             ),
             Part::Slot { default } => {
                 self.slots.push(quote! {
@@ -623,7 +630,7 @@ impl Generated {
         ty: &syn::Type,
         key: &str,
         doc: &str,
-        (required, positional): (bool, bool),
+        (required, positional, data): (bool, bool, bool),
     ) {
         self.props.push(quote! {
             #k::Prop {
@@ -632,6 +639,7 @@ impl Generated {
                 ty: <#ty as #k::PropType>::ty(),
                 required: #required,
                 positional: #positional,
+                data: #data,
             }
         });
         let missing = if required {

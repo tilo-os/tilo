@@ -317,7 +317,7 @@ impl Core {
             TimeShift, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
             TupleSetI, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
             UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-            Versions, Viewer, Withdraw, WorkspaceMembers,
+            Versions, Viewer, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -367,7 +367,7 @@ impl Core {
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
             | ActThen | ActOpen | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
-            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase
+            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase | Word
             | Dated | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)

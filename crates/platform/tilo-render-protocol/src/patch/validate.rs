@@ -498,6 +498,14 @@ impl<'a> Validator<'a> {
             Value::Float(_) => Err(Refused::invalid("a number that is not finite")),
             Value::Text(text) | Value::Error(text) => self.string(text),
             Value::Enum(case) => self.key(case),
+            Value::Case { case, fields } => {
+                self.key(case)?;
+                for (name, held) in fields {
+                    self.key(name)?;
+                    self.value(held, depth + 1)?;
+                }
+                Ok(())
+            }
             Value::List(items) => {
                 if items.len() > self.limits.rows as usize {
                     return Err(Refused::invalid(concat!(
@@ -788,6 +796,8 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         ) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),
+        // The case's fields are read against the catalogue's set where the node is built.
+        (Type::Cases { .. }, Value::Case { .. }) => true,
         (Type::List(inner) | Type::Set(inner), Value::List(items)) => {
             items.iter().all(|item| fits(item, inner))
         }

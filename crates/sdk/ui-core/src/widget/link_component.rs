@@ -13,6 +13,7 @@ use super::Link;
 pub struct LinkProps {
     /// The address it opens (usually also what it says).
     #[component(required, positional)]
+    #[component(data)]
     pub url: String,
     /// What it shows, when that is not the address: "The docs".
     pub label: Option<String>,

@@ -14,6 +14,7 @@ pub struct ColorPickerProps {
     #[component(bind)]
     pub value: Bound<String>,
     /// A palette of quick picks under the sliders.
+    #[component(data)]
     pub swatches: Vec<String>,
     /// How many swatches stand in a row.
     pub columns: Option<i64>,

@@ -797,16 +797,25 @@ d-tnecawb6 = A foreign place
 d-i6ll2n4j = Desk view
 
 d-72tgr4px = Clock
+    .w-paused = Paused · { $timer_left }
 
 d-3ezewqgy = Bar
+    .w-top-bar = Top bar
 
 d-pvl6wwx6 = Bar part
+    .w-tilo = Tilo
 
 d-vidcax4k = Workspace menu
+    .w-new-workspace = New workspace
+    .w-join-a-workspace = Join a workspace
+    .w-workspace-settings = Workspace settings
+    .w-overview = Overview
 
 d-k7lksxkj = Status icons
 
 d-hac3p23j = Volume status
+    .w-volume-muted = Volume, muted
+    .w-volume = Volume, { $percent }%
 
 d-iwv7cd5i = Network status
 
@@ -815,18 +824,23 @@ d-agni63m4 = Battery status
 d-moh3hzne = Bell
 
 d-fniigjed = Viewing settings
+    .w-desk = Desk
+    .w-the-same-places-shown-three-ways = The same places, shown three ways. Switching keeps every window where it is.
 
 d-j2fnnt4g = Show preset~present
 
 d-m4owmri7 = Framed canvas
+    .w-canvas = Canvas
 
 d-nt2inbrl = Spaces canvas
+    .w-spaces = Spaces
 
 d-t3cux3yd = Framed place
 
 d-s6b5stgz = Space content
 
 d-w6ftt2gh = Canvas entry
+    .w-find-something-or-ask = Find something, or ask
 
 d-ewgdlyyr = Show app menus~present
 
@@ -839,34 +853,59 @@ d-gkca5uj2 = Move item~present
 d-i4odzov3 = Pin~present
 
 d-bzxwxsra = Composer
+    .w-ask-about = Ask about { $subject }
+    .w-ask-an-agent = Ask an agent
+    .w-what-should-it-do = What should it do?
+    .w-no-task-is-running = No task is running
+    .w-what-you-ask-becomes-one-and = What you ask becomes one, and its log stays here
+    .w-running = Running
+    .w-agents-here = Agents here
+    .w-send = Send
+    .w-what-i-am-on = What I am on
+    .w-enter = Enter
 
 d-6hsxbazg = Task line
 
 d-dz2lhlbc = Conversation
 
 d-cp25pggy = Conversation entry
+    .w-type-a-program-or-say-what = Type a program, or say what to do
 
 d-edxsethn = Said
+    .w-you = You
 
 d-zhqh5ven = Said now
 
 d-ojxyofwa = Program step
+    .w-you = You
 
 d-ghaelk2z = Reference
 
 d-dterbuii = Phase badge
+    .w-starting = Starting
+    .w-working = Working
+    .w-waiting-for-you = Waiting for you
+    .w-done = Done
+    .w-could-not-finish = Could not finish
+    .w-stopped = Stopped
 
 d-2u2ny6gr = Outcome badge
+    .w-did-not-compile = Did not compile
+    .w-waiting-to-confirm = Waiting to confirm
+    .w-waiting-for-an-answer = Waiting for an answer
+    .w-stopped = Stopped
 
 d-gctjtdv7 = Desk
 
 d-6jkhhsvr = Desk around
+    .w-dock = Dock
 
 d-p2yoggx4 = Screen
 
 d-bhxvwkho = Shown preset
 
 d-afjfzjl6 = Bar on edge
+    .w-top-bar = Top bar
 
 d-su7ogm3c = Top bar
 
@@ -881,94 +920,191 @@ d-lwre5gd7 = Dock run
 d-lwt7iwsj = Dock tile
 
 d-dpqvjh2f = Launcher
+    .w-search-apps-windows-actions-and-files = Search apps, windows, actions and files
+    .w-windows = Windows
+    .w-recent-windows = Recent windows
+    .w-nothing-here-matches = Nothing here matches
+    .w-search-everywhere-for-it = Search everywhere for it
+    .w-search-everywhere-for = Search everywhere for { $query }
 
 d-tst43bqy = Window row
 
 d-hlv2uw7o = Desk doors
+    .w-the-desk = The desk
+    .w-overview = Overview
+    .w-every-strip-and-window-to-search = Every strip and window, to search and move
+    .w-workspaces = Workspaces
+    .w-who-is-in-each-and-what = Who is in each, and what it holds
+    .w-notifications = Notifications
+    .w-what-apps-and-agents-told-you = What apps and agents told you
+    .w-ask-an-agent = Ask an agent
+    .w-run-a-task-over-what-you = Run a task over what you point at
 
 d-outvdzmi = Layouts
+    .w-layout = Layout
 
 d-5q3okayl = Layout card
+    .w-in-use = In use
 
 d-mwph24zz = Preview
 
 d-cpowx55e = Preview bar
+    .w-file = File
+    .w-edit = Edit
+    .w-view = View
 
 d-ebrt7kdg = Preview dock
 
 d-grqdyggg = Shell settings
+    .w-top-bar = Top bar
+    .w-show-the-top-bar = Show the top bar
+    .w-dock = Dock
+    .w-show-the-dock = Show the dock
 
 d-p7ismolp = Bar parts
+    .w-parts-in-order = Parts, in order
 
 d-6phinc3w = Part row
+    .w-shown = Shown
+    .w-hidden = Hidden
 
 d-e25dashr = Dock settings
+    .w-running-apps = Running apps
+    .w-launcher-entry = Launcher entry
+    .w-magnify-the-item-under-the-pointer = Magnify the item under the pointer
 
 d-clgbrhsn = Notices
+    .w-notifications = Notifications
+    .w-clear-all = Clear all
+    .w-nothing-to-catch-up-on = Nothing to catch up on
+    .w-what-apps-and-agents-tell-you = What apps and agents tell you shows here
+    .w-search-notifications = Search notifications
+    .w-nothing-matches-that = Nothing matches that
+    .w-clear-the-search-to-see-every = Clear the search to see every notice
 
 d-wud3t5ro = Notice group
 
 d-t3ywtwqj = Notice row
+    .w-dismiss = Dismiss
 
 d-yyk2izra = Banner
 
 d-gke2gvrj = Banner full
 
 d-wh7n4fhq = Banner row
+    .w-dismiss = Dismiss
 
 d-rcjzvfxp = Overview
+    .w-overview = Overview
+    .w-new-workspace = New workspace
+    .w-join-a-workspace = Join a workspace
+    .w-search-windows-across-your-workspaces = Search windows across your workspaces
 
 d-f5tl6n63 = Rooms here
+    .w-here = { $len } here
 
 d-7nxhynyj = Picture
+    .w-nothing-on-this-strip = Nothing on this strip
+    .w-open-something-or-carry-a-window = Open something, or carry a window here
 
 d-nxpbvfox = Window place
 
 d-6l3wldtm = Window menu
+    .w-this-window = This window
+    .w-go-there = Go there
+    .w-close = Close
 
 d-6nn35yb7 = Found
+    .w-nothing-matches = Nothing matches
+    .w-windows-of-your-other-workspaces-show = Windows of your other workspaces show here. What apps hold is in Search
+    .w-in-other-workspaces = In other workspaces
 
 d-kxdzjhoo = Window line
+    .w-this-window = This window
+    .w-go-there = Go there
+    .w-move-here = Move here
 
 d-luuijvwf = Key hints launcher
+    .w-up = Up
+    .w-down = Down
+    .w-choose = Choose
+    .w-enter = Enter
+    .w-open = Open
+    .w-esc = Esc
+    .w-close = Close
 
 d-z4hw2mcw = Key hints switcher
+    .w-alt = Alt
+    .w-tab = Tab
+    .w-walk = Walk
+    .w-enter = Enter
+    .w-go-there = Go there
+    .w-esc = Esc
+    .w-stay = Stay
 
 d-uhzjvuan = People button
+    .w-people = People
 
 d-uvwnwa4d = Agent chip
+    .w-stop = Stop
 
 d-e7u7zirf = Agent line
 
 d-teccuwja = Quick settings
+    .w-quick-settings = Quick settings
 
 d-yxl6yq2r = Wifi tile
 
 d-d5wzqn37 = Bluetooth tile
+    .w-bluetooth = Bluetooth
 
 d-uzi5ah2q = Dark tile
+    .w-dark-mode = Dark mode
 
 d-s66oqjwe = Quiet tile
+    .w-do-not-disturb = Do not disturb
 
 d-w3fe7tjv = Levels
+    .w-volume = Volume
+    .w-brightness = Brightness
 
 d-lcjohgdk = Battery line
 
 d-ycck5awo = Power row
+    .w-lock = Lock
+    .w-power = Power
+    .w-sleep = Sleep
+    .w-log-out = Log out
+    .w-restart = Restart
+    .w-shut-down = Shut down
 
 d-wdjxaekq = Workspaces
+    .w-workspaces = Workspaces
+    .w-name-a-new-workspace = Name a new workspace
+    .w-create = Create
+    .w-join-a-workspace = Join a workspace
 
 d-wcb3o55u = Room card
 
 d-r34xb7ak = Preset switch
+    .w-strips = Strips
+    .w-frames = Frames
+    .w-spaces = Spaces
 
 d-qrahog47 = Strips view
 
 d-xwdhqtyz = Row of
+    .w-no-window-here-yet = No window here yet
+    .w-open-something-into-this-strip = Open something into this strip.
 
 d-7oiz3phb = Strip column
+    .w-nothing-here = Nothing here
 
 d-scru4wch = Strip controls
+    .w-width = Width
+    .w-narrow = Narrow
+    .w-normal = Normal
+    .w-wide = Wide
 
 d-so5z33zr = Tab chip
 
@@ -977,8 +1113,14 @@ d-74cbhzyb = Place content
 d-43am22do = Place view
 
 d-z4vc77e6 = Place controls
+    .w-pinned = Pinned
+    .w-pin = Pin
+    .w-close-place = Close place
+    .w-move-to-row = Move to row
 
 d-fziuz57n = Switcher
+    .w-no-windows = No windows
+    .w-open-something-and-it-shows-here = Open something and it shows here
 
 d-dswgb57x = Window card
 
@@ -987,6 +1129,7 @@ d-jzxijptr = Window names
 d-3bxeb2i2 = Window face
 
 d-4hp326dv = Traditional desktop
+    .w-desktop = Desktop
 
 d-uekksuqv = Front window
 
@@ -995,6 +1138,8 @@ d-6izhhsie = Desktop frame
 d-fabwkpdf = Frame classic
 
 d-efc4bnyi = Frame buttons
+    .w-move-to-row = Move to row
+    .w-close = Close
 
 d-u55srubm = Action bar
 
@@ -1003,8 +1148,10 @@ d-ysqdgpzc = Action run
 d-35o7co3i = Action control
 
 d-cijhlzxf = Window commands
+    .w-close = Close
 
 d-yx7doxgr = Traditional bar
+    .w-tilo = Tilo
 
 d-3ezewqgy-row0 = Bar for part
 
@@ -1043,8 +1190,10 @@ d-wh7n4fhq-row0 = Banner row for a
 d-f5tl6n63-row0 = Rooms here for r
 
 d-6l3wldtm-row0 = Window menu for s
+    .w-move-to = Move to { $strip_name }
 
 d-6l3wldtm-row1 = Window menu for r
+    .w-move-to = Move to { $name }
 
 d-qrahog47-row0 = Strips view for workspace
 

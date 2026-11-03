@@ -191,6 +191,7 @@ imports! {
     (RichEmpty, "rich_empty", "i", "i"),
     (RichTime, "rich_time", "i", "i"),
     (Phrase, "phrase", "ii", "i"),
+    (Word, "word", "iii", "i"),
     (Dated, "dated", "ii", "i"),
     (EventPart, "event_part", "i", "i"),
     (CollMoveAmong, "coll_move_among", "iiili", ""),

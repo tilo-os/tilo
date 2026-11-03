@@ -62,9 +62,14 @@ d-yjwm6mjf = Rename column
 d-t5kjcxjq = Board
 
 d-ufycrk6s = Card tile
+    .w-move-to = Move to { $title }
 
 d-zzww2gmr = Card page
+    .w-title = Title
+    .w-notes = Notes
 
 d-t5kjcxjq-row0 = Board for col
+    .w-new-card = New card
 
 d-t5kjcxjq-row1 = Board for col
+    .w-new-card = New card

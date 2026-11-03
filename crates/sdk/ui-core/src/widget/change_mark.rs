@@ -24,6 +24,7 @@ pub struct ChangeMarkProps {
     /// The task run it was part of, as its task is titled.
     pub run: Option<String>,
     /// What they did: `created`, `changed` or `removed`.
+    #[component(data)]
     pub kind: Option<String>,
     /// How many changes of it the person has not seen.
     pub count: i64,

@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use super::{Checker, Ex};
+use super::{Checker, Ctx, Ex};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
@@ -241,6 +241,10 @@ impl Checker<'_> {
             return;
         }
         if let Some(p) = d.prop(name) {
+            // The literals a prop of words shows are the view's messages (i18n.md §2).
+            if !p.data && self.st.ctx == Ctx::View && shows_words(&p.ty) {
+                self.mark_shown(value);
+            }
             self.typed_prop(n, d, name, &p.ty, &p.doc, value);
         } else if let Some(b) = d.binding(name)
             && d.event("change").is_some()
@@ -386,7 +390,9 @@ impl Checker<'_> {
                 }
             }
             Type::List(_) | Type::Set(_) | Type::Map { .. } => {
-                let v = self.expr(value, None);
+                // Cases are written `.arc(...)`: the elements are told their enum.
+                let want = names_cases(ty).then(|| lang_type(ty));
+                let v = self.expr(value, want.as_ref());
                 if v.ty.is_error() {
                     return;
                 }
@@ -1001,6 +1007,25 @@ fn offers_actions(ty: &Type) -> bool {
     }
 }
 
+/// Whether a prop of `ty` shows text: text, or an option or list of it.
+fn shows_words(ty: &Type) -> bool {
+    match ty {
+        Type::Text => true,
+        Type::Option(inner) | Type::List(inner) => shows_words(inner),
+        _ => false,
+    }
+}
+
+/// Whether `ty` holds one of the toolkit's closed sets with fields.
+fn names_cases(ty: &Type) -> bool {
+    match ty {
+        Type::Cases { .. } => true,
+        Type::Option(inner) | Type::List(inner) | Type::Set(inner) => names_cases(inner),
+        Type::Map { value, .. } => names_cases(value),
+        _ => false,
+    }
+}
+
 /// The language's types a binding of the description's `ty` takes: a moment is a Date, a Time,
 /// or one that may be none.
 fn binding_types(ty: &Type) -> Vec<Ty> {
@@ -1035,6 +1060,8 @@ fn lang_type(ty: &Type) -> Ty {
         Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Action => super::platform::host_ty("Action"),
+        // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
+        Type::Cases { name } => Ty::Enum(toolkit::key(name)),
         Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
     }
 }
@@ -1049,6 +1076,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
         // The language's maps are keyed by text.
         (Type::Map { key, value }, Ty::Map(held)) => **key == Type::Text && fits(value, held),
         (Type::Action, Ty::Record(key)) => key.app == crate::host::HOST_APP && key.name == "Action",
+        (Type::Cases { name }, Ty::Enum(key)) => *key == toolkit::key(name),
         _ => matches!(
             (ty, found),
             (_, Ty::Error)

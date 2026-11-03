@@ -146,31 +146,66 @@ d-comllwls = Edit~present
 d-c2x2a6dh = Pin~present
 
 d-5rkfnkg4 = Sidebar
+    .w-channels = Channels
+    .w-direct-messages = Direct messages
+    .w-no-channels-yet = No channels yet
+    .w-new-channel = New channel
+    .w-no-channel-open = No channel open
 
 d-ymtess4x = Channel
+    .w-send = Send
 
 d-jbezqvlc = Direct
+    .w-send = Send
 
 d-enkgjyn7 = Thread
+    .w-send = Send
 
 d-rydgecpc = Typing here
+    .w-is-typing = { $who } is typing…
+    .w-and-others-are-typing = { $who } and others are typing…
 
 d-tx3zjawu = Direct typing here
+    .w-is-typing = { $who } is typing…
+    .w-and-others-are-typing = { $who } and others are typing…
 
 d-dcprca6g = Thread typing here
+    .w-is-typing = { $who } is typing…
+    .w-and-others-are-typing = { $who } and others are typing…
 
 d-hjw5xd6b = Said
+    .w-a-view-to-add-to-your = A view, to add to your own views
+    .w-edited = edited
 
 d-5rkfnkg4-row0-row0 = Sidebar for ch
 
 d-5rkfnkg4-row0 = Sidebar for item
+    .w-notes-to-self = Notes to self
 
 d-5rkfnkg4-row1 = Sidebar for p
 
 d-ymtess4x-row0 = Channel for m
+    .w-pinned = Pinned
+    .w-edit-message = Edit message
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-reply = Reply
+    .w-edit = Edit
 
 d-jbezqvlc-row0 = Direct for m
+    .w-pinned = Pinned
+    .w-edit-message = Edit message
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-reply = Reply
+    .w-edit = Edit
 
 d-enkgjyn7-row0 = Thread for m
+    .w-pinned = Pinned
+    .w-edit-message = Edit message
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-reply = Reply
+    .w-edit = Edit
 
 d-hjw5xd6b-row0 = Said for p

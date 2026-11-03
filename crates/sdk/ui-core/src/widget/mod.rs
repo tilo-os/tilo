@@ -3398,6 +3398,8 @@ pub mod icon;
 pub use icon::{IconProps, IconSize, IconWidget};
 pub mod signal_meter;
 pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace, SignalMeterProps};
+pub mod drawing;
+pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,

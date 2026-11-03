@@ -17,6 +17,7 @@ pub struct WebViewProps {
     /// What the page is, for assistive technology.
     pub title: Option<String>,
     /// The page's address, which it opens at first.
+    #[component(data)]
     pub uri: Option<String>,
     /// The page navigated (the person followed a link): carries the address.
     #[component(event(value = String))]

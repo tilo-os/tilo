@@ -226,8 +226,9 @@ impl Checker<'_> {
         Ex::host(Imp::Query, vec![Ex::str(&id), list, pairs, text], list_ty)
     }
 
-    /// A list of `(key, value)` text pairs, as the runtime reads a query's terms.
-    fn text_pairs(&mut self, pairs: Vec<(String, Ex)>) -> Ex {
+    /// A list of `(key, value)` text pairs, as the runtime reads a query's terms and a
+    /// message's arguments.
+    pub(super) fn text_pairs(&mut self, pairs: Vec<(String, Ex)>) -> Ex {
         let pair = Ty::Tuple(vec![Ty::Text, Ty::Text]);
         let list_ty = Ty::List(Box::new(pair.clone()));
         let list = self.fresh(list_ty.clone());

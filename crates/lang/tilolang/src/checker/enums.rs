@@ -32,6 +32,8 @@ pub(super) struct VariantShape {
     pub name: String,
     pub id: String,
     pub fields: Vec<(String, String, Ty)>,
+    /// Each field's default, when it has one: a payload may leave such a field out.
+    pub defaults: Vec<Option<serde_json::Value>>,
 }
 
 impl Shape {
@@ -50,6 +52,7 @@ impl Shape {
             name: name.to_string(),
             id: name.to_string(),
             fields: Vec::new(),
+            defaults: Vec::new(),
         };
         match self {
             Self::Option(t) => vec![
@@ -58,6 +61,7 @@ impl Shape {
                     name: "some".into(),
                     id: "some".into(),
                     fields: vec![("value".into(), "value".into(), t.clone())],
+                    defaults: vec![None],
                 },
             ],
             Self::Result(t, e) => vec![
@@ -69,11 +73,17 @@ impl Shape {
                     } else {
                         vec![(RESULT_VALUE.into(), RESULT_VALUE.into(), t.clone())]
                     },
+                    defaults: if *t == Ty::Unit {
+                        Vec::new()
+                    } else {
+                        vec![None]
+                    },
                 },
                 VariantShape {
                     name: RESULT_ERR.into(),
                     id: RESULT_ERR.into(),
                     fields: vec![(RESULT_ERROR.into(), RESULT_ERROR.into(), e.clone())],
+                    defaults: vec![None],
                 },
             ],
             Self::Enum(info) => info
@@ -87,6 +97,7 @@ impl Shape {
                         .iter()
                         .map(|f| (f.name.clone(), f.id.clone(), f.ty.clone()))
                         .collect(),
+                    defaults: v.fields.iter().map(|f| f.default.clone()).collect(),
                 })
                 .collect(),
             Self::Choice(kind) => prims::choice(kind)
@@ -150,6 +161,16 @@ impl Checker<'_> {
             self.skip_args(args);
             return Ex::error();
         }
+        // A case of the enum an Option holds is that Option's `.some`: `fill: .muted`.
+        if let Ty::Option(inner) = want
+            && name.name != "none"
+            && name.name != "some"
+            && let Some(held) = Shape::of(self, inner)
+            && held.variants().iter().any(|v| v.name == name.name)
+        {
+            let x = self.construct_variant(&held, inner, name, args, span);
+            return Self::some(x, want);
+        }
         let Some(shape) = Shape::of(self, want) else {
             let w = self.show(want);
             self.err(
@@ -161,6 +182,40 @@ impl Checker<'_> {
             return Ex::error();
         };
         self.construct_variant(&shape, want, name, args, span)
+    }
+
+    /// A field's default as the literal that writes it: a number, a flag, `.none`, or a
+    /// variant without payload.
+    fn default_literal(
+        &self,
+        default: &serde_json::Value,
+        ty: &Ty,
+        span: Span,
+    ) -> Option<ast::Expr> {
+        use serde_json::Value as J;
+        let kind = match default {
+            J::Bool(b) => ast::ExprKind::Bool(*b),
+            J::Number(n) if matches!(ty, Ty::Float) => ast::ExprKind::Float(n.as_f64()?),
+            J::Number(n) => ast::ExprKind::Int(n.as_i64()?),
+            J::Null => ast::ExprKind::Variant {
+                name: ast::Ident {
+                    name: "none".into(),
+                    span,
+                },
+                args: None,
+            },
+            J::Object(o) => {
+                let id = o.get("variant")?.as_str()?;
+                let shape = Shape::of(self, ty)?;
+                let name = shape.variants().into_iter().find(|v| v.id == id)?.name;
+                ast::ExprKind::Variant {
+                    name: ast::Ident { name, span },
+                    args: None,
+                }
+            }
+            _ => return None,
+        };
+        Some(ast::Expr { kind, span })
     }
 
     fn skip_args(&mut self, args: Option<&[Arg]>) {
@@ -204,7 +259,10 @@ impl Checker<'_> {
             self.skip_args(args);
             return Ex::error();
         }
-        if !v.fields.is_empty() && given.len() != v.fields.len() {
+        let required = (0..v.fields.len())
+            .filter(|at| v.defaults.get(*at).is_none_or(Option::is_none))
+            .count();
+        if !v.fields.is_empty() && (given.len() < required || given.len() > v.fields.len()) {
             let fields: Vec<&str> = v.fields.iter().map(|f| f.0.as_str()).collect();
             self.err(
                 "E022",
@@ -238,6 +296,20 @@ impl Checker<'_> {
             let fty = v.fields[slot].2.clone();
             let value = self.expr_as(&a.value, &fty);
             values[slot] = Some(value);
+        }
+        // A field left out takes its default, written as the literal it is.
+        for (slot, value) in values.iter_mut().enumerate() {
+            if value.is_some() {
+                continue;
+            }
+            let default = v.defaults.get(slot).cloned().flatten();
+            let fty = v.fields[slot].2.clone();
+            if let Some(literal) = default.and_then(|d| self.default_literal(&d, &fty, span)) {
+                *value = Some(self.expr_as(&literal, &fty));
+            } else if given.iter().all(|a| a.name.is_some()) {
+                let field = &v.fields[slot].0;
+                self.err("E022", span, format!("`.{}` needs its `{field}`", v.name));
+            }
         }
         let values: Vec<Ex> = values
             .into_iter()

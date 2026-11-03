@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -31,6 +31,44 @@ pub struct Catalogue {
     /// The toolkit version the descriptions come from.
     pub toolkit: String,
     pub components: Vec<Description>,
+    /// The closed sets with fields a prop can name ([`Type::Cases`]): a drawing's shapes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enums: Vec<EnumDescription>,
+}
+
+/// A closed set whose cases carry fields, as a tilolang `enum` with payloads reads it: the
+/// toolkit declares it once, and every prop of [`Type::Cases`] names it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumDescription {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    pub cases: Vec<CaseDescription>,
+}
+
+/// One case of an [`EnumDescription`], with its fields in order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaseDescription {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldDescription>,
+}
+
+/// One field of a [`CaseDescription`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldDescription {
+    pub name: String,
+    pub ty: Type,
+    /// Its value when a case leaves it out; none when it is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
 }
 
 impl Catalogue {
@@ -175,6 +213,10 @@ pub struct Prop {
     /// Whether it may be given by position, in declaration order.
     #[serde(default, skip_serializing_if = "is_false")]
     pub positional: bool,
+    /// Whether its text is data the component reads (a key, an address, an emoji) rather than
+    /// words it shows: a view's literal given to it is never a message to translate.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub data: bool,
 }
 
 /// Child content a component takes.
@@ -351,6 +393,11 @@ pub enum Type {
     /// An action offered to the person, as a control shows it: what it is called, its icon and
     /// role, and what choosing it runs (an event of the instance, never a closure).
     Action,
+    /// One case of the catalogue's closed set `name` whose cases carry fields
+    /// ([`Catalogue::enums`]): a drawing's shape.
+    Cases {
+        name: String,
+    },
 }
 
 impl Type {
@@ -368,7 +415,7 @@ impl Type {
             Self::Icon => "Icon".into(),
             Self::Picture => "Picture".into(),
             Self::RichText => "RichText".into(),
-            Self::Choice { name, .. } => name.clone(),
+            Self::Choice { name, .. } | Self::Cases { name } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
             Self::List(inner) => format!("List<{}>", inner.show()),
             Self::Set(inner) => format!("Set<{}>", inner.show()),
@@ -410,6 +457,11 @@ pub enum Value {
     Map(Vec<(Value, Value)>),
     /// An action offered to the person.
     Action(Offered),
+    /// A case of a [`Type::Cases`] set, with its fields' values in the case's order.
+    Case {
+        case: String,
+        fields: Vec<(String, Value)>,
+    },
 }
 
 /// A picture a component shows, by where its bytes are. The address is opaque to the toolkit: a
@@ -460,7 +512,7 @@ impl Value {
             Self::Resource(_) => "a resource",
             Self::Icon(_) => "Icon",
             Self::Picture(_) => "a picture",
-            Self::Choice(_) => "a case",
+            Self::Choice(_) | Self::Case { .. } => "a case",
             Self::Rich(_) => "RichText",
             Self::None => "nothing",
             Self::List(_) => "List",

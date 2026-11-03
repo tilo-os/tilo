@@ -74,6 +74,9 @@ pub struct PackageMeta {
     /// Declared enums. Types that name one are written `enum Name` in metadata.
     #[serde(default)]
     pub enums: Vec<EnumMeta>,
+    /// The words the package's views show as written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<WordMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
     pub flows: Vec<FlowMeta>,
@@ -143,6 +146,18 @@ pub struct DefaultViewMeta {
     pub ty: String,
     /// The view id.
     pub view: String,
+}
+
+/// Words a view shows as it wrote them (`"{n} new"` given to a label): a message of the
+/// package's catalogue, an attribute of the view's own message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordMeta {
+    /// The view's id.
+    pub view: String,
+    /// The attribute naming it under the view's message: `w-` and a slug of its words.
+    pub key: String,
+    /// The words with each interpolation as its variable: `{n} new`.
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

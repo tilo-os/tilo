@@ -131,6 +131,24 @@ fn sample(ty: &Type) -> Value {
         Type::List(_) | Type::Set(_) => Value::List(Vec::new()),
         Type::Map { .. } => Value::Map(Vec::new()),
         Type::Action => Value::Action(tilo_ui_graph::component::Offered::default()),
+        // The first case of the closed set, each field without a default given a sample.
+        Type::Cases { name } => {
+            let described = crate::component::catalogue()
+                .enums
+                .into_iter()
+                .find(|described| &described.name == name)
+                .unwrap_or_else(|| panic!("`{name}` is described"));
+            let case = &described.cases[0];
+            Value::Case {
+                case: case.name.clone(),
+                fields: case
+                    .fields
+                    .iter()
+                    .filter(|field| field.default.is_none())
+                    .map(|field| (field.name.clone(), sample(&field.ty)))
+                    .collect(),
+            }
+        }
     }
 }
 

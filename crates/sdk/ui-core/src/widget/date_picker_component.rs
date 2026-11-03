@@ -14,6 +14,7 @@ pub struct DatePickerProps {
     #[component(bind(ty = crate::component::Moment))]
     pub value: Bound<String>,
     /// Days that hold something (an event, a note): a dot under the number.
+    #[component(data)]
     pub marked: Vec<String>,
     /// Its spoken name.
     pub label: Option<String>,

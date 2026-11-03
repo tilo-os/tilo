@@ -1181,6 +1181,7 @@ pub fn catalogue() -> Catalogue {
             .map(|entry| (entry.describe)())
             .chain(parts().iter().map(|describe| describe()))
             .collect(),
+        enums: vec![crate::widget::drawing::shape_description()],
     }
 }
 
