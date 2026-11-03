@@ -1,0 +1,52 @@
+[package]
+name = "tilo-model-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A Rust app's model and verbs run in the session's document host: the record it keeps, the readings a view is offered, and the actions it admits, so an app process holds no document, key or transport."
+
+# docs/architecture/apps.md §2–§8: the document host owns every document. A
+# tilolang package's code runs there as a WebAssembly module; a Rust app's
+# model is the same kinds of types with the same verbs, so a host that links
+# the model crate runs the same code, and this crate is the one place it
+# does. The app's process keeps its views only.
+#
+# It depends on the resource layer and the action door, never the UI
+# toolkit: a host that has no screen (a device without one, a test, the
+# session's own host) runs an app's model the same way.
+
+[lib]
+name = "tilo_model_host"
+path = "src/lib.rs"
+
+[features]
+# The record a host keeps is an Automerge document on disk, at the place a
+# workspace keeps its apps' records; without it a host keeps its records in
+# memory (a test, a device premise).
+store = ["dep:tilo-app-state", "dep:durable-store"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+automerge.workspace = true
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-automerge.workspace = true
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
+durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
+
+[dev-dependencies]
+# The record kind the tests run: an app's model crate, the same one the app's
+# process links, so a test runs the real model rather than a stand-in.
+tasks-model = { path = "../../../apps/tasks-model" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

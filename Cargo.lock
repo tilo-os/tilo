@@ -19766,6 +19766,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-host"
+version = "0.1.0"
+dependencies = [
+ "durable-store",
+ "serde",
+ "serde_json",
+ "tasks-model",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-app-state",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-moderation"
 version = "0.1.0"
 dependencies = [
