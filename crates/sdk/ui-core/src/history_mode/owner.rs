@@ -258,13 +258,13 @@ impl HistoryOwner {
     pub(crate) fn prepare_publication(
         &self,
         outer: &AutoCommit,
-        sent: &crate::state::DocumentFrontier,
+        sent: &mut crate::state::DocumentFrontier,
         needs_snapshot: bool,
         blocked: bool,
     ) -> Result<OwnedDocumentPublication, HistoryRegistrationError> {
         fn inspect(
             document: &AutoCommit,
-            sent: &crate::state::DocumentFrontier,
+            sent: &mut crate::state::DocumentFrontier,
             needs_snapshot: bool,
             blocked: bool,
             provenance: &crate::invocation_scope::InvocationProvenance,
@@ -273,9 +273,10 @@ impl HistoryOwner {
                 return OwnedDocumentPublication::Unfinished;
             }
             let heads = super::sorted_heads(document.base_heads());
-            // The route already holds what the document holds: nothing goes
-            // out, and the history is not cloned to find that out.
-            if !needs_snapshot && sent.covers(&heads) {
+            // Nothing arrived and nothing was made since the destination was
+            // told what the document holds: no history is cloned for a
+            // publication that has nothing to carry.
+            if !needs_snapshot && sent.unchanged(&heads) {
                 return OwnedDocumentPublication::Unchanged;
             }
             if blocked {
@@ -294,8 +295,12 @@ impl HistoryOwner {
             let mutation = if needs_snapshot {
                 collab_types::DocumentMutation::Snapshot(document.save())
             } else {
-                let delta = document.save_after(&from);
+                let delta = sent.delta(&mut document);
                 if delta.is_empty() {
+                    // What arrived is all the document gained, and the
+                    // destination delivered it: it is missing nothing, and
+                    // the frontier says so without another clone.
+                    sent.advance(heads);
                     return OwnedDocumentPublication::Unchanged;
                 }
                 collab_types::DocumentMutation::Incremental(delta)
@@ -376,7 +381,7 @@ mod publication_tests {
         assert!(matches!(
             owner.prepare_publication(
                 &AutoCommit::new(),
-                &crate::state::DocumentFrontier::default(),
+                &mut crate::state::DocumentFrontier::default(),
                 true,
                 false
             ),

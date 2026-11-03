@@ -699,7 +699,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
             }
             let publication = owner.prepare_publication(
                 outer,
-                &entry.sent,
+                &mut entry.sent,
                 entry.needs_snapshot,
                 entry.pending.failure.is_some(),
             );

@@ -5164,6 +5164,11 @@ pub(crate) fn merge_remote_owned_document(
                 state.statuses.clear();
                 state.generation = Some(next);
             }
+            if let collab_types::DocumentMutation::Incremental(bytes) = mutation {
+                // A change whose history this replica lacks waits for it, but
+                // this route delivered it, so it is never sent back.
+                observed.extend(crate::state::changes_beyond(doc, bytes));
+            }
             Ok(MergedRemote {
                 changed: Some(changed),
                 observed,
