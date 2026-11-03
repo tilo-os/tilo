@@ -169,7 +169,7 @@ where
         AccessAudit::new(peer.device_public_key == own_device_cert.device_public_key);
 
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
-    // Presence is coalesced, paced, batched and slot-coded.
+    // Presence is batched per connection, in the order it was posted.
     let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
     let session = SessionCtx {
         workspaces: &workspaces,
