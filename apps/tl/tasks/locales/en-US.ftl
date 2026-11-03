@@ -165,7 +165,7 @@ d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task just over it, as Tab does in an outline.
+    .doc = Moves a task under the task just over it, as Tab does in an outline: one change, undone as one.
 
 d-khy6tj7s = Outdent
     .doc = Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.

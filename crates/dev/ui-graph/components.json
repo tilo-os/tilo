@@ -5043,6 +5043,11 @@
           }
         },
         {
+          "name": "tree",
+          "doc": "The rows stand as a tree: each indented under the row of the item it names as its parent ([`ListItemProps::parent`]), with a disclosure on the rows that have subtasks, folding them away. The list works the tree out of the items as it builds their rows.",
+          "type": "bool"
+        },
+        {
           "name": "unread",
           "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
           "type": {
@@ -5095,6 +5100,16 @@
         {
           "name": "activate",
           "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
+          "value": "resource"
+        },
+        {
+          "name": "indent",
+          "doc": "Tab moved the row with the keyboard under the row over it: carries the item it shows.",
+          "value": "resource"
+        },
+        {
+          "name": "outdent",
+          "doc": "Shift+Tab moved it out from under its parent: carries the item it shows.",
           "value": "resource"
         }
       ],
@@ -6790,6 +6805,27 @@
           "name": "removed",
           "doc": "The item was removed and the person has not seen it go: the row stands in for it, its title struck through, at the row's own height. The UI host places such rows.",
           "type": "bool"
+        },
+        {
+          "name": "parent",
+          "doc": "The item this one is a subtask of: in a tree list (`tree`) the row stands indented under that item's row, with a disclosure that folds it away.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "parent_title",
+          "doc": "The title of the item it is under, for the row to say where it belongs while that item is no row of the list.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "progress",
+          "doc": "Its open subtasks of all of them, on the row's trailing edge: \"1/3\".",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "slots": [

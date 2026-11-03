@@ -53,9 +53,9 @@ type Task {
         filter due
         filter project
         filter priority
+        filter parent
         hide at
         hide section
-        hide parent
     }
 }
 
@@ -228,8 +228,9 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
     if not moved.done and tasks.items.ancestors(moved, .parent).any(a -> a.done) { check(moved, false) }
 }
 
-/// Moves a task under the task just over it, as Tab does in an outline.
-action indent(t: Task) (label: "Indent", icon: .arrow_right) {
+/// Moves a task under the task just over it, as Tab does in an outline: one change, undone as
+/// one.
+action indent(t: Task) (label: "Indent", icon: .arrow_right, key: "Tab") {
     let siblings = tasks.items.filter(x -> x.parent == t.parent)
     if let at = siblings.index_of(t) {
         if at > 0 {
@@ -239,7 +240,7 @@ action indent(t: Task) (label: "Indent", icon: .arrow_right) {
 }
 
 /// Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
-action outdent(t: Task) (label: "Outdent", icon: .arrow_left) {
+action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Shift+Tab") {
     if let p = t.parent {
         t.parent = p.parent
         tasks.items.move(t, after: p)
@@ -332,6 +333,13 @@ fn tasks_of(p: Project) -> List<Task> {
     tasks.items.filter(t -> t.project == p)
 }
 
+/// How many of a task's subtasks are still open, of all of them, as its row says ("1/3"): the
+/// list asks the index for the task's subtasks, not for every task's.
+fn open_subtasks(t: Task) -> Option<Text> {
+    let kids = tasks.items.filter(x -> x.parent == .some(t))
+    if kids.is_empty() { .none } else { .some("{kids.count(k -> not k.done)}/{kids.len()}") }
+}
+
 /// The sections of a project, in order.
 fn sections_of(p: Project) -> List<Section> {
     tasks.sections.filter(s -> s.project == p)
@@ -388,7 +396,17 @@ view home(t: Tasks) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks here", .none, .some("list-checks"), group: .due, closed: .done) { x ->
+                std.rows(
+                    shown,
+                    "No tasks here",
+                    .none,
+                    .some("list-checks"),
+                    group: .due,
+                    closed: .done,
+                    parent: .parent,
+                    parent_title: x -> x.parent?.title,
+                    progress: x -> open_subtasks(x)
+                ) { x ->
                     task_row(x, .day)
                 }
             }
@@ -426,7 +444,15 @@ view project_list(p: Project, draft: State<Text>) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks yet", .none, .some("folder")) { x ->
+                std.rows(
+                    shown,
+                    "No tasks yet",
+                    .none,
+                    .some("folder"),
+                    parent: .parent,
+                    parent_title: x -> x.parent?.title,
+                    progress: x -> open_subtasks(x)
+                ) { x ->
                     task_row(x, .project)
                 }
             }
