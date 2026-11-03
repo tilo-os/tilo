@@ -422,12 +422,6 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
 /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
 /// send. Invoked after the throttle gate.
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
-/// Lets the shell apply what other devices say of their pointers to
-/// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
-/// Returns `true` only when the callback changed pixels. This keeps an
-/// installed background pump from turning every event-loop wake into a full
-/// window redraw.
-type FrameTick = Box<dyn FnMut(&mut PresenceCtx) -> bool + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
     &'a tilo_actions::ResourceSpec,

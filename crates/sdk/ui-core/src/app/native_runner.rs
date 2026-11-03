@@ -4414,15 +4414,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
-        // A background pump can run while its visible projection is stable.
-        // Redrawing only on a changed snapshot avoids full-scene GPU work on
-        // every otherwise-idle collaboration wake.
-        if let Some(tick) = app.presence.frame_tick.as_mut()
-            && tick(&mut app.presence_ctx)
-        {
-            request_primary_redraw();
-        }
-
         // `Wait` sleeps until real input, zero CPU; escalate to a bounded
         // ~60 Hz tick only while a root still wants another frame. A live
         // collaboration connection is not such a reason: its transport wakes

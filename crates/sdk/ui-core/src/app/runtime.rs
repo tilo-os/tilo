@@ -5,8 +5,8 @@
 //! or collaboration from the retained widget tree.
 
 use super::{
-    ActionDirectoryCursor, DirectedInvocation, FrameTick, LocalResourceCache,
-    OpenResourceSearchCache, PresenceBroadcastSink, ResourceCache, ResourceCacheKey,
+    ActionDirectoryCursor, DirectedInvocation, LocalResourceCache, OpenResourceSearchCache,
+    PresenceBroadcastSink, ResourceCache, ResourceCacheKey,
 };
 use crate::collaboration::CollaborationManager;
 use crate::presence::PresenceKey;
@@ -723,7 +723,6 @@ pub(super) struct PresenceRuntime {
     pub(super) last_composing: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     pub(super) last_view: Option<crate::view::ViewSubset>,
     pub(super) broadcast_sink: Option<PresenceBroadcastSink>,
-    pub(super) frame_tick: Option<FrameTick>,
 }
 
 impl PresenceRuntime {
@@ -738,7 +737,6 @@ impl PresenceRuntime {
             last_composing: None,
             last_view: None,
             broadcast_sink: None,
-            frame_tick: None,
         }
     }
 }
