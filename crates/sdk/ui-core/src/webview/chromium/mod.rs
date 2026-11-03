@@ -994,9 +994,15 @@ fn launch_host(
     extensions: &[String],
     private_root: Option<&Path>,
     mode: HostMode<'_>,
+    claim: Option<&shared::Claim>,
 ) -> Result<(std::process::Child, Option<frame_memory::FrameMemory>), String> {
     let mut command =
         host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
+    // The host keeps the profile owned for as long as it runs, past the
+    // Browser process that starts it.
+    if let Some(claim) = claim {
+        claim.hold_with(&mut command);
+    }
     // Without frame memory the host pipes its frames: slower, still whole.
     let mut memory = frame_memory::FrameMemory::create()
         .inspect_err(|error| tracing::warn!(%error, "Chromium frame memory unavailable"))
@@ -1106,10 +1112,15 @@ impl Starter {
             );
             self.exited.store(exited, Ordering::Release);
         }
-        if self.exited.load(Ordering::Acquire)
-            && let Some(claim) = self.claim
-        {
+        let Some(claim) = self.claim else {
+            return;
+        };
+        if self.exited.load(Ordering::Acquire) {
             claim.release_after_exit(server.as_ref());
+        } else {
+            // The host was killed and its exit could not be confirmed: it may
+            // still run on the profile, so this process keeps it claimed.
+            claim.keep_while_host_may_run();
         }
     }
 }
@@ -1308,8 +1319,14 @@ impl ChromiumEngine {
                 }
             }
         };
-        let (mut child, memory) =
-            launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
+        let (mut child, memory) = launch_host(
+            host,
+            profile,
+            &extensions,
+            private_root.as_deref(),
+            mode,
+            claim.as_ref(),
+        )?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -2821,5 +2838,7 @@ mod extension_tests;
 mod frame_tests;
 #[cfg(test)]
 mod popup_tests;
+#[cfg(test)]
+mod shared_tests;
 #[cfg(test)]
 mod tests;
