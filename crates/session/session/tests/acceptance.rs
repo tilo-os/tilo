@@ -33,8 +33,8 @@ use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use common::{
-    HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, press, press_sheet,
-    private_home, seeded_session, seeded_session_with, type_text, until,
+    HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, preset_menu, press,
+    press_sheet, private_home, seeded_session, seeded_session_with, type_text, until,
 };
 
 /// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the
@@ -74,7 +74,8 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
 
     // The preset switch: the bar's own menu, saying the preset the desk shows, offering the
     // ways of showing the same places.
-    press(&mut session, "Showing Strips");
+    let menu = preset_menu(&mut session).expect("the desk's preset menu");
+    press(&mut session, &menu);
     for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
         assert!(
             on_screen(&session, preset).is_some(),
@@ -193,7 +194,8 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches the preset: {answer}");
     until(&mut session, "the strips", |session| {
-        on_screen(session, "Typed").is_none() && on_screen(session, "Showing Strips").is_some()
+        on_screen(session, "Typed").is_none()
+            && preset_menu(session).as_deref() == Some("Showing Strips")
     });
 
     // The traditional desktop: no preset switch at all, its own top bar instead.
@@ -203,7 +205,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches to the desktop: {answer}");
     until(&mut session, "the traditional desktop", |session| {
-        on_screen(session, "Showing Strips").is_none()
+        preset_menu(session).is_none()
     });
 }
 
@@ -449,7 +451,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     );
     assert!(!failed, "the desk is the traditional one: {answer}");
     until(&mut session, "the traditional desktop", |session| {
-        on_screen(session, "Showing Strips").is_none() && on_screen(session, "Dock").is_some()
+        preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
     });
 
     // A dock press opens what its item stands for.
@@ -503,7 +505,8 @@ fn step_9_a_theme_switch_changes_looks_only() {
     }
 
     // Where the desk's own parts stand, and what the screen looks like.
-    let controls = ["Showing Strips", "Notifications", "Launcher"];
+    let menu = preset_menu(&mut session).expect("the desk's preset menu");
+    let controls = [menu.as_str(), "Notifications", "Launcher"];
     let before: Vec<(String, (f64, f64, f64, f64))> = controls
         .iter()
         .filter_map(|name| {

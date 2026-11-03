@@ -30,7 +30,7 @@ use tilolang_tilo::records_service::RecordService;
 
 use common::{
     HEIGHT, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, WIDTH, control, on_screen,
-    place_the_inbox, placed, placed_resources, press, press_sheet, private_home, repl_session,
+    place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
     seeded_session, show_preset, until,
 };
 
@@ -144,7 +144,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     reading_an_action_says_how_it_is_called(session, repl);
 
     // The framed canvas, as the person shows it.
-    show_preset(session, "Strips", "Frames");
+    show_preset(session, "Frames");
     until(session, "the canvas", |session| {
         on_screen(session, "Typed").is_some()
     });
@@ -554,7 +554,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    show_preset(&mut session, "Strips", "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, "Typed").is_some()
     });
@@ -633,7 +633,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    show_preset(&mut session, "Strips", "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, "Typed").is_some()
     });
@@ -1034,7 +1034,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    show_preset(&mut session, "Strips", "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, "Typed").is_some()
     });
@@ -1124,10 +1124,7 @@ fn the_repl_finds_what_place_found_places() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, "Typed").is_some()
     });

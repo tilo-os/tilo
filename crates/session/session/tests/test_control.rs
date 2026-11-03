@@ -53,6 +53,23 @@ fn click(session: &mut Session, socket: &Path, name: &str) {
     assert_eq!(clicked, json!({"ok": {}}), "the click on {name} is taken");
 }
 
+/// The desk's preset menu, once the shell stands on the output: the bar names the preset the
+/// desk shows, and which one that is depends on the desk the session starts from.
+fn preset_menu(session: &mut Session) -> String {
+    assert!(
+        reached(session, |session| session
+            .shell_control("Notifications")
+            .is_some()),
+        "the shell stands on the output: {:?}",
+        session.accessible_labels()
+    );
+    session
+        .accessible_labels()
+        .into_iter()
+        .find(|label| label.starts_with("Showing ") && session.shell_control(label).is_some())
+        .expect("the desk's preset menu")
+}
+
 /// A headless session with the shell as the whole screen writes a PNG of it through
 /// `tilo-control snapshot`'s request, and the bar stands in it.
 #[test]
@@ -118,7 +135,8 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
 
     // A click through the socket presses the screen's own control there: the bar's preset menu
     // opens, and the framed canvas it offers stands with its entry where the strips stood.
-    click(&mut session, &socket, "Showing Strips");
+    let menu = preset_menu(&mut session);
+    click(&mut session, &socket, &menu);
     assert!(
         reached(&mut session, |session| session
             .shell_control("Frames")
@@ -453,7 +471,8 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    click(&mut session, &socket, "Showing Strips");
+    let menu = preset_menu(&mut session);
+    click(&mut session, &socket, &menu);
     assert!(reached(&mut session, |session| session
         .shell_control("Frames")
         .is_some()));

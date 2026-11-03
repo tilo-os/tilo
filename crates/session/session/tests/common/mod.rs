@@ -173,13 +173,23 @@ pub fn type_text(session: &mut Session, text: &str) {
     }
 }
 
-/// The preset the desk shows, as a person changes it: the bar's own menu names the preset up now
-/// (`showing`), and the one picked in it is the desk's from then on.
-pub fn show_preset(session: &mut Session, showing: &str, preset: &str) {
-    let menu = format!("Showing {showing}");
+/// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows
+/// ("Showing Strips", "Showing Frames", …). Which one it names depends on the desk a test
+/// starts from, so a test asks for the menu rather than for a name.
+pub fn preset_menu(session: &mut Session) -> Option<String> {
+    session
+        .accessible_labels()
+        .into_iter()
+        .find(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
+}
+
+/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") from the desk's own bar: open the
+/// preset menu the bar carries and press the preset it offers.
+pub fn show_preset(session: &mut Session, preset: &str) {
     until(session, "the desk's preset menu", |session| {
-        on_screen(session, &menu).is_some()
+        preset_menu(session).is_some()
     });
+    let menu = preset_menu(session).expect("the preset menu just reached");
     press(session, &menu);
     until(session, "the presets the bar offers", |session| {
         on_screen(session, preset).is_some()
@@ -290,7 +300,7 @@ pub fn seeded_session_with(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    show_preset(&mut session, "Strips", "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, "Typed").is_some()
     });

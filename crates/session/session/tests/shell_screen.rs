@@ -128,7 +128,7 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
         on_screen(&session, CANVAS_ENTRY).is_none(),
         "the strips stand first, not the canvas"
     );
-    show_preset(&mut session, "Strips", "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -341,7 +341,7 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
             );
         }
         // The framed canvas: the switch and the canvas's entry stand apart too.
-        show_preset(&mut session, "Strips", "Frames");
+        show_preset(&mut session, "Frames");
         until(&mut session, "the canvas's entry", |session| {
             within(session, CANVAS_ENTRY, width, height).is_some()
         });

@@ -602,6 +602,7 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
         !SurfaceHost::wants_keyboard(&part),
         "a part nobody typed in leaves the keys to the window in front"
     );
+    click(&mut part, "Showing Strips");
     click(&mut part, "Frames");
     click(&mut part, "Typed");
     assert!(
