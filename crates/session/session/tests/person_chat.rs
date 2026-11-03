@@ -37,6 +37,10 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, SearchOptions, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
+// A host admits its members' records through an Automerge worker: this
+// binary is that worker, as it is the session's own.
+tilo_automerge_isolate::test_worker!();
+
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 /// The app whose private conversations these are.
@@ -59,22 +63,28 @@ struct Keys {
     /// phone does.
     phone: ed25519_dalek::SigningKey,
     phone_cert: DeviceCert,
-    /// The other person of the workspace, as the device of theirs that
-    /// enrolled certifies them.
+    /// The other person of the workspace: the device of theirs that enrolled,
+    /// and their certificate.
+    peer: ed25519_dalek::SigningKey,
     peer_cert: DeviceCert,
 }
 
 impl Keys {
-    /// The other person, as the workspace and the conversation name a person:
-    /// their root key in hex.
+    /// The other person, as the workspace and the conversation name a person.
     fn peer_key(&self) -> String {
-        hex::encode(self.peer_cert.user_public_key)
+        person(self.peer_cert.user_public_key)
     }
 
     /// This person, as the messages they sent name them.
     fn root_key(&self) -> String {
-        hex::encode(self.root)
+        person(self.root)
     }
+}
+
+/// A person's public root, as their conversations name them: the owner's own
+/// spelling of a person, which is what Chat lists and sends to.
+fn person(root: [u8; 32]) -> String {
+    blake3::Hash::from_bytes(root).to_hex().to_string()
 }
 
 /// A person, their identity provisioned where this test's session reads it,
@@ -145,6 +155,7 @@ fn fixture() -> Fixture {
         cert,
         phone,
         phone_cert,
+        peer,
         peer_cert,
     };
     hold_workspace(&state, &keys);
@@ -154,6 +165,53 @@ fn fixture() -> Fixture {
         _env: env,
         _root: root,
     }
+}
+
+/// The workspace's host admits `certificate`'s device as an editor, redeeming
+/// the invitation it issues for it: what pairing another of the person's
+/// devices does, and what the other person's device did to be here.
+fn admit(
+    governor: &mut testing::governor::TestGovernor,
+    key: &ed25519_dalek::SigningKey,
+    certificate: &DeviceCert,
+) -> Result<(), String> {
+    use tilo_peer_state::join;
+    let now = std::time::SystemTime::now();
+    let ns = testing::ns(now)?;
+    let hint = governor.hint(iroh::EndpointAddr::new(
+        iroh::EndpointId::from_bytes(&governor.workspace_host().device_public_key)
+            .map_err(|error| error.to_string())?,
+    ));
+    let invitation = governor.issue(
+        vec![hint],
+        join::MemberRole::Editor,
+        Some(certificate.user_public_key),
+        Some(certificate.device_label.clone()),
+        ns.saturating_add(60_000_000_000),
+    );
+    let mut request_id = [0_u8; 32];
+    request_id[..8].copy_from_slice(&certificate.device_public_key[..8]);
+    let answered = governor.handle(
+        certificate.device_public_key,
+        join::JoinTransportRequest::Challenge(join::JoinChallengeRequest {
+            signed_invitation: invitation,
+            device_cert: certificate.clone(),
+            request_id,
+        }),
+    );
+    let join::JoinTransportResponse::Challenge(challenge) = answered else {
+        return Err(format!("the host refuses the invitation: {answered:?}"));
+    };
+    let answered = governor.handle(
+        certificate.device_public_key,
+        join::JoinTransportRequest::Complete(join::JoinCompleteRequest {
+            proof: join::sign_join_proof(challenge.challenge, key)?,
+        }),
+    );
+    if !matches!(answered, join::JoinTransportResponse::Complete(_)) {
+        return Err(format!("the host refuses the proof: {answered:?}"));
+    }
+    Ok(())
 }
 
 /// The workspace's owner, as this device holds it in `state`, with the people
@@ -169,12 +227,12 @@ fn hold_workspace(state: &Path, keys: &Keys) {
     let mut governor =
         testing::enroll_interactive_governor_in(&owner, &keys.device, &keys.cert, WORKSPACE)
             .expect("this device governs the workspace it hosts");
-    governor = testing::enroll_into(governor, &owner, &keys.phone, &keys.phone_cert)
-        .expect("the person's other device joins");
-    governor = testing::enroll_into(governor, &owner, &keys.peer, &keys.peer_cert)
-        .expect("the other person joins");
-    // The governor's own checkpoint carries both admissions to the host.
-    let frames: Vec<_> = governor
+    admit(&mut governor, &keys.phone, &keys.phone_cert).expect("the person's other device joins");
+    admit(&mut governor, &keys.peer, &keys.peer_cert).expect("the other person joins");
+    // The governor's checkpoint now names both of them: the host admits it as
+    // the publication a host's own workspace makes.
+    let host = governor.workspace_host().device_public_key;
+    let frames: Vec<Vec<u8>> = governor
         .outgoing()
         .map(|(bytes, _)| bytes.to_vec())
         .collect();
@@ -182,7 +240,7 @@ fn hold_workspace(state: &Path, keys: &Keys) {
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(keys.cert.device_public_key),
+                TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 std::time::SystemTime::now(),
             )
@@ -289,15 +347,23 @@ fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// The session's pass until the apps are done, as the session runs its loop.
-fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc::Receiver<T>) -> T {
+/// The session's pass until the apps are done, as the session runs its loop:
+/// what they answered, or `None` when they left without one (their own
+/// thread's ending tells why).
+fn until_the_apps_are_done<T>(
+    session: &mut Session,
+    received: &std::sync::mpsc::Receiver<T>,
+) -> Option<T> {
+    use std::sync::mpsc::TryRecvError;
     for _ in 0..4000 {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
-        if let Ok(done) = received.try_recv() {
-            return done;
+        match received.try_recv() {
+            Ok(done) => return Some(done),
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) => {}
         }
     }
     panic!("the apps never finished their calls");
@@ -462,7 +528,12 @@ fn chat_lists_the_other_person_opens_sends_and_hears_a_new_message_live() {
         let _ = done.send(proof);
     });
     let proof = until_the_apps_are_done(&mut session, &received);
-    apps.join().expect("the apps finished");
+    let ended = apps.join();
+    let proof = match (proof, ended) {
+        (Some(proof), Ok(())) => proof,
+        (_, Err(panic)) => panic!("the app's calls failed: {panic:?}"),
+        (None, Ok(())) => panic!("the app left without answering"),
+    };
 
     let peer = &proof.opened["peer"];
     assert_eq!(
