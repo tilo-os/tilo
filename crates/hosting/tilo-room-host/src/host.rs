@@ -542,7 +542,7 @@ impl WorkspaceHost {
     ) -> Result<Self, HostError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
             return Err(HostError::Identity(
-                "a host admitting anyone governs no rooms".into(),
+                "a host admitting anyone governs no workspaces".into(),
             ));
         }
         let (sessions, governed) =
@@ -552,7 +552,9 @@ impl WorkspaceHost {
             actions,
         }) = governed
         else {
-            return Err(HostError::Workspaces("the host governs no rooms".into()));
+            return Err(HostError::Workspaces(
+                "the host governs no workspaces".into(),
+            ));
         };
         let handlers = host_handlers(&sessions, &workspaces);
         Ok(Self {

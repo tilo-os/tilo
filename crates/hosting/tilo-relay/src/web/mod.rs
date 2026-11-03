@@ -571,7 +571,7 @@ async fn directory_door(
     let (workspace, step) =
         door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
     // A relay that governs no workspaces refuses before the request is parsed.
-    governed_rooms(web)?;
+    governed_workspaces(web)?;
     let refused = |error: crate::workspaces::CollaborationError| {
         json_status(
             StatusCode::FORBIDDEN,
@@ -582,7 +582,7 @@ async fn directory_door(
         "join" => {
             let join: DoorJoin = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
-            let (issued, token) = governed_rooms(web)?
+            let (issued, token) = governed_workspaces(web)?
                 .admit_listed(workspace, &join)
                 .await
                 .map_err(refused)?;
@@ -598,7 +598,7 @@ async fn directory_door(
         "report" => {
             let report: DoorReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
-            governed_rooms(web)?
+            governed_workspaces(web)?
                 .report_listed(workspace, &report)
                 .await
                 .map_err(refused)?;
@@ -613,10 +613,10 @@ async fn directory_door(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
 )]
-fn governed_rooms(web: &Web) -> Result<&crate::workspaces::Workspaces, Response<Body>> {
+fn governed_workspaces(web: &Web) -> Result<&crate::workspaces::Workspaces, Response<Body>> {
     web.workspaces
         .as_ref()
-        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))
 }
 
 fn session_status(error: &SessionError) -> Response<Body> {
@@ -1043,7 +1043,7 @@ async fn route(
             let keys = web
                 .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?
                 .spectator_keys(&request, |runtime| {
                     crate::workspace_access::decide(
                         runtime,
@@ -1070,7 +1070,7 @@ async fn route(
                 .workspaces
                 .clone()
                 .map(crate::workspaces::PrivateProtocol::new)
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             if bytes.len() > MAX_REQUEST_BYTES {
                 return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"));
             }
@@ -1101,7 +1101,7 @@ async fn route(
             let workspaces = web
                 .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             let request = decode(&bytes)?;
             Ok(encoded(
                 &workspaces.page_rooms(&session.peer.cert, request).await,
@@ -1111,7 +1111,7 @@ async fn route(
             let workspaces = web
                 .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             let step = decode(&bytes)?;
             Ok(encoded(&workspaces.page_join(step).await))
         }
@@ -1122,7 +1122,7 @@ async fn route(
             let workspaces = web
                 .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             if bytes.len() > MAX_WORKSPACE_JOIN_REQUEST_BYTES {
                 return Err(status(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -1139,7 +1139,7 @@ async fn route(
             let workspaces = web
                 .workspaces
                 .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             let online = web.sessions.online_users().into_keys().collect();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
                 workspaces: workspaces.directory(&online).await,

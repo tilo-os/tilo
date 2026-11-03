@@ -212,7 +212,7 @@ fn text_bytes(page: &DirectConversation, before: usize) -> Result<usize, String>
 }
 
 fn check_bound(messages: usize, bytes: usize) -> Result<(), String> {
-    use tilo_relay_protocol::rooms::private::{MAX_WHOLE_MESSAGES, MAX_WHOLE_TEXT_BYTES};
+    use tilo_relay_protocol::workspaces::private::{MAX_WHOLE_MESSAGES, MAX_WHOLE_TEXT_BYTES};
     if bytes > MAX_WHOLE_TEXT_BYTES || messages > MAX_WHOLE_MESSAGES {
         return Err("private conversation snapshot exceeds bound".into());
     }

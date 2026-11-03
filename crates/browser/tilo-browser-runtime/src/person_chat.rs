@@ -1,6 +1,6 @@
 //! The page's door to its workspace's private person conversations: the
 //! toolkit's `ui::person_chat` asks the workspace's governor over this page's
-//! session (`tilo_relay_protocol::rooms::private`), the same door and
+//! session (`tilo_relay_protocol::workspaces::private`), the same door and
 //! governor code a native device reaches over iroh, authenticated by the
 //! device certificate the session proved. Nothing waits on the page thread:
 //! each answer comes back through the toolkit's callbacks.

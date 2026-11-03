@@ -107,10 +107,10 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     };
     let mut member_peer = replica();
     let mut laptop_peer = replica();
-    let room_id = room.workspace.clone();
+    let workspace_id = room.workspace.clone();
     let authors = move |peer: &StatePeer| {
         peer.admitted_workspace().is_some_and(|doc| {
-            tilo_desktop_model::projection::workspace_policy_of(doc, &room_id).app_authors(
+            tilo_desktop_model::projection::workspace_policy_of(doc, &workspace_id).app_authors(
                 OPENED,
                 &tilo_action_policy::Context::at_time(SystemTime::now()),
             )

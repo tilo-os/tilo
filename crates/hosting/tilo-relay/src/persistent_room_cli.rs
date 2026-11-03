@@ -1545,7 +1545,7 @@ pub(crate) async fn run(
     let workspaces = hosted
         .relay
         .workspaces()
-        .context("the relay governs no rooms in this mode")?
+        .context("the relay governs no workspaces in this mode")?
         .clone();
     let shown = persistent
         .workspace_name
