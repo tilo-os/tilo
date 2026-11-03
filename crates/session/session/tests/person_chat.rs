@@ -460,8 +460,7 @@ fn chat_calls(socket: &PathBuf, keys: &Keys) -> Proof {
                 &[],
             )
             .await
-            .err()
-            .expect("the owner refuses a person of no certified device here")
+            .expect_err("the owner refuses a person of no certified device here")
             .to_string();
         // The conversation's own lane, held before the other device writes:
         // what arrives on it is what the app shows next, without asking.

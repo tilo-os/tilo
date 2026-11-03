@@ -393,7 +393,7 @@ fn kill_mid_transfer_child() {
     loop {
         assert!(
             started.elapsed() < WAIT,
-            "the transfer never reached {stage:?}"
+            "the transfer never reached {stage}"
         );
         step(&mut session);
     }

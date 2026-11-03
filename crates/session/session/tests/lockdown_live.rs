@@ -60,17 +60,7 @@ impl Factory for Route {
 
 #[test]
 fn locking_down_the_camera_and_sound_stops_them_while_the_session_runs() {
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join("runtime")).unwrap();
-    // SAFETY: this binary runs the one test below, so nothing else reads the
-    // environment while it changes.
-    unsafe {
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("XDG_STATE_HOME", home.path().join("state"));
-        std::env::set_var("XDG_RUNTIME_DIR", home.path().join("runtime"));
-        std::env::set_var("XDG_CONFIG_HOME", home.path().join("config"));
-        std::env::set_var("XDG_DATA_HOME", home.path().join("data"));
-    }
+    let _home = tilo_test_env::TestHome::new().unwrap();
     let writes = Arc::new(AtomicUsize::new(0));
     media::audio_output::install(Arc::new(Route(Arc::clone(&writes))));
     let policy = LockdownBackend::for_session();
@@ -126,6 +116,7 @@ fn locking_down_the_camera_and_sound_stops_them_while_the_session_runs() {
             Err(CaptureBrokerError::Disabled),
             "the camera is not handed out while the person turned it off"
         );
+        drop(broker);
     }
 
     // Turning the switches off again in the running session lets both back in.

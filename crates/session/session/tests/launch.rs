@@ -493,7 +493,7 @@ fn session_through(
         None,
         Some(launcher.path().to_owned()),
     ));
-    let launches = Arc::new(Launches::default());
+    let started = Arc::new(Launches::default());
     let wake = tilo_service::LoopWake::default();
     let desktop = bus.map(|bus| {
         let (side, _link) = tilo_session::portal_link::channel(wake.handle());
@@ -519,7 +519,7 @@ fn session_through(
             presentation: ui::headless::fixture_runner_inputs,
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
-            launches: Arc::clone(&launches),
+            launches: Arc::clone(&started),
             services,
             wake,
             // A login's services take part in no collaboration plane of their
@@ -531,7 +531,7 @@ fn session_through(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    (session, apps, launches)
+    (session, apps, started)
 }
 
 /// The workspace in front, and who the desk holds as its owner.
@@ -562,7 +562,7 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, apps, _started) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
 
     let (desk, _) = front_workspace(&session);

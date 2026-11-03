@@ -1173,9 +1173,13 @@ fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
     layout
 }
 
+/// A strip the site holds as a test writes it: its id, its name, and the
+/// windows in it, each window's id and title.
+type HeldStrip<'a> = (u64, &'a str, &'a [(u64, &'a str)]);
+
 /// A workspace's shared desktop, as the people in it left it: `strips` names
 /// each strip with the windows opened in it, all of them `person`'s.
-fn shared_desktop(person: &str, strips: &[(u64, &str, &[(u64, &str)])]) -> SharedDesktop {
+fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
     let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
     let mut authors = std::collections::BTreeMap::new();
     for (strip_id, name, windows) in strips {
@@ -1507,51 +1511,7 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
 
     // Another member opens a window beside one of theirs, and moves one of
     // theirs: the desk here follows without anyone touching it.
-    let mut reopened = laid_out.clone();
-    let work = reopened
-        .tree
-        .workspaces
-        .first_mut()
-        .and_then(|workspace| workspace.strips.get_mut(1))
-        .expect("the work strip");
-    work.window_groups.insert(
-        0,
-        WindowGroup {
-            id: GroupId::from(0x47_u64),
-            tabs: vec![Tab {
-                id: TabId::from(0x46_u64),
-                title: "Files".to_owned(),
-                tile: TileContent::LocalApp {
-                    app_id: "so.tilo.files".to_owned(),
-                    label: "Files".to_owned(),
-                    note: String::new(),
-                },
-                app_title: None,
-            }],
-            active_tab: TabId::from(0x46_u64),
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        },
-    );
-    reopened.authors.insert(0x46, member.clone());
-    reopened.authors.insert(0x47, member.clone());
-    // Chat moves into the work strip, after the files.
-    let talk = reopened
-        .tree
-        .workspaces
-        .first_mut()
-        .and_then(|workspace| workspace.strips.get_mut(0))
-        .expect("the talk strip");
-    let chat = talk.window_groups.remove(0);
-    reopened
-        .tree
-        .workspaces
-        .first_mut()
-        .and_then(|workspace| workspace.strips.get_mut(1))
-        .expect("the work strip")
-        .window_groups
-        .push(chat);
+    let reopened = another_member_edits(laid_out, &member);
     lounge.page_writes_desktop(&reopened);
     lounge.wait_for_desktop(&reopened);
     wait_until_desk(
@@ -1561,63 +1521,8 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
         "the window another member opened and the one they moved arrive here",
     );
 
-    // Their pointer, over a window they work in: the desk draws it there,
-    // wherever the person here is looking, without the roster being opened.
-    // The window is on the strip in front, so its tile is where the pointer
-    // lands.
-    let front = session.handle().read(|tree| {
-        let workspace = tree.active_workspace()?;
-        let strip = tilo_desktop_surface::navigation::active_strip(tree, workspace)?;
-        workspace
-            .strips
-            .iter()
-            .find(|held| held.id == strip)?
-            .window_groups
-            .first()
-            .map(|group| group.active_tab)
-    });
-    let shown = front.expect("the workspace in front shows a strip with a window");
-    other_member_arrives(&lounge);
-    other_member_points_at(&lounge, shown, 12.0, 34.0);
-    wait_until(
-        &mut session,
-        "the other member's pointer is drawn here",
-        |session| {
-            session.drawn_peer_pointers().iter().any(|(_, (x, y))| {
-                tile_here(session, shown).is_some_and(|tile| {
-                    (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5
-                })
-            })
-        },
-    );
-    let drawn = session.drawn_peer_pointers();
-    let tile = tile_here(&session, shown).expect("the window in front draws its tile");
-    assert_eq!(
-        drawn.len(),
-        1,
-        "one other person's pointer is drawn: {drawn:?}"
-    );
-    let (x, y) = drawn[0].1;
-    assert!(
-        (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5,
-        "drawn over the window's tile where they put it: {drawn:?}, tile {tile:?}"
-    );
-    // And it follows them.
-    other_member_points_at(&lounge, shown, 40.0, 55.0);
-    wait_until(
-        &mut session,
-        "the other member's pointer follows where they moved it",
-        |session| {
-            session
-                .drawn_peer_pointers()
-                .first()
-                .is_some_and(|(_, (x, y))| {
-                    tile_here(session, shown).is_some_and(|tile| {
-                        (x - (tile.x0 + 40.0)).abs() < 0.5 && (y - (tile.y0 + 55.0)).abs() < 0.5
-                    })
-                })
-        },
-    );
+    the_pointer_follows(&mut session, &lounge);
+
     // The sheets window is the one the site opened first: it moved with the
     // rest, and is not this computer's to see twice.
     assert!(
@@ -1664,6 +1569,125 @@ fn wait_until_desk(
     }
 }
 
+/// The desktop as another member leaves it: a window they open beside one
+/// of theirs in the work strip, and the chat window they move there from the
+/// talk strip.
+fn another_member_edits(mut reopened: SharedDesktop, member: &str) -> SharedDesktop {
+    let work = reopened
+        .tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.get_mut(1))
+        .expect("the work strip");
+    work.window_groups.insert(
+        0,
+        WindowGroup {
+            id: GroupId::from(0x47_u64),
+            tabs: vec![Tab {
+                id: TabId::from(0x46_u64),
+                title: "Files".to_owned(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.files".to_owned(),
+                    label: "Files".to_owned(),
+                    note: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: TabId::from(0x46_u64),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        },
+    );
+    reopened.authors.insert(0x46, member.to_owned());
+    reopened.authors.insert(0x47, member.to_owned());
+    // Chat moves into the work strip, after the files.
+    let talk = reopened
+        .tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.get_mut(0))
+        .expect("the talk strip");
+    let chat = talk.window_groups.remove(0);
+    reopened
+        .tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.get_mut(1))
+        .expect("the work strip")
+        .window_groups
+        .push(chat);
+    reopened
+}
+
+/// The window the workspace in front shows: the active strip's first.
+fn window_in_front(session: &Session) -> Option<TabId> {
+    session.handle().read(|tree| {
+        let workspace = tree.active_workspace()?;
+        let strip = tilo_desktop_surface::navigation::active_strip(tree, workspace)?;
+        workspace
+            .strips
+            .iter()
+            .find(|held| held.id == strip)?
+            .window_groups
+            .first()
+            .map(|group| group.active_tab)
+    })
+}
+
+/// The pointer of a person working in another member's window: the desk
+/// draws it there, wherever the person here is looking, without the roster
+/// being opened, and follows where they move it.
+fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
+    // Their pointer, over a window they work in: the desk draws it there,
+    // wherever the person here is looking, without the roster being opened.
+    // The window is on the strip in front, so its tile is where the pointer
+    // lands.
+    let front = window_in_front(session);
+    let shown = front.expect("the workspace in front shows a strip with a window");
+    other_member_arrives(lounge);
+    other_member_points_at(lounge, shown, 12.0, 34.0);
+    wait_until(
+        session,
+        "the other member's pointer is drawn here",
+        |session| {
+            session.drawn_peer_pointers().iter().any(|(_, (x, y))| {
+                tile_here(session, shown).is_some_and(|tile| {
+                    (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5
+                })
+            })
+        },
+    );
+    let drawn = session.drawn_peer_pointers();
+    let tile = tile_here(session, shown).expect("the window in front draws its tile");
+    assert_eq!(
+        drawn.len(),
+        1,
+        "one other person's pointer is drawn: {drawn:?}"
+    );
+    let (x, y) = drawn[0].1;
+    assert!(
+        (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5,
+        "drawn over the window's tile where they put it: {drawn:?}, tile {tile:?}"
+    );
+    // And it follows them.
+    other_member_points_at(lounge, shown, 40.0, 55.0);
+    wait_until(
+        session,
+        "the other member's pointer follows where they moved it",
+        |session| {
+            session
+                .drawn_peer_pointers()
+                .first()
+                .is_some_and(|(_, (x, y))| {
+                    tile_here(session, shown).is_some_and(|tile| {
+                        (x - (tile.x0 + 40.0)).abs() < 0.5 && (y - (tile.y0 + 55.0)).abs() < 0.5
+                    })
+                })
+        },
+    );
+}
+
 /// The id of the window titled `title` on `desktop`.
 fn shared_desktop_tab(desktop: &SharedDesktop, title: &str) -> u64 {
     desktop
@@ -1674,8 +1698,10 @@ fn shared_desktop_tab(desktop: &SharedDesktop, title: &str) -> u64 {
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
         .find(|tab| tab.title == title)
-        .map(|tab| tab.id)
-        .unwrap_or_else(|| panic!("the desktop holds a window titled {title}"))
+        .map_or_else(
+            || panic!("the desktop holds a window titled {title}"),
+            |tab| tab.id,
+        )
 }
 
 /// Join the lounge's listed workspace and wait until its content and its

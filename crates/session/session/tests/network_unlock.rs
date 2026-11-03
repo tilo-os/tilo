@@ -57,7 +57,6 @@ struct Person {
     phone_cert: DeviceCert,
     phone_key: ed25519_dalek::SigningKey,
     store: DeviceFleetStore,
-    runtime_dir: std::path::PathBuf,
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
@@ -115,7 +114,6 @@ fn person() -> Person {
         phone_cert,
         phone_key,
         store,
-        runtime_dir: runtime,
         _env: env,
         _root: root,
     }

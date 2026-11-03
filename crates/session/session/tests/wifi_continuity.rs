@@ -254,7 +254,7 @@ fn settings_shares_and_reads_a_wifi_passphrase_through_the_session() {
     let mut session = session(&socket, &person);
 
     let (seen, received) = std::sync::mpsc::channel();
-    let (device, cert) = (person.device.clone(), person.cert.clone());
+    let (device, cert) = (person.device.clone(), person.cert);
     let app = std::thread::spawn(move || app(&socket, &device, &cert, &seen));
     let replies = until_the_app_is_done(&mut session, &received);
     app.join().expect("the app's thread");

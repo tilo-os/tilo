@@ -695,7 +695,7 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     until(&mut session, |session| says(session, &desk(session).clock));
     let notes = open_window(&mut session, "so.tilo.notes");
     until(&mut session, |session| desk(session).windows.len() == 1);
-    let behind = desk(&session).workspace.clone();
+    let behind = desk(&session).workspace;
     session
         .invoke(
             tilo_surface_host::shell_part::CHROME_RESOURCE,
@@ -708,14 +708,14 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     });
     // The reading holds it, in the workspace behind the one in front.
     let read = desk(&session);
-    let noted = read
+    let placed = read
         .windows
         .iter()
         .find(|w| w.key == notes.to_string())
         .unwrap_or_else(|| panic!("the window behind is read: {:?}", read.windows));
-    assert_eq!(noted.workspace, behind, "it keeps the workspace it is in");
+    assert_eq!(placed.workspace, behind, "it keeps the workspace it is in");
     assert_ne!(
-        noted.workspace, read.workspace,
+        placed.workspace, read.workspace,
         "the window is not in the workspace in front"
     );
     show(&mut session, "overview");

@@ -52,6 +52,17 @@ fn session(
     (session, note)
 }
 
+/// An action read as a value, rather than called: what it says of how it is
+/// called.
+fn reading_an_action_says_how_it_is_called(session: &mut Session, repl: &mut Repl) {
+    let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
+    assert!(failed, "{named}");
+    assert!(
+        named.contains("call it: `session.overview(open: Option<Bool> = .none)`"),
+        "{named}"
+    );
+}
+
 /// Lists the apps, places the note through a `tilo` program, sees it on the shell's screen as
 /// the person's step, and takes it back with `undo`.
 fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &str) {
@@ -129,13 +140,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
             .then(|| reference.to_owned())
         })
         .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"));
-    // An action read as a value says how it is called.
-    let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
-    assert!(failed, "{named}");
-    assert!(
-        named.contains("call it: `session.overview(open: Option<Bool> = .none)`"),
-        "{named}"
-    );
+    reading_an_action_says_how_it_is_called(session, repl);
 
     // The framed canvas, as the person shows it.
     until(session, "the preset switch", |session| {

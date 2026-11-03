@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, json};
-use tilo_agent_runs::{AgentRuns, wire};
+use tilo_agent_runs::AgentRuns;
 use tilo_compositor::OutputConfig;
 use tilo_reference::{ProgramStep, ResourceAt, ResourceRef, StepOutcome};
 use tilo_session::{Options, Session};
@@ -417,6 +417,19 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
 /// missing is the traditional desk itself, which this test drives the same way.)
 #[test]
 fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
+    fn offered(resources: &[tilo_actions::ResourceSpec], id: &str, label: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                resource
+                    .actions
+                    .iter()
+                    .find(|offered| offered.label == label)
+                    .map(|offered| offered.id.clone())
+            } else {
+                offered(&resource.children, id, label)
+            }
+        })
+    }
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
@@ -445,19 +458,6 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     // its pin control toggles; unpinning it through the note's own published action leaves a
     // note whose bar offers "Pin", as one it would pin does.
     let note = seeded_note(&session, "Groceries");
-    fn offered(resources: &[tilo_actions::ResourceSpec], id: &str, label: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.id.as_str() == id {
-                resource
-                    .actions
-                    .iter()
-                    .find(|offered| offered.label == label)
-                    .map(|offered| offered.id.clone())
-            } else {
-                offered(&resource.children, id, label)
-            }
-        })
-    }
     let pin = offered(&session.resources(), &note, "Pin").expect("the note offers its pin");
     session
         .invoke(&note, &pin, &Map::new())

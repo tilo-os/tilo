@@ -452,14 +452,12 @@ fn record_states(state: &Path) -> Vec<serde_json::Value> {
 /// How many times the launcher wrote a start down: one line per app the
 /// session started.
 fn starts(started: &Path) -> usize {
-    fs::read_to_string(started)
-        .map(|written| {
-            written
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count()
-        })
-        .unwrap_or(0)
+    fs::read_to_string(started).map_or(0, |written| {
+        written
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+    })
 }
 
 /// A window the person opened in one session opens again in the next: a
