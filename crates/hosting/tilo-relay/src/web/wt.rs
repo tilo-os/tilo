@@ -298,16 +298,13 @@ impl Pages {
             workspace: id,
         };
         let admitted = self.members.lock_recover().get(&key).cloned();
-        let member = match admitted {
-            Some(member) => {
-                member.set(true);
-                member
-            }
-            None => {
-                let member = Arc::new(Grant::new([0; 32], id, &workspace, peer));
-                self.members.lock_recover().insert(key, member.clone());
-                member
-            }
+        let member = if let Some(member) = admitted {
+            member.set(true);
+            member
+        } else {
+            let member = Arc::new(Grant::new([0; 32], id, &workspace, peer));
+            self.members.lock_recover().insert(key, member.clone());
+            member
         };
         Ok(member)
     }

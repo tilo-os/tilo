@@ -367,6 +367,10 @@ pub(super) async fn handle_presence(
 /// workspace's other members, as presence was fanned out, and answer it here
 /// from what the host keeps ([`answer_content`]). A spectator's request
 /// nobody sees, as its presence was not.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
 pub(super) async fn handle_content_want(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
