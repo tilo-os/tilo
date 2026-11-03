@@ -411,6 +411,12 @@ fn moment_of(at: &str) -> Option<Moment> {
         .map(|midnight| Moment(midnight.and_utc().timestamp()))
 }
 
+/// The day a moment's text names: its date, or the day an instant falls on.
+#[must_use]
+pub fn moment_day(text: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(text.get(..10).unwrap_or(text), "%Y-%m-%d").ok()
+}
+
 /// The id of a resource a component presents.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResourceId(pub String);

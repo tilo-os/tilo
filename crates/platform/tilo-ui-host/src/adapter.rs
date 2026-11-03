@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 
 use crate::{ResourceRef, UiNode, Value};
 use ui::component::{
-    Accepts, Bound, BoundValue, Catalogue, Description, Event, Fired, Intent, Source, Type,
+    Accepts, Bound, BoundValue, Catalogue, Description, Event, Fired, Intent, Merge, Source, Type,
     Value as Prop,
 };
 use ui::widget::Element;
@@ -73,6 +73,8 @@ struct Built {
     events: Vec<String>,
     /// The resource it presents, which it opens when activated without an event of its own.
     presents: Option<ResourceRef>,
+    /// How an edit through its binding merges, when it has one.
+    merge: Option<Merge>,
 }
 
 /// The events the components of one view report, and what each component's events do. Clones
@@ -169,8 +171,29 @@ impl Adapter {
                 component: description.name.clone(),
                 events: node.events.keys().cloned().collect(),
                 presents: presented(node, description),
+                merge: bound(node, description).map(|binding| binding.merge),
             },
         );
+    }
+
+    /// How an edit through the bound control `key` merges into what it is bound to, as the
+    /// component that built it says: `None` for a key no component with a binding built.
+    #[must_use]
+    pub fn merge_of(&self, key: &str) -> Option<Merge> {
+        self.built.borrow().get(key)?.merge
+    }
+}
+
+/// The binding of `node`'s component an edit it reports is for: the one its `bind` prop names,
+/// or the only one it has.
+fn bound<'a>(
+    node: &UiNode,
+    description: &'a Description,
+) -> Option<&'a ui::component::BindingDescription> {
+    match node.props.get("bind") {
+        Some(Value::Text(name)) => description.binding(name),
+        _ if description.bindings.len() == 1 => description.bindings.first(),
+        _ => None,
     }
 }
 

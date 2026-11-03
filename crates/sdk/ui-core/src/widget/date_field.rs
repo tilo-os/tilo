@@ -6,7 +6,8 @@
 //! calendar, as Calendar's due-date popover does.
 //!
 //! The owner learns of a change through [`DateField::on_change`] and tells the field a date from
-//! elsewhere with [`DateField::set_value`]; the field never holds the authoritative value.
+//! elsewhere with [`DateField::set_value`]; the field never holds the authoritative value. A
+//! described component's field follows the day its binding holds ([`DateField::from_state`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -15,6 +16,7 @@ use chrono::NaiveDate;
 
 use crate::icons::Icon;
 use crate::widget::arrange::Stack;
+use crate::widget::binding::{BoxedBinding, Pulled, derived};
 use crate::widget::{
     AppModel, Button, ButtonRole, DatePicker, Decorator, ModelPath, PopoverButton, Widget,
 };
@@ -26,6 +28,16 @@ pub use component::DateFieldProps;
 /// What a press in the popover asked for: a day, or no date.
 type Picked = Rc<Cell<Option<Option<NaiveDate>>>>;
 
+/// A day the bound value took while the calendar was open: shown once it closes, so a day set
+/// elsewhere never moves the calendar from under the person picking.
+#[derive(Clone, Copy)]
+enum Waiting {
+    /// The binding took no day since the field last showed one.
+    Nothing,
+    /// The day to show now, `None` for a date the app cleared.
+    Day(Option<NaiveDate>),
+}
+
 /// See the [module docs](self).
 pub struct DateField {
     inner: PopoverButton<Stack>,
@@ -34,6 +46,10 @@ pub struct DateField {
     optional: bool,
     picked: Picked,
     on_change: Option<Box<dyn FnMut(Option<NaiveDate>)>>,
+    /// The bound day the field follows, when a view binds it.
+    bound: Option<BoxedBinding<Option<NaiveDate>>>,
+    /// A day the bound value took while the calendar was open: shown once it closes.
+    waiting: Waiting,
 }
 
 impl DateField {
@@ -48,7 +64,18 @@ impl DateField {
             optional,
             picked,
             on_change: None,
+            bound: None,
+            waiting: Waiting::Nothing,
         }
+    }
+
+    /// A field following the day `state` holds as its ISO text (`""` for no date), which the
+    /// person may clear when `optional`: a day set there shows in place.
+    pub(super) fn from_state(id: &str, state: &crate::LocalState<String>, optional: bool) -> Self {
+        let (day, binding) = derived(state, |text| crate::component::moment_day(text));
+        let mut field = Self::new(id, day, optional);
+        field.bound = Some(binding);
+        field
     }
 
     /// Call `f` with the date the person picked, or `None` when they cleared it.
@@ -84,6 +111,9 @@ impl DateField {
         let Some(value) = self.picked.take() else {
             return false;
         };
+        // Their pick is the newest day there is: a day the bound value took while the calendar
+        // was open gives way to it.
+        self.waiting = Waiting::Nothing;
         self.inner.close();
         if value != self.value {
             self.value = value;
@@ -92,6 +122,21 @@ impl DateField {
                 on_change(value);
             }
         }
+        true
+    }
+
+    /// Show the day the bound value took while the calendar was open, now that it closed.
+    fn show_waiting(&mut self) -> bool {
+        if self.inner.is_open() {
+            return false;
+        }
+        let Waiting::Day(value) = std::mem::replace(&mut self.waiting, Waiting::Nothing) else {
+            return false;
+        };
+        if value == self.value {
+            return false;
+        }
+        self.set_value(value);
         true
     }
 
@@ -147,10 +192,26 @@ impl Decorator for DateField {
         &mut self.inner
     }
 
+    /// The day the bound value took shows in place; a day the person is picking is not taken
+    /// from under the calendar.
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if let Some(bound) = &mut self.bound
+            && let Pulled::Value(day) = bound.pull(state, path)
+        {
+            if self.inner.is_open() {
+                self.waiting = Waiting::Day(day);
+            } else {
+                self.set_value(day);
+            }
+        }
+        self.inner.sync(state, path);
+    }
+
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let picked = self.take_pick();
+        let shown = self.show_waiting();
         let inner = self.inner.update(state, path);
-        picked || inner
+        picked || shown || inner
     }
 
     fn name(&self) -> &'static str {
@@ -191,5 +252,39 @@ mod tests {
         assert_eq!(field.value(), day);
         assert!(!field.take_pick());
         assert!(!reported.get());
+    }
+
+    #[test]
+    fn a_bound_day_shows_and_one_set_while_the_calendar_is_open_waits_for_it() {
+        let state = crate::LocalState::new("2026-06-30".to_owned());
+        let mut field = DateField::from_state("due", &state, true);
+        assert_eq!(
+            field.value(),
+            NaiveDate::from_ymd_opt(2026, 6, 30),
+            "the day the binding holds is shown"
+        );
+        state.set("2026-07-01".to_owned());
+        Decorator::sync(&mut field, &(), &());
+        assert_eq!(
+            field.value(),
+            NaiveDate::from_ymd_opt(2026, 7, 1),
+            "a day set elsewhere shows in place"
+        );
+        // The person is picking: the calendar stays on what they are looking at.
+        field.inner_mut().open();
+        state.set("2026-07-02".to_owned());
+        Decorator::sync(&mut field, &(), &());
+        assert_eq!(
+            field.value(),
+            NaiveDate::from_ymd_opt(2026, 7, 1),
+            "a day set while the calendar is open does not move it"
+        );
+        field.inner_mut().close();
+        assert!(Decorator::update(&mut field, &(), &()));
+        assert_eq!(
+            field.value(),
+            NaiveDate::from_ymd_opt(2026, 7, 2),
+            "the day it took shows once the calendar closes"
+        );
     }
 }

@@ -33,12 +33,6 @@ impl Default for DateFieldProps {
     }
 }
 
-/// The day `value` holds, when it is one (its ISO text).
-fn day_of(value: &str) -> Option<chrono::NaiveDate> {
-    use chrono::NaiveDate;
-    NaiveDate::parse_from_str(value.get(..10).unwrap_or(value), "%Y-%m-%d").ok()
-}
-
 /// A picked day as the moment a bound field holds: its ISO text, empty for none.
 fn moment(day: Option<chrono::NaiveDate>) -> String {
     day.map_or_else(String::new, |day| day.format("%Y-%m-%d").to_string())
@@ -56,21 +50,14 @@ impl Described for DateField {
         } = props;
         let _ = label;
         let shown = value.clone();
-        Self::new(key, day_of(&value.state.get()), optional).on_change(move |day| {
+        Self::from_state(key, &value.state, optional).on_change(move |day| {
             shown.edited(crate::component::Value::Text(moment(day)));
         })
     }
 
-    /// A date set elsewhere is shown in place; whether it may be cleared builds it again.
+    /// A date set elsewhere shows in place through the binding; whether it may be cleared
+    /// builds it again.
     fn set_props(&mut self, props: DateFieldProps) -> bool {
-        if props.optional != self.is_optional() {
-            return false;
-        }
-        let day = day_of(&props.value.state.get());
-        if day != self.value() {
-            self.set_value(day);
-            return true;
-        }
-        false
+        props.optional == self.is_optional()
     }
 }

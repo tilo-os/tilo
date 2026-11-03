@@ -54,10 +54,11 @@ impl Described for ColorPicker {
         } = props;
         let shown = value.clone();
         // A field with no colour yet starts at the first colour offered, else at none.
-        let color = color_of(&value.state.get())
-            .or_else(|| swatches.iter().find_map(|hex| color_of(hex)))
+        let fallback = swatches
+            .iter()
+            .find_map(|hex| color_of(hex))
             .unwrap_or(vello::peniko::Color::TRANSPARENT);
-        let mut picker = Self::new(color)
+        let mut picker = Self::from_text_state(&value.state, fallback)
             .on_change(move |color| {
                 shown.edited(Value::Text(crate::color::to_hex(color)));
             })
@@ -74,12 +75,7 @@ impl Described for ColorPicker {
 
     /// A colour set elsewhere is shown in place; other swatches are built again.
     fn set_props(&mut self, props: ColorPickerProps) -> bool {
-        if !props.swatches.is_empty() {
-            return false;
-        }
-        if let Some(color) = color_of(&props.value.state.get()) {
-            self.set_color(color);
-        }
-        true
+        // A colour set elsewhere shows in place through the binding.
+        props.swatches.is_empty()
     }
 }
