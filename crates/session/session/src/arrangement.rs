@@ -128,8 +128,13 @@ pub enum ArrangementAction {
     },
     /// Resize the strip `strip` to `permille` of its row's width.
     Resize { strip: u64, permille: u32 },
+    /// Maximize the strip `strip` (`maximized`), so it fills the desk alone,
+    /// or restore it.
+    Maximize { strip: u64, maximized: bool },
     /// Close the place `place`; its window goes with it.
     Close { place: u64 },
+    /// Bring the place `place` in front of the strip it stands in, as choosing its tab does.
+    Activate { place: u64 },
     /// Pin the place `place` (`pinned`), so an agent's arrangement leaves it
     /// alone (shell.md §5), or unpin it.
     Pin { place: u64, pinned: bool },
@@ -1105,9 +1110,24 @@ fn change(
         ArrangementAction::Resize { strip, permille } => {
             Ok(strips.resize(*strip, WindowWidth::Fraction(*permille)))
         }
+        ArrangementAction::Maximize { strip, maximized } => {
+            if strips.strip(*strip).is_none() {
+                return Err("that strip is not in the arrangement".into());
+            }
+            Ok(strips.maximize(*strip, *maximized))
+        }
         ArrangementAction::Close { place } => {
             if strips.close_place(*place) {
                 Ok(true)
+            } else {
+                Err("that place is not in the arrangement".into())
+            }
+        }
+        ArrangementAction::Activate { place } => {
+            if strips.activate(TabId(*place)) {
+                Ok(true)
+            } else if strips.place(TabId(*place)).is_some() {
+                Err("that place is in front already".into())
             } else {
                 Err("that place is not in the arrangement".into())
             }
@@ -1273,7 +1293,9 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::OpenInto { .. } => "open",
         ArrangementAction::Move { .. } => "move",
         ArrangementAction::Resize { .. } => "resize",
+        ArrangementAction::Maximize { .. } => "maximize",
         ArrangementAction::Close { .. } => "close",
+        ArrangementAction::Activate { .. } => "activate",
         ArrangementAction::Pin { .. } => "pin",
         ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
     }
@@ -1348,6 +1370,7 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
     let pinned = key.to_owned();
     let closed = key.to_owned();
     let moved = key.to_owned();
+    let in_front = key.to_owned();
     vec![
         action(
             "pin",
@@ -1368,6 +1391,14 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
             }
         }),
         action(
+            "activate",
+            "Bring a place in front of its strip",
+            Vec::new(),
+            move |_| ArrangementAction::Activate {
+                place: count_of(&in_front),
+            },
+        ),
+        action(
             "move",
             "Move a place into a row",
             vec![
@@ -1387,19 +1418,35 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
 /// they are pressed on.
 fn strip_actions(key: &str) -> Vec<ActionSpec> {
     let resized = key.to_owned();
-    vec![action(
-        "resize",
-        "Resize a strip",
-        vec![required(
-            "permille",
-            ParamType::Integer,
-            "Its width in per-mille of the row",
-        )],
-        move |args| ArrangementAction::Resize {
-            strip: count_of(&resized),
-            permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
-        },
-    )]
+    let maximized = key.to_owned();
+    vec![
+        action(
+            "resize",
+            "Resize a strip",
+            vec![required(
+                "permille",
+                ParamType::Integer,
+                "Its width in per-mille of the row",
+            )],
+            move |args| ArrangementAction::Resize {
+                strip: count_of(&resized),
+                permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
+            },
+        ),
+        action(
+            "maximize",
+            "Maximize a strip, so it fills the desk alone, or restore it",
+            vec![optional(
+                "maximized",
+                ParamType::Boolean,
+                "Whether it is maximized",
+            )],
+            move |args| ArrangementAction::Maximize {
+                strip: count_of(&maximized),
+                maximized: args.boolean("maximized").unwrap_or(true),
+            },
+        ),
+    ]
 }
 
 /// The row `arguments` names as `name`, by the id of the row's resource. `None` for an id of

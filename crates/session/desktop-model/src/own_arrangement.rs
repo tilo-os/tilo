@@ -471,12 +471,25 @@ impl Strips {
         }
     }
 
+    /// Maximize the strip `id` (`maximized`), so it fills the desk alone, or
+    /// restore it. `false` when this shell holds no such strip, or it is as
+    /// asked already.
+    pub fn maximize(&mut self, id: GroupId, maximized: bool) -> bool {
+        match self.strips.iter_mut().find(|strip| strip.id == id) {
+            Some(strip) => {
+                let changed = strip.maximized != maximized;
+                strip.maximized = maximized;
+                changed
+            }
+            None => false,
+        }
+    }
+
     /// Take the place `id` out of the arrangement, as closing its window
     /// does.
     pub fn close_place(&mut self, id: TabId) -> bool {
         self.take_place(id).is_some()
     }
-
     /// Pin the place `id` (`true`) or unpin it.
     pub fn pin(&mut self, id: TabId, pinned: bool) -> bool {
         let Some(place) = self
@@ -496,6 +509,21 @@ impl Strips {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.strips.iter().all(|strip| strip.places.is_empty())
+    }
+
+    /// Bring the place `id` in front of the strip it stands in, as choosing its tab does.
+    /// `false` when no strip of this shell holds it, or it is in front already.
+    pub fn activate(&mut self, id: TabId) -> bool {
+        let Some(strip) = self
+            .strips
+            .iter_mut()
+            .find(|strip| strip.places.iter().any(|place| place.id == id))
+        else {
+            return false;
+        };
+        let changed = strip.active != Some(id);
+        strip.active = Some(id);
+        changed
     }
 }
 
