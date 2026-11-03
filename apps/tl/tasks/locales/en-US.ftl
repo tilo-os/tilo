@@ -206,6 +206,8 @@ d-day53wfn = Unfile~present
 
 d-mg3c777a = Move to~present
 
+d-tpvjqy5m = Clear done~present
+
 d-swaiyhcf = Show board~present
 
 d-i2mhsb3h = Home
