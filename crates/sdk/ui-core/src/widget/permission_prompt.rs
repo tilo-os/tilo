@@ -107,6 +107,10 @@ pub struct PermissionPrompt {
     /// request is not the usual capability one ([`Self::with_choices`]).
     own_choices: Option<OwnChoices>,
     icon: Option<crate::icons::Icon>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// A request's own subset of the four choices and what each is called.
@@ -127,6 +131,7 @@ impl PermissionPrompt {
     /// `is_owner` controls whether the `Always` button is interactive.
     pub fn new(app_id: String, capability_label: String, is_owner: bool) -> Self {
         Self {
+            dirty: true,
             rect: Rect::ZERO,
             app_id,
             capability_label,
@@ -570,6 +575,7 @@ impl Widget for PermissionPrompt {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
@@ -662,6 +668,14 @@ impl Widget for PermissionPrompt {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "PermissionPrompt"
     }
@@ -711,6 +725,7 @@ impl Widget for PermissionPrompt {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.has_keyboard_focus = focused;
         if focused && self.focused_choice.is_none() {
             self.focused_choice = Some(PromptChoice::Deny);

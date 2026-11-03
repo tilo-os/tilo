@@ -24,6 +24,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tilo_capture_studio::audio::{Availability, Track as AudioTrack};
@@ -33,7 +34,6 @@ use tilo_capture_studio::{
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
-use tilo_device_fabric::link::SharedLink;
 use tilo_portal::CaptureError;
 use tilo_surface_host::Doors;
 use ui::vello::kurbo::Rect;
@@ -43,7 +43,8 @@ use ui::widget::{
 };
 
 use crate::Options;
-use crate::capture_send::{self, Sends};
+use crate::capture_send::Sends;
+use crate::nearby_transfer::NearbyTransfer;
 use crate::panels::Held;
 use crate::sheets::Sheet;
 
@@ -61,9 +62,9 @@ pub(crate) struct CaptureStudio {
     directory: PathBuf,
     /// The last screenshot, for its receipt and for opening it again.
     last: Option<Kept>,
-    /// The person's devices, when this session runs on one: who a screenshot
-    /// may be sent to.
-    fabric: Option<SharedLink>,
+    /// The session's transfer engine, when this session runs on a device
+    /// fabric: who a screenshot may be sent to.
+    nearby: Option<Arc<NearbyTransfer>>,
     /// The screenshots on their way to those devices.
     sends: Sends,
     /// What became of sending the last screenshot, while its receipt shows
@@ -117,7 +118,7 @@ pub(crate) fn mount(
     compositor: &mut Compositor,
     doors: &mut Doors,
     options: &Options,
-    fabric: Option<&SharedLink>,
+    nearby: Option<&Arc<NearbyTransfer>>,
 ) -> Option<CaptureStudio> {
     let who = (options.device.as_str(), options.person.as_str());
     let seat = Studio::new();
@@ -134,18 +135,16 @@ pub(crate) fn mount(
             let sheet = Rc::new(RefCell::new(sheet));
             compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
             doors.add(sheet);
-            let fabric = fabric.cloned();
             Some(CaptureStudio {
                 seat,
                 directory: options.pictures.clone().unwrap_or_else(screenshots),
                 last: None,
                 sends: Sends::new(
-                    fabric.clone(),
-                    capture_send::spool_root(),
+                    nearby.cloned(),
                     tilo_paths::workspace_root(),
                     options.wake.handle(),
                 ),
-                fabric,
+                nearby: nearby.cloned(),
                 sent: None,
                 asking: None,
                 feeding: None,
@@ -613,9 +612,9 @@ impl CaptureStudio {
     /// Hand the studio what it shows now.
     fn publish(&self, compositor: &Compositor) {
         let devices: Vec<ScreenshotSendDevice> = self
-            .fabric
+            .nearby
             .as_ref()
-            .map_or_else(Vec::new, capture_send::devices);
+            .map_or_else(Vec::new, |nearby| nearby.devices());
         let audio = self.audio_availability();
         let scene = Scene {
             windows: windows(compositor, self.presentation().place()),

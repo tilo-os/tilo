@@ -583,7 +583,7 @@ fn observe_classifies_like_full_decode() {
     .collect();
     let other_bodies = [
         postcard::to_stdvec(&NeighbourMsg::Heartbeat { peer: 3, ts: 4 }).unwrap(),
-        postcard::to_stdvec(&NeighbourMsg::PresenceCleared {
+        postcard::to_stdvec(&NeighbourMsg::RetiredPresenceCleared {
             peer: 3,
             key: "cursor".into(),
         })

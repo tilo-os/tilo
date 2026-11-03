@@ -160,10 +160,11 @@ pub enum Envelope {
         signature: [u8; 64],
     },
 
-    /// A presence event — cheap ephemeral broadcast (cursor
-    /// positions, "user is here" markers, typing indicators). Not
-    /// persisted; if no subscribers exist, the relay drops it.
-    Presence {
+    /// Retired: a presence event, broadcast as an opaque payload. Nothing
+    /// sends it — presence rides the workspace's live plane, on its presence
+    /// track — and it stays only so every later variant keeps its postcard
+    /// position.
+    RetiredPresence {
         workspace_id: u64,
         /// Peer-defined presence payload. The relay never inspects
         /// the bytes.
@@ -319,11 +320,11 @@ pub enum Envelope {
         reason: String,
     },
 
-    /// Join the workspace's live plane. Requires an accepted `Subscribe` on
-    /// the same connection. The host answers with one
-    /// [`Envelope::LiveMember`] per current live member, then relays their
-    /// [`Envelope::Live`] frames.
-    LiveJoin {
+    /// Retired: join the workspace's live plane over the relay connection.
+    /// Nothing sends it — a device joins the plane itself, on its own carrier
+    /// — and it stays only so every later variant keeps its postcard
+    /// position.
+    RetiredLiveJoin {
         /// Workspace id.
         workspace_id: u64,
     },
@@ -334,11 +335,10 @@ pub enum Envelope {
         workspace_id: u64,
     },
 
-    /// One ephemeral live frame ([`crate::live::LiveFrame`] bytes). The host
-    /// validates and rate-limits it, stamps `from_device_public_key` from
-    /// the authenticated connection, forwards it to the other live members
-    /// and never stores it.
-    Live {
+    /// Retired: one ephemeral live frame ([`crate::live::LiveFrame`] bytes)
+    /// relayed by the host. Nothing sends it — frames travel on the plane —
+    /// and it stays only so every later variant keeps its postcard position.
+    RetiredLive {
         workspace_id: u64,
         /// Publishing device, stamped by the host. Whatever a sender puts
         /// here is overwritten.
@@ -348,8 +348,10 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// A device joined (`active`) or left the workspace's live plane.
-    LiveMember {
+    /// Retired: a device joined (`active`) or left the workspace's live
+    /// plane. Nothing sends it — membership is the plane's own — and it stays
+    /// only so every later variant keeps its postcard position.
+    RetiredLiveMember {
         workspace_id: u64,
         device_public_key: [u8; 32],
         /// Whether it is now a live member.
@@ -557,6 +559,19 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         bootstrap: Vec<u8>,
     },
+
+    /// A member asks the workspace for content one of its records
+    /// references. The host fans it out to the workspace's other members and
+    /// answers with what it keeps itself; each member answers to the asking
+    /// device alone ([`Self::RecordContent`]). `frame` is the
+    /// `NeighbourMsg::RecordContentWant` that says what is wanted, and
+    /// `from_device_public_key` is the host's stamp of who asked.
+    RecordContentWant {
+        workspace_id: u64,
+        from_device_public_key: [u8; 32],
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
 }
 
 impl Envelope {
@@ -568,7 +583,7 @@ impl Envelope {
             Self::Subscribe { .. } => "Subscribe",
             Self::Unsubscribe { .. } => "Unsubscribe",
             Self::Delta { .. } => "Delta",
-            Self::Presence { .. } => "Presence",
+            Self::RetiredPresence { .. } => "Presence",
             Self::Ready { .. } => "Ready",
             Self::NotAuthorised { .. } => "NotAuthorised",
             Self::Ping => "Ping",
@@ -581,10 +596,10 @@ impl Envelope {
             Self::Commit { .. } => "Commit",
             Self::Committed { .. } => "Committed",
             Self::CommitRefused { .. } => "CommitRefused",
-            Self::LiveJoin { .. } => "LiveJoin",
+            Self::RetiredLiveJoin { .. } => "LiveJoin",
             Self::LiveLeave { .. } => "LiveLeave",
-            Self::Live { .. } => "Live",
-            Self::LiveMember { .. } => "LiveMember",
+            Self::RetiredLive { .. } => "Live",
+            Self::RetiredLiveMember { .. } => "LiveMember",
             Self::SubscribeFrom { .. } => "SubscribeFrom",
             Self::Position { .. } => "Position",
             Self::CompactVolunteer { .. } => "CompactVolunteer",
@@ -604,6 +619,7 @@ impl Envelope {
             Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
             Self::RoomBootstrap { .. } => "RoomBootstrap",
+            Self::RecordContentWant { .. } => "RecordContentWant",
         }
     }
 
@@ -618,7 +634,7 @@ impl Envelope {
             Self::Subscribe { workspace_id }
             | Self::Unsubscribe { workspace_id }
             | Self::Delta { workspace_id, .. }
-            | Self::Presence { workspace_id, .. }
+            | Self::RetiredPresence { workspace_id, .. }
             | Self::Ready { workspace_id, .. }
             | Self::NotAuthorised { workspace_id, .. }
             | Self::SyncRequest { workspace_id, .. }
@@ -629,10 +645,10 @@ impl Envelope {
             | Self::Commit { workspace_id, .. }
             | Self::Committed { workspace_id, .. }
             | Self::CommitRefused { workspace_id, .. }
-            | Self::LiveJoin { workspace_id }
+            | Self::RetiredLiveJoin { workspace_id }
             | Self::LiveLeave { workspace_id }
-            | Self::Live { workspace_id, .. }
-            | Self::LiveMember { workspace_id, .. }
+            | Self::RetiredLive { workspace_id, .. }
+            | Self::RetiredLiveMember { workspace_id, .. }
             | Self::SubscribeFrom { workspace_id, .. }
             | Self::Position { workspace_id, .. }
             | Self::CompactVolunteer { workspace_id }
@@ -649,7 +665,8 @@ impl Envelope {
             | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. }
-            | Self::RoomBootstrap { workspace_id, .. } => Some(*workspace_id),
+            | Self::RoomBootstrap { workspace_id, .. }
+            | Self::RecordContentWant { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
         }
     }
@@ -675,7 +692,7 @@ mod tests {
             (Envelope::Subscribe { workspace_id: 7 }, vec![0, 7]),
             (Envelope::Unsubscribe { workspace_id: 7 }, vec![1, 7]),
             (
-                Envelope::Presence {
+                Envelope::RetiredPresence {
                     workspace_id: 7,
                     payload: vec![9, 8],
                 },
@@ -787,7 +804,7 @@ mod tests {
         };
         assert_eq!(delta.workspace_id(), Some(9));
         assert_eq!(
-            Envelope::Presence {
+            Envelope::RetiredPresence {
                 workspace_id: 4,
                 payload: Vec::new(),
             }

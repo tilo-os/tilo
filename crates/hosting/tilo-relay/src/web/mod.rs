@@ -23,7 +23,7 @@ mod sessions;
 #[cfg(test)]
 mod tests;
 mod tls;
-mod wt;
+pub(crate) mod wt;
 
 pub use fetch::FetchProxySetup;
 use std::convert::Infallible;
@@ -342,14 +342,18 @@ impl Relay {
             tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
         let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
         let context = self.web_context().clone();
+        let Some(plane) = self.plane.as_ref() else {
+            return Err(failed("the relay runs no live plane".into()));
+        };
         let sessions = Sessions::with_limits(context.clone(), config.limits);
+        plane.pages.serve_pages(sessions.clone());
         if let Some(rooms) = self.rooms() {
             let _ = context.relay.carried_calls.set(rooms.downgrade());
         }
         let host_cert = context.relay.identity.cert.clone();
         let mut live = wt::Live::start(
+            plane,
             &identity,
-            sessions.clone(),
             &config,
             &public_origin
                 .clone()

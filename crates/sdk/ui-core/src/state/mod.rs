@@ -1,6 +1,7 @@
 use crate::application::InstanceId;
 use crate::permissions::UserId;
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::{ActorId, AutoCommit, ChangeHash, ObjId};
+use std::collections::HashSet;
 use tilo_automerge::ApplyIncoming;
 
 pub(crate) mod owned_restore;
@@ -11,6 +12,33 @@ pub use collaboration::state::{UndoEntry, UndoLog};
 pub use collaboration::state::{write_patches, write_revert_patches, write_revert_patches_where};
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
+
+/// The actors this replica has written one document as, beyond the ones the
+/// document itself names.
+///
+/// A mount writing as another author writes under the writer derived for that
+/// author ([`crate::record::author_writer`]); the frame puts the record's
+/// writer back when the action ends, so only the frame's note of it is left.
+/// A handle on this device writing an action ([`crate::history_source::authors`])
+/// needs no note: its actor carries the device's own in its suffix, which
+/// [`DocumentFrontier::delta`] reads off the document.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WritingActors {
+    actors: HashSet<ActorId>,
+}
+
+impl WritingActors {
+    /// Note that this replica writes as `actor`.
+    pub fn note(&mut self, actor: ActorId) {
+        self.actors.insert(actor);
+    }
+
+    /// Whether `actor` is a writer of this replica.
+    #[must_use]
+    pub fn contains(&self, actor: &ActorId) -> bool {
+        self.actors.contains(actor)
+    }
+}
 
 /// An explicit outbound synchronization frontier for one document route.
 ///
@@ -43,8 +71,8 @@ impl DocumentFrontier {
     /// Serialize everything after this frontier and advance it to the heads
     /// represented by that payload. Unlike `save_incremental`, this does not
     /// share hidden mutable cursor state with persistence or snapshot export.
-    pub fn take_delta(&mut self, doc: &mut AutoCommit) -> Vec<u8> {
-        let (delta, current) = self.pending_delta(doc);
+    pub fn take_delta(&mut self, doc: &mut AutoCommit, own: &WritingActors) -> Vec<u8> {
+        let (delta, current) = self.pending_delta(doc, own);
         self.advance(current);
         delta
     }
@@ -69,13 +97,17 @@ impl DocumentFrontier {
     /// Build a delta without advancing the frontier. Call [`Self::advance`]
     /// only after the durable transport accepts it; a saturated/disconnected
     /// queue can then be retried instead of silently losing the mutation.
-    pub fn pending_delta(&mut self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
+    pub fn pending_delta(
+        &mut self,
+        doc: &mut AutoCommit,
+        own: &WritingActors,
+    ) -> (Vec<u8>, Vec<ChangeHash>) {
         let current = doc.get_heads();
         if current == self.heads {
             // Nothing was made since the frontier: no change to walk for.
             return (Vec::new(), current);
         }
-        let delta = self.delta(doc);
+        let delta = self.delta(doc, own);
         if !delta.is_empty() {
             return (delta, current);
         }
@@ -87,7 +119,9 @@ impl DocumentFrontier {
     }
 
     /// What this device holds that the destination does not, as an
-    /// incremental payload: this replica's own changes after the frontier.
+    /// incremental payload: this replica's own changes after the frontier,
+    /// made under the document's current actor, a writer `own` names, or a
+    /// handle on this device whose actor carries the device's own.
     ///
     /// Another replica's change is never in it, whether or not this frontier
     /// was told it arrived: a change is published by the replica that made
@@ -97,11 +131,18 @@ impl DocumentFrontier {
     /// not get this way — another device's, or this one's from before a join —
     /// arrives whole, in the snapshot a route publishes when it opens and when
     /// a holder asks for one.
-    pub fn delta(&self, doc: &mut AutoCommit) -> Vec<u8> {
+    pub fn delta(&self, doc: &mut AutoCommit, own: &WritingActors) -> Vec<u8> {
         let actor = doc.get_actor().clone();
+        // A change made as a handle on this device, as an action made by one
+        // person is, carries the device's actor in its suffix
+        // ([`crate::history_source::authors::DeviceActors`]).
+        let device = crate::history_source::authors::DeviceActors::of(&actor);
         let mut bytes = Vec::new();
         for change in doc.get_changes(&self.heads) {
-            if change.actor_id() != &actor || self.observed.contains(&change.hash()) {
+            let mine = change.actor_id() == &actor
+                || own.contains(change.actor_id())
+                || device.wrote(&change.actor_id().to_hex_string());
+            if !mine || self.observed.contains(&change.hash()) {
                 continue;
             }
             bytes.extend_from_slice(change.raw_bytes());
@@ -203,7 +244,8 @@ impl DocumentReplica {
     }
 
     pub fn pending_outbound_delta(&mut self) -> (Vec<u8>, Vec<ChangeHash>) {
-        self.outbound.pending_delta(&mut self.doc)
+        self.outbound
+            .pending_delta(&mut self.doc, &WritingActors::default())
     }
 
     pub fn advance_outbound(&mut self, heads: Vec<ChangeHash>) {
@@ -565,7 +607,8 @@ impl State {
     /// Prepare primary-route bytes without advancing its frontier. The caller
     /// advances only after its durable queue accepts the payload.
     pub fn pending_outbound_delta(&mut self) -> (Vec<u8>, Vec<ChangeHash>) {
-        self.outbound.pending_delta(&mut self.doc)
+        self.outbound
+            .pending_delta(&mut self.doc, &WritingActors::default())
     }
 
     pub fn advance_outbound(&mut self, heads: Vec<ChangeHash>) {
@@ -649,10 +692,57 @@ mod tests {
         // replica's change alone: a change goes out from the replica that
         // made it, and the snapshot handshake carries the rest.
         let mut frontier = DocumentFrontier::default();
-        let (delta, heads) = frontier.pending_delta(&mut doc);
+        let (delta, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
         let published = automerge::Automerge::parse_changes(&delta).unwrap();
         assert_eq!(published.len(), 1);
         assert_eq!(published[0].actor_id(), doc.get_actor());
+        assert_eq!(heads, doc.get_heads());
+    }
+
+    #[test]
+    fn a_frontier_publishes_changes_a_handle_on_this_device_made() {
+        let device = automerge::ActorId::random();
+        let mut doc = AutoCommit::new().with_actor(device.clone());
+        doc.put(ROOT, "setting", "on").unwrap();
+        doc.commit();
+        let mut frontier = DocumentFrontier::at_document(&mut doc);
+        // An action one person performs writes as that person's handle on this
+        // device; the record's writer is put back when the action ends.
+        let handled = automerge::ActorId::from(
+            crate::history_source::authors::device_actor("alice", &device).as_slice(),
+        );
+        doc.set_actor(handled.clone());
+        doc.put(ROOT, "named", "alice").unwrap();
+        doc.commit();
+        doc.set_actor(device);
+        let (delta, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
+        let published = automerge::Automerge::parse_changes(&delta).unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].actor_id(), &handled);
+        assert_eq!(heads, doc.get_heads());
+    }
+
+    #[test]
+    fn a_frontier_publishes_changes_written_as_an_author_writer() {
+        let writer = automerge::ActorId::random();
+        let mut doc = AutoCommit::new().with_actor(writer.clone());
+        doc.put(ROOT, "setting", "on").unwrap();
+        doc.commit();
+        let mut frontier = DocumentFrontier::at_document(&mut doc);
+        // A mount writing as another author writes under the writer derived
+        // for that author; the frame puts the record's writer back when it
+        // ends, so the route remembers the writer it noted.
+        let mut own = WritingActors::default();
+        let authored = crate::record::author_writer(&writer, "alice");
+        own.note(authored.clone());
+        doc.set_actor(authored.clone());
+        doc.put(ROOT, "named", "alice").unwrap();
+        doc.commit();
+        doc.set_actor(writer);
+        let (delta, heads) = frontier.pending_delta(&mut doc, &own);
+        let published = automerge::Automerge::parse_changes(&delta).unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].actor_id(), &authored);
         assert_eq!(heads, doc.get_heads());
     }
 
@@ -857,12 +947,16 @@ mod tests {
             doc.put(automerge::ROOT, "body", "draft").unwrap();
             let _snapshot = doc.save();
 
-            let delta = frontier.take_delta(&mut doc);
+            let delta = frontier.take_delta(&mut doc, &WritingActors::default());
             assert!(
                 !delta.is_empty(),
                 "a full snapshot must not consume this route's delta"
             );
-            assert!(frontier.take_delta(&mut doc).is_empty());
+            assert!(
+                frontier
+                    .take_delta(&mut doc, &WritingActors::default())
+                    .is_empty()
+            );
         }
         // phase: rebased_frontier_does_not_echo_inbound_changes
         {
@@ -876,10 +970,18 @@ mod tests {
             let mut incoming = AutoCommit::load(&bytes).unwrap();
             target.merge(&mut incoming).unwrap();
             frontier.rebase(&mut target);
-            assert!(frontier.take_delta(&mut target).is_empty());
+            assert!(
+                frontier
+                    .take_delta(&mut target, &WritingActors::default())
+                    .is_empty()
+            );
 
             target.put(automerge::ROOT, "local", true).unwrap();
-            assert!(!frontier.take_delta(&mut target).is_empty());
+            assert!(
+                !frontier
+                    .take_delta(&mut target, &WritingActors::default())
+                    .is_empty()
+            );
         }
         // phase: pending_delta_is_retryable_until_transport_accepts_it
         {
@@ -887,12 +989,17 @@ mod tests {
             let mut frontier = DocumentFrontier::at_document(&mut doc);
             doc.put(automerge::ROOT, "body", "retry me").unwrap();
 
-            let (first, heads) = frontier.pending_delta(&mut doc);
-            let (retry, _) = frontier.pending_delta(&mut doc);
+            let (first, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
+            let (retry, _) = frontier.pending_delta(&mut doc, &WritingActors::default());
             assert_eq!(retry, first);
 
             frontier.advance(heads);
-            assert!(frontier.pending_delta(&mut doc).0.is_empty());
+            assert!(
+                frontier
+                    .pending_delta(&mut doc, &WritingActors::default())
+                    .0
+                    .is_empty()
+            );
         }
         // phase: rejected_local_delta_survives_concurrent_incremental_merge
         {

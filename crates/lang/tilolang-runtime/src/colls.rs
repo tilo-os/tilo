@@ -437,6 +437,26 @@ impl Core {
         Ok(value)
     }
 
+    /// The first `n` items of `coll`, as references: the items a `take` shows, and no more, so
+    /// a view that walks a collection up to a count reads that many of its items, not all.
+    ///
+    /// # Errors
+    ///
+    /// A message when the store cannot list the collection.
+    pub(crate) fn coll_take(&self, coll: &Rc<CollRef>, n: usize) -> Result<Vec<Value>, String> {
+        let listing = self.coll_listing(coll)?;
+        let len = listing.len();
+        let mut out = Vec::new();
+        for i in 0..n {
+            let Some(id) = listing.get(i) else {
+                break;
+            };
+            self.saw(coll, Read::At(i, Rc::clone(&id)), len);
+            out.push(self.item_ref(coll, &id));
+        }
+        Ok(out)
+    }
+
     /// Every item of `coll`, as references: the whole collection, which a view running now then
     /// depends on.
     ///

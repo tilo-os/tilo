@@ -157,6 +157,10 @@ pub struct Popover<C: Widget = NoContent> {
     /// The pose it was last drawn in: option rows are hit where they are
     /// drawn while it moves.
     drawn: crate::motion::Pose,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for Popover {
@@ -168,6 +172,7 @@ impl Default for Popover {
 impl<C: Widget> Popover<C> {
     fn with_body(content: C, options: Option<Options>) -> Self {
         Self {
+            dirty: true,
             content,
             options,
             transparent: false,
@@ -225,6 +230,7 @@ impl<C: Widget> Popover<C> {
 
     /// [`Self::aligned`] after construction.
     pub fn set_align(&mut self, align: PanelAlign) {
+        self.dirty = true;
         self.align = align;
     }
 
@@ -251,6 +257,7 @@ impl<C: Widget> Popover<C> {
     /// Open on `side` of the anchor from now on: a panel that stands beside
     /// its subject on a wide screen and along the bottom of a narrow one.
     pub fn set_side(&mut self, side: PopoverSide) {
+        self.dirty = true;
         self.side = side;
         self.resolved_side = side;
     }
@@ -267,12 +274,14 @@ impl<C: Widget> Popover<C> {
     /// Protect exact painted geometry from an optional fallback placement.
     /// This is presentation metadata, never an expanded input target.
     pub fn set_avoid(&mut self, avoid: Option<Rect>) {
+        self.dirty = true;
         self.avoid = avoid;
     }
 
     /// Alias for a protected source-control/receipt footprint. This changes
     /// only placement, never the anchor, input rectangle or authority.
     pub fn set_protected_rect(&mut self, protected: Option<Rect>) {
+        self.dirty = true;
         self.set_avoid(protected);
     }
 
@@ -318,6 +327,7 @@ impl<C: Widget> Popover<C> {
     }
 
     pub fn set_label(&mut self, label: impl Into<String>) {
+        self.dirty = true;
         self.label = Some(label.into());
         if let Some(dismiss) = self.dismiss.take() {
             self.dismiss = Some(dismiss.renamed(self.surface_id()));
@@ -326,15 +336,18 @@ impl<C: Widget> Popover<C> {
 
     /// [`Self::with_viewport`] after construction.
     pub fn set_viewport(&mut self, viewport: Rect) {
+        self.dirty = true;
         self.viewport = Some(viewport);
     }
 
     /// Move the anchor (window coordinates).
     pub fn set_anchor(&mut self, anchor: Rect) {
+        self.dirty = true;
         self.anchor = anchor;
     }
 
     pub fn set_open(&mut self, open: bool) {
+        self.dirty = true;
         if open && !self.open {
             self.stale = self.host_content.is_some();
         }
@@ -657,6 +670,8 @@ pub struct PopoverPrompt {
     chars: usize,
     rect: Rect,
     theme: Theme,
+    /// Its paint changed since the last frame drew it.
+    dirty: bool,
 }
 
 impl PopoverPrompt {
@@ -664,6 +679,7 @@ impl PopoverPrompt {
         let mut input = crate::widget::TextInput::local().with_placeholder(placeholder);
         input.set_focus(true);
         Self {
+            dirty: true,
             caption: caption.to_string(),
             hint: hint.to_string(),
             input,
@@ -688,6 +704,7 @@ impl PopoverPrompt {
     /// accepted).
     pub fn set_hint(&mut self, hint: &str) {
         hint.clone_into(&mut self.hint);
+        self.dirty = true;
     }
 
     fn line(theme: &Theme, role: TextRole) -> f64 {
@@ -845,6 +862,15 @@ impl Widget for PopoverPrompt {
         Some(node)
     }
 
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.input.needs_redraw() || self.input.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        self.input.mark_drawn();
+    }
+
     fn name(&self) -> &'static str {
         "PopoverPrompt"
     }
@@ -938,6 +964,7 @@ impl Popover {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        self.dirty = true;
         let options = self.options_mut();
         options.items = items.into_iter().map(Into::into).collect();
         if options.highlighted >= options.items.len() {
@@ -1120,6 +1147,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         // Even when closed, so reopening shows a current frame.
         self.content.sync(state, path);
     }
@@ -1301,6 +1329,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.open {
             return;
         }
@@ -1405,6 +1434,14 @@ impl<C: Widget + 'static> Widget for Popover<C> {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1699,7 +1736,10 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.request.get() || self.popover.is_open() || self.button.needs_redraw()
+        if self.request.get() || self.popover.is_open() {
+            return true;
+        }
+        self.button.needs_redraw() || self.button.needs_animation_frame()
     }
 
     fn modal_capture(&self) -> Option<Rect> {

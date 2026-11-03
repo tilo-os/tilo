@@ -331,7 +331,9 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     )
     .await;
     assert_eq!(refused, WATCH_ONLY);
-    watching.send(Envelope::LiveJoin { workspace_id }).unwrap();
+    watching
+        .send(Envelope::RetiredLiveJoin { workspace_id })
+        .unwrap();
     let reason = answer(
         "the spectator's live join is refused",
         &watching,
@@ -365,7 +367,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     .encode()
     .unwrap();
     watching
-        .send(Envelope::Presence {
+        .send(Envelope::RetiredPresence {
             workspace_id,
             payload: attributed,
         })
@@ -439,9 +441,11 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
         "Bob's presence reaches the watching page",
         &watching,
         |envelope| match envelope {
-            Envelope::Presence { payload, .. } => tilo_relay::AttributedPresence::decode(&payload)
-                .filter(|presence| presence.author == phone.device_pubkey())
-                .map(|presence| presence.body),
+            Envelope::RetiredPresence { payload, .. } => {
+                tilo_relay::AttributedPresence::decode(&payload)
+                    .filter(|presence| presence.author == phone.device_pubkey())
+                    .map(|presence| presence.body)
+            }
             _ => None,
         },
     )
@@ -469,7 +473,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     .encode()
     .unwrap();
     watching
-        .send(Envelope::Presence {
+        .send(Envelope::RetiredPresence {
             workspace_id,
             payload: want,
         })

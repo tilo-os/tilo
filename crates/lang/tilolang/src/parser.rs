@@ -12,7 +12,7 @@ use crate::ast::{
     ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
-use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
+use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
 /// Whether call arguments name only a filter's options: `(icon: .circle)`.
@@ -92,6 +92,9 @@ pub fn parse_module(src: &str) -> (Option<Module>, Vec<Diagnostic>) {
 pub struct ParsedFile {
     pub header: Option<AppHeader>,
     pub items: Vec<Item>,
+    /// The file's plain `//` comments, in the package's span space: the canonical printer keeps
+    /// them where they were written.
+    pub comments: Vec<Comment>,
     /// The first node id after this file's: the next file of the package starts there.
     pub next_node: NodeId,
 }
@@ -108,6 +111,7 @@ pub fn parse_file_at(src: &str, base: usize, first_node: NodeId) -> (ParsedFile,
     let parsed = ParsedFile {
         header,
         items,
+        comments: crate::lexer::plain_comments_at(src, base),
         next_node: p.next_node,
     };
     (parsed, diags)
@@ -553,9 +557,10 @@ impl<'a> Parser<'a> {
             Tok::Ident(n) if n == "primary" => ActionRole::Primary,
             Tok::Ident(n) if n == "destructive" => ActionRole::Destructive,
             Tok::Ident(n) if n == "migration" => ActionRole::Migration,
+            Tok::Ident(n) if n == "internal" => ActionRole::Internal,
             _ => return None,
         };
-        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration");
+        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration" || n == "internal");
         (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 
@@ -705,7 +710,25 @@ impl<'a> Parser<'a> {
 
     fn docs(&mut self) -> Vec<String> {
         let mut out = Vec::new();
+        let mut prev_end = None;
         while let Tok::Doc(text) = self.peek().clone() {
+            let span = self.span();
+            // A blank line between two `///` lines is a paragraph break: the canonical form
+            // writes it as a `///` line of its own, since a doc comment is prose.
+            if let Some(end) = prev_end {
+                let between = self
+                    .src
+                    .get(end - self.base..span.start - self.base)
+                    .unwrap_or_default();
+                let blank = between.matches('\n').count() > 1
+                    && between
+                        .chars()
+                        .all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+                if blank && !out.last().is_some_and(|line: &String| line.is_empty()) {
+                    out.push(String::new());
+                }
+            }
+            prev_end = Some(span.end);
             self.bump();
             out.push(text);
             self.skip_nl();
@@ -791,7 +814,7 @@ impl<'a> Parser<'a> {
                 self.diags.push(Diagnostic::new(
                     "E090",
                     span,
-                    "an action is `primary`, `destructive` or a `migration`, one of them: the primary action is the one main thing to do, a destructive one never is, and a migration is never offered. Keep one of the words",
+                    "an action is `primary`, `destructive`, a `migration` or `internal`, one of them: the primary action is the one main thing to do, a destructive one never is, a migration is never offered, and an internal one only the app's own gestures run. Keep one of the words",
                 ));
                 continue;
             }

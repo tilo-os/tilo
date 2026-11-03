@@ -126,7 +126,11 @@ pub fn animating_leaves(root: &dyn crate::widget::Widget) -> Vec<String> {
         if !widget.needs_animation_frame() {
             return;
         }
-        let clean = if widget.needs_redraw() { "" } else { "~" };
+        let clean = if widget.needs_redraw() || widget.needs_animation_frame() {
+            ""
+        } else {
+            "~"
+        };
         let here = match widget.test_id() {
             Some(id) => format!("{path}/{}{clean}#{id}", widget.name()),
             None => format!("{path}/{}{clean}", widget.name()),

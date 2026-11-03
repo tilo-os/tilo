@@ -1416,6 +1416,26 @@ impl NearbyTransferRequestContext {
         }
     }
 
+    /// The context of a certified connection, for a test that drives the
+    /// service without the broker admitting a real app on it.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn for_test(
+        peer_id: u64,
+        app_id: &str,
+        workspace_id: &str,
+        channel: &str,
+        person: &str,
+    ) -> Self {
+        Self::authenticated(
+            peer_id,
+            app_id,
+            workspace_id,
+            channel,
+            Some(person.to_owned()),
+        )
+    }
+
     #[must_use]
     pub const fn peer_id(&self) -> u64 {
         self.peer_id

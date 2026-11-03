@@ -1440,6 +1440,7 @@ impl Widget for MediaCard {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1653,6 +1654,10 @@ pub struct MediaGrid {
     /// grid's top. Only cards within a viewport's height of it have their
     /// titles measured; the others are as tall as their text can be.
     window: (f64, f64),
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// The window a grid measures before its first draw: a tall screen.
@@ -1668,6 +1673,7 @@ impl MediaGrid {
     /// Equal columns, as many as fit `size` cards.
     pub fn new(cards: Vec<MediaCard>) -> Self {
         Self {
+            dirty: true,
             cards: cards.into_iter().map(|c| Box::new(c) as Element).collect(),
             nodes: Vec::new(),
             mode: GridMode::Columns,
@@ -1684,6 +1690,7 @@ impl MediaGrid {
     /// rows of equal height that span the width exactly.
     pub fn justified(cards: Vec<MediaCard>) -> Self {
         Self {
+            dirty: true,
             mode: GridMode::Justified,
             ..Self::new(cards)
         }
@@ -1984,6 +1991,7 @@ impl Widget for MediaGrid {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         for (card, &node) in self.cards.iter_mut().zip(&self.nodes) {
             card.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             if *ctx.handled {
@@ -2010,6 +2018,7 @@ impl Widget for MediaGrid {
     }
 
     fn mark_drawn(&mut self) {
+        self.dirty = false;
         for card in &mut self.cards {
             card.mark_drawn();
         }
@@ -2017,6 +2026,10 @@ impl Widget for MediaGrid {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
     }
 
     fn name(&self) -> &'static str {

@@ -347,9 +347,12 @@ fn a_spun_wheel_moves_the_strip_without_stalls_or_surges() {
         "no notch makes the strip lurch forward: {spinning:?}"
     );
     assert!(!strip.animating(ms), "the reveal comes to rest");
+    // A notch brings a window into view, and an entering window measures
+    // once (its own content) while the spin measures nothing: a budget per
+    // notch, and a couple of frames for the strip's own settling.
     assert!(
-        strip.measured_rarely(),
-        "{} of {} frames measured",
+        strip.measured <= notches + 3,
+        "{} of {} frames measured for {notches} notches",
         strip.measured,
         strip.frames
     );

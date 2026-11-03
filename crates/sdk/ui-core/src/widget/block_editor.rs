@@ -4706,6 +4706,7 @@ impl BlockEditor {
 
     /// Queue an image intent in prose without deleting any selected content.
     fn paste_image(&mut self) -> bool {
+        self.dirty = true;
         if self.read_only || self.is_composing() {
             return false;
         }
@@ -4728,7 +4729,6 @@ impl BlockEditor {
             return false;
         };
         self.pasted_images.push(ImagePasteRequest { image, target });
-        self.dirty = true;
         true
     }
 
@@ -8299,15 +8299,46 @@ impl BlockEditor {
         self.refresh_layout_theme(theme);
         // Lines within one authored fence stay together; distinct adjacent
         // fences need space outside both painted backgrounds.
-        let is_code: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
-            .collect();
         let is_paragraph: Vec<bool> = self
             .blocks
             .iter()
             .map(|block| matches!(block.kind, BlockKind::Paragraph))
+            .collect();
+        // A block that paints a surface of its own (a code fence, a quote's rule, a callout's
+        // wash, a table, a rule) reaches past its box, so it stands apart from the text around
+        // it: prose spacing would leave little or no visible gap under a code ground.
+        let is_surface: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| {
+                matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. }
+                        | BlockKind::Quote
+                        | BlockKind::Callout(_)
+                        | BlockKind::Table { .. }
+                        | BlockKind::Divider
+                )
+            })
+            .collect();
+        // The lines of one quote or one callout are one unit: they keep the prose gap between
+        // them, and the surface gap only at the run's edges.
+        let within_surface_run: Vec<bool> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                matches!(block.kind, BlockKind::Quote | BlockKind::Callout(_))
+                    && index
+                        .checked_sub(1)
+                        .is_some_and(|previous| self.blocks[previous].kind == block.kind)
+            })
+            .collect();
+        // A heading opens a section: room above, and its first line close under it.
+        let is_heading: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| matches!(block.kind, BlockKind::Heading(_)))
             .collect();
         let continues_code: Vec<bool> = self
             .blocks
@@ -8393,10 +8424,16 @@ impl BlockEditor {
             // prose read like separate form fields. Keep that padding for
             // richer controls and use the text line-height for compact prose.
             // A list item is prose too: its rows sit as close as a
-            // paragraph's, and its marker follows its first row.
+            // paragraph's, and its marker follows its first row. A quote
+            // line is prose, so a quote split across blocks reads as one run.
+            // A code row is a row of its fence, whose painted ground holds
+            // the space around it: field padding would double-space the fence
+            // whether the document's prose is compact or not.
             b.line.set_compact_wrapped(
-                self.compact_paragraph_spacing
-                    && (matches!(b.kind, BlockKind::Paragraph) || b.kind.supports_indent()),
+                matches!(b.kind, BlockKind::CodeBlock { .. })
+                    || (self.compact_paragraph_spacing
+                        && (matches!(b.kind, BlockKind::Paragraph | BlockKind::Quote)
+                            || b.kind.supports_indent())),
             );
             let header_height = code_headers[i] as f32;
             b.line.set_layout_header_height(header_height);
@@ -8408,20 +8445,25 @@ impl BlockEditor {
                 min: row_height,
             };
             if header_height > 0.0 {
-                let height = (b.kind.font_size() * theme.text_scale * 1.5)
-                    .max(20.0 * theme.text_scale)
-                    + header_height;
-                if !self.wrap_lines {
-                    stack_box.fixed = Some(height);
+                // The band stands above the line's own row: a fixed row adds
+                // it here, and a measured line adds it to its measure.
+                if let Some(fixed) = stack_box.fixed.as_mut() {
+                    *fixed += header_height;
                 }
-                stack_box.min = height;
+                stack_box.min += header_height;
             }
             // Per-block top margin (not a uniform gap) so it can be zeroed
             // for soft-break continuations, the first block, and consecutive
             // code lines (one contiguous fenced unit).
             let continues_code_block = continues_code[i];
-            let adjacent_fences =
-                is_code[i] && i.checked_sub(1).is_some_and(|previous| is_code[previous]);
+            let against_surface = (is_surface[i]
+                || i.checked_sub(1)
+                    .is_some_and(|previous| is_surface[previous]))
+                && !within_surface_run[i];
+            let heading_above = is_heading[i];
+            let heading_below = i
+                .checked_sub(1)
+                .is_some_and(|previous| is_heading[previous]);
             let compact_paragraph_pair = self.compact_paragraph_spacing
                 && is_paragraph[i]
                 && i.checked_sub(1)
@@ -8445,8 +8487,12 @@ impl BlockEditor {
             };
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
-            } else if adjacent_fences || around_embed {
+            } else if heading_above {
+                theme.tokens.spacing.s6 * theme.text_scale
+            } else if against_surface || around_embed {
                 theme.tokens.spacing.s4 * theme.text_scale
+            } else if heading_below {
+                theme.tokens.spacing.s3 * theme.text_scale
             } else if list_item_pair {
                 paragraph_gap / 2.0 * theme.text_scale
             } else if compact_paragraph_pair {
@@ -9955,7 +10001,7 @@ impl Widget for BlockEditor {
                 .map(|handle| handle.inflate(reach, reach))
                 .collect();
             paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
-                "drag-handles".into(),
+                "drag-handles",
                 handle_damage
                     .iter()
                     .copied()
@@ -10665,7 +10711,8 @@ impl Widget for BlockEditor {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.needs_redraw() || self.paint_damage.is_recorded() {
+        if (self.needs_redraw() || self.needs_animation_frame()) || self.paint_damage.is_recorded()
+        {
             self.paint_damage.collect(self.paint_extent(), regions);
         }
     }
@@ -12565,8 +12612,11 @@ impl BlockEditor {
             && (focused.is_some()
                 || self.table_mode_controls.values().any(|control| {
                     control.button.needs_redraw()
-                        || control.add_row.needs_redraw()
-                        || control.add_column.needs_redraw()
+                        || control.button.needs_animation_frame()
+                        || (control.add_row.needs_redraw()
+                            || control.add_row.needs_animation_frame())
+                        || (control.add_column.needs_redraw()
+                            || control.add_column.needs_animation_frame())
                 }))
         {
             self.dirty = true;

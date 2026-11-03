@@ -1253,6 +1253,8 @@ impl Checker<'_> {
                     | "take"
                     | "each"
                     | "single"
+                    | "descendants"
+                    | "ancestors"
             )
         {
             let t = self.show(&f.ty);
@@ -1293,6 +1295,8 @@ impl Checker<'_> {
                 "take",
                 "each",
                 "single",
+                "descendants",
+                "ancestors",
             ];
             let hint = crate::diag::suggestion(m, methods);
             self.err(
@@ -1675,6 +1679,10 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 Self::end_item(r, &elem, m == "last")
             }
+            (Ty::List(t) | Ty::Collection(t), "descendants" | "ancestors") => {
+                let elem = (**t).clone();
+                self.relatives(r, &elem, name, args, span)
+            }
             // `items.index_of(x)`: where it stands among the items, or none when it is not one.
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "index_of") => {
                 let elem = (**t).clone();
@@ -1731,7 +1739,7 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single"
+                        "len, is_empty, first, last, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single, descendants, ancestors"
                     }
                     _ => "none",
                 };
@@ -1841,6 +1849,137 @@ impl Checker<'_> {
             Some((local, held, pred)) => self.where_or_loop(local, held, m, &pred, looped),
             None => looped,
         }
+    }
+
+    /// `items.descendants(t, x -> x.parent)` and `items.ancestors(t, x -> x.parent)`: the items
+    /// under `t`, and the ones it is under, following the parent each item names. The items come
+    /// in the order the list keeps them; `t` itself is neither. The parent is read one item at a
+    /// time and the walk stops at the first item without one, so a chain that loops still ends.
+    pub(super) fn relatives(
+        &mut self,
+        list: Ex,
+        elem: &Ty,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        let m = name.name.as_str();
+        let lambda = match args {
+            [t, l] if t.name.is_none() && l.name.is_none() => {
+                Some((t, super::optional::lambda_of(&l.value)))
+            }
+            _ => None,
+        };
+        let Some((target, Some((param, body)))) = lambda else {
+            self.err(
+                "E051",
+                span,
+                format!(
+                    "`.{m}` takes one of the items and how to read an item's parent: `.{m}(t, x -> x.parent)`, or `.{m}(t, .parent)`"
+                ),
+            );
+            for a in args {
+                if !matches!(a.value.kind, ExprKind::Lambda { .. }) {
+                    let _ = self.expr(&a.value, None);
+                }
+            }
+            return Ex::error();
+        };
+        let opt = Ty::Option(Box::new(elem.clone()));
+        let out_ty = Ty::List(Box::new(elem.clone()));
+        let target = self.expr_as(&target.value, elem);
+        // The parent of `at`, with the lambda's parameter bound to it.
+        let at = self.fresh(elem.clone());
+        self.push_sink();
+        self.bind_local(&param.name, at);
+        let parent = self.expr(&body, None);
+        let parent = self.coerce(parent, &opt, body.span);
+        let step = self.pop_sink();
+        if parent.ty.is_error() {
+            return Ex::error();
+        }
+        let held_ty = list.ty.clone();
+        let held = self.fresh(held_ty.clone());
+        let target_local = self.fresh(elem.clone());
+        let cur = self.fresh(opt.clone());
+        let out = self.fresh(out_ty.clone());
+        let mut stmts = vec![
+            Stmt::Set(held, list),
+            Stmt::Set(target_local, target),
+            Stmt::Set(out, Ex::host(Imp::ListNew, Vec::new(), out_ty.clone())),
+        ];
+        // What the parent of the item held in `at` is, left in `cur`.
+        let parent_step = {
+            let mut s = step;
+            s.push(Stmt::Set(cur, parent));
+            s
+        };
+        let has_a_parent = || Ex::host(Imp::IsSome, vec![Ex::local(cur, opt.clone())], Ty::Bool);
+        if m == "descendants" {
+            let found = self.fresh(Ty::Bool);
+            let mut outer = self.new_for(Ex::local(held, held_ty.clone()), elem);
+            let item = Ex::local(outer.item_local, elem.clone());
+            let mut body = vec![Stmt::Set(at, item.clone())];
+            body.extend(parent_step.clone());
+            body.push(Stmt::Set(found, Ex::new(Ek::Bool(false), Ty::Bool)));
+            let mut walk = self.new_for(Ex::local(held, held_ty), elem);
+            let under = self.same(
+                Ex::local(at, elem.clone()),
+                Ex::local(target_local, elem.clone()),
+                span,
+            );
+            let mut reached = vec![
+                Stmt::Set(at, Self::unwrap_opt(Ex::local(cur, opt.clone()), elem)),
+                Stmt::If(
+                    under,
+                    vec![
+                        Stmt::Set(found, Ex::new(Ek::Bool(true), Ty::Bool)),
+                        Stmt::Break,
+                    ],
+                    Vec::new(),
+                ),
+            ];
+            reached.extend(parent_step);
+            walk.body
+                .push(Stmt::If(has_a_parent(), reached, vec![Stmt::Break]));
+            body.push(Stmt::ForList(Box::new(walk)));
+            body.push(Stmt::If(
+                Ex::local(found, Ty::Bool),
+                vec![Stmt::Eval(Self::push_item(
+                    Ex::local(out, out_ty.clone()),
+                    item,
+                ))],
+                Vec::new(),
+            ));
+            outer.body = body;
+            stmts.push(Stmt::ForList(Box::new(outer)));
+        } else {
+            stmts.push(Stmt::Set(
+                cur,
+                Self::some(Ex::local(target_local, elem.clone()), &opt),
+            ));
+            let mut walk = self.new_for(Ex::local(held, held_ty), elem);
+            let mut up = vec![Stmt::Set(
+                at,
+                Self::unwrap_opt(Ex::local(cur, opt.clone()), elem),
+            )];
+            up.extend(parent_step);
+            up.push(Stmt::If(
+                has_a_parent(),
+                vec![Stmt::Eval(Self::push_item(
+                    Ex::local(out, out_ty.clone()),
+                    Self::unwrap_opt(Ex::local(cur, opt.clone()), elem),
+                ))],
+                vec![Stmt::Break],
+            ));
+            walk.body
+                .push(Stmt::If(has_a_parent(), up, vec![Stmt::Break]));
+            stmts.push(Stmt::ForList(Box::new(walk)));
+        }
+        Ex::new(
+            Ek::Seq(stmts, Box::new(Ex::local(out, out_ty.clone()))),
+            out_ty,
+        )
     }
 
     /// `first()` or `last()`: the host reads the end of the list (`list_end`), so a view over a

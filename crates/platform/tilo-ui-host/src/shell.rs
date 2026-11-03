@@ -40,17 +40,51 @@ pub fn shell_of(tree: &UiNode) -> Option<&UiNode> {
 }
 
 /// A view's tree as a shell: its own, or one whose content it is (a view that composes no
-/// shell of its own).
+/// shell of its own, a row standing in a page).
 #[must_use]
 pub fn as_shell(tree: &UiNode) -> UiNode {
     if let Some(shell) = shell_of(tree) {
         return shell.clone();
     }
     let mut shell = UiNode::empty(&shell_kind(), &format!("{}~shell", tree.key));
+    let content = if row(tree) {
+        framed(tree, &shell.key)
+    } else {
+        tree.clone()
+    };
     shell
         .children
-        .push(slot("content", &shell.key, vec![tree.clone()]));
+        .push(slot("content", &shell.key, vec![content]));
     shell
+}
+
+/// Whether `tree` is one row of a list: a row view's body, or a view of one item drawn as a row.
+fn row(tree: &UiNode) -> bool {
+    [
+        kind("ListRow"),
+        kind("TreeViewRow"),
+        kind("SwipeRow"),
+        kind("ListItem"),
+    ]
+    .contains(&tree.kind)
+}
+
+/// A row as a window's content: a page from its top, at the readable measure, scrolling under
+/// the header. A row is a line: a window that shows one — a result, a notice — shows it where a
+/// page holds it. Given the column itself instead, the row is stretched over the whole of it,
+/// and its line floats at the column's middle with no padding around it. A view that is not a
+/// row keeps the column: a body that fills (a `layers`, a canvas) fills it.
+fn framed(tree: &UiNode, owner: &str) -> UiNode {
+    let mut stack = UiNode::empty("stack", &format!("{owner}#stack"));
+    stack
+        .props
+        .insert("gap".to_owned(), Value::Text("section".to_owned()));
+    stack.children.push(tree.clone());
+    let mut page = UiNode::empty("page", &format!("{owner}#page"));
+    page.children.push(stack);
+    let mut scroll = UiNode::empty(&kind("Scroll"), &format!("{owner}#scroll"));
+    scroll.children.push(page);
+    scroll
 }
 
 fn slot(name: &str, owner: &str, children: Vec<UiNode>) -> UiNode {
@@ -203,10 +237,17 @@ pub fn header_rules(mut shell: UiNode) -> UiNode {
                 let mut menu = node.clone();
                 menu.children
                     .retain(|item| item.kind != kind("MenuItem") || !repeated(item, "choose"));
-                let commands = menu
-                    .children
-                    .iter()
-                    .any(|item| item.kind == kind("MenuItem"));
+                // The commands the menu holds, wherever the view's calls and loops put them
+                // (a loop of commands stands in a fragment), and those it is given as actions
+                // of the resource it offers.
+                let commands = crate::adapter::description_of(node).is_some_and(|description| {
+                    crate::adapter::slot_parts(node, description, "items")
+                        .iter()
+                        .any(|item| item.kind == kind("MenuItem") && !repeated(item, "choose"))
+                }) || matches!(
+                    node.props.get("actions"),
+                    Some(Value::List(items)) if !items.is_empty()
+                );
                 return commands.then_some(menu);
             }
             Some(node.clone())
@@ -409,6 +450,47 @@ mod tests {
         assert!(
             !ruled.props.contains_key("title"),
             "the content edits its title"
+        );
+    }
+
+    #[test]
+    fn a_row_view_with_no_shell_of_its_own_is_drawn_in_a_page() {
+        let row = node(
+            "ListRow",
+            "summary",
+            &[("title", Value::text("Take the bins out"))],
+        );
+        let shelled = as_shell(&row);
+        assert_eq!(shelled.kind, kind("NavShell"), "the window's shell");
+        let content = slot_children(&shelled, "content");
+        let [scroll] = content else {
+            panic!("the shell's content, not {:?}", content.len());
+        };
+        assert_eq!(
+            scroll.kind,
+            kind("Scroll"),
+            "a page scrolls under the header"
+        );
+        let [page] = scroll.children.as_slice() else {
+            panic!("the scroll holds the page");
+        };
+        assert_eq!(page.kind, "page", "the page pads it and holds its measure");
+        let [stack] = page.children.as_slice() else {
+            panic!("the page holds the stack");
+        };
+        assert_eq!(stack.kind, "stack");
+        assert_eq!(
+            stack.children.first().map(|node| node.key.as_str()),
+            Some("summary"),
+            "the view's own tree, whole"
+        );
+        let filling = node("layers", "desk", &[]);
+        let filled = as_shell(&filling);
+        let content = slot_children(&filled, "content");
+        assert_eq!(
+            content.first().map(|node| node.key.as_str()),
+            Some("desk"),
+            "a body that fills the window keeps the column"
         );
     }
 }

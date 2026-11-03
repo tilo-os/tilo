@@ -674,12 +674,17 @@ pub struct BarGauge {
     height: f32,
     style: GaugeStyle,
     rect: Rect,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl BarGauge {
     /// `frac` is clamped to `0..1`.
     pub fn new(frac: f32) -> Self {
         Self {
+            dirty: true,
             frac: frac.clamp(0.0, 1.0),
             fill: Fillcolor::Threshold(GaugeThresholds::default()),
             label: String::new(),
@@ -886,6 +891,14 @@ impl Widget for BarGauge {
             &reading,
             &self.style,
         );
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

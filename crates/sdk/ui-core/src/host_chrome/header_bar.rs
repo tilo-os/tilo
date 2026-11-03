@@ -78,6 +78,10 @@ pub(crate) struct HeaderBar {
     rect: Rect,
     last_press: Option<crate::time::Instant>,
     swallow_release: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl HeaderBar {
@@ -169,6 +173,7 @@ impl HeaderBar {
                 })));
         }
         Self {
+            dirty: true,
             presented: presented(title, commands),
             row,
             menu,
@@ -191,6 +196,7 @@ impl HeaderBar {
 
     /// The window area the History menu may open into.
     pub(crate) fn set_viewport(&mut self, viewport: Rect) {
+        self.dirty = true;
         self.viewport = viewport;
     }
 
@@ -291,6 +297,7 @@ fn control(id: &str, icon: Icon, key: &str) -> Button {
 
 impl Widget for HeaderBar {
     fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.dirty = true;
         // A press the host's tick answered after the event that made it
         // reaches the bar here, in the frame that press asks for.
         self.take_menu_request();
@@ -353,6 +360,7 @@ impl Widget for HeaderBar {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.menu.is_open() {
             self.menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
@@ -416,6 +424,14 @@ impl Widget for HeaderBar {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.menu.modal_capture()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

@@ -531,7 +531,6 @@ impl Store {
     fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
         self.scroll.set((0.0, 0.0));
-        self.dirty = true;
     }
 
     /// Stage a screenshot scenario over the sample machine. A phone-sized
@@ -577,7 +576,6 @@ impl Store {
         if scenario.is_some_and(|name| name.ends_with("drawer")) {
             self.open_drawer = true;
         }
-        self.dirty = true;
     }
 
     /// Answer `effect`, from a control, the palette, an agent or a script.
@@ -1184,7 +1182,9 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.store.borrow().dirty || self.shell.needs_redraw()
+        self.store.borrow().dirty
+            || self.shell.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

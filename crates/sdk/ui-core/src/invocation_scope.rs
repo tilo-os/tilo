@@ -1080,7 +1080,7 @@ impl InvocationProvenance {
         // The changes the exact body carries, not an ancestry range: what
         // arrived from the route is left out of the publication, and the
         // authorization names what went out with it.
-        let exported = match mutation {
+        let exported: BTreeSet<ChangeHash> = match mutation {
             collab_types::DocumentMutation::Snapshot(_) => document
                 .get_changes(&[])
                 .into_iter()

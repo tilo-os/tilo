@@ -3450,7 +3450,8 @@ pub(crate) fn service_owner_save_progress(
                 // anything else it asks to redraw.
                 let bar = crate::window_toolbar::revision();
                 owner.record_save_status(status);
-                Ok(crate::window_toolbar::revision() != bar || owner.needs_redraw())
+                Ok(crate::window_toolbar::revision() != bar
+                    || (owner.needs_redraw() || owner.needs_animation_frame()))
             }));
         }
         None
@@ -3539,6 +3540,11 @@ pub(crate) struct RecordActionState {
     /// What windows said they did, held until the workspace keeps it
     /// ([`crate::record::RecordStore::hold_notice`]).
     pub(crate) notices: crate::record::WorkspaceNotices,
+    /// The writers this replica has written the record as: the record's own
+    /// writer and each writer derived for an author an action ran as. A route
+    /// publishes the changes made under any of them
+    /// ([`crate::state::WritingActors`]).
+    pub(crate) writers: Rc<RefCell<crate::state::WritingActors>>,
 }
 impl Default for RecordActionState {
     fn default() -> Self {
@@ -3550,6 +3556,7 @@ impl Default for RecordActionState {
             answered: HashMap::new(),
             refusals: Vec::new(),
             notices: crate::record::WorkspaceNotices::default(),
+            writers: Rc::default(),
         }
     }
 }
@@ -4169,6 +4176,7 @@ impl ActionFrame {
     /// actor before, so it is committed first: `set_actor` would otherwise
     /// commit it without a time.
     fn switch_writer(&self, doc: &mut AutoCommit, actor: automerge::ActorId) {
+        self.state.writers.borrow_mut().note(actor.clone());
         if doc.get_actor() != &actor {
             self.commit_physical(doc);
             doc.set_actor(actor);

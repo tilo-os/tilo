@@ -497,6 +497,13 @@ impl ActionMeta {
     pub fn is_migration(&self) -> bool {
         self.role.as_deref() == Some("migration")
     }
+
+    /// Whether it is an `internal action`: never offered, because the person reaches it through
+    /// the app's own gesture (a drag, a lane's button, an entry), not from a list of commands.
+    #[must_use]
+    pub fn is_internal(&self) -> bool {
+        self.role.as_deref() == Some("internal")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -620,9 +627,19 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: every action but the hidden ones of scenarios and the
-    /// migrations, which the platform runs itself.
+    /// The actions the platform offers: every action but the hidden ones of scenarios, the
+    /// migrations, which the platform runs itself, and the internal ones, which only the app's own
+    /// gestures run.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
+        self.actions
+            .iter()
+            .filter(|a| !a.scenario && !a.is_migration() && !a.is_internal())
+    }
+
+    /// The actions code may call by name: every action but the hidden ones of scenarios and the
+    /// migrations, which the platform runs itself. Internal actions are among them, since the
+    /// app's own gestures and the programs of agents run them; a surface just never lists one.
+    pub fn callable_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
             .filter(|a| !a.scenario && !a.is_migration())

@@ -546,6 +546,12 @@ impl Instance {
         Rc::clone(&self.open_requests)
     }
 
+    /// Show what the person's own step made, as a press of the action that made it does: it
+    /// comes to the front as their input does, and takes the keyboard.
+    pub fn opens_what_it_made(&mut self, anchor: String) {
+        self.pressed_opens.push(anchor);
+    }
+
     /// Where the door's answers to effects mark work for the next frame.
     #[must_use]
     pub fn door_work(&self) -> Rc<Cell<bool>> {

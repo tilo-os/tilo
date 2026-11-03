@@ -26,7 +26,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use super::{Client, Enrolling, OwnPresence};
 use crate::channels::ChannelLink;
 use crate::engine::Engine;
-use crate::fabric::MediaContinuity;
+use crate::fabric::Continuity;
 
 /// `key`'s certificate as a device of the person whose root key is `root`.
 fn certified(
@@ -169,7 +169,7 @@ impl Device {
             Some(std::sync::Arc::clone(&engine)),
             OwnPresence::default(),
             Vec::new(),
-            MediaContinuity::default(),
+            Continuity::default(),
             std::sync::Arc::new(|| ()),
             None,
             Vec::new(),

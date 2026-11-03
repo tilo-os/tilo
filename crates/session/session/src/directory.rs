@@ -609,6 +609,17 @@ impl Store {
                     }
                     *self.listed.borrow_mut() = listings;
                     *self.status.borrow_mut() = Status::Listed;
+                    // A site that could not be read is missing from the
+                    // list: say so, so a short list is never taken for
+                    // everything there is.
+                    if !self.settling() {
+                        *self.note.borrow_mut() = (!failures.is_empty()).then(|| {
+                            tilo_sheets::words(
+                                "directory-sites-unread",
+                                &[("error", &failures.join("; "))],
+                            )
+                        });
+                    }
                 }
                 Answer::Joined { key, name, granted } => {
                     *self.joining.borrow_mut() = None;

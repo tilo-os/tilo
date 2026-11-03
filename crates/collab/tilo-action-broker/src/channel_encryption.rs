@@ -452,13 +452,14 @@ impl ChannelEncryption {
         channel: ChannelId,
         now: Instant,
     ) -> ChannelAccess {
-        self.access_routed(workspace, channel, now)
+        self.access_routed(workspace, channel, None, now)
     }
 
     fn access_routed(
         &mut self,
         workspace: WorkspaceId,
         channel: ChannelId,
+        route: Option<&ChannelRoute>,
         now: Instant,
     ) -> ChannelAccess {
         if self.store.is_none() {
@@ -492,6 +493,11 @@ impl ChannelEncryption {
             }
         }
         self.unopened.remove(&channel);
+        // Known before it is founded: a pair's channel is not the workspace's,
+        // and its route says so ([`Self::found`]).
+        if let Some(route) = route {
+            self.learn_route(workspace, channel, route);
+        }
         self.found_governed(workspace, channel, now);
         let Some(entry) = self.peers.get_mut(&channel) else {
             return ChannelAccess::Unavailable;
@@ -525,9 +531,10 @@ impl ChannelEncryption {
         now: Instant,
     ) -> (ChannelId, ChannelAccess) {
         let channel = route.channel(&workspace.to_string());
-        let access = self.access_routed(workspace, channel, now);
-        self.learn_route(workspace, channel, route);
-        (channel, access)
+        (
+            channel,
+            self.access_routed(workspace, channel, Some(route), now),
+        )
     }
 
     /// Keep `route`, proven to be `channel`'s in `workspace`, with the channel's
@@ -640,8 +647,9 @@ impl ChannelEncryption {
     }
 
     /// The devices whose membership of `channel` the policy backs at `wall`:
-    /// every device it lets read the channel, and the workspace's governor.
-    /// `None` while this device cannot name the channel's record.
+    /// every device it lets read the channel, and the workspace's governor —
+    /// except for a pair's channel, whose two people alone hold it. `None`
+    /// while this device cannot name the channel's record.
     fn allowed(
         &self,
         workspace: WorkspaceId,
@@ -652,7 +660,9 @@ impl ChannelEncryption {
         let mut allowed = self
             .directory
             .allowed_devices(workspace, channel, route, wall)?;
-        allowed.extend(self.directory.governor_of(workspace));
+        if !is_direct(route) {
+            allowed.extend(self.directory.governor_of(workspace));
+        }
         Some(allowed)
     }
 
@@ -1125,11 +1135,14 @@ impl ChannelEncryption {
         let (workspace, route) = (entry.workspace, entry.route.clone());
         // The device that governs a workspace takes part in every channel of it,
         // the records no grant names included: it reads what its workspace holds.
-        let governs = self
-            .directory
-            .governor_of(workspace)
-            .zip(self.device())
-            .is_some_and(|(governor, device)| governor == device);
+        // A pair's channel is not the workspace's to read, so not this device's
+        // to open either; its two people's devices found it (see [`Self::found`]).
+        let governs = !is_direct(route.as_ref())
+            && self
+                .directory
+                .governor_of(workspace)
+                .zip(self.device())
+                .is_some_and(|(governor, device)| governor == device);
         let reads = governs
             || self
                 .allowed(workspace, channel, route.as_ref(), wall)
@@ -1273,6 +1286,12 @@ fn takes_part(
         .allowed_devices(workspace, channel, None, tilo_clock::unix_now())
         .zip(device)
         .is_some_and(|(allowed, device)| allowed.contains(&device))
+}
+
+/// Whether `route` is a pair's record: a channel its two people alone hold,
+/// outside its workspace's governance.
+fn is_direct(route: Option<&ChannelRoute>) -> bool {
+    route.is_some_and(|route| collab_types::direct_pair(&route.record).is_some())
 }
 
 /// Wakes a host's parked governance pump.
@@ -3387,6 +3406,87 @@ mod tests {
             ChannelAccess::NoSecretStore
         ));
         assert!(governed.peers.is_empty());
+    }
+
+    #[test]
+    fn a_pair_channels_keys_never_reach_the_workspaces_governor() {
+        let workspace = Arc::new(Workspace::default());
+        let workspace_id = WorkspaceId::new();
+        let policy = Policy::default();
+        for seed in [2, 3] {
+            policy.allowed.lock().unwrap().insert(public(seed));
+        }
+        let (governor_dir, first_dir, second_dir) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let mut governor = device(
+            &workspace,
+            workspace_id,
+            0,
+            (1, 1),
+            &policy,
+            governor_dir.path(),
+        );
+        let mut first = device(
+            &workspace,
+            workspace_id,
+            1,
+            (2, 1),
+            &policy,
+            first_dir.path(),
+        );
+        let mut second = device(
+            &workspace,
+            workspace_id,
+            2,
+            (3, 1),
+            &policy,
+            second_dir.path(),
+        );
+        let pair = collab_types::direct_pair_id(
+            &workspace_id.to_string(),
+            &hex::encode([2u8; 32]),
+            &hex::encode([3u8; 32]),
+        )
+        .unwrap();
+        let route = ChannelRoute::new("chat.app", collab_types::direct_record(&pair));
+        let channel = route.channel(&workspace_id.to_string());
+        let mut now = Instant::now();
+        first.service.access_record(workspace_id, &route, now);
+        second.service.access_record(workspace_id, &route, now);
+        let created = create(&mut first, workspace_id, channel, now);
+        assert!(
+            ready_epoch(&created).is_some(),
+            "a pair's device creates its channel"
+        );
+        run(&mut [&mut first, &mut second], &mut now, 4);
+        assert!(ready_epoch(&second.service.access(workspace_id, channel, now)).is_some());
+        // The workspace's governor opens it, founds it and asks for its keys:
+        // the pair's devices name it in neither, so it holds none.
+        governor.service.access_record(workspace_id, &route, now);
+        let governed = create(&mut governor, workspace_id, channel, now);
+        assert_eq!(
+            ready_epoch(&governed),
+            None,
+            "a pair's channel is not the governor's to read"
+        );
+        run(&mut [&mut governor, &mut first, &mut second], &mut now, 4);
+        assert_eq!(
+            ready_epoch(&governor.service.access(workspace_id, channel, now)),
+            None,
+            "asking again does not hand it the keys"
+        );
+        // Any other record of the workspace it still holds.
+        let ordinary = ChannelRoute::new("chat.app", "tab:1");
+        let tab = ordinary.channel(&workspace_id.to_string());
+        governor.service.access_record(workspace_id, &ordinary, now);
+        let ordinary_access = create(&mut governor, workspace_id, tab, now);
+        assert!(
+            ready_epoch(&ordinary_access).is_some(),
+            "the governor keeps founding the records its workspace holds"
+        );
     }
 
     include!("channel_encryption_personal_cluster_tests.rs");

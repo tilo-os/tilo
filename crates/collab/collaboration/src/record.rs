@@ -356,6 +356,9 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
     if s.starts_with("member:") {
         return collab_types::member_record(s).is_some();
     }
+    if let Some(pair) = s.strip_prefix("direct/") {
+        return collab_types::canonical_pair(pair);
+    }
     if let Some(tab) = s.strip_prefix("tab:") {
         return tab.len() == 16 && tab.bytes().all(|c| c.is_ascii_hexdigit());
     }

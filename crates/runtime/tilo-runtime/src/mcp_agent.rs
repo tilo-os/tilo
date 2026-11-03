@@ -241,10 +241,9 @@ impl Reply {
     }
 }
 
-/// The MCP result of an agent tool: its text alone. There is no structured
-/// copy beside it unless the caller asked for one (a program's structured
-/// read, [`ResourceRead`]), and then the text is that copy as JSON: a second
-/// rendering would be read twice.
+/// The MCP result of an agent tool: its text alone, or the structured copy
+/// the caller asked for (a program's structured read, [`ResourceRead`]) as
+/// JSON, which is the text then: a second rendering would be read twice.
 pub(super) fn text_result(result: Result<Reply, String>) -> Value {
     match result {
         Ok(Reply {
@@ -370,16 +369,24 @@ impl Node {
             .unwrap_or(&self.key)
     }
 
-    /// Whether `other` is this resource's own: its key names this one's
-    /// distinguishing part (a note owns the body published beside it).
+    /// Whether `other`'s key names this one's distinguishing part.
     fn owns(&self, other: &Node) -> bool {
         let token = self.token();
         token.len() >= 8 && other.key != self.key && other.key.contains(token)
     }
 
-    /// How well `name` names this node: 0 is its label, 1 its key (whole or
-    /// its last part), 2 its kind, 3 the start of its label or of its key's
-    /// distinguishing part. `None` when it does not.
+    /// Whether `other` is this resource's own and not one of its children.
+    fn beside(&self, other: &Node) -> bool {
+        self.owns(other) && !other.key.starts_with(&self.key)
+    }
+
+    /// Whether this resource is one of `other`'s: it sits under the other's id.
+    fn within(&self, other: &Node) -> bool {
+        matches!(self.id.strip_prefix(other.id.as_str()), Some(rest) if rest.starts_with('/'))
+    }
+
+    /// How well `name` names this node: 0 its label, 1 its key (whole or last
+    /// part), 2 its kind, 3 the start of either; `None` when it does not.
     fn answers_to(&self, name: &str) -> Option<u8> {
         let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
         let tail = |text: &str| {
@@ -404,17 +411,17 @@ impl Node {
         .then_some(3)
     }
 
-    /// The name that goes in a path: its label when that tells it apart from
-    /// `siblings`, else the last part of its key (`body`), else its key.
+    /// The name that goes in a path: its label when it tells it apart from
+    /// `siblings`, else its key's last part (`body`), else its key.
     fn name(&self, siblings: &[Node]) -> String {
-        // What belongs to this resource never competes with it: the name
-        // goes to the owner.
-        let owned = |other: &Node| self.owns(other);
+        // Neither what belongs to this resource nor what it is a part of
+        // competes with it: a note titled like its notebook keeps its title.
         let apart = |name: &str| {
             !name.trim().is_empty()
                 && siblings
                     .iter()
-                    .filter(|other| other.id != self.id && !owned(other))
+                    .filter(|other| other.id != self.id)
+                    .filter(|other| !self.owns(other) && !self.within(other))
                     .all(|other| other.answers_to(name).is_none_or(|rank| rank > 0))
         };
         let label = self.label.trim();
@@ -585,14 +592,12 @@ fn path_of(node: &Node, levels: &Levels) -> Option<String> {
 }
 
 /// The action `name` means anywhere in what `resolved` names: the target's
-/// own actions (`notes/Todo#rename`), else, for a path naming the app, one
-/// the app publishes on a resource of its own — the live Settings'
-/// `add-email-account` is on the resource it lists as `settings.root`, so
-/// `settings#add-email-account` names it. `ranked` is what the app answered
-/// for `name`, each action with how well it is named and the key of the
-/// resource it is published on.
-/// Several resources carrying it equally well is refused naming them, each
-/// with the path that names it: the app alone does not mean one of two.
+/// own actions (`notes/Todo#rename`), else one the app publishes on a
+/// resource of its own (`settings#add-email-account` is on `settings.root`).
+/// `ranked` is what the app answered for `name`, each action with how well it
+/// is named and the key of the resource it is published on. Several
+/// resources carrying it equally well is refused naming them, each with the
+/// path that names it: the app alone does not mean one of two.
 fn pick_action_anywhere<'a>(
     name: &str,
     resolved: &'a Resolved,
@@ -788,8 +793,7 @@ fn skip_answered(text: &mut String, answered: usize) -> usize {
 
 /// What a read of `output` answers: its text from character `already` on,
 /// cut at `max_chars` with the cursor for the rest, else ending in the app's
-/// cursor for its next page when it gave one. `app_cursor` is the app's
-/// cursor that asked for `output`.
+/// cursor for its next page (`app_cursor`) when it gave one.
 fn read_answer(
     read: &ResourceRead,
     already: usize,
@@ -814,10 +818,8 @@ fn read_answer(
 }
 
 /// How long to wait before a directory level's `read`th read (0 the first)
-/// while it keeps changing: not at all for the first read or the first
-/// read again (one change, as an invocation's refresh makes, is read past
-/// at once), then from 5 ms, twice as long each time, up to
-/// [`RESTART_PAUSE_MAX`].
+/// while it keeps changing: the first change is read past at once, then from
+/// 5 ms, twice as long each time, up to [`RESTART_PAUSE_MAX`].
 fn restart_pause(read: u32) -> std::time::Duration {
     let Some(doublings) = read.checked_sub(2) else {
         return std::time::Duration::ZERO;
@@ -1514,8 +1516,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The resources an app's path starts from: its top-level resources and
     /// the resources inside its containers (a notebook's pages are the app's
-    /// own), with the containers' own actions (`notes#new-page`). What
-    /// another resource owns is listed under it, not here.
+    /// own), with the containers' own actions (`notes#new-page`).
     async fn app_children(&self, provider: &str, levels: &mut Levels) -> Result<Level, String> {
         let mut root = self.level(provider, "", levels).await?;
         let containers: Vec<Node> = root
@@ -1536,7 +1537,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let all = root.children.clone();
         root.children
-            .retain(|node| !all.iter().any(|owner| owner.owns(node)));
+            .retain(|node| !all.iter().any(|owner| owner.beside(node)));
         Ok(root)
     }
 
@@ -1580,8 +1581,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// What `name` may mean at the app's level, asked by name: the app's top
     /// level and, inside each of its containers, what `name` names there,
-    /// less what another of them owns. `None` when a container cannot be
-    /// asked by name.
+    /// less what another of them owns; `None` when one cannot be asked.
     async fn named_at_app(
         &self,
         provider: &str,
@@ -1608,7 +1608,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
         }
         let all = pool.clone();
-        pool.retain(|node| !all.iter().any(|owner| owner.owns(node)));
+        pool.retain(|node| !all.iter().any(|owner| owner.beside(node)));
         Ok(Some(Level {
             own: Vec::new(),
             children: pool,

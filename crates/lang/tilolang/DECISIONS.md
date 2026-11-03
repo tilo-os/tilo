@@ -120,6 +120,27 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
+- **Roles say what a surface does with an action, and only `internal` and `scenario` hide one.**
+  `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
+  skips the `scenario` actions and those with a hiding role, so a gesture-only action
+  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in a
+  `std` header or menu, or in an agent's choices, while the app can still name it where the
+  gesture wants it.
+- **A window's header shows its primary action and the commands the app marks `frequent` as
+  buttons, and every other action in the header's one menu.** `std.header` builds them that
+  way: a button per primary and per `frequent` action, and a `ui.Button(..., in_menu: true)`
+  per remaining action, which the shell's own More button holds whatever room the row has.
+  Which commands earn a place in the row is the app's judgement (`frequent: true`), not the
+  window's width, so a narrow window gives way with the menu, never with the one main thing to
+  do; a host that lists a window's actions elsewhere (`WindowBar::lists_actions`) hides the
+  menu's door instead, and nothing is offered twice.
+- **A row is drawn by the view that knows what the place around it says.** `row(title, ...)`
+  stands in a list's item block, as a row view's body, or as the whole body of a view of one
+  item (first parameter a record, body one row after its `let`s). The extra parameters are what
+  only the place knows: a list grouped by a day gives the day, a project's list its project, so
+  the row omits what the heading or the page already states instead of every row repeating it.
+  The type's `row view` stays the item alone, since the system draws it where no page says
+  anything (a result, a notice).
 - Blocks: an expression is checked as a value in view-like context (actions and flows become
   `Action` values); a UI primitive or foreign view call, or a view body, is a `View`. The block module
   is `app agent.block.<run id>` (`main` for `compile_block`) and exports `memory` and `b_main`.
@@ -166,9 +187,12 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   sibling directories, or in `--path` entries (a package directory or a directory of packages),
   and compiles imports first (`source::dependency_order`, `source::compile_dirs`). A cycle is
   refused.
-- **`fmt` keeps what people wrote.** The canonical form drops plain `//` comments (only `///`
-  doc comments are part of the tree), so `fmt` leaves a file that has any unchanged and names
-  it, rather than deleting them.
+- **`fmt` keeps what people wrote.** Plain `//` comments are not part of the tree, but `fmt`
+  keeps them: each prints above the declaration, field, statement or match arm it was written
+  over, at that line's indentation, inside an expression's blocks and its match arms too. One
+  written inside a declaration's head has no line of its own to keep, so it prints above the
+  next statement. `///` is prose: a blank line between two `///` lines is a paragraph break,
+  and the canonical form writes it as a `///` line.
 - **The command line is a library module** (`cli::main`), so the host app's binary can run the
   same commands and add `run`, which needs the platform. The names: `tilolang` is the full build
   tool (the host binary, with `run`); the compiler crate's own binary is `tilolangc`, also

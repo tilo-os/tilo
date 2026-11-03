@@ -24,6 +24,7 @@ pub(crate) trait ActionPaletteApi: crate::widget::Widget {
     fn scrim_rect(&self) -> Option<Rect>;
     fn asking_why(&self) -> Option<&str>;
     fn result_rows(&self) -> Vec<(String, Option<String>)>;
+    fn result_hits(&self) -> Vec<crate::search::SearchResult>;
     fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)>;
     fn confirming_target(&self) -> Option<String>;
     fn load_open_resources(&mut self, resources: &[ResourceSpec]);
@@ -112,6 +113,9 @@ impl ActionPaletteApi for ActionPalette {
     }
     fn result_rows(&self) -> Vec<(String, Option<String>)> {
         ActionPalette::result_rows(self)
+    }
+    fn result_hits(&self) -> Vec<crate::search::SearchResult> {
+        ActionPalette::result_hits(self)
     }
     fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)> {
         ActionPalette::asking(self)

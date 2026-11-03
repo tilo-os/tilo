@@ -427,6 +427,72 @@ fn listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs(
     }
 }
 
+/// An action's row in the window's own search says what every list says of
+/// it — its picture and its declared keys as keycaps — and lists only what
+/// the app offers a person: never the host's operations or the window's
+/// control mirrors.
+#[test]
+fn action_rows_carry_the_actions_picture_and_its_keys() {
+    let _settled = crate::motion::testing::settled();
+    let mut new_task = ActionSpec::immediate(
+        "new-task",
+        "New task",
+        NOTE_TYPE,
+        &Note {
+            key: "task".into(),
+            value: "new".into(),
+        },
+    )
+    .unwrap();
+    {
+        let ty = new_task.type_mut();
+        ty.icon = Some("plus".into());
+        ty.state.shortcut = Some("Ctrl+n".into());
+    }
+    let tapped = |template: &ActionSpec, id: &str, label: &str| {
+        let mut spec = template.clone();
+        spec.type_mut().id = id.into();
+        spec.type_mut().label = label.into();
+        spec
+    };
+    let run_block = tapped(&new_task, "run-block", "Run a block");
+    let focus = tapped(&new_task, "focus", "Focus");
+    let internal_step = tapped(&new_task, "internal", "Internal step");
+    let resources = vec![
+        ResourceSpec::new("tasks", "tasks.Tasks", "Tasks").with_action(new_task),
+        // The host runs these for agents; they are no one's palette entry.
+        ResourceSpec::new("tl:host", "tl.host", "tilolang").with_action(run_block),
+        // A control the window already draws.
+        ResourceSpec::new("ui:new-task", "tilo.ui.control", "New task").with_action(focus),
+        // A node without a title names nothing to look for.
+        ResourceSpec::new("tasks:internal", "tasks.Task", " ").with_action(internal_step),
+    ];
+    let mut palette = ActionPalette::new();
+    palette.set_platform_conventions(crate::platform::PlatformConventions::new(
+        crate::platform::Platform::Linux,
+    ));
+    palette.load_open_resources(&resources);
+    palette.open();
+    let rows: Vec<crate::search::SearchResult> = palette
+        .results
+        .groups()
+        .iter()
+        .flat_map(|group| group.results.iter().cloned())
+        .collect();
+    let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+    assert_eq!(titles, vec!["New task"], "only the app's own action");
+    let row = &rows[0];
+    assert_eq!(row.icon, Some(crate::icons::Icon::Plus));
+    let Some(crate::search::SearchRow::Command(command)) = &row.row else {
+        panic!("the action row is painted from the action's own state: {row:?}");
+    };
+    assert_eq!(
+        command.keycaps,
+        Some(vec!["Ctrl".to_owned(), "N".to_owned()]),
+        "the declared chord as the keys it names"
+    );
+}
+
 /// Two open documents offering the same action are two rows, each naming
 /// its document under the outcome: neither is hidden as a duplicate, and
 /// neither joins the name on with a glyph.

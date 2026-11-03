@@ -49,6 +49,24 @@ pub(super) struct Flow {
     /// moves no child's size and dirties no child, yet every pixel of the
     /// cache is in the old theme, so a differing theme redraws it.
     cache_theme: Option<Box<DrawnTheme>>,
+    /// The shared-permission generation the cache was painted under
+    /// ([`crate::presence::PresenceCtx::paint_permission_generation`]): a
+    /// permission change moves what a gated child paints with nothing in
+    /// the tree marking it, so a cache from another generation is stale.
+    cache_permissions: u64,
+    /// The input generation the cache was painted at
+    /// ([`crate::input_generation`]), and whether that drawing read state
+    /// outside the widgets that made it ([`crate::outside_paint`]): such a
+    /// drawing paints other pixels once input has been handed to the tree,
+    /// with nothing in the tree marking it, so only that cache is stale on
+    /// input. One that read nothing outside keeps across it.
+    cache_input: u64,
+    cache_outside: bool,
+    /// The model generation the cache was painted at
+    /// ([`crate::input_generation::model`]): a sync hands the tree a changed
+    /// document without a widget flag of its own, so a cache from another
+    /// generation holds a drawing of what changed.
+    cache_model: u64,
     cache_present: bool,
     descendant_caches_released: bool,
     /// The cache holds floating surfaces over the blurred material. A reused
@@ -147,6 +165,10 @@ impl Flow {
             subtree_cache: Scene::new(),
             cache_rect: Rect::ZERO,
             cache_theme: None,
+            cache_permissions: 0,
+            cache_input: 0,
+            cache_outside: false,
+            cache_model: 0,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
@@ -466,15 +488,28 @@ impl Flow {
         )]
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
-        let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
+        // A child that is moving paints other pixels every frame without
+        // being dirty in the `needs_redraw` sense (a fade in, a spring): the
+        // cache is only as fresh as the child that can repaint itself.
+        let any_child_dirty = self
+            .children
+            .iter()
+            .any(|c| c.needs_redraw() || c.needs_animation_frame());
         let theme_changed = self
             .cache_theme
             .as_deref()
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
+        let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
+        let input_moved =
+            self.cache_outside && self.cache_input != crate::input_generation::generation();
+        let model_moved = self.cache_model != crate::input_generation::model();
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
+            || permissions_moved
+            || input_moved
+            || model_moved
             || any_child_dirty
             || self.cache_carries_material
             || self.drawn_shifted
@@ -494,6 +529,7 @@ impl Flow {
             self.cache_present = false;
             self.descendant_caches_released = false;
             self.drawn_shifted = false;
+            let enclosing = crate::outside_paint::begin();
             for child in &mut self.children {
                 super::draw_child(
                     child.as_mut(),
@@ -504,6 +540,7 @@ impl Flow {
                     presence,
                 );
             }
+            crate::outside_paint::end(enclosing);
             return true;
         }
         if needs_rebuild {
@@ -564,6 +601,7 @@ impl Flow {
             // drawn into this cache would otherwise vanish from it.
             // The cache lands on screen through `transform`; a scroller
             // drawn into it offers copies in screen space.
+            let enclosing = crate::outside_paint::begin();
             self.cache_parts = crate::scroll_copy::drawing_into_cache(transform, || {
                 if tracked {
                     crate::scene_parts::record(&mut local, draw_children).1
@@ -572,6 +610,7 @@ impl Flow {
                     None
                 }
             });
+            self.cache_outside = crate::outside_paint::end(enclosing);
             self.cache_shows_secret = secrets.finish();
             self.cache_carries_material = crate::scene_parts::append_with(
                 scene,
@@ -584,6 +623,9 @@ impl Flow {
             if theme_changed {
                 self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
             }
+            self.cache_permissions = presence.paint_permission_generation();
+            self.cache_input = crate::input_generation::generation();
+            self.cache_model = crate::input_generation::model();
             self.cache_present = true;
             self.descendant_caches_released = false;
             presence.viewport.set(prev_vp);
@@ -605,6 +647,11 @@ impl Flow {
             );
             if self.cache_shows_secret {
                 crate::secret_paint::note_secret_painted();
+            }
+            if self.cache_outside {
+                // This drawing read outside the tree, so the frame that
+                // reuses it stands on the same readings.
+                crate::outside_paint::note();
             }
             if !self.descendant_caches_released {
                 for child in &mut self.children {
@@ -650,9 +697,14 @@ impl Flow {
         self.cache_present = false;
         self.descendant_caches_released = false;
         self.drawn_shifted = false;
+        // A changed document reaches the children through the sync pass, so
+        // each of them paints other pixels: none of what the frame keeps is
+        // still what it drew before.
+        let model_moved = self.cache_model != crate::input_generation::model();
         for child in self.children.get_mut(near).unwrap_or_default() {
             // What the frame keeps on screen, unchanged, is not drawn again.
-            if !child.needs_redraw()
+            if !model_moved
+                && !child.needs_redraw()
                 && !child.needs_animation_frame()
                 && crate::draw_cull::kept(scene, transform, child.paint_bounds())
             {
@@ -669,6 +721,9 @@ impl Flow {
             // What it paints now, should that have grown since its layout.
             self.reach = self.reach.max(paint_reach(child.as_ref()));
         }
+        // The children this frame kept stand for a drawing of the model it
+        // read; the next frame rests on the same document.
+        self.cache_model = crate::input_generation::model();
         true
     }
 
@@ -852,7 +907,7 @@ macro_rules! flow_widget_methods {
         /// `Vec` via `children()`, which the subtree-cache check
         /// hits per frame.
         fn needs_redraw(&self) -> bool {
-            self.flow.has_ghosts() || self.flow.children.iter().any(|c| c.needs_redraw())
+            self.flow.has_ghosts() || self.flow.children.iter().any(|c| (c.needs_redraw() || c.needs_animation_frame()))
         }
 
         /// Frames while a band its view stopped building leaves, and one

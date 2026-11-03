@@ -129,7 +129,7 @@ impl App {
                     return (!heads.is_empty())
                         .then(|| (collab_types::DocumentMutation::Snapshot(doc.save()), heads));
                 }
-                let (delta, heads) = frontier.pending_delta(doc);
+                let (delta, heads) = frontier.pending_delta(doc, &actions.writers.borrow());
                 (!delta.is_empty())
                     .then_some((collab_types::DocumentMutation::Incremental(delta), heads))
             })

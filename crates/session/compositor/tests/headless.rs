@@ -18,6 +18,8 @@ mod harness;
 mod idle_inhibit;
 #[path = "headless/ime.rs"]
 mod ime;
+#[path = "headless/liveness.rs"]
+mod liveness;
 #[path = "headless/session_follow.rs"]
 mod session_follow;
 #[path = "headless/touch.rs"]
@@ -31,7 +33,7 @@ use harness::{Seen, TestClient, headless, mapped_client, mapped_client_without_t
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;

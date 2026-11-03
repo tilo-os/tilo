@@ -201,6 +201,10 @@ pub struct Map {
     /// How far one arrow-key press pans, in screen pixels: one line, as an arrow key scrolls
     /// any scrolling region.
     key_pan: f64,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for Map {
@@ -214,6 +218,7 @@ impl Map {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            dirty: true,
             pins: Vec::new(),
             parts: Parts::default(),
             camera: MapCamera::default(),
@@ -243,6 +248,7 @@ impl Map {
 
     /// Look with `camera`: where the person left the canvas on this device.
     pub fn set_camera(&mut self, camera: MapCamera) {
+        self.dirty = true;
         if !self.camera.same(camera) {
             self.camera = camera;
             self.invalidation.invalidate();
@@ -582,6 +588,9 @@ impl Map {
 }
 
 impl Widget for Map {
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
     fn name(&self) -> &'static str {
         "Map"
     }
@@ -709,6 +718,7 @@ impl Widget for Map {
     }
 
     fn mark_drawn(&mut self) {
+        self.dirty = false;
         for child in &mut self.parts.children {
             child.mark_drawn();
         }
@@ -737,6 +747,7 @@ impl Widget for Map {
     }
 
     fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.dirty = true;
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -755,6 +766,7 @@ impl Widget for Map {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         // The camera first: a wheel with Ctrl zooms, a middle drag pans, the arrow keys pan.
         self.camera_event(event, ctx);
         if *ctx.handled {

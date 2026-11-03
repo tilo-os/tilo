@@ -159,7 +159,7 @@ fn persons_step(doc: &mut ui::tilo_resource::Doc, title: &str) -> String {
 fn a_view_s_undo_of_a_step_and_a_run(window: &mut impl Window) {
     window.settle();
     let root = window.root();
-    let add = window.action(&root, "add");
+    let add = window.action(&root, "new_task");
     window.run(None, None, &root, &add, &titled("Call the landlord"));
     window.settle();
     assert_eq!(window.read(titles), ["Call the landlord"]);
@@ -233,7 +233,7 @@ impl InProcess {
             Box::leak(Box::new(tilolang_app::definition()))
         });
         Self {
-            add: action_id(&tasks(), "add"),
+            add: action_id(&tasks(), "new_task"),
             app: ui::framework::testing::HostedApp::open(definition, "ada").expect("the app opens"),
         }
     }
@@ -275,7 +275,7 @@ impl Window for InProcess {
         let specs = self.app.harness().resources();
         let mut all = Vec::new();
         flattened(&specs, &mut all);
-        let id = (name == "add").then(|| self.add.clone());
+        let id = (name == "new_task").then(|| self.add.clone());
         all.iter()
             .find(|spec| spec.id.as_str() == resource)
             .and_then(|spec| {
@@ -384,7 +384,7 @@ impl Hosted {
             Arc::new(bundle.clone()),
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
-            Rc::new(Phrases::new("en-US")),
+            &Phrases::new("en-US"),
             wake,
         );
         host.add(hosted, None);
@@ -398,7 +398,7 @@ impl Hosted {
             window,
             sent,
             inbox,
-            add: action_id(&bundle, "add"),
+            add: action_id(&bundle, "new_task"),
             next: 0,
         }
     }
@@ -495,7 +495,7 @@ impl Window for Hosted {
                 .published()
                 .into_iter()
                 .find(|(resource, _, label)| {
-                    resource.starts_with(&format!("tl:{TASKS}:")) && label == "Add"
+                    resource.starts_with(&format!("tl:{TASKS}:")) && label == "New task"
                 })
                 .map(|(resource, _, _)| resource);
             if let Some(root) = root {
@@ -509,7 +509,7 @@ impl Window for Hosted {
     }
 
     fn action(&mut self, resource: &str, name: &str) -> String {
-        let want = if name == "add" {
+        let want = if name == "new_task" {
             self.add.clone()
         } else {
             name.to_owned()

@@ -109,7 +109,7 @@ fn session_writes(relay: &TestRelay, device: [u8; 32]) -> u64 {
 }
 
 fn caret(pos: u64) -> NeighbourMsg {
-    NeighbourMsg::AppPresenceV2 {
+    NeighbourMsg::RetiredAppPresenceV2 {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: ROOM.into(),
@@ -122,7 +122,7 @@ fn caret(pos: u64) -> NeighbourMsg {
 }
 
 fn typing(start: u64, end: u64) -> NeighbourMsg {
-    NeighbourMsg::AppPresenceV2 {
+    NeighbourMsg::RetiredAppPresenceV2 {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: ROOM.into(),
@@ -153,7 +153,7 @@ impl Member {
             loop {
                 match self.reader.read_next().await.unwrap() {
                     Some(EnvelopeV2::State(Envelope::Delta { .. })) => delta = true,
-                    Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) => {
+                    Some(EnvelopeV2::State(Envelope::RetiredPresence { payload, .. })) => {
                         let attributed = AttributedPresence::decode(&payload).unwrap();
                         let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
                         if message == caret(pos) {

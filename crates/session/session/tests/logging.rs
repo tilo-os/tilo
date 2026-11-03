@@ -96,8 +96,9 @@ fn session_log(rust_log: &str) -> Vec<String> {
         }
     }
     let group = libc::pid_t::try_from(child.id()).expect("a pid fits a pid_t");
+    let group = group.wrapping_neg();
     // SAFETY: a pid and a signal number are all kill(2) reads.
-    let sent = unsafe { libc::kill(-group, libc::SIGTERM) };
+    let sent = unsafe { libc::kill(group, libc::SIGTERM) };
     assert_eq!(
         sent,
         0,

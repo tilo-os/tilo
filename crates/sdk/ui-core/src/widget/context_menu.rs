@@ -1781,7 +1781,7 @@ impl Widget for ContextMenu {
             || self
                 .submenu
                 .as_ref()
-                .is_some_and(|(_, menu)| menu.needs_redraw())
+                .is_some_and(|(_, menu)| menu.needs_redraw() || menu.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {

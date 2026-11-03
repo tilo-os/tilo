@@ -449,7 +449,7 @@ impl Session<'_> {
                     crate::peer::tell_governor(&tap, author, body).await;
                 }
             }
-            Envelope::Presence { workspace_id, .. } => {
+            Envelope::RetiredPresence { workspace_id, .. } => {
                 if let Some(workspace) = self.workspace(*workspace_id).await {
                     // Presence carries no author on the wire; zero stands
                     // in. Fan-out only compares it to subscribers and keeps

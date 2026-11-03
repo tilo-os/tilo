@@ -44,10 +44,10 @@ view preset_switch(v: Viewing) {
     }
 }
 
-/// The desk: its rows stacked and scrolled vertically, each row's strips scrolled sideways. One
-/// two-way scroll holds the lot, so a hand can pan the whole desk as today's does.
+/// The desk: its rows stacked and scrolled down, each row's strips side by side in a scroll of
+/// their own, so a hand pans down the desk and sideways along a row as today's does.
 view strips_view(a: Arrangement, v: Viewing) {
-    scroll(axis: .both) {
+    scroll(axis: .vertical) {
         page(full) {
             stack(gap: .group) {
                 for workspace in a.workspaces {
@@ -60,9 +60,11 @@ view strips_view(a: Arrangement, v: Viewing) {
     }
 }
 
-/// One row: the strip across the desk, named, with its columns of places side by side. A phone's
-/// or a tablet's output cannot hold a wide column beside another, so there each strip takes the
-/// output's width, one under the other, as the phone shell shows them.
+/// One row: the strip across the desk, named, with its columns of places side by side. The
+/// row's columns stand one height, the taller column's, so the desk reads as a row of strips
+/// rather than as cards of whatever each happens to hold. A phone's or a tablet's output cannot
+/// hold a wide column beside another, so there each strip takes the output's width, one under
+/// the other, as the phone shell shows them.
 view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
     stack(gap: .related) {
         ui.Text(held.name, role: .subheading)
@@ -72,16 +74,26 @@ view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
                     strip_column(a, v, s)
                 }
                 if strips_of(a, held.key).is_empty() {
-                    ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                    ui.EmptyState(
+                        "No window here yet",
+                        message: "Open something into this strip.",
+                        inline: true,
+                    )
                 }
             }
         } else {
-            row(gap: .group, align: .start, wrap: true) {
-                for s in strips_of(a, held.key) {
-                    strip_column(a, v, s)
-                }
-                if strips_of(a, held.key).is_empty() {
-                    ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+            scroll(axis: .horizontal) {
+                row(gap: .group, align: .stretch) {
+                    for s in strips_of(a, held.key) {
+                        strip_column(a, v, s)
+                    }
+                    if strips_of(a, held.key).is_empty() {
+                        ui.EmptyState(
+                            "No window here yet",
+                            message: "Open something into this strip.",
+                            inline: true,
+                        )
+                    }
                 }
             }
         }
@@ -92,17 +104,30 @@ view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
 /// place in front shows) and lit while it is the strip in front; a press on it brings it to the
 /// front. The place in front shows; the others stand as tabs above it, so a column of one reads
 /// as one window and a column of several as its tabs (§4).
+///
+/// A strip across the desk keeps the width the record gives it: a narrow, a usual or a wide
+/// strip, not one cut to what it happens to hold. A narrow display holds one across, so there
+/// each takes the room it is given.
 view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
     let in_front = s.key == v.focused
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
     let current = chosen?.key ?? ""
+    let roomy = space.width_class == .expanded or space.width_class == .wide
+    let kept = if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }
     let name = match shown {
         .some(p) => place_title(p),
         .none => "Empty strip",
     }
-    ui.Card(title: name, selected: in_front, min: if space.width < 16.0 { 8rem } else if not (space.width_class == .expanded or space.width_class == .wide) { 12rem } else if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }) {
+    ui.Card(
+        title: name,
+        selected: in_front,
+        min: if not roomy and space.width < 16.0 {
+            8rem
+        } else if not roomy { 12rem } else { kept },
+        max: if roomy { kept } else { 100rem },
+    ) {
         on activate: focus_strip(v, s.key)
         strip_controls(a, s, shown)
         if placed.len() > 1 {

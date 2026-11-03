@@ -130,6 +130,18 @@ impl DeclaredRail {
 }
 
 impl crate::widget::Widget for DeclaredRail {
+    fn needs_redraw(&self) -> bool {
+        self.rail.needs_redraw() || self.rail.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.rail.mark_drawn();
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.rail.needs_animation_frame()
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

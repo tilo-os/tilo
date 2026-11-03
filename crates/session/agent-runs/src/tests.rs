@@ -467,3 +467,27 @@ fn a_runs_transcript_keeps_what_was_said_and_run_in_the_order_it_happened() {
     );
     assert_eq!(run.programs.len(), 1);
 }
+
+/// A German desktop reads the runs' own words in German: the resource, its
+/// one action, and what a run's state is called.
+#[test]
+fn the_runs_speak_the_persons_language() {
+    use tilo_service::Service as _;
+
+    let served = crate::Served::new(Arc::new(AgentRuns::new(None)));
+    // Publish once so the catalogue is installed, then read it in German.
+    let english = served.resources();
+    ui::i18n::I18nManager::set_locale("de-DE");
+    let published = served.resources();
+    ui::i18n::I18nManager::set_locale("en-US");
+
+    assert_eq!(english[0].label, "Agent runs");
+
+    assert_eq!(published[0].label, "Agentenläufe");
+    let ask = published[0]
+        .actions
+        .iter()
+        .find(|spec| spec.id.as_str() == "ask")
+        .expect("the runs offer an ask");
+    assert_eq!(ask.label, "Einen Agenten fragen");
+}

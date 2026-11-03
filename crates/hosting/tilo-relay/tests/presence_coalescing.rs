@@ -117,14 +117,14 @@ impl Member {
         tilo_test_env::within("the presence burst to arrive", async {
             let mut seen = Vec::new();
             loop {
-                let Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) =
+                let Some(EnvelopeV2::State(Envelope::RetiredPresence { payload, .. })) =
                     self.reader.read_next().await.unwrap()
                 else {
                     continue;
                 };
                 let attributed = AttributedPresence::decode(&payload).unwrap();
                 let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
-                let cleared = matches!(message, NeighbourMsg::PresenceCleared { .. });
+                let cleared = matches!(message, NeighbourMsg::RetiredPresenceCleared { .. });
                 seen.push((attributed.author, message));
                 if cleared {
                     return seen;
@@ -160,7 +160,7 @@ fn session_bytes(relay: &TestRelay, device: [u8; 32]) -> u64 {
 }
 
 fn pointer(step: u32, user: &str) -> NeighbourMsg {
-    NeighbourMsg::PresenceMoved {
+    NeighbourMsg::RetiredPresenceMoved {
         peer: 0x9e37_79b9_7f4a_7c15,
         user: user.into(),
         key: format!(r#"{{"pointer":{{"space":{{"tile":{{"room":"{ROOM}","tab":1}}}}}}}}"#),
@@ -171,7 +171,7 @@ fn pointer(step: u32, user: &str) -> NeighbourMsg {
 }
 
 fn caret(pos: u64) -> NeighbourMsg {
-    NeighbourMsg::AppPresenceV2 {
+    NeighbourMsg::RetiredAppPresenceV2 {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: ROOM.into(),
@@ -184,7 +184,7 @@ fn caret(pos: u64) -> NeighbourMsg {
 }
 
 fn typing(start: u64, end: u64) -> NeighbourMsg {
-    NeighbourMsg::AppPresenceV2 {
+    NeighbourMsg::RetiredAppPresenceV2 {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: ROOM.into(),
@@ -210,7 +210,7 @@ fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protoc
     );
     let moves: Vec<_> = seen
         .iter()
-        .filter(|(_, message)| matches!(message, NeighbourMsg::PresenceMoved { .. }))
+        .filter(|(_, message)| matches!(message, NeighbourMsg::RetiredPresenceMoved { .. }))
         .collect();
     assert!(
         !moves.is_empty() && moves.len() < 30,
@@ -226,7 +226,7 @@ fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protoc
     assert_eq!(
         seen.iter()
             .rev()
-            .find(|(_, message)| matches!(message, NeighbourMsg::AppPresenceV2 { .. }))
+            .find(|(_, message)| matches!(message, NeighbourMsg::RetiredAppPresenceV2 { .. }))
             .map(|(_, message)| message),
         Some(&caret(42)),
         "{protocol}: the caret's last position arrives before the event sent after it"
@@ -284,7 +284,7 @@ async fn presence_is_coalesced_and_slot_coded() {
     }
     publish(
         &publisher,
-        &NeighbourMsg::PresenceCleared {
+        &NeighbourMsg::RetiredPresenceCleared {
             peer: 0x9e37_79b9_7f4a_7c15,
             key: "tile".into(),
         },
@@ -317,7 +317,7 @@ impl Member {
             loop {
                 match self.reader.read_next().await.unwrap() {
                     Some(EnvelopeV2::State(Envelope::Delta { .. })) => delta = true,
-                    Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) => {
+                    Some(EnvelopeV2::State(Envelope::RetiredPresence { payload, .. })) => {
                         let attributed = AttributedPresence::decode(&payload).unwrap();
                         let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
                         saw_typing |= message == typing(pos - 1, pos);
@@ -466,14 +466,14 @@ impl Member {
         tilo_test_env::within("the pointer's resting position", async {
             let mut moves = Vec::new();
             loop {
-                let Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) =
+                let Some(EnvelopeV2::State(Envelope::RetiredPresence { payload, .. })) =
                     self.reader.read_next().await.unwrap()
                 else {
                     continue;
                 };
                 let attributed = AttributedPresence::decode(&payload).unwrap();
                 let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
-                if matches!(message, NeighbourMsg::PresenceMoved { .. }) {
+                if matches!(message, NeighbourMsg::RetiredPresenceMoved { .. }) {
                     let rested = message == *last;
                     moves.push(message);
                     if rested {

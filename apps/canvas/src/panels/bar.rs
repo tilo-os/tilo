@@ -249,7 +249,7 @@ impl ui::widget::Decorator for WindowBar {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.child.needs_redraw()
+        self.child.needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn concrete_type_name(&self) -> &'static str {

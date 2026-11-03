@@ -175,7 +175,9 @@ impl ui::widget::Decorator for VersionPreview {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.canvas.needs_redraw() || self.preview.with(Option::is_some) != self.shown.is_some()
+        self.canvas.needs_redraw()
+            || self.preview.with(Option::is_some) != self.shown.is_some()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     /// While a past version is shown the canvas beneath takes no input;

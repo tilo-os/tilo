@@ -359,6 +359,10 @@ pub struct OskWidget {
     /// the screen back to the app the person is typing into. The keyboard is
     /// still on screen and still one tap from typing again.
     parked: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for OskWidget {
@@ -386,6 +390,7 @@ impl OskWidget {
             layouts.insert(l.name.clone(), l);
         }
         let mut me = Self {
+            dirty: true,
             layouts,
             active_letter: "qwerty".to_string(),
             preferred_text_layout: "qwerty".to_string(),
@@ -2850,6 +2855,7 @@ mod personal_vocabulary_tests;
 
 impl Widget for OskWidget {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.dirty = true;
         self.poll_hold(Instant::now());
     }
 
@@ -2992,6 +2998,7 @@ impl Widget for OskWidget {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         // A hidden keyboard occupies no area and draws nothing, so it should
         // not consume or react to pointer events meant for the app behind it.
         if !self.visible {
@@ -3093,6 +3100,14 @@ impl Widget for OskWidget {
         // A held key acts on its own (long press, repeat); the host syncs at
         // this instant, and `sync` fires it.
         self.hold.map(|h| h.due)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

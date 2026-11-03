@@ -634,11 +634,16 @@ pub struct CaptureStudio {
     /// Render caches only.
     metrics: BarMetrics,
     receipt_widths: ReceiptWidths,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for CaptureStudio {
     fn default() -> Self {
         Self {
+            dirty: true,
             rect: Rect::ZERO,
             overlay_rect: Rect::ZERO,
             open: false,
@@ -686,6 +691,7 @@ impl CaptureStudio {
     /// current layout parent. The latter can move back into the content area
     /// as soon as modal selection closes.
     pub fn set_overlay_rect(&mut self, rect: Rect) {
+        self.dirty = true;
         self.overlay_rect = rect;
     }
 
@@ -816,6 +822,7 @@ impl CaptureStudio {
     }
 
     pub fn set_mode(&mut self, mode: CaptureMode) {
+        self.dirty = true;
         self.mode = mode;
         self.options_menu = None;
         if mode == CaptureMode::Pip {
@@ -826,6 +833,7 @@ impl CaptureStudio {
     }
 
     pub fn set_source_mode(&mut self, source: SourceMode) {
+        self.dirty = true;
         self.source = source;
         self.regions.clear();
         self.drag = None;
@@ -836,6 +844,7 @@ impl CaptureStudio {
     }
 
     pub fn set_audio_available(&mut self, system: bool, microphone: bool) {
+        self.dirty = true;
         self.system_audio_available = system;
         self.microphone_available = microphone;
         self.audio = AudioCaptureMode::of(
@@ -848,6 +857,7 @@ impl CaptureStudio {
     /// is chosen, the picked window follows the keyboard focus, so moving
     /// focus the usual way picks another one.
     pub fn set_candidates(&mut self, candidates: Vec<CaptureTarget>) {
+        self.dirty = true;
         self.candidates = candidates;
         if self.source == SourceMode::Window {
             self.select_focused_window();
@@ -907,6 +917,7 @@ impl CaptureStudio {
     }
 
     pub fn set_recording_active(&mut self, active: bool) {
+        self.dirty = true;
         if active && !self.take.active {
             self.take = RecordingTake {
                 active: true,
@@ -933,6 +944,7 @@ impl CaptureStudio {
     /// `set_recording_active(false)` instead, so a receipt never shows for an
     /// incomplete file.
     pub fn set_recording_finished(&mut self) {
+        self.dirty = true;
         if !self.take.active {
             return;
         }
@@ -945,6 +957,7 @@ impl CaptureStudio {
     }
 
     pub fn set_recording_paused(&mut self, paused: bool) {
+        self.dirty = true;
         if !self.take.active || paused == self.take.paused {
             return;
         }
@@ -971,6 +984,7 @@ impl CaptureStudio {
     }
 
     pub fn set_replay_active(&mut self, active: bool, audio: AudioCaptureMode) {
+        self.dirty = true;
         self.replay_active = active;
         self.replay_audio = if active {
             audio
@@ -989,6 +1003,7 @@ impl CaptureStudio {
     }
 
     pub fn set_replay_buffered_seconds(&mut self, seconds: u8) {
+        self.dirty = true;
         if self.replay_active {
             self.replay_buffered_seconds = seconds.min(30);
         }
@@ -996,6 +1011,7 @@ impl CaptureStudio {
 
     /// The kept seconds were saved: the receipt offers to play them.
     pub fn set_replay_saved(&mut self) {
+        self.dirty = true;
         if self.replay_active {
             self.recording_finished_at = Some(crate::time::now());
         }
@@ -1043,6 +1059,7 @@ impl CaptureStudio {
     /// The devices "Send…" lists. Called by the shell whenever a screenshot
     /// is saved, so the picker names who is online now.
     pub fn set_screenshot_send_devices(&mut self, devices: Vec<ScreenshotSendDevice>) {
+        self.dirty = true;
         self.send_devices = devices;
     }
 
@@ -1124,6 +1141,7 @@ impl CaptureStudio {
         height: u32,
         preview: CapturePreview,
     ) {
+        self.dirty = true;
         let origin = self
             .screenshot_origin
             .take()
@@ -1142,10 +1160,12 @@ impl CaptureStudio {
     }
 
     pub fn set_screenshot_pin_pending(&mut self, pending: bool) {
+        self.dirty = true;
         self.screenshot_pin_pending = pending;
     }
 
     pub fn set_screenshot_pinned(&mut self) {
+        self.dirty = true;
         self.screenshot_pin_pending = false;
         self.screenshot_receipt = None;
         self.open = false;
@@ -1154,6 +1174,7 @@ impl CaptureStudio {
     /// Pin the selected-pixels-to-receipt handoff for deterministic visual
     /// review. Live presentation continues to use elapsed time.
     pub fn set_screenshot_transition_progress(&mut self, permille: u16) {
+        self.dirty = true;
         let Some(receipt) = self.screenshot_receipt.as_mut() else {
             return;
         };
@@ -2639,6 +2660,7 @@ impl Widget for CaptureStudio {
     }
 
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.open {
             return;
         }
@@ -2695,6 +2717,8 @@ impl Widget for CaptureStudio {
         };
         *ctx.handled = consumed;
     }
+
+    crate::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "CaptureStudio"
@@ -2942,57 +2966,11 @@ fn drive_menu(
     }
 }
 
-fn normal_rect(a: Point, b: Point) -> Rect {
-    Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
-}
-
-fn add_rect(path: &mut BezPath, r: Rect) {
-    path.move_to((r.x0, r.y0));
-    path.line_to((r.x1, r.y0));
-    path.line_to((r.x1, r.y1));
-    path.line_to((r.x0, r.y1));
-    path.close_path();
-}
-
-fn studio_progress(spec: crate::motion::MotionSpec, elapsed: Duration) -> f64 {
-    spec.progress_after(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
-        elapsed,
-    )
-}
-
-/// How long one of the tool's motions runs.
-fn studio_motion_time(spec: crate::motion::MotionSpec) -> Duration {
-    spec.settle_time(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
-    )
-}
-
-/// A receipt's opacity: there at once, leaving on the standard transient
-/// when its time is up.
-fn leaving_opacity(shown: Instant, lasts: Duration) -> f32 {
-    let now = crate::time::now();
-    let fade_from = crate::motion::Transient::exit_starts(
-        crate::motion::Transient::READOUT,
-        shown + lasts,
-        crate::tokens::EffectiveMotion::default(),
-    );
-    if now < fade_from {
-        return 1.0;
-    }
-    crate::motion::unit_opacity(f64::from(crate::motion::Transient::opacity(
-        crate::motion::Transient::READOUT,
-        (shown, shown + lasts),
-        now,
-        crate::tokens::EffectiveMotion::default(),
-    )))
-}
-
+mod geometry;
+mod motion;
 mod receipt;
+use geometry::{add_rect, normal_rect};
+use motion::{leaving_opacity, studio_motion_time, studio_progress};
 use receipt::{ReceiptAction, ReceiptWidths};
 mod semantics;
 

@@ -19,11 +19,16 @@ pub struct Well {
     tools: Tools,
     hovered: bool,
     name: String,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Well {
     pub fn new(tools: Tools) -> Self {
         Self {
+            dirty: true,
             rect: Rect::ZERO,
             tools,
             hovered: false,
@@ -109,6 +114,7 @@ impl Widget for Well {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let at = ctx.logical(position);
@@ -135,7 +141,17 @@ impl Widget for Well {
         Some(AccessNode::new(Role::Image).with_name(self.describe()))
     }
 
-    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.dirty = true;
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
 
     fn name(&self) -> &'static str {
         "Well"

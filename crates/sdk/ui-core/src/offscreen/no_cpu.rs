@@ -33,7 +33,11 @@ impl CpuSurface {
     }
 
     /// Nothing is drawn where a page has no CPU rasterizer.
-    pub fn draw(&mut self, _scene: &Scene, _regions: &[(u32, u32, u32, u32)]) -> bool {
-        false
+    pub fn draw(
+        &mut self,
+        _scene: &Scene,
+        _damage: Option<&[(u32, u32, u32, u32)]>,
+    ) -> Option<Vec<(u32, u32, u32, u32)>> {
+        None
     }
 }

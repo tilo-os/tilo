@@ -34,3 +34,12 @@ fn the_strip(key: Text) -> session.Strip {
 fn the_row(key: Text) -> session.Row {
     return resource("shell:row:{key}", of: session.Row)
 }
+
+/// The id of the workspace in front: the one whose windows the switcher walks and the overview
+/// shows as the desk's, as the desk's own fields name it.
+fn front_workspace(d: Desk) -> Text {
+    if let r = d.rooms.filter(r -> r.current).first() {
+        return r.key
+    }
+    return ""
+}

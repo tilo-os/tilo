@@ -211,12 +211,14 @@ published_env_runtime() {
 # SDK and the native host), which the session signs as the
 # `tilo-runtime/<RUNTIME_VERSION>` bundle Browser requires
 # (ui::webview::chromium::runtime). Built again only when the CEF pin or the
-# host's sources change.
+# host's sources change. The key hashes the sources themselves: a build copy of
+# the tree (a builder's, synced without `.git`) has no index to list them from.
 chromium_engine=$target/nested-session-chromium
 build_chromium_engine() {
     local key began=$SECONDS
     key=$( { cat scripts/browser/cef-lock.json scripts/browser/build-host.py
-             git ls-files -s apps/browser/chromium crates/browser/tilo-chromium-blocker; } \
+             find apps/browser/chromium crates/browser/tilo-chromium-blocker -type f -print \
+                 | LC_ALL=C sort | xargs sha256sum; } \
            | sha256sum | cut -c1-64)
     if [[ -f $chromium_engine/.key && $(<"$chromium_engine/.key") == "$key" \
           && -x $chromium_engine/runtime/chromium/tilo-chromium-host ]]; then

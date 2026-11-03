@@ -83,7 +83,10 @@ view data(d: Data) {
                 for f in d.files {
                     ui.TreeViewNode(f, f.title, branch: f.folder) {
                         row: {
-                            ui.TreeViewRow(icon: if f.folder { .folder } else { .file_text }, trailing: if f.folder { .none } else { .some("{f.size} B") })
+                            ui.TreeViewRow(
+                                icon: if f.folder { .folder } else { .file_text },
+                                trailing: if f.folder { .none } else { .some("{f.size} B") },
+                            )
                         }
                     }
                 }
@@ -94,7 +97,13 @@ view data(d: Data) {
         ui.Section("Conversation") {
             ui.ConversationList(name: .some("Conversation with Ada")) {
                 for m in d.messages {
-                    ui.ConversationEntry(m, m.body, author: .some(m.from), time: .some(m.at), outgoing: m.mine)
+                    ui.ConversationEntry(
+                        m,
+                        m.body,
+                        author: .some(m.from),
+                        time: .some(m.at),
+                        outgoing: m.mine,
+                    )
                 }
             }
         }
@@ -130,12 +139,40 @@ scenario "data" {
     d.files.insert(File(title: "Project", parent: "", folder: true))
     d.files.insert(File(title: "src", parent: "Project", folder: true, size: 0))
     d.files.insert(File(title: "main.rs", parent: "src", folder: false, size: 880))
-    d.messages.insert(Message(title: "a", from: "Ada", body: "Are we ready to ship?", at: 2026-06-30T08:40Z, mine: false))
-    d.messages.insert(Message(title: "b", from: "Sam", body: "The build is green.", at: 2026-06-30T08:42Z, mine: true))
-    d.messages.insert(Message(title: "c", from: "Ada", body: "Then let us go.", at: 2026-06-30T08:44Z, mine: false))
+    d.messages.insert(
+        Message(
+            title: "a",
+            from: "Ada",
+            body: "Are we ready to ship?",
+            at: 2026-06-30T08:40Z,
+            mine: false,
+        ),
+    )
+    d.messages.insert(
+        Message(
+            title: "b",
+            from: "Sam",
+            body: "The build is green.",
+            at: 2026-06-30T08:42Z,
+            mine: true,
+        ),
+    )
+    d.messages.insert(
+        Message(
+            title: "c",
+            from: "Ada",
+            body: "Then let us go.",
+            at: 2026-06-30T08:44Z,
+            mine: false,
+        ),
+    )
     d.cards.insert(Card(title: "Design", count: 12))
     d.cards.insert(Card(title: "Engineering", count: 34))
     d.cards.insert(Card(title: "Support", count: 7))
-    d.changes.insert(Change(title: "a", who: "Ada", summary: "Rewrote the summary", at: 2026-06-30T08:42Z))
-    d.changes.insert(Change(title: "b", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z))
+    d.changes.insert(
+        Change(title: "a", who: "Ada", summary: "Rewrote the summary", at: 2026-06-30T08:42Z),
+    )
+    d.changes.insert(
+        Change(title: "b", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
+    )
 }

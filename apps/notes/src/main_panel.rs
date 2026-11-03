@@ -1103,11 +1103,12 @@ impl MainPanel {
         let quiet = self.scroll_moved
             && !self.dirty
             && !self.editor.needs_redraw()
+            && !self.editor.needs_animation_frame()
             && !self.has_editor_popup()
             && self
                 .header
                 .built()
-                .is_none_or(|header| !header.needs_redraw());
+                .is_none_or(|header| !(header.needs_redraw() || header.needs_animation_frame()));
         (quiet
             && drawing.clip == presented.clip
             && drawing.track == presented.track
@@ -2191,7 +2192,7 @@ impl Widget for MainPanel {
                 scene.append(&header_scene, None);
                 let rect = header.get_rect();
                 parts.push(ui::widget::paint_damage::PaintPart::new(
-                    "note-header".into(),
+                    "note-header",
                     rect,
                     header_scene,
                     vec![rect.inflate(
@@ -2254,7 +2255,7 @@ impl Widget for MainPanel {
                 editor_damage,
             ));
             parts.push(ui::widget::paint_damage::PaintPart::new(
-                "note-scrollbar".into(),
+                "note-scrollbar",
                 self.scroll_track,
                 scrollbar_scene,
                 vec![self.scroll_track.inflate(track_reach, track_reach)],
@@ -2269,7 +2270,7 @@ impl Widget for MainPanel {
             title_damage.extend(self.title_overhang);
             title_damage.extend(self.drawn_title_overhang);
             parts.push(ui::widget::paint_damage::PaintPart::new(
-                "note-title".into(),
+                "note-title",
                 self.title_rect,
                 title_scene,
                 title_damage,
@@ -2578,14 +2579,12 @@ impl Widget for MainPanel {
         if self.page_id.is_some() {
             if !focused {
                 self.scroll_focused = false;
-                self.dirty = true;
             }
             return;
         }
         let next = focused && self.page_id.is_none();
         if self.empty_action_focused != next {
             self.empty_action_focused = next;
-            self.dirty = true;
         }
     }
 
@@ -2739,7 +2738,10 @@ impl Widget for MainPanel {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.scroll_moved || self.editor.needs_redraw()
+        self.dirty
+            || self.scroll_moved
+            || self.editor.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

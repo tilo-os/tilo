@@ -344,7 +344,7 @@ d-7chkyi44 = Basics
     .w-stage = Stage
     .w-review = Review
     .w-no-archived-items = No archived items
-    .w-archived-items-show-here = Archived items show here.
+    .w-archive-an-item-to-put-it = Archive an item to put it aside.
     .w-a-page-of-a-stack = A page of a stack
     .w-a-section-opened-in-its-own = A section opened in its own page of the panel, one level deep.
 

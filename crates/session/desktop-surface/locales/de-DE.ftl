@@ -1496,3 +1496,10 @@ desk-monitor-temperature = Temperatur
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
 desk-widget-resize = { $widget } vergrößern
+
+hung-app-title = Antwortet nicht
+hung-app-card = { $window } antwortet nicht
+hung-app-wait = Warten
+hung-app-force-quit = Erzwungen beenden
+desk-wait-window = Weiter auf { $window } warten
+desk-force-quit-window = { $window } erzwungen beenden

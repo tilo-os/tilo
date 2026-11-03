@@ -63,12 +63,17 @@ pub struct HistoryChart {
     local_offset: i64,
     rect: Rect,
     hover: Option<Point>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl HistoryChart {
     pub fn new(points: &[BatteryHistoryPoint], span: Span, now: u64, local_offset: i64) -> Self {
         let from = now.saturating_sub(span.minutes());
         Self {
+            dirty: true,
             points: points
                 .iter()
                 .filter(|point| point.unix_minute >= from && point.unix_minute <= now)
@@ -460,6 +465,7 @@ impl Widget for HistoryChart {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let at = ctx.logical(position);
@@ -475,6 +481,14 @@ impl Widget for HistoryChart {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

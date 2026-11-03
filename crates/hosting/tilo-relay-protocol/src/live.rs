@@ -1,6 +1,6 @@
 //! Live plane: bounded, inert values for ephemeral multiplayer state —
 //! presence (focus, pointer, selection anchors, drags) and ordered text
-//! previews — carried in [`Envelope::Live`](crate::Envelope::Live).
+//! previews — carried in [`Envelope::RetiredLive`](crate::Envelope::RetiredLive).
 //!
 //! Live frames are never durable and never authority. Documents change only
 //! through signed durable deltas; a preview or drag is an overlay a receiver
@@ -627,7 +627,7 @@ impl OpsFrame {
     }
 }
 
-/// One live frame, the payload of [`Envelope::Live`](crate::Envelope::Live).
+/// One live frame, the payload of [`Envelope::RetiredLive`](crate::Envelope::RetiredLive).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 // With 32-bit pointers (wasm32) the variants are close enough in size that
 // the lint does not fire.

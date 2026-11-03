@@ -63,8 +63,20 @@ view front_window(a: Arrangement, lists: Bool) {
 }
 
 /// One frame on the desktop, at its strip's canvas point and size.
-view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, focused: Bool, lists: Bool) {
-    ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: if s.canvas_width > 0 { s.canvas_width } else { 720 }, height: if s.canvas_height > 0 { s.canvas_height } else { 480 }) {
+view desktop_frame(
+    a: Arrangement,
+    s: ArrangementStrip,
+    p: ArrangementPlace,
+    focused: Bool,
+    lists: Bool,
+) {
+    ui.MapPin(
+        name: .some(p.key),
+        x: s.canvas_x,
+        y: s.canvas_y,
+        width: if s.canvas_width > 0 { s.canvas_width } else { 720 },
+        height: if s.canvas_height > 0 { s.canvas_height } else { 480 },
+    ) {
         frame_classic(a, p, focused, lists)
     }
 }
@@ -93,7 +105,9 @@ view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bo
 /// the window has no title. A bar, a chip, a switcher row and a search row never disagree, and
 /// none of them ever falls back to an app id.
 fn place_title(p: ArrangementPlace) -> Text {
-    if p.name != "" { p.name } else if p.title != "" { p.title } else if p.shows != "" { p.shows } else { "Window" }
+    if p.name != "" {
+        p.name
+    } else if p.title != "" { p.title } else if p.shows != "" { p.shows } else { "Window" }
 }
 
 /// A frame's controls: the way to carry the place to another row, and close. Each is one
@@ -170,7 +184,12 @@ view action_run(name: Text, offered: List<host.Action>, room: BarRoom) {
             } else {
                 ui.MenuButton(name, role: .bar) {
                     for c in loose {
-                        ui.MenuItem(c.label, icon: c.icon, destructive: c.destructive, checked: c.on) {
+                        ui.MenuItem(
+                            c.label,
+                            icon: c.icon,
+                            destructive: c.destructive,
+                            checked: c.on,
+                        ) {
                             on choose: c.run
                         }
                     }
@@ -187,7 +206,12 @@ view action_run(name: Text, offered: List<host.Action>, room: BarRoom) {
                 if starts_run(offered, c) {
                     ui.MenuButton(c.group ?? "", role: .bar) {
                         for b in in_run(offered, c.group ?? "") {
-                            ui.MenuItem(b.label, icon: b.icon, destructive: b.destructive, checked: b.on) {
+                            ui.MenuItem(
+                                b.label,
+                                icon: b.icon,
+                                destructive: b.destructive,
+                                checked: b.on,
+                            ) {
                                 on choose: b.run
                             }
                         }
@@ -215,7 +239,11 @@ view action_control(c: host.Action) {
 /// Whether `c` is the first command of its run: the run's menu is drawn once, at the place the
 /// app declared its first command, so the menus come in the app's own order.
 fn starts_run(offered: List<host.Action>, c: host.Action) -> Bool {
-    if c.group == .none { false } else if let first = offered.find(b -> (b.group ?? "") == (c.group ?? "")) { first.label == c.label } else { false }
+    if c.group == .none {
+        false
+    } else if let first = offered.find(b -> (b.group ?? "") == (c.group ?? "")) {
+        first.label == c.label
+    } else { false }
 }
 
 /// The commands of `offered` that stand in the run `run`, in the app's order.
@@ -227,7 +255,9 @@ fn in_run(offered: List<host.Action>, run: Text) -> List<host.Action> {
 /// that has a place on the desktop.
 fn focused_strip(a: Arrangement) -> Option<ArrangementStrip> {
     let v = viewing
-    if let named = a.strips.find(s -> s.key == v.focused) { named } else { a.strips.find(s -> s.placed) }
+    if let named = a.strips.find(s -> s.key == v.focused) {
+        named
+    } else { a.strips.find(s -> s.placed) }
 }
 
 /// The place in front of `s`: its active place, else the first one it holds.
@@ -278,7 +308,9 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
 /// on a phone the sound does too (the time, the connection, the charge, the notifications and the
 /// person's face stay), so the row never wraps and its parts never press into each other.
 view traditional_bar(d: Desk) {
-    let room = if space.width_class == .wide { BarRoom.roomy } else if space.compact { BarRoom.one } else { BarRoom.menus }
+    let room = if space.width_class == .wide {
+        BarRoom.roomy
+    } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
             on press: session.tilo_menu()

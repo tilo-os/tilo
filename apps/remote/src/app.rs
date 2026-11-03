@@ -1232,7 +1232,6 @@ impl Store {
             return;
         }
         self.fullscreen = fullscreen;
-        self.dirty = true;
     }
 
     /// Show the connection a picked search hit points at.
@@ -2066,7 +2065,9 @@ impl Widget for RemoteApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.store.borrow().dirty || self.body().needs_redraw()
+        self.store.borrow().dirty
+            || self.body().needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

@@ -1391,7 +1391,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         &browser,
         &session,
         &[id],
-        Envelope::Presence {
+        Envelope::RetiredPresence {
             workspace_id: id,
             payload: vec![9, 9],
         },
@@ -1434,14 +1434,14 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         &browser,
         &session,
         &[id],
-        Envelope::Presence {
+        Envelope::RetiredPresence {
             workspace_id: id,
             payload: forged.encode().unwrap(),
         },
     )
     .await
     .unwrap();
-    let Envelope::Presence { payload, .. } = native_rx.try_recv().unwrap() else {
+    let Envelope::RetiredPresence { payload, .. } = native_rx.try_recv().unwrap() else {
         panic!("expected forwarded presence");
     };
     let observed = crate::AttributedPresence::decode(&payload).unwrap();
@@ -1517,7 +1517,7 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
     // for it, as it waits for a slow store under it.
     let held = workspace.lock().await;
     outbound
-        .send(Envelope::Presence {
+        .send(Envelope::RetiredPresence {
             workspace_id: id,
             payload: vec![1],
         })

@@ -324,6 +324,12 @@ impl Backend for HeadlessBackend {
         Ok(())
     }
 
+    /// Its outputs are images the CPU composes into: a hosted surface's
+    /// pixels reach them as memory, never as a texture a GPU samples.
+    fn composes_on_cpu(&self) -> bool {
+        true
+    }
+
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         for output in &mut self.outputs {
             if output.dark {

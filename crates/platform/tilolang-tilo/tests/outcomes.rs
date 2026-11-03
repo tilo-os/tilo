@@ -28,7 +28,7 @@ fn workspace() -> (Replica, Replica, Meta, String) {
         &ada,
         &meta,
         ("Tasks", &root.doc),
-        "add",
+        "new_task",
         json!({"title": "Take the bins out"}),
         None,
     );

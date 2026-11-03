@@ -76,10 +76,10 @@ impl Platform for Packages {
         tilo_ui_host::i18n::t_args(id, &args)
     }
 
+    /// The package's words, and the one language its window is laid out in: the person's when
+    /// the package ships it, the package's source language otherwise.
     fn add_words(&self, catalogues: &[(String, String)]) {
-        for (locale, text) in catalogues {
-            ui::i18n::I18nManager::add_resource(locale, text.clone());
-        }
+        ui::i18n::speak_window_language(catalogues);
     }
 
     /// A fixed instant, so every run lays out the same dates.

@@ -32,7 +32,7 @@ impl AsyncWrite for CountedWire {
 }
 
 fn presence(payload: PeerPresencePayload) -> NeighbourMsg {
-    NeighbourMsg::AppPresenceV2 {
+    NeighbourMsg::RetiredAppPresenceV2 {
         peer: 1,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: "writer-room".into(),
@@ -150,7 +150,7 @@ async fn keystroke_presence_and_position_share_the_production_delta_write() {
                 &fixture.source.peer,
                 &source_session,
                 &[7],
-                Envelope::Presence {
+                Envelope::RetiredPresence {
                     workspace_id: 7,
                     payload,
                 },
@@ -225,10 +225,9 @@ async fn keystroke_presence_and_position_share_the_production_delta_write() {
             }),
             presence(PeerPresencePayload::Caret { pos }),
         ] {
-            let Some(tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Presence {
-                payload,
-                ..
-            })) = reader.read_next().await.unwrap()
+            let Some(tilo_delivery_protocol::transport_v2::EnvelopeV2::State(
+                Envelope::RetiredPresence { payload, .. },
+            )) = reader.read_next().await.unwrap()
             else {
                 panic!("missing keystroke presence")
             };

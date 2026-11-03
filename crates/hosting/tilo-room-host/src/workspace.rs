@@ -563,7 +563,7 @@ impl WorkspaceRuntime {
     }
 
     fn announce_live_member(&self, device: [u8; 32], workspace_id: u64, active: bool) {
-        let envelope = Envelope::LiveMember {
+        let envelope = Envelope::RetiredLiveMember {
             workspace_id,
             device_public_key: device,
             active,
@@ -1063,7 +1063,7 @@ impl WorkspaceRuntime {
             }
             if let (
                 Some(mailbox),
-                Envelope::Presence {
+                Envelope::RetiredPresence {
                     workspace_id,
                     payload,
                 },
@@ -1984,7 +1984,7 @@ mod tests {
             id: 1,
             motion: false,
         });
-        let presence = Envelope::Presence {
+        let presence = Envelope::RetiredPresence {
             workspace_id: 9,
             payload: b"caret".to_vec(),
         };

@@ -128,6 +128,9 @@ impl State {
             pointer,
             time,
         });
+        if let Some((surface, _)) = focus.as_ref() {
+            self.note_input_on(surface);
+        }
         if pointer {
             self.touch_pointer(focus, at, Some(ButtonState::Pressed), serial, time);
             return;

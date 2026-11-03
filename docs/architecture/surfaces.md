@@ -200,18 +200,23 @@ ground of its own and the desktop shows around it. The power menu, the
 question about a tool's display change, the Super+P display sheet, the
 shortcut guide and "Join a workspace…" are apps.
 
-The workspace overview (Super+Tab) is one too (`crates/session/overview`), with
-one thing a sheet does not need: it pictures other apps' windows, whose
-buffers belong to other clients. It never draws them. It names each window it
-pictures and the rect its picture rests at through a `WindowFlight`
-(`tilo_desktop::window_flight`), and the compositor draws every named window
-from what it already holds (a client's latest buffer, a live paint of a window
-the shell draws), flying each from where it stands on its strip to that rect
-on the overview's zoom and back (`overlay_host/window_flight.rs`). The
-compositor keeps the clock and reports it, with where each window stands, so
-the app's own drawing (titles, selection, its panel) moves in step. The
-overview's view is `tilo_desktop::overview_panel::OverviewPanel`, the same
-widget the browser desktop draws.
+The workspace overview (Super+Tab) is not a sheet. When the tilolang shell is
+its own screen (`--shell screen`), it is the shell's view
+(`apps/tl/shell/overview.tl`): it reads the desk the session publishes and
+draws every workspace's windows as places on their strips, the desk's bar
+staying above it. The default chrome draws the same overview with
+`tilo_desktop::overview_panel::OverviewPanel` and a `WindowFlight`, the widget
+the browser desktop draws.
+
+Either way it pictures other apps' windows, whose buffers belong to other
+clients, and never copies them: the shell's places hold a `ui.WindowPreview`
+reporting the rect each rests at, the panel names each window and its rect
+through the `WindowFlight`, and the compositor draws every named window from
+what it already holds (a client's latest buffer, a live paint of a window the
+shell draws), flying each from where it stands on its strip to that rect on
+the overview's zoom and back (`overlay_host/window_flight.rs`). The
+compositor keeps the clock and reports it, with where each window stands, so a
+drawing that moves (titles, selection, a panel) moves in step.
 
 ## Migration
 

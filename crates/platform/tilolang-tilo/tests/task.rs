@@ -60,7 +60,7 @@ fn seeded() -> Task {
     for source in [
         "notes.retitle(notes.new_note(notes.notes), \"Q3 plan\")",
         "notes.pin(notes.new_note(notes.notes), true)",
-        "tasks.add(tasks.tasks, \"milk\")\ntasks.add(tasks.tasks, \"bins\")",
+        "tasks.new_task(tasks.tasks, \"milk\")\ntasks.new_task(tasks.tasks, \"bins\")",
     ] {
         let answer = task.run(source, true);
         assert_eq!(answer["state"], "done", "{source}: {answer:#}");
@@ -101,7 +101,7 @@ fn a_programs_lets_stay_for_the_next() {
 fn changes_in_two_apps_are_invocations_of_each() {
     let task = seeded();
     let answer = task.run(
-        "for n in notes.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntasks.add(tasks.tasks, \"call Ada\")",
+        "for n in notes.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntasks.new_task(tasks.tasks, \"call Ada\")",
         false,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
@@ -153,7 +153,7 @@ fn an_assignment_is_the_resources_field_edit() {
 #[test]
 fn many_changes_are_previewed_and_sent_on_confirm() {
     let task = seeded();
-    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.add(tasks.tasks, t)\n}\nfor n in notes.notes {\n    n.title = \"x\"\n}";
+    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.new_task(tasks.tasks, t)\n}\nfor n in notes.notes {\n    n.title = \"x\"\n}";
     let previewed = task.run(bulk, false);
     assert_eq!(previewed["state"], "preview", "{previewed:#}");
     assert_eq!(
@@ -194,7 +194,7 @@ fn a_refused_invocation_is_never_done() {
         "{answer:#}"
     );
     let tried = task.run(
-        "match try tasks.add(tasks.tasks, \"Saturday\") { .ok(t) => print(t.title), .err(why) => print(why) }",
+        "match try tasks.new_task(tasks.tasks, \"Saturday\") { .ok(t) => print(t.title), .err(why) => print(why) }",
         true,
     );
     assert_eq!(tried["state"], "done", "{tried:#}");
@@ -228,8 +228,11 @@ fn what_cannot_be_read_is_an_error_never_nothing() {
 
 #[test]
 fn a_refused_action_stops_the_program_unless_it_tries() {
-    let task = task(vec!["add"]);
-    let answer = task.run("tasks.add(tasks.tasks, \"milk\")\nprint(\"went on\")", true);
+    let task = task(vec!["new_task"]);
+    let answer = task.run(
+        "tasks.new_task(tasks.tasks, \"milk\")\nprint(\"went on\")",
+        true,
+    );
     assert_eq!(answer["state"], "failed", "{answer:#}");
     assert!(
         answer["detail"].as_str().unwrap().contains("denied"),
@@ -316,7 +319,7 @@ fn each_argument_is_sent_as_its_published_parameter_takes_it() {
         "2 1"
     );
     let answer = task.run(
-        "let t = tasks.add(tasks.tasks, \"Check the launch video\")\ntasks.prioritize(t, .high)",
+        "let t = tasks.new_task(tasks.tasks, \"Check the launch video\")\ntasks.prioritize(t, .high)",
         true,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");

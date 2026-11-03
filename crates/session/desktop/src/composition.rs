@@ -83,6 +83,11 @@ pub struct DesktopSurface {
     deck_index: usize,
     pub(crate) navigation: crate::navigation::Navigation,
     root: Box<dyn Widget>,
+    /// The input generation the frame on screen read from outside the tree
+    /// ([`ui::outside_paint`]), when it read outside it: input handed to the
+    /// tree after that makes the next frame due, and one that read inside
+    /// it goes stale with no input at all.
+    drawn_reading: Option<u64>,
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
     retained_wakes: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -316,6 +321,7 @@ impl DesktopSurface {
             navigation: crate::navigation::Navigation::default(),
             root,
             context: tree.active_workspace().map(|w| (w.slot, w.id())),
+            drawn_reading: None,
             empty_workspace_visible,
             component_wake,
             retained_wakes: vec![],
@@ -1301,10 +1307,27 @@ impl Widget for DesktopSurface {
     }
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let wake = self.take_component_wake();
-        self.root.update(doc, path) || wake
+        let changed = self.root.update(doc, path) || wake;
+        if changed {
+            // What the model moved reaches widgets that paint it without a
+            // flag of their own.
+            ui::input_generation::note_model();
+        }
+        changed
     }
     fn needs_redraw(&self) -> bool {
-        self.has_pending_component_wake() || self.root.needs_redraw()
+        self.has_pending_component_wake()
+            || (self.root.needs_redraw() || self.root.needs_animation_frame())
+            // Only a drawing that read outside the tree goes stale with
+            // input; one that read inside it changed nothing.
+            || self
+                .drawn_reading
+                .is_some_and(|drawn| drawn != ui::input_generation::generation())
+    }
+    fn mark_drawn(&mut self) {
+        self.drawn_reading = ui::outside_paint::on_screen().then(ui::input_generation::generation);
+        ui::outside_paint::forget_on_screen();
+        self.mark_children_drawn();
     }
     fn build_layout(
         &mut self,
@@ -1346,6 +1369,9 @@ impl Widget for DesktopSurface {
         if !*ctx.handled {
             self.observe_navigation_event(event, ctx.scale_factor);
         }
+        // What the event changed reaches widgets that paint it without a
+        // flag of their own.
+        ui::input_generation::note();
         self.root.handle_event(event, ctx);
     }
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {

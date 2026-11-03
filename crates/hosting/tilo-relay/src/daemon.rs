@@ -142,6 +142,9 @@ pub struct Relay {
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
+    /// The relay's live plane, which its browsers serve and its devices dial.
+    #[cfg(feature = "web")]
+    pub(crate) plane: Option<crate::web::wt::Plane>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
     /// (per-handle) when the `Relay` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -490,6 +493,11 @@ impl Relay {
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
+        // The live plane belongs to the relay: pages reach it over
+        // WebTransport, devices over the relay's own iroh endpoint, and both
+        // land in one origin whether or not browsers are served.
+        #[cfg(feature = "web")]
+        let mut plane = Some(crate::web::wt::Plane::start(handler.clone()));
         let live_trust_policy = handler.trust_policy.clone();
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -528,9 +536,19 @@ impl Relay {
         for (alpn, handler) in additional_protocols {
             router = router.accept(alpn, handler);
         }
+        #[cfg(feature = "web")]
+        if let Some(plane) = plane.as_ref() {
+            let (alpn, handler) = plane.protocol();
+            router = router.accept(alpn, handler);
+        }
         let router = router.spawn();
 
         let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
+        #[cfg(feature = "web")]
+        if let Some(plane) = plane.as_mut() {
+            let mut tasks = lock_background_tasks(&background_tasks);
+            tasks.extend(plane.tasks().into_iter().map(AbortOnDrop));
+        }
         // The host is a member of every room it holds: its own device is on
         // those rosters, so it reads and serves them as any participant does.
         for workspace in workspaces.lock().await.values() {
@@ -545,6 +563,8 @@ impl Relay {
             sessions,
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(feature = "web")]
+            plane,
             background_tasks,
             mesh_profile,
             full_replica: full_replica.clone(),

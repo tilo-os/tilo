@@ -645,6 +645,7 @@ impl BrowserShell {
             .handle
             .read(|tree| tree.active_workspace().map(|w| w.name.clone()))
             .unwrap_or_default();
+        let unavailable = self.chrome.here.borrow().unavailable().map(str::to_owned);
         self.people.draw(
             scene,
             transform,
@@ -654,7 +655,7 @@ impl BrowserShell {
                 host: self.rect,
                 workspace: &workspace,
                 rows: &rows,
-                unavailable: None,
+                unavailable: unavailable.as_deref(),
                 exposure: None,
                 may_invite: self.chrome.may_invite(),
                 may_pin: !self.pinned.is_pinned(),

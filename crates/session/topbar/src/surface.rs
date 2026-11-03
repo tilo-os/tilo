@@ -806,6 +806,7 @@ impl Widget for TopBarSurface {
             || self.bars.iter().any(|bar| bar.widget.needs_redraw())
             || self.menu.needs_redraw()
             || self.profile.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn needs_animation_frame(&self) -> bool {

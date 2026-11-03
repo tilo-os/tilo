@@ -147,7 +147,7 @@ impl SharedDesktops {
         if room.is_nil() || local == 0 {
             return false;
         }
-        let Some(person) = sync.and_then(|sync| sync.own().user.clone()) else {
+        let Some(person) = sync.and_then(|sync| sync.own().user) else {
             return false;
         };
         let Some(mut held) = Self::record(engine, room) else {

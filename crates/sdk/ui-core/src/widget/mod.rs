@@ -333,6 +333,17 @@ pub fn holds_pointer(child: &dyn Widget) -> bool {
     child.wants_pointer_capture() || child.modal_capture().is_some()
 }
 
+/// Whether `widget` paints this frame: it changed itself, or a child is dirty
+/// or on its way (`needs_animation_frame`) and paints other pixels.
+#[must_use]
+pub fn redraw_or_children(dirty: bool, widget: &dyn Widget) -> bool {
+    let mut dirty = dirty;
+    widget.for_each_child(&mut |child: &dyn Widget| {
+        dirty |= child.needs_redraw() || child.needs_animation_frame();
+    });
+    dirty
+}
+
 /// Route `event` through a container's children, first handler wins. A
 /// child latching a drag gets it exclusively, so the drag survives the
 /// cursor crossing a peer whose handler would otherwise claim it first; a
@@ -2414,10 +2425,12 @@ pub trait Widget {
         defaults::has_transient_feedback(self.children())
     }
 
-    /// Default `true` (dirty every frame). Opt into incremental redraw by
-    /// tracking a `dirty: bool`, setting it in `handle_event`/`sync`, and
-    /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any
-    /// descendant is.
+    /// Default `false` (clean). A widget is clean until something it reads
+    /// changes: a leaf that keeps state says so by tracking a `dirty: bool`
+    /// (set in `handle_event`/`sync`, cleared in `mark_drawn()`), and one
+    /// that paints from the people on the document reads the frame's
+    /// presence ([`crate::presence::frame::frame`]). Containers MUST
+    /// forward: dirty iff any descendant is.
     fn needs_redraw(&self) -> bool {
         defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
@@ -2430,7 +2443,7 @@ pub trait Widget {
     /// Callers add an anti-alias/effect safety margin and fall back to a full
     /// redraw for layout, structure, overlays, or invalid retained targets.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        if self.needs_redraw() {
+        if self.needs_redraw() || self.needs_animation_frame() {
             regions.push(self.get_rect());
         }
     }
@@ -2449,6 +2462,12 @@ pub trait Widget {
     /// Called after this widget's scene lands in the composed frame, to
     /// clear a `dirty` flag. Default forwards to children.
     fn mark_drawn(&mut self) {
+        defaults::mark_drawn(self.children_mut());
+    }
+
+    /// Rest this widget's children after a frame drew them, for a widget that
+    /// keeps its own dirty flag: it clears the flag itself, then calls this.
+    fn mark_children_drawn(&mut self) {
         defaults::mark_drawn(self.children_mut());
     }
 
@@ -3340,8 +3359,10 @@ pub mod program_step;
 pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
+pub mod person_field;
 pub use date_field::{DateField, DateFieldProps};
 pub use date_picker::{DateFeed, DatePicker, DatePickerProps, DateShown, ExternalDatePickerHit};
+pub use person_field::{PersonField, PersonFieldProps};
 pub mod time_picker;
 pub mod timeline_density;
 pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
@@ -3487,7 +3508,8 @@ mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    RowGroup, RowSelection, VecListModel, VirtualList, VirtualListProps,
+    RowGroup, RowSelection, TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeRow, VecListModel,
+    VirtualList, VirtualListProps,
 };
 mod activation;
 pub(crate) mod control_verb;
@@ -3663,6 +3685,10 @@ pub use qr_component::QrProps;
 
 #[cfg(test)]
 mod a11y_tree_tests;
+
+#[cfg(test)]
+#[path = "flow_cache_tests.rs"]
+mod flow_cache_tests;
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]

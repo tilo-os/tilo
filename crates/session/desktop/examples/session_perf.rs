@@ -458,6 +458,17 @@ fn run() -> Result<(), String> {
     // still counts as moving; settle the animations on the toolkit's clock
     // first, as a capture does, and then no offered frame may find work.
     harness.settle_for_capture(ui::time::Duration::from_millis(2000));
+    // Settling moves what the desk shows: a placeholder says where its
+    // content comes from once it has stood a while. A host presents that
+    // frame as soon as it is due; presenting it here keeps the offers below
+    // to the idle loop itself, rather than counting the one frame the
+    // settled state is still owed six hundred times.
+    for _ in 0..3 {
+        if !harness.frame_schedule().needs_redraw {
+            break;
+        }
+        harness.profile_frame();
+    }
     let mut idle_frames = 0usize;
     let mut idle_worked = 0usize;
     let start = Instant::now();

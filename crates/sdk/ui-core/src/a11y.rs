@@ -236,6 +236,30 @@ pub enum Action {
     ShowContextMenu,
 }
 
+/// Whether activating a control of `role` carries a meaning of its own, so
+/// an assistive technology is offered the activation: the roles a person
+/// presses. A table's row is one of them — its activation opens what the row
+/// names, and it is only offered on a row that carries an action target (see
+/// [`AccessNode::with_action_target`]) — while a label or a plain cell is
+/// not: offering activation there makes a reader say "clickable" about text
+/// that does nothing.
+#[must_use]
+pub(crate) const fn activation_role(role: Role) -> bool {
+    matches!(
+        role,
+        Role::Button
+            | Role::ToggleButton
+            | Role::Checkbox
+            | Role::RadioButton
+            | Role::Switch
+            | Role::Tab
+            | Role::MenuItem
+            | Role::ListItem
+            | Role::TreeItem
+            | Role::Link
+    )
+}
+
 /// A change to the person's accessibility preferences that a control asked
 /// for, such as the sign-in screen's larger-text or high-contrast toggle.
 /// The host applies it to the whole window, exactly as the matching system

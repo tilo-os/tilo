@@ -154,6 +154,8 @@ pub struct RichTextLine {
     transient_key: Option<u64>,
     /// Formatting-only edits must notify the owning document just like typing.
     dirty: RichTextDirty,
+    /// Its paint changed since the last frame drew it.
+    paint_dirty: bool,
     /// Cached theme colours used by unwrapped attributed single-line shaping.
     accent_rgb: Option<[u8; 3]>,
     /// The theme's syntax palette, captured when attributes are prepared.
@@ -215,6 +217,7 @@ impl RichTextLine {
             transient_colors: Vec::new(),
             transient_key: None,
             dirty: RichTextDirty::default(),
+            paint_dirty: true,
             accent_rgb: None,
             syntax: None,
             pending_marks: Vec::new(),
@@ -243,11 +246,13 @@ impl RichTextLine {
 
     /// Make the line a field of its own (a composer): see the field's docs.
     pub fn set_composer(&mut self, composer: bool) {
+        self.paint_dirty = true;
         self.composer = composer;
     }
 
     /// Paint mentions in the colours `paint` gives each participant.
     pub fn set_mention_paint(&mut self, paint: Option<marks::MentionPaint>) {
+        self.paint_dirty = true;
         self.mention_paint = paint;
         self.refresh_attributes();
     }
@@ -283,6 +288,7 @@ impl RichTextLine {
 
     /// Change the line's role; its height is measured again.
     pub fn set_text_role(&mut self, role: TextRole) {
+        self.paint_dirty = true;
         self.inner.set_text_role(role);
         self.set_size(crate::tokens::typography::stock().size(role));
     }
@@ -302,6 +308,7 @@ impl RichTextLine {
     }
 
     pub fn set_mono(&mut self, mono: bool) {
+        self.paint_dirty = true;
         if self.inner.is_mono() != mono {
             self.stack_measure = None;
         }
@@ -311,6 +318,7 @@ impl RichTextLine {
     /// Source-code cells retain literal text rather than prose formatting or
     /// note-link shortcuts. Monospace alone does not imply these semantics.
     pub fn set_inline_formatting(&mut self, enabled: bool) {
+        self.paint_dirty = true;
         if self.inline_formatting != enabled {
             self.dirty.styled_layout = true;
             self.stack_measure = None;
@@ -370,6 +378,7 @@ impl RichTextLine {
     }
 
     pub fn set_wrap(&mut self, wrap: bool) {
+        self.paint_dirty = true;
         if self.wrap != wrap {
             self.stack_measure = None;
         }
@@ -378,10 +387,12 @@ impl RichTextLine {
     }
 
     pub(super) fn set_compact_wrapped(&mut self, compact: bool) {
+        self.paint_dirty = true;
         self.inner.set_compact_multiline(compact);
     }
 
     pub(super) fn set_layout_inset(&mut self, inset: f32) {
+        self.paint_dirty = true;
         if self.layout_inset.to_bits() != inset.to_bits() {
             self.stack_measure = None;
         }
@@ -389,6 +400,7 @@ impl RichTextLine {
     }
 
     pub(super) fn set_layout_header_height(&mut self, height: f32) {
+        self.paint_dirty = true;
         if self.layout_header_height.to_bits() != height.to_bits() {
             self.stack_measure = None;
         }
@@ -396,6 +408,7 @@ impl RichTextLine {
     }
 
     pub(super) fn set_table_preview(&mut self, visual: Option<bool>) {
+        self.paint_dirty = true;
         if self.table_preview != visual {
             self.stack_measure = None;
         }
@@ -407,6 +420,7 @@ impl RichTextLine {
     }
 
     pub(super) fn set_image_preview(&mut self, preview: ImagePreview) {
+        self.paint_dirty = true;
         if self.image_preview != preview {
             self.stack_measure = None;
         }
@@ -424,6 +438,7 @@ impl RichTextLine {
     /// Used by `BlockEditor` to back each block with the per-block `Text` at
     /// `pages[id].blocks[i].text`.
     pub fn bind_text(&mut self, obj: ObjId) {
+        self.paint_dirty = true;
         self.inner.bind_text(obj);
     }
 
@@ -431,6 +446,7 @@ impl RichTextLine {
         &mut self,
         state: &AutoCommit,
     ) -> Result<(), crate::view::ThawError> {
+        self.paint_dirty = true;
         self.inner.adopt_bound_text(state)?;
         self.align_bound_projection(state);
         self.refresh_attributes();
@@ -468,11 +484,13 @@ impl RichTextLine {
     }
 
     pub fn set_local_author(&mut self, author: Option<String>) {
+        self.paint_dirty = true;
         self.inner.set_local_author(author);
     }
 
     /// Align the line's text within its width.
     pub fn set_align(&mut self, align: crate::richtext::TextAlign) {
+        self.paint_dirty = true;
         self.inner.set_align(align);
     }
 
@@ -487,11 +505,13 @@ impl RichTextLine {
     /// Show who wrote which run of an unbound line: byte ranges and the
     /// writer's id, as the model owning the text records them.
     pub fn set_author_runs(&mut self, runs: Vec<(usize, usize, String)>) {
+        self.paint_dirty = true;
         self.author_runs = runs;
     }
 
     /// Does NOT mark the line dirty — programmatic writes are not user edits.
     pub fn set_text(&mut self, s: &str) {
+        self.paint_dirty = true;
         self.closed = None;
         self.inner.set_text(s);
         self.inner.set_cursor_pos(s.len());
@@ -527,6 +547,7 @@ impl RichTextLine {
     /// When losing focus the cursor isn't touched — it stays wherever
     /// the user last left it.
     pub fn set_focus(&mut self, focused: bool) {
+        self.paint_dirty = true;
         self.inner.set_focus(focused);
     }
 
@@ -549,6 +570,7 @@ impl RichTextLine {
     }
 
     pub fn set_cursor_pos(&mut self, pos: usize) {
+        self.paint_dirty = true;
         self.inner.set_cursor_pos(pos);
         self.prev_cursor = self.inner.cursor_pos();
     }
@@ -565,6 +587,7 @@ impl RichTextLine {
 
     /// A document editor's own 1× size; its height is measured again.
     pub(crate) fn set_size(&mut self, size: f32) {
+        self.paint_dirty = true;
         if self.font_size.to_bits() != size.to_bits() {
             self.stack_measure = None;
             self.font_size = size;
@@ -583,12 +606,14 @@ impl RichTextLine {
     }
 
     pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
+        self.paint_dirty = true;
         marks.compact_sort_by_key(|s| s.range.start);
         self.dirty.styled_layout |= self.marks != marks;
         self.marks = marks;
     }
 
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
+        self.paint_dirty = true;
         self.transient_key = None;
         self.replace_transient_colors(colors);
     }
@@ -597,6 +622,7 @@ impl RichTextLine {
     /// derived from; [`Self::transient_colors_key`] returns it until the
     /// colours are set again.
     pub fn set_keyed_transient_colors(&mut self, key: u64, colors: Vec<TransientColorSpan>) {
+        self.paint_dirty = true;
         self.transient_key = Some(key);
         self.replace_transient_colors(colors);
     }
@@ -607,6 +633,7 @@ impl RichTextLine {
     }
 
     fn replace_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
+        self.paint_dirty = true;
         if self.transient_colors == colors {
             return;
         }
@@ -629,6 +656,7 @@ impl RichTextLine {
     /// [`TextInput::apply_pending_autocorrection`]), carrying the marks over
     /// it as typing does.
     pub fn apply_pending_autocorrection(&mut self) -> bool {
+        self.paint_dirty = true;
         if !self.inner.apply_pending_autocorrection() {
             return false;
         }
@@ -646,10 +674,12 @@ impl RichTextLine {
     /// span of each ends there: the person ended them on purpose. Moving
     /// the caret or editing elsewhere forgets this.
     pub fn close_marks_at(&mut self, at: usize, marks: Vec<Mark>) {
+        self.paint_dirty = true;
         self.closed = Some((at, marks));
     }
 
     pub fn add_mark(&mut self, span: MarkSpan) {
+        self.paint_dirty = true;
         self.marks.push(span);
         self.marks.compact_sort_by_key(|s| s.range.start);
         self.dirty.styled_layout = true;
@@ -662,6 +692,7 @@ impl RichTextLine {
     /// With no active selection, pushes the mark onto the pending list so
     /// the next typed character inherits it.
     pub fn toggle_mark(&mut self, mark: Mark) {
+        self.paint_dirty = true;
         if !self.inline_formatting {
             return;
         }
@@ -682,6 +713,7 @@ impl RichTextLine {
     /// Set the line's text flush with its rect's edge: a read-only body that lines up with
     /// what stands beside it. Given before the line is laid out.
     pub(crate) fn set_flush(&mut self) {
+        self.paint_dirty = true;
         self.inner.drop_document_inset();
     }
 
@@ -858,6 +890,7 @@ impl RichTextLine {
     /// against `prev_text`, which the caller updates afterward), and emits
     /// `LinkOpen` when the edit just typed a `[[` at the caret.
     fn reconcile_marks_after_edit(&mut self, new_text: &str) {
+        self.paint_dirty = true;
         let (at, inserted, removed) = diff_splice(&self.prev_text, new_text);
         marks::carry_through_edit(&mut self.marks, at, inserted, removed);
         if let Some((closed_at, closed)) = self.closed.take()
@@ -897,6 +930,7 @@ impl RichTextLine {
     /// Give the input attributed text before it measures or paints. Overpainting
     /// plain glyphs cannot preserve wrapping or pointer/caret geometry.
     fn sync_wrapped_spans(&mut self, theme: &Theme) {
+        self.paint_dirty = true;
         if self.wrap && !self.inline_formatting && !self.transient_colors.is_empty() {
             let text = self.value();
             let mut boundaries = vec![0, text.len()];
@@ -1086,6 +1120,7 @@ impl RichTextLine {
     }
 
     pub(super) fn forget_stacked_height(&mut self) {
+        self.paint_dirty = true;
         self.stack_measure = None;
     }
 
@@ -1255,10 +1290,12 @@ impl Widget for RichTextLine {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        self.paint_dirty = true;
         self.inner.set_interaction_environment(environment);
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.paint_dirty = true;
         let (state, path) = crate::doc::document_ref(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
@@ -1356,6 +1393,7 @@ impl Widget for RichTextLine {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.paint_dirty = true;
         // Intercepted before the inner TextInput sees them — otherwise Enter
         // would be filtered as a control char, and Backspace at byte 0 would
         // silently no-op (TextInput already guards `cursor_pos > 0`).
@@ -1471,6 +1509,16 @@ impl Widget for RichTextLine {
         }
     }
 
+    /// Its paint changed since the last frame drew it, or its inner field's did.
+    fn needs_redraw(&self) -> bool {
+        self.paint_dirty || (self.inner.needs_redraw() || self.inner.needs_animation_frame())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.paint_dirty = false;
+        Widget::mark_drawn(&mut self.inner);
+    }
+
     fn name(&self) -> &'static str {
         "RichTextLine"
     }
@@ -1488,6 +1536,7 @@ impl Widget for RichTextLine {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.paint_dirty = true;
         self.inner.set_focus(focused);
     }
 
@@ -1523,6 +1572,7 @@ impl Widget for RichTextLine {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        self.paint_dirty = true;
         let (state, path) = crate::doc::document(state, path);
         let handled = Widget::perform_action(&mut self.inner, action, &[], state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {

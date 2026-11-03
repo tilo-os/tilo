@@ -52,16 +52,13 @@ fn the_session_publishes_its_file_access_list_to_the_files_daemon() {
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::create_dir_all(root.path().join("runtime")).unwrap();
-    // SAFETY: this binary runs the one test below, so nothing else reads the
-    // environment while it changes.
-    unsafe {
-        std::env::set_var("HOME", root.path());
-        std::env::set_var("XDG_CONFIG_HOME", root.path().join("config"));
-        std::env::set_var("XDG_RUNTIME_DIR", root.path().join("runtime"));
-        std::env::set_var("TILO_IDENTITY_ROOT", root.path().join("identity"));
-        std::env::set_var("TILO_AUTHORITY_SOCKET_DIR", root.path().join("sockets"));
-        std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &script);
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", root.path())
+        .set("XDG_CONFIG_HOME", root.path().join("config"))
+        .set("XDG_RUNTIME_DIR", root.path().join("runtime"))
+        .set("TILO_IDENTITY_ROOT", root.path().join("identity"))
+        .set("TILO_AUTHORITY_SOCKET_DIR", root.path().join("sockets"))
+        .set("TILO_FS_AUTHORITY_PUBLISHER", &script);
     let acl = root.path().join("config/tilo/fs-capabilities.json");
     let mut session = common::seeded_session(root.path());
     common::until(&mut session, "the file access list", |_| {

@@ -657,6 +657,26 @@ pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
     Ok(SharedGpu { device, queue })
 }
 
+/// The adapter the toolkit's shared device draws on, if this machine offers
+/// one: what a frame path asks before it builds a renderer, so a machine
+/// with no GPU to draw on is known from one question rather than from a
+/// renderer built and thrown away per surface.
+///
+/// Opens the device on the first call, as [`shared_gpu`] does; `None` where
+/// this process draws on no adapter at all.
+#[must_use]
+pub fn shared_adapter_info() -> Option<wgpu::AdapterInfo> {
+    if !tilo_rt::available(tilo_rt::Feature::BlockOn) || gpu_disabled() {
+        return None;
+    }
+    let context = shared_render_context();
+    let mut ctx = context.lock().ok()?;
+    let dev_id = ctx.device(None).block_on()?;
+    ctx.devices
+        .get(dev_id)
+        .map(|handle| handle.adapter.get_info())
+}
+
 /// Why an [`OffscreenRenderer`] could not be built.
 ///
 /// Every variant is an *environment* failure. Bad arguments (a zero width

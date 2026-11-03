@@ -2,6 +2,7 @@
 mod admit;
 mod adopt;
 pub mod base;
+pub mod direct_pair;
 pub(crate) mod key_hex;
 pub mod media;
 pub mod membership;
@@ -16,6 +17,7 @@ pub use admit::{
 };
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+pub use direct_pair::{DirectPair, proven_pair};
 pub use saved_shortcut::{proven_saver, sign_saved_shortcut, workspace_revocations};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
@@ -288,6 +290,19 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
         && settings_of(before) == settings_of(Some(after))
 }
 
+/// What `value` holds, as stored: bytes as bytes, and any value of another
+/// shape as what it prints, so a writer's value of an unexpected shape is a
+/// value too.
+fn held_bytes(value: &Value<'_>) -> Vec<u8> {
+    match value {
+        Value::Scalar(value) => match value.as_ref() {
+            ScalarValue::Bytes(bytes) => bytes.clone(),
+            other => format!("{other:?}").into_bytes(),
+        },
+        Value::Object(kind) => format!("{kind:?}").into_bytes(),
+    }
+}
+
 /// The workspace's settings as stored: its name and its saved grant sets.
 /// Whatever a key holds counts, so a value of another shape than a writer
 /// writes is a change too.
@@ -296,23 +311,16 @@ fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
     let Some(doc) = doc else {
         return Vec::new();
     };
-    let held = |value: &Value<'_>| match value {
-        Value::Scalar(value) => match value.as_ref() {
-            ScalarValue::Bytes(bytes) => bytes.clone(),
-            other => format!("{other:?}").into_bytes(),
-        },
-        Value::Object(kind) => format!("{kind:?}").into_bytes(),
-    };
     let mut settings = Vec::new();
     for key in [WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY] {
         let Some((value, obj)) = doc.get(ROOT, key).ok().flatten() else {
             continue;
         };
-        settings.push((key.to_owned(), held(&value)));
+        settings.push((key.to_owned(), held_bytes(&value)));
         if matches!(value, Value::Object(_)) {
             for entry in doc.keys(&obj) {
                 if let Some((value, _)) = doc.get(&obj, &entry).ok().flatten() {
-                    settings.push((format!("{key}/{entry}"), held(&value)));
+                    settings.push((format!("{key}/{entry}"), held_bytes(&value)));
                 }
             }
         }
@@ -377,26 +385,19 @@ fn nested_values(doc: Option<&AutoCommit>, key: &str) -> BTreeMap<(String, Strin
     let Some(doc) = doc else {
         return values;
     };
-    let held = |value: &Value<'_>| match value {
-        Value::Scalar(value) => match value.as_ref() {
-            ScalarValue::Bytes(bytes) => bytes.clone(),
-            other => format!("{other:?}").into_bytes(),
-        },
-        Value::Object(kind) => format!("{kind:?}").into_bytes(),
-    };
     let Some((top, outer)) = doc.get(ROOT, key).ok().flatten() else {
         return values;
     };
-    values.insert((String::new(), String::new()), held(&top));
+    values.insert((String::new(), String::new()), held_bytes(&top));
     for first in doc.keys(&outer) {
         let Some((value, inner)) = doc.get(&outer, &first).ok().flatten() else {
             continue;
         };
-        values.insert((first.clone(), String::new()), held(&value));
+        values.insert((first.clone(), String::new()), held_bytes(&value));
         if matches!(value, Value::Object(_)) {
             for second in doc.keys(&inner) {
                 if let Some((value, _)) = doc.get(&inner, &second).ok().flatten() {
-                    values.insert((first.clone(), second), held(&value));
+                    values.insert((first.clone(), second), held_bytes(&value));
                 }
             }
         }

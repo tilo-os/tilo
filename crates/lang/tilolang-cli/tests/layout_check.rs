@@ -57,11 +57,14 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             Kind::Overflow => "overflowing",
             Kind::Overlap => "overlapping",
             // A word wider than its column breaks (`clipped` is laid out right), and the chip
-            // takes a finger's room on touch (`small_target` is laid out right).
-            Kind::ClippedText | Kind::SmallHitTarget => "",
+            // takes a finger's room on touch (`small_target` is laid out right). A view in
+            // this fixture has no scroll view given no room: `a_board_lane_draws_every_card_it_
+            // has_room_for` holds that one.
+            Kind::ClippedText | Kind::SmallHitTarget | Kind::LostContent => "",
             Kind::ScrollsSideways => "sideways",
-            // Layout snaps every edge, broken or not.
-            Kind::OffPixel => "(no view)",
+            // Layout snaps every edge, broken or not; and a window gives a view that composes
+            // no shell its page, so no page anywhere is one bare row.
+            Kind::OffPixel | Kind::BareRow => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -106,6 +109,30 @@ fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
     assert!(
         report.findings.is_empty(),
         "the middle and the dock scroll inside the window:\n{}",
+        layout_check::render(&report)
+    );
+}
+
+/// A board's lanes are as tall as the page they are in: a lane holding as many cards as the
+/// pane shows draws every one of them under its heading, and a lane holding more keeps them
+/// all inside the view that scrolls them. A lane given no height loses its cards instead, which
+/// the check catches (a scroll view with no room for what it holds).
+#[test]
+fn a_board_lane_draws_every_card_it_has_room_for() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/board")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(report.layouts > 0, "the board is laid out");
+    assert!(
+        report.unreached.is_empty(),
+        "the board's views are laid out:\n{}",
+        layout_check::render(&report)
+    );
+    assert!(
+        report.findings.is_empty(),
+        "no lane loses the cards it has room for:\n{}",
         layout_check::render(&report)
     );
 }

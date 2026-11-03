@@ -176,3 +176,35 @@ engine could not type into the field it was composing in.
 
 Remove both once smithay lets a compositor serve its own text fields through
 an input method and route a virtual keyboard's keys through its own input.
+
+## A mode set does not hold the compositor's thread (`drm`)
+
+Setting a mode is a state commit, and this release makes one blocking: the
+atomic commit returns once the driver's commit tail ran, and that is where the
+link to the display trains — seconds when a sink's training fails and the
+driver waits its timeout out. The caller is the compositor's event loop, so
+every other display kept scanning out the frame it had, and no input was read,
+until it returned. The crtc also forgot the commit it still had: `commit_frame`
+dropped the frame it committed instead of tracking it, so nothing knew a
+commit was in flight.
+
+- `src/backend/drm/surface/atomic.rs`: one `commit_flags(event)` for state
+  commits, `ALLOW_MODESET | NONBLOCK` plus `PAGE_FLIP_EVENT` when the caller
+  waits for the commit, used by `commit` and by `clear_state`. Page flips
+  already queued theirs.
+- `src/backend/drm/compositor/mod.rs`: `commit_frame` asks for the event, and
+  `PendingFrame`/`QueuedFrame` hold `Option<U>`, so a frame committed without
+  user data is tracked like one queued with it. `frame_submitted` retires it
+  on its event, no second commit goes to that crtc before it, a frame
+  committed while one is in flight waits for the same event, and
+  `reset_state` drops both because the state they were committed against is
+  read back again.
+
+A commit the driver fails after the call returned cannot be reported to the
+caller; whoever commits owns that. Tilo's DRM backend judges a commit by the
+vblank and the kernel state that follow it, and redoes the modeset once. The
+backend only creates atomic surfaces; the legacy surface keeps
+`drmModeSetCrtc`, which is blocking by API.
+
+Remove this once upstream queues its state commits and tracks them, or reports
+which commit is still in flight.

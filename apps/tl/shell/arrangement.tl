@@ -161,7 +161,9 @@ fn showing_text(v: Viewing) -> Text {
 /// The preset `text` names, or the strips for one this build does not know: a record from a
 /// newer shell still opens.
 fn preset_named(text: Text) -> Preset {
-    if text == "frames" { .frames } else if text == "spaces" { .spaces } else if text == "desktop" { .desktop } else { .strips }
+    if text == "frames" {
+        .frames
+    } else if text == "spaces" { .spaces } else if text == "desktop" { .desktop } else { .strips }
 }
 
 /// Shows the desk through `shown` (§6): the scrolling strips, the framed canvas or the spaces

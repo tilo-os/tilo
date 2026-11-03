@@ -8,7 +8,7 @@ const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
 
 fn pointer(step: u32) -> NeighbourMsg {
-    NeighbourMsg::PresenceMoved {
+    NeighbourMsg::RetiredPresenceMoved {
         peer: 0x9e37_79b9_7f4a_7c15,
         user: "a".repeat(64),
         key: format!(r#"{{"pointer":{{"space":{{"tile":{{"room":"{ROOM}","tab":1}}}}}}}}"#),
@@ -21,7 +21,7 @@ fn pointer(step: u32) -> NeighbourMsg {
 }
 
 fn caret(pos: u64) -> NeighbourMsg {
-    NeighbourMsg::AppPresenceV2 {
+    NeighbourMsg::RetiredAppPresenceV2 {
         peer: 0x9e37_79b9_7f4a_7c15,
         app_id: "so.tilo.word-processor".into(),
         cluster_id: ROOM.into(),
@@ -82,7 +82,7 @@ async fn cost(fixture: &Fixture) -> (usize, u64, u64) {
     // author stamping, mailbox routing and frame encoding are all production.
     let mut input: Vec<_> = (0..MOVES).map(pointer).collect();
     input.extend((30..=42).map(caret));
-    let cleared = NeighbourMsg::PresenceCleared {
+    let cleared = NeighbourMsg::RetiredPresenceCleared {
         peer: 0x9e37_79b9_7f4a_7c15,
         key: "tile".into(),
     };
@@ -98,7 +98,7 @@ async fn cost(fixture: &Fixture) -> (usize, u64, u64) {
             &fixture.source.peer,
             &source,
             &[7],
-            Envelope::Presence {
+            Envelope::RetiredPresence {
                 workspace_id: 7,
                 payload,
             },
@@ -146,7 +146,7 @@ async fn cost(fixture: &Fixture) -> (usize, u64, u64) {
     let mut reader = SessionReader::new(bytes.as_slice());
     let mut seen = Vec::new();
     while let Some(frame) = reader.read_next().await.unwrap() {
-        let EnvelopeV2::State(Envelope::Presence {
+        let EnvelopeV2::State(Envelope::RetiredPresence {
             workspace_id,
             payload,
         }) = frame

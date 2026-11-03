@@ -344,7 +344,9 @@ impl Drop for ConnectionLease {
 pub(super) fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
         EnvelopeV2::State(Envelope::Delta { delta, .. }) => delta.len().saturating_add(256),
-        EnvelopeV2::State(Envelope::Presence { payload, .. }) => payload.len().saturating_add(256),
+        EnvelopeV2::State(Envelope::RetiredPresence { payload, .. }) => {
+            payload.len().saturating_add(256)
+        }
         EnvelopeV2::State(Envelope::SyncResponse { delta_since, .. }) => {
             delta_since.len().saturating_add(256)
         }

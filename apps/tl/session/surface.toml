@@ -662,6 +662,16 @@ id = "close-tab"
 kind = "outside"
 params = []
 
+[[resources.verbs]]
+id = "wait-window"
+kind = "outside"
+params = []
+
+[[resources.verbs]]
+id = "force-quit-app"
+kind = "outside"
+params = []
+
 [[resources]]
 instances = true
 kind = "so.tilo.session.agent-run"

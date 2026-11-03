@@ -107,35 +107,35 @@ d-clxahlh2 = High
 
 d-d6avlyc5 = Urgent
 
+d-3776c5yx = Row place
+    .doc = What the place a task's row stands in already says, and the row therefore leaves out.
+
+d-63qticzp = Nothing: a plain list, a card, a surface of the system's own
+    .doc = Nothing: a plain list, a card, a surface of the system's own.
+
+d-u4wzi4k4 = The day it is grouped under, as a list of a day is
+    .doc = The day it is grouped under, as a list of a day is.
+
+d-ifftrju4 = Its project, as a project's list is of one
+    .doc = Its project, as a project's list is of one.
+
 d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
-
-d-dypqwvdm = Add
-    .doc = Adds a task with this title to the inbox.
 
 d-u7a3fue4 = Quick add
     .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`.
 
 d-rs3ubifz = New task
-    .doc = Starts a task in the inbox.
+    .doc = Starts a task in the inbox: one to type into, or one under the title a program or an agent gives it.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
 
 d-vwgro4iv = Complete
-    .doc = Checks a task off, or opens it again.
-
-d-baqmaej2 = Assign to me
-    .doc = Takes a task on: it is the invoker's to do.
-
-d-lwodiwbl = Assign to…
-    .doc = Gives a task to someone in the workspace to do.
+    .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
 
 d-dfu53sij = Snooze until…
     .doc = Puts a task off until a day: it is due then.
-
-d-77umq62t = Unassign
-    .doc = Leaves a task for anyone to take.
 
 d-laxsa3x6 = File
     .doc = Files a task under a project.
@@ -156,7 +156,7 @@ d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task just over it, as Tab does in an outline.
+    .doc = Moves a task under the task just over it, as Tab does in an outline: one change, undone as one.
 
 d-khy6tj7s = Outdent
     .doc = Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
@@ -165,7 +165,7 @@ d-ojzyzzxu = Remove
     .doc = Deletes a task and its subtasks.
 
 d-rjpcv6es = Clear done
-    .doc = Deletes every finished task, and answers how many went: a task whose subtasks are still undone stays, so clearing never takes unfinished work with it.
+    .doc = Deletes every finished task, and answers how many went: a task is finished when everything under it is done too, so clearing takes whole finished branches and never unfinished work with it, and a task done with a step still open under it stays.
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
@@ -183,24 +183,17 @@ d-vi6srojh = Delete section
     .doc = Deletes a section; its tasks go to the project's first lane.
 
 d-pcn3xgni = New task
-    .doc = Adds a task at the end of a lane of a project's board.
+    .doc = Adds a task at the end of a lane of a project's board: `s` names the lane, none for the first.
 
 d-scjlkb6d = Place
     .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
-
-d-ekvchj3n = Move
-    .doc = Moves a task to just after another.
 
 d-kjbukd2o = Rename
     .doc = Renames a project.
 
 d-qwizihx4 = Check~present
 
-d-7ldzywu7 = Take~present
-
 d-gqnya75y = Snooze~present
-
-d-7g55zawk = Release~present
 
 d-day53wfn = Unfile~present
 
@@ -229,6 +222,8 @@ d-hc5ndp4x = Task card
     .w-move-to = Move to { $name }
 
 d-w63ba6ad = Task row
+
+d-rj4l44km = Task summary
 
 d-ypbiaiq3 = Task outline row
 

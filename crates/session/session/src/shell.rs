@@ -426,6 +426,21 @@ impl Shell {
         self.link.surface()
     }
 
+    /// The windows the shell's views picture, each with the rect its picture rests at, logical
+    /// `(x, y, width, height)`: what the compositor draws of them, its own buffers scaled into
+    /// the place a view gives them. Empty while no view pictures a window.
+    pub(crate) fn pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
+        self.parts
+            .iter()
+            .flat_map(|(_, part)| {
+                part.borrow()
+                    .window_pictures()
+                    .into_iter()
+                    .map(|picture| (picture.window, picture.rect))
+            })
+            .collect()
+    }
+
     /// Whether the shell asked something of the door the session has not run yet.
     pub(crate) fn has_asks(&self) -> bool {
         self.link.has_asks()
@@ -1225,10 +1240,7 @@ mod tests {
         // Every scenario the package declares keeps the id the lock gives it, in the lock's
         // live entries and never among the retired: a scenario's id is as real as a type's.
         let parsed = IdsLock::parse(&on_disk).expect("the lock parses");
-        let retired: std::collections::BTreeMap<(&str, &str), ()> = parsed
-            .retired()
-            .map(|(name, id)| ((name, id), ()))
-            .collect();
+        let retired: std::collections::BTreeSet<(&str, &str)> = parsed.retired().collect();
         let scenarios = &compiled.compiled.meta.scenarios;
         assert!(
             scenarios.len() > 20,
@@ -1241,7 +1253,7 @@ mod tests {
                 .get(&name)
                 .unwrap_or_else(|| panic!("scenario {name:?} has no id in app.ids"));
             assert!(
-                !retired.contains_key(&(name.as_str(), held)),
+                !retired.contains(&(name.as_str(), held)),
                 "{name} is retired"
             );
         }

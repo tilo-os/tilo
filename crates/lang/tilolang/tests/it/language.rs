@@ -287,6 +287,27 @@ fn sort_by_takes_a_key_path_that_may_be_absent() {
 }
 
 #[test]
+fn descendants_and_ancestors_follow_the_parent_an_item_names() {
+    const TREE: &str = "type N {\n    p: Option<N> = .none\n    items: Collection<N>\n}\n";
+    // The items under one, and the ones it is under: a tree the list itself holds.
+    ok(&format!(
+        "{TREE}fn f(all: List<N>, n: N) -> List<N> {{\n    all.descendants(n, x -> x.p)\n}}"
+    ));
+    ok(&format!(
+        "{TREE}fn f(n: N, t: N) -> Bool {{\n    n.items.ancestors(t, .p).any(a -> a == t)\n}}"
+    ));
+    // An item's parent is an Option of the item, and the call names one to start from.
+    expect(
+        "E051",
+        "type N {\n    p: Option<N> = .none\n}\nfn f(all: List<N>) -> List<N> {\n    all.descendants(.p)\n}",
+    );
+    expect(
+        "E020",
+        "type N {\n    t: Text\n}\nfn f(all: List<N>, n: N) -> List<N> {\n    all.descendants(n, x -> x.t)\n}",
+    );
+}
+
+#[test]
 fn a_ui_let_writes_the_type_its_value_is_read_as() {
     // What `std.rows` writes: a heading that is absent when the app names no group.
     ok(

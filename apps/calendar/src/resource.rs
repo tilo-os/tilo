@@ -1023,6 +1023,30 @@ pub enum CalendarEffect {
     /// Opens this workspace's Inbox task list without changing its content.
     #[effect(view, idempotent)]
     ShowTasks,
+    /// New event
+    ///
+    /// Starts an event the way the window's own New event does: at the next
+    /// quarter hour on the day the window shows, its form open with the caret
+    /// in the title.
+    #[effect(
+        view,
+        idempotent,
+        label = "New event",
+        icon = "plus",
+        keywords = "create, add, schedule, start"
+    )]
+    StartEvent,
+    /// New task
+    ///
+    /// Opens the task list's entry, ready for the new task's name.
+    #[effect(
+        view,
+        idempotent,
+        label = "New task",
+        icon = "plus",
+        keywords = "create, add, todo, start"
+    )]
+    StartTask,
     /// Open
     ///
     /// Shows an event, one occurrence of it, a task, a project's tasks or

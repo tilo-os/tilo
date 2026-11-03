@@ -1912,3 +1912,73 @@ fn typed_cells_align_numbers_dim_absent_values_and_measure_auto_columns() {
     let x = cell.x1 - pad - f64::from(w);
     assert!(x > cell.center().x, "numbers sit at the trailing edge");
 }
+
+#[test]
+fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
+    let menus = Rc::new(RefCell::new(Vec::<(usize, Point)>::new()));
+    let recorded = Rc::clone(&menus);
+    let opened = Rc::new(RefCell::new(Vec::<usize>::new()));
+    let answer = Rc::clone(&opened);
+    let columns = vec![
+        ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
+            .with_accessible_value(|row: &R| row.name.clone()),
+    ];
+    let mut table = DataTable::<R>::new(columns)
+        .with_row_key(|row: &R| u64::from(row.name.as_bytes()[0]))
+        .selectable(true)
+        .on_activate_view("table.open", move |index| answer.borrow_mut().push(index))
+        .on_row_context_menu(move |row, point, _rect| recorded.borrow_mut().push((row, point)));
+    table.set_rows(rows4());
+    table.set_viewport(96.0, 24.0);
+    let _ = lay_out(&mut table);
+
+    let semantics = Widget::accessibility(&table).expect("table semantics");
+    let row = semantics.children.first().expect("first visible row");
+    assert_eq!(row.role, crate::a11y::Role::Row);
+    assert_eq!(
+        row.name.as_deref(),
+        Some("a"),
+        "a row reads as the record it stands for"
+    );
+    assert!(
+        row.action_target.is_some(),
+        "and carries what the activation an assistive technology sends reaches"
+    );
+    assert!(
+        row.state.context_menu,
+        "a row the table opens a menu for announces that menu"
+    );
+
+    // The activation an AT sends lands on that row, through the same host
+    // callback a double-click takes.
+    assert!(Widget::perform_action(
+        &mut table,
+        &crate::a11y::Action::Activate,
+        &[0],
+        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert_eq!(crate::testing::answer_controls(&mut table), 1);
+    assert_eq!(&*opened.borrow(), &[0], "the row's own record is opened");
+
+    // Its menu verb opens the menu on the row the AT aimed at.
+    assert!(Widget::perform_action(
+        &mut table,
+        &crate::a11y::Action::ShowContextMenu,
+        &[1],
+        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    let menus = menus.borrow();
+    assert_eq!(menus.len(), 1, "the row's menu opened once");
+    assert_eq!(menus[0].0, 1, "for the row the action named");
+
+    // A table with no row menu says so: no menu is invented for it.
+    let mut plain = DataTable::<R>::new(sample_cols()).selectable(true);
+    plain.set_rows(rows4());
+    let semantics = Widget::accessibility(&plain).expect("table semantics");
+    assert!(
+        semantics.children.iter().all(|row| !row.state.context_menu),
+        "a row without a menu does not announce one"
+    );
+}

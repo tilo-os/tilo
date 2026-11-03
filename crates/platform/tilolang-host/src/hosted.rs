@@ -305,7 +305,7 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: Rc<Phrases>,
+        phrases: &Phrases,
         wake: Waker,
     ) -> Result<Self, RecordError> {
         let record = InstanceRecord::open(manager, &kept.documents, spec.person.clone())?;
@@ -322,7 +322,7 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: Rc<Phrases>,
+        phrases: &Phrases,
         wake: Waker,
     ) -> Self {
         let surface: SurfaceSlot = Rc::default();
@@ -330,6 +330,14 @@ impl Hosted {
             package_resource_id(&bundle.meta.app),
             bundle.meta.package_kind(),
         );
+        // The window speaks the language its package ships, the person's when it ships it: the
+        // frames' words and the history's sentences follow the app's own copy.
+        let catalogues = bundle.catalogues();
+        let shipped: Vec<&str> = catalogues
+            .iter()
+            .map(|(locale, _)| locale.as_str())
+            .collect();
+        let phrases = Rc::new(phrases.for_window(&shipped));
         let record = record.speaking(phrases.locale());
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
@@ -976,12 +984,43 @@ impl Hosted {
         let invoker = ActionInvoker::actor(self.spec.person.clone());
         let mut changed = false;
         for (address, argument) in chosen {
+            let opens_what_it_made = self.is_primary(&address);
             match self.invoke(&address, argument.as_deref(), invoker.clone(), None) {
-                Ok(_) => changed = true,
+                Ok(output) => {
+                    changed = true;
+                    // Choosing what a press of a primary action does asks for the same: what
+                    // it made opens beside the list.
+                    if opens_what_it_made {
+                        for anchor in output.resources {
+                            self.instance.opens_what_it_made(anchor);
+                        }
+                    }
+                }
                 Err(refused) => self.instance.action_refused(refused.message),
             }
         }
         changed
+    }
+
+    /// Whether the app declares the action `address` names `primary`: what it made opens when
+    /// a person runs it, whether from a press or from the palette.
+    fn is_primary(&self, address: &ActionAddress) -> bool {
+        self.instance
+            .host()
+            .and_then(|host| {
+                host.find_in_packages(|package| {
+                    package
+                        .meta
+                        .actions
+                        .iter()
+                        .find(|action| {
+                            action.id == address.action
+                                && tilolang_tilo::surface::is_primary(action)
+                        })
+                        .map(|_| ())
+                })
+            })
+            .is_some()
     }
 
     /// Publish a change to the surface that moved only labels (a note's title typed into) as

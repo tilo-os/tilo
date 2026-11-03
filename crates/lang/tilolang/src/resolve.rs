@@ -601,7 +601,7 @@ impl Env {
                 scenario: false,
             });
         };
-        for a in meta.offered_actions() {
+        for a in meta.callable_actions() {
             let present = Presentation {
                 label: if a.label.is_empty() {
                     action_label(&a.name, &a.doc)

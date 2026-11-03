@@ -86,11 +86,16 @@ pub struct EditableLabel {
     edits: Option<crate::component::Bound<String>>,
     /// The revision of the bound name last shown here.
     seen: u64,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl EditableLabel {
     pub fn new(value: &str) -> Self {
         Self {
+            dirty: true,
             id: String::new(),
             accessible_name: None,
             semantic_target: None,
@@ -143,6 +148,7 @@ impl EditableLabel {
         if given != self.value {
             self.value = given;
             self.measured = None;
+            self.dirty = true;
         }
     }
 
@@ -240,6 +246,7 @@ impl EditableLabel {
 
     /// Change the label's role; see [`Self::with_text_role`].
     pub fn set_text_role(&mut self, role: crate::tokens::TextRole) {
+        self.dirty = true;
         self.role = role;
         self.style = crate::tokens::typography::stock().style(role);
         self.input.set_text_role(role);
@@ -286,6 +293,7 @@ impl EditableLabel {
     /// Bind the editable surface to its current model identity. Changing the
     /// target retires semantic routes from the previously displayed model.
     pub fn set_semantic_target(&mut self, target: Option<String>) {
+        self.dirty = true;
         self.semantic_target = target;
     }
 
@@ -313,6 +321,7 @@ impl EditableLabel {
 
     /// Ignored while editing so it doesn't stomp the user's typing.
     pub fn set_value(&mut self, value: &str) {
+        self.dirty = true;
         if !self.editing {
             self.value = value.to_string();
         }
@@ -548,6 +557,7 @@ impl Widget for EditableLabel {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = ctx.logical(position);
         }
@@ -616,6 +626,14 @@ impl Widget for EditableLabel {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "EditableLabel"
     }
@@ -647,6 +665,7 @@ impl Widget for EditableLabel {
     /// Losing focus while editing blur-commits — the keyboard-navigation
     /// counterpart to a click-outside.
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         if focused {
             if !self.editing {
                 self.begin_edit();

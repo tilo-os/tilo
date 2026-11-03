@@ -236,8 +236,6 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     });
     let watcher = watching_page(&spectator, &host.cert, paths.clone()).await;
     watcher.join(workspace_id).unwrap();
-    // What a page does as a member, it does not do watching.
-    watcher.live_join(workspace_id).unwrap();
     watcher.open_route(route.clone()).unwrap();
     watcher
         .publish(

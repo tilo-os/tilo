@@ -30,6 +30,10 @@ use crate::store::{Listing, Splice};
 use crate::value::{CollRef, Value};
 use crate::view::{Patch, RowStep, RowsChange, UiNode, row_steps};
 
+/// The rows a virtual list holds built: each row's place and boundary, and the fragments that
+/// stand for the rows in the list.
+type BuiltRows = (Vec<(usize, BoundId)>, Vec<(usize, UiNode)>);
+
 /// The rows of a virtual list as the host holds them: what they are made of, as of the last
 /// steps the host was given.
 #[derive(Clone)]
@@ -620,47 +624,45 @@ impl Builder<'_> {
             );
             return Ok(Vec::new());
         };
-        // Where each row built before is now, by key.
-        let (steps, places): (Vec<RowStep>, Vec<(usize, usize)>) =
-            if before.rows.same(&rows) && before.len == rows.len() {
-                let kept = before
-                    .built
-                    .iter()
-                    .map(|(index, _)| (*index, *index))
-                    .collect();
-                (Vec::new(), kept)
-            } else {
-                let old = before.rows.keys(&before.template);
-                let new = rows.keys(&template);
-                let at: HashMap<&str, usize> = new
-                    .iter()
-                    .enumerate()
-                    .map(|(index, key)| (key.as_str(), index))
-                    .collect();
-                let kept = before
-                    .built
-                    .iter()
-                    .filter_map(|(index, _)| {
-                        let key = old.get(*index)?;
-                        at.get(key.as_str()).map(|now| (*index, *now))
-                    })
-                    .collect();
-                let fragment = |key: &str| template.fragment(key.to_owned(), Vec::new());
-                (row_steps(&old, &new, &fragment), kept)
-            };
-        let mut built: Vec<(usize, BoundId)> = Vec::with_capacity(places.len());
-        let mut children: Vec<(usize, UiNode)> = Vec::with_capacity(places.len());
-        for (_, now) in places {
-            let Some(item) = rows.item(self.core, now) else {
-                continue;
-            };
-            let (row_key, args) = template.row(&item, now);
-            let (id, content) = self.keep_row(template.stub(&row_key, args))?;
-            built.push((now, id));
-            children.push((now, template.fragment(row_key, content)));
-        }
-        built.sort_unstable_by_key(|(index, _)| *index);
-        children.sort_unstable_by_key(|(index, _)| *index);
+        let same = before.rows.same(&rows)
+            && before.len == rows.len()
+            && before.template.makes_as(&template);
+        let (steps, (built, children)): (Vec<RowStep>, BuiltRows) = if same {
+            // Nothing the list shows changed and none of its rows moved.
+            (Vec::new(), self.keep_built(&before.built, &template)?)
+        } else {
+            // Where each row built before is now, by key.
+            let old = before.rows.keys(&before.template);
+            let new = rows.keys(&template);
+            let at: HashMap<&str, usize> = new
+                .iter()
+                .enumerate()
+                .map(|(index, key)| (key.as_str(), index))
+                .collect();
+            let fragment = |key: &str| template.fragment(key.to_owned(), Vec::new());
+            let placed: Vec<(usize, usize)> = before
+                .built
+                .iter()
+                .filter_map(|(index, _)| {
+                    let key = old.get(*index)?;
+                    at.get(key.as_str()).map(|now| (*index, *now))
+                })
+                .collect();
+            let mut built: Vec<(usize, BoundId)> = Vec::with_capacity(placed.len());
+            let mut children: Vec<(usize, UiNode)> = Vec::with_capacity(placed.len());
+            for (_, now) in placed {
+                let Some(item) = rows.item(self.core, now) else {
+                    continue;
+                };
+                let (row_key, args) = template.row(&item, now);
+                let (id, content) = self.keep_row(template.stub(&row_key, args))?;
+                built.push((now, id));
+                children.push((now, template.fragment(row_key, content)));
+            }
+            built.sort_unstable_by_key(|(index, _)| *index);
+            children.sort_unstable_by_key(|(index, _)| *index);
+            (row_steps(&old, &new, &fragment), (built, children))
+        };
         self.live
             .row_changes
             .insert(key.clone(), RowsChange::Steps(steps));
@@ -677,6 +679,40 @@ impl Builder<'_> {
             },
         );
         Ok(children.into_iter().map(|(_, node)| node).collect())
+    }
+
+    /// The rows `before` built, kept: the list's rows are the same and none of them moved, so
+    /// each is still a boundary of its holder and its fragment stands under the same key.
+    /// Building each one's item reference, key and arguments again would read every shown item
+    /// of the list to say nothing about it changed. A row that read what changed runs again.
+    fn keep_built(
+        &mut self,
+        before: &[(usize, BoundId)],
+        template: &RowsOf,
+    ) -> Result<BuiltRows, RuntimeError> {
+        let mut built: Vec<(usize, BoundId)> = Vec::with_capacity(before.len());
+        let mut children: Vec<(usize, UiNode)> = Vec::with_capacity(before.len());
+        for (index, id) in before {
+            // Dropped rows leave the list's `built` (see `forget_rows_of`): a row here is one
+            // still in the tree.
+            let Some(b) = self.live.bound(*id) else {
+                continue;
+            };
+            let row_key = b.key.clone();
+            let fresh = b.rendered && !self.live.dirty.contains(id);
+            self.new.push(*id);
+            if fresh {
+                self.live.reused.insert(row_key.clone());
+                children.push((*index, template.fragment(row_key, Vec::new())));
+            } else {
+                let content = vec![self.live.render(self.core, *id)?];
+                children.push((*index, template.fragment(row_key, content)));
+            }
+            built.push((*index, *id));
+        }
+        built.sort_unstable_by_key(|(index, _)| *index);
+        children.sort_unstable_by_key(|(index, _)| *index);
+        Ok((built, children))
     }
 
     /// A row built before, kept: its subtree as it is when its view, arguments and reads are

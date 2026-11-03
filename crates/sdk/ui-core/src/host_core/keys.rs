@@ -28,6 +28,7 @@ impl RootEvent<'_> {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
     ) {
+        crate::input_generation::note();
         self.root.handle_event(
             event,
             &mut crate::widget::EventCtx {

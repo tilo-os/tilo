@@ -25,13 +25,22 @@ impl StatePeer {
     }
 
     /// Whether `member` may create `route`'s record empty: the workspace lets
-    /// its app author records and lets them change that record.
+    /// its app author records and lets them change that record. A pair record
+    /// is created by its two people alone ([`StatePeer::direct_pair`]), and one
+    /// the workspace holds no proof of by nobody.
     pub(super) fn may_create_record(
         &self,
         member: &MemberAuthority,
         route: &Route,
         at: SystemTime,
     ) -> bool {
+        if collab_types::direct_pair(&route.record).is_some()
+            && !self
+                .direct_pair(&route.record, at)
+                .is_some_and(|pair| pair.contains(&member.person))
+        {
+            return false;
+        }
         member
             .policy
             .app_authors(&route.app, &tilo_action_policy::Context::at_time(at))

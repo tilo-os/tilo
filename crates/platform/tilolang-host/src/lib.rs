@@ -588,7 +588,7 @@ impl TilolangHost {
             bundle,
             &kept,
             Box::new(transport),
-            Rc::clone(&self.phrases),
+            &self.phrases,
             Arc::clone(&self.wake),
         );
         let mut hosted = match opening.identity.take() {

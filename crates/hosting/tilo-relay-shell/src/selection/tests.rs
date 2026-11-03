@@ -1876,7 +1876,7 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
     }
     retain(&reopened, &t2_frame);
     reopened.bind_shell_authority(authority).unwrap();
-    let pending = tilo_relay::transport::encode(&Envelope::Presence {
+    let pending = tilo_relay::transport::encode(&Envelope::RetiredPresence {
         workspace_id,
         payload: b"pending subscription frame".to_vec(),
     })

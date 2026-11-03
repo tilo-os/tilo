@@ -69,62 +69,6 @@ pub fn members_document(event: &PeerEvent) -> bool {
     matches!(event, PeerEvent::Document(document) if !is_host(&document.author))
 }
 
-/// What a member said of itself in `body` (a postcard `NeighbourMsg` the
-/// host stamped with its device), when it is a desktop's presence.
-pub fn presence(body: &[u8]) -> Option<collab_types::PeerPresencePayload> {
-    let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
-    match message {
-        neighbour_wire::NeighbourMsg::AppPresenceV2 {
-            app_id, presence, ..
-        } if app_id == neighbour_wire::DESKTOP_PRESENCE_APP => Some(presence.payload),
-        _ => None,
-    }
-}
-
-/// The presence message saying `device`'s pointer is at `(x, y)` over tab 1
-/// of the test workspace: what a page publishes as its cursor moves.
-pub fn pointer_body(device: &[u8; 32], x: f32, y: f32) -> Vec<u8> {
-    let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
-        space: collab_types::presence::PointerSpace::Tile {
-            workspace: WORKSPACE.to_owned(),
-            tab: 1,
-        },
-    })
-    .unwrap();
-    postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(device),
-        WORKSPACE,
-        key,
-        collab_types::PeerPresencePayload::Pointer { x, y },
-    ))
-    .unwrap()
-}
-
-/// The presence message saying `device` shows itself as `label`: the view of
-/// itself a native member publishes.
-pub fn shell_body(device: &[u8; 32], label: &str) -> Vec<u8> {
-    postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(device),
-        WORKSPACE,
-        neighbour_wire::workspace_key(WORKSPACE),
-        collab_types::PeerPresencePayload::Shell(Box::new(collab_types::presence::ShellPresence {
-            seq: 1,
-            sent_at_ms: 1,
-            label: label.to_owned(),
-            agent: false,
-            colour: "#0ea5e9".into(),
-            activity: None,
-            place: None,
-            size: [1440, 900],
-            windows: Vec::new(),
-            selection: None,
-            chat: None,
-            reaction: None,
-        })),
-    ))
-    .unwrap()
-}
-
 pub fn workspace() -> u64 {
     tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
 }
@@ -619,7 +563,7 @@ pub async fn door(
     let token = random_bytes();
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
-        workspace: workspace.to_owned(),
+        room: workspace.to_owned(),
         role: RoomRole::Editor,
         token_sha256,
         label: "Guest".into(),

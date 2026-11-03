@@ -263,7 +263,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// ([`Options::sync`]) has already said what that endpoint serves.
 pub(crate) fn start_collaboration(
     options: &Options,
-    media: fabric::MediaContinuity,
+    continuity: fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     beside: tilo_network_actor::local_host::Protocols,
 ) -> Option<Rc<sync::Client>> {
@@ -286,7 +286,7 @@ pub(crate) fn start_collaboration(
         engine,
         own,
         sync::configured_hosts(),
-        media,
+        continuity,
         options.wake.handle(),
         options.questions.clone(),
         beside,

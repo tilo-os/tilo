@@ -60,6 +60,41 @@ pub enum Item {
     Fn(FnDecl),
 }
 
+impl Item {
+    /// The `///` lines a declaration is written with, in order; an item that takes none has
+    /// none.
+    pub fn doc(&self) -> &[String] {
+        match self {
+            Self::Type(d) => &d.doc,
+            Self::Alias(d) => &d.doc,
+            Self::Enum(d) => &d.doc,
+            Self::Scenario(d) => &d.doc,
+            Self::Action(d) => &d.doc,
+            Self::Flow(d) => &d.doc,
+            Self::View(d) => &d.doc,
+            Self::Fn(d) => &d.doc,
+            Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
+        }
+    }
+
+    /// Where the item is written.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Use(d) => d.span,
+            Self::Type(d) => d.span,
+            Self::Alias(d) => d.span,
+            Self::Enum(d) => d.span,
+            Self::Root(d) => d.span,
+            Self::DefaultView(d) | Self::RowView(d) => d.span,
+            Self::Scenario(d) => d.span,
+            Self::Action(d) => d.span,
+            Self::Flow(d) => d.span,
+            Self::View(d) => d.span,
+            Self::Fn(d) => d.span,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct UseDecl {
     pub node: NodeId,
@@ -257,6 +292,10 @@ pub enum ActionRole {
     /// subject's type that a version before it wrote, as an ordinary action, to bring what that
     /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
     Migration,
+    /// `internal action`: never offered. The app drives it from a gesture of its own — a drag,
+    /// an entry, a lane's button — so it is not a command a header, a menu or an action bar
+    /// lists beside the ones a person chooses from.
+    Internal,
 }
 
 impl ActionRole {
@@ -265,6 +304,7 @@ impl ActionRole {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
             Self::Migration => "migration",
+            Self::Internal => "internal",
         }
     }
 }

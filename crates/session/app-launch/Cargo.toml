@@ -21,8 +21,14 @@ test-support = []
 # Reading a downloaded `AppImage`'s own name and artwork needs its image.
 desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../../system/desktop-entry", features = ["appimage"] }
 tilo-installed-apps = { version = "0.1.0", path = "../../packaging/installed-apps" }
-# The workspace's grants, as the launcher's capability file carries them.
+# The workspace's grants, as the launcher's capability file carries them, and
+# the policy the person's authority in it is projected from.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+# Publishing the projection the launcher binds, and holding it for as long as
+# the session vouches for it.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+blake3.workspace = true
 # A record's id: what one is, and the URI that asks an app to open it.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 # The extended attributes a workspace mount answers a record's path on.

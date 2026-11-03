@@ -42,6 +42,97 @@ pub enum DeskGesture {
     Overview(bool),
 }
 
+/// What reading one touchpad event came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reading {
+    /// Not the desk's: the client under the pointer keeps it.
+    Clients,
+    /// The desk took it; the fingers say nothing yet.
+    Taken,
+    /// The desk took it and it asks this.
+    Asked(DeskGesture),
+}
+
+/// The desk's reading of the touchpad's gestures: the three- and four-finger
+/// streams the person's settings give the desk, followed until the fingers say
+/// what they mean (`tilo_compositor::gestures` turns the stream into those
+/// actions). Both window policies read them — the strips' and the shell's
+/// wells — so a gesture means the same on either desk.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GestureReader {
+    tracker: GestureTracker,
+    /// How far the fingers have carried the strip, or the strip deck, in the
+    /// gesture in flight.
+    travel: f64,
+}
+
+impl GestureReader {
+    /// `gesture` as the desk's, when `config` reads gestures (the person asked
+    /// for them) and it has three or more fingers.
+    pub(crate) fn read(
+        &mut self,
+        gesture: &GestureEvent,
+        config: Option<GestureConfig>,
+    ) -> Reading {
+        let action = match *gesture {
+            GestureEvent::SwipeBegin { fingers } | GestureEvent::PinchBegin { fingers } => {
+                let Some(config) = config.filter(|_| claims(fingers)) else {
+                    return Reading::Clients;
+                };
+                self.tracker.set_config(config);
+                self.tracker.swipe_begin(fingers);
+                self.travel = 0.0;
+                None
+            }
+            GestureEvent::SwipeUpdate { dx, dy } => self.tracker.swipe_update(dx, dy),
+            GestureEvent::SwipeEnd { cancelled } | GestureEvent::PinchEnd { cancelled } => {
+                self.tracker.swipe_end_with_cancel(cancelled)
+            }
+            GestureEvent::PinchUpdate { scale, .. } => self.tracker.pinch_update(scale),
+            // A hold asks nothing of the desk: the client keeps it.
+            GestureEvent::HoldBegin { .. } | GestureEvent::HoldEnd { .. } => {
+                return Reading::Clients;
+            }
+        };
+        let step = |travel: f64| {
+            if travel >= SWIPE_THRESHOLD {
+                Some(1)
+            } else if travel <= -SWIPE_THRESHOLD {
+                Some(-1)
+            } else {
+                None
+            }
+        };
+        let asked = match action {
+            Some(
+                GestureAction::StripPanUpdate { travel, .. }
+                | GestureAction::StripDeckUpdate { travel, .. },
+            ) => {
+                self.travel = travel;
+                None
+            }
+            Some(GestureAction::StripPanEnd { cancelled: false }) => {
+                step(self.travel).map(DeskGesture::StepWindow)
+            }
+            Some(GestureAction::StripDeckEnd { cancelled: false }) => {
+                step(self.travel).map(DeskGesture::StepStrip)
+            }
+            Some(GestureAction::SwitchWorkspace(delta)) => {
+                Some(DeskGesture::SwitchWorkspace(delta))
+            }
+            Some(GestureAction::ShowOverview) => Some(DeskGesture::Overview(true)),
+            Some(GestureAction::HideOverview) => Some(DeskGesture::Overview(false)),
+            Some(GestureAction::StripPanEnd { .. } | GestureAction::StripDeckEnd { .. }) | None => {
+                None
+            }
+        };
+        match asked {
+            Some(asked) => Reading::Asked(asked),
+            None => Reading::Taken,
+        }
+    }
+}
+
 /// The desktop both halves share.
 struct Desk {
     policy: DesktopPolicy,
@@ -178,11 +269,8 @@ pub struct StripPolicy {
     /// The windows given a place, so one gone from the compositor closes
     /// its tab.
     mapped: Vec<u64>,
-    /// The touchpad gesture in flight, when the desktop took it.
-    tracker: GestureTracker,
-    /// How far the fingers have carried the strip, or the strip deck, in
-    /// the gesture in flight.
-    travel: f64,
+    /// The touchpad gestures the desk took.
+    gestures: GestureReader,
     /// Those of them that have not shown a buffer yet: they wait in their
     /// place, which the compositor does not list among its windows.
     pending: Vec<u64>,
@@ -243,7 +331,7 @@ pub fn desktop_with(
     let desk = Rc::new(RefCell::new(Desk {
         policy,
         host: WidgetHost::new(root, placement, true)
-            .named("Desktop")
+            .named(crate::i18n::t("desktop"))
             .with_keyboard(keyboard),
         gestures: Vec::new(),
         gesture_config: Some(GestureConfig::default()),
@@ -263,8 +351,7 @@ pub fn desktop_with(
         StripPolicy {
             desk,
             mapped: Vec::new(),
-            tracker: GestureTracker::default(),
-            travel: 0.0,
+            gestures: GestureReader::default(),
             pending: Vec::new(),
             followers: WindowFollowers::default(),
             samples: None,
@@ -343,6 +430,14 @@ impl crate::well_policy::WellDesk for DesktopHost {
     fn cover(&self, outputs: &[LayoutRect]) {
         self.desk.borrow_mut().cover(outputs);
     }
+
+    fn gesture_config(&self) -> Option<GestureConfig> {
+        self.desk.borrow().gesture_config
+    }
+
+    fn took_gesture(&self, gesture: DeskGesture) {
+        self.desk.borrow_mut().gestures.push(gesture);
+    }
 }
 
 impl crate::Published for DesktopHost {
@@ -351,7 +446,13 @@ impl crate::Published for DesktopHost {
     }
 
     fn revision(&self) -> Option<u64> {
-        Some(self.desk.borrow().host.revision())
+        // What the desk publishes — the windows it holds and what can be done
+        // with them — is the desk model's, so it is the model's revision that
+        // says it changed. The hosted tree's own revision counts the frames it
+        // drew, and the desk draws every frame of a drag or a resize: read as
+        // that, everything publishing here was read again every frame of
+        // every gesture.
+        Some(self.desk.borrow().policy.handle().revision())
     }
 
     fn invoke(
@@ -741,61 +842,15 @@ impl WindowPolicy for StripPolicy {
     }
 
     fn gesture(&mut self, gesture: &GestureEvent) -> bool {
-        let action = match *gesture {
-            GestureEvent::SwipeBegin { fingers } | GestureEvent::PinchBegin { fingers } => {
-                let config = self.desk.borrow().gesture_config;
-                let Some(config) = config.filter(|_| claims(fingers)) else {
-                    return false;
-                };
-                self.tracker.set_config(config);
-                self.tracker.swipe_begin(fingers);
-                self.travel = 0.0;
-                None
+        let config = self.desk.borrow().gesture_config;
+        match self.gestures.read(gesture, config) {
+            Reading::Clients => false,
+            Reading::Taken => true,
+            Reading::Asked(asked) => {
+                self.desk.borrow_mut().gestures.push(asked);
+                true
             }
-            GestureEvent::SwipeUpdate { dx, dy } => self.tracker.swipe_update(dx, dy),
-            GestureEvent::SwipeEnd { cancelled } | GestureEvent::PinchEnd { cancelled } => {
-                self.tracker.swipe_end_with_cancel(cancelled)
-            }
-            GestureEvent::PinchUpdate { scale, .. } => self.tracker.pinch_update(scale),
-            // A hold asks nothing of the desktop: the client keeps it.
-            GestureEvent::HoldBegin { .. } | GestureEvent::HoldEnd { .. } => return false,
-        };
-        let step = |travel: f64| {
-            if travel >= SWIPE_THRESHOLD {
-                Some(1)
-            } else if travel <= -SWIPE_THRESHOLD {
-                Some(-1)
-            } else {
-                None
-            }
-        };
-        let asked = match action {
-            Some(
-                GestureAction::StripPanUpdate { travel, .. }
-                | GestureAction::StripDeckUpdate { travel, .. },
-            ) => {
-                self.travel = travel;
-                None
-            }
-            Some(GestureAction::StripPanEnd { cancelled: false }) => {
-                step(self.travel).map(DeskGesture::StepWindow)
-            }
-            Some(GestureAction::StripDeckEnd { cancelled: false }) => {
-                step(self.travel).map(DeskGesture::StepStrip)
-            }
-            Some(GestureAction::SwitchWorkspace(delta)) => {
-                Some(DeskGesture::SwitchWorkspace(delta))
-            }
-            Some(GestureAction::ShowOverview) => Some(DeskGesture::Overview(true)),
-            Some(GestureAction::HideOverview) => Some(DeskGesture::Overview(false)),
-            Some(GestureAction::StripPanEnd { .. } | GestureAction::StripDeckEnd { .. }) | None => {
-                None
-            }
-        };
-        if let Some(asked) = asked {
-            self.desk.borrow_mut().gestures.push(asked);
         }
-        true
     }
 
     fn take_close_requests(&mut self) -> Vec<u64> {

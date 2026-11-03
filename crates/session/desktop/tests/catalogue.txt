@@ -42,16 +42,20 @@ desktop:desk desktop (Windows)
   close-tab Close its window
   focus Bring its window to the front
   focus-display Focus a display
+  force-quit-app Force quit its app
   launchpad Choose a launchpad card
   move-to-display Move the window in front to another display
   search Search the desktop
   step-focus Step through the windows
+  wait-window Keep waiting for its app
   desktop:tab:7 desktop.window (Notes)
     close-tab Close Notes
     focus Focus Notes
   desktop:tab:8 desktop.window (Mail)
     close-tab Close Mail
     focus Focus Mail
+    force-quit-app Force quit Mail
+    wait-window Keep waiting for Mail
   desktop:display:1 desktop.display (Display 1)
     focus-display Focus a display
   desktop:search desktop.search (scr)

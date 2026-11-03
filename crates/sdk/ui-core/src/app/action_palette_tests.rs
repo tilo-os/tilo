@@ -22,6 +22,10 @@ impl Action for Flip {
     }
 }
 
+/// The operation a [`Viewer`]'s own action runs: a view, so it writes
+/// nothing of its own into the document.
+const PEEK: &str = "test.view.peek";
+
 /// Stands in for an app's contacts/files provider.
 struct PeopleProvider;
 impl crate::search::SearchProvider for PeopleProvider {
@@ -134,6 +138,67 @@ impl crate::resources::PublishesResources for Publisher {
                 .unwrap(),
             )
         })
+    }
+}
+
+/// One open resource offering a person a viewed action of its own: running
+/// it asks the widget, and writes nothing into the document.
+struct Viewer(std::rc::Rc<std::cell::Cell<usize>>);
+
+impl Widget for Viewer {
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+    fn name(&self) -> &'static str {
+        "viewer"
+    }
+}
+
+impl crate::widget::ResourceOperations for Viewer {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[PEEK]
+    }
+
+    fn start_operation(
+        &mut self,
+        _op: &crate::widget::ResourceOperation<'_>,
+        _: &mut crate::widget::Edits<'_>,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.0.set(self.0.get() + 1);
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+impl crate::resources::PublishesResources for Viewer {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
+        vec![
+            ResourceSpec::new("test.view:1", "test.view", "Viewable").with_action(
+                ActionSpec::operation(
+                    "peek",
+                    "Peek at it",
+                    tilo_actions::OperationKind::View,
+                    PEEK,
+                    &(),
+                )
+                .unwrap(),
+            ),
+        ]
+    }
+    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<ResourceSpec> {
+        None
     }
 }
 
@@ -693,13 +758,12 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
 
     // Case `projected_view_preserves_pending_edit_and_eventual_attribution`.
     {
+        let peeked = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut app = App::new_with_controlled_inputs(
             State::new(),
-            Box::new(Button::new("focus-me", "Focus me")),
+            Box::new(Viewer(std::rc::Rc::clone(&peeked))),
         );
         app.init_layout();
-        app.set_focused_node(None);
-        assert!(!app.root_widget.is_focused());
         let before = app.state.doc.get_heads();
         app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
         let pending = app.state.doc.pending_ops();
@@ -708,9 +772,9 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
             .action_palette
             .as_deref_mut()
             .unwrap()
-            .set_query("focus");
+            .set_query("Peek at it");
         assert!(app.action_palette_handle_key(&synth_enter()));
-        assert!(app.root_widget.is_focused());
+        assert_eq!(peeked.get(), 1, "the app's view action ran");
         assert_eq!(app.state.doc.pending_ops(), pending);
         assert_eq!(app.state.doc.base_heads(), before);
         assert!(app.state.peek_last_undo().is_none());

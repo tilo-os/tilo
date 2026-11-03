@@ -13,8 +13,8 @@ pub const KEYWORDS: &[&str] = &[
 
 /// Words that are keywords only where a declaration starts: `window` and `lens` at the start
 /// of a statement of a view body; `root`, `default`, `row` (before `view`), `scenario`,
-/// `primary`, `destructive` and `migration` (before `action`) at the start of an item; `root` before a type
-/// in a scenario. Elsewhere they are ordinary names.
+/// `primary`, `destructive`, `migration` and `internal` (before `action`) at the start of an item;
+/// `root` before a type in a scenario. Elsewhere they are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
     "window",
     "lens",
@@ -25,6 +25,7 @@ pub const CONTEXTUAL: &[&str] = &[
     "primary",
     "destructive",
     "migration",
+    "internal",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -164,14 +165,28 @@ pub fn lex_at(src: &str, base: usize) -> (Vec<Token>, Vec<Diagnostic>) {
     (lx.toks, lx.diags)
 }
 
-/// The plain `//` comments of `src` (not `///` doc comments): what printing the canonical form
-/// would drop.
-pub fn plain_comments(src: &str) -> Vec<Span> {
+/// One plain `//` comment (not a `///` doc comment): where it is, and what it says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub span: Span,
+    /// The text after the `//`, with the one space the canonical form prints taken off and no
+    /// trailing space; empty for a line of `//` alone.
+    pub text: String,
+}
+
+/// The plain `//` comments of `src`, in source order: the canonical form keeps them, above the
+/// declaration or statement they were written over.
+pub fn plain_comments(src: &str) -> Vec<Comment> {
+    plain_comments_at(src, 0)
+}
+
+/// The plain `//` comments of `src`, whose spans start at `base` as [`lex_at`] places tokens.
+pub fn plain_comments_at(src: &str, base: usize) -> Vec<Comment> {
     let mut lx = Lexer {
         src,
         bytes: src.as_bytes(),
         pos: 0,
-        base: 0,
+        base,
         depth: 0,
         toks: Vec::new(),
         diags: Vec::new(),
@@ -195,8 +210,8 @@ struct Lexer<'a> {
     depth: usize,
     toks: Vec<Token>,
     diags: Vec<Diagnostic>,
-    /// Plain `//` comments, which the canonical form does not keep.
-    comments: Vec<Span>,
+    /// Plain `//` comments, which the canonical form keeps where they were written.
+    comments: Vec<Comment>,
 }
 
 const fn is_ident_start(b: u8) -> bool {
@@ -268,19 +283,25 @@ impl Lexer<'_> {
         if matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Newline)) {
             return;
         }
+        // A statement never ends with a comma: the line continues the list it is in, as a long
+        // `if let` breaks between its binds.
+        if matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Comma)) {
+            return;
+        }
         // A line that starts `.name` continues the previous one as a method call, unless the
-        // previous line ended a block or the new line is a match arm (`.name(..) =>`).
-        if !matches!(self.toks.last().map(|t| &t.tok), Some(Tok::RBrace))
-            && self.next_line_continues()
-        {
+        // previous line ended a block or the new line is a match arm (`.name(..) =>`); a line
+        // that starts a binary operator continues it too, however the line before ended.
+        let ended_block = matches!(self.toks.last().map(|t| &t.tok), Some(Tok::RBrace));
+        if self.next_line_continues(ended_block) {
             return;
         }
         self.push(Tok::Newline, start);
     }
 
-    /// Whether the next significant character is a `.` that starts a method call, so the
-    /// previous line continues.
-    fn next_line_continues(&self) -> bool {
+    /// Whether the next line continues the previous one: its first token is a `.` or `?.` that
+    /// names a field or method, or a binary operator, which a broken expression leads its
+    /// continuation line with.
+    fn next_line_continues(&self, ended_block: bool) -> bool {
         let mut i = self.pos;
         loop {
             match self.bytes.get(i).copied() {
@@ -294,10 +315,36 @@ impl Lexer<'_> {
                     }
                 }
                 Some(b'.') => {
-                    return self.bytes.get(i + 1).is_some_and(|b| is_ident_start(*b))
+                    return !ended_block
+                        && self.bytes.get(i + 1).is_some_and(|b| is_ident_start(*b))
                         && !self.is_match_arm(i + 1);
                 }
-                _ => return false,
+                Some(b'?') => {
+                    return match self.bytes.get(i + 1) {
+                        // `?.name`: a field or method of what the line before left.
+                        Some(b'.') => {
+                            !ended_block
+                                && self.bytes.get(i + 2).is_some_and(|b| is_ident_start(*b))
+                        }
+                        // `??`, the value or the fallback.
+                        Some(b'?') => true,
+                        _ => false,
+                    };
+                }
+                Some(b) if is_ident_start(b) => {
+                    // The operators spelled as words; nothing else starts a statement.
+                    let mut end = i;
+                    while self.bytes.get(end).is_some_and(|b| is_ident_char(*b)) {
+                        end += 1;
+                    }
+                    return matches!(self.bytes.get(i..end), Some(b"and" | b"or"));
+                }
+                Some(b) => {
+                    // The symbolic operators. `-`, `not` and `/` are left out: each can begin an
+                    // expression, a value or a regular expression of its own.
+                    return matches!(b, b'+' | b'*' | b'%' | b'=' | b'!' | b'<' | b'>');
+                }
+                None => return false,
             }
         }
     }
@@ -346,7 +393,10 @@ impl Lexer<'_> {
         }
         if !doc {
             let span = self.span(start, self.pos);
-            self.comments.push(span);
+            // As a doc comment: one space after the marker, and none at the end.
+            let text = self.slice(start + 2, self.pos);
+            let text = text.strip_prefix(' ').unwrap_or(text).trim_end().to_owned();
+            self.comments.push(Comment { span, text });
         }
         if doc {
             let text = self.slice(start + 3, self.pos);

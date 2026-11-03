@@ -7,10 +7,10 @@
 //!   ([`PeerHandle::publish`]); inbound documents arrive already verified as
 //!   [`CollabEvent::Document`]. The publication barrier completes when the
 //!   host has made every earlier change durable.
-//! - Presence rides the workspace's presence, as every device's does: a
+//! - Presence rides the workspace's presence track, as every device's does: a
 //!   pointer, caret, selection, typing range, status or wave under the
-//!   editor's [`PresenceKey`] goes out as an app-presence frame, and the
-//!   members' frames come back as `RemoteCursorMoved` /
+//!   editor's [`PresenceKey`] goes out as an app's [`Presence`] frame, and
+//!   the members' frames come back from the plane as `RemoteCursorMoved` /
 //!   `RemotePresenceUpdate`.
 //! - `InstallDocumentEncryption` seals and opens the route with its
 //!   `channel-crypto` group.
@@ -25,6 +25,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use collab_types::PeerPresencePayload;
+use collab_types::presence::Presence;
 use tilo_relay_protocol::live::{
     AnchorScope, LiveAnchor, read_selection_anchors, selection_anchors,
 };
@@ -115,15 +116,14 @@ pub fn read_presence_anchors(
 }
 
 /// `payload` under `key` as the workspace's presence carries an app's
-/// presence: cluster-scoped, and authored by the device that publishes it.
-/// `None` for a payload this device cannot say.
+/// presence: the app of the route, in its workspace, authored by the device
+/// that publishes it. `None` for a payload this device cannot say.
 fn app_presence(
-    device: [u8; 32],
     cluster_id: &str,
     app_id: &str,
     key: &PresenceKey,
     payload: &PresencePayload,
-) -> Option<Vec<u8>> {
+) -> Option<Presence> {
     let payload = match payload {
         PresencePayload::Pointer { x, y } => PeerPresencePayload::Pointer { x: *x, y: *y },
         PresencePayload::Caret { pos } => PeerPresencePayload::Caret {
@@ -159,19 +159,7 @@ fn app_presence(
             composing: *composing,
         },
     };
-    let mut peer = [0; 8];
-    peer.copy_from_slice(device.get(..8)?);
-    let message = neighbour_wire::NeighbourMsg::AppPresenceV2 {
-        peer: u64::from_le_bytes(peer),
-        app_id: app_id.to_owned(),
-        cluster_id: cluster_id.to_owned(),
-        presence: collab_types::PeerPresence {
-            key: postcard::to_stdvec(key).ok()?,
-            payload,
-        },
-        colour: None,
-    };
-    postcard::to_stdvec(&message).ok()
+    Some(Presence::app(app_id, cluster_id, key.clone(), payload))
 }
 
 /// The certified relay session as a [`CollabTransport`].
@@ -283,14 +271,8 @@ impl RelayCollabTransport {
         payload: &PresencePayload,
     ) -> Result<(), TransportError> {
         let workspace = workspace(route).ok_or(TransportError::Shed)?;
-        let body = app_presence(
-            self.peer.status().device,
-            &route.cluster_id.to_string(),
-            &route.app_id,
-            key,
-            payload,
-        )
-        .ok_or(TransportError::Shed)?;
+        let body = app_presence(&route.cluster_id.to_string(), &route.app_id, key, payload)
+            .ok_or(TransportError::Shed)?;
         self.peer
             .publish_presence(workspace, vec![body])
             .map_err(|_| TransportError::Shed)
@@ -323,22 +305,33 @@ impl RelayCollabTransport {
                     });
                 }
                 PeerEvent::Live { from, frame, .. } => self.remote_presence(from, &frame),
-                PeerEvent::Presence { from, body, .. } => self.remote_app_presence(from, &body),
                 PeerEvent::RecordContent { frame, .. } => self.content_piece(&frame),
                 PeerEvent::LiveMember { device, active, .. } => {
                     self.live.member(device, active);
                 }
-                // Remote actions and voice are the page's (`agents.mjs`,
-                // `actionsV1`, `voice-peer.mjs`), consumed from their own queues. The toolkit keeps its
+                // One member's frame on the workspace's live plane: the app
+                // presence track is where an editor's cursors arrive, and a
+                // record's preview frames were opened into [`PeerEvent::Live`]
+                // before they reached here. Remote actions and voice are the
+                // page's (`agents.mjs`, `actionsV1`, `voice-peer.mjs`), consumed
+                // from their own queues. The toolkit keeps its
                 // documents in the collaboration manager, so another
                 // volunteer answers compaction requests. A refused commit is
                 // the record owner's to withdraw; this transport holds none,
                 // nor content to answer a member's request with.
+                PeerEvent::LivePlane {
+                    from,
+                    track: tilo_live::live::Track::Presence,
+                    body,
+                    ..
+                } => self.remote_app_presence(from, &body),
                 PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
                 | PeerEvent::CommitRefused { .. }
                 | PeerEvent::RemoteAction { .. }
                 | PeerEvent::RemoteActionUndeliverable { .. }
+                | PeerEvent::Presence { .. }
+                | PeerEvent::LivePlane { .. }
                 | PeerEvent::CompactionRequested { .. }
                 | PeerEvent::RecordOpened { .. }
                 | PeerEvent::ContentWanted { .. }
@@ -358,77 +351,76 @@ impl RelayCollabTransport {
     /// A member's app presence: its pointer, caret, selection or typing range
     /// under an editor key this transport's app gave it.
     fn remote_app_presence(&mut self, from: [u8; 32], body: &[u8]) {
-        let Ok(neighbour_wire::NeighbourMsg::AppPresenceV2 {
-            app_id,
-            cluster_id,
-            presence,
-            ..
-        }) = postcard::from_bytes(body)
-        else {
+        let Some(said) = Presence::decode(body) else {
             return;
         };
-        if !self
-            .routes
-            .iter()
-            .any(|route| route.app_id == app_id && route.cluster_id == cluster_id)
-        {
-            return;
-        }
-        let Ok(key) = postcard::from_bytes::<PresenceKey>(&presence.key) else {
-            return;
-        };
-        let user_id = hex::encode(from);
-        match presence.payload {
-            PeerPresencePayload::Pointer { x, y } => {
-                self.events
-                    .push_back(CollabEvent::RemoteCursorMoved { user_id, x, y });
-            }
-            PeerPresencePayload::Caret { pos } => {
-                self.events.push_back(CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload: PresencePayload::Caret {
-                        pos: usize::try_from(pos).unwrap_or(usize::MAX),
-                    },
-                });
-            }
-            PeerPresencePayload::Selection { start, end } => {
-                self.events.push_back(CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload: PresencePayload::Selection {
-                        start: usize::try_from(start).unwrap_or(usize::MAX),
-                        end: usize::try_from(end).unwrap_or(usize::MAX),
-                    },
-                });
-            }
-            PeerPresencePayload::Typing { start, end } => {
-                self.events.push_back(CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload: PresencePayload::Typing {
-                        start: usize::try_from(start).unwrap_or(usize::MAX),
-                        end: usize::try_from(end).unwrap_or(usize::MAX),
-                    },
-                });
-            }
-            PeerPresencePayload::Arrived
-            | PeerPresencePayload::Left
-            | PeerPresencePayload::Following { .. }
-            | PeerPresencePayload::InteractionJson(_)
-            | PeerPresencePayload::Status { .. }
-            | PeerPresencePayload::Availability { .. }
-            | PeerPresencePayload::Chat { .. }
-            | PeerPresencePayload::Reaction { .. }
-            | PeerPresencePayload::Wave { .. }
-            | PeerPresencePayload::Composing { .. }
-            | PeerPresencePayload::Shell(_) => {}
+        if let Some(event) = editor_presence(&self.routes, from, said) {
+            self.events.push_back(event);
         }
     }
 
     /// The live plane's own frames are previews; presence is the workspace's.
     fn remote_presence(&mut self, from: [u8; 32], frame: &[u8]) {
         let _ = self.live.receive(from, frame, tilo_clock::unix_now_ms());
+    }
+}
+
+/// The toolkit event a member's app presence is, when it is about an editor
+/// this transport's app holds ([`DocumentRoute`]s of `routes`): its pointer,
+/// caret, selection or typing range under the frame's own key. `None` for
+/// another app's or workspace's frame, and for what an editor draws nothing
+/// from.
+fn editor_presence(
+    routes: &BTreeSet<DocumentRoute>,
+    from: [u8; 32],
+    said: Presence,
+) -> Option<CollabEvent> {
+    if !routes
+        .iter()
+        .any(|route| route.app_id == said.app && route.cluster_id == said.cluster)
+    {
+        return None;
+    }
+    let key = said.key;
+    let user_id = hex::encode(from);
+    match said.payload {
+        PeerPresencePayload::Pointer { x, y } => {
+            Some(CollabEvent::RemoteCursorMoved { user_id, x, y })
+        }
+        PeerPresencePayload::Caret { pos } => Some(CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload: PresencePayload::Caret {
+                pos: usize::try_from(pos).unwrap_or(usize::MAX),
+            },
+        }),
+        PeerPresencePayload::Selection { start, end } => Some(CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload: PresencePayload::Selection {
+                start: usize::try_from(start).unwrap_or(usize::MAX),
+                end: usize::try_from(end).unwrap_or(usize::MAX),
+            },
+        }),
+        PeerPresencePayload::Typing { start, end } => Some(CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload: PresencePayload::Typing {
+                start: usize::try_from(start).unwrap_or(usize::MAX),
+                end: usize::try_from(end).unwrap_or(usize::MAX),
+            },
+        }),
+        PeerPresencePayload::Arrived
+        | PeerPresencePayload::Left
+        | PeerPresencePayload::Following { .. }
+        | PeerPresencePayload::InteractionJson(_)
+        | PeerPresencePayload::Status { .. }
+        | PeerPresencePayload::Availability { .. }
+        | PeerPresencePayload::Chat { .. }
+        | PeerPresencePayload::Reaction { .. }
+        | PeerPresencePayload::Wave { .. }
+        | PeerPresencePayload::Composing { .. }
+        | PeerPresencePayload::Shell(_) => None,
     }
 }
 
@@ -528,5 +520,98 @@ impl CollabTransport for RelayCollabTransport {
     fn set_wake(&mut self, wake: Box<dyn Fn() + Send + Sync>) {
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(wake);
         self.peer.on_change(wake);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+
+    const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+    const APP: &str = "so.tilo.notes";
+
+    fn routes() -> BTreeSet<DocumentRoute> {
+        BTreeSet::from([DocumentRoute {
+            app_id: APP.to_owned(),
+            cluster_id: WORKSPACE.to_owned(),
+            record: "notes".to_owned(),
+        }])
+    }
+
+    fn cursor() -> PresenceKey {
+        PresenceKey::Pointer {
+            space: collab_types::presence::PointerSpace::Tile {
+                workspace: WORKSPACE.to_owned(),
+                tab: 4,
+            },
+        }
+    }
+
+    /// A page's editor cursor goes out as the app's presence frame and comes
+    /// back as the toolkit's cursor event: nothing of the old presence
+    /// message is left in between.
+    #[test]
+    fn an_editors_pointer_rides_the_presence_frame_both_ways() {
+        let frame = app_presence(
+            WORKSPACE,
+            APP,
+            &cursor(),
+            &PresencePayload::Pointer { x: 12.5, y: 40.0 },
+        )
+        .expect("a pointer frame");
+        let body = frame.encode().expect("a presence frame encodes");
+        let said = Presence::decode(&body).expect("the frame reads back");
+        let event = editor_presence(&routes(), [7; 32], said).expect("the editor's cursor");
+        let CollabEvent::RemoteCursorMoved { user_id, x, y } = event else {
+            panic!("a pointer is a cursor move: {event:?}");
+        };
+        assert_eq!(user_id, hex::encode([7; 32]));
+        assert_eq!((x, y), (12.5, 40.0));
+    }
+
+    /// A caret under the same key arrives as the editor's own presence, with
+    /// the key the app gave it.
+    #[test]
+    fn an_editors_caret_carries_its_key() {
+        let said = Presence::app(
+            APP,
+            WORKSPACE,
+            cursor(),
+            PeerPresencePayload::Caret { pos: 9 },
+        );
+        let event = editor_presence(&routes(), [7; 32], said).expect("the editor's caret");
+        let CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload,
+        } = event
+        else {
+            panic!("a caret is a presence update: {event:?}");
+        };
+        assert_eq!(user_id, hex::encode([7; 32]));
+        assert_eq!(key, cursor());
+        assert_eq!(payload, PresencePayload::Caret { pos: 9 });
+    }
+
+    /// Another app's presence, and the shell's, is not the editor's: an app
+    /// draws nothing from a frame about a route it does not hold.
+    #[test]
+    fn another_apps_presence_is_not_the_editors() {
+        let said = Presence::pointing(WORKSPACE, 3, 1.0, 2.0);
+        assert!(editor_presence(&routes(), [7; 32], said).is_none());
+        let elsewhere = Presence::app(
+            APP,
+            "07848ffe-1898-4f72-8419-0b54c93e6dad",
+            cursor(),
+            PeerPresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert!(editor_presence(&routes(), [7; 32], elsewhere).is_none());
     }
 }

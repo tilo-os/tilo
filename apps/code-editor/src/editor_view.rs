@@ -536,7 +536,6 @@ impl EditorView {
         if self.find_matches != matches || self.find_current != current {
             self.find_matches = matches.to_vec();
             self.find_current = current;
-            self.dirty = true;
         }
         if let Some(m) = current.and_then(|i| self.find_matches.get(i)).copied() {
             // Keep the current match on screen as the user steps through.
@@ -982,7 +981,6 @@ impl EditorView {
                 Some((al, ac))
             },
         }];
-        self.dirty = true;
     }
 
     /// Copy the primary selection to the system clipboard (no-op when empty).
@@ -1026,7 +1024,6 @@ impl EditorView {
                 message: d.message.clone(),
             })
             .collect();
-        self.dirty = true;
     }
 
     /// Show a completion popup for `items` (hidden when empty). The anchor is
@@ -1083,7 +1080,6 @@ impl EditorView {
     /// Set (or clear) the hover tooltip text.
     pub fn set_hover(&mut self, text: Option<String>) {
         self.hover_text = text;
-        self.dirty = true;
     }
 
     /// The message of the diagnostic whose span contains `(line, col)`, if any.
@@ -1129,7 +1125,6 @@ impl EditorView {
         }];
         self.clamp_carets();
         self.scroll_to_caret();
-        self.dirty = true;
     }
 
     /// The buffer's line count — used by shots scenarios to pick a valid line.
@@ -2776,7 +2771,6 @@ impl EditorView {
         let zoom = zoom.clamp(ui::content_zoom::MIN, ui::content_zoom::MAX);
         if (zoom - self.text_zoom).abs() > f32::EPSILON {
             self.text_zoom = zoom;
-            self.dirty = true;
         }
     }
 }
@@ -3076,7 +3070,6 @@ impl Widget for EditorView {
 
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
-        self.dirty = true;
     }
 
     fn is_focused(&self) -> bool {

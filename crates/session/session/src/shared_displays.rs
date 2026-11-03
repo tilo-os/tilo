@@ -334,7 +334,8 @@ mod tests {
             runtime,
             outgoing,
             [7; 32],
-            crate::fabric::MediaContinuity::default(),
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            crate::fabric::Continuity::default(),
         )
     }
 

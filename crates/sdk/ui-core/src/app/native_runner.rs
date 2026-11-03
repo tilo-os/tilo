@@ -2692,7 +2692,8 @@ impl AppHandler {
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
-        floating_content_changed |= app.root_widget.needs_redraw();
+        floating_content_changed |=
+            app.root_widget.needs_redraw() || app.root_widget.needs_animation_frame();
 
         // Admission reserved this pair before state updates. Taking it cannot
         // wait on GPU work; aborted layouts retain it in the handle for retry.

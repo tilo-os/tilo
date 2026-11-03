@@ -1202,21 +1202,12 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     // on every node — which this used to do — makes an AT read "clickable" on
     // a plain label. `ListItem` is in the list because a synthetic segmented
     // control's segments are list items, and without it an AT could see them
-    // but not press them.
+    // but not press them. A table row is one too, as soon as it carries a
+    // target an activation reaches: that is what a person's Enter on the row,
+    // a screen reader's activation and a click all route to.
+    let actionable = access.action_target.is_some() && access.bounds.is_some();
     if !access.state.disabled
-        && matches!(
-            access.role,
-            Role::Button
-                | Role::ToggleButton
-                | Role::Checkbox
-                | Role::RadioButton
-                | Role::Switch
-                | Role::Tab
-                | Role::MenuItem
-                | Role::ListItem
-                | Role::TreeItem
-                | Role::Link
-        )
+        && (crate::a11y::activation_role(access.role) || (access.role == Role::Row && actionable))
     {
         ak.add_action(AkAction::Click);
     }
@@ -2838,5 +2829,54 @@ mod tests {
                 Some(A11yTarget::Widget(field_taffy)),
             );
         }
+    }
+
+    #[test]
+    fn a_table_rows_press_and_menu_reach_an_assistive_technology() {
+        let row = TestWidget::new(Some(
+            AccessNode::new(Role::Row)
+                .with_name("Quarterly report.pdf")
+                .with_action_target("row:a:0")
+                .with_bounds(vello::kurbo::Rect::new(0.0, 0.0, 200.0, 24.0))
+                .with_state(AccessState::new().focusable(true).context_menu(true)),
+        ))
+        .with_rect(0.0, 0.0, 200.0, 24.0);
+        let mut root = TestWidget::new(None).with_child(Box::new(row));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == AkRole::Row)
+            .expect("a row reaches AccessKit");
+        assert_eq!(node.label(), Some("Quarterly report.pdf".into()));
+        assert!(
+            node.supports_action(AkAction::Click),
+            "the row's activation is offered"
+        );
+        assert!(
+            node.supports_action(AkAction::ShowContextMenu),
+            "the row's menu is offered"
+        );
+
+        // Without a target to reach, a row is a description, not a control.
+        let inert = TestWidget::new(Some(
+            AccessNode::new(Role::Row)
+                .with_name("Budget")
+                .with_bounds(vello::kurbo::Rect::new(0.0, 0.0, 200.0, 24.0)),
+        ))
+        .with_rect(0.0, 0.0, 200.0, 24.0);
+        let mut root = TestWidget::new(None).with_child(Box::new(inert));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == AkRole::Row)
+            .expect("a row reaches AccessKit");
+        assert!(
+            !node.supports_action(AkAction::Click),
+            "a row nothing can reach is not offered a press"
+        );
     }
 }

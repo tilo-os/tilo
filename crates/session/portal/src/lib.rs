@@ -75,6 +75,7 @@ pub mod email;
 pub mod file_chooser;
 pub mod global_shortcuts;
 pub mod host;
+mod i18n;
 pub mod inhibit;
 pub mod input_capture;
 pub mod lifecycle;

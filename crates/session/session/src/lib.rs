@@ -33,6 +33,7 @@ mod activity_provider;
 pub mod agent_door;
 mod ambient_brightness;
 mod app_icons;
+mod app_liveness;
 mod app_names;
 mod app_sheets;
 pub mod arrangement;
@@ -100,6 +101,7 @@ pub mod logging;
 mod membership;
 pub mod messages;
 pub mod mount;
+pub mod nearby_transfer;
 mod network;
 pub mod night_light;
 pub mod notices;
@@ -111,6 +113,7 @@ mod pairing;
 mod panels;
 mod pass;
 mod people;
+mod person_chat;
 mod plane;
 pub mod portal_link;
 mod press_outside;
@@ -143,10 +146,12 @@ mod status;
 pub mod surfaces;
 pub mod sync;
 mod system_sounds;
+mod task_programs;
 pub mod termination;
 pub mod test_control;
 pub mod unlock;
 mod wallpapers;
+mod wifi_continuity;
 mod window_motion;
 mod window_share;
 mod window_warmth;
@@ -391,6 +396,9 @@ struct Shared {
     /// Where everything the session publishes stood when search last read
     /// it.
     observed: RefCell<Option<Vec<(usize, u64)>>>,
+    /// The second search last read who is here: people and the calls they are
+    /// in change with the clock as well as with what arrives.
+    here_at: Cell<u64>,
     /// The title each window had when search last recorded where it was.
     places_seen: RefCell<std::collections::HashMap<u64, String>>,
     /// The daemon's notifications on the desktop, as the session publishes
@@ -973,11 +981,12 @@ impl Session {
         // The desk widgets' choices, kept current by the same watch.
         let widget_prefs = desk::prefs();
         let watched_widgets = std::sync::Arc::clone(&widget_prefs);
-        // Whether what the person plays here may go on playing on their other
-        // devices, read from the same settings document on the same watch.
-        let media = fabric::MediaContinuity::default();
-        media.read(&settings_store::load());
-        let watched_media = media.clone();
+        // What may continue on the person's other devices — what they play
+        // here, the Wi-Fi passphrases they share — read from the same settings
+        // document on the same watch.
+        let continuity = fabric::Continuity::default();
+        continuity.read(&settings_store::load());
+        let watched_continuity = continuity.clone();
         // The bar's own setting, read on the same watch: it changes what the
         // desk's band takes and when the bars show.
         let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
@@ -1000,7 +1009,7 @@ impl Session {
                 settings_store::notification_policy::NotificationPolicy::from_document(&document);
             watched_wallpapers.follow(&document);
             desk::follow_prefs(&watched_widgets, &document);
-            watched_media.read(&document);
+            watched_continuity.read(&document);
             watched_night_light.read(&document);
             ambient_brightness::read(&watched_auto, &document);
             watched_hide.store(
@@ -1152,10 +1161,12 @@ impl Session {
                 .map(|workspace| workspace.slot.0.to_string())
         }));
         wallpapers.start(&settings_store::load());
-        // The apps the person opens read their workspace from this desktop and leave
-        // their notice in it.
+        // The apps the person opens read their workspace from this desktop, leave
+        // their notice in it, and act as the person the workspaces' governance
+        // names.
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
+            launch.set_person(options.person.clone());
         }
         // One process per app per workspace: its later windows open in the
         // process the session started, with connections of their own. A
@@ -1213,6 +1224,7 @@ impl Session {
             shell: options.shell,
             panel: overlays.clone(),
             overlays: Rc::clone(&desk_overlays),
+            overview: overview.open_flag(),
         };
         let desk_door: tilo_surface_host::Shared =
             shell::desk_door(options.shell, desktop.clone(), surfaces.clone());
@@ -1237,7 +1249,7 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        let sync = start_collaboration(&options, media, engine.clone(), beside);
+        let sync = start_collaboration(&options, continuity.clone(), engine.clone(), beside);
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
@@ -1274,6 +1286,25 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
+        // Nearby Send: one engine for every file that leaves this device for
+        // another of the person's, whether a screenshot the studio sends or a
+        // file Files hands over. It stages into this machine's own spool, and
+        // the session's pass turns when a hand-over moves.
+        let nearby = match nearby_transfer::NearbyTransfer::open(
+            fabric.clone(),
+            nearby_transfer::spool_root(),
+            continuity,
+            options.wake.handle(),
+        ) {
+            Ok(nearby) => Some(nearby),
+            Err(error) => {
+                tracing::warn!(%error, "no thread takes what is sent nearby");
+                None
+            }
+        };
+        if let (Some(sync), Some(nearby)) = (&sync, &nearby) {
+            sync.attach_nearby(std::sync::Arc::clone(nearby));
+        }
         // The machine's status, which the bar's status cluster shows as the
         // battery, network and volume glyphs, the lock screen shows under its
         // card and the desk reads: every part of it is read off the services
@@ -1354,6 +1385,16 @@ impl Session {
         // shows each run's conversation.
         let agent_runs = std::sync::Arc::clone(&the_runs);
         let run_programs = std::sync::Arc::clone(&the_programs);
+        // The seam the agent door's connections ask this session's own doors on, and where a
+        // task's programs are kept: made before the plane starts, which serves the programs.
+        let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
+            options.wake.handle(),
+            std::sync::Arc::clone(&run_programs),
+            &options.person,
+        ));
+        let task_programs = Some(std::sync::Arc::new(task_programs::TaskPrograms::new(
+            std::sync::Arc::clone(&session_doors),
+        )));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
         let desk = || desk_resource::Desk {
@@ -1420,7 +1461,7 @@ impl Session {
 
         // The capture studio, over everything it captures.
         let capture_studio =
-            capture_studio::mount(&mut compositor, &mut doors, &options, fabric.as_ref());
+            capture_studio::mount(&mut compositor, &mut doors, &options, nearby.as_ref());
 
         // One table for the keys the session answers and the guide that
         // explains them: a chord that works is a chord the guide shows.
@@ -1531,8 +1572,17 @@ impl Session {
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
                 content: Some(record_content),
+                task_programs,
+                nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
+        // What Files may read, and where a received file may land, is what
+        // this session's workspaces grant it: read off the desk the broker
+        // decides against.
+        if let (Some(nearby), Some(plane)) = (&nearby, &action_plane) {
+            nearby.attach_authority(std::sync::Arc::clone(&plane.desk)
+                as std::sync::Arc<dyn tilo_action_broker::services::WorkspaceAuthority>);
+        }
         // The agent door: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
         // binds first, and is served from the broker the plane starts, which
@@ -1565,11 +1615,6 @@ impl Session {
             tools: Some(tools),
             wake: options.wake.handle(),
         });
-        let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
-            options.wake.handle(),
-            std::sync::Arc::clone(&run_programs),
-            &options.person,
-        ));
         // The control door `tilo-control` reaches: the development socket and
         // the device admin's, both answered over the broker this session's
         // plane starts. It exists whether or not a socket opens, because a
@@ -1778,6 +1823,7 @@ impl Session {
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,
             observed: RefCell::new(None),
+            here_at: Cell::new(0),
             places_seen: RefCell::default(),
             notifications: Rc::new(RefCell::new(notifications::SessionNotifications::new(
                 options
@@ -1818,6 +1864,26 @@ impl Session {
             controller_keys,
             app_sheets,
         };
+        // A package the person opens authors its own records in the workspace
+        // it opens in, as the person there: the workspace's governance gives
+        // it before the process is planned, so the app starts able to keep
+        // what they do in it.
+        if let Some(launch) = &shared.launch {
+            let handle = shared.handle.clone();
+            let engine = shared.engine.clone();
+            launch.lend_authorship(Rc::new(move |workspace: &str, app: &str| {
+                if let Err(error) =
+                    crate::membership::authorship(engine.as_deref(), &handle, workspace, app)
+                {
+                    tracing::warn!(
+                        %workspace,
+                        app,
+                        %error,
+                        "an opening app was not let author its workspace"
+                    );
+                }
+            }));
+        }
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
         // copies itself, as a reading only a caller the workspace grants reads.
@@ -2281,7 +2347,10 @@ impl Session {
     /// away, and before a window on the desk has a picture.
     #[must_use]
     pub fn overview_pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
-        self.shared.overview_pictures()
+        match self.shell.as_ref() {
+            Some(shell) => shell.pictures(),
+            None => self.shared.overview_pictures(),
+        }
     }
 
     /// What the service publishing `resource` reads of it now, as JSON;
@@ -2311,7 +2380,10 @@ impl Session {
     #[must_use]
     pub fn placed_by(&self, text: &str) -> Option<String> {
         let search = Rc::clone(&self.shared.search);
-        arrangement::found(text, &|needle| search.find(needle))
+        let catalog = self.shared.arrangement.borrow().targets();
+        arrangement::found(text, &|needle| search.find(needle), |resource| {
+            catalog.borrow().get(resource).is_some()
+        })
     }
 
     /// Undo the person's last arranging step, through the published action
@@ -2643,6 +2715,9 @@ impl Session {
         );
         self.place_sheets();
         self.settle_asks()?;
+        // Which apps stopped answering reaches the desk, and the person's
+        // Wait or Force quit reaches the compositor.
+        self.follow_app_liveness();
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();

@@ -234,6 +234,8 @@ fn place_header(
             crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w),
         )
     };
+    // The row shows its everyday actions and its menu holds the rest, whatever room it has.
+    let shown = fit.menu_from.map_or(shown, |from| shown.min(from));
     fit.compact = use_compact;
     fit.shown = Some(shown);
     let widths = if use_compact { &compact } else { &full };

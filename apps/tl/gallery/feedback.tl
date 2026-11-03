@@ -37,7 +37,12 @@ view feedback(f: Feedback) {
             }
         }
         ui.ObjectHeader("Release 4.2", caption: .some("Ships Friday"), who: f.owner)
-        ui.Banner("Sync paused", message: .some("Files sync again when you are online."), kind: .warning, action: .some("Retry")) {
+        ui.Banner(
+            "Sync paused",
+            message: .some("Files sync again when you are online."),
+            kind: .warning,
+            action: .some("Retry"),
+        ) {
             on act: set(last, "Retry")
         }
         ui.Section("Status") {
@@ -51,7 +56,11 @@ view feedback(f: Feedback) {
                 ui.Spinner(.some("Syncing"))
             }
             ui.StatusLine("Syncing 3 files", status: .active, who: f.owner)
-            ui.TextStack("Quarterly report", secondary: .some("Shared with the team"), tertiary: .some("Edited an hour ago"))
+            ui.TextStack(
+                "Quarterly report",
+                secondary: .some("Shared with the team"),
+                tertiary: .some("Edited an hour ago"),
+            )
             ui.Facts {
                 ui.Fact("12 pages", icon: .folder)
                 ui.Fact("Due Friday", icon: .calendar)
@@ -66,21 +75,62 @@ view feedback(f: Feedback) {
                 ui.ProgressRing(0.4, readout: .some("40%"))
                 ui.ProgressRing(0.9, tone: .warning, size: .small)
             }
-            ui.BarGauge(0.81, label: .some("Disk"), readout: .some("81 of 100 GB"), warning: .some(0.75), danger: .some(0.9))
+            ui.BarGauge(
+                0.81,
+                label: .some("Disk"),
+                readout: .some("81 of 100 GB"),
+                warning: .some(0.75),
+                danger: .some(0.9),
+            )
         }
         ui.Section("Numbers") {
             ui.StatGroup {
                 ui.StatTile("Open", "24", change: .some("+3"), trend: .up)
-                ui.StatTile("Closed", "112", unit: .some("this month"), samples: [3.0, 5.0, 4.0, 8.0, 6.0])
+                ui.StatTile(
+                    "Closed",
+                    "112",
+                    unit: .some("this month"),
+                    samples: [3.0, 5.0, 4.0, 8.0, 6.0],
+                )
                 ui.StatTile("Late", "2", tone: .danger)
             }
             row(gap: .related) {
-                ui.Sparkline([3.0, 5.0, 4.0, 8.0, 6.0, 9.0], label: .some("Requests per second"), tone: .success)
-                ui.Sparkline([9.0, 6.0, 8.0, 4.0, 5.0, 3.0], label: .some("Errors per minute"), smooth: true, filled: false)
+                ui.Sparkline(
+                    [3.0, 5.0, 4.0, 8.0, 6.0, 9.0],
+                    label: .some("Requests per second"),
+                    tone: .success,
+                )
+                ui.Sparkline(
+                    [9.0, 6.0, 8.0, 4.0, 5.0, 3.0],
+                    label: .some("Errors per minute"),
+                    smooth: true,
+                    filled: false,
+                )
             }
         }
         ui.Section("Drawing") {
-            ui.Drawing([.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, round: 0.1, fill: .track), .path(points: [0.05, 0.8, 0.25, 0.55, 0.45, 0.65, 0.65, 0.3, 0.95, 0.2], smooth: true, fill: .accent, wash: true), .path(points: [0.05, 0.8, 0.25, 0.55, 0.45, 0.65, 0.65, 0.3, 0.95, 0.2], smooth: true, stroke: .accent), .line(x1: 0.05, y1: 0.5, x2: 0.95, y2: 0.5, stroke: .muted, weight: .hairline), .ellipse(cx: 0.65, cy: 0.3, rx: 0.03, ry: 0.06, fill: .accent)], meaning: .chart, label: .some("Visitors this week, above the target since Thursday"), width: .some(240.0), height: .some(120.0))
+            ui.Drawing(
+                [
+                    .rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, round: 0.1, fill: .track),
+                    .path(
+                        points: [0.05, 0.8, 0.25, 0.55, 0.45, 0.65, 0.65, 0.3, 0.95, 0.2],
+                        smooth: true,
+                        fill: .accent,
+                        wash: true,
+                    ),
+                    .path(
+                        points: [0.05, 0.8, 0.25, 0.55, 0.45, 0.65, 0.65, 0.3, 0.95, 0.2],
+                        smooth: true,
+                        stroke: .accent,
+                    ),
+                    .line(x1: 0.05, y1: 0.5, x2: 0.95, y2: 0.5, stroke: .muted, weight: .hairline),
+                    .ellipse(cx: 0.65, cy: 0.3, rx: 0.03, ry: 0.06, fill: .accent),
+                ],
+                meaning: .chart,
+                label: .some("Visitors this week, above the target since Thursday"),
+                width: .some(240.0),
+                height: .some(120.0),
+            )
         }
         ui.Section("Details") {
             ui.DisclosureRow("Build log", secondary: .some("Finished in 4 minutes"), icon: .list) {

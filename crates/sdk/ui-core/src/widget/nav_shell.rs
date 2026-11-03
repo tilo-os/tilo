@@ -478,6 +478,10 @@ struct ColumnFit {
     full: Vec<Option<f64>>,
     /// The labelled buttons collapse to their icons.
     compact: bool,
+    /// The index of the first action that belongs in the menu: the row shows its everyday
+    /// actions and the menu holds the rest, whatever room it has. `None` when they all stand
+    /// in the row while they fit.
+    menu_from: Option<usize>,
     /// How many actions stand in the row; the rest are in the More menu.
     /// `None` until the first layout decides.
     shown: Option<usize>,
@@ -2400,16 +2404,24 @@ impl NavShell {
                         .is_some_and(Button::is_compact_presentation)
                 })
                 .collect();
+            let menu_from = header.actions.iter().position(|action| {
+                action
+                    .as_any()
+                    .and_then(|any| any.downcast_ref::<Button>())
+                    .is_some_and(Button::is_menu_only)
+            });
             if slot.capable != capable || slot.compact_now.len() != compact_now.len() {
                 *slot = ColumnFit {
                     full: vec![None; capable.len()],
                     capable,
                     compact_now,
                     compact: false,
+                    menu_from,
                     shown: None,
                 };
             } else {
                 slot.compact_now = compact_now;
+                slot.menu_from = menu_from;
             }
         }
     }
@@ -3836,6 +3848,10 @@ impl Widget for NavShell {
 
     fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
         self.run_shell_bar_events(edits, path);
+        // A command chosen from a header's menu by assistive technology has no
+        // pointer event to carry it: the settle pass runs it, as it runs a
+        // header button pressed in the desktop's window bar.
+        self.take_more_choices(edits, path);
         // Settling is the data pass: a column a narrow window put away
         // still takes its writes and feeds the column on screen.
         self.for_each_owned_mut(|child| child.settle(edits, path));

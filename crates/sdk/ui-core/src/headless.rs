@@ -349,6 +349,13 @@ pub struct FrameHarness {
     /// remounts their children in the retained tree, unless it rebuilds.
     remount: bool,
     layout_requested: bool,
+    /// The input generation the last drawn frame read: input handed to the
+    /// tree after it makes the next frame due.
+    drawn_input: u64,
+    /// Whether the frame on screen stands on a reading from outside the tree
+    /// ([`crate::outside_paint`]): input handed to the tree makes the next
+    /// one due only when it does.
+    drawn_outside: bool,
     state: Box<State>,
     root: Box<dyn Widget>,
     history: Option<crate::history_mode::host::HistoryChrome>,
@@ -386,6 +393,10 @@ pub struct FrameHarness {
     /// A frame was laid out: what arrives after it moves in
     /// (`motion::window_has_shown`).
     shown_a_frame: bool,
+    /// [`crate::permissions::shared_revision`] as the last frame drew it: a
+    /// permission change moves what widgets paint with nothing in the tree
+    /// marking it, so the next frame draws again from a cleared cache.
+    drawn_permissions: u64,
     child_node: NodeId,
     /// The harness stands in for the desktop's window bar: the app's slots,
     /// search and History are hosted there and every capture paints it over
@@ -1528,6 +1539,8 @@ impl FrameHarness {
             composition_replaced: false,
             remount: false,
             layout_requested: false,
+            drawn_input: crate::input_generation::generation(),
+            drawn_outside: false,
             state: Box::new(state),
             root,
             taffy: TaffyTree::new(),
@@ -1549,6 +1562,7 @@ impl FrameHarness {
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
             shown_a_frame: false,
+            drawn_permissions: crate::permissions::shared_revision(),
             child_node: NodeId::from(0usize),
             window_bar: false,
             window_search: Box::new(crate::widget::WindowSearch::new()),
@@ -1739,6 +1753,7 @@ impl FrameHarness {
             node_id: self.child_node,
             taffy: &self.taffy,
         };
+        crate::input_generation::note();
         if let Some(history) = &mut self.history {
             // child_node is the History composition, not the app's node.
             // Use its retained mapping without a host frame or focus routing.
@@ -2232,9 +2247,15 @@ impl FrameHarness {
     fn update_root(&mut self) -> bool {
         let (root, state) = (&mut self.root, &self.state);
         let permissions = self.permissions.clone();
-        self.presence.with_permissions(permissions, || {
+        let changed = self.presence.with_permissions(permissions, || {
             crate::presence::frame::lend(&self.presence, || root.update(&state.doc, &state.root))
-        })
+        });
+        if changed {
+            // What the model moved reaches widgets that paint it without a
+            // flag of their own.
+            crate::input_generation::note_model();
+        }
+        changed
     }
 
     /// The frame's sync: what the widgets took up is written, the document
@@ -2645,14 +2666,32 @@ impl FrameHarness {
                 )
                 .chain(self.tooltips.schedule().1)
                 .min(),
-            needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
+            needs_redraw: roots
+                .iter()
+                .any(|root| root.needs_redraw() || root.needs_animation_frame())
+                || queued_work
+                || self.permissions_moved()
+                // Only a drawing that read outside the tree goes stale with
+                // input; one that read inside it changed nothing.
+                || (self.drawn_input != crate::input_generation::generation()
+                    && self.drawn_outside),
             queued_work,
         })
     }
 
-    /// The roots [`Self::frame_schedule`] reads demand from.
+    /// Whether the shared permissions moved since the last frame drew them:
+    /// what widgets paint from them is stale, so a frame is due and the
+    /// drawings are made again ([`Self::try_relayout_content`]).
+    fn permissions_moved(&self) -> bool {
+        self.drawn_permissions != crate::permissions::shared_revision()
+    }
+
+    /// The roots [`Self::frame_schedule`] reads demand from, with this
+    /// workspace's presence lent for the pass: a widget that paints from the
+    /// people on the document answers whether they changed ([`crate::widget::Widget::needs_redraw`])
+    /// before anything draws, not only when it draws.
     fn with_schedule_roots<R>(&self, visit: impl FnOnce(Vec<&dyn Widget>) -> R) -> R {
-        visit(self.presentation_roots())
+        crate::presence::frame::lend(&self.presence, || visit(self.presentation_roots()))
     }
 
     /// The widgets behind [`Self::frame_schedule`]'s animation demand and due
@@ -2778,7 +2817,7 @@ impl FrameHarness {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
             };
-            if !widget.needs_redraw() {
+            if !(widget.needs_redraw() || widget.needs_animation_frame()) {
                 return;
             }
             let path = format!("{parent}/{}", widget.name());
@@ -3852,6 +3891,21 @@ impl FrameHarness {
         // before draw and any accessibility read — a shot must show the
         // enabled state the user would see. A quiet frame that kept its
         // composition and focus would write what the last frame wrote.
+        // What the tree holds was drawn from the permissions of that frame.
+        // A change since moves what gated widgets paint with nothing in the
+        // tree marking it: the retained drawings go, and this frame draws
+        // the widgets again instead of showing the last drawing.
+        if self.permissions_moved() {
+            self.invalidate_local();
+            self.root.release_scene_cache();
+            if let Some(palette) = self.action_palette.as_deref_mut() {
+                palette.release_scene_cache();
+            }
+            if let Some(history) = self.history.as_deref_mut() {
+                history.release_scene_cache();
+            }
+            self.drawn_permissions = crate::permissions::shared_revision();
+        }
         let quiet = quiet
             && !stats.rebuilt
             && self.focused == focused_at_start
@@ -3980,6 +4034,9 @@ impl FrameHarness {
             );
             self.root.mark_drawn();
         }
+        self.drawn_input = crate::input_generation::generation();
+        self.drawn_outside = crate::outside_paint::on_screen();
+        crate::outside_paint::forget_on_screen();
         if let Some(history) = &mut self.history {
             history.draw_overlay(
                 &mut self.scene,
@@ -4291,6 +4348,7 @@ impl FrameHarness {
 
     fn capture_is_ready(&self) -> bool {
         !self.frame_schedule().needs_animation_frame
+            && self.root.holds_frame_until(crate::time::now()).is_none()
             && !self.root.has_pending_visual_work()
             && crate::image_store::loads_in_flight() == 0
     }
@@ -6242,6 +6300,9 @@ impl FrameHarness {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let t_event = self.profiler.as_ref().map(|_| crate::time::now());
+        // What the event changed reaches widgets that paint it without a
+        // flag of their own.
+        crate::input_generation::note();
         if let Some(history) = &mut self.history {
             history.route_event(
                 self.root.as_mut(),
@@ -7240,6 +7301,17 @@ impl FrameHarness {
         self.action_palette
             .as_deref()
             .is_some_and(|palette| palette.is_presented() && palette.asking().is_none())
+    }
+
+    /// The rows the window's own search shows, as its list paints them: what
+    /// each says, the line under it, its picture and its shortcut's keys (for
+    /// tests and diagnostics).
+    pub fn palette_rows(&self) -> Vec<crate::search::SearchResult> {
+        self.action_palette
+            .as_deref()
+            .filter(|palette| palette.is_presented())
+            .map(|palette| palette.result_hits())
+            .unwrap_or_default()
     }
 
     /// The control the open confirmation stands beside, as a popover,

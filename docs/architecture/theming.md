@@ -465,11 +465,12 @@ handle). It reaches windows through the window layer, not the theme:
 `Theme::configured` does not read `identity.colour`; the shell sends it to
 each app window, and a standalone app that may read the person's settings
 starts from the stored choice (a private app with an ephemeral identity
-does not). Collaborators see the same colour: every presence plane carries
-it (`NeighbourMsg::PresenceMoved` and `AppPresenceV2` as the hue's
-`PresenceHue::id`, a live frame's `LiveParticipant::color`), and each
-receiving shell paints that peer in it and announces it to its apps in the
-roster (`Collaborator::colour`). It is their focus ring, text caret, text-selection tint and unread
+does not). Collaborators see the same colour: a shell's presence frame says
+its face's colour (`ShellPresence::colour`), a live frame carries
+`LiveParticipant::color`, and a remote cursor the toolkit draws takes its hue
+from the publisher's identity (`PresenceHue`); each receiving shell paints
+that peer in it and announces it to its apps in the roster
+(`Collaborator::colour`). It is their focus ring, text caret, text-selection tint and unread
 mark (`intent.you`, `selection_tint`, `border_focus`), painted at the
 current theme's presence lightness and chroma, so it reads on every theme.
 The theme sets only that lightness and chroma. Settings' Appearance page

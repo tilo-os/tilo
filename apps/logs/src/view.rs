@@ -208,6 +208,10 @@ pub(crate) struct JournalPane {
     nodes: Nodes,
     layout_dirty: bool,
     structure_dirty: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl JournalPane {
@@ -231,6 +235,7 @@ impl JournalPane {
         };
         severity.set_value_options(severity_options());
         Self {
+            dirty: true,
             shared,
             seen: None,
             seen_rows: None,
@@ -460,6 +465,7 @@ impl Widget for JournalPane {
     ui::provides!(dyn Filterable);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.adopt();
         for child in self.children_mut() {
             child.sync(state, path);
@@ -593,6 +599,7 @@ impl Widget for JournalPane {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.shows_filters() {
             // An open list floats over the table: the dropdowns go first.
             for (dropdown, node) in [
@@ -665,6 +672,14 @@ impl Widget for JournalPane {
             dirty |= child.take_structure_dirty();
         }
         dirty
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

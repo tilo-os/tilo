@@ -119,16 +119,18 @@ impl Platform for InProcess {
         tilo_ui_host::i18n::word(id, args, id)
     }
 
-    /// The package's own words: its catalogues join the person's, so what it declares reads in
-    /// their language.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_catalogues(catalogues);
-    }
-
     /// When the person's language, or a catalogue, moves, what the window published is
     /// published again in it.
     fn words_revision(&self) -> u64 {
         tilo_ui_host::i18n::revision()
+    }
+
+    /// The package's words, and the one language its window speaks: the person's when the
+    /// package ships it, the package's source language otherwise, so the app's copy, the
+    /// chrome's words and the toolkit's dates all read in the same language.
+    fn add_words(&self, catalogues: &[(String, String)]) {
+        tilo_ui_host::i18n::ensure();
+        ui::i18n::speak_window_language(catalogues);
     }
 
     /// The toolkit's clock, as every time the window shows is: a capture pins it, so a
@@ -201,6 +203,10 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Window {
@@ -236,6 +242,7 @@ impl Window {
         );
         let view = AppWindow::new(Box::new(window_end), vec![endpoint, open_endpoint]);
         Self {
+            dirty: true,
             app,
             me,
             mode,
@@ -615,8 +622,24 @@ impl Widget for Window {
         dyn ui::presence::capability::PublishesPresence
     );
 
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "TilolangWindow"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -628,6 +651,7 @@ impl Widget for Window {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         let _phase = Phase::start("tl.sync");
         // Shown before the workspace's record, the window reads none: it opens over the indexes.
         let doc = self
@@ -690,6 +714,7 @@ impl Widget for Window {
         event: &ui::winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
+        self.dirty = true;
         self.view.handle_event(event, ctx);
     }
 

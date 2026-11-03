@@ -537,7 +537,10 @@ impl Widget for StudioSurface {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.behind() || (self.shown_open() && self.widget.needs_redraw())
+        self.dirty
+            || self.behind()
+            || (self.shown_open()
+                && (self.widget.needs_redraw() || self.widget.needs_animation_frame()))
     }
 
     fn needs_animation_frame(&self) -> bool {

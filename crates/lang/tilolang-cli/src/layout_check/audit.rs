@@ -19,18 +19,26 @@ pub enum Kind {
     SmallHitTarget,
     /// Content is wider than the window or its scroll view, so the page scrolls sideways.
     ScrollsSideways,
+    /// A scroll view with no room on the way it scrolls: what it holds cannot be scrolled into
+    /// view, so it is lost (a board lane whose height came from its content).
+    LostContent,
     /// An edge between two device pixels at the display's scale, drawn blurred across both.
     OffPixel,
+    /// A page whose content is one row stretched over the column: a row is a line, and the page
+    /// around it holds it.
+    BareRow,
 }
 
 impl Kind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
         Self::SmallHitTarget,
         Self::ScrollsSideways,
+        Self::LostContent,
         Self::OffPixel,
+        Self::BareRow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -40,7 +48,9 @@ impl Kind {
             Self::Overlap => "overlap",
             Self::SmallHitTarget => "small-hit-target",
             Self::ScrollsSideways => "scrolls-sideways",
+            Self::LostContent => "lost-content",
             Self::OffPixel => "off-pixel",
+            Self::BareRow => "bare-row",
         }
     }
 }
@@ -115,6 +125,18 @@ fn scrolls(node: &InspectionNode) -> Scrolls {
         down,
         across: false,
     }
+}
+
+/// Whether a node is one row of a list: what a list draws per item, which a surface of its own
+/// (a result, a notice) draws too.
+fn is_row(node: &InspectionNode) -> bool {
+    matches!(
+        node.widget.as_str(),
+        "ListRow" | "TreeViewRow" | "SwipeRow" | "ListItem"
+    ) || node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| access.role == ui::a11y::Role::ListItem)
 }
 
 /// Whether a widget hangs part of itself outside the column it is in by design: a document's
@@ -324,6 +346,7 @@ impl Walk<'_> {
         let was_off_pixel = self.off_pixel;
         if geometric {
             self.pixels(node, keys, own);
+            self.bare_row(node, keys, own);
         }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
@@ -362,6 +385,9 @@ impl Walk<'_> {
         // and holds it scrolls the page sideways.
         if scrolling && !scrolls.across && geometric {
             self.sideways(node, keys, node.child_clip.map_or(own, rect));
+        }
+        if scrolling {
+            self.lost(node, keys, own);
         }
         if geometric {
             self.overlaps(node, keys, inner_clip);
@@ -402,6 +428,28 @@ impl Walk<'_> {
             format!(
                 "its {side} edge at {edge:.3} falls at device pixel {:.3} at {scale}x",
                 edge * scale
+            ),
+        );
+    }
+
+    /// A row stretched over the column it stands in: the page drawn as one row, its line
+    /// floating at the column's middle where a page around it would hold it. A row is as tall
+    /// as its line wherever it stands — a list's row, a result in a page, a notice's — so a row
+    /// taking half the window's height is the page itself.
+    fn bare_row(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        let window = self.viewport.height();
+        if !is_row(node) || window <= 0.0 || own.height() < window * 0.5 {
+            return;
+        }
+        self.push(
+            Kind::BareRow,
+            node,
+            keys,
+            format!(
+                "a {} {} fills {:.0}% of the window's height: a row is a line, and the page it stands in holds it",
+                node.widget,
+                size(own),
+                own.height() / window * 100.0
             ),
         );
     }
@@ -479,6 +527,39 @@ impl Walk<'_> {
                 ),
             );
         }
+    }
+
+    /// A scroll view with no room on the way it scrolls, holding more than that: nothing under
+    /// it can be scrolled into view, so a card or a line the person was promised is gone.
+    fn lost(&mut self, node: &InspectionNode, keys: &[String], shown: Rect) {
+        let content = node
+            .children
+            .iter()
+            .map(|child| rect(child.rect))
+            .filter(|r| has_area(*r))
+            .reduce(|a, b| a.union(b));
+        let Some(content) = content else {
+            return;
+        };
+        let scrolls = scrolls(node);
+        let lost = [
+            (scrolls.down, shown.height(), content.height(), "tall"),
+            (scrolls.across, shown.width(), content.width(), "wide"),
+        ]
+        .into_iter()
+        .find(|(scrolls, shown, content, _)| *scrolls && *shown <= EPSILON && *content > EPSILON);
+        let Some((_, shown, content, axis)) = lost else {
+            return;
+        };
+        self.push(
+            Kind::LostContent,
+            node,
+            keys,
+            format!(
+                "content {content:.0} {axis} in a scroll view {shown:.0} {axis}, which cannot \
+                 scroll it into view"
+            ),
+        );
     }
 
     /// Something to press smaller than the minimum.
@@ -748,11 +829,112 @@ mod tests {
         assert_eq!(found[0].keys.first().map(String::as_str), Some("new"));
     }
 
+    /// A column of a board as a height it did not get leaves it: the view scrolling its cards
+    /// has no room, so the cards under its heading cannot be brought into view. Given the room
+    /// of a pane, the same view holds them and nothing is lost.
+    #[test]
+    fn a_scroll_view_with_no_room_loses_the_cards_it_holds() {
+        let lane = |height: f64| {
+            let mut scrolling = stack_node(
+                "lane",
+                [0.0, 40.0, 240.0, height],
+                (0..7)
+                    .map(|index| {
+                        stack_node(
+                            "card",
+                            [0.0, 40.0 + 76.0 * f64::from(index), 240.0, 68.0],
+                            vec![],
+                        )
+                    })
+                    .collect(),
+            );
+            scrolling.layout = Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                direction: ui::widget::ScrollDirection::Vertical,
+            }));
+            stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![scrolling])
+        };
+        let lost = |root: &InspectionNode| {
+            inspect(root, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::LostContent)
+                .map(|problem| problem.keys)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lost(&lane(0.0)),
+            vec![vec!["lane".to_owned(), "window".to_owned()]],
+            "a scroll view with no height holds seven cards in none of it"
+        );
+        assert!(
+            lost(&lane(600.0)).is_empty(),
+            "given the room of a pane, the same cards are there to scroll through"
+        );
+    }
+
     fn inspected(root: &InspectionNode) -> Vec<Problem> {
         inspect(root, (800, 600), None, 1.0)
             .into_iter()
             .filter(|p| p.kind == Kind::Overlap)
             .collect()
+    }
+
+    fn bare_rows(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (800, 600), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::BareRow)
+            .collect()
+    }
+
+    /// A page whose content is one row: the row is stretched over the column and its line
+    /// floats at the column's middle, where a page around it would hold it at the top. A list's
+    /// rows are their line's height, and a page that holds a row is no finding.
+    #[test]
+    fn a_page_drawn_as_one_row_is_caught() {
+        let shell = |content: Vec<InspectionNode>| {
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 800.0, 600.0], None);
+            shell.children = content;
+            shell
+        };
+        let bare = shell(vec![node(
+            "ListRow",
+            "detail-row",
+            [416.0, 56.0, 384.0, 544.0],
+            Some(Role::ListItem),
+        )]);
+        let found = bare_rows(&bare);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].keys.first().map(String::as_str),
+            Some("detail-row"),
+            "at the row a view drew"
+        );
+        let listed = shell(vec![holding(
+            node("DescribedList", "rows", [76.0, 56.0, 340.0, 540.0], None),
+            vec![
+                node("ListRow", "a", [76.0, 56.0, 340.0, 36.0], None),
+                node("ListRow", "b", [76.0, 92.0, 340.0, 36.0], None),
+            ],
+        )]);
+        assert!(bare_rows(&listed).is_empty(), "a list's rows are lines");
+        let page = shell(vec![holding(
+            node("Scroll", "scroll", [416.0, 56.0, 384.0, 544.0], None),
+            vec![holding(
+                node("page", "page", [416.0, 56.0, 384.0, 544.0], None),
+                vec![holding(
+                    node("stack", "stack", [440.0, 80.0, 336.0, 120.0], None),
+                    vec![node(
+                        "ListRow",
+                        "summary",
+                        [440.0, 80.0, 336.0, 60.0],
+                        Some(Role::ListItem),
+                    )],
+                )],
+            )],
+        )]);
+        assert!(
+            bare_rows(&page).is_empty(),
+            "a page holding a row is no finding"
+        );
     }
 
     fn holding(mut outer: InspectionNode, children: Vec<InspectionNode>) -> InspectionNode {

@@ -2833,12 +2833,12 @@ mod tests {
         }
         // Every frame pumps the connection; reading while the watcher is
         // armed does not wake it.
-        let settled = tilo_test_env::idle::asleep_switches(&tid);
+        let settled = tilo_test_env::idle::asleep_runs(&tid);
         for _ in 0..10 {
             assert!(client.pump().unwrap().is_empty());
         }
         assert_eq!(
-            tilo_test_env::idle::asleep_switches(&tid),
+            tilo_test_env::idle::asleep_runs(&tid),
             settled,
             "pumping an armed connection woke its watcher"
         );

@@ -93,6 +93,10 @@ pub struct ThemeTiles {
     preferred: f64,
     gap: f64,
     label: f64,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ThemeTiles {
@@ -104,6 +108,7 @@ impl ThemeTiles {
             .position(|tile| tile.name == chosen)
             .unwrap_or_default();
         Self {
+            dirty: true,
             tiles,
             chosen,
             hover: None,
@@ -541,6 +546,7 @@ impl Widget for ThemeTiles {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -587,6 +593,14 @@ impl Widget for ThemeTiles {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

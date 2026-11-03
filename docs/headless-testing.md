@@ -184,17 +184,22 @@ provider/ID with its declared arguments, adding `--wait` so the answer is the
 result and not the admission. To follow a pending receipt, use
 `actions status INVOCATION_ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
-not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
-presented app identity, surface, frame count, and rendering errors for foreign
-Wayland clients. It does not observe apps mounted inside the compositor:
+not prove the app has rendered. A packaged app is up when a process of it runs
+from the session's store — `/var/tilo-apps/<application id>/`, the only place
+its binary sits inside the sandbox — and the desk holds its window
+(`windows`); what it draws is proved by a control it offers (`list_targets`)
+pressed, and what that changes. `real_apps.Session.answering` waits for the
+first two and leaves the last to the check.
+
+Apps mounted inside the compositor are not processes of their own:
 `actions:window.new.terminal` mounts Terminal in-process, with `AppPlaceholder`
-as its persisted tile kind. Neither that kind nor an empty `foreign_frames`
-reply proves the hosted app failed to render. Verify its exported
-`inspect-session` operation to completion, its laid-out `terminal` target and
-a private headless snapshot. Process startup additionally requires an open
-session with input available; rendering a missing-runtime explanation is not
-a working PTY. The separately discovered `applications:so.tilo.terminal`
-launches the packaged app and should be checked with foreign-frame counters.
+as its persisted tile kind. That kind alone proves the hosted app failed to
+render no more than a window does. Verify its exported `inspect-session`
+operation to completion, its laid-out `terminal` target and a private headless
+snapshot. Process startup additionally requires an open session with input
+available; rendering a missing-runtime explanation is not a working PTY. The
+separately discovered `applications:so.tilo.terminal` launches the packaged
+app, which `answering` covers.
 
 `scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
 invocation against an isolated compositor.
@@ -497,6 +502,65 @@ kill $COMP_PID
 rm -f $TILO_TEST_CONTROL
 ```
 
+## A session with the tree's own apps
+
+The recipes above start the compositor alone: it lists no applications, so a
+click on Notes in the desk finds nothing to start. Showing a real app's window
+with real content needs a session that has the apps *installed* and starts them
+through `tilo-launcher` and its sandbox, as an image does. One harness does
+that, `scripts/headless-examples/real_apps.py`; the checks that drive apps
+(`tilolang-e2e.py`, `canvas-e2e.py`) are built on it.
+
+```bash
+# Once per tree: the session's programs, the apps, and the runtime they link.
+# Through a remote-exec prefix when this machine has no toolchain for it:
+export TILO_NESTED_SESSION_BUILD_EXEC="…"   # optional
+python3 scripts/headless-examples/real_apps.py --start --build --open notes --shot /tmp/notes.png
+
+# Afterwards every start reuses that build (seconds) and installs nothing twice:
+python3 scripts/headless-examples/real_apps.py --start --open notes --shot /tmp/notes.png
+python3 scripts/headless-examples/real_apps.py --start --open file-explorer --open chat --keep
+```
+
+The build takes the app list from `TILO_NESTED_APPS`. Through a remote-exec
+prefix, pass it in the program's own environment — `<prefix> env
+TILO_NESTED_APPS="notes …" dist/dev/nested-session-build.sh`, which is what the
+harness does — because a builder runs with its environment, not this machine's.
+
+`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone
+(`--software`: it never opens this machine's GPU and never touches a live
+desktop) on a private runtime directory and a throwaway identity. The apps it
+installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed
+with the session's own key and installed through `tilo-install` into the
+session's store — the same path the image's `/usr/share/tilo-apps` is built
+through. `--open APP` launches it through the desktop's own launcher
+(`applications so.tilo.<app>`) and waits until a process of it runs from the
+session's store with its window on the desk; `--shot` writes a PNG of the whole
+desktop. `--keep` leaves the session running
+and prints its ready JSON — the control socket, the runtime directory and the
+state directory — so `tilo-control` drives it from anywhere:
+
+```bash
+TILO_TEST_CONTROL=<control from the ready line> <build>/bin/tilo-control actions list
+kill -TERM -<pid>   # the session's own process group: its apps, services and bus too
+```
+
+Never start an app binary by hand and never run `tilo-launcher` outside a
+session: an app launched that way has no window to show (`no runtime host
+found`), and the launcher refuses one that is not in a session's scope. From
+Python, mount the same harness instead of a second one:
+
+```python
+from real_apps import Session, prepare
+
+prepare(state, apps="notes", built=False)          # idempotent
+with Session(state) as session:                    # fresh desktop, headless
+    session.start()
+    session.launch("notes")                        # through the launcher
+    session.answering("notes")                     # its process runs, its window is on the desk
+    session.snapshot(out / "notes.png")
+```
+
 ## Measuring the frame loop
 
 The compositor carries per-tick instrumentation — cadence, per-phase
@@ -604,7 +668,11 @@ itself.
 A gate that runs inside the pull-request test shard shares the runner with
 other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
 counts only voluntary switches, one per wakeup, together with a CPU bound that
-catches a thread spinning without blocking.
+catches a thread spinning without blocking. `assert_stays_asleep` counts the
+times the thread was scheduled in, not its context switches: a switch is
+counted a moment after the kernel marks the thread asleep, so a settle on the
+switch count can catch a park that is still being counted and report it
+inside the window.
 
 ## Idle memory
 

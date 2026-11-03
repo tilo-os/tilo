@@ -1316,3 +1316,61 @@ fn an_agent_reads_an_issue_through_its_document_read() {
         "nothing of the tracker is kept from an agent"
     );
 }
+
+/// Its palette lists what a person looks for — the tracker's resources by
+/// their title and its own actions — and never the nodes its controls are
+/// addressed by.
+#[test]
+fn its_palette_lists_its_own_resources_and_actions() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Write the launch notes" }))
+        .expect("create");
+    app.harness()
+        .open_search(&ui::search::SearchRequest::this_app())
+        .expect("the palette opens");
+    let shown: Vec<String> = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect();
+    assert!(
+        shown.iter().any(|label| label == "Write the launch notes"),
+        "the issue by its title: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|label| label == "Create an issue"),
+        "and what the tracker does: {shown:?}"
+    );
+    for internal in ["Focus", "Go to", "Submit", "Search the window"] {
+        assert!(
+            !shown.iter().any(|label| label == internal),
+            "{internal} addresses a control, it is not a row: {shown:?}"
+        );
+    }
+    if let Some(dir) = std::env::var_os("TILO_PALETTE_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        let dir = match std::env::var_os("CARGO_TARGET_DIR") {
+            Some(target) if dir.is_relative() => std::path::PathBuf::from(target).join(dir),
+            _ => dir,
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+            app.harness().set_theme(theme);
+            app.harness()
+                .render_png(&dir.join(format!("native-palette-{shade}.png")));
+            // What the palette reads row by row, for a check that cannot look at the image.
+            let labels: Vec<String> = app
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect();
+            std::fs::write(
+                dir.join(format!("native-palette-{shade}.txt")),
+                labels.join("\n"),
+            )
+            .unwrap();
+        }
+    }
+}

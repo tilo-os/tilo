@@ -74,6 +74,11 @@ impl Overview {
         Rc::clone(&self.inner.open)
     }
 
+    /// The same flag, borrowed: for a reader that lives for one call.
+    pub(crate) fn open_cell(&self) -> &Cell<bool> {
+        &self.inner.open
+    }
+
     /// A frame is about to be drawn: move the zoom by the clock, and tell
     /// the panel where the windows it pictures stand on the desk now.
     ///

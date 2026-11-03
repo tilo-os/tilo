@@ -64,7 +64,10 @@ ui::action_contract_tests! {
     seed: seeded_doc(),
     registry: registry(),
     resources: |doc| resources_for(doc),
-    palette: ["New event", "New task", "Delete event", "Reschedule"],
+    // What a person starts from the palette, and what acts on an event it
+    // names: starting an event or a task opens their form, which is where a
+    // time, a repeat or a guest is set, so no row asks for a whole event.
+    palette: ["New event", "New task", "Delete event"],
     replay: [
         // Completion is an absolute value, so replay does not depend on the
         // receiving replica's current task state.

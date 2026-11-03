@@ -137,6 +137,14 @@ filter = 'package(tilolang-cli) and test(=the_apps_show_no_layout_problem_their_
 threads-required = "num-cpus"
 priority = 100
 
+# Each app gate seeds a workspace of a thousand items and one of ten thousand and
+# runs the open, the filter and the changes over both: 42 s of CPU a gate on a quiet
+# machine, and a loaded one reached the eight-minute suite-wide bound without a
+# finish. The bound only has to catch a gate that stopped.
+[[profile.default.overrides]]
+filter = 'package(tilolang-tilo) and binary(budgets)'
+slow-timeout = { period = "30s", terminate-after = 40 }
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
 threads-required = 16

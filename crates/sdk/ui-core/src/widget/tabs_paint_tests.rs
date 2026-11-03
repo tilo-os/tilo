@@ -75,6 +75,35 @@ fn a_bar_at_rest_is_drawn_once_and_again_only_on_a_change() {
     assert_eq!(bar.fresh_draws, drawn + 3, "someone came to a tab");
 }
 
+/// A bar that drew is clean: it asks for no frame until its own state moves
+/// or the people on its tabs are no longer the people it drew — both read
+/// before a draw, from the presence the host lends the pass.
+#[test]
+fn a_drawn_bar_asks_for_a_frame_only_on_a_change_or_a_person() {
+    use crate::presence::frame;
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut bar = bar();
+    let mut presence = PresenceCtx::default();
+    let clean =
+        |bar: &TabBar, presence: &PresenceCtx| frame::lend(presence, || !Widget::needs_redraw(bar));
+    let draw = |bar: &mut TabBar, tr: &mut TextRenderer, presence: &PresenceCtx| {
+        frame::lend(presence, || {
+            let mut scene = Scene::new();
+            bar.draw(&mut scene, Affine::IDENTITY, tr, &theme, presence);
+        });
+    };
+    assert!(!clean(&bar, &presence), "an undrawn bar repaints");
+    draw(&mut bar, &mut tr, &presence);
+    assert!(clean(&bar, &presence), "a bar that drew is clean");
+    presence.register_peer_at("peer".to_string(), tab_presence_key(2));
+    assert!(!clean(&bar, &presence), "someone came to a tab");
+    draw(&mut bar, &mut tr, &presence);
+    assert!(clean(&bar, &presence), "and is clean drawn with them");
+    bar.set_modified(2, true);
+    assert!(!clean(&bar, &presence), "a change of its own");
+}
+
 /// A turning busy arc draws its bar on every frame, in a damage part of
 /// its own, so only its square repaints; at rest, the bar is shown again.
 #[test]

@@ -500,78 +500,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let carried = Delegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
 
-    // 5. The browser's session sees the agent: the view of itself an agent
-    // says on the workspace, focused on the record it works in.
-    let record = tilo_relay_protocol::live::LiveRecord {
-        app: SCRATCHPAD.to_owned(),
-        record: route.record.clone(),
-    }
-    .short_digest();
-    let deadline = tilo_test_env::hang_deadline();
-    let mut shells = Vec::new();
-    let presence = loop {
-        assert!(
-            Instant::now() < deadline,
-            "the agent's presence never reached the browser"
-        );
-        agent.pump();
-        for event in browser_events.drain() {
-            let PeerEvent::Presence { from, body, .. } = event else {
-                continue;
-            };
-            if from == agent_cert.device_public_key
-                && let Some(collab_types::PeerPresencePayload::Shell(shell)) =
-                    support::presence(&body)
-            {
-                shells.push(*shell);
-            }
-        }
-        if let Some(shell) = shells.iter().rev().find(|shell| {
-            shell
-                .windows
-                .iter()
-                .any(|window| window.app == SCRATCHPAD && window.record == record)
-        }) {
-            break shell.clone();
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert!(presence.agent);
-    assert_eq!(presence.label, "Writer helper");
-    assert_eq!(presence.colour, "#7c3aed");
-
-    // 6. The browser's own presence, published on its session, reaches the
-    // agent (an iroh peer): one presence path for the page and the agent.
-    let browser_key = browser_device.cert.device_public_key;
-    let deadline = tilo_test_env::hang_deadline();
-    let seen = loop {
-        assert!(
-            Instant::now() < deadline,
-            "the browser's presence never reached the agent"
-        );
-        browser
-            .publish_presence(
-                workspace(),
-                vec![
-                    support::pointer_body(&browser_key, 12.0, 34.0),
-                    support::shell_body(&browser_key, "Ada"),
-                ],
-            )
-            .unwrap();
-        agent.pump();
-        if let Some(member) = agent
-            .remote_members()
-            .into_iter()
-            .find(|member| member.publisher == browser_key)
-        {
-            break member;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert_eq!(seen.shell.label, "Ada");
-    assert!(!seen.shell.agent);
-
-    // 7. The host keeps the agent to its delegated workspaces.
+    // 5. The host keeps the agent to its delegated workspaces.
     agent
         .peer()
         .join(tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap())
@@ -591,7 +520,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     )
     .await;
 
-    // 8. Pause holds the next task, resume releases it, stop ends the agent.
+    // 6. Pause holds the next task, resume releases it, stop ends the agent.
     let agent_id = agent_resource("writer");
     let host_key = host_cert.device_public_key;
     completed(
@@ -657,7 +586,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     )
     .await;
 
-    // 9. Idle, the agent's loop sleeps until something changes: no pump on
+    // 7. Idle, the agent's loop sleeps until something changes: no pump on
     // an interval, only its presence keep-alive while it shows on a record
     // (a loop on a 20 ms interval pumped 50 times a second).
     let idle = agent.run_until(Some(Instant::now() + Duration::from_secs(1)), |_| false);
@@ -668,7 +597,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         idle.pumps
     );
 
-    // 10. A plan of local steps runs back to back: the loop never waits
+    // 8. A plan of local steps runs back to back: the loop never waits
     // between them (a loop on a 20 ms interval took one step per pump).
     let steps: Vec<serde_json::Value> = (1..=10)
         .map(|n| {
@@ -716,7 +645,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     )
     .await;
 
-    // 11. A plan that takes a while (a model call) is made beside the loop:
+    // 9. A plan that takes a while (a model call) is made beside the loop:
     // the loop goes on pumping meanwhile, and the plan's first step runs as
     // soon as it is ready.
     let (note, arguments) = common::scratchpad_body("Planned beside the loop");
@@ -778,7 +707,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     )
     .await;
 
-    // 12. A plan still being made when the agent is paused, its task is
+    // 10. A plan still being made when the agent is paused, its task is
     // cancelled or the agent is stopped carries out nothing by itself: a
     // pause holds the late plan until resume, and a cancelled or stopped
     // task's late plan is dropped. Each step goes through the agent's

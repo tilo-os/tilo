@@ -883,6 +883,18 @@ pub struct OpenResourceSearch {
     resources: Arc<BTreeMap<String, tilo_actions::ResourceSpec>>,
 }
 
+/// How good a choice `resource` is for the one row its title gets: the one
+/// that presents it to people first, then the one offering more of the
+/// app's own actions.
+fn resource_rank(resource: &tilo_actions::ResourceSpec) -> (bool, usize) {
+    (
+        resource
+            .open_action()
+            .is_some_and(|action| action.kind == tilo_actions::OperationKind::View),
+        resource.person_action_count(),
+    )
+}
+
 impl OpenResourceSearch {
     #[must_use]
     pub fn new(resources: &[tilo_actions::ResourceSpec]) -> Self {
@@ -902,12 +914,27 @@ impl OpenResourceSearch {
         for resource in resources {
             collect(resource, &mut indexed);
         }
+        // What a person is looking for: the app's own resources, by their
+        // title. A node with no title, a mirror of one of the window's
+        // controls, and a node left only with what agents act on are ways to
+        // address something, not things to list; two parts of the app naming
+        // one resource list it once, as the one offering the most to do.
+        let mut listed: BTreeMap<String, &tilo_actions::ResourceSpec> = BTreeMap::new();
+        for resource in indexed
+            .values()
+            .filter(|resource| resource.listed_for_people())
+        {
+            match listed.get(&resource.label) {
+                Some(known) if resource_rank(resource) <= resource_rank(known) => {}
+                _ => {
+                    listed.insert(resource.label.clone(), resource);
+                }
+            }
+        }
         let catalog = SearchCatalog::new("Open resources");
-        if let Err(error) = catalog.replace_all_records(indexed.values().filter_map(|resource| {
+        if let Err(error) = catalog.replace_all_records(listed.values().filter_map(|resource| {
             let action = resource
-                .actions
-                .iter()
-                .find(|action| action.kind == tilo_actions::OperationKind::View)
+                .open_action()
                 .or_else(|| resource.actions.first())?;
             let address = ActionAddress::new(resource.id.as_str(), &action.id);
             // Named as the app names it, with the detail it gives (where
@@ -921,15 +948,25 @@ impl OpenResourceSearch {
             {
                 hit = hit.with_subtitle(detail);
             }
-            Some(SearchRecord::new(resource.id.as_str(), hit).field(
-                format!(
-                    "{} {} {}",
-                    resource.label,
-                    resource.kind,
-                    resource.id.as_str()
-                ),
-                FieldWeight::UNRANKED,
-            ))
+            hit = hit.with_icon(
+                action
+                    .icon
+                    .as_deref()
+                    .and_then(Icon::from_name)
+                    .unwrap_or_else(|| {
+                        super::system::icon_for_kind(&super::system::ResourceKind::Record)
+                    }),
+            );
+            let mut record = SearchRecord::new(resource.id.as_str(), hit)
+                .field(resource.label.clone(), FieldWeight::TITLE);
+            if let Some(detail) = &resource
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.detail.as_ref())
+            {
+                record = record.field((*detail).clone(), FieldWeight::SUBTITLE);
+            }
+            Some(record)
         })) {
             tracing::error!(%error, "could not index open resources");
         }
@@ -1495,6 +1532,91 @@ mod tests {
             assert!(page.results.len() <= 2);
             assert!(page.next.is_some());
         }
+    }
+
+    #[test]
+    fn open_resource_search_lists_only_titled_person_resources_once() {
+        let open = || {
+            tilo_actions::ActionSpec::operation(
+                "open",
+                "Open",
+                tilo_actions::OperationKind::View,
+                "test.item",
+                &serde_json::json!({}),
+            )
+            .unwrap()
+        };
+        let tasks = tilo_actions::ResourceSpec::new("tasks:root", "tasks.Tasks", "Tasks")
+            .with_action(open().with_icon("plus"))
+            .with_action(
+                tilo_actions::ActionSpec::operation(
+                    "add",
+                    "Add task",
+                    tilo_actions::OperationKind::Effect,
+                    "test.item",
+                    &serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .with_child(
+                tilo_actions::ResourceSpec::new("tasks:one", "tasks.Task", "Ship it")
+                    .with_action(open()),
+            );
+        let resources = vec![
+            // The host's operations: published to be addressed, never found
+            // by a person looking for something to open.
+            tilo_actions::ResourceSpec::new("tl:host", "tl.host", "tilolang").with_action(open()),
+            // A control the window already draws.
+            tilo_actions::ResourceSpec::new("ui:submit", "tilo.control", "Submit")
+                .with_action(open()),
+            // What holds the tasks, and the package root naming itself the
+            // same: one row, the one offering the person more.
+            tasks,
+            tilo_actions::ResourceSpec::new("tasks", "tasks", "Tasks").with_action(open()),
+            // An untitled node.
+            tilo_actions::ResourceSpec::new("tasks:internal", "tasks.Task", "  ")
+                .with_action(open()),
+        ];
+        let provider = OpenResourceSearch::new(&resources);
+        let hits = provider.search("");
+        let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+        assert_eq!(
+            titles.iter().filter(|title| **title == "Tasks").count(),
+            1,
+            "one row per title: {titles:?}"
+        );
+        assert!(titles.contains(&"Ship it"), "{titles:?}");
+        assert!(
+            !titles.contains(&"tilolang") && !titles.contains(&"Submit"),
+            "host operations and control mirrors are not things to open: {titles:?}"
+        );
+        let opened = hits
+            .iter()
+            .find(|hit| hit.title == "Tasks")
+            .and_then(SearchResult::action_address)
+            .expect("the tasks have an address");
+        assert_eq!(
+            opened.resource, "tasks:root",
+            "the one with more of the app's own actions"
+        );
+        assert!(
+            hits.iter().all(|hit| hit.icon.is_some()),
+            "every row wears a picture: {hits:?}"
+        );
+        assert_eq!(
+            hits.iter()
+                .find(|hit| hit.title == "Tasks")
+                .and_then(|hit| hit.icon),
+            Some(Icon::Plus),
+            "the picture the action opening it declares"
+        );
+        assert_eq!(
+            hits.iter()
+                .find(|hit| hit.title == "Ship it")
+                .and_then(|hit| hit.icon),
+            Some(Icon::Layers),
+            "and the resource kind's picture when it declares none"
+        );
     }
 
     #[test]

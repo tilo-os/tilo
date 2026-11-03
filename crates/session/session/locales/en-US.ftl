@@ -210,3 +210,24 @@ paste-failed-body = { $failed } of { $total } did not land. { $name }: { $reason
 paste-undone-title = The last paste did not finish
 paste-undone-body = { $landed } of { $total } had already landed. Those are kept; the rest is where it was.
 paste-undone-trouble = { $landed } of { $total } had already landed. Those are kept; the rest could not be put back yet: { $reason }
+
+## What the desk's own rows say: the question on the person's avatar, a running
+## application's tray item, and what the roster is called to assistive technology.
+session-desk-answer-ask = Answer
+session-desk-ask-later = Ask me later
+session-desk-open = Open
+session-desk-stop-agent = Stop
+session-people = People
+
+## What a person's private conversations are called, and the one action they offer.
+session-messages = Private messages
+session-messages-send = Send a private message
+
+## What the lock screen is called while it is up.
+session-lock-screen = Lock screen
+
+## What an agent's programs are, as the action door offers them: a task agent
+## writes one program at a time as a step of its task's run.
+task-programs-resource = Task programs
+task-programs-run = Run a program
+task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.

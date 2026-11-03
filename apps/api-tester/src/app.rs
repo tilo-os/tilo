@@ -1560,6 +1560,7 @@ impl ui::widget::Decorator for ApiTesterApp {
             || self.pose.is_some()
             || self.menu_pending
             || self.nav.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     /// What the window says to assistive technology: the shell's own tree,

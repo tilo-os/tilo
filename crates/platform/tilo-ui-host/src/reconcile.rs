@@ -930,8 +930,13 @@ impl Reconciler {
             Page::full()
         } else {
             Page::new()
+        };
+        // A page that fills takes the height its pane gives it: a canvas's content (a board's
+        // lanes) stands on the pane's floor, and what it holds scrolls inside it.
+        if flag(node, "fill") {
+            page = page.filling();
         }
-        .with_id(node.key.clone());
+        let mut page = page.with_id(node.key.clone());
         for slot in self.slots(node) {
             page = page.push_slot(slot);
         }

@@ -340,6 +340,12 @@ pub struct ChangeNote {
 /// The action id of the change that made a resource, when the host made it.
 pub const CREATE_ACTION: &str = "$create";
 
+/// The action id of a change a bound control makes to the text field it shows.
+pub const EDIT_TEXT_ACTION: &str = "edit-text";
+
+/// The action id of a change a bound control makes to the flag field it shows.
+pub const EDIT_FLAG_ACTION: &str = "edit-flag";
+
 /// One version of a resource, as history keeps it: who made it, when, by which action, in
 /// which task run, and what it did to the resource.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

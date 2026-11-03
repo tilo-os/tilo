@@ -23,6 +23,10 @@ pub struct StripView {
     rect: Rect,
     last_paginate_ms: Option<u128>,
     start: Instant,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl StripView {
@@ -33,6 +37,7 @@ impl StripView {
             active_index.min(strip_names.len().saturating_sub(1))
         };
         Self {
+            dirty: true,
             strip_names,
             active_index: clamped,
             rect: Rect::ZERO,
@@ -111,6 +116,7 @@ impl Widget for StripView {
         false
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let sign = match delta {
                 MouseScrollDelta::LineDelta(_x, y) => wheel_sign(f64::from(*y)),
@@ -123,6 +129,14 @@ impl Widget for StripView {
                 }
             }
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "StripView"

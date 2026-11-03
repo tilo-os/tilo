@@ -362,4 +362,12 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     rt.load_package(&wasm, common::counter_meta()).unwrap();
     rt.set_words(after.clone());
     assert_eq!(*after.0.borrow(), catalogues);
+
+    // A window loads its app as a module, which is a package reload: the load that first brings
+    // a package hands its catalogues over too, as a later build of it does.
+    let window = Taken::default();
+    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    rt.set_words(window.clone());
+    rt.reload_package(&wasm, common::counter_meta()).unwrap();
+    assert_eq!(*window.0.borrow(), catalogues);
 }

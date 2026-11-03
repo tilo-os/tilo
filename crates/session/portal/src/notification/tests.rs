@@ -100,7 +100,7 @@ fn the_default_action_and_buttons_become_the_daemons_actions() {
     assert_eq!(
         listed,
         [
-            (DEFAULT.to_owned(), DEFAULT_LABEL.to_owned()),
+            (DEFAULT.to_owned(), default_label()),
             ("button-0".to_owned(), "Mark read".to_owned()),
             (INLINE_REPLY.to_owned(), "Reply".to_owned()),
         ],

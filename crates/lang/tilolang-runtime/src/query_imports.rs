@@ -249,8 +249,12 @@ impl Core {
             }
             Imp::Take => {
                 let n = usize::try_from(a.long(1)?).unwrap_or(0);
-                let items = self.items_of(self.val(a.h(0)?)?, "take")?;
-                self.ret_h(Value::List(items.into_iter().take(n).collect()))
+                // A collection read up to a count reads that many items, not all of them.
+                let items = match self.val(a.h(0)?)? {
+                    Value::Coll(c) => self.coll_take(&c, n)?,
+                    other => self.items_of(other, "take")?.into_iter().take(n).collect(),
+                };
+                self.ret_h(Value::List(items))
             }
             Imp::Single => {
                 let items = self.items_of(self.val(a.h(0)?)?, "single")?;

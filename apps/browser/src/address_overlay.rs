@@ -47,6 +47,10 @@ pub struct AddressSuggestions {
     last_cursor: Point,
     /// The row a touch went down on: lifting on it chooses it.
     touched: Option<(u64, usize)>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for AddressSuggestions {
@@ -59,6 +63,7 @@ impl AddressSuggestions {
     /// An empty, hidden suggestion list.
     pub fn new() -> Self {
         Self {
+            dirty: true,
             items: Vec::new(),
             list: SuggestionList::new(),
             engine: String::new(),
@@ -288,6 +293,7 @@ impl Widget for AddressSuggestions {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.is_visible() {
             return;
         }
@@ -375,6 +381,14 @@ impl Widget for AddressSuggestions {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

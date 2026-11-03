@@ -320,6 +320,10 @@ pub struct MonitorApp {
     /// window's structure ([`Widget::take_structure_dirty`]), which takes it
     /// once: the layout it asks for clears `layout_dirty` on its own.
     retold: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for MonitorApp {
@@ -337,6 +341,7 @@ impl MonitorApp {
             .with_window_toolbar()
             .content(Box::new(tab_content(&state.shared, &state.shown_tab)));
         Self {
+            dirty: true,
             state: Rc::new(RefCell::new(state)),
             live: None,
             presented: None,
@@ -1585,6 +1590,7 @@ impl MonitorState {
 
 impl Widget for MonitorApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.follow_document();
         {
             // The preferences follow the person's settings, never the
@@ -1680,6 +1686,7 @@ impl Widget for MonitorApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.context.is_open() {
             self.context.handle_event(event, ctx);
             if let Some(index) = self.context.take_selection() {
@@ -1772,6 +1779,14 @@ impl Widget for MonitorApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

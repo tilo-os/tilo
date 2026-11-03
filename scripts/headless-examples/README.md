@@ -21,6 +21,12 @@ every claim back off that session rather than off the thing that asked for it.
 | `agent-seats-proof.py` | Two agents at the session's agent door, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
 | `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
 
+`notes-persist-proof.py` is the same kind of proof for a desktop with the
+tree's own apps: it opens Notes, types into a page, stops the session and starts
+it again, and reads the text back off the record on disk. It needs the session
+and its apps built (`dist/dev/nested-session-build.sh`) and so is not part of
+`tools/ci/session-proofs.sh`.
+
 For examples that connect to an existing compositor, start it once with:
 
 ```bash
@@ -51,6 +57,7 @@ Each script takes the socket path as its first argument (default `$TILO_TEST_CON
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
 | `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down. |
+| `real_apps.py` | A headless session with the tree's own apps installed, launched through the desktop's own launcher: `Session` for a check, `--start --open notes --shot out.png` for a person. Every check of a desktop with apps starts here. |
 | `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
 | `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 

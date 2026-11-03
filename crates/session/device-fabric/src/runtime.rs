@@ -194,7 +194,7 @@ impl FabricRuntime {
         if records.next().is_some() {
             return Err(FabricError::ForeignAuthorship);
         }
-        let Some(source) = self.device_on(peer) else {
+        let Some(source) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         if snapshot.owner != source {
@@ -232,7 +232,7 @@ impl FabricRuntime {
         if !trailing.is_empty() {
             return Err(FabricError::InvalidAction);
         }
-        let Some(source) = self.device_on(peer) else {
+        let Some(source) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         let Some(local) = self.local.as_ref().map(|local| local.device.clone()) else {
@@ -291,6 +291,59 @@ impl FabricRuntime {
             return Ok(false);
         }
         local.snapshot.clipboard = entries;
+        self.revise()
+    }
+
+    /// Seal the Wi-Fi passphrase this device learned for `ssid` to itself and
+    /// to every device of the person's in this fabric, as this device's own
+    /// record in its next snapshot: the passphrase itself never leaves the
+    /// sealed envelopes. A network this device already shared is replaced.
+    /// Returns whether this device's record changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the passphrase is not one to carry between the person's
+    /// devices, or why the record does not make a valid snapshot.
+    pub fn share_wifi_password(
+        &mut self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+        password: &str,
+    ) -> Result<bool, FabricError> {
+        let Some((device, counter)) = self.local.as_ref().map(|local| {
+            (
+                local.device.clone(),
+                local.snapshot.presence.stamp.counter.saturating_add(1),
+            )
+        }) else {
+            return Ok(false);
+        };
+        let recipients = self
+            .fabric
+            .snapshots()
+            .keys()
+            .cloned()
+            .chain([device.clone()])
+            .collect::<BTreeSet<_>>();
+        let credential = crate::secrets::seal_wifi_credential(
+            ssid,
+            security,
+            password,
+            &device,
+            recipients,
+            FabricStamp {
+                counter,
+                device: device.clone(),
+            },
+        )
+        .map_err(|_| FabricError::InvalidWifiCredential)?;
+        if let Some(local) = &mut self.local {
+            local
+                .snapshot
+                .wifi
+                .retain(|saved| saved.network_id != credential.network_id);
+            local.snapshot.wifi.push(credential);
+        }
         self.revise()
     }
 
@@ -441,7 +494,7 @@ impl FabricRuntime {
         stamp: &FabricStamp,
         outputs: Vec<crate::DisplayConnectorPlacement>,
     ) -> Result<bool, FabricError> {
-        let Some(owner) = self.device_on(peer) else {
+        let Some(owner) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         self.fabric
@@ -461,7 +514,7 @@ impl FabricRuntime {
         stamp: &FabricStamp,
         outputs: Vec<crate::DisplayOutputObservation>,
     ) -> Result<bool, FabricError> {
-        let Some(owner) = self.device_on(peer) else {
+        let Some(owner) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
         };
         self.fabric.observe_display_outputs(&owner, stamp, outputs)
@@ -512,7 +565,8 @@ impl FabricRuntime {
     }
 
     /// The device behind `peer`, from the certificate it proved.
-    fn device_on(&self, peer: EndpointId) -> Option<DeviceId> {
+    #[must_use]
+    pub fn device_behind(&self, peer: EndpointId) -> Option<DeviceId> {
         self.siblings
             .iter()
             .find(|(_, sibling)| sibling.endpoint == peer)
@@ -1027,6 +1081,84 @@ mod tests {
         assert!(
             restarted.online_device_ids().is_empty(),
             "no session is up yet, so there is no device to send work to"
+        );
+    }
+
+    /// This laptop's key, and its fabric id as the device that key names.
+    fn keyed_local() -> (ed25519_dalek::SigningKey, (DeviceId, String)) {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let device =
+            DeviceId::new(hex::encode(key.verifying_key().to_bytes())).expect("a device id");
+        let local = (device, "This laptop".to_owned());
+        (key, local)
+    }
+
+    #[test]
+    fn a_shared_passphrase_is_sealed_in_the_fabric_and_opens_only_here() {
+        let (key, local) = keyed_local();
+        let mut runtime = FabricRuntime::restored(Some(local.clone()), None).expect("a runtime");
+        assert!(
+            runtime
+                .share_wifi_password("Home", os_actions::WifiSecurity::Wpa2, "the-passphrase")
+                .expect("a shareable passphrase"),
+            "the device's record changed"
+        );
+        let fabric = runtime.device_fabric();
+        let credential = fabric
+            .merged_wifi()
+            .into_values()
+            .next()
+            .expect("one credential");
+        assert_eq!(credential.ssid, "Home");
+        assert_eq!(credential.security, os_actions::WifiSecurity::Wpa2);
+        assert_eq!(credential.stamp.device, local.0, "authored by this device");
+        assert!(
+            !credential
+                .sealed_secret
+                .windows("the-passphrase".len())
+                .any(|window| window == b"the-passphrase"),
+            "the passphrase itself never reaches the fabric"
+        );
+        assert_eq!(
+            crate::secrets::open_wifi_credential(&credential, &key),
+            Ok("the-passphrase".to_owned()),
+            "this device reads what it shared"
+        );
+        let another = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+        assert!(
+            crate::secrets::open_wifi_credential(&credential, &another).is_err(),
+            "a key the passphrase was not sealed to cannot read it"
+        );
+
+        // Sharing the same network again replaces what this device said
+        // before rather than keeping two passphrases for one network.
+        runtime
+            .share_wifi_password("Home", os_actions::WifiSecurity::Wpa2, "changed")
+            .expect("a shareable passphrase");
+        let fabric = runtime.device_fabric();
+        let credential = fabric
+            .merged_wifi()
+            .into_values()
+            .next()
+            .expect("one credential");
+        assert_eq!(
+            crate::secrets::open_wifi_credential(&credential, &key),
+            Ok("changed".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_passphrase_no_device_can_hold_is_refused() {
+        let (_, local) = keyed_local();
+        let mut runtime = FabricRuntime::restored(Some(local), None).expect("a runtime");
+        assert_eq!(
+            runtime.share_wifi_password("Open", os_actions::WifiSecurity::Open, "no-passphrase"),
+            Err(FabricError::InvalidWifiCredential),
+            "an open network has no passphrase to share"
+        );
+        assert!(
+            runtime.device_fabric().merged_wifi().is_empty(),
+            "nothing was said"
         );
     }
 }

@@ -243,11 +243,38 @@ d-g3ddlvlc = Strip key
 
 d-hnoh7dgq = Workspace
 
+d-c7yq7qkl = Workspace key
+    .doc = Its workspace's id, as switching to it names the workspace.
+
+d-bard6ca3 = Group key
+    .doc = The window it is a tab of: a group's tabs are one window on the desk, and its other tabs stand behind it.
+
+d-lbxt5665 = Tab index
+    .doc = Its place among its group's tabs: 0 for the tab in front, then the tabs behind it in their order.
+
+d-kiwhpw3z = Share
+    .doc = Its share of its strip's width, 0..1: the width the window keeps on the desk.
+
+d-hm2x5otu = Local
+    .doc = Whether it runs on this device: false for a window on another of the person's devices, or on a peer's.
+
+d-wxi227u2 = Device
+    .doc = The device that runs it, when it is not this one: its key, empty when it is not known.
+
+d-aadqdflh = Device name
+    .doc = That device's name, as its certificate labels it.
+
+d-ctnewsrr = Place
+    .doc = Where it stands in the picture of its workspace: 1 for the first tab of the first group of the first strip, on along them, strips top to bottom.
+
 d-z3pjamxl = Recency
 
 d-a5fwclo5 = Focused
 
 d-tb2jierp = Preview
+
+d-4agha6k5 = Not responding
+    .doc = Whether its app stopped answering: its card says so, and offers to keep waiting for the app or to quit it.
 
 d-labby3mp = Agent
     .doc = An agent here for the person, or that acted for them.
@@ -797,7 +824,7 @@ d-tnecawb6 = A foreign place
 d-i6ll2n4j = Desk view
 
 d-72tgr4px = Clock
-    .w-paused = Paused · { $timer_left }
+    .w-paused = Paused
 
 d-3ezewqgy = Bar
     .w-top-bar = Top bar
@@ -900,7 +927,7 @@ d-gctjtdv7 = Desk
 d-6jkhhsvr = Desk around
     .w-dock = Dock
 
-d-p2yoggx4 = Screen
+d-w3f6bqf5 = Screen
 
 d-bhxvwkho = Shown preset
 
@@ -977,7 +1004,7 @@ d-clgbrhsn = Notices
     .w-notifications = Notifications
     .w-clear-all = Clear all
     .w-nothing-to-catch-up-on = Nothing to catch up on
-    .w-what-apps-and-agents-tell-you = What apps and agents tell you shows here
+    .w-apps-and-agents-leave-a-notice = Apps and agents leave a notice when something needs you
     .w-search-notifications = Search notifications
     .w-nothing-matches-that = Nothing matches that
     .w-clear-the-search-to-see-every = Clear the search to see every notice
@@ -999,13 +1026,13 @@ d-rcjzvfxp = Overview
     .w-new-workspace = New workspace
     .w-join-a-workspace = Join a workspace
     .w-search-windows-across-your-workspaces = Search windows across your workspaces
+    .w-no-windows = No windows
+    .w-open-something-to-see-its-window = Open something to see its window
 
 d-f5tl6n63 = Rooms here
     .w-here = { $len } here
 
 d-7nxhynyj = Picture
-    .w-nothing-on-this-strip = Nothing on this strip
-    .w-open-something-or-carry-a-window = Open something, or carry a window here
 
 d-nxpbvfox = Window place
 
@@ -1016,8 +1043,8 @@ d-6l3wldtm = Window menu
 
 d-6nn35yb7 = Found
     .w-nothing-matches = Nothing matches
-    .w-windows-of-your-other-workspaces-show = Windows of your other workspaces show here. What apps hold is in Search
-    .w-in-other-workspaces = In other workspaces
+    .w-finds-windows-in-every-workspace-what = Finds windows in every workspace. What is inside an app is in Search
+    .w-windows = Windows
 
 d-kxdzjhoo = Window line
     .w-this-window = This window
@@ -1041,6 +1068,11 @@ d-z4hw2mcw = Key hints switcher
     .w-go-there = Go there
     .w-esc = Esc
     .w-stay = Stay
+
+d-fehlcpo5 = Hung window
+    .w-not-responding = Not responding
+    .w-wait = Wait
+    .w-force-quit = Force quit
 
 d-uhzjvuan = People button
     .w-people = People
@@ -1109,7 +1141,7 @@ d-scru4wch = Strip controls
 
 d-so5z33zr = Tab chip
 
-d-74cbhzyb = Place content
+d-oyjbbzbk = Place content
 
 d-43am22do = Place view
 
@@ -1121,13 +1153,15 @@ d-z4vc77e6 = Place controls
 
 d-fziuz57n = Switcher
     .w-no-windows = No windows
-    .w-open-something-and-it-shows-here = Open something and it shows here
+    .w-open-something-to-switch-to-it = Open something to switch to it
 
 d-dswgb57x = Window card
 
 d-jzxijptr = Window names
 
 d-3bxeb2i2 = Window face
+
+d-sk6mvhah = Window picture
 
 d-4hp326dv = Traditional desktop
     .w-desktop = Desktop
@@ -1189,6 +1223,14 @@ d-t3ywtwqj-row0 = Notice row for a
 d-wh7n4fhq-row0 = Banner row for a
 
 d-f5tl6n63-row0 = Rooms here for r
+
+d-7nxhynyj-row0-row0 = Picture for v
+
+d-7nxhynyj-row0 = Picture for w
+
+d-7nxhynyj-row1-row0 = Picture for v
+
+d-7nxhynyj-row1 = Picture for w
 
 d-6l3wldtm-row0 = Window menu for s
     .w-move-to = Move to { $strip_name }

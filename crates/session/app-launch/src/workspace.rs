@@ -1,11 +1,13 @@
 //! The workspace an app is launched into.
 //!
 //! A workspace is a collaboration workspace: its id is the cluster id every
-//! change an app makes is addressed to, and what the person granted apps in
-//! it is what the launcher lets them reach. Both travel with the launch —
-//! the id as `--workspace-id`, the grants as a JSON file under the per-user
-//! runtime directory that the launcher reads and the app never sees
-//! ([`Workspace::write_grants`]).
+//! change an app makes is addressed to, what the person granted apps in it is
+//! what the launcher lets them reach, and its policy is what the person may do
+//! in the app there. Both travel with the launch — the id as
+//! `--workspace-id`, the grants as a JSON file under the per-user runtime
+//! directory that the launcher reads and the app never sees
+//! ([`Workspace::write_grants`]), and the authority as a projection of the
+//! policy the launcher binds into the app ([`crate::authority`]).
 //!
 //! An app launched with no workspace gets the manifest's sandbox and nothing
 //! else; that is the safe default, so a workspace is only ever passed when the
@@ -15,6 +17,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::LaunchGrants;
+use tilo_action_policy::WorkspacePolicy;
 
 /// One workspace, as a launch into it needs it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -23,6 +26,13 @@ pub struct Workspace {
     pub id: String,
     /// What the person granted apps in this workspace.
     pub grants: LaunchGrants,
+    /// The workspace's policy as the desk holds it, or `None` when the session
+    /// holds none for it: what the person at this device may do in the app
+    /// ([`crate::authority`]).
+    pub policy: Option<WorkspacePolicy>,
+    /// The person at this device, by the id the workspace's governance names
+    /// them by: whose authority in it the app is handed.
+    pub person: String,
     /// Where the session keeps a launch's private files, under the per-user
     /// runtime directory.
     pub directory: PathBuf,
@@ -36,6 +46,8 @@ impl Workspace {
         Self {
             id: id.into(),
             grants: LaunchGrants::default(),
+            policy: None,
+            person: String::new(),
             directory: directory.into(),
         }
     }

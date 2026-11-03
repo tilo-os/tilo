@@ -209,6 +209,17 @@ fn text_arg(args: &ActionArgs, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} is required"))
 }
 
+/// The picture a history verb shows where people list it: the palette draws
+/// undo, redo and history from the toolkit's own shortcut table; these are the
+/// verbs people take that it does not know.
+fn icon_of(id: &str) -> Option<&'static str> {
+    match id {
+        "restore" => Some("rotate-ccw"),
+        "checkpoint" => Some("bookmark"),
+        _ => None,
+    }
+}
+
 fn edit(
     id: &'static str,
     label: &'static str,
@@ -235,6 +246,9 @@ fn edit(
     )
     .of_kind(tilo_actions::ActionKind::Undoable)
     .with_description(description);
+    if let Some(icon) = icon_of(id) {
+        spec = spec.with_icon(icon);
+    }
     spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
@@ -266,6 +280,9 @@ fn view(
     )
     .of_kind(ActionKind::Read)
     .with_description(description);
+    if let Some(icon) = icon_of(id) {
+        spec = spec.with_icon(icon);
+    }
     spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };

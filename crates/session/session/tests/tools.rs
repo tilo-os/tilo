@@ -14,9 +14,10 @@
               outlives every call made into it"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,10 +26,10 @@ use runtime_portal::tools::{
     AppKind, AppRemoval, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
 };
 use tilo_action_broker::services::{LaunchPlace, LauncherServices as _};
-use tilo_app_launch::{Launch, SessionEnvironment};
+use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::Workspace;
-use tilo_desktop_policy::{DesktopPolicy, Window};
+use tilo_desktop_policy::Window;
 use tilo_notifications_service::Notifications;
 use tilo_session::mount::apps::Apps;
 use tilo_session::mount::drives::{Drives, Media, Medium};
@@ -77,12 +78,14 @@ fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
             ),
         )
         .unwrap();
-        registry.push_str(&format!(
+        write!(
+            registry,
             "[[entry]]\nid = \"{id}\"\nversion = \"1.0.0\"\n\
              payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
             payload = payload.display(),
             manifest = manifest.display(),
-        ));
+        )
+        .unwrap();
     }
     fs::write(store.join("registry.toml"), registry).unwrap();
     home.env().set("TILO_APPS_DATA_DIR", &store);
@@ -91,7 +94,7 @@ fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
 /// The launcher this session starts packages through: it writes down the
 /// arguments it was started with and the tool context it was handed, then
 /// runs until the test is over.
-fn launcher(home: &mut tilo_test_env::TestHome, records: &Path) -> tilo_test_env::StandIn {
+fn launcher(home: &tilo_test_env::TestHome, records: &Path) -> tilo_test_env::StandIn {
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
         &format!(
@@ -128,13 +131,13 @@ fn session(
         None,
         Some(launcher.path().to_owned()),
     ));
-    let launches = Arc::new(Launches::default());
+    let opened = Arc::new(Launches::default());
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
-            launches: Arc::clone(&launches),
+            launches: Arc::clone(&opened),
             // The person's lists as the device reads them, read once: what
             // the tools service serves Files is that same list.
             search: SearchOptions {
@@ -148,7 +151,7 @@ fn session(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    (session, launches)
+    (session, opened)
 }
 
 /// Run frames until `done` holds.
@@ -261,8 +264,8 @@ fn an_agent_opens_notes_in_a_workspace() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("starts");
     packages(&mut home, &[(NOTES, "Notes")]);
-    let launcher = launcher(&mut home, &records);
-    let (mut session, launches) = session(&home, &launcher, None);
+    let launcher = launcher(&home, &records);
+    let (mut session, opened) = session(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session);
 
@@ -270,9 +273,9 @@ fn an_agent_opens_notes_in_a_workspace() {
     // front, from a thread that owns no part of the desk: the broker's
     // launcher seam is the one path such an open takes.
     let asked = {
-        let launches = Arc::clone(&launches);
+        let opened = Arc::clone(&opened);
         let workspace = workspace.clone();
-        std::thread::spawn(move || launches.launch(NOTES, &workspace, None, &LaunchPlace::Focus))
+        std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &LaunchPlace::Focus))
     };
     until(&mut session, "the app runs", |_| {
         starts(&records)
@@ -293,7 +296,7 @@ fn an_agent_opens_notes_in_a_workspace() {
         "the app starts in the workspace the agent named"
     );
     assert_eq!(
-        launches.workspace_of(pid, NOTES).as_deref(),
+        opened.workspace_of(pid, NOTES).as_deref(),
         Some(workspace.id().to_string().as_str()),
         "the session recorded its launch in that workspace"
     );
@@ -311,7 +314,7 @@ fn files_lists_the_drives_and_the_apps_it_may_open() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("starts");
     packages(&mut home, &[(NOTES, "Notes")]);
-    let launcher = launcher(&mut home, &records);
+    let launcher = launcher(&home, &records);
     let mount = home.home().join("Backup");
     fs::create_dir_all(&mount).unwrap();
     let drives = Rc::new(Drives::new(
@@ -323,10 +326,10 @@ fn files_lists_the_drives_and_the_apps_it_may_open() {
         }]))),
         Notifications::default(),
     ));
-    let (mut session, launches) = session(&home, &launcher, Some(drives));
+    let (mut session, opened) = session(&home, &launcher, Some(drives));
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session).id().to_string();
-    launch_as(&launches, FILES, &workspace);
+    launch_as(&opened, FILES, &workspace);
 
     let listed = ask(&home, &workspace, ToolIntent::Drives);
     assert!(listed.accepted, "{}", listed.message);
@@ -351,7 +354,7 @@ fn files_lists_the_drives_and_the_apps_it_may_open() {
     assert_eq!(notes.kind, AppKind::Tilo);
 
     // The person's app list is Files' own: no other app is told it.
-    launch_as(&launches, NOTES, &workspace);
+    launch_as(&opened, NOTES, &workspace);
     let refused = ask(&home, &workspace, ToolIntent::Applications);
     assert!(
         !refused.accepted,
@@ -366,11 +369,11 @@ fn open_in_terminal_starts_a_terminal_at_the_folder() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("starts");
     packages(&mut home, &[(TERMINAL, "Terminal")]);
-    let launcher = launcher(&mut home, &records);
-    let (mut session, launches) = session(&home, &launcher, None);
+    let launcher = launcher(&home, &records);
+    let (mut session, opened) = session(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session).id().to_string();
-    launch_as(&launches, FILES, &workspace);
+    launch_as(&opened, FILES, &workspace);
     let folder = home.home().join("Documents");
     fs::create_dir_all(&folder).unwrap();
     let intent = ToolIntent::Terminal {

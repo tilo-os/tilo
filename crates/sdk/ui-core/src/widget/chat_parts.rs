@@ -237,7 +237,9 @@ impl Decorator for EmojiPickerButton {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.button.needs_redraw() || self.picker.needs_redraw()
+        self.button.needs_redraw()
+            || self.button.needs_animation_frame()
+            || (self.picker.needs_redraw() || self.picker.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {

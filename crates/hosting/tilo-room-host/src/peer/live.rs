@@ -45,7 +45,7 @@ pub(super) async fn handle_live_join(
     for device in members {
         // Live state is never authority: a member notice lost to a full
         // queue costs only a late cursor.
-        let _ = session.outbound.try_send(Envelope::LiveMember {
+        let _ = session.outbound.try_send(Envelope::RetiredLiveMember {
             workspace_id,
             device_public_key: device,
             active: true,
@@ -262,7 +262,7 @@ pub(super) async fn handle_live(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
-    let stamped = Envelope::Live {
+    let stamped = Envelope::RetiredLive {
         workspace_id,
         from_device_public_key: peer.device_public_key,
         frame,
@@ -288,7 +288,7 @@ pub(super) async fn handle_presence(
     let mut slot = None;
     // A presence that is no toolkit presence may ask the room for content.
     let mut asks = None;
-    let Envelope::Presence { workspace_id, .. } = &env else {
+    let Envelope::RetiredPresence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
         ));
@@ -305,7 +305,7 @@ pub(super) async fn handle_presence(
         None => false,
     };
     if !attached
-        && let Envelope::Presence { payload, .. } = &mut env
+        && let Envelope::RetiredPresence { payload, .. } = &mut env
         && let Some(mut attributed) = crate::AttributedPresence::decode(payload)
     {
         // Co-edit receivers recover the author from this opaque wrapper.
@@ -359,6 +359,65 @@ pub(super) async fn handle_presence(
                 body,
             );
         }
+    }
+    Ok(None)
+}
+
+/// Handle `RecordContentWant`: fan a member's request for content out to the
+/// workspace's other members, as presence was fanned out, and answer it here
+/// from what the host keeps ([`answer_content`]). A spectator's request
+/// nobody sees, as its presence was not.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
+pub(super) async fn handle_content_want(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    mut env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let Envelope::RecordContentWant {
+        workspace_id,
+        from_device_public_key,
+        frame,
+    } = &mut env
+    else {
+        return Err(PeerError::Protocol(
+            "handle_content_want called with a non-RecordContentWant envelope".into(),
+        ));
+    };
+    // A sender's claim is not transport evidence: the host stamps its own.
+    let workspace_id = *workspace_id;
+    if !subscribed.contains(&workspace_id) {
+        return Err(PeerError::Protocol(
+            "content wanted before subscribing to workspace".into(),
+        ));
+    }
+    let frame = std::mem::take(frame);
+    *from_device_public_key = peer.device_public_key;
+    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+    let Some(ws) = ws else {
+        return Ok(None);
+    };
+    let mut wr = ws.lock().await;
+    let watching = room_access::watches_only(&wr, peer);
+    if !watching {
+        wr.fanout_presence(&peer.device_public_key, &env, None);
+    }
+    // In a public room a spectator reads what members read, so it may also
+    // ask the room for the content those records reference.
+    let reads = !watching || wr.spectators.is_some_and(|spectators| spectators.public);
+    let authority = wr.room_authority.clone();
+    drop(wr);
+    if reads {
+        answer_content(
+            &ws,
+            authority.as_ref(),
+            workspace_id,
+            (*session.own_device_public_key, peer.device_public_key),
+            frame,
+        );
     }
     Ok(None)
 }

@@ -158,6 +158,10 @@ pub struct WebView {
     accepts: Option<fn(&crate::webview::Frame) -> bool>,
     /// Draws the engine's display list when it has one (the paint stream).
     page: crate::webview::paint::PageRenderer,
+    /// The display list's sequence number the last draw painted: the page
+    /// shows the frame after it only when it moved
+    /// (`WebViewEngine::paint_seq`).
+    painted_seq: u64,
     test_id: String,
     accessible_name: String,
 }
@@ -256,6 +260,7 @@ impl WebView {
             damage: None,
             accepts: None,
             page: crate::webview::paint::PageRenderer::new(),
+            painted_seq: 0,
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
         }
@@ -469,6 +474,7 @@ impl WebView {
                 text: text_renderer,
                 blobs: &blobs,
             };
+            self.painted_seq = page.seq;
             self.page.draw(&mut canvas, &page);
             crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
             return None;
@@ -1249,6 +1255,13 @@ impl Widget for WebView {
                         .focused(self.focused),
                 ),
         )
+    }
+
+    /// A frame the engine exported since the last draw, or a page whose
+    /// display list moved since it was painted: what the view shows is
+    /// stale exactly then, and nothing in the tree marks it.
+    fn needs_redraw(&self) -> bool {
+        self.needs_animation_frame() || self.painted_seq != self.engine.paint_seq()
     }
 
     /// A freshly-exported engine frame that the scene hasn't painted yet
@@ -2578,7 +2591,13 @@ mod tests {
                         .draw_tags
                         .contains(&vello_encoding::DrawTag::IMAGE)
                 );
-                let expected = if pass == 2 { vec![202] } else { vec![201] };
+                // Only a frame that arrived is drawn: pass 1 exports none, and
+                // the image the drawing it replays already holds stays.
+                let expected = match pass {
+                    1 => vec![],
+                    2 => vec![202],
+                    _ => vec![201],
+                };
                 assert_eq!(
                     crate::webview::frame_trace::take_for_test(),
                     (expected, false),

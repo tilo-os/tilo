@@ -80,7 +80,7 @@ impl Other {
             None,
             OwnPresence::default(),
             Vec::new(),
-            tilo_session::fabric::MediaContinuity::default(),
+            tilo_session::fabric::Continuity::default(),
             Arc::new(|| {}),
             None,
             Vec::new(),

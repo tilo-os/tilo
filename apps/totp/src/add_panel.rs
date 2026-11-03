@@ -255,11 +255,16 @@ struct AddForm {
     structure_dirty: bool,
     /// The sheet must measure the form again.
     relayout: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl AddForm {
     fn new(sheet: Shared, values: Values) -> Self {
         Self {
+            dirty: true,
             tree: Scrollable::new_vertical(),
             sheet,
             values,
@@ -374,6 +379,7 @@ impl AddForm {
 
 impl Widget for AddForm {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         // The tree is replaced here, where the window expects a widget to
         // change its structure (and then asks it whether it did), never while
         // the window or the sheet is laying it out.
@@ -464,6 +470,7 @@ impl Widget for AddForm {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
         }
@@ -481,6 +488,14 @@ impl Widget for AddForm {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.tree]
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

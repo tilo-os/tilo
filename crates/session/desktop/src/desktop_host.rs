@@ -134,6 +134,11 @@ pub enum DesktopAsk {
     /// The person pressed one of the music widget's controls: the host
     /// steers the player it shows.
     Music(MusicAction),
+    /// The person chose Wait on a window that says it stopped responding:
+    /// its app gets another period to answer.
+    WaitWindow(TabId),
+    /// The person chose Force quit on such a window: the host ends its app.
+    ForceQuitApp(TabId),
 }
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's
@@ -215,7 +220,8 @@ impl Widget for EmptyWorkspace {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.shown.get() && self.launchpad.needs_redraw()
+        self.shown.get()
+            && (self.launchpad.needs_redraw() || self.launchpad.needs_animation_frame())
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -449,6 +455,18 @@ impl DeskLayer {
                 self.handle
                     .move_focused_to_display(i32::try_from(*steps).unwrap_or_default());
             }
+            DeskEffect::WaitWindow { tab } => {
+                let Ok(tab) = tab.parse() else {
+                    return false;
+                };
+                self.asks.borrow_mut().push(DesktopAsk::WaitWindow(tab));
+            }
+            DeskEffect::ForceQuitApp { tab } => {
+                let Ok(tab) = tab.parse() else {
+                    return false;
+                };
+                self.asks.borrow_mut().push(DesktopAsk::ForceQuitApp(tab));
+            }
         }
         true
     }
@@ -477,7 +495,8 @@ impl ui::resources::PublishesResources for DeskLayer {
             rows: rows.as_slice(),
             searching: self.handle.search_searching(),
         });
-        let mut resources = vec![desk_resource(&tabs, &self.handle.displays(), search)];
+        let hung = self.handle.unresponsive_tabs();
+        let mut resources = vec![desk_resource(&tabs, &hung, &self.handle.displays(), search)];
         if self.handle.read(desk_is_empty) {
             resources.push(launchpad_resource());
         }
@@ -620,11 +639,13 @@ impl Widget for DeskLayer {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.backdrop.needs_redraw() || self.area.needs_redraw()
+        self.backdrop.needs_redraw()
+            || self.backdrop.needs_animation_frame()
+            || (self.area.needs_redraw() || self.area.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.backdrop.needs_redraw() {
+        if self.backdrop.needs_redraw() || self.backdrop.needs_animation_frame() {
             regions.push(self.rect);
             return;
         }
@@ -710,8 +731,12 @@ pub struct DesktopChrome {
     /// The tree revision the open overview shows.
     overview_revision: u64,
     /// Whether the overview is open, as the chrome last drew it, for the
-    /// host whose clock flies its windows in and out.
+    /// host whose clock flies its windows in and out. The panel speaks only
+    /// when it moves: where the shell carries the overview, the panel stays
+    /// shut and the shell's own surface is the one that has the flag.
     overview_open: Option<Rc<Cell<bool>>>,
+    /// What the overview's panel last said of itself.
+    overview_said: bool,
     /// Whether the bar last drew its Tilo mark pressed (its menu open).
     menu_shown: Cell<bool>,
     handle: DesktopHandle,
@@ -837,6 +862,7 @@ impl DesktopChrome {
             navigator_seen: None,
             overview_revision: 0,
             overview_open: None,
+            overview_said: false,
             menu_shown: Cell::new(false),
             handle,
             generation,
@@ -1903,12 +1929,15 @@ impl DesktopChrome {
         // An intent waiting to be carried out asks for the frame that
         // carries it.
         !self.intents.borrow().is_empty()
-            || self.emoji.needs_redraw()
+            || (self.emoji.needs_redraw() || self.emoji.needs_animation_frame())
             || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
             || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.identify.needs_redraw(ui::time::now())
-            || self.children().iter().any(|child| child.needs_redraw())
+            || self
+                .children()
+                .iter()
+                .any(|child| child.needs_redraw() || child.needs_animation_frame())
     }
 }
 
@@ -2346,12 +2375,16 @@ impl Widget for DesktopChrome {
             self.emoji.note_delivered(&text, sensitive);
             changed = true;
         }
-        changed |= self.emoji.needs_redraw();
+        changed |= self.emoji.needs_redraw() || self.emoji.needs_animation_frame();
         changed |= self.search.update(state, path);
         self.observe_navigation();
         self.publish_overlays();
         if let Some(open) = &self.overview_open {
-            open.set(self.overview.is_open());
+            let said = self.overview.is_open();
+            if said != self.overview_said {
+                open.set(said);
+                self.overview_said = said;
+            }
         }
         changed | !self.asks.borrow().is_empty()
     }

@@ -665,7 +665,7 @@ mod tests {
             assert!(!bar.needs_redraw(), "setting the same value is a no-op");
             bar.set_progress(0.75);
             assert!(
-                bar.needs_redraw(),
+                bar.needs_redraw() || bar.needs_animation_frame(),
                 "a visible value change invalidates the bar"
             );
         }

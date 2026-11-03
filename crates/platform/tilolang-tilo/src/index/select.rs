@@ -243,24 +243,15 @@ impl View<'_> {
         if !in_order {
             return Ok(None);
         }
-        let list = scope_list(resource, field, &a.column);
-        let pages = self.snapshot.pages(&list).map_err(index_error)?;
-        let (start, end) =
-            run_bounds(self.snapshot, (&list, &pages), column, run).map_err(index_error)?;
-        let base = Base::Slice {
-            pages,
-            start,
-            end,
-            reversed: descending,
-        };
-        let (added, removed) = self.moved_in_run(
+        let run = self.run_as_written(
             (resource, field),
             schema,
             (&a.column, conj.get(at).copied()),
+            run,
+            descending,
             touched,
         )?;
         let locate = self.locate((resource, field), Some((&schema.id, &a.column)));
-        let run = Merged::new(base, added, &removed);
         let Some(residual) = rest(conj, Some(at)) else {
             return Ok(Some(Listing::paged(Rc::new(run.locating(locate)))));
         };
@@ -361,9 +352,9 @@ impl View<'_> {
         let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
             return Ok(None);
         };
-        // The most items the conjuncts can name: the run one exact conjunct answers is no
-        // longer than every item of the column.
-        let bound = self.run_count((resource, field), schema, conj, chosen)?;
+        // The most items the conjuncts can name: the run one exact conjunct answers, as the open
+        // writes leave it, is no longer than every item of the column.
+        let bound = self.run_count((resource, field), schema, conj, chosen, touched)?;
         let residual = rest(conj, None);
         let mut reads: Vec<Filtered> = Vec::new();
         let mut most = None;
@@ -464,13 +455,16 @@ impl View<'_> {
     }
 
     /// The length of the run one exact conjunct of `conj` answers, when `chosen` is that one: no
-    /// more items than that can hold of every conjunct.
+    /// more items than that can hold of every conjunct. The run is counted as the open writes
+    /// leave it: one counted from the index alone is short of what was just written, and a list
+    /// sized by it shows none of that.
     fn run_count(
         &self,
         (resource, field): (&str, &str),
         schema: &TypeSchema,
         conj: &[&Pred],
         chosen: Option<&(usize, Vec<Access>)>,
+        touched: &std::collections::BTreeSet<String>,
     ) -> Result<Option<usize>, StoreError> {
         let Some((at, access)) = chosen else {
             return Ok(None);
@@ -486,12 +480,42 @@ impl View<'_> {
         {
             return Ok(None);
         }
-        let list = scope_list(resource, field, &a.column);
+        let held = self.run_as_written(
+            (resource, field),
+            schema,
+            (&a.column, conj.get(*at).copied()),
+            run,
+            false,
+            touched,
+        )?;
+        Ok(Some(held.len()))
+    }
+
+    /// The run `run` of the column `column` that `pred` chose, as the open writes leave it: the
+    /// entries of its run of the column's list, in its order (`descending` from the last), with
+    /// those the writes put in and took out.
+    fn run_as_written(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        (column, pred): (&str, Option<&Pred>),
+        run: &(String, String),
+        descending: bool,
+        touched: &std::collections::BTreeSet<String>,
+    ) -> Result<Merged, StoreError> {
+        let list = scope_list(resource, field, column);
         let pages = self.snapshot.pages(&list).map_err(index_error)?;
-        let column = schema.column(&a.column);
-        let (start, end) =
-            run_bounds(self.snapshot, (&list, &pages), column, run).map_err(index_error)?;
-        Ok(Some(end.saturating_sub(start)))
+        let (start, end) = run_bounds(self.snapshot, (&list, &pages), schema.column(column), run)
+            .map_err(index_error)?;
+        let base = Base::Slice {
+            pages,
+            start,
+            end,
+            reversed: descending,
+        };
+        let (added, removed) =
+            self.moved_in_run((resource, field), schema, (column, pred), touched)?;
+        Ok(Merged::new(base, added, &removed))
     }
 
     /// [`Self::query`] read whole: the candidates the chosen access reads (every item when

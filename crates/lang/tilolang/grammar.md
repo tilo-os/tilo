@@ -21,7 +21,7 @@ root       = "root" [ ident ":" ] type ;                      (* `root notes: No
 alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
-role       = "primary" | "destructive" | "migration" ;
+role       = "primary" | "destructive" | "migration" | "internal" ;
 
 type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
 field      = { doc } ident ":" type [ "merge" merge_kind ] [ "(" ( "title" | "body" | "previously" ) ")" ]
@@ -114,5 +114,7 @@ Tokens:
   `@version` (`@so.tilo.todo.Todo:01J8/3K`). An older reference's `/field:item` steps still
   read, as the item of its last step.
 - `.name` where a lambda goes is a key path, the lambda `x -> x.name` (`sort_by(.due)`).
-- `//` starts a comment to the end of the line. `///` is a doc comment: it belongs to the
-  declaration that follows, is kept in the metadata, and is what agents read.
+- `//` starts a comment to the end of the line; the canonical form keeps it above the
+  declaration, field, statement or match arm it was written over. `///` is a doc comment: it
+  belongs to the declaration that follows, is kept in the metadata, and is what agents read.
+  A blank line between two `///` lines is a paragraph break, kept as a `///` line.

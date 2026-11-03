@@ -98,7 +98,7 @@ fn a_task_is_made_filed_under_a_project_and_checked_off() {
     let (mut ada, root) = workspace();
     let task = call(
         &ada,
-        "add",
+        "new_task",
         vec![root.clone(), Value::text("Book a haircut")],
     );
     ada.commit();
@@ -230,7 +230,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
-    let dated = |title: &str| call(&ada, "add", vec![root.clone(), Value::text(title)]);
+    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
     let late = dated("Pay the electricity bill");
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
@@ -271,12 +271,90 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     assert_eq!(count(&view, "Upcoming"), 0);
 }
 
+/// The count the tasks window shows over its list.
+fn overview_count(view: &ViewInstance) -> Option<i64> {
+    fn walk(node: &UiNode, out: &mut Option<i64>) {
+        if node.kind == "ui.NavShell"
+            && let Some(Value::Int(count)) = node.props.get("overview_count")
+        {
+            *out = Some(*count);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = None;
+    walk(view.tree(), &mut out);
+    out
+}
+
+/// The home list, sized before it reads its rows, counts the inbox just written: what the
+/// writes put in the run it is drawn from is in its count before the index holds it as well
+/// as after.
+#[test]
+fn the_home_list_counts_the_inbox_that_was_just_written() {
+    let (mut ada, root) = workspace();
+    let dated = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Buy oat milk and eggs")],
+    );
+    call(
+        &ada,
+        "schedule",
+        vec![dated, Value::some(Value::text("2026-10-30"))],
+    );
+    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    assert_eq!(
+        overview_count(&ada.view(APP)),
+        Some(2),
+        "both inbox tasks count before they are indexed"
+    );
+    ada.commit();
+    assert_eq!(overview_count(&ada.view(APP)), Some(2), "and after");
+}
+
+#[test]
+fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changing() {
+    let (mut ada, root) = workspace();
+    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+    let today = dated("Buy oat milk");
+    let next = dated("Order a present");
+    ada.commit();
+    for (task, day) in [(&today, "2026-10-29"), (&next, "2026-10-30")] {
+        call(
+            &ada,
+            "schedule",
+            vec![task.clone(), Value::some(Value::text(day))],
+        );
+    }
+    ada.commit();
+    let mut view = ada.view(APP);
+    assert_eq!(count(&view, "Today"), 1, "{:?}", places(&view));
+    assert_eq!(count(&view, "Upcoming"), 1, "{:?}", places(&view));
+    assert!(
+        view.wakes_at().is_some(),
+        "the view read the day it is: it asks to be run again when that reads differently"
+    );
+    // The record did not change; the clock did. The same window runs again and lists the day
+    // it is now.
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-30T10:00:00Z".to_owned());
+    assert!(
+        !view.poll_patches().unwrap().is_empty(),
+        "the window woke for the time it read"
+    );
+    assert_eq!(count(&view, "Today"), 2, "{:?}", places(&view));
+    assert_eq!(count(&view, "Upcoming"), 0, "{:?}", places(&view));
+}
+
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();
     let task = call(
         &ada,
-        "add",
+        "new_task",
         vec![root.clone(), Value::text("Call the landlord")],
     );
     ada.commit();
@@ -361,7 +439,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         "Pack the books",
         "Measure the bedworkspace",
     ] {
-        let t = call(&ada, "add", vec![root.clone(), Value::text(title)]);
+        let t = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
         call(&ada, "file", vec![t.clone(), project.clone()]);
         made.push(t);
     }
@@ -544,7 +622,7 @@ fn launch_post() -> (Replica, Value) {
     let (mut ada, root) = workspace();
     let parent = call(
         &ada,
-        "add",
+        "new_task",
         vec![root.clone(), Value::text("Write the launch post")],
     );
     ada.commit();
@@ -680,4 +758,396 @@ fn a_subtask_indents_over_itself_and_outdents_beside_its_parent() {
         ],
         "out again it stands after the task it was under"
     );
+}
+
+/// A task is done exactly when everything under it is: checking it off checks off every step
+/// under it, however deep, and opening a step opens the tasks it is under while the rest stay.
+#[test]
+fn checking_a_task_off_checks_every_task_under_it() {
+    let (mut ada, parent) = launch_post();
+    let tasks = Value::resource(&ada.host.root_of(APP).unwrap());
+    let outline = task(&ada, "Outline");
+    call(
+        &ada,
+        "add_subtask",
+        vec![tasks, outline.clone(), Value::text("Gather facts")],
+    );
+    ada.commit();
+    let facts = task(&ada, "Gather facts");
+
+    call(&ada, "check", vec![parent.clone()]);
+    ada.commit();
+    for t in [
+        &parent,
+        &outline,
+        &task(&ada, "First draft"),
+        &task(&ada, "Screenshots"),
+        &facts,
+    ] {
+        assert_eq!(
+            read(&ada, t, "done"),
+            Value::Bool(true),
+            "{:?} is done with the task over it",
+            read(&ada, t, "title")
+        );
+    }
+
+    // Opening a step at the bottom opens everything over it, and nothing beside it.
+    call(&ada, "check", vec![facts.clone()]);
+    ada.commit();
+    assert_eq!(read(&ada, &facts, "done"), Value::Bool(false));
+    assert_eq!(
+        read(&ada, &outline, "done"),
+        Value::Bool(false),
+        "the task it is a step of opens too"
+    );
+    assert_eq!(
+        read(&ada, &parent, "done"),
+        Value::Bool(false),
+        "and the task that one is under"
+    );
+    for title in ["First draft", "Screenshots"] {
+        assert_eq!(
+            read(&ada, &task(&ada, title), "done"),
+            Value::Bool(true),
+            "{title} stays done"
+        );
+    }
+}
+
+/// A list row's checkbox asks the app's check, so a press on it takes the tasks under the one
+/// it stands for, not the one field the box shows.
+#[test]
+fn a_rows_checkbox_checks_the_tasks_under_it() {
+    let (mut ada, parent) = launch_post();
+    assert_eq!(
+        target(&read(&ada, &parent, "project")),
+        None,
+        "the task is in the inbox, so the home list shows it"
+    );
+    let mut view = ada.view(APP);
+    // Every row, not only the ones the window has room for.
+    view.set_lazy_rows(false).unwrap();
+    let key = key_of(&view, "ui.ListRow", &|node| {
+        node.props.get("title") == Some(&Value::text("Write the launch post"))
+    });
+    view.fire_with(&key, "check", None).unwrap();
+    ada.commit();
+    view.poll_patches().unwrap();
+    for title in ["Write the launch post", "Outline", "First draft"] {
+        assert_eq!(
+            read(&ada, &task(&ada, title), "done"),
+            Value::Bool(true),
+            "{title} is done from the row's box"
+        );
+    }
+}
+
+/// The assignee a task holds, as its page reads it: who, or nobody.
+#[cfg(feature = "record")]
+fn assignee(r: &Replica, task: &Value) -> Option<String> {
+    match read(r, task, "assignee") {
+        Value::Opt(Some(held)) => match *held {
+            Value::Principal(who) => Some(who.0),
+            other => panic!("an assignee: {other:?}"),
+        },
+        Value::Opt(None) => None,
+        other => panic!("an assignee: {other:?}"),
+    }
+}
+
+/// The key of the node bound to `field`.
+#[cfg(feature = "record")]
+fn bound_key(node: &UiNode, field: &str) -> Option<String> {
+    if node
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .is_some_and(|(_, bound)| bound == field)
+    {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| bound_key(child, field))
+}
+
+/// Every text the tree shows.
+#[cfg(feature = "record")]
+fn texts(node: &UiNode) -> Vec<String> {
+    fn walk(node: &UiNode, out: &mut Vec<String>) {
+        if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
+        {
+            out.push(text.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
+}
+
+/// A task's assignee is one person field: a chip of who holds it that opens a list of "Me",
+/// "No one" and the workspace's people. Picking the person the page shows, another member, and
+/// nobody is one step of the task's history each, so one undo takes back one pick.
+#[cfg(feature = "record")]
+#[test]
+fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
+    use collaboration::history_source::verbs::HistoryEdit;
+
+    let (mut ada, root) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "owner"),
+            tilolang_runtime::members::Member::person("ben", "editor"),
+        ],
+        None,
+    );
+    let task = call(
+        &ada,
+        "new_task",
+        vec![root, Value::text("Write the launch post")],
+    );
+    ada.commit();
+    let mut page = task_page(&ada, &task);
+    let field = {
+        let meta = &ada.host.package(APP).unwrap().meta;
+        crate::fixtures::field_id(meta, "Task", "assignee")
+    };
+    let key = bound_key(page.tree(), &field).expect("the page binds its assignee");
+    let node = node_of(page.tree(), &key).expect("the bound node is drawn");
+    assert_eq!(
+        node.kind, "ui.PersonField",
+        "the assignee is one person field, not two buttons"
+    );
+    assert_eq!(
+        node.props.get("people"),
+        Some(&Value::List(vec![
+            Value::Principal(Principal::new("ada")),
+            Value::Principal(Principal::new("ben")),
+        ])),
+        "the list offers the workspace's members"
+    );
+    assert_eq!(
+        node.props.get("me"),
+        Some(&Value::Principal(Principal::new("ada"))),
+        "the list leads with the person the page is shown to"
+    );
+    assert!(
+        !texts(page.tree())
+            .iter()
+            .any(|text| text.starts_with("Assign to")),
+        "the page no longer spells the assignee out as buttons: {:?}",
+        texts(page.tree())
+    );
+    assert_eq!(assignee(&ada, &task), None, "nobody holds it yet");
+
+    // Me, then another member, then nobody, as the person picks each from the list.
+    page.edit(&key, &Value::text("ada")).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(assignee(&ada, &task), Some("ada".to_owned()));
+    assert_eq!(
+        page.bound_value(&key),
+        Some(Value::some(Value::Principal(Principal::new("ada")))),
+        "the chip shows the person it is bound to"
+    );
+    page.edit(&key, &Value::text("ben")).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(assignee(&ada, &task), Some("ben".to_owned()));
+    page.edit(&key, &Value::Text(String::new())).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(assignee(&ada, &task), None, "No one clears it");
+    assert_eq!(
+        page.bound_value(&key),
+        Some(Value::none()),
+        "the chip shows nobody"
+    );
+    // Each pick reads as a plain entry of the task's history, named for the field it changed.
+    assert!(
+        texts(page.tree()).iter().any(|text| text == "Assignee"),
+        "the history names the field it changed: {:?}",
+        texts(page.tree())
+    );
+
+    // One undo takes back one pick: the clearing, then Ben, then Me.
+    let undo = |r: &mut Replica| {
+        r.history(&HistoryEdit::Undo {
+            steps: None,
+            run: None,
+            by: None,
+            to: None,
+            step: None,
+        });
+    };
+    undo(&mut ada);
+    assert_eq!(
+        assignee(&ada, &task),
+        Some("ben".to_owned()),
+        "clearing it is one step"
+    );
+    undo(&mut ada);
+    assert_eq!(
+        assignee(&ada, &task),
+        Some("ada".to_owned()),
+        "picking Ben is one step"
+    );
+    undo(&mut ada);
+    assert_eq!(assignee(&ada, &task), None, "picking Me is one step");
+}
+
+/// A step added while someone else checks the task off leaves that task done with the step
+/// open under it. A clear takes the finished branch and keeps the step: unfinished work is
+/// never taken with a task that was checked off before it existed.
+#[test]
+fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
+    let (mut ada, root) = workspace();
+    let parent = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Write the launch post")],
+    );
+    ada.commit();
+    call(
+        &ada,
+        "add_subtask",
+        vec![root.clone(), parent.clone(), Value::text("Outline")],
+    );
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    ben.host.sync_from(&ben.doc);
+    // Ada checks the task off while Ben, not yet seeing that, puts a step under it.
+    call(&ada, "check", vec![parent.clone()]);
+    ada.commit();
+    call(
+        &ben,
+        "add_subtask",
+        vec![
+            root.clone(),
+            parent.clone(),
+            Value::text("Gather the quotes"),
+        ],
+    );
+    ben.commit();
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        read(&ada, &parent, "done"),
+        Value::Bool(true),
+        "checked off before the step was there"
+    );
+    assert_eq!(
+        read(&ada, &task(&ada, "Gather the quotes"), "done"),
+        Value::Bool(false),
+        "the step came after the check"
+    );
+
+    // Outline is finished with nothing under it, so it goes; the task whose step is still open
+    // stays with that step.
+    assert_eq!(
+        call(&ada, "clear_done", vec![root]),
+        Value::Int(1),
+        "one finished task went"
+    );
+    ada.commit();
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Write the launch post"),
+            Value::text("Gather the quotes"),
+        ],
+        "the step that is not done stays under its task"
+    );
+}
+
+/// Every node of this kind in the drawn view.
+fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
+    fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
+        if node.kind == kind {
+            out.push(node);
+        }
+        for child in &node.children {
+            walk(child, kind, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, kind, &mut out);
+    out
+}
+
+/// What each row of the home list presents: the task, the task it stands under, and what its row
+/// says of the task's subtasks.
+fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>)> {
+    view.poll_patches().unwrap();
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    let len = view.list_len(&list).unwrap_or(0);
+    let mut out = Vec::new();
+    for index in 0..len {
+        let Some(row) = view.row(&list, index).unwrap() else {
+            continue;
+        };
+        let Some(item) = all(row, "ui.ListItem").first().copied() else {
+            continue;
+        };
+        let Some(Value::Ref(at)) = item.props.get("item") else {
+            panic!("a row presents its task: {:?}", item.props.get("item"));
+        };
+        let count = match item.props.get("progress") {
+            Some(Value::Text(count)) => Some(count.clone()),
+            _ => None,
+        };
+        out.push((
+            at.target.id_string(),
+            item.props.get("parent").and_then(target),
+            count,
+        ));
+    }
+    out
+}
+
+/// The home list is a tree: a task's subtasks stand under it, and its row says how many of them
+/// are still open.
+#[test]
+fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
+    let (ada, parent) = launch_post();
+    let mut view = ada.view(APP);
+    assert_eq!(
+        all(view.tree(), "ui.VirtualList")
+            .first()
+            .and_then(|list| list.props.get("tree")),
+        Some(&Value::Int(1)),
+        "the home list draws the tasks as a tree"
+    );
+    let rows = home_rows(&mut view);
+    let of = |item: &Value| target(item).expect("a task");
+    let (_, above, count) = rows
+        .iter()
+        .find(|(item, _, _)| *item == of(&parent))
+        .expect("the task's row");
+    assert_eq!(above, &None, "the task stands at the top");
+    assert_eq!(
+        count.as_deref(),
+        Some("3/3"),
+        "its row says all three of its subtasks are still open, of the three it has"
+    );
+    for title in ["Outline", "First draft", "Screenshots"] {
+        let subtask = task(&ada, title);
+        let (_, under, count) = rows
+            .iter()
+            .find(|(item, _, _)| *item == of(&subtask))
+            .unwrap_or_else(|| panic!("{title}'s row"));
+        assert_eq!(
+            under,
+            &target(&parent),
+            "{title} stands under the task it belongs to"
+        );
+        assert_eq!(count, &None, "{title} has no subtasks of its own");
+    }
 }

@@ -2594,7 +2594,10 @@ impl Widget for SecretPrompt {
     fn needs_redraw(&self) -> bool {
         self.chrome_changed()
             || self.answer.deadline().is_some()
-            || self.fields.iter().any(|field| field.input.needs_redraw())
+            || self
+                .fields
+                .iter()
+                .any(|field| field.input.needs_redraw() || field.input.needs_animation_frame())
     }
 
     /// A keystroke repaints its field; the whole prompt only when what is

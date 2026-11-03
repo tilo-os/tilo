@@ -367,6 +367,7 @@ impl Widget for Stack {
 
     fn needs_redraw(&self) -> bool {
         self.children.iter().any(|c| c.needs_redraw())
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     /// The stack's own paint changes only with a rebuild, which repaints

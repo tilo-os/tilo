@@ -720,7 +720,18 @@ pub(crate) struct LogsWindow {
     spacing: Spacing,
     inspected: Inspected,
     has_inspector: bool,
-    layout_dirty: bool,
+    /// What the window owes the next frame.
+    dirty: Dirty,
+}
+
+/// What the window owes the next frame: its controls laid out again, and its
+/// paint drawn again once.
+#[derive(Default)]
+struct Dirty {
+    /// A control the window holds changed: the layout is built again.
+    layout: bool,
+    /// Input or a new document value changed what the window paints.
+    paint: bool,
 }
 
 impl LogsWindow {
@@ -739,6 +750,10 @@ impl LogsWindow {
             .with_window_toolbar()
             .inspector(crate::view::entry_detail(None, &Spacing::default()));
         let mut window = Self {
+            dirty: Dirty {
+                layout: true,
+                paint: true,
+            },
             journal,
             shared,
             live,
@@ -751,7 +766,6 @@ impl LogsWindow {
             spacing: Spacing::default(),
             inspected: Inspected::Stale,
             has_inspector: true,
-            layout_dirty: true,
         };
         window.follow_document();
         window.show_journal();
@@ -785,13 +799,13 @@ impl LogsWindow {
         }
         if republished || stale {
             self.show_inspector();
-            self.layout_dirty = true;
+            self.dirty.layout = true;
         }
         if reveal {
             self.reveal_inspector();
         }
         if reveal_detail {
-            self.layout_dirty = true;
+            self.dirty.layout = true;
         }
     }
 
@@ -932,6 +946,7 @@ fn export_picked(picked: &PortalChannel, entries: &[LogEntry]) -> Option<String>
 }
 impl Widget for LogsWindow {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty.paint = true;
         self.follow_document();
         self.journal.borrow_mut().poll();
         self.take_window_toolbar_events();
@@ -946,7 +961,7 @@ impl Widget for LogsWindow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_dirty = false;
+        self.dirty.layout = false;
         if self.spacing != theme.tokens.spacing {
             // The inspector's content lines up with its property list in
             // this theme's spacing.
@@ -972,7 +987,7 @@ impl Widget for LogsWindow {
             self.journal.borrow_mut().reveal_detail = false;
             self.reveal_inspector();
             self.shell.snap();
-            self.layout_dirty = true;
+            self.dirty.layout = true;
         }
     }
 
@@ -988,6 +1003,7 @@ impl Widget for LogsWindow {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty.paint = true;
         // Ctrl+L follows or pauses the journal, like a terminal's `-f`.
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
@@ -1023,6 +1039,14 @@ impl Widget for LogsWindow {
         self.shell.wants_pointer_capture()
     }
 
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty.paint, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty.paint = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "LogsWindow"
     }
@@ -1054,11 +1078,11 @@ impl Widget for LogsWindow {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.layout_dirty || self.shell.is_layout_dirty()
+        self.dirty.layout || self.shell.is_layout_dirty()
     }
 
     fn layout_needs_measure(&self) -> bool {
-        self.layout_dirty || self.shell.layout_needs_measure()
+        self.dirty.layout || self.shell.layout_needs_measure()
     }
 
     fn needs_idle_sync(&self) -> bool {

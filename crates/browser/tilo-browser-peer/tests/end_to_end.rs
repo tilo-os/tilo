@@ -2,8 +2,7 @@
 //! key behind the `DeviceSigner` seam — reaches the user's host only over the
 //! browser carriers: HTTPS to a local host with a development certificate
 //! (pinned by SHA-256, as the page pins it) for certification and documents.
-//! Its presence rides that same session, the way the laptop's does. The
-//! root-holding laptop is an iroh peer of the same host.
+//! The root-holding laptop is an iroh peer of the same host.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -22,20 +21,15 @@ mod support;
 // Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
-use std::time::Duration;
-
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::{Host, PeerEvent, PeerSnapshot, TransportPhase, certify};
+use tilo_browser_peer::{Host, PeerSnapshot, TransportPhase, certify};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity, sign_revocation_entry,
 };
 
-use support::{
-    approve_one, enrol, next_document, pointer_body, presence, ready, route, shell_body,
-    start_host, start_peer, wait_for, workspace,
-};
+use support::{approve_one, enrol, next_document, ready, route, start_host, start_peer, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
@@ -101,7 +95,6 @@ async fn browser_over_https_is_certified_syncs_and_is_revoked() {
     laptop_peer
         .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
-    laptop_peer.live_join(workspace()).unwrap();
     ready(&[&browser, &laptop_peer]).await;
 
     // 3. Durable both ways: commit over HTTPS, delivery over iroh and back.
@@ -126,60 +119,6 @@ async fn browser_over_https_is_certified_syncs_and_is_revoked() {
         PeerSnapshot::from_status(&browser.status()).synchronization,
         "acknowledged"
     );
-
-    // 4. Presence rides the session: the page is one member device beside the
-    // laptop, and what each says of itself reaches the other through the host
-    // with no second channel.
-    let workspace_id = workspace();
-    let browser_device = browser_cert.device_public_key;
-    let laptop_device = laptop.cert.device_public_key;
-    let laptop_events = laptop_peer.events();
-    let seen_by_laptop = tilo_test_env::within("the page's cursor reaches the laptop", async {
-        loop {
-            browser
-                .publish_presence(
-                    workspace_id,
-                    vec![pointer_body(&browser_device, 12.0, 34.0)],
-                )
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            for event in laptop_events.drain() {
-                let PeerEvent::Presence { from, body, .. } = event else {
-                    continue;
-                };
-                if from == browser_device
-                    && let Some(collab_types::PeerPresencePayload::Pointer { x, y }) =
-                        presence(&body)
-                {
-                    return (x, y);
-                }
-            }
-        }
-    })
-    .await;
-    assert_eq!(seen_by_laptop, (12.0, 34.0));
-
-    let browser_events = browser.events();
-    let seen_by_page = tilo_test_env::within("the laptop's view reaches the page", async {
-        loop {
-            laptop_peer
-                .publish_presence(workspace_id, vec![shell_body(&laptop_device, "Laptop")])
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            for event in browser_events.drain() {
-                let PeerEvent::Presence { from, body, .. } = event else {
-                    continue;
-                };
-                if from == laptop_device
-                    && let Some(collab_types::PeerPresencePayload::Shell(shell)) = presence(&body)
-                {
-                    return shell.label;
-                }
-            }
-        }
-    })
-    .await;
-    assert_eq!(seen_by_page, "Laptop");
 
     // 5. Revocation: the host ends the HTTPS session, refuses the handshake
     // from then on, and the browser stops in `failed`.

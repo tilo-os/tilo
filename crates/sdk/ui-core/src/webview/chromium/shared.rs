@@ -343,6 +343,10 @@ pub(super) enum Role {
 }
 
 /// The right to run the profile's host: held until that host exits.
+///
+/// The host itself holds the lock too ([`Claim::hold_with`]), so the profile
+/// stays owned by a Browser process that dies while its host is still
+/// shutting down.
 pub(super) struct Claim(Ownership);
 
 /// Becomes the owner of the (canonical, existing) `profile`, or connects to
@@ -383,6 +387,14 @@ fn handshake(mut connection: &Connection) -> io::Result<()> {
 }
 
 impl Claim {
+    /// Lets `command`'s program keep the profile for as long as it runs: the
+    /// host outlives the Browser process that started it, and a successor
+    /// must not start a second host on a profile the old one is still
+    /// shutting down.
+    pub(super) fn hold_with(&self, command: &mut std::process::Command) {
+        self.0.hold_with(command);
+    }
+
     /// Serves the running host on the profile's socket.
     pub(super) fn serve(
         &self,
@@ -426,6 +438,14 @@ impl Claim {
         if let Some(server) = server {
             server.mark_host_exited();
         }
+    }
+
+    /// Keeps the profile claimed for the rest of this process's life: its
+    /// host never confirmed its exit, so a second host on the profile could
+    /// still meet the first one.
+    pub(super) fn keep_while_host_may_run(self) {
+        // Unlocking here would release the profile while the host holds it.
+        std::mem::forget(self);
     }
 }
 

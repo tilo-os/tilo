@@ -170,6 +170,7 @@ impl Session {
                 doors: &self.shared.doors,
                 handle: &self.shared.handle,
                 overlays: &self.shared.overlays,
+                overview: self.shared.overview.open_cell(),
                 engine: self.shared.engine.as_deref(),
                 seats: &self.shared.seats,
                 locked,

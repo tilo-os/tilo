@@ -74,6 +74,7 @@ mod empty_state;
 mod facet_chips;
 mod history;
 mod host;
+mod inspect;
 mod rows;
 mod window_place;
 pub use api::{ACTION_PALETTE, MakeActionPalette, builtin_action_palette};
@@ -151,7 +152,9 @@ const VIEW_OPEN_SUFFIX: &str = "#open";
 const PER_GROUP_CAP: usize = 12;
 
 mod row_text;
-pub(crate) use row_text::{found_by, merged_facets, scope_token_label, shows_a_hit, without_token};
+pub(crate) use row_text::{
+    found_by, lists_a_row, merged_facets, offers_a_person, scope_token_label, without_token,
+};
 /// Maximum number of provider hits materialised for one keystroke. Providers
 /// may emit several groups, so leave room for each while keeping work bounded.
 const PROVIDER_HIT_BUDGET: usize = 32;
@@ -382,6 +385,11 @@ pub struct ActionPalette {
     /// Row `action_id` → how activating it resolves.
     index: HashMap<String, RowResolution>,
     base_index: HashMap<String, RowResolution>,
+    /// Resolution key → the actions the palette may be asked for whether or not
+    /// it lists them as rows: a control bound to one, an assistive activation
+    /// and a search request name the action they want the field to collect the
+    /// arguments of (`offers_a_person`, [`Self::activate_address`]).
+    askable: HashMap<String, RowResolution>,
     action_rows: Vec<SearchResult>,
     provider_rows: Vec<SearchResult>,
     provider_index: HashMap<String, RowResolution>,
@@ -527,6 +535,10 @@ pub struct ActionPalette {
     ui_scale: f64,
     /// The card's own composition changed: a host asks for a new frame.
     structure_dirty: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 enum PaletteFieldSource {
@@ -672,6 +684,7 @@ impl ActionPalette {
         let command = std::rc::Rc::new(std::cell::Cell::new(None));
         let controls = confirm::controls(&command, "Confirm", None);
         Self {
+            dirty: true,
             field: field_source
                 .build()
                 .control_size(FIELD_SIZE)
@@ -681,6 +694,7 @@ impl ActionPalette {
                 .with_test_id("action-palette-results"),
             index: HashMap::new(),
             base_index: HashMap::new(),
+            askable: HashMap::new(),
             action_rows: Vec::new(),
             provider_rows: Vec::new(),
             provider_index: HashMap::new(),
@@ -818,6 +832,7 @@ impl ActionPalette {
     }
 
     pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
+        self.dirty = true;
         self.ambient_context = context;
         let query = self.field.value().to_string();
         self.rebuild(&query);
@@ -826,6 +841,7 @@ impl ActionPalette {
     /// Fold in searchable-content sources. Canonically addressed hits dispatch
     /// through the resource/action path; legacy opaque hits remain navigable.
     pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
+        self.dirty = true;
         self.providers = providers;
         self.facets = merged_facets(&self.providers);
         self.scopes = self
@@ -1114,12 +1130,19 @@ impl ActionPalette {
         target: &crate::bound_dispatch::BoundActionTarget,
     ) -> bool {
         let key = target.key();
-        if self.index.contains_key(&key) {
+        if self.resolution_of(&key).is_some() {
             self.resolve_activation(&key);
             true
         } else {
             false
         }
+    }
+
+    /// How activating `id` resolves: a row of the list, or an action the
+    /// palette was asked for by address and does not list as a row
+    /// ([`Self::askable`]).
+    fn resolution_of(&self, id: &str) -> Option<&RowResolution> {
+        self.index.get(id).or_else(|| self.askable.get(id))
     }
 
     pub fn open(&mut self) {
@@ -1154,6 +1177,7 @@ impl ActionPalette {
     /// Narrow the palette to one part of the app, or widen it to the whole
     /// app with `None`. The field shows the scope as a removable token.
     pub fn set_scope(&mut self, scope: Option<ScopeDecl>) {
+        self.dirty = true;
         self.scope = scope;
         self.field
             .set_scope_token(self.scope.as_ref().map(scope_token_label));
@@ -1252,6 +1276,7 @@ impl ActionPalette {
     /// While the palette asks for a name to be typed, this is what stands
     /// in its plain field instead: it searches nothing.
     pub fn set_query(&mut self, q: &str) {
+        self.dirty = true;
         if self.hosts_rows() {
             self.set_host_query(q);
             return;
@@ -1319,29 +1344,6 @@ impl ActionPalette {
         let query = self.field.value().to_owned();
         self.rebuild(&query);
         true
-    }
-
-    /// The labels currently shown, in display order (for tests / diagnostics).
-    pub fn result_labels(&self) -> Vec<String> {
-        self.results
-            .groups()
-            .iter()
-            .flat_map(|g| g.results.iter().map(|r| r.title.clone()))
-            .collect()
-    }
-
-    /// The rows currently shown as a person reads them, label and the line
-    /// under it, in display order (for tests / diagnostics).
-    pub fn result_rows(&self) -> Vec<(String, Option<String>)> {
-        self.results
-            .groups()
-            .iter()
-            .flat_map(|g| {
-                g.results
-                    .iter()
-                    .map(|r| (r.title.clone(), r.subtitle.clone()))
-            })
-            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -1776,6 +1778,7 @@ impl ActionPalette {
 
     /// Move the highlight to a flat row index (clamped).
     pub fn set_cursor(&mut self, index: usize) {
+        self.dirty = true;
         self.missing_selection = None;
         self.results.set_cursor(index);
         if self.hosts_rows() {
@@ -1845,7 +1848,7 @@ impl ActionPalette {
     /// jump around the palette's policy flow.
     pub fn activate_address(&mut self, resource: &str, action: &str) -> bool {
         let id = format!("{resource}{}{action}", tilo_actions::KEY_SEP);
-        if self.index.contains_key(&id) {
+        if self.resolution_of(&id).is_some() {
             self.resolve_activation(&id);
             true
         } else {
@@ -1861,7 +1864,9 @@ impl ActionPalette {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> bool {
-        if !self.index.contains_key(&address.encode()) && !self.hidden_from_people(address, None) {
+        if self.resolution_of(&address.encode()).is_none()
+            && !self.hidden_from_people(address, None)
+        {
             return false;
         }
         self.activate_with_arguments(address.clone(), None, arguments)
@@ -2143,7 +2148,7 @@ impl ActionPalette {
             }
             return;
         }
-        match self.index.get(id).cloned() {
+        match self.resolution_of(id).cloned() {
             Some(resolution @ (RowResolution::Address(_) | RowResolution::Bound(_))) => {
                 let (address, bound) = match resolution {
                     RowResolution::Address(address) => (address, None),
@@ -2311,6 +2316,10 @@ impl ActionPalette {
         // of the same resource (its bar and its document) are one thing to
         // the person. Different targets stay different rows.
         let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // What the palette may be asked for by address, whether or not it is a
+        // row: a control bound to an action, an assistive activation and a
+        // search request name what they want the field to ask the arguments of.
+        let mut askable: HashMap<String, RowResolution> = HashMap::new();
 
         // Keep only inert addresses in the row index. Encoding and callbacks
         // are resolved later, against the authority snapshot current at the
@@ -2319,24 +2328,30 @@ impl ActionPalette {
             .into_iter()
             // Programmatic actions are for agents and scripts, never a row;
             // a scoped palette offers the actions of that part of the app.
-            .filter(|fa| {
-                fa.action.contract.availability.is_available()
-                    && fa.action.reaches_people()
-                    && !shows_a_hit(fa.action)
-                    && parsed.in_scope(fa.resource_id.as_str())
-            })
+            .filter(|fa| offers_a_person(fa) && parsed.in_scope(fa.resource_id.as_str()))
             .collect();
+        // What it offers is not all rows: an action asking for more than a row
+        // takes stays askable by address, and the field collects its arguments.
+        for fa in &flat {
+            askable.insert(
+                fa.key.clone(),
+                RowResolution::Address(tilo_actions::ActionAddress::new(
+                    fa.resource_id.as_str(),
+                    fa.action.id.as_str(),
+                )),
+            );
+        }
         // Two open documents offering the same action read alike: name the
         // document under each, so the person can tell which one it acts on.
         let mut targets_of: HashMap<tilo_actions::ListedRow, std::collections::HashSet<&str>> =
             HashMap::new();
-        for fa in &flat {
+        for fa in flat.iter().filter(|fa| lists_a_row(fa)) {
             targets_of
                 .entry(fa.row())
                 .or_default()
                 .insert(fa.key.as_str());
         }
-        for fa in &flat {
+        for fa in flat.iter().filter(|fa| lists_a_row(fa)) {
             if !listed.insert(fa.key.clone()) {
                 continue;
             }
@@ -2346,10 +2361,11 @@ impl ActionPalette {
             if targets_of.get(&row).is_some_and(|keys| keys.len() > 1) {
                 row = tilo_actions::listed_row(&fa.action.label, Some(fa.resource_label.as_str()));
             }
-            let mut r = SearchResult::new(ACTIONS_KIND, row.title.clone(), fa.key.clone());
-            if let Some(subtitle) = &row.subtitle {
-                r = r.with_subtitle(subtitle.clone());
-            }
+            let found = found_by(&row, &fa.resource_label);
+            // The same row the app's own search shows: its picture, and its
+            // shortcut as the keys it names.
+            let entry = CommandEntry::of_action(fa, row, self.platform);
+            let mut r = entry.result(ACTIONS_KIND, self.platform);
             if let Some(preview) = fa
                 .resource_presentation
                 .as_ref()
@@ -2361,7 +2377,7 @@ impl ActionPalette {
                 fa.resource_id.as_str(),
                 fa.action.id.as_str(),
             ));
-            candidates.push((r, found_by(&row, &fa.resource_label), resolution));
+            candidates.push((r, found, resolution));
         }
 
         for snapshot in &self.bound_resources {
@@ -2372,10 +2388,7 @@ impl ActionPalette {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {
-                    if !fa.action.contract.availability.is_available()
-                        || !fa.action.reaches_people()
-                        || shows_a_hit(fa.action)
-                    {
+                    if !offers_a_person(&fa) {
                         continue;
                     }
                     // The same row as any other action: never the component
@@ -2394,16 +2407,18 @@ impl ActionPalette {
                         },
                     };
                     let key = target.key();
-                    if !listed.insert(key.clone()) {
+                    askable
+                        .entry(key.clone())
+                        .or_insert_with(|| RowResolution::Bound(target.clone()));
+                    if !lists_a_row(&fa) || !listed.insert(key.clone()) {
                         continue;
                     }
-                    let mut result = SearchResult::new(ACTIONS_KIND, row.title.clone(), key);
-                    if let Some(subtitle) = &row.subtitle {
-                        result = result.with_subtitle(subtitle.clone());
-                    }
+                    let found = found_by(&row, &fa.resource_label);
+                    let mut entry = CommandEntry::of_action(&fa, row, self.platform);
+                    entry.id = key;
                     candidates.push((
-                        result,
-                        found_by(&row, &fa.resource_label),
+                        entry.result(ACTIONS_KIND, self.platform),
+                        found,
                         RowResolution::Bound(target),
                     ));
                 }
@@ -2453,6 +2468,7 @@ impl ActionPalette {
         self.query = parsed;
         self.action_rows = rows;
         self.base_index = index;
+        self.askable = askable;
         self.provider_rows.clear();
         self.provider_index.clear();
         self.provider_validation.clear();
@@ -2483,13 +2499,31 @@ impl ActionPalette {
         // The hits of the query: what an action row acts on, where that is a row of this same
         // list. An action's secondary line that only says the name of the hit under it is that
         // hit's own title, shown twice, and is left off.
-        let hit_titles: std::collections::HashSet<&str> = self
+        let hits: Vec<&SearchResult> = self
             .provider_rows
             .iter()
-            .filter(|row| self.provider_row_is_current(&row.action_id) && row.kind != ACTIONS_KIND)
+            .filter(|row| self.provider_row_is_current(&row.action_id))
+            .collect();
+        // A hit that invokes an action stands for it: the same command as an
+        // action's own row, so the list shows the one place that runs it.
+        let taken: std::collections::HashSet<tilo_actions::ActionAddress> = hits
+            .iter()
+            .filter(|row| row.kind != ACTIONS_KIND)
+            .filter_map(|row| match self.provider_index.get(&row.action_id) {
+                Some(RowResolution::Address(address)) => Some(address.clone()),
+                Some(RowResolution::Navigate(..) | RowResolution::Bound(_)) | None => None,
+            })
+            .collect();
+        let hit_titles: std::collections::HashSet<&str> = hits
+            .iter()
+            .filter(|row| row.kind != ACTIONS_KIND)
             .map(|row| row.title.trim())
             .collect();
         let mut rows = self.action_rows.clone();
+        rows.retain(|row| match self.base_index.get(&row.action_id) {
+            Some(RowResolution::Address(address)) => !taken.contains(address),
+            _ => true,
+        });
         for row in &mut rows {
             let restates_a_hit = row
                 .subtitle
@@ -2499,12 +2533,7 @@ impl ActionPalette {
                 row.subtitle = None;
             }
         }
-        rows.extend(
-            self.provider_rows
-                .iter()
-                .filter(|row| self.provider_row_is_current(&row.action_id))
-                .cloned(),
-        );
+        rows.extend(hits.into_iter().cloned());
         let groups = rank_and_group(&self.search_query, rows);
         let mut index = self.base_index.clone();
         for row in groups.iter().flat_map(|group| &group.results) {
@@ -3209,324 +3238,7 @@ impl ActionPalette {
     }
 }
 
-impl Widget for ActionPalette {
-    fn name(&self) -> &str {
-        "ActionPalette"
-    }
-    /// The registry key a host resolves the card by: the query field's rect,
-    /// as the shell's overlay hosts look the search card up.
-    fn test_id(&self) -> Option<&str> {
-        if self.hosts_rows() {
-            return Some("command_palette_input");
-        }
-        Some("action-palette")
-    }
-    fn resets_binding_inheritance(&self) -> bool {
-        true
-    }
-    fn is_focusable(&self) -> bool {
-        self.is_presented()
-    }
-    fn is_focused(&self) -> bool {
-        self.is_presented()
-            && (self.field.is_focused()
-                || self
-                    .confirm
-                    .as_ref()
-                    .and_then(ConfirmState::phrase_field)
-                    .is_some_and(|field| field.is_focused())
-                || self
-                    .controls
-                    .children()
-                    .iter()
-                    .any(|control| control.is_focused()))
-    }
-    fn set_focus(&mut self, focused: bool) {
-        if self.hosts_rows() {
-            self.open = focused;
-            self.results.set_focused(focused);
-            self.sync_field_focus();
-            return;
-        }
-        if focused {
-            if !self.is_focused() {
-                self.focus_part(self.confirm.as_ref().map_or(0, ConfirmState::first_part));
-            }
-        } else {
-            self.field.set_focused(false);
-            if let Some(field) = self
-                .confirm
-                .as_mut()
-                .and_then(ConfirmState::phrase_field_mut)
-            {
-                field.set_focus(false);
-            }
-            for control in self.controls.children_mut() {
-                control.set_focus(false);
-            }
-        }
-    }
-    fn traps_focus(&self) -> bool {
-        self.is_presented()
-    }
-    fn modal_capture(&self) -> Option<Rect> {
-        self.is_presented().then_some(self.rect)
-    }
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        theme: &Theme,
-        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        use crate::widget::TaffyTreeExt;
-        if self.hosts_rows() {
-            self.host_prepare(theme);
-            // `desired_size` is the single source of truth so a hand-placed
-            // card (`set_rect`) and a laid-out one agree.
-            let (width, height) = self.desired_size();
-            let style = Style {
-                size: Size::from_lengths(width as f32, height as f32),
-                ..Style::default()
-            };
-            return tree.widget_leaf(style, nodes, self);
-        }
-        let node = tree.leaf_node(Style {
-            position: taffy::Position::Absolute,
-            ..Style::default()
-        });
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if !self.hosts_rows() {
-            return;
-        }
-        self.rect = crate::widget::layout_rect(tree, node, origin);
-        self.sync_list();
-    }
-    fn take_structure_dirty(&mut self) -> bool {
-        if !self.hosts_rows() {
-            return false;
-        }
-        std::mem::take(&mut self.structure_dirty)
-    }
-    /// Sized by its style alone: nothing a host row changes needs taffy to
-    /// measure it again.
-    fn is_layout_dirty(&self) -> bool {
-        !self.hosts_rows()
-    }
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
-        if self.hosts_rows() {
-            self.set_host_platform(conventions);
-        }
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if self.hosts_rows() {
-            self.draw_host(scene, transform, text, theme, presence);
-            return;
-        }
-        ActionPalette::draw(self, scene, transform, text, theme, presence);
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        *ctx.handled |= self.route_event(
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            &mut ctx.state,
-            ctx.path,
-        );
-    }
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.hosts_rows() && self.is_open() && self.row_at(point).is_some() {
-            return Some(winit::window::CursorIcon::Pointer);
-        }
-        None
-    }
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.hosts_rows()
-            .then(|| self.field.ime_cursor_rect())
-            .flatten()
-    }
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        self.hosts_rows()
-            .then(|| self.field.ime_content())
-            .flatten()
-    }
-    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        if !self.hosts_rows() {
-            return None;
-        }
-        self.host_ime_fingerprint(key)
-    }
-    fn accessibility_hidden(&self) -> bool {
-        self.hosts_rows() && !self.is_open()
-    }
-    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        if !self.hosts_rows() {
-            return None;
-        }
-        self.host_synthetic_rect(path)
-    }
-    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        if !self.hosts_rows() {
-            return false;
-        }
-        self.host_focus_synthetic(path)
-    }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        if self.hosts_rows() {
-            return Some(self.host_accessibility());
-        }
-        if !self.is_presented() {
-            return None;
-        }
-        let mut children = Vec::new();
-        if self.confirm.is_none()
-            && let Some(field) = self.field.accessibility()
-        {
-            let target = self.target("field");
-            children.push(
-                field
-                    .with_name("Search")
-                    .with_hashed_key(&target)
-                    .with_action_target(target)
-                    .with_bounds(self.field.get_rect()),
-            );
-        }
-        // A name to type is a field called by its visible label.
-        if let Some(field) = self.confirm.as_ref().and_then(ConfirmState::phrase_field)
-            && let Some(node) = field.accessibility()
-        {
-            let target = self.target("field");
-            children.push(
-                node.with_hashed_key(&target)
-                    .with_action_target(target)
-                    .with_bounds(field.get_rect()),
-            );
-        }
-        if self.confirm.is_some() || self.history_review_required {
-            for (button, part) in self
-                .controls
-                .children()
-                .into_iter()
-                .zip(["submit", "cancel"])
-            {
-                if let Some(node) = button.accessibility() {
-                    let target = self.target(part);
-                    children.push(
-                        node.with_hashed_key(&target)
-                            .with_action_target(target)
-                            .with_bounds(
-                                self.confirmation_sheet
-                                    .layout()
-                                    .filter(|_| self.confirm.is_some())
-                                    .and_then(|layout| {
-                                        layout.actions.get(usize::from(part != "submit"))
-                                    })
-                                    .copied()
-                                    .unwrap_or_else(|| button.get_rect()),
-                            ),
-                    );
-                }
-            }
-        }
-        if !self.in_argument_mode()
-            && !self.history_review_required
-            && let Some(results) = self.results.accessibility()
-        {
-            children.push(results.with_hashed_key(self.target("results")));
-        }
-        let confirm = self.confirm.as_ref();
-        let description = confirm.map_or("", |confirm| confirm.detail.as_str());
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name(confirm.map_or_else(
-                    || {
-                        if self.in_argument_mode() {
-                            "Action confirmation"
-                        } else {
-                            "Search"
-                        }
-                    },
-                    |confirm| confirm.question.as_str(),
-                ))
-                .with_description(description)
-                .with_state(
-                    crate::a11y::AccessState::new()
-                        .modal(true)
-                        .focused(self.is_focused()),
-                )
-                .with_children(children),
-        )
-    }
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        if self.hosts_rows() {
-            return self.host_semantic_action(target, action, doc, path);
-        }
-        if !self.is_presented() {
-            return false;
-        }
-        if target == self.target("field") {
-            if self.confirm.is_none() {
-                if matches!(action, crate::a11y::Action::Focus) {
-                    self.focus_part(0);
-                }
-                return self.field.perform_action(action, &[], doc, path);
-            }
-            if self.confirm.as_ref().is_some_and(ConfirmState::typed) {
-                if matches!(action, crate::a11y::Action::Focus) {
-                    self.focus_part(0);
-                }
-                let handled = self
-                    .confirm
-                    .as_mut()
-                    .and_then(ConfirmState::phrase_field_mut)
-                    .is_some_and(|field| field.input_mut().perform_action(action, &[], doc, path));
-                self.sync_confirmation();
-                return handled;
-            }
-        }
-        if !self.in_argument_mode() && !self.history_review_required {
-            let handled = self
-                .results
-                .perform_semantic_action(target, action, doc, path);
-            self.poll_view_activation();
-            return handled;
-        }
-        if self.confirm.is_none() && !self.history_review_required {
-            return false;
-        }
-        for (index, part) in ["submit", "cancel"].into_iter().enumerate() {
-            if target == self.target(part) {
-                if matches!(action, crate::a11y::Action::Focus) {
-                    self.focus_part(index + 1);
-                }
-                let handled =
-                    self.controls.children_mut()[index].perform_action(action, &[], doc, path);
-                let (doc, path) = crate::doc::document(doc, path);
-                self.drain_command(doc, path);
-                return handled;
-            }
-        }
-        false
-    }
-}
+mod widget;
 
 #[cfg(test)]
 pub(crate) fn observed_field_language(palette: &ActionPalette) -> &str {

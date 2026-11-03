@@ -11,7 +11,10 @@ use so.tilo.settings as settings
 /// notification centre and on the same material; the bar's status opens it.
 view quick_settings(d: Desk) {
     row(fill, distribute: .end, padding: .related) {
-        ui.FloatingPanel(width: if space.compact { .none } else { .some(360.0) }, fill: if space.compact { 1.0 } else { 0.0 }) {
+        ui.FloatingPanel(
+            width: if space.compact { .none } else { .some(360.0) },
+            fill: if space.compact { 1.0 } else { 0.0 },
+        ) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text("Quick settings", role: .heading)

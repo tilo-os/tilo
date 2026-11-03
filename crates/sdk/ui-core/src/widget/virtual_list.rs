@@ -50,6 +50,11 @@ mod choice;
 #[path = "virtual_list_shown.rs"]
 mod shown;
 use shown::ListShown;
+#[path = "virtual_list_tree.rs"]
+mod tree;
+pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeRow};
+#[path = "virtual_list_press.rs"]
+mod press;
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 /// How near its end a list that follows its end still counts as at it, in logical pixels.
@@ -165,9 +170,16 @@ pub trait ListModel {
     fn group_at(&self, _index: usize) -> Option<RowGroup> {
         None
     }
+
+    /// What the row stands as in a tree ([`VirtualList::with_tree`]): the row it is under, and
+    /// what the list shows of its subtasks. `None` for a row outside a tree, or a model that
+    /// holds none.
+    fn tree_at(&self, _index: usize) -> Option<TreeRow<Self::Key>> {
+        None
+    }
 }
 
-/// A row's place in a group of the list ([`ListModel::group_at`]): the heading the run of
+/// The row's place in a group of the list ([`ListModel::group_at`]): the heading the run of
 /// rows stands under, and the tail of items done with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowGroup {
@@ -445,6 +457,13 @@ pub struct VirtualList<M: ListModel> {
     /// What each row is grouped by, by key: the model is asked once for a row while its props
     /// stand as they were.
     row_groups: HashMap<M::Key, Option<(String, bool)>>,
+    /// The rows are a tree ([`Self::with_tree`]): each under the row of the item it names as
+    /// its parent, its subtasks folded away where the person folded them.
+    tree: Option<Rc<TreeMarks<M::Key>>>,
+    /// The tree's rows as the model gives them, read once each while they stand.
+    tree_rows: HashMap<M::Key, TreeRow<M::Key>>,
+    /// The rows standing under a folded row: they take no room and are never built.
+    tree_hidden: HashSet<M::Key>,
 }
 
 impl<M: ListModel> VirtualList<M> {
@@ -565,6 +584,9 @@ impl<M: ListModel> VirtualList<M> {
             groups: Groups::default(),
             tail_title: None,
             row_groups: HashMap::new(),
+            tree: None,
+            tree_rows: HashMap::new(),
+            tree_hidden: HashSet::new(),
         };
         list.refresh_anchor();
         list
@@ -818,6 +840,7 @@ impl<M: ListModel> VirtualList<M> {
     pub fn update_model<R>(&mut self, update: impl FnOnce(&mut M) -> R) -> R {
         let anchor = self.capture_anchor();
         let result = update(&mut self.model);
+        self.forget_tree();
         self.mounted.clear();
         self.reconcile_model(anchor.as_ref());
         result
@@ -834,6 +857,7 @@ impl<M: ListModel> VirtualList<M> {
         let anchor = self.capture_anchor();
         self.capture_list_change(changes);
         let result = update(&mut self.model);
+        self.forget_tree();
         self.apply_model_changes(changes);
         self.reconcile_model(anchor.as_ref());
         result
@@ -1406,6 +1430,9 @@ impl<M: ListModel> VirtualList<M> {
         let interaction = self.interaction;
         let range = self.mount_window();
         let window = range.clone();
+        // What the tree rows are, before any of them is built: a row reads its depth and
+        // whether its subtasks show from what this leaves in its marks.
+        self.shape_tree(&range);
         if self.request_dirty || self.requested_range.as_ref() != Some(&range) {
             self.model.request_range(range.clone());
             self.requested_range = Some(range.clone());
@@ -1443,6 +1470,15 @@ impl<M: ListModel> VirtualList<M> {
                     self.viewport.collapse(index, key);
                 }
                 continue;
+            }
+            if self.tree.is_some() {
+                // Under a folded row: out of the way, never built, as a closed group's are.
+                if self.tree_hidden.contains(&key) {
+                    self.viewport.collapse(index, key);
+                    continue;
+                }
+                // Shown again, a row measures as it did: the room it takes is its own again.
+                self.viewport.expand(index, &key);
             }
             if !seen.insert(key.clone()) {
                 continue;
@@ -1663,50 +1699,6 @@ impl<M: ListModel> VirtualList<M> {
             |index| model.key_at(index),
         );
         self.emit_selection(key);
-    }
-
-    /// A completed click on the row of `key`: select it by the modifiers, and
-    /// activate it when it is the second click on the same row in time.
-    fn click_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
-        let state = modifiers.state();
-        let toggle = state.control_key() || state.super_key();
-        let extend = state.shift_key();
-        self.apply_selection(key.clone(), toggle, extend);
-        self.focus_row(key.clone());
-        if toggle || extend {
-            self.clicks.record(key);
-        } else if self.clicks.register(key.clone()) {
-            self.activate_key(key);
-        }
-    }
-
-    /// Open `key` as Enter or a second click does: through the published view
-    /// action when the host bound one, else the activation callback.
-    fn activate_key(&mut self, key: M::Key) {
-        if let Some((_, handler)) = &mut self.opens {
-            handler(key);
-        } else if let Some(callback) = &mut self.on_activate {
-            callback(key);
-        }
-    }
-
-    /// Open the row's context menu: select it unless it already is, then
-    /// hand the host the key, the point and the row's rect.
-    fn open_context(&mut self, index: usize, key: M::Key, point: Point) {
-        if !self.selection.is_selected(&key) {
-            self.apply_selection(key.clone(), false, false);
-        }
-        self.focus_row(key.clone());
-        let rect = match (
-            self.viewport.item_view_top(index),
-            self.viewport.item_height(index),
-        ) {
-            (Some(top), Some(height)) => self.lift_rect(top, height),
-            _ => self.rect,
-        };
-        if let Some(callback) = &mut self.on_context {
-            callback(key, point, rect);
-        }
     }
 
     fn emit_selection(&mut self, key: M::Key) {
@@ -2557,7 +2549,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     if let Some(dropped) = self.reorder.finish() {
                         self.commit_reorder(dropped);
                     } else if !active && let Some(key) = source {
-                        self.click_row(key, *ctx.modifiers);
+                        self.press_row(key, *ctx.modifiers);
                     }
                     *ctx.handled = true;
                 } else if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
@@ -2568,8 +2560,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                             self.scroll.momentum.fling(drag.velocity);
                             self.last_tick = Some(crate::time::now());
                         }
-                    } else if let Some((_, key)) = self.row_at_cursor() {
-                        self.click_row(key, *ctx.modifiers);
+                    } else if let Some((index, key)) = self.row_at_cursor() {
+                        self.press_row_at(index, key, *ctx.modifiers);
                     }
                     *ctx.handled = true;
                 }
@@ -2836,7 +2828,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.collect_row_damage(regions);
             }
             crate::scroll_copy::Since::Still | crate::scroll_copy::Since::Repaint => {
-                if shown_changed || self.needs_redraw() {
+                if shown_changed || (self.needs_redraw() || self.needs_animation_frame()) {
                     regions.push(self.rect);
                 }
             }
@@ -2991,6 +2983,10 @@ mod arriving_tests;
 #[cfg(test)]
 #[path = "virtual_list_mount_tests.rs"]
 mod mount_tests;
+
+#[cfg(test)]
+#[path = "virtual_list_tree_tests.rs"]
+mod tree_tests;
 
 #[path = "virtual_list_component.rs"]
 mod component;

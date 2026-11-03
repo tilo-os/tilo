@@ -511,7 +511,9 @@ impl ui::widget::Decorator for SetupSheet {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.shown.as_ref() != Some(&self.setup.step.get()) || self.dialog.needs_redraw()
+        self.shown.as_ref() != Some(&self.setup.step.get())
+            || self.dialog.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn concrete_type_name(&self) -> &'static str {

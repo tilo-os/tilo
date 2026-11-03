@@ -1604,6 +1604,7 @@ impl Widget for TubeApp {
             || tube.images_pending()
             || !self.shell_built
             || self.shell.needs_redraw()
+            || self.shell.needs_animation_frame()
     }
 
     fn mark_drawn(&mut self) {

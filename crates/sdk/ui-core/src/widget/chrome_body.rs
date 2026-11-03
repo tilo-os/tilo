@@ -221,7 +221,7 @@ impl Decorator for ChromeBody {
 
     /// The body paints only where its content changed: a bar at rest draws nothing.
     fn needs_redraw(&self) -> bool {
-        self.container.needs_redraw()
+        self.container.needs_redraw() || self.container.needs_animation_frame()
     }
 
     /// The body's ground repaints where its content changed: the container carries its
