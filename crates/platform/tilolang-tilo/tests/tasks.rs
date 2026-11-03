@@ -905,3 +905,92 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
         "the step that is not done stays under its task"
     );
 }
+
+/// Every node of this kind in the drawn view.
+fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
+    fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
+        if node.kind == kind {
+            out.push(node);
+        }
+        for child in &node.children {
+            walk(child, kind, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, kind, &mut out);
+    out
+}
+
+/// What each row of the home list presents: the task, the task it stands under, and what its row
+/// says of the task's subtasks.
+fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>)> {
+    view.poll_patches().unwrap();
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    let len = view.list_len(&list).unwrap_or(0);
+    let mut out = Vec::new();
+    for index in 0..len {
+        let Some(row) = view.row(&list, index).unwrap() else {
+            continue;
+        };
+        let Some(item) = all(row, "ui.ListItem").first().copied() else {
+            continue;
+        };
+        let Some(Value::Ref(at)) = item.props.get("item") else {
+            panic!("a row presents its task: {:?}", item.props.get("item"));
+        };
+        let count = match item.props.get("progress") {
+            Some(Value::Text(count)) => Some(count.clone()),
+            _ => None,
+        };
+        out.push((
+            at.target.id_string(),
+            item.props.get("parent").and_then(target),
+            count,
+        ));
+    }
+    out
+}
+
+/// The home list is a tree: a task's subtasks stand under it, and its row says how many of them
+/// are still open.
+#[test]
+fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
+    let (ada, parent) = launch_post();
+    let mut view = ada.view(APP);
+    assert_eq!(
+        all(view.tree(), "ui.VirtualList")
+            .first()
+            .and_then(|list| list.props.get("tree")),
+        Some(&Value::Int(1)),
+        "the home list draws the tasks as a tree"
+    );
+    let rows = home_rows(&mut view);
+    let of = |item: &Value| target(item).expect("a task");
+    let (_, above, count) = rows
+        .iter()
+        .find(|(item, _, _)| *item == of(&parent))
+        .expect("the task's row");
+    assert_eq!(above, &None, "the task stands at the top");
+    assert_eq!(
+        count.as_deref(),
+        Some("3/3"),
+        "its row says all three of its subtasks are still open, of the three it has"
+    );
+    for title in ["Outline", "First draft", "Screenshots"] {
+        let subtask = task(&ada, title);
+        let (_, under, count) = rows
+            .iter()
+            .find(|(item, _, _)| *item == of(&subtask))
+            .unwrap_or_else(|| panic!("{title}'s row"));
+        assert_eq!(
+            under,
+            &target(&parent),
+            "{title} stands under the task it belongs to"
+        );
+        assert_eq!(count, &None, "{title} has no subtasks of its own");
+    }
+}
