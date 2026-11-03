@@ -60,9 +60,11 @@ view strips_view(a: Arrangement, v: Viewing) {
     }
 }
 
-/// One row: the strip across the desk, named, with its columns of places side by side. A phone's
-/// or a tablet's output cannot hold a wide column beside another, so there each strip takes the
-/// output's width, one under the other, as the phone shell shows them.
+/// One row: the strip across the desk, named, with its columns of places side by side. The
+/// row's columns stand one height, the taller column's, so the desk reads as a row of strips
+/// rather than as cards of whatever each happens to hold. A phone's or a tablet's output cannot
+/// hold a wide column beside another, so there each strip takes the output's width, one under
+/// the other, as the phone shell shows them.
 view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
     stack(gap: .related) {
         ui.Text(held.name, role: .subheading)
@@ -77,7 +79,7 @@ view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
             }
         } else {
             scroll(axis: .horizontal) {
-                row(gap: .group, align: .start) {
+                row(gap: .group, align: .stretch) {
                     for s in strips_of(a, held.key) {
                         strip_column(a, v, s)
                     }
