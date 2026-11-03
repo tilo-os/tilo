@@ -779,10 +779,23 @@ pub fn provide_backdrops(images: Vec<(usize, ImageData)>) {
 }
 
 /// The size in texels of the image a surface with `bounds` (recording
-/// pixels) is drawn with: what a provided backdrop must measure.
+/// pixels) is drawn with: what a provided backdrop must measure. `cell_px`
+/// is the cell the surface shows as pixels ([`Sampling::Blocky`]), in the
+/// same recording pixels, or `0` for a smoothly sampled surface.
+///
+/// One texel per cell, as [`Self::record`] takes for a blocky sample: a
+/// host that blurs outside the renderer has to hand back an image the size
+/// the placeholder takes, or the surface draws the opaque placeholder and
+/// its look never shows.
 #[must_use]
-pub fn backdrop_texels(bounds: Rect) -> (u32, u32) {
-    (texels(bounds.width()), texels(bounds.height()))
+pub fn backdrop_texels(bounds: Rect, sampling: Sampling, cell_px: f64) -> (u32, u32) {
+    match sampling {
+        Sampling::Blocky => (
+            cells(bounds.width(), cell_px.max(1.0)),
+            cells(bounds.height(), cell_px.max(1.0)),
+        ),
+        Sampling::Smooth => (texels(bounds.width()), texels(bounds.height())),
+    }
 }
 
 /// The provided backdrop of `slot` when it measures `width` by `height`.

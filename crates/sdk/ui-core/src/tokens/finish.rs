@@ -438,6 +438,10 @@ impl Finish {
                     // What the tint lets through, and how the glass bends and lights: each
                     // falls away with the strength.
                     "saturation" => 1.0 - strength * (1.0 - param.value),
+                    // A look's own grain, not its translucency: a cell, a pixel grid, a
+                    // shader's pattern stays what it is at any strength, or a calm surface
+                    // would lose the cells it is made of (and a `0` cell draws nothing).
+                    "cell" | "grid" | "scale" | "phase" | "light_angle" => param.value,
                     _ => param.value * strength,
                 };
                 Param {
@@ -929,6 +933,31 @@ mod tests {
         assert!(Finish::solid().hairline());
         assert!(!Finish::solid().translucent());
         assert!(Finish::stock_floating().translucent());
+    }
+
+    /// A calm surface is the glass with its translucency off: its light
+    /// falls away with the strength, but a look's own grain — a pixel cell,
+    /// the cell grid, a shader's pattern size — is what the look is made of,
+    /// so it stays. Scaling those by `0` left the shell's calm bar drawing
+    /// flat, which read as a bug in the look rather than the theme's choice.
+    #[test]
+    fn calm_keeps_the_looks_own_grain_and_drops_the_light() {
+        let pixelated = Finish::named(
+            "pixelated",
+            [("cell", 4.0), ("cover", 0.8), ("blur", 0.0), ("grid", 0.2)],
+        )
+        .unwrap();
+        let calm = pixelated.with_translucency(0.0);
+        assert_eq!(calm.painter(), "pixelated");
+        assert_eq!(calm.param("cell"), Some(4.0), "the cells stay a look");
+        assert_eq!(calm.param("cover"), Some(0.0), "nothing shows through");
+        assert_eq!(calm.param("grid"), Some(0.2), "the grid stays");
+        // The light a glass body catches goes with its translucency.
+        let glass = glass_with(16.0, 0.2, 1.5);
+        let calm = glass.with_translucency(0.0);
+        assert!((calm.param("refraction").unwrap_or(0.0)).abs() < 1e-6);
+        assert!((calm.param("specular").unwrap_or(0.0)).abs() < 1e-6);
+        assert!((calm.tint() - 1.0).abs() < 1e-6, "the ground is opaque");
     }
 
     #[test]
