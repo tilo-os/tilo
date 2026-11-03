@@ -235,9 +235,11 @@ pub(crate) fn join(
 // transport. Both run on the browser's one thread, so the plane is put down by
 // name for `Command::PlaneJoined` to take (`arrived`).
 #[cfg(target_arch = "wasm32")]
+type Arrived = Vec<(u64, Result<Arc<Plane>, Failed>)>;
+
+#[cfg(target_arch = "wasm32")]
 thread_local! {
-    static ARRIVED: std::cell::RefCell<Vec<(u64, Result<Arc<Plane>, Failed>)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    static ARRIVED: std::cell::RefCell<Arrived> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// What the join for `workspace_id` came to; `Unavailable` when no join put a
@@ -448,7 +450,7 @@ impl Task {
     /// Take what `workspace_id`'s plane heard since the last call: each
     /// member's track object, already opened with the scope's keys, as
     /// [`PeerEvent::LivePlane`].
-    pub(super) fn plane_heard(&mut self, workspace_id: u64) {
+    pub(super) fn plane_heard(&self, workspace_id: u64) {
         let heard: Vec<_> = match self.planes.joined(workspace_id) {
             Some(joined) => std::iter::from_fn(|| joined.plane.try_recv()).collect(),
             None => return,

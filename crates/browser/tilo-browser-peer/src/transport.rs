@@ -328,18 +328,18 @@ impl RelayCollabTransport {
                 PeerEvent::LiveMember { device, active, .. } => {
                     self.live.member(device, active);
                 }
-                // A frame another member published on the workspace's live
-                // plane. The toolkit's presence still comes from the relay's
-                // own presence frames ([`Self::remote_presence`]), so hearing
-                // the plane moves no board yet.
-                PeerEvent::LivePlane { .. } => {}
-                // Remote actions and voice are the page's (`agents.mjs`,
-                // `actionsV1`, `voice-peer.mjs`), consumed from their own queues. The toolkit keeps its
+                // Neither moves the toolkit: a frame another member
+                // published on the workspace's live plane carries presence
+                // the relay's own presence frames already bring
+                // ([`Self::remote_presence`]); remote actions and voice are
+                // the page's (`agents.mjs`, `actionsV1`, `voice-peer.mjs`),
+                // consumed from their own queues. The toolkit keeps its
                 // documents in the collaboration manager, so another
                 // volunteer answers compaction requests. A refused commit is
                 // the record owner's to withdraw; this transport holds none,
                 // nor content to answer a member's request with.
-                PeerEvent::DocumentRejected(_)
+                PeerEvent::LivePlane { .. }
+                | PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
                 | PeerEvent::CommitRefused { .. }
                 | PeerEvent::RemoteAction { .. }

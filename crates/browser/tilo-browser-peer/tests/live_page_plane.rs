@@ -65,11 +65,7 @@ fn keys() -> ChannelContentKeys {
 fn certificate(relay: &LoopbackRelay) -> String {
     use base64::Engine as _;
     let hex = relay.fingerprints.first().unwrap();
-    let bytes: Vec<u8> = (0..hex.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
-        .collect();
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+    base64::engine::general_purpose::STANDARD.encode(hex::decode(hex).unwrap())
 }
 
 /// What the relay grants one participant: its own namespace to publish in and
@@ -113,21 +109,18 @@ struct Admits {
 
 impl RelayAuthority for Admits {
     fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let device = match LiveGrant::decode(proof) {
-            Some(grant) => {
-                let token = *self.token.lock().unwrap();
-                if Some(grant.token) != token || grant.workspace_id != support::workspace() {
-                    return Err(Denied);
-                }
-                self.page
+        let device = if let Some(grant) = LiveGrant::decode(proof) {
+            let token = *self.token.lock().unwrap();
+            if Some(grant.token) != token || grant.workspace_id != support::workspace() {
+                return Err(Denied);
             }
-            None => {
-                let device = <[u8; 32]>::try_from(proof).map_err(|_| Denied)?;
-                if device != self.device {
-                    return Err(Denied);
-                }
-                device
+            self.page
+        } else {
+            let device = <[u8; 32]>::try_from(proof).map_err(|_| Denied)?;
+            if device != self.device {
+                return Err(Denied);
             }
+            device
         };
         let namespace = Namespace::new(&self.scope, device);
         Ok(Arc::new(Permit {
@@ -339,6 +332,7 @@ async fn a_page_joins_its_workspaces_plane_and_hears_a_device_through_the_relay(
         certificate: certificate(&relay),
         token,
     };
+    drop(host);
     let page = start_peer(
         Host::Https(Arc::new(live)),
         browser_cert.clone(),
