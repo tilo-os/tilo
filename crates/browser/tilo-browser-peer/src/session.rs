@@ -2764,20 +2764,24 @@ impl Task {
                 workspace_id,
                 from_device_public_key,
                 frame,
-            } => {
-                if from_device_public_key != self.config.cert.device_public_key {
-                    self.emit(&PeerEvent::ContentWanted {
-                        workspace_id,
-                        from: from_device_public_key,
-                        request: frame,
-                    });
-                }
-            }
+            } => self.content_wanted(workspace_id, from_device_public_key, frame),
             envelope => {
                 if let Some(event) = addressed(envelope) {
                     self.emit(&event);
                 }
             }
+        }
+    }
+
+    /// One member asked for `frame` of `workspace_id`'s record content: a
+    /// request this device did not make is the page's to answer.
+    fn content_wanted(&self, workspace_id: u64, from: [u8; 32], frame: Vec<u8>) {
+        if from != self.config.cert.device_public_key {
+            self.emit(&PeerEvent::ContentWanted {
+                workspace_id,
+                from,
+                request: frame,
+            });
         }
     }
 
