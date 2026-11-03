@@ -765,8 +765,8 @@ mod tests {
             app: "so.tilo.chat".into(),
             record: String::new(),
         };
-        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&primary.app, workspace, &primary.record);
         let frame = LiveFrame::Ops(OpsFrame::Preview {
             seq: 1,
             record: primary.clone(),
