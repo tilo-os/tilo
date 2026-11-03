@@ -180,6 +180,26 @@ impl WindowControls {
         }
     }
 
+    /// The pill around any window's own controls, laid out on `bar`: as tall as a bar control
+    /// with the pill's padding, centred on the bar's centre line, from `controls`' leading
+    /// edge less the padding to its trailing edge less the window's own inset. `Rect::ZERO`
+    /// for no controls.
+    #[must_use]
+    pub fn around(bar: Rect, controls: Rect) -> Rect {
+        if controls.area() <= 0.0 || bar.height() <= 0.0 || controls.width() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let height = (CONTROL_PX + 2.0 * PILL_PAD).min(bar.height());
+        let x0 = controls.x0 - PILL_PAD;
+        let x1 = (controls.x1 + PILL_PAD).min(bar.x1 - EDGE_INSET);
+        Rect::new(
+            x0,
+            bar.center().y - height / 2.0,
+            x1.max(x0 + height),
+            bar.center().y + height / 2.0,
+        )
+    }
+
     /// Where the controls begin, less the gap anything before them keeps;
     /// the row's trailing edge for none.
     #[must_use]
@@ -231,9 +251,8 @@ impl WindowControls {
         if self.pill.area() <= 0.0 {
             return;
         }
+        paint_pill(scene, transform, self.pill, theme);
         let ground = crate::chrome::panel_ground(theme);
-        let radius = crate::chrome::ChromeRole::Selector.radius(theme, self.pill.height());
-        crate::surface::panel_unsnapped(scene, transform, self.pill, radius, theme);
         // The pill is the ground its controls stand on: their ink and their
         // hover ring are resolved against it, never against the window's.
         let theme = &theme.on_ground(ground);
@@ -300,6 +319,18 @@ impl WindowControls {
             );
         }
     }
+}
+
+/// Paint the floating pill the window's own controls stand in: the panel ground of the
+/// floating material, at the selector's radius, over the window's own ground or over the app's
+/// header row. Every window's controls stand in this one pill, so a bar says the same thing
+/// about them wherever the frame puts them.
+pub fn paint_pill(scene: &mut Scene, transform: Affine, pill: Rect, theme: &Theme) {
+    if pill.area() <= 0.0 {
+        return;
+    }
+    let radius = crate::chrome::ChromeRole::Selector.radius(theme, pill.height());
+    crate::surface::panel_unsnapped(scene, transform, pill, radius, theme);
 }
 
 /// `alpha` of an opaque line, `progress` of the way in.
@@ -419,6 +450,27 @@ mod tests {
         assert_eq!(c.hit(Point::new(10.0, 22.0)), None);
         assert!(c.on_pill(Point::new(c.pill.x0 + 1.0, c.pill.center().y)));
         assert!(!c.on_pill(Point::new(10.0, 22.0)));
+    }
+
+    #[test]
+    fn the_window_s_controls_stand_in_one_pill_inside_its_bar() {
+        let bar = Rect::new(0.0, 0.0, 800.0, crate::widget::tabs::TAB_BAR_HEIGHT);
+        let controls = Rect::new(700.0, 8.0, 788.0, 36.0);
+        let pill = WindowControls::around(bar, controls);
+        assert!(
+            pill.contains(controls.center()) && pill.area() > controls.area(),
+            "the pill holds the controls with room around them: {pill:?} for {controls:?}"
+        );
+        assert!(pill.height() <= bar.height() + f64::EPSILON);
+        assert!(
+            (pill.x1 - (bar.x1 - EDGE_INSET)).abs() < f64::EPSILON,
+            "the pill stands the window's own inset from its trailing edge: {pill:?}"
+        );
+        assert!(
+            (pill.center().y - bar.center().y).abs() < f64::EPSILON,
+            "the pill is centred on the bar",
+        );
+        assert_eq!(WindowControls::around(bar, Rect::ZERO), Rect::ZERO);
     }
 
     #[test]
