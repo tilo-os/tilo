@@ -277,6 +277,8 @@ pub(crate) struct Records {
     open: RefCell<BTreeMap<String, WorkspaceRecord<DirectConversation>>>,
     /// The people whose old private conversation is still to be imported.
     imports: RefCell<VecDeque<String>>,
+    /// The pairs this window announced, so a send asks the workspace once.
+    announced: RefCell<BTreeSet<String>>,
     /// The pairs this person is in, as the workspace last proved them.
     pairs: RefCell<Option<Vec<ui::person_chat::Pair>>>,
 }
@@ -294,6 +296,7 @@ impl Records {
             people: RefCell::default(),
             open: RefCell::default(),
             imports: RefCell::default(),
+            announced: RefCell::default(),
             pairs: RefCell::new(None),
         })
     }
@@ -404,8 +407,15 @@ impl Records {
         let person = self
             .person(peer)
             .ok_or_else(|| "no direct conversation with them here".to_owned())?;
+        let pair = self.pair(&person.root)?;
+        if self.announced.borrow().contains(&pair) {
+            return Ok(());
+        }
         match ui::person_chat::announce(&person.root).take() {
-            Some(Ok(())) => Ok(()),
+            Some(Ok(())) => {
+                self.announced.borrow_mut().insert(pair);
+                Ok(())
+            }
             Some(Err(error)) => Err(error),
             None => Err("the pair is being announced".into()),
         }
@@ -464,10 +474,9 @@ impl Records {
         if imported.is_empty() {
             return true;
         }
-        let Ok(record) = self.record(peer) else {
+        let Ok(record) = self.announce(peer).and_then(|()| self.record(peer)) else {
             return false;
         };
-        let _ = self.announce(peer);
         record
             .invoke(&DirectConversation::IMPORT.with(conversation::Import { messages: imported }))
             .is_ok()
@@ -517,10 +526,11 @@ impl ui::person_chat::Native for Records {
     }
 
     fn open(&self, peer: &str) -> Result<ui::person_chat::Conversation, String> {
-        let record = self.record(peer)?;
         // Whoever opens a conversation makes its record the pair's: the one
-        // write only the session's owner can sign.
+        // write only the session's owner can sign. Before the record is
+        // opened here, so this window writes nothing an unproved pair owns.
         self.announce(peer)?;
+        let record = self.record(peer)?;
         Ok(record.get().conversation(peer))
     }
 
@@ -542,8 +552,7 @@ impl ui::person_chat::Native for Records {
         text: &str,
         invocation: uuid::Uuid,
     ) -> Result<ui::person_chat::Conversation, String> {
-        let record = self.record(peer)?;
-        self.announce(peer)?;
+        let record = self.announce(peer).and_then(|()| self.record(peer))?;
         record
             .invoke(&DirectConversation::SEND.with(conversation::Send {
                 id: message_id(invocation),
