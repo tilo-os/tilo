@@ -16,12 +16,12 @@ use tilo_peer_state::{coverage::Coverage, durability::DurableReceipt};
 pub use tilo_relay_protocol::retention::RetentionAuthority;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RoomInput {
+pub enum WorkspaceInput {
     Checkpoint,
     Delta,
 }
 /// Both errors are conservative: retain the input. Unpaired permits retry with
-/// another exact room proof; Unknown grants no interpretation/retirement right.
+/// another exact workspace proof; Unknown grants no interpretation/retirement right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProofError {
     Unknown,
@@ -45,10 +45,10 @@ pub struct TailDecision {
     pub floor: FloorSafety,
 }
 
-/// One verified room document. A Delta result depends on its supplied prior
+/// One verified workspace document. A Delta result depends on its supplied prior
 /// basis; the storage caller must retain those exact prerequisite frames.
 #[derive(Clone)]
-pub struct VerifiedRoom {
+pub struct VerifiedWorkspace {
     authority: RetentionAuthority,
     doc: AutoCommit,
     input_hash: [u8; 32],
@@ -159,9 +159,9 @@ fn document(bytes: &[u8]) -> Result<AutoCommit, ProofError> {
     }
     Ok(doc)
 }
-/// A room frame's framing: each entry exactly one change chunk. Nothing is
+/// A workspace frame's framing: each entry exactly one change chunk. Nothing is
 /// decoded here; `tilo_peer_state::workspace::candidate` decodes them in the isolate.
-fn room_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
+fn workspace_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     if changes.is_empty() {
         return Err(ProofError::Unknown);
     }
@@ -175,7 +175,7 @@ fn room_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     }
     Ok(())
 }
-/// The changes of a room frame that `tilo_peer_state::workspace::candidate` has already
+/// The changes of a workspace frame that `tilo_peer_state::workspace::candidate` has already
 /// accepted, parsed in this process only now: the isolate's worker decoded
 /// each of these chunks the same way first.
 ///
@@ -198,7 +198,7 @@ fn admitted_changes(changes: &[Vec<u8>]) -> Result<Vec<automerge::Change>, Proof
         .collect()
 }
 fn valid_coverage(authority: &RetentionAuthority, key: &str, coverage: &Coverage) -> bool {
-    coverage.workspace == authority.room()
+    coverage.workspace == authority.workspace()
         && key == tilo_peer_state::coverage::route_key(&coverage.app, &coverage.record)
         && coverage.author == authority.governor().device_public_key
         && coverage.sequence > 0
@@ -314,30 +314,34 @@ fn identities(
 /// verified dependency basis. A checkpoint is loaded independently even when
 /// `prior` is present; it cannot borrow missing dependencies from the old basis.
 /// `prior` additionally checks immutable governance and monotonic metadata.
-pub fn verify_room(
+pub fn verify_workspace(
     authority: &RetentionAuthority,
     source: [u8; 32],
     channel: [u8; 32],
     body: &[u8],
-    kind: RoomInput,
-    prior: Option<&VerifiedRoom>,
-) -> Result<VerifiedRoom, ProofError> {
+    kind: WorkspaceInput,
+    prior: Option<&VerifiedWorkspace>,
+) -> Result<VerifiedWorkspace, ProofError> {
     if source != authority.governor().device_public_key
         || channel != *blake3::hash(b"shell-tree").as_bytes()
         || prior.is_some_and(|prior| prior.authority != *authority)
     {
         return Err(ProofError::Unknown);
     }
-    let NeighbourMsg::SyncResp { room, changes } = decode(body)? else {
+    let NeighbourMsg::SyncResp {
+        room: workspace,
+        changes,
+    } = decode(body)?
+    else {
         return Err(ProofError::Unknown);
     };
-    if room != authority.room() {
+    if workspace != authority.workspace() {
         return Err(ProofError::Unknown);
     }
-    room_framing(&changes)?;
+    workspace_framing(&changes)?;
     let base = match kind {
-        RoomInput::Checkpoint => None,
-        RoomInput::Delta => Some(&prior.ok_or(ProofError::Unpaired)?.doc),
+        WorkspaceInput::Checkpoint => None,
+        WorkspaceInput::Delta => Some(&prior.ok_or(ProofError::Unpaired)?.doc),
     };
     // The isolate decodes the changes first; only then are they parsed here.
     let doc =
@@ -347,20 +351,20 @@ pub fn verify_room(
         return Err(ProofError::Unknown);
     }
     match doc.get(ROOT, "room").map_err(|_| ProofError::Unknown)? {
-        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Str(value) if value.as_str() == authority.room()) =>
+        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Str(value) if value.as_str() == authority.workspace()) =>
             {}
         _ => return Err(ProofError::Unknown),
     }
     let before = prior.map(|prior| &prior.doc);
     let pinned = hex::encode(source);
     let owner = authority.governor().user_public_key;
-    // The governor wrote it, so this is the room admission every receiver
-    // runs, from one of the owner's devices: room, layout, receipts,
+    // The governor wrote it, so this is the workspace admission every receiver
+    // runs, from one of the owner's devices: workspace, layout, receipts,
     // coverage, durability and media.
     tilo_peer_state::workspace::check_candidate(
         &tilo_peer_state::workspace::WorkspaceAdmission {
             before,
-            workspace: authority.room(),
+            workspace: authority.workspace(),
             source: tilo_peer_state::workspace::Writer {
                 key: &pinned,
                 standing: tilo_peer_state::workspace::Standing::Member {
@@ -404,12 +408,12 @@ pub fn verify_room(
             return Err(ProofError::Unknown);
         }
     }
-    Ok(VerifiedRoom {
+    Ok(VerifiedWorkspace {
         authority: authority.clone(),
         doc,
         input_hash: *blake3::hash(body).as_bytes(),
-        prior_heads: if kind == RoomInput::Delta {
-            prior.map(VerifiedRoom::heads)
+        prior_heads: if kind == WorkspaceInput::Delta {
+            prior.map(VerifiedWorkspace::heads)
         } else {
             None
         },
@@ -420,7 +424,7 @@ fn signed_document(
     source: [u8; 32],
     channel: [u8; 32],
     body: &[u8],
-    room: &str,
+    workspace: &str,
 ) -> Result<
     (
         String,
@@ -441,7 +445,7 @@ fn signed_document(
         return Err(ProofError::Unknown);
     };
     if peer != tilo_peer_state::peer_handle(&source)
-        || cluster_id != room
+        || cluster_id != workspace
         || envelope.author.as_bytes() != &source
         || channel != *blake3::hash(format!("app\0{app_id}\0{record_id}").as_bytes()).as_bytes()
         || envelope.seq == 0
@@ -450,42 +454,44 @@ fn signed_document(
     }
     collab_types::verify_op(&envelope).map_err(|_| ProofError::Unknown)?;
     let WholeDocumentPayload::Cleartext(mutation) =
-        collab_types::validate_whole_document_payload_route(&app_id, room, &record_id, &envelope)
-            .map_err(|_| ProofError::Unknown)?
+        collab_types::validate_whole_document_payload_route(
+            &app_id, workspace, &record_id, &envelope,
+        )
+        .map_err(|_| ProofError::Unknown)?
     else {
         return Err(ProofError::Unknown);
     };
     Ok((app_id, record_id, envelope, mutation))
 }
 
-/// Verify a document snapshot against a verified room.
+/// Verify a document snapshot against a verified workspace.
 pub fn verify_snapshot(
-    room: &VerifiedRoom,
+    workspace: &VerifiedWorkspace,
     source: [u8; 32],
     channel: [u8; 32],
     body: &[u8],
 ) -> Result<VerifiedSnapshot, ProofError> {
-    if source != room.authority.governor().device_public_key {
+    if source != workspace.authority.governor().device_public_key {
         return Err(ProofError::Unknown);
     }
     let (app, record, envelope, mutation) =
-        signed_document(source, channel, body, room.authority.room())?;
+        signed_document(source, channel, body, workspace.authority.workspace())?;
     let DocumentMutation::Snapshot(bytes) = mutation else {
         return Err(ProofError::Unknown);
     };
     let mut doc = document(&bytes)?;
     if let Some(policy) =
-        tilo_peer_state::workspace::media::parse(&room.doc).map_err(|_| ProofError::Unknown)?
+        tilo_peer_state::workspace::media::parse(&workspace.doc).map_err(|_| ProofError::Unknown)?
     {
         tilo_peer_state::workspace::media::validate_bound_chat_change(&policy, &app, &record, &doc)
             .map_err(|_| ProofError::Unknown)?;
     }
     let key = tilo_peer_state::coverage::route_key(&app, &record);
-    let coverage = tilo_peer_state::coverage::entries(&room.doc)
+    let coverage = tilo_peer_state::coverage::entries(&workspace.doc)
         .map_err(|_| ProofError::Unknown)?
         .remove(&key)
         .ok_or(ProofError::Unpaired)?;
-    let receipt = tilo_peer_state::durability::entries(&room.doc)
+    let receipt = tilo_peer_state::durability::entries(&workspace.doc)
         .map_err(|_| ProofError::Unknown)?
         .remove(&key)
         .ok_or(ProofError::Unpaired)?;
@@ -498,18 +504,18 @@ pub fn verify_snapshot(
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
-        || !valid_coverage(&room.authority, &key, &coverage)
+        || !valid_coverage(&workspace.authority, &key, &coverage)
     {
         return Err(ProofError::Unpaired);
     }
     Ok(VerifiedSnapshot {
-        authority: room.authority.clone(),
+        authority: workspace.authority.clone(),
         doc,
         receipt,
         input_hash: *blake3::hash(body).as_bytes(),
     })
 }
-impl VerifiedRoom {
+impl VerifiedWorkspace {
     pub fn heads(&self) -> Vec<String> {
         self.doc
             .base_heads()
@@ -529,7 +535,7 @@ impl VerifiedRoom {
     pub fn coverages(&self) -> Result<BTreeMap<String, Coverage>, ProofError> {
         tilo_peer_state::coverage::entries(&self.doc).map_err(|_| ProofError::Unknown)
     }
-    /// Causality only. A Covered room frame may still be an indispensable exact
+    /// Causality only. A Covered workspace frame may still be an indispensable exact
     /// app prerequisite. Cross-channel selection must check its app pairs.
     pub fn covers_frame(
         &self,
@@ -542,10 +548,14 @@ impl VerifiedRoom {
         {
             return CoverageDecision::Unknown;
         }
-        let Ok(NeighbourMsg::SyncResp { room, changes }) = decode(body) else {
+        let Ok(NeighbourMsg::SyncResp {
+            room: workspace,
+            changes,
+        }) = decode(body)
+        else {
             return CoverageDecision::Unknown;
         };
-        if room != self.authority.room() || room_framing(&changes).is_err() {
+        if workspace != self.authority.workspace() || workspace_framing(&changes).is_err() {
             return CoverageDecision::Unknown;
         }
         // Decode the frame in the isolate, on its own, before parsing it here.
@@ -576,7 +586,7 @@ impl VerifiedSnapshot {
             return false;
         }
         let Ok((app, record, envelope, DocumentMutation::Snapshot(bytes))) =
-            signed_document(source, channel, body, self.authority.room())
+            signed_document(source, channel, body, self.authority.workspace())
         else {
             return false;
         };
@@ -733,7 +743,7 @@ fn route_increment(
     body: &[u8],
 ) -> Option<Increment> {
     let Ok((app, record, envelope, DocumentMutation::Incremental(bytes))) =
-        signed_document(source, channel, body, authority.room())
+        signed_document(source, channel, body, authority.workspace())
     else {
         return None;
     };

@@ -11,8 +11,8 @@
 //! publication after generation 1 (`.delta` files are complete
 //! four-byte-length-prefixed `Envelope` frames with zero outer signatures, a
 //! trusted test import); `initial-peer.postcard` is the receiver's export
-//! after generation 1; `failure.json` names the governor, certificates, room
-//! and admission time, the frame count, the room-checkpoint frame and the
+//! after generation 1; `failure.json` names the governor, certificates, workspace
+//! and admission time, the frame count, the workspace-checkpoint frame and the
 //! superseded route.
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -25,8 +25,8 @@ use tilo_relay::transport::Envelope;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
-/// Fixed room of the scenario.
-const ROOM: &str = "5e11f00d-7110-4000-8000-000000000001";
+/// Fixed workspace of the scenario.
+const WORKSPACE_ID: &str = "5e11f00d-7110-4000-8000-000000000001";
 /// Fixed base time; every signature and admission is relative to it.
 const BASE_NS: u64 = 1_800_000_000_000_000_000;
 /// The admission time the fixture tests replay at.
@@ -201,7 +201,7 @@ pub(crate) fn generate() -> ShellProofFixture {
     let source = governor.device_public_key;
 
     let mut owner = StatePeer::new(
-        ROOM,
+        WORKSPACE_ID,
         governor.clone(),
         certificates.clone(),
         RevocationList::new(),
@@ -218,8 +218,12 @@ pub(crate) fn generate() -> ShellProofFixture {
     owner
         .install_seed(
             tilo_peer_state::SeedState {
-                workspace_changes: tilo_peer_state::seed_workspace(ROOM, &governor, &certificates)
-                    .unwrap(),
+                workspace_changes: tilo_peer_state::seed_workspace(
+                    WORKSPACE_ID,
+                    &governor,
+                    &certificates,
+                )
+                .unwrap(),
                 documents: vec![
                     seed(NOTES, 1, &[("title", "Notes"), ("body", "unchanged")]),
                     seed(WORD_PROCESSOR, 2, &[("title", "Draft")]),
@@ -233,7 +237,7 @@ pub(crate) fn generate() -> ShellProofFixture {
         .unwrap();
 
     let mut receiver = StatePeer::new(
-        ROOM,
+        WORKSPACE_ID,
         governor.clone(),
         certificates.clone(),
         RevocationList::new(),
@@ -298,7 +302,7 @@ pub(crate) fn generate() -> ShellProofFixture {
         successor,
         superseded,
     ];
-    let room_checkpoint_frame = 6;
+    let workspace_checkpoint_frame = 6;
     let superseded_frame = delivered.len().checked_sub(1).unwrap();
     let frames = delivered
         .iter()
@@ -308,7 +312,7 @@ pub(crate) fn generate() -> ShellProofFixture {
     // The relay's unbound store retains every publication in receipt order,
     // exactly as its authenticated ingress does.
     let store = tempfile::tempdir().unwrap();
-    let workspace = tilo_relay::room_workspace_id(ROOM).unwrap();
+    let workspace = tilo_relay::room_workspace_id(WORKSPACE_ID).unwrap();
     let relay = WorkspaceStore::open(store.path(), workspace, true).unwrap();
     for (index, publication) in retained.iter().enumerate() {
         let payload = publication.payload();
@@ -345,12 +349,12 @@ pub(crate) fn generate() -> ShellProofFixture {
     let store_root = relay.root().to_owned();
 
     let metadata = serde_json::json!({
-        "room": ROOM,
+        "room": WORKSPACE_ID,
         "authority": governor,
         "certificates": certificates,
         "now_ns": BASE_NS + NOW_OFFSET_SECS * 1_000_000_000,
         "frames": frames.len(),
-        "room_checkpoint_frame": room_checkpoint_frame,
+        "room_checkpoint_frame": workspace_checkpoint_frame,
         "superseded": {
             "frame": superseded_frame,
             "app_id": NOTES.0,

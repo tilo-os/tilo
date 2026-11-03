@@ -149,7 +149,10 @@ pub trait ShellAuthority {
 impl<S: ShellStore + ?Sized> ShellAuthority for S {
     fn bind_shell_authority(&mut self, authority: RetentionAuthority) -> Result<(), StoreError> {
         let invalid = |message| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
-        if !tilo_relay_protocol::room_workspace_id_matches(authority.room(), self.workspace_id()) {
+        if !tilo_relay_protocol::room_workspace_id_matches(
+            authority.workspace(),
+            self.workspace_id(),
+        ) {
             return Err(invalid("shell authority room/workspace mismatch"));
         }
         if self

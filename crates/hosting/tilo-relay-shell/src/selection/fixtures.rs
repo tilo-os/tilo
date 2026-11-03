@@ -30,7 +30,7 @@ pub fn producer_metadata() -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(producer_fixture().join("manifest.json")).unwrap())
         .unwrap()
 }
-/// The governor's retention authority over the scenario's room.
+/// The governor's retention authority over the scenario's workspace.
 pub fn producer_authority(meta: &serde_json::Value) -> RetentionAuthority {
     RetentionAuthority::new(
         meta["room"].as_str().unwrap(),

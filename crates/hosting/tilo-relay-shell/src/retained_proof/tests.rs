@@ -8,7 +8,7 @@ use tilo_peer_state::{SeedDocument, SeedState, StatePeer, peer_handle, seed_work
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "proof.app";
 fn fixture() -> (SigningKey, RetentionAuthority, StatePeer, SystemTime) {
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -26,14 +26,21 @@ fn fixture() -> (SigningKey, RetentionAuthority, StatePeer, SystemTime) {
     let now = SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(2000))
         .unwrap();
-    let mut peer = StatePeer::new(ROOM, cert.clone(), vec![], RevocationList::new(), now).unwrap();
+    let mut peer = StatePeer::new(
+        WORKSPACE_ID,
+        cert.clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", "initial").unwrap();
     doc.commit_edit("fixture", "value");
     let bytes = doc.save();
     peer.install_seed(
         SeedState {
-            workspace_changes: seed_workspace(ROOM, &cert, &[cert.clone()]).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE_ID, &cert, &[cert.clone()]).unwrap(),
             documents: vec![
                 SeedDocument {
                     app_id: APP.into(),
@@ -53,7 +60,12 @@ fn fixture() -> (SigningKey, RetentionAuthority, StatePeer, SystemTime) {
         now,
     )
     .unwrap();
-    (key, RetentionAuthority::new(ROOM, cert).unwrap(), peer, now)
+    (
+        key,
+        RetentionAuthority::new(WORKSPACE_ID, cert).unwrap(),
+        peer,
+        now,
+    )
 }
 fn encoded(msg: &NeighbourMsg) -> ([u8; 32], Vec<u8>) {
     (
@@ -61,14 +73,14 @@ fn encoded(msg: &NeighbourMsg) -> ([u8; 32], Vec<u8>) {
         postcard::to_allocvec(msg).unwrap(),
     )
 }
-fn room_proof(
+fn workspace_proof(
     authority: &RetentionAuthority,
     msg: &NeighbourMsg,
-    kind: RoomInput,
-    prior: Option<&VerifiedRoom>,
-) -> VerifiedRoom {
+    kind: WorkspaceInput,
+    prior: Option<&VerifiedWorkspace>,
+) -> VerifiedWorkspace {
     let (channel, body) = encoded(msg);
-    verify_room(
+    verify_workspace(
         authority,
         authority.governor().device_public_key,
         channel,
@@ -78,12 +90,12 @@ fn room_proof(
     )
     .unwrap()
 }
-fn snapshot(room: &VerifiedRoom, msg: &NeighbourMsg) -> VerifiedSnapshot {
+fn snapshot(workspace: &VerifiedWorkspace, msg: &NeighbourMsg) -> VerifiedSnapshot {
     let (channel, body) = encoded(msg);
     let NeighbourMsg::AppDocument { envelope, .. } = msg else {
         panic!()
     };
-    verify_snapshot(room, *envelope.author.as_bytes(), channel, &body).unwrap()
+    verify_snapshot(workspace, *envelope.author.as_bytes(), channel, &body).unwrap()
 }
 fn signed(
     key: &SigningKey,
@@ -94,9 +106,9 @@ fn signed(
     let source = key.verifying_key().to_bytes();
     let mut envelope = SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id(APP, ROOM, "one"),
+        collab_types::document_artifact_id(APP, WORKSPACE_ID, "one"),
         collab_types::Ed25519PublicKey::from_bytes(source),
-        collab_types::document_attestation_id(APP, ROOM, "one"),
+        collab_types::document_attestation_id(APP, WORKSPACE_ID, "one"),
         collab_types::OpKind::Change,
         now,
         seq,
@@ -105,7 +117,7 @@ fn signed(
     NeighbourMsg::AppDocument {
         peer: peer_handle(&source),
         app_id: APP.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE_ID.into(),
         record_id: "one".into(),
         envelope: Box::new(envelope),
     }
@@ -118,19 +130,19 @@ fn same_heads_new_receipt_is_exact_pair_and_old_signature_is_unpaired() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let old_room = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
-    let old = snapshot(&old_room, &first[1]);
+    let old_workspace = workspace_proof(&authority, &first[0], WorkspaceInput::Checkpoint, None);
+    let old = snapshot(&old_workspace, &first[1]);
     let second = peer
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 2)
         .unwrap();
-    let room = room_proof(
+    let workspace = workspace_proof(
         &authority,
         &second[0],
-        RoomInput::Checkpoint,
-        Some(&old_room),
+        WorkspaceInput::Checkpoint,
+        Some(&old_workspace),
     );
-    let new = snapshot(&room, &second[1]);
+    let new = snapshot(&workspace, &second[1]);
     assert_eq!(new.coverage().heads, old.coverage().heads);
     assert_ne!(new.receipt().receipt_id, old.receipt().receipt_id);
     assert!(new.covers_snapshot(&old));
@@ -138,7 +150,7 @@ fn same_heads_new_receipt_is_exact_pair_and_old_signature_is_unpaired() {
     let (channel, body) = encoded(&first[1]);
     assert!(matches!(
         verify_snapshot(
-            &room,
+            &workspace,
             authority.governor().device_public_key,
             channel,
             &body
@@ -147,7 +159,7 @@ fn same_heads_new_receipt_is_exact_pair_and_old_signature_is_unpaired() {
     ));
     let (channel, body) = encoded(&first[0]);
     assert_eq!(
-        room.covers_frame(authority.governor().device_public_key, channel, &body),
+        workspace.covers_frame(authority.governor().device_public_key, channel, &body),
         CoverageDecision::Covered
     );
 }
@@ -164,7 +176,7 @@ fn authority_rejects_invalid_cert_and_noncanonical_room() {
     );
     let mut cert = authority.governor().clone();
     cert.signature[0] ^= 1;
-    assert!(RetentionAuthority::new(ROOM, cert).is_err());
+    assert!(RetentionAuthority::new(WORKSPACE_ID, cert).is_err());
 }
 
 #[test]
@@ -174,7 +186,7 @@ fn mixed_receipt_generations_pair_route_by_route_and_delta_needs_prior() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let old_room = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
+    let old_workspace = workspace_proof(&authority, &first[0], WorkspaceInput::Checkpoint, None);
     let before = peer.clone();
     let mut doc = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
     doc.put(ROOT, "value", "edited").unwrap();
@@ -196,19 +208,24 @@ fn mixed_receipt_generations_pair_route_by_route_and_delta_needs_prior() {
     assert_eq!(tail.len(), 2);
     let (channel, body) = encoded(&tail[0]);
     assert!(
-        verify_room(
+        verify_workspace(
             &authority,
             authority.governor().device_public_key,
             channel,
             &body,
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             None
         )
         .is_err()
     );
-    let room = room_proof(&authority, &tail[0], RoomInput::Delta, Some(&old_room));
-    let changed = snapshot(&room, &tail[1]);
-    let untouched = snapshot(&room, &first[2]);
+    let workspace = workspace_proof(
+        &authority,
+        &tail[0],
+        WorkspaceInput::Delta,
+        Some(&old_workspace),
+    );
+    let changed = snapshot(&workspace, &tail[1]);
+    let untouched = snapshot(&workspace, &first[2]);
     assert_eq!(changed.receipt().generation, 2);
     assert_eq!(untouched.receipt().generation, 1);
     assert_eq!(changed.coverage().sequence, 9_000_000_000_000_000_001);
@@ -221,14 +238,14 @@ fn signed_route_crypto_and_strict_body_fail_closed() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let room = room_proof(&authority, &batch[0], RoomInput::Checkpoint, None);
+    let workspace = workspace_proof(&authority, &batch[0], WorkspaceInput::Checkpoint, None);
     let source = authority.governor().device_public_key;
     let (channel, body) = encoded(&batch[1]);
-    assert!(verify_snapshot(&room, [99; 32], channel, &body).is_err());
-    assert!(verify_snapshot(&room, source, [99; 32], &body).is_err());
+    assert!(verify_snapshot(&workspace, [99; 32], channel, &body).is_err());
+    assert!(verify_snapshot(&workspace, source, [99; 32], &body).is_err());
     let mut trailing = body;
     trailing.push(0);
-    assert!(verify_snapshot(&room, source, channel, &trailing).is_err());
+    assert!(verify_snapshot(&workspace, source, channel, &trailing).is_err());
     for case in 0..8 {
         let mut bad = batch[1].clone();
         let NeighbourMsg::AppDocument {
@@ -258,7 +275,7 @@ fn signed_route_crypto_and_strict_body_fail_closed() {
             _ => {
                 envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
                     1,
-                    collab_types::document_channel_id(APP, ROOM, "one"),
+                    collab_types::document_channel_id(APP, WORKSPACE_ID, "one"),
                 ));
                 envelope.payload = vec![1, 2, 3];
                 collab_types::sign_op(envelope, &key).unwrap();
@@ -266,7 +283,7 @@ fn signed_route_crypto_and_strict_body_fail_closed() {
         }
         assert!(
             verify_snapshot(
-                &room,
+                &workspace,
                 source,
                 channel,
                 &postcard::to_allocvec(&bad).unwrap()
@@ -284,9 +301,9 @@ fn higher_sequence_and_generation_do_not_cover_an_independent_snapshot() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let room = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
-    let prior = snapshot(&room, &first[1]);
-    // Same room/key/visible value, independent Automerge history.
+    let workspace = workspace_proof(&authority, &first[0], WorkspaceInput::Checkpoint, None);
+    let prior = snapshot(&workspace, &first[1]);
+    // Same workspace/key/visible value, independent Automerge history.
     let (_, _, mut fork, _) = fixture();
     fork.publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
@@ -295,22 +312,22 @@ fn higher_sequence_and_generation_do_not_cover_an_independent_snapshot() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 2)
         .unwrap();
-    let room = room_proof(&authority, &later[0], RoomInput::Checkpoint, None);
-    let candidate = snapshot(&room, &later[1]);
+    let workspace = workspace_proof(&authority, &later[0], WorkspaceInput::Checkpoint, None);
+    let candidate = snapshot(&workspace, &later[1]);
     assert!(candidate.coverage().sequence > prior.coverage().sequence);
     assert!(candidate.receipt().generation > prior.receipt().generation);
     assert!(!candidate.covers_snapshot(&prior));
 }
 
-fn room_document(msg: &NeighbourMsg) -> AutoCommit {
+fn workspace_document(msg: &NeighbourMsg) -> AutoCommit {
     let NeighbourMsg::SyncResp { changes, .. } = msg else {
         panic!()
     };
     tilo_peer_state::workspace::candidate(None, changes).unwrap()
 }
-fn room_message(doc: &mut AutoCommit) -> NeighbourMsg {
+fn workspace_message(doc: &mut AutoCommit) -> NeighbourMsg {
     NeighbourMsg::SyncResp {
-        room: ROOM.into(),
+        room: WORKSPACE_ID.into(),
         changes: doc
             .get_changes(&[])
             .iter()
@@ -326,8 +343,8 @@ fn room_checksum_corruption_is_unknown_for_checkpoint_delta_and_coverage() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let prior = room_proof(&authority, &baseline[0], RoomInput::Checkpoint, None);
-    let mut doc = room_document(&baseline[0]);
+    let prior = workspace_proof(&authority, &baseline[0], WorkspaceInput::Checkpoint, None);
+    let mut doc = workspace_document(&baseline[0]);
     doc.put(ROOT, "checksum_probe", "compressible".repeat(1024))
         .unwrap();
     let mut change = doc.get_last_local_change().unwrap();
@@ -342,22 +359,22 @@ fn room_checksum_corruption_is_unknown_for_checkpoint_delta_and_coverage() {
             Err(automerge::AutomergeError::MissingDeps)
         ));
         let delta = NeighbourMsg::SyncResp {
-            room: ROOM.into(),
+            room: WORKSPACE_ID.into(),
             changes: vec![bytes.clone()],
         };
         let (channel, body) = encoded(&delta);
-        let complete = room_proof(
+        let complete = workspace_proof(
             &authority,
-            &room_message(&mut doc),
-            RoomInput::Checkpoint,
+            &workspace_message(&mut doc),
+            WorkspaceInput::Checkpoint,
             Some(&prior),
         );
-        let valid_delta = verify_room(
+        let valid_delta = verify_workspace(
             &authority,
             source,
             channel,
             &body,
-            RoomInput::Delta,
+            WorkspaceInput::Delta,
             Some(&prior),
         )
         .unwrap();
@@ -376,7 +393,7 @@ fn room_checksum_corruption_is_unknown_for_checkpoint_delta_and_coverage() {
             changes.push(corrupt.clone());
             let (_, checkpoint_body) = encoded(&checkpoint);
             let delta = NeighbourMsg::SyncResp {
-                room: ROOM.into(),
+                room: WORKSPACE_ID.into(),
                 changes: vec![corrupt],
             };
             let (_, delta_body) = encoded(&delta);
@@ -384,23 +401,23 @@ fn room_checksum_corruption_is_unknown_for_checkpoint_delta_and_coverage() {
                 kind,
                 offset,
                 matches!(
-                    verify_room(
+                    verify_workspace(
                         &authority,
                         source,
                         channel,
                         &checkpoint_body,
-                        RoomInput::Checkpoint,
+                        WorkspaceInput::Checkpoint,
                         None
                     ),
                     Err(ProofError::Unknown)
                 ),
                 matches!(
-                    verify_room(
+                    verify_workspace(
                         &authority,
                         source,
                         channel,
                         &delta_body,
-                        RoomInput::Delta,
+                        WorkspaceInput::Delta,
                         Some(&prior)
                     ),
                     Err(ProofError::Unknown)
@@ -426,54 +443,63 @@ fn room_proof_rejects_foreign_missing_dependencies_suffix_and_regressing_metadat
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let old = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
+    let old = workspace_proof(&authority, &first[0], WorkspaceInput::Checkpoint, None);
     let second = peer
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 2)
         .unwrap();
-    let current = room_proof(&authority, &second[0], RoomInput::Checkpoint, Some(&old));
+    let current = workspace_proof(
+        &authority,
+        &second[0],
+        WorkspaceInput::Checkpoint,
+        Some(&old),
+    );
     let (channel, body) = encoded(&first[0]);
     let source = authority.governor().device_public_key;
     assert!(
-        verify_room(
+        verify_workspace(
             &authority,
             source,
             channel,
             &body,
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             Some(&current)
         )
         .is_err()
     );
     assert!(
-        verify_room(
+        verify_workspace(
             &authority,
             [99; 32],
             channel,
             &body,
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             None
         )
         .is_err()
     );
     assert!(
-        verify_room(
+        verify_workspace(
             &authority,
             source,
             [99; 32],
             &body,
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             None
         )
         .is_err()
     );
     for case in 0..4 {
         let mut msg = first[0].clone();
-        let NeighbourMsg::SyncResp { room, changes } = &mut msg else {
+        let NeighbourMsg::SyncResp {
+            room: workspace,
+            changes,
+        } = &mut msg
+        else {
             panic!()
         };
         match case {
-            0 => *room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+            0 => *workspace = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
             1 => {
                 changes.remove(0);
             }
@@ -481,29 +507,29 @@ fn room_proof_rejects_foreign_missing_dependencies_suffix_and_regressing_metadat
             _ => changes.clear(),
         }
         assert!(
-            verify_room(
+            verify_workspace(
                 &authority,
                 source,
                 channel,
                 &postcard::to_allocvec(&msg).unwrap(),
-                RoomInput::Checkpoint,
+                WorkspaceInput::Checkpoint,
                 None
             )
             .is_err(),
             "case {case}"
         );
     }
-    let mut doc = room_document(&first[0]);
+    let mut doc = workspace_document(&first[0]);
     doc.put(ROOT, "room", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
         .unwrap();
-    let (_, body) = encoded(&room_message(&mut doc));
+    let (_, body) = encoded(&workspace_message(&mut doc));
     assert!(
-        verify_room(
+        verify_workspace(
             &authority,
             source,
             channel,
             &body,
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             None
         )
         .is_err()
@@ -519,7 +545,7 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
         .unwrap();
     let (app_channel, app_body) = encoded(&batch[1]);
     for case in 0..9 {
-        let mut doc = room_document(&batch[0]);
+        let mut doc = workspace_document(&batch[0]);
         let mut coverage = tilo_peer_state::coverage::entries(&doc)
             .unwrap()
             .remove(&tilo_peer_state::coverage::route_key(APP, "one"))
@@ -582,18 +608,18 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
             .unwrap();
             doc.commit_edit("fixture", "fixture");
         }
-        let (channel, body) = encoded(&room_message(&mut doc));
-        if let Ok(room) = verify_room(
+        let (channel, body) = encoded(&workspace_message(&mut doc));
+        if let Ok(workspace) = verify_workspace(
             &authority,
             authority.governor().device_public_key,
             channel,
             &body,
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             None,
         ) {
             assert!(
                 verify_snapshot(
-                    &room,
+                    &workspace,
                     authority.governor().device_public_key,
                     app_channel,
                     &app_body
@@ -612,8 +638,8 @@ fn causal_tail_coverage_is_distinct_from_floor_safety_and_foreign_retirement() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let room = room_proof(&authority, &batch[0], RoomInput::Checkpoint, None);
-    let proof = snapshot(&room, &batch[1]);
+    let workspace = workspace_proof(&authority, &batch[0], WorkspaceInput::Checkpoint, None);
+    let proof = snapshot(&workspace, &batch[1]);
     let mut branch = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
     let heads = branch.get_heads();
     branch.put(ROOT, "uncovered", true).unwrap();
@@ -689,7 +715,7 @@ fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
     let source = authority.governor().device_public_key;
-    let mut doc = room_document(&batch[0]);
+    let mut doc = workspace_document(&batch[0]);
     let ledger = doc
         .put_object(ROOT, "effect_receipts_v1", automerge::ObjType::Map)
         .unwrap();
@@ -702,10 +728,10 @@ fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
         automerge::ScalarValue::Bytes(b"{\"effect\":1}".to_vec()),
     )
     .unwrap();
-    let prior = room_proof(
+    let prior = workspace_proof(
         &authority,
-        &room_message(&mut doc),
-        RoomInput::Checkpoint,
+        &workspace_message(&mut doc),
+        WorkspaceInput::Checkpoint,
         None,
     );
     for case in 0..5 {
@@ -748,14 +774,14 @@ fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
             }
             _ => panic!("unexpected fixture shape"),
         }
-        let (channel, body) = encoded(&room_message(&mut next));
+        let (channel, body) = encoded(&workspace_message(&mut next));
         assert!(
-            verify_room(
+            verify_workspace(
                 &authority,
                 source,
                 channel,
                 &body,
-                RoomInput::Checkpoint,
+                WorkspaceInput::Checkpoint,
                 Some(&prior)
             )
             .is_err(),
@@ -775,8 +801,8 @@ fn incoming_snapshot_obsolescence_needs_exact_signed_route_integrity_and_selecte
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 2)
         .unwrap();
-    let room = room_proof(&authority, &second[0], RoomInput::Checkpoint, None);
-    let selected = snapshot(&room, &second[1]);
+    let workspace = workspace_proof(&authority, &second[0], WorkspaceInput::Checkpoint, None);
+    let selected = snapshot(&workspace, &second[1]);
     let (channel, body) = encoded(&first[1]);
     let source = authority.governor().device_public_key;
     assert!(selected.covers_incoming_snapshot(source, channel, &body));
@@ -806,8 +832,8 @@ fn hostile_tail_is_rejected_without_in_process_decode() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let room = room_proof(&authority, &batch[0], RoomInput::Checkpoint, None);
-    let proof = snapshot(&room, &batch[1]);
+    let workspace = workspace_proof(&authority, &batch[0], WorkspaceInput::Checkpoint, None);
+    let proof = snapshot(&workspace, &batch[1]);
     let source = authority.governor().device_public_key;
     let seq = proof.coverage().sequence + 1;
     let mut branch = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
