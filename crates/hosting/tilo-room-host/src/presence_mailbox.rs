@@ -164,7 +164,7 @@ impl PresenceMailbox {
 mod tests {
     use super::*;
 
-    const ROOM: u64 = 7;
+    const WORKSPACE: u64 = 7;
 
     fn bytes(text: &str) -> Arc<[u8]> {
         Arc::from(text.as_bytes().to_vec())
@@ -180,8 +180,8 @@ mod tests {
     fn presence_goes_after_the_window_in_posting_order() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        mailbox.post(ROOM, bytes("pointer"), t0);
-        mailbox.post(ROOM, bytes("caret"), t0);
+        mailbox.post(WORKSPACE, bytes("pointer"), t0);
+        mailbox.post(WORKSPACE, bytes("caret"), t0);
         assert_eq!(mailbox.next_due(), Some(t0 + BATCH_WINDOW));
         assert!(
             mailbox.take(t0, false).is_empty(),
@@ -198,7 +198,7 @@ mod tests {
     fn riding_takes_presence_before_its_window() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        mailbox.post(ROOM, bytes("caret"), t0);
+        mailbox.post(WORKSPACE, bytes("caret"), t0);
         assert!(mailbox.take(t0, false).is_empty());
         assert_eq!(texts(&mailbox.take(t0, true)), ["caret"]);
         assert_eq!(mailbox.next_due(), None);
@@ -209,9 +209,9 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         for step in 0..MAX_PENDING {
-            mailbox.post(ROOM, bytes(&step.to_string()), t0);
+            mailbox.post(WORKSPACE, bytes(&step.to_string()), t0);
         }
-        mailbox.post(ROOM, bytes("last"), t0);
+        mailbox.post(WORKSPACE, bytes("last"), t0);
         let due = mailbox.take(t0 + BATCH_WINDOW, false);
         assert_eq!(due.len(), MAX_PENDING);
         assert_eq!(texts(&due).last().map(String::as_str), Some("last"));
@@ -234,7 +234,7 @@ mod tests {
         });
         tokio::task::yield_now().await;
         let posted = Instant::now();
-        mailbox.post(ROOM, bytes("caret"), posted);
+        mailbox.post(WORKSPACE, bytes("caret"), posted);
         let woke = waiter.await.unwrap();
         assert!(woke >= posted + BATCH_WINDOW);
         assert_eq!(texts(&mailbox.take(woke, false)), ["caret"]);
