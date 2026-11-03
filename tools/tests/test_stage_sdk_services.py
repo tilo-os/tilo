@@ -8,6 +8,9 @@ import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+IDENTITY = "optional@{}".format(
+    tomllib.loads((ROOT / "os/usr/share/tilo/system-interfaces.toml").read_text())["interfaces"]["runtime"]
+)
 RUNTIME = "tilo-runtime/2026.07+native." + "a" * 32
 
 
@@ -31,17 +34,15 @@ class SdkServiceStagingTests(unittest.TestCase):
         return manifest
 
     def test_the_identity_requirement_is_the_runtime_version_the_image_serves(self):
-        served = tomllib.loads((ROOT / "os/usr/share/tilo/system-interfaces.toml").read_text())
-        source = (ROOT / "tools/apps/stage_sdk_services.py").read_text()
-        self.assertIn(
-            f'IDENTITY_REQUIREMENT = "optional@{served["interfaces"]["runtime"]}"', source
-        )
+        original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
+        staged = tomllib.loads(self.stamp(original).read_text())
+        self.assertEqual(staged["sandbox"]["services"]["identity"], IDENTITY)
 
     def test_actual_app_staging_adds_only_negotiated_identity_requirement(self):
         original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
         expected = tomllib.loads(original)
         expected["package"]["runtime"] = RUNTIME
-        expected["sandbox"]["services"]["identity"] = "optional@14"
+        expected["sandbox"]["services"]["identity"] = IDENTITY
         manifest = self.stamp(original)
         self.assertEqual(tomllib.loads(manifest.read_text()), expected)
         # Already-staged output is idempotent and retains publisher/trust inputs.
@@ -65,7 +66,7 @@ class SdkServiceStagingTests(unittest.TestCase):
                 staged = tomllib.loads(manifest.read_text())
                 self.assertEqual(
                     staged["sandbox"]["services"]["identity"],
-                    original.get("sandbox", {}).get("services", {}).get("identity", "optional@14"),
+                    original.get("sandbox", {}).get("services", {}).get("identity", IDENTITY),
                 )
 
     def test_authored_legacy_identity_contract_remains_legacy(self):
@@ -80,7 +81,7 @@ class SdkServiceStagingTests(unittest.TestCase):
         source = '[package]\nkind="app"\nruntime="tilo-runtime/2026.07"\n[sandbox]\nseccomp="tilo-default"\n'
         manifest = self.stamp(source)
         self.assertEqual(tomllib.loads(manifest.read_text())["sandbox"], {
-            "seccomp": "tilo-default", "services": {"identity": "optional@14"},
+            "seccomp": "tilo-default", "services": {"identity": IDENTITY},
         })
 
     def test_unbound_runtime_and_non_app_are_refused_without_mutation(self):

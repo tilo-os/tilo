@@ -946,6 +946,46 @@ def check(root: Path = ROOT) -> list[str]:
             )
         if spec.name == "package":
             problems.extend(env_runtime_format(declared, root))
+    problems.extend(app_service_versions(root))
+    return problems
+
+
+def service_versions(root: Path = ROOT) -> dict[str, int]:
+    """The version this system serves each app-facing service at: ``shell-ui``
+    its own number, and each runtime service the runtime interface's."""
+    data = tomllib.loads((root / SYSTEM_INTERFACES).read_text())
+    interfaces = data.get("interfaces", {})
+    versions = {
+        service: interfaces["runtime"]
+        for service in data.get("runtime", {}).get("services", [])
+    }
+    for name in ("shell-ui", "app-host", "messaging"):
+        if name in interfaces:
+            versions[name] = interfaces[name]
+    return versions
+
+
+def app_service_versions(root: Path = ROOT) -> list[str]:
+    """Every committed app manifest asks for each service at the version the
+    system serves: two sides speak only when their numbers are equal, so an app
+    asking for any other is refused at install on the system built beside it."""
+    served = service_versions(root)
+    problems = []
+    for manifest in sorted(root.glob("apps/**/tilo-app.toml")):
+        if "target" in manifest.parts:
+            continue
+        try:
+            services = tomllib.loads(manifest.read_text()).get("sandbox", {}).get("services", {})
+        except tomllib.TOMLDecodeError as error:
+            problems.append(f"{manifest.relative_to(root)}: {error}")
+            continue
+        for name, requirement in services.items():
+            _, _, version = str(requirement).rpartition("@")
+            if name in served and version.isdigit() and int(version) != served[name]:
+                problems.append(
+                    f"{manifest.relative_to(root)}: asks for {name} {requirement}, "
+                    f"{SYSTEM_INTERFACES} serves {name} {served[name]}"
+                )
     return problems
 
 
