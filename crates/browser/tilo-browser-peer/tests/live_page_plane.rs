@@ -377,4 +377,42 @@ async fn a_page_joins_its_workspaces_plane_and_hears_a_device_through_the_relay(
     assert_eq!(track, tilo_live::live::Track::Presence);
     assert_eq!(body, said);
     assert_eq!(page.live_note(), None, "the page joined live");
+
+    // A moving pointer reaches the page well inside a frame's worth of time:
+    // presence travels the plane itself, so a stream of moves is never queued
+    // behind the workspace's documents.
+    let mut latencies = Vec::new();
+    for step in 0..60_u32 {
+        let said = format!("pointer {step}").into_bytes();
+        let started = std::time::Instant::now();
+        native.publish_presence(&said);
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if events
+                .drain()
+                .into_iter()
+                .any(|event| matches!(event, PeerEvent::LivePlane { body, .. } if body == said))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the plane stopped carrying moves at move {step}"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        latencies.push(started.elapsed());
+    }
+    latencies.sort_unstable();
+    let p95 = latencies[latencies.len() * 95 / 100];
+    eprintln!(
+        "presence latency over {} moves: p50 {:?}, p95 {p95:?}",
+        latencies.len(),
+        latencies[latencies.len() / 2]
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "pointer p95 {p95:?} over {} moves",
+        latencies.len()
+    );
 }
