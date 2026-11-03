@@ -27,7 +27,7 @@ use tilo_agent_participant::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_relay::room_bots::installed::{self, BotRunner};
 use tilo_relay::room_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::rooms::Rooms;
+use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
@@ -79,7 +79,7 @@ fn governor() -> (SigningKey, DeviceCert) {
 
 /// The workspace's records, read as the governor's copy holds them.
 struct Workspace {
-    rooms: Rooms,
+    workspaces: Workspaces,
     id: String,
     cert: DeviceCert,
     catalogue: AppCatalogue,
@@ -89,7 +89,7 @@ impl Workspace {
     async fn doc(&self, app: &str) -> AutoCommit {
         AutoCommit::load(
             &self
-                .rooms
+                .workspaces
                 .record_document(&self.id, app, "")
                 .await
                 .unwrap()
@@ -109,7 +109,7 @@ impl Workspace {
 
     /// The chat's first part of messages, as the workspace holds it.
     async fn part(&self) -> AutoCommit {
-        self.rooms
+        self.workspaces
             .record_document(&self.id, CHAT, chat::parts::part(0).as_str())
             .await
             .ok()
@@ -127,20 +127,20 @@ impl Workspace {
         use tilo_agent_participant::{Replica, ReplicaActor, Seed};
         use ui::collaboration::DocumentMutation;
         let chat = self
-            .rooms
+            .workspaces
             .record_document(&self.id, CHAT, "")
             .await
             .unwrap()
             .unwrap();
         let mut held = Vec::new();
-        for (app, record) in self.rooms.record_routes(&self.id).await.unwrap() {
+        for (app, record) in self.workspaces.record_routes(&self.id).await.unwrap() {
             let Some(part) = ui::record::RecordId::parse(&record)
                 .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
             else {
                 continue;
             };
             let bytes = self
-                .rooms
+                .workspaces
                 .record_document(&self.id, CHAT, &record)
                 .await
                 .unwrap()
@@ -192,7 +192,7 @@ impl Workspace {
         for (record, mutation) in taken {
             match mutation {
                 DocumentMutation::Snapshot(bytes) => self
-                    .rooms
+                    .workspaces
                     .author_room_record(&self.id, &self.cert, (CHAT, record.as_str()), move |doc| {
                         tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
                             .map(drop)
@@ -201,7 +201,7 @@ impl Workspace {
                     .await
                     .unwrap(),
                 DocumentMutation::Incremental(bytes) => self
-                    .rooms
+                    .workspaces
                     .author_application(
                         &self.id,
                         &self.cert,
@@ -230,7 +230,7 @@ impl Workspace {
         &self,
         change: impl FnOnce(&mut AutoCommit) -> Result<T, String> + Send + 'static,
     ) -> T {
-        self.rooms
+        self.workspaces
             .author_application(&self.id, &self.cert, &self.catalogue, CHAT, "", change)
             .await
             .unwrap()
@@ -427,10 +427,10 @@ impl Bridge {
         )
         .await
         .unwrap();
-        let rooms = relay.rooms().unwrap().clone();
+        let workspaces = relay.workspaces().unwrap().clone();
         let workspace = Workspace {
-            id: rooms.create("Bridged").await.unwrap().room,
-            rooms,
+            id: workspaces.create("Bridged").await.unwrap().workspace,
+            workspaces,
             cert: cert.clone(),
             catalogue: AppCatalogue::native(),
         };
@@ -438,7 +438,7 @@ impl Bridge {
         let ada = hex::encode(ADA);
 
         workspace
-            .rooms
+            .workspaces
             .prepare_application(&workspace.id, &cert, &workspace.catalogue, CHAT, "")
             .await
             .unwrap();
@@ -475,12 +475,12 @@ impl Bridge {
         }
 
         workspace
-            .rooms
+            .workspaces
             .prepare_application(&workspace.id, &cert, &workspace.catalogue, APP, "")
             .await
             .unwrap();
         workspace
-            .rooms
+            .workspaces
             .author_application(&workspace.id, &cert, &workspace.catalogue, APP, "", {
                 let owner = owner.clone();
                 move |doc| {
@@ -537,11 +537,17 @@ impl Bridge {
             .await
             .unwrap();
         let certifier = HostRootCertifier::new(SigningKey::from_bytes(&[1; 32]));
-        keep_member(&workspace.rooms, &workspace.id, &cert, &certifier, &bot)
-            .await
-            .unwrap();
+        keep_member(
+            &workspace.workspaces,
+            &workspace.id,
+            &cert,
+            &certifier,
+            &bot,
+        )
+        .await
+        .unwrap();
         let mut runner = BotRunner::new(
-            workspace.rooms.clone(),
+            workspace.workspaces.clone(),
             workspace.id.clone(),
             cert.clone(),
             certifier.device_key(&bot.installation),
@@ -737,7 +743,7 @@ async fn a_linked_account_lends_its_picture_and_handle() {
     // The bridge offers the account, as `/link` has it, and Ada takes it.
     bridge
         .workspace
-        .rooms
+        .workspaces
         .author_application(
             &bridge.workspace.id,
             &bridge.workspace.cert,
@@ -769,7 +775,7 @@ async fn a_linked_account_lends_its_picture_and_handle() {
         .unwrap();
     bridge
         .workspace
-        .rooms
+        .workspaces
         .author_application(
             &bridge.workspace.id,
             &bridge.workspace.cert,
@@ -1915,13 +1921,13 @@ impl Bridge {
         let record = collab_types::workspace_record_id(ui::tilo_workspace_emoji::KIND);
         let saved = self
             .workspace
-            .rooms
+            .workspaces
             .record_document(&self.workspace.id, CHAT, &record)
             .await
             .unwrap();
         let bytes = self.emoji_changed(&record, saved, change());
         self.workspace
-            .rooms
+            .workspaces
             .author_room_record(
                 &self.workspace.id,
                 &self.workspace.cert,
