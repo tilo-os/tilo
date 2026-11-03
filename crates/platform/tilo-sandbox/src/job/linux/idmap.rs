@@ -194,6 +194,33 @@ fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
 /// When the filesystem can't be idmapped (`EINVAL`), or the kernel is older
 /// than 5.12 (`ENOSYS`).
 pub fn tree(path: &Path, userns: BorrowedFd<'_>) -> io::Result<OwnedFd> {
+    let attr = sys::MountAttr {
+        attr_set: sys::MOUNT_ATTR_IDMAP,
+        propagation: libc::MS_PRIVATE,
+        userns_fd: u64::try_from(userns.as_raw_fd()).unwrap_or_default(),
+        ..sys::MountAttr::default()
+    };
+    detached(path, &attr)
+}
+
+/// A detached copy of the mount tree at `path` (submounts included), its
+/// files' owners as they are, private: what a job made from another mount
+/// namespace than this one binds where its tree can't be idmapped, as it is
+/// here and not as that namespace has it.
+///
+/// # Errors
+/// When the kernel is older than 5.12 (`ENOSYS`), or `path` can't be opened.
+pub fn plain_tree(path: &Path) -> io::Result<OwnedFd> {
+    let attr = sys::MountAttr {
+        propagation: libc::MS_PRIVATE,
+        ..sys::MountAttr::default()
+    };
+    detached(path, &attr)
+}
+
+/// A detached copy of the mount tree at `path` (submounts included), with
+/// `attr` set on all of it.
+fn detached(path: &Path, attr: &sys::MountAttr) -> io::Result<OwnedFd> {
     let c = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::other("a path with a NUL byte"))?;
     // SAFETY: a live C string; open_tree returns a new descriptor or -1.
@@ -211,12 +238,6 @@ pub fn tree(path: &Path, userns: BorrowedFd<'_>) -> io::Result<OwnedFd> {
     }
     // SAFETY: the kernel just returned this descriptor; nothing else owns it.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    let attr = sys::MountAttr {
-        attr_set: sys::MOUNT_ATTR_IDMAP,
-        propagation: libc::MS_PRIVATE,
-        userns_fd: u64::try_from(userns.as_raw_fd()).unwrap_or_default(),
-        ..sys::MountAttr::default()
-    };
     // SAFETY: a descriptor we own, an empty path, and a live structure of
     // the size passed.
     let rc = unsafe {
@@ -225,7 +246,7 @@ pub fn tree(path: &Path, userns: BorrowedFd<'_>) -> io::Result<OwnedFd> {
             fd.as_raw_fd(),
             c"".as_ptr(),
             libc::AT_EMPTY_PATH.unsigned_abs() | sys::AT_RECURSIVE,
-            &raw const attr,
+            std::ptr::from_ref(attr),
             std::mem::size_of::<sys::MountAttr>(),
         )
     };

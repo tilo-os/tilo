@@ -171,9 +171,12 @@ impl<'a> Launch<'a> {
     /// all mount namespaces: from a caller holding a mount for each of
     /// hundreds of running jobs, each start copied them all and, starts
     /// coming together, waited on each other (20-35 ms a copy of 840 mounts
-    /// against 3-4 ms of 13, on a CI node). Every path the job's mounts name
-    /// is looked up in `ns`; what the plan takes as a tree (an idmapped bind)
-    /// is taken from the caller's, before the job's namespace is made.
+    /// against 3-4 ms of 13, on a CI node). The job still sees what it would
+    /// made from the caller's: every bind, an overlay's layers too, is a tree
+    /// taken from the caller's before the job's namespace is made (idmapped
+    /// where it can be, plain where it can't), never a path looked up in
+    /// `ns`, which lacks the caller's mounts made after it. `ns` holds only
+    /// where the job's root is staged.
     #[must_use]
     pub fn mount_ns(mut self, ns: BorrowedFd<'a>) -> Self {
         self.mount_ns = Some(ns);
@@ -212,7 +215,7 @@ impl<'a> Launch<'a> {
     /// See [`SpawnError`].
     #[cfg(target_os = "linux")]
     pub fn spawn(mut self) -> Result<Job, SpawnError> {
-        let mut plan = linux::plan::Plan::new(self.spec)?;
+        let mut plan = linux::plan::Plan::new(self.spec, self.mount_ns.is_some())?;
         plan.own_net = self.netns.is_none();
         let fds = linux::runner::Fds {
             stdin: self.stdin,
