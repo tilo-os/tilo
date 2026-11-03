@@ -533,8 +533,8 @@ fn a_conversation_that_fills_a_part_keeps_going_in_the_next_one() {
 fn another_pair_is_another_record() {
     let workspace = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     let carol = "c0".repeat(32);
-    let ours = collab_types::direct_pair_id(workspace, ADA, BOB).expect("a pair");
-    let theirs = collab_types::direct_pair_id(workspace, ADA, &carol).expect("a pair");
+    let ours = ui::person_chat::direct_pair_id(workspace, ADA, BOB).expect("a pair");
+    let theirs = ui::person_chat::direct_pair_id(workspace, ADA, &carol).expect("a pair");
     assert_ne!(ours, theirs);
     assert_ne!(
         ui::record::workspace::direct_record_id(&ours),
