@@ -1359,6 +1359,18 @@ fn its_palette_lists_its_own_resources_and_actions() {
             app.harness().set_theme(theme);
             app.harness()
                 .render_png(&dir.join(format!("native-palette-{shade}.png")));
+            // What the palette reads row by row, for a check that cannot look at the image.
+            let labels: Vec<String> = app
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect();
+            std::fs::write(
+                dir.join(format!("native-palette-{shade}.txt")),
+                labels.join("\n"),
+            )
+            .unwrap();
         }
     }
 }

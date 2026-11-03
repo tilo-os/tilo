@@ -1797,6 +1797,15 @@ fn palette_shots() {
                 .window
                 .harness()
                 .render_png(&dir.join(format!("{what}-{shade}.png")));
+            // What the palette reads row by row, for a check that cannot look at the image.
+            let labels: Vec<String> = session
+                .window
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect();
+            std::fs::write(dir.join(format!("{what}-{shade}.txt")), labels.join("\n")).unwrap();
         }
     }
 }
