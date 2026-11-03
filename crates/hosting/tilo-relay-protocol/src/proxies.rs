@@ -1,5 +1,5 @@
 //! Address ranges whose forwarded headers a host believes: the ingress or
-//! proxy in front of it, never the open internet. Both the room service
+//! proxy in front of it, never the open internet. Both the workspace service
 //! (whose `X-Forwarded-For` names a visitor) and a relay (whose proxy names
 //! a client's country) read them the same way.
 

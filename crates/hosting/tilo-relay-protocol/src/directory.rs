@@ -5,12 +5,12 @@
 //! and the role everyone who joins gets (the default role). The host the
 //! workspace lives on then lists it in its directory and admits whoever asks
 //! at its door with that role, the way a chat server's invite-free join
-//! does. Nobody decides each join again; the owner and the room's
+//! does. Nobody decides each join again; the owner and the workspace's
 //! moderators remove and ban like they do for anyone, and a banned person is
 //! refused at the door.
 //!
 //! JSON over HTTPS, below the host's [`API_PREFIX`](crate::web::API_PREFIX)
-//! for a relay, at the site's own path for a site's community room (the room
+//! for a relay, at the site's own path for a site's community workspace (the workspace
 //! service). Every route is a `POST` (a relay serves nothing else):
 //!
 //! | Route | Body | Answer |
@@ -39,20 +39,20 @@ pub const MAX_FACES: usize = 8;
 /// The longest reason a report gives.
 pub const MAX_REPORT_CHARS: usize = 500;
 
-/// The door of `room` on a relay, relative to its directory: what
+/// The door of `workspace` on a relay, relative to its directory: what
 /// [`DirectoryEntry::door`] names.
 #[must_use]
-pub fn door_path(room: &str) -> String {
-    format!("directory/{room}/")
+pub fn door_path(workspace: &str) -> String {
+    format!("directory/{workspace}/")
 }
 
-/// The room a relay door route below the API prefix names, and what is
-/// asked of it there: `/directory/<room>/join` is `(room, "join")`.
+/// The workspace a relay door route below the API prefix names, and what is
+/// asked of it there: `/directory/<workspace>/join` is `(workspace, "join")`.
 #[must_use]
 pub fn door_route(route: &str) -> Option<(&str, &str)> {
     let rest = route.strip_prefix(DIRECTORY_PATH)?.strip_prefix('/')?;
-    let (room, step) = rest.split_once('/')?;
-    (!room.is_empty() && !step.contains('/')).then_some((room, step))
+    let (workspace, step) = rest.split_once('/')?;
+    (!workspace.is_empty() && !step.contains('/')).then_some((workspace, step))
 }
 
 /// What the owner decided when they made the workspace public.
@@ -110,7 +110,7 @@ pub struct Face {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntry {
-    /// The room's UUID.
+    /// The workspace's UUID.
     #[serde(rename = "room")]
     pub workspace: String,
     pub name: String,
@@ -248,18 +248,21 @@ mod tests {
 
     #[test]
     fn a_door_route_names_its_room_and_step() {
-        let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+        let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
         assert_eq!(
-            door_route(&format!("/{}join", door_path(room))),
-            Some((room, "join"))
+            door_route(&format!("/{}join", door_path(workspace))),
+            Some((workspace, "join"))
         );
         assert_eq!(
-            door_route(&format!("/directory/{room}/report")),
-            Some((room, "report"))
+            door_route(&format!("/directory/{workspace}/report")),
+            Some((workspace, "report"))
         );
         assert_eq!(door_route("/directory"), None);
         assert_eq!(door_route("/directory//join"), None);
-        assert_eq!(door_route(&format!("/directory/{room}/join/more")), None);
+        assert_eq!(
+            door_route(&format!("/directory/{workspace}/join/more")),
+            None
+        );
         assert_eq!(door_route("/rooms"), None);
     }
 

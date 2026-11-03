@@ -14,10 +14,10 @@
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
-//! - [`workspaces`] — governed rooms over HTTPS: administration and joining;
+//! - [`workspaces`] — governed workspaces over HTTPS: administration and joining;
 //! - [`directory`] — the public workspaces a host lists, and the door that
 //!   lets anyone in with the owner's default role;
-//! - [`operator`] — the JSON-lines protocol between the public-room
+//! - [`operator`] — the JSON-lines protocol between the public-workspace
 //!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
 //!   the server advertisements devices offer work with;
@@ -61,7 +61,7 @@ pub mod workspaces;
 /// Root-signed agent and bot delegations, defined in `tilo-workspace-join` so
 /// the admission core can verify them without linking the relay protocol.
 pub use tilo_workspace_join::delegation;
-/// The stable relay shard of a room UUID, defined beside [`delegation`].
+/// The stable relay shard of a workspace UUID, defined beside [`delegation`].
 pub use tilo_workspace_join::room_workspace_id;
 
 pub use auth::{AuthError, AuthenticatedPeer};
@@ -80,7 +80,7 @@ pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
 
 /// Stable private relay workspace of one person: their devices reach their
-/// hosts' verbs and each other's sessions on it before they hold any room.
+/// hosts' verbs and each other's sessions on it before they hold any workspace.
 /// This is not a user-visible workspace and is derived only from the root
 /// identity so every enrolled device/home peer agrees after restart.
 pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
@@ -114,8 +114,8 @@ pub fn relay_service_node_id(device_secret: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Match a retained or subscribed binding without aliasing arbitrary numeric IDs.
-pub fn room_workspace_id_matches(room: &str, workspace: u64) -> bool {
-    room_workspace_id(room).is_ok_and(|id| id == workspace)
+pub fn room_workspace_id_matches(workspace: &str, shard: u64) -> bool {
+    room_workspace_id(workspace).is_ok_and(|id| id == shard)
 }
 
 #[cfg(test)]

@@ -4,8 +4,8 @@
 //! hosts and desktops: a changed byte here is a wire break, not a vector to
 //! recapture.
 //!
-//! The join challenge no longer carries the room's governing device beside the
-//! signer: a host answers a join as a device of the room's owner, which the
+//! The join challenge no longer carries the workspace's governing device beside the
+//! signer: a host answers a join as a device of the workspace's owner, which the
 //! membership challenge already names. The two vectors holding a join challenge
 //! (`Complete` and the `Challenge` answer) are that much shorter, and a host
 //! and a desktop of different versions refuse each other's bytes.

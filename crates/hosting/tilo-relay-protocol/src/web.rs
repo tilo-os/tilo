@@ -19,12 +19,12 @@
 //! | `/session/end` ([`SESSION_END_PATH`]) | the session token, lowercase hex text | `204` |
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
-//! | `/workspaces` | [`WorkspacesRequest`](crate::rooms::RoomsRequest) | [`WorkspacesReply`](crate::rooms::RoomsReply) |
-//! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
+//! | `/rooms` | [`WorkspacesRequest`](crate::workspaces::RoomsRequest) | [`WorkspacesReply`](crate::workspaces::RoomsReply) |
+//! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
 //! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
-//! | `/private` ([`PRIVATE_PATH`](crate::rooms::private::PRIVATE_PATH)) | [`PrivateCall`](crate::rooms::private::PrivateCall) | [`PrivateReply`](crate::rooms::private::PrivateReply) (a watch long-polls) |
+//! | `/private` ([`PRIVATE_PATH`](crate::workspaces::private::PRIVATE_PATH)) | [`PrivateCall`](crate::workspaces::private::PrivateCall) | [`PrivateReply`](crate::workspaces::private::PrivateReply) (a watch long-polls) |
 //! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
@@ -62,7 +62,7 @@
 //! `/session/end` takes its token as the body instead, so a page that is
 //! going away can say so with `navigator.sendBeacon`, which sends no
 //! headers of its own: the host ends that session at once rather than when
-//! its polls stop, and the people in the room stop counting the page.
+//! its polls stop, and the people in the workspace stop counting the page.
 
 use serde::{Deserialize, Serialize};
 
@@ -221,13 +221,13 @@ pub struct SessionChallenge {
 /// and its live trust policy, which is one allow list for the whole host.
 /// So it tells a revoked device apart from a person the host does not admit,
 /// but not why it does not admit them: one it never knew, one it forgot (its
-/// state was reset, or it pruned them after an absence) and one a room
+/// state was reset, or it pruned them after an absence) and one a workspace
 /// removed or banned all read [`Self::NotAdmitted`]. Whether such a person
-/// may come back is the room's door to answer, not the handshake's.
+/// may come back is the workspace's door to answer, not the handshake's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionRefusal {
     /// The host admits nobody of this device's person: joining again, where
-    /// the room lets them, admits them anew.
+    /// the workspace lets them, admits them anew.
     NotAdmitted,
     /// This device is on the host's revocation list. It never comes back;
     /// its person's other devices are unaffected.
@@ -262,7 +262,7 @@ pub struct SessionFinish {
     pub handshake: [u8; 16],
     /// The same [`HelloAck2`] the relay stream carries.
     pub ack2: HelloAck2,
-    /// The device's page keeps this session beside the room it is in, only
+    /// The device's page keeps this session beside the workspace it is in, only
     /// to deliver for it: nobody is online by it, so it takes no seat and
     /// shows no face, and its person counts only by another session.
     pub background: bool,
@@ -287,7 +287,7 @@ pub const FEATURE_RESUME: u64 = 1;
 /// [`crate::transport::Envelope::CompactRequest`].
 pub const FEATURE_COMPACTION: u64 = 2;
 
-/// The host governs calls in its rooms: it accepts
+/// The host governs calls in its workspaces: it accepts
 /// [`crate::transport::Envelope::VoiceCall`],
 /// [`crate::transport::Envelope::VoiceJoin`],
 /// [`crate::transport::Envelope::VoiceLeave`],
@@ -295,8 +295,8 @@ pub const FEATURE_COMPACTION: u64 = 2;
 /// [`crate::transport::Envelope::VoiceCalls`] (see [`crate::voice`]).
 pub const FEATURE_VOICE: u64 = 4;
 
-/// The host governs rooms a page administers and joins over HTTPS
-/// (`/workspaces`, `/join`; see [`crate::workspaces`]).
+/// The host governs workspaces a page administers and joins over HTTPS
+/// (`/rooms`, `/join`; see [`crate::workspaces`]).
 pub const FEATURE_ROOMS: u64 = 8;
 
 /// The host serves its members' pages a fetch proxy at [`FETCH_PATH`]
@@ -348,9 +348,9 @@ pub struct EventsPage {
     pub envelopes: Vec<Envelope>,
 }
 
-/// Route a spectator of a public room takes a channel's content keys from,
-/// to open what the room's members sealed there. Only a device of the room's
-/// spectator person is answered, only in a public room and only while it is
+/// Route a spectator of a public workspace takes a channel's content keys from,
+/// to open what the workspace's members sealed there. Only a device of the workspace's
+/// spectator person is answered, only in a public workspace and only while it is
 /// subscribed; a member is admitted to a channel by its participants
 /// instead.
 pub const CHANNEL_KEYS_PATH: &str = "/channel-keys";
@@ -362,7 +362,7 @@ pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelKeysRequest {
     pub app_id: String,
-    /// The room (the record's cluster).
+    /// The workspace (the record's cluster).
     #[serde(rename = "room")]
     pub workspace: String,
     /// The record id.
@@ -529,7 +529,7 @@ pub struct HereRequest {
     /// label: shown, never trusted for anything else.
     pub label: String,
     /// The tab id of the desktop window the poster has focused in the
-    /// room's shared desktop, if any. The desktop tree is replicated, so the
+    /// workspace's shared desktop, if any. The desktop tree is replicated, so the
     /// id means the same window to every member.
     pub window: Option<u64>,
     /// Their recent actions, at most [`MAX_HERE_ACTIONS`].

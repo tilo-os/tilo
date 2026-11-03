@@ -1,5 +1,5 @@
 //! The shell retention authority a relay binding may pin: which device
-//! governs retention for one room. Shared by the relay configuration and the
+//! governs retention for one workspace. Shared by the relay configuration and the
 //! peer state that checks retained publications against it.
 
 use serde::{Deserialize, Serialize};

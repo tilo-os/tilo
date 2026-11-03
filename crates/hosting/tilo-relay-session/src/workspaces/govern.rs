@@ -1,11 +1,11 @@
-//! A room's governance actions from a device that is not a desktop: a
+//! A workspace's governance actions from a device that is not a desktop: a
 //! developer's machine pushing a release of an app or a bot into a running
-//! room (`tilo-app push`), a script, an agent.
+//! workspace (`tilo-app push`), a script, an agent.
 //!
 //! The device is one of a member's devices, enrolled as any other. It holds
-//! a session with the room's host, subscribes to the room's workspace, and
-//! invokes the action on the room's governance resource, addressed to the
-//! host's own device, exactly as a desktop does. The room decides who may.
+//! a session with the workspace's host, subscribes to the workspace, and
+//! invokes the action on the workspace's governance resource, addressed to the
+//! host's own device, exactly as a desktop does. The workspace decides who may.
 
 use serde_json::{Map, Value};
 use tilo_actions::InvocationId;
@@ -45,7 +45,7 @@ impl WorkspaceLink {
 }
 
 impl std::fmt::Display for WorkspaceLink {
-    /// `tilo-room:<relay endpoint>[@<ip:port>]/<workspace>/<room>`.
+    /// `tilo-room:<relay endpoint>[@<ip:port>]/<workspace id>/<workspace uuid>`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "tilo-room:{}", self.relay)?;
         if let Some(direct) = self.direct {
@@ -59,14 +59,17 @@ impl std::str::FromStr for WorkspaceLink {
     type Err = String;
 
     fn from_str(link: &str) -> Result<Self, String> {
-        let shape =
-            || format!("{link}: a room link is tilo-room:<relay>[@<ip:port>]/<workspace>/<room>");
+        let shape = || {
+            format!(
+                "{link}: a workspace link is tilo-room:<relay>[@<ip:port>]/<workspace id>/<workspace uuid>"
+            )
+        };
         let rest = link.strip_prefix("tilo-room:").ok_or_else(shape)?;
         let mut parts = rest.split('/');
-        let (relay, workspace, room) =
+        let (relay, shard, workspace) =
             match (parts.next(), parts.next(), parts.next(), parts.next()) {
-                (Some(relay), Some(workspace), Some(room), None) if !workspace.is_empty() => {
-                    (relay, workspace, room)
+                (Some(relay), Some(shard), Some(workspace), None) if !shard.is_empty() => {
+                    (relay, shard, workspace)
                 }
                 _ => return Err(shape()),
             };
@@ -86,10 +89,10 @@ impl std::str::FromStr for WorkspaceLink {
                 .parse()
                 .map_err(|error| format!("{relay}: not a relay endpoint: {error}"))?,
             direct,
-            workspace_id: workspace
+            workspace_id: shard
                 .parse()
-                .map_err(|_| format!("{workspace}: not a workspace id"))?,
-            workspace: room.to_owned(),
+                .map_err(|_| format!("{shard}: not a workspace id"))?,
+            workspace: workspace.to_owned(),
         })
     }
 }
@@ -130,12 +133,12 @@ pub async fn connect(
     .map_err(|error| format!("reach {link}: {error}"))
 }
 
-/// Invoke the governance action `action` of `room`, carried by
-/// `workspace_id`, with `argument`, over `client`'s session with the room's
+/// Invoke the governance action `action` of `workspace`, carried by
+/// `workspace_id`, with `argument`, over `client`'s session with the workspace's
 /// host: what the action produced.
 ///
 /// # Errors
-/// The room did not admit the device, the session closed, or the room
+/// The workspace did not admit the device, the session closed, or the workspace
 /// refused the action (one the device's person may not take is unknown to
 /// them).
 pub async fn invoke(
@@ -155,8 +158,8 @@ pub const UPLOAD_APP_FILE: &str = "upload-app-file";
 /// The bytes of a package file one `upload-app-file` piece carries.
 const UPLOAD_PIECE: usize = 256 * 1024;
 
-/// Hand `file`, a `.tapp`, to `room`'s host in pieces, for its members to
-/// fetch from the room: the file's BLAKE3 hash, hex, which `install-app`
+/// Hand `file`, a `.tapp`, to `workspace`'s host in pieces, for its members to
+/// fetch from the workspace: the file's BLAKE3 hash, hex, which `install-app`
 /// then names as the version's `file`.
 ///
 /// # Errors
@@ -183,7 +186,7 @@ pub async fn upload(
     Ok(hash)
 }
 
-/// Subscribe `client` to the room carried by `workspace_id`.
+/// Subscribe `client` to the workspace carried by `workspace_id`.
 async fn subscribe(client: &RelayClient, workspace_id: u64) -> Result<(), String> {
     client
         .send(Envelope::Subscribe { workspace_id })

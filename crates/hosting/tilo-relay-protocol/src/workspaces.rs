@@ -1,19 +1,19 @@
-//! The rooms a host governs, as a page reaches them over HTTPS.
+//! The workspaces a host governs, as a page reaches them over HTTPS.
 //!
 //! Two routes below [`API_PREFIX`](crate::web::API_PREFIX):
 //!
 //! | Route | Session | Body | Answer |
 //! |---|---|---|---|
-//! | `/workspaces` | yes | [`WorkspacesRequest`] | [`WorkspacesReply`] |
+//! | `/rooms` | yes | [`WorkspacesRequest`] | [`WorkspacesReply`] |
 //! | `/join` | no | [`JoinStep`] | [`JoinReply`] |
 //!
-//! `/workspaces` administers the host's rooms for a device of the host's own
+//! `/rooms` administers the host's workspaces for a device of the host's own
 //! user: create a governed workspace, enter it as its owner, invite and
 //! cancel invitations, admit or decline the people who asked to join, change
 //! members' roles and remove them. `/join` is for
 //! anyone holding an invitation, before the host admits them to a session:
 //! the device names itself with its certificate, signs the host's join
-//! challenge ([`join_proof_digest`]) and waits until the room's owner admits
+//! challenge ([`join_proof_digest`]) and waits until the workspace's owner admits
 //! or declines it.
 
 pub mod private;
@@ -24,7 +24,7 @@ use tilo_user_identity::DeviceCert;
 /// Domain of the device signature that answers a join challenge.
 pub const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
 
-/// Pending join requests a room keeps at once.
+/// Pending join requests a workspace keeps at once.
 pub const MAX_JOIN_REQUESTS: usize = 64;
 
 /// What the device signs to answer the join challenge whose canonical
@@ -46,10 +46,10 @@ pub struct JoinChallengeView {
     pub version: u32,
     /// The invitation being redeemed.
     pub signed_invitation: Vec<u8>,
-    /// The room's UUID.
+    /// The workspace's UUID.
     #[serde(rename = "room")]
     pub workspace: String,
-    /// The room's relay workspace.
+    /// The workspace's relay workspace.
     pub workspace_id: u64,
     /// The joining person.
     pub user_public_key: [u8; 32],
@@ -62,7 +62,7 @@ pub struct JoinChallengeView {
     pub expires_at_ns: u64,
 }
 
-/// What a member may do in a room.
+/// What a member may do in a workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceRole {
     Viewer,
@@ -75,7 +75,7 @@ pub enum WorkspaceRole {
     Moderator,
 }
 
-/// A person governance records in a room.
+/// A person governance records in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceMember {
     /// The person's user root.
@@ -90,10 +90,10 @@ pub struct WorkspaceMember {
     pub removed: bool,
 }
 
-/// A governed room.
+/// A governed workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
-    /// The room's UUID.
+    /// The workspace's UUID.
     #[serde(rename = "room")]
     pub workspace: String,
     /// The relay workspace carrying it.
@@ -138,14 +138,14 @@ pub const PRE_ADMISSION_DOMAIN: &[u8] = b"tilo/workspace-pre-admission/v1\0";
 /// Longest label a pre-admission gives the person it is for.
 pub const MAX_PRE_ADMISSION_LABEL_CHARS: usize = 128;
 
-/// The room owner's standing decision to admit, without deciding again,
+/// The workspace owner's standing decision to admit, without deciding again,
 /// whoever redeems the invitation issued with it and presents the one-time
 /// token whose SHA-256 is `token_sha256`. Whoever hands out the token (a
-/// backend that verified the person's email, say) never holds the room's
+/// backend that verified the person's email, say) never holds the workspace's
 /// keys; the owner's user root signs the grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreAdmission {
-    /// The room's UUID.
+    /// The workspace's UUID.
     #[serde(rename = "room")]
     pub workspace: String,
     pub role: WorkspaceRole,
@@ -232,7 +232,7 @@ impl PreAdmission {
     }
 }
 
-/// Something that happened in a room without its owner deciding it then,
+/// Something that happened in a workspace without its owner deciding it then,
 /// for the owner to see.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceNotice {
@@ -270,8 +270,8 @@ pub struct PendingInvite {
     pub expires_at_ns: u64,
 }
 
-/// One `/workspaces` request. `room` is a room UUID. Each change answers with
-/// the room as it is after it, except as noted.
+/// One `/rooms` request. `workspace` is a workspace UUID. Each change answers with
+/// the workspace as it is after it, except as noted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspacesRequest {
     List,
@@ -279,7 +279,7 @@ pub enum WorkspacesRequest {
     Create {
         name: String,
     },
-    /// Admit the calling device to `room` as its owner.
+    /// Admit the calling device to `workspace` as its owner.
     Enter {
         #[serde(rename = "room")]
         workspace: String,
@@ -314,12 +314,12 @@ pub enum WorkspacesRequest {
         /// The invitation.
         invite_id: [u8; 32],
     },
-    /// The invitations to `room` still redeemable.
+    /// The invitations to `workspace` still redeemable.
     Pending {
         #[serde(rename = "room")]
         workspace: String,
     },
-    /// The people waiting to join `room`.
+    /// The people waiting to join `workspace`.
     Requests {
         #[serde(rename = "room")]
         workspace: String,
@@ -382,34 +382,34 @@ pub enum WorkspacesRequest {
     PreAdmit {
         /// Caller-chosen idempotency key; never zero.
         request_id: [u8; 32],
-        /// The owner's signed grant; its room is the room.
+        /// The owner's signed grant; its workspace is the workspace.
         grant: PreAdmission,
         /// How the inviting person names themself.
         inviter_name: Option<String>,
     },
-    /// What happened in `room` without the owner deciding it then.
+    /// What happened in `workspace` without the owner deciding it then.
     Notices {
         #[serde(rename = "room")]
         workspace: String,
     },
     /// Whether the calling device's person may make an undoable change at
-    /// `node` of `room`, as the room decides their writes there: answered
+    /// `node` of `workspace`, as the workspace decides their writes there: answered
     /// with [`WorkspacesReply::Permits`]. A page asks before it offers what only
     /// some members may do, such as acting on what other people made.
     Permits {
         #[serde(rename = "room")]
         workspace: String,
-        /// A node of the room's published tree, in its text form
-        /// (`room:<id>/app:<app>/…`).
+        /// A node of the workspace's published tree, in its text form
+        /// (`workspace:<id>/app:<app>/…`).
         node: String,
     },
-    /// The requests left at `room`'s door, oldest first: answered with
+    /// The requests left at `workspace`'s door, oldest first: answered with
     /// [`WorkspacesReply::WaitList`]. Whoever may invite.
     WaitList {
         #[serde(rename = "room")]
         workspace: String,
     },
-    /// Take a request left at `room`'s door off its wait list, when it is
+    /// Take a request left at `workspace`'s door off its wait list, when it is
     /// not to be invited: answered with [`WorkspacesReply::WaitList`]. An entry
     /// invited ([`WorkspacesRequest::Invite`]'s `wait_list_entry`) leaves the
     /// list by itself once someone joins with that invitation.
@@ -421,18 +421,18 @@ pub enum WorkspacesRequest {
     },
     /// Mail the invitation `link` to the wait-list entry `wait_list_entry`
     /// it was issued for ([`WorkspacesRequest::Invite`]'s `wait_list_entry`):
-    /// answered with [`WorkspacesReply::WaitList`], or refused where the room
+    /// answered with [`WorkspacesReply::WaitList`], or refused where the workspace
     /// sends no mail, when the page shares the link itself.
     MailInvite {
         #[serde(rename = "room")]
         workspace: String,
         /// The confirmed entry.
         wait_list_entry: [u8; 32],
-        /// The invitation's web link: the room's own door, with the signed
+        /// The invitation's web link: the workspace's own door, with the signed
         /// invitation in its `invite` query parameter.
         link: String,
     },
-    /// Share one record, or one item of it, with `room`'s members, as the
+    /// Share one record, or one item of it, with `workspace`'s members, as the
     /// calling device's person: answered with [`WorkspacesReply::Shared`], how
     /// many grants the share holds. The members below the owner get what
     /// `access` gives, never more than the sharer holds there.
@@ -442,14 +442,14 @@ pub enum WorkspacesRequest {
         /// The share's id, such as the message that shares it: 1 to 128
         /// letters, digits or `.` `_` `:` `-`.
         share: String,
-        /// The record or item, as a node of the room's tree in its text
-        /// form (`room:<id>/app:<app>/kind:<kind>/resource:<id>[/item:<id>]`;
+        /// The record or item, as a node of the workspace's tree in its text
+        /// form (`workspace:<id>/app:<app>/kind:<kind>/resource:<id>[/item:<id>]`;
         /// `resource:*` names an item of the app's own record).
         node: String,
         /// `view` or `edit`.
         access: String,
     },
-    /// End the share `share` in `room`: answered with
+    /// End the share `share` in `workspace`: answered with
     /// [`WorkspacesReply::Shared`], how many of its grants were revoked (its
     /// sharer's, or any for a person who may govern revoking).
     Unshare {
@@ -457,9 +457,9 @@ pub enum WorkspacesRequest {
         workspace: String,
         share: String,
     },
-    /// How the calling device's person names themself in `room` from now
+    /// How the calling device's person names themself in `workspace` from now
     /// on, a display name ([`tilo_user_identity::display_name`]): the name
-    /// the room's member list and every person list show for them.
+    /// the workspace's member list and every person list show for them.
     /// Answered with [`WorkspacesReply::Named`]. A page sends it as it joins and
     /// whenever its person renames themself.
     Name {
@@ -467,12 +467,12 @@ pub enum WorkspacesRequest {
         workspace: String,
         name: String,
     },
-    /// Have the host govern `room`, a workspace of the calling device's
+    /// Have the host govern `workspace`, a workspace of the calling device's
     /// person, creating it as `name` (1–80 characters) unless the host
     /// governs it already, and admit the calling device to it as its owner
-    /// ([`WorkspacesRequest::Enter`]): answered with the room. Whoever may create
-    /// rooms. A page places its person's workspace before it subscribes, so
-    /// the room has governance like every other.
+    /// ([`WorkspacesRequest::Enter`]): answered with the workspace. Whoever may create
+    /// workspaces. A page places its person's workspace before it subscribes, so
+    /// the workspace has governance like every other.
     Place {
         #[serde(rename = "room")]
         workspace: String,
@@ -483,7 +483,7 @@ pub enum WorkspacesRequest {
 /// The answer to a [`WorkspacesRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspacesReply {
-    /// Every governed room.
+    /// Every governed workspace.
     Workspaces(Vec<Workspace>),
     Workspace(Workspace),
     /// The issued invitation.
@@ -508,7 +508,7 @@ pub enum WorkspacesReply {
     /// How many grants a [`WorkspacesRequest::Share`] holds, or a
     /// [`WorkspacesRequest::Unshare`] revoked.
     Shared(u32),
-    /// The room names the caller as asked, for [`WorkspacesRequest::Name`].
+    /// The workspace names the caller as asked, for [`WorkspacesRequest::Name`].
     Named,
 }
 
@@ -567,7 +567,7 @@ pub enum JoinStep {
 pub enum JoinReply {
     /// What the invitation offers.
     Invitation {
-        /// The room's UUID.
+        /// The workspace's UUID.
         #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
@@ -590,7 +590,7 @@ pub enum JoinReply {
     Waiting,
     /// The owner admitted the device: it may open a session and subscribe.
     Admitted {
-        /// The room's UUID.
+        /// The workspace's UUID.
         #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
@@ -604,7 +604,7 @@ pub enum JoinReply {
     Refused(String),
 }
 
-// Requests left at the door. A room that takes people by invitation also
+// Requests left at the door. A workspace that takes people by invitation also
 // keeps the requests of people who asked at its door without one, each an
 // address to be invited at ([`WaitListEntry`]).
 
@@ -612,7 +612,7 @@ pub enum JoinReply {
 /// the longest an email address can be.
 pub const MAX_CONTACT_CHARS: usize = 254;
 
-/// `text` as the address a request left at a room's door keeps
+/// `text` as the address a request left at a workspace's door keeps
 /// ([`WaitListEntry`]): an email address, trimmed and otherwise as typed,
 /// since that is how its owner writes it. One address is one request
 /// however it was typed: requests are told apart by [`contact_key`].
@@ -681,13 +681,13 @@ pub fn mail_language(tag: &str) -> &'static str {
     }
 }
 
-/// The bytes of the secret that takes a request left at a room's door off
-/// its wait list again: random, handed only to whoever left it. The room
+/// The bytes of the secret that takes a request left at a workspace's door off
+/// its wait list again: random, handed only to whoever left it. The workspace
 /// keeps only its SHA-256.
 pub const WAIT_LIST_REMOVAL_BYTES: usize = 32;
 
-/// A request left at the door of a room that takes people by invitation:
-/// someone who has no invitation, and so no identity the room knows yet,
+/// A request left at the door of a workspace that takes people by invitation:
+/// someone who has no invitation, and so no identity the workspace knows yet,
 /// left an address to be invited at. Someone who may invite sends an
 /// invitation of their own there ([`WorkspacesRequest::Invite`] naming the
 /// entry), and the entry leaves the list once someone joins with it; or

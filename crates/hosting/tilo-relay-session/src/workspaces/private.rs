@@ -1,5 +1,5 @@
 //! Closed governor RPCs over authenticated encrypted transport.
-//! Private payloads never enter the room log; the trusted host reads plaintext.
+//! Private payloads never enter the workspace log; the trusted host reads plaintext.
 //! Variant order is append-only across independently updated devices.
 use serde::{Deserialize, Serialize};
 use tilo_relay_protocol::workspaces::private::{

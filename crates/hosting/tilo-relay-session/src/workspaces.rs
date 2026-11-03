@@ -1,19 +1,19 @@
-//! Room administration from a device: the names of the actions a relay
+//! Workspace administration from a device: the names of the actions a relay
 //! serves for it, and the requests they carry.
 //!
 //! A relay serves what it governs as actions addressed to its own device:
 //!
-//! - a room's own governance (provider `tilo.workspace`, named in
-//!   `tilo-actions`), over `Envelope::RemoteAction` on the room's workspace;
-//! - the host's own business, which no room decides (creating, listing and
-//!   entering rooms, letting an app author a room), as provider
+//! - a workspace's own governance (provider `tilo.workspace`, named in
+//!   `tilo-actions`), over `Envelope::RemoteAction` on the workspace;
+//! - the host's own business, which no workspace decides (creating, listing and
+//!   entering workspaces, letting an app author a workspace), as provider
 //!   [`HOST_ACTIONS_PROVIDER`], to the devices of the relay's own person
 //!   only, over `Envelope::HostAction` on their session with it, naming no
-//!   workspace ([`ask_host`]), or on a room's workspace they hold there.
+//!   workspace ([`ask_host`]), or on a workspace they hold there.
 //!
 //! What a member does for themselves (their effect receipts, their shares,
 //! the empty record of an app they open first) their own device writes into
-//! the room; no relay is asked for it.
+//! the workspace; no relay is asked for it.
 //!
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
@@ -66,40 +66,40 @@ pub async fn ask_host(
 }
 
 /// The provider a relay answers its host operations under: creating,
-/// listing and entering the rooms it governs. Only the devices of the
+/// listing and entering the workspaces it governs. Only the devices of the
 /// relay's own person are offered them, and invoking one is decided as
 /// every door decides a host operation.
 pub const HOST_ACTIONS_PROVIDER: &str = "tilo.host";
 /// The one resource the host operations are published on.
 pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
-/// Create a governed room. Arguments: `name`, and the terms of its first
+/// Create a governed workspace. Arguments: `name`, and the terms of its first
 /// invitation when one is wanted (`invite_role`, `invite_recipient`,
 /// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedWorkspace`].
 pub const CREATE_ROOM: &str = "room.create";
-/// Every room the host governs, each as a [`WorkspaceListing`].
+/// Every workspace the host governs, each as a [`WorkspaceListing`].
 pub const LIST_ROOMS: &str = "room.list";
-/// Admit the calling device to `room` as one of its owner's. Answers an
-/// [`EnteredWorkspace`]: the invitation the device redeems to hold the room,
+/// Admit the calling device to `workspace` as one of its owner's. Answers an
+/// [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
 pub const ENTER_ROOM: &str = "room.enter";
 
-/// Serve a room a device of the host's own person governs, as that governor
-/// asks: arguments `room`, `workspace_id`, `governor_hint` (the governor's
-/// signed address) and `bootstrap` (the room as a joining member gets it,
+/// Serve a workspace a device of the host's own person governs, as that governor
+/// asks: arguments `workspace`, `workspace_id`, `governor_hint` (the governor's
+/// signed address) and `bootstrap` (the workspace as a joining member gets it,
 /// the host's device admitted), each signed value postcard in hex. Only a
-/// certified host serves rooms this way. Answers a [`HostedWorkspace`].
+/// certified host serves workspaces this way. Answers a [`HostedWorkspace`].
 pub const HOST_ROOM: &str = "room.host";
-/// Stop serving `room` for its governor. Answers `{"stopped": bool}`.
+/// Stop serving `workspace` for its governor. Answers `{"stopped": bool}`.
 pub const UNHOST_ROOM: &str = "room.unhost";
 /// Have the certified host `host` (its device key, 64 hex) of the person,
-/// reachable at `host_addr` (an endpoint address), serve the room `room`
+/// reachable at `host_addr` (an endpoint address), serve the workspace `workspace`
 /// governed here as well: admitted as one of the owner's devices, handed the
-/// room with [`HOST_ROOM`], and named among the room's hosts. Answers a
+/// workspace with [`HOST_ROOM`], and named among the workspace's hosts. Answers a
 /// [`HostedWorkspace`].
 pub const ATTACH_HOST: &str = "room.attach-host";
-/// Stop having the host `host` serve `room`: it is no longer named among the
-/// room's hosts, and is asked to stop at `host_addr` when given, else at the
+/// Stop having the host `host` serve `workspace`: it is no longer named among the
+/// workspace's hosts, and is asked to stop at `host_addr` when given, else at the
 /// address it last answered. Answers `{"confirmed": bool}`, whether the host
 /// confirmed it stopped.
 pub const DETACH_HOST: &str = "room.detach-host";
@@ -107,24 +107,24 @@ pub const DETACH_HOST: &str = "room.detach-host";
 /// What [`HOST_ROOM`] and [`ATTACH_HOST`] answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedWorkspace {
-    /// The serving host's own signed address for the room, postcard in hex.
+    /// The serving host's own signed address for the workspace, postcard in hex.
     pub host_hint: String,
 }
 
-/// One room a relay governs, as its host actions answer it.
+/// One workspace a relay governs, as its host actions answer it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceListing {
-    /// The room's UUID.
+    /// The workspace's UUID.
     pub workspace: String,
-    /// The relay workspace carrying the room.
+    /// The relay workspace carrying the workspace.
     pub workspace_id: u64,
     /// The workspace's name.
     pub name: String,
-    /// The room's committed governance generation.
+    /// The workspace's committed governance generation.
     pub generation: u64,
 }
 
-/// An invitation a relay's room action issued, as it answers it.
+/// An invitation a relay's workspace action issued, as it answers it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionInvitation {
     /// Digest of the signed invitation, 64 hex characters.
@@ -171,7 +171,7 @@ pub struct CreatedWorkspace {
 pub struct EnteredWorkspace {
     /// Whether governance changed to admit the caller.
     pub changed: bool,
-    /// The invitation the caller redeems to hold the room.
+    /// The invitation the caller redeems to hold the workspace.
     pub invitation: ActionInvitation,
 }
 
@@ -199,12 +199,12 @@ pub struct RemoveMemberRequest {
     pub user_public_key: [u8; 32],
 }
 
-/// A governed room as its administrators see it.
+/// A governed workspace as its administrators see it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
-    /// The room's UUID.
+    /// The workspace's UUID.
     pub workspace: String,
-    /// The relay workspace carrying the room.
+    /// The relay workspace carrying the workspace.
     pub workspace_id: u64,
     /// The workspace's name.
     pub name: String,

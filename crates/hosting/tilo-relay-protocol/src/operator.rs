@@ -1,11 +1,11 @@
-//! The JSON-lines protocol between a room's operator and the
-//! `tilo-relay room` child it runs for it — a short-lived room, or one
-//! persistent room.
+//! The JSON-lines protocol between a workspace's operator and the
+//! `tilo-relay room` child it runs for it — a short-lived workspace, or one
+//! persistent workspace.
 //!
 //! The service writes one [`OperatorCommand`] per line to the child's stdin.
 //! The child writes one [`OperatorEvent`] per line to its stdout, each behind
 //! [`LINE_PREFIX`], so nothing else the child prints can be mistaken for one.
-//! Operator and room relay are built from one tree, so the protocol changes
+//! Operator and workspace relay are built from one tree, so the protocol changes
 //! in one commit;
 //! [`VERSION`] is announced in [`OperatorEvent::Started`] and a reader refuses
 //! any other. Neither side skips a line it cannot decode: an unknown
@@ -19,7 +19,7 @@ use crate::workspaces::WorkspaceRole;
 pub const VERSION: u16 = 4;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
-/// when the numbers changed, so a busy room does not flood the service.
+/// when the numbers changed, so a busy workspace does not flood the service.
 pub const ONLINE_EVERY_SECS: u64 = 2;
 
 /// Decodes a 32-byte key or digest written as 64 lowercase hex characters,
@@ -43,7 +43,7 @@ pub const LINE_PREFIX: &str = "tilo-room-operator ";
 /// certification request before it answers [`RefusalReason::NoMatchingRequest`].
 pub const ADMIT_WAIT_SECS: u64 = 60;
 
-/// What the room service tells its room relay.
+/// What the workspace service tells its workspace relay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperatorCommand {
@@ -54,8 +54,8 @@ pub enum OperatorCommand {
         /// The six-digit code the guest's browser displays.
         pairing_code: String,
     },
-    /// Pre-admit one guest of a persistent room: the child signs a
-    /// pre-admission with the room's owner root for `token_sha256`, issues
+    /// Pre-admit one guest of a persistent workspace: the child signs a
+    /// pre-admission with the workspace's owner root for `token_sha256`, issues
     /// an invitation that only `user_public_key` can redeem, and answers
     /// [`OperatorEvent::PreAdmitted`] or [`OperatorEvent::PreAdmitRefused`] for the
     /// same digest.
@@ -66,25 +66,25 @@ pub enum OperatorCommand {
         user_public_key: String,
         /// SHA-256 of the one-time admission token (hex).
         token_sha256: String,
-        /// How the room's notices name the guest.
+        /// How the workspace's notices name the guest.
         label: String,
         role: WorkspaceRole,
     },
-    /// Certify an in-memory browser device as the persistent room's one
-    /// read-only spectator person, so a page embedding the room can watch it
+    /// Certify an in-memory browser device as the persistent workspace's one
+    /// read-only spectator person, so a page embedding the workspace can watch it
     /// without minting a member per visitor. The child answers
     /// [`OperatorEvent::SpectatorCertified`] or [`OperatorEvent::SpectateRefused`].
     Spectate {
         /// The browser's device key (hex).
         device_public_key: String,
     },
-    /// Stop the room. A struct variant, so `deny_unknown_fields` holds for
+    /// Stop the workspace. A struct variant, so `deny_unknown_fields` holds for
     /// it too (serde ignores extra fields on a tagged unit variant).
     Shutdown {},
     /// Keep the request of someone who asked at the door of a persistent
-    /// room that takes people by invitation, without one: the address
+    /// workspace that takes people by invitation, without one: the address
     /// `contact` ([`crate::workspaces::contact_address`]) its answer goes to. The
-    /// room keeps it on its wait list for whoever may invite. The
+    /// workspace keeps it on its wait list for whoever may invite. The
     /// child answers [`OperatorEvent::WaitListed`] or
     /// [`OperatorEvent::WaitListRefused`] for the same `request`.
     WaitList {
@@ -95,7 +95,7 @@ pub enum OperatorCommand {
         /// SHA-256 (hex) of the secret the service hands the visitor
         /// ([`crate::workspaces::WAIT_LIST_REMOVAL_BYTES`]): whoever holds it takes
         /// the entry off again ([`OperatorCommand::Unlist`]). The secret
-        /// itself never reaches the room.
+        /// itself never reaches the workspace.
         removal_sha256: String,
         /// SHA-256 (hex) of the secret the confirmation mail carries, when
         /// the service sends mail: the entry stays unconfirmed, and hidden
@@ -128,10 +128,10 @@ pub enum OperatorCommand {
     },
     /// Someone came back from Discord's consent page to the service's
     /// callback, and Discord vouched for their account. The child hands it
-    /// to the room's Discord bridge, which offers the account to whoever
+    /// to the workspace's Discord bridge, which offers the account to whoever
     /// started the round trip (`state_sha256`) and holds the token whose
     /// check `link_check` is. No answer: the browser is sent on at once and
-    /// asks the room for the offer itself.
+    /// asks the workspace for the offer itself.
     DiscordAuthorized {
         user_id: String,
         user_name: String,
@@ -158,7 +158,7 @@ pub enum OperatorCommand {
     InviteMailQueued { request: String, queued: bool },
 }
 
-/// What the room relay reports to the room service.
+/// What the workspace relay reports to the workspace service.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperatorEvent {
@@ -170,13 +170,13 @@ pub enum OperatorEvent {
         origin: String,
         /// The plain loopback listener, if any.
         plain_origin: Option<String>,
-        /// The room's throwaway user root (hex).
+        /// The workspace's throwaway user root (hex).
         user_public_key: String,
         /// SHA-256 of a development certificate, for a client that pins it.
         certificate_sha256: Option<String>,
-        /// Page origins allowed to call the room cross-origin.
+        /// Page origins allowed to call the workspace cross-origin.
         allowed_origins: Vec<String>,
-        /// The governed room's UUID; `None` for a short-lived room.
+        /// The governed workspace's UUID; `None` for a short-lived workspace.
         #[serde(rename = "room")]
         workspace: Option<String>,
     },
@@ -209,10 +209,10 @@ pub enum OperatorEvent {
         token_sha256: String,
         /// Why, for the operator's log.
         reason: String,
-        /// The person was removed from the room within the day: the door
+        /// The person was removed from the workspace within the day: the door
         /// tells them so, as it tells anyone from the address they joined from.
         removed: bool,
-        /// The room takes people by invitation only and the person is not a
+        /// The workspace takes people by invitation only and the person is not a
         /// member: the door tells them they need an invitation.
         #[serde(default, skip_serializing_if = "is_false")]
         invite_only: bool,
@@ -241,7 +241,7 @@ pub enum OperatorEvent {
         /// workspaces (at most [`crate::directory::MAX_FACES`]).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         here: Vec<crate::directory::Face>,
-        /// How many people belong to the room.
+        /// How many people belong to the workspace.
         #[serde(default, skip_serializing_if = "is_zero")]
         members: u32,
         /// Every person counted in `people` (user roots, hex): the door
@@ -251,14 +251,14 @@ pub enum OperatorEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         online: Vec<String>,
     },
-    /// A member was removed from the persistent room.
+    /// A member was removed from the persistent workspace.
     MemberRemoved {
         /// Their user root (hex).
         user_public_key: String,
         /// The removal is a ban.
         banned: bool,
     },
-    /// The room keeps the request of an [`OperatorCommand::WaitList`]:
+    /// The workspace keeps the request of an [`OperatorCommand::WaitList`]:
     /// `added`, or it kept one for that address already.
     WaitListed {
         /// The command's `request`.
@@ -270,13 +270,13 @@ pub enum OperatorEvent {
         #[serde(default, skip_serializing_if = "is_false")]
         mail: bool,
     },
-    /// An [`OperatorCommand::WaitList`] the room did not keep.
+    /// An [`OperatorCommand::WaitList`] the workspace did not keep.
     WaitListRefused {
         /// The command's `request`.
         request: String,
         /// Why, for the operator's log.
         reason: String,
-        /// The room keeps as many such requests as it takes already: the
+        /// The workspace keeps as many such requests as it takes already: the
         /// door says so, rather than that it failed.
         #[serde(default, skip_serializing_if = "is_false")]
         full: bool,
@@ -297,7 +297,7 @@ pub enum OperatorEvent {
         contact_sha256: Option<String>,
     },
     /// An [`OperatorCommand::Unlist`], [`OperatorCommand::Confirm`] or
-    /// [`OperatorCommand::Standing`] the room could not do.
+    /// [`OperatorCommand::Standing`] the workspace could not do.
     WaitListFailed {
         /// The command's `request`.
         request: String,
@@ -318,15 +318,15 @@ pub enum OperatorEvent {
         request: String,
         standing: WaitListStanding,
     },
-    /// Someone who may invite asked the room to mail an invitation to a
-    /// confirmed wait-list entry: send it, from the room's door.
+    /// Someone who may invite asked the workspace to mail an invitation to a
+    /// confirmed wait-list entry: send it, from the workspace's door.
     InviteMail {
         request: String,
         to: WaitListMailbox,
-        /// The invitation's web link, on the room's own door.
+        /// The invitation's web link, on the workspace's own door.
         link: String,
         /// A secret (hex) that takes the entry off the list, for the mail's
-        /// removal link; the room keeps only its SHA-256.
+        /// removal link; the workspace keeps only its SHA-256.
         removal: String,
     },
 }
@@ -755,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn room_operator_round_trip() {
+    fn operator_round_trip() {
         for command in [
             OperatorCommand::Admit {
                 pairing_code: "012345".into(),
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn room_operator_wire_form_is_pinned() {
+    fn operator_wire_form_is_pinned() {
         assert_eq!(
             OperatorCommand::Admit {
                 pairing_code: "012345".into()
@@ -797,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn room_operator_rejects_unknown_tags_fields_and_the_old_text_form() {
+    fn operator_rejects_unknown_tags_fields_and_the_old_text_form() {
         for line in [
             "admit 012345",
             "shutdown",

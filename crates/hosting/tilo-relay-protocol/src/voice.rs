@@ -1,6 +1,6 @@
-//! Voice calls in the rooms a relay governs.
+//! Voice calls in the workspaces a relay governs.
 //!
-//! A call belongs to a room's governance: the room's governor records each
+//! A call belongs to a workspace's governance: the workspace's governor records each
 //! call, bound to one voice channel of a chat record, with the directions its
 //! participants may use and per-person denials.
 //!
@@ -8,11 +8,11 @@
 //! member opens the channel's call with [`CallOperation::Open`], which starts
 //! it when the channel has none yet (or its call was ended), and then joins
 //! it. Nobody has to start a call first; the call is empty once the last
-//! participant leaves. A room's owner or an administrator ends and moderates
+//! participant leaves. A workspace's owner or an administrator ends and moderates
 //! calls with the other operations of
 //! [`Envelope::VoiceCall`](crate::Envelope::VoiceCall).
 //!
-//! A device subscribed to the room joins an active call with
+//! A device subscribed to the workspace joins an active call with
 //! [`Envelope::VoiceJoin`](crate::Envelope::VoiceJoin) and gets a
 //! [`VoiceGrant`]: its participation and the roster of everyone in the call.
 //! It repeats the join with its participation every [`HEARTBEAT`]; a
@@ -22,7 +22,7 @@
 //! devices put it on the call's own lane (`tilo-call-lane`), which the
 //! workspace's channel keys seal.
 //!
-//! A device that does not read the room's governance itself (a browser
+//! A device that does not read the workspace's governance itself (a browser
 //! session) learns its calls with
 //! [`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls).
 //!
@@ -54,7 +54,7 @@ pub struct Directions {
     pub subscribe: bool,
 }
 
-/// A change to a room's calls.
+/// A change to a workspace's calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallOperation {
     /// Open the call of voice channel `channel_id` of the chat record
@@ -107,7 +107,7 @@ pub enum CallOperation {
     },
 }
 
-/// A call as the room's governance records it.
+/// A call as the workspace's governance records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallState {
     pub call: [u8; 32],
@@ -133,7 +133,7 @@ pub struct VoiceGrant {
     pub participants: Vec<VoiceParticipant>,
 }
 
-/// A call of a room, for a device deciding whether to join it
+/// A call of a workspace, for a device deciding whether to join it
 /// ([`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls)).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallSummary {

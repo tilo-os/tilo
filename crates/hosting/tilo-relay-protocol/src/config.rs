@@ -2,8 +2,8 @@
 //!
 //! The daemon reads a TOML file — path is passed via `--config` and
 //! defaults to `/etc/tilo/relay.toml`. The file contains
-//! filesystem paths + a listen address + policy. Which rooms a relay
-//! holds is decided by the rooms themselves (their governance), never by
+//! filesystem paths + a listen address + policy. Which workspaces a relay
+//! holds is decided by the workspaces themselves (their governance), never by
 //! this file. Any secrets stay on disk under those paths and are never
 //! inlined here.
 //!
@@ -90,7 +90,7 @@ pub struct RelayConfig {
     /// This is a navigation destination, not an admission or content-access grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_entry: Option<String>,
-    /// Per-person change and content budgets, for a host whose rooms admit
+    /// Per-person change and content budgets, for a host whose workspaces admit
     /// the public. `None` limits nobody.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_limits: Option<MemberLimitsConfig>,

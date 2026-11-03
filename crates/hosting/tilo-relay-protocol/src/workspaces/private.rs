@@ -1,5 +1,5 @@
-//! The private conversation vocabulary a room's governor serves: two
-//! people's direct messages, which never enter the room's log or its
+//! The private conversation vocabulary a workspace's governor serves: two
+//! people's direct messages, which never enter the workspace's log or its
 //! publication. A native device asks over the governor's dedicated iroh
 //! protocol (`tilo_relay_session::workspaces::private`), a page over its HTTPS
 //! session at [`PRIVATE_PATH`]; both are authenticated by the device
@@ -82,7 +82,7 @@ impl core::fmt::Debug for PrivateOperation {
 pub struct PrivateContact {
     /// Canonical participant public key.
     pub public_key: String,
-    /// The name the room keeps for the person; never one of their devices'
+    /// The name the workspace keeps for the person; never one of their devices'
     /// labels.
     pub display_name: Option<String>,
     /// Whether a conversation between the caller and this person holds
@@ -146,7 +146,7 @@ impl core::fmt::Debug for PrivateReply {
             .finish()
     }
 }
-/// A page's private operation in `room`. The caller is the device its
+/// A page's private operation in `workspace`. The caller is the device its
 /// session authenticated; nothing in the body names one.
 #[derive(Serialize, Deserialize)]
 pub struct PrivateCall {

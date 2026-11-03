@@ -2,7 +2,7 @@
 //!
 //! A device that talks to a relay needs the authenticated session client
 //! ([`RelayClient`]), the co-edit session over it ([`RelayCoeditSession`]),
-//! anti-entropy ([`antientropy`]), resume positions ([`position`]), room
+//! anti-entropy ([`antientropy`]), resume positions ([`position`]), workspace
 //! administration ([`workspaces`]: the names of the actions a relay serves) and
 //! the workspace join client
 //! ([`workspace_join::WorkspaceJoinClient`]). None of them needs the daemon's

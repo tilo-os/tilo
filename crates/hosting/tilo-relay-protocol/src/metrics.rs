@@ -81,12 +81,12 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-/// Bytes one relay room's frames put on the wire since the daemon started.
+/// Bytes one relay workspace's frames put on the wire since the daemon started.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceEgress {
-    /// Every frame of the room written to a peer session.
+    /// Every frame of the workspace written to a peer session.
     pub bytes_sent: u64,
-    /// The room's live fan-out frames (deltas and presence), not replay.
+    /// The workspace's live fan-out frames (deltas and presence), not replay.
     pub bytes_sent_live: u64,
 }
 
