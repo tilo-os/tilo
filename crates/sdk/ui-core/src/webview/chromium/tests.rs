@@ -558,6 +558,14 @@ const PROFILE_FROM_ARGUMENTS: &str =
 
 #[cfg(unix)]
 pub(super) fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    helper_fixture_after("", trailing)
+}
+
+/// [`helper_fixture`] for a host that has to do something before it says it is
+/// ready: `prologue` runs first, so a host that dies before it reports ready
+/// still leaves its mark.
+#[cfg(unix)]
+fn helper_fixture_after(prologue: &str, trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("helper");
     let mut bytes = Vec::new();
@@ -569,7 +577,7 @@ pub(super) fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::P
     let encoded: String = bytes.iter().map(|byte| format!("\\{:03o}", byte)).collect();
     crate::testing::write_executable(
         &path,
-        &format!("#!/bin/sh\nprintf '{encoded}'\n{trailing}\n"),
+        &format!("#!/bin/sh\n{prologue}printf '{encoded}'\n{trailing}\n"),
     );
     (dir, path)
 }
@@ -1484,25 +1492,37 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
     }
 }
 
-/// A host that records its launches and every command it receives in the
-/// profile, and writes `packets` once the test creates `emit` there.
+/// A host that records its launch as soon as it runs, records every command
+/// it receives in the profile, writes `packets` once the test creates `emit`
+/// there, and records that it stopped however it stops.
+///
+/// A host outlives the owner that started it only to serve that owner's
+/// clients, so it is the owner's death that ends it: its input reaches its
+/// end, and a frame it would write has nowhere to go. The last line of a
+/// script is therefore not where a stopped host can be recorded: the exit
+/// trap is, for a host that dies before it ever reports ready included.
 #[cfg(unix)]
 fn shared_fixture(packets: &[u8]) -> (tempfile::TempDir, PathBuf) {
     let encoded: String = packets
         .iter()
         .map(|byte| format!("\\{:03o}", byte))
         .collect();
-    helper_fixture(&format!(
-        "{PROFILE_FROM_ARGUMENTS}\
-         echo spawned >> \"$profile/spawns\"\n\
-         exec 3<&0\n\
-         cat <&3 > \"$profile/commands\" &\n\
-         reader=$!\n\
-         while [ ! -f \"$profile/emit\" ] && kill -0 $reader 2>/dev/null; do sleep 0.01; done\n\
-         if [ -f \"$profile/emit\" ]; then printf '{encoded}'; fi\n\
-         wait\n\
-         printf exited > \"$profile/exited\""
-    ))
+    helper_fixture_after(
+        &format!(
+            "{PROFILE_FROM_ARGUMENTS}\
+             trap 'printf exited > \"$profile/exited\"' EXIT\n\
+             trap '' PIPE\n\
+             echo spawned >> \"$profile/spawns\"\n"
+        ),
+        &format!(
+            "exec 3<&0\n\
+             cat <&3 > \"$profile/commands\" &\n\
+             reader=$!\n\
+             while [ ! -f \"$profile/emit\" ] && kill -0 $reader 2>/dev/null; do sleep 0.01; done\n\
+             if [ -f \"$profile/emit\" ]; then printf '{encoded}'; fi\n\
+             wait"
+        ),
+    )
 }
 
 #[cfg(unix)]
@@ -1899,6 +1919,11 @@ fn a_second_process_browses_through_the_first_processs_host() {
         tilo_test_env::wait_until("the dead owner's host to exit", || {
             profile.join("exited").exists()
         });
+        assert_eq!(
+            host_spawns(&profile),
+            2,
+            "the dead owner's host recorded its launch, however soon it stopped"
+        );
         let next = ChromiumEngine::with_host(&host, &profile).unwrap();
         assert!(next.runtime.link.is_none());
         assert_host_spawns(&profile, 3);
