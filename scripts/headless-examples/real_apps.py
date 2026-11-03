@@ -18,16 +18,16 @@ the toolchain or the RAM for it still gets a session.
 As a library, `Session` is the session and the tools that act in it:
 `Session.start()`, `session.invoke("applications", "so.tilo.notes")` to launch
 an app through the desktop, `session.windows()`, `session.snapshot(path)`,
-`session.click(...)`, `session.type(...)`. `tilolang-e2e.py` and
+`session.click_named(...)`, `session.type(...)`. `tilolang-e2e.py` and
 `canvas-e2e.py` build on it.
 
 As a command:
 
   # start a session, open Notes through the desktop, write the window bar's note title to a PNG
-  python3 scripts/headless-examples/real-apps.py --start --open notes --shot /tmp/notes.png
+  python3 scripts/headless-examples/real_apps.py --start --open notes --shot /tmp/notes.png
 
   # leave it running and drive it with tilo-control from anywhere
-  python3 scripts/headless-examples/real-apps.py --start --keep --state /tmp/my-session
+  python3 scripts/headless-examples/real_apps.py --start --keep --state /tmp/my-session
 
 `--start` prints its ready JSON (control socket, runtime directory, state
 directory, the session script's pid) once the desktop answers with a frame, so
@@ -336,6 +336,14 @@ class Session:
 
     def key(self, key: str) -> dict:
         return self.control({"op": "key", "key": key})
+
+    def chord(self, modifier: str, key: str) -> None:
+        """`modifier` held while `key` is typed, as Ctrl+N is."""
+        self.control({"op": "key_down", "key": modifier})
+        try:
+            self.key(key)
+        finally:
+            self.control({"op": "key_up", "key": modifier})
 
     def snapshot(self, path: Path) -> Path:
         path = Path(path).resolve()
