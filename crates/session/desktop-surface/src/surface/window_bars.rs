@@ -40,6 +40,24 @@ pub(super) struct Bars {
     /// What the person did in the bars, by connection, waiting for the
     /// session to write it to the app.
     events: Vec<(u64, ToolbarEvent)>,
+    /// The name each app gives what its window shows (its bar's location: a
+    /// note's title, a folder's path), by tab, as the bar last read it. A
+    /// window's name is what it shows, so it stands in front of the window's
+    /// own title everywhere the tab is named.
+    names: std::collections::BTreeMap<u64, String>,
+}
+
+impl Bars {
+    /// Take `names` as what the windows' apps call what they show; whether
+    /// that changed anything. The bar reads them from the slots the apps
+    /// declared, so an unchanged pass costs one comparison.
+    fn take_names(&mut self, names: std::collections::BTreeMap<u64, String>) -> bool {
+        if self.names == names {
+            return false;
+        }
+        self.names = names;
+        true
+    }
 }
 
 impl DesktopHandle {
@@ -50,7 +68,7 @@ impl DesktopHandle {
     /// [`DesktopHandle::declare_bar`]).
     #[must_use]
     pub fn window_name(&self, tab: u64) -> Option<String> {
-        self.shared.borrow().window_names.get(&tab).cloned()
+        self.shared.borrow().bars.names.get(&tab).cloned()
     }
 
     /// `connection`'s app declared `toolbar` for `tab`, or none. Shown from
@@ -161,8 +179,11 @@ impl DesktopSurface {
             }
         }
         let mut shared = self.shared.borrow_mut();
-        let named_before = shared.window_names.clone();
-        let mut changed = shared.take_window_names(names.clone());
+        let named_before = shared.bars.names.clone();
+        let mut changed = shared.bars.take_names(names.clone());
+        if changed {
+            shared.changed();
+        }
         let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
             workspace
                 .strips
@@ -242,20 +263,6 @@ impl DesktopSurface {
             }
         }
         changed
-    }
-}
-
-impl super::Shared {
-    /// Take `names` as what the windows' apps call what they show; whether
-    /// that changed anything. The bar reads them from the slots the apps
-    /// declared, so an unchanged pass costs one comparison.
-    fn take_window_names(&mut self, names: std::collections::BTreeMap<u64, String>) -> bool {
-        if self.window_names == names {
-            return false;
-        }
-        self.window_names = names;
-        self.changed();
-        true
     }
 }
 

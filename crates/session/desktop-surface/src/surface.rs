@@ -65,6 +65,7 @@ pub mod peer_view;
 mod personal_ask;
 mod search;
 mod seed;
+mod shared;
 mod shown;
 mod splice;
 mod strip;
@@ -269,35 +270,9 @@ struct Shared {
     /// pass, and what the person did there, for the apps' connections
     /// ([`DesktopHandle::declare_bar`] and its siblings).
     bars: window_bars::Bars,
+    /// What wakes the host holding this desk for a change queued on its handle
+    /// ([`DesktopHandle::set_wake`]).
     wake: crate::wake::Waker,
-    /// The name each app gives what its window shows (its bar's location:
-    /// a note's title, a folder's path), by tab, as the bar last read it
-    /// ([`DesktopHandle::window_name`]). A window's name is what it
-    /// shows, so this stands in front of the window's own title everywhere
-    /// the tab is named.
-    window_names: std::collections::BTreeMap<TabId, String>,
->>>>>>> dc40ff3b94d (fix(search): find apps by name words, name windows by what they show)
-    /// The name each app gives what its window shows (its bar's location:
-    /// a note's title, a folder's path), by tab, as the bar last read it
-    /// ([`DesktopHandle::set_window_names`]). A window's name is what it
-    /// shows, so this stands in front of the window's own title everywhere
-    /// the tab is named.
-    window_names: std::collections::BTreeMap<TabId, String>,
->>>>>>> dc40ff3b94d (fix(search): find apps by name words, name windows by what they show)
-}
-
-impl Shared {
-    fn changed(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
-        self.wake.wake();
-    }
-
-    fn present(&mut self, presentation: Presentation) {
-        if self.presentation != presentation {
-            self.presentation = presentation;
-            self.presented = self.presented.wrapping_add(1);
-        }
-    }
 }
 
 /// The host's side of a mounted [`DesktopSurface`]: read the tree, publish
@@ -912,7 +887,6 @@ impl DesktopSurface {
             peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
             bars: window_bars::Bars::default(),
             wake: crate::wake::Waker::default(),
-            window_names: std::collections::BTreeMap::new(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
         #[cfg(not(target_arch = "wasm32"))]
