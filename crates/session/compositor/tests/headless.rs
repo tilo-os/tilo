@@ -20,6 +20,8 @@ mod idle_inhibit;
 mod ime;
 #[path = "headless/liveness.rs"]
 mod liveness;
+#[path = "headless/seats.rs"]
+mod seats;
 #[path = "headless/session_follow.rs"]
 mod session_follow;
 #[path = "headless/touch.rs"]
@@ -41,9 +43,9 @@ use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
     HostIme, HostKey, HostLayer, HostTextInput, IconArtwork, InputEvent, KeyClaim, KeyboardLayout,
-    OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent,
-    TabletPhase, TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon,
-    WindowInfo, WindowPicture, WindowPolicy,
+    LayoutPoint, LayoutRect, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch,
+    TabletEvent, TabletPadEvent, TabletPhase, TextField, TextFieldRefusal, TextInsertion,
+    WindowEffect, WindowFrame, WindowIcon, WindowInfo, WindowPicture, WindowPolicy,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{

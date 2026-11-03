@@ -61,6 +61,7 @@ mod protocols;
 pub mod remote_input;
 pub mod render;
 mod requests;
+pub mod seats;
 pub mod selection;
 pub mod settings_bridge;
 mod share_stream;
@@ -78,6 +79,8 @@ mod x11_windows;
 mod xdnd;
 mod xdnd_bridge;
 mod xwayland;
+
+pub use seats::{Aim, Seat, WindowAim};
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -1849,6 +1852,178 @@ impl Compositor {
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Why input from another device is refused now — the person cut it, they
+    /// are using this machine's own keyboard or pointer, or the session is
+    /// locked. `None` when it would be let in. What a share checks before it
+    /// acts for a remote viewer at the viewer's own seat.
+    #[must_use]
+    pub fn remote_input_refusal(&self) -> Option<&'static str> {
+        self.data
+            .state
+            .remote_input
+            .refusal(std::time::Instant::now(), self.data.state.locked())
+    }
+
+    /// Open a seat of its own: a pointer and a keyboard beside the person's,
+    /// which only what it aims at hears (see [`seats`]).
+    pub fn open_seat(&mut self) -> Seat {
+        self.data.state.seats.open()
+    }
+
+    /// End `seat`: its window sees the release of every key and button it
+    /// still held, and the seat is gone.
+    pub fn close_seat(&mut self, seat: Seat) {
+        self.data.state.close_seat(seat);
+    }
+
+    /// Aim `seat` at the window of `app`, or at nothing for the whole screen:
+    /// its coordinates are that window's pixels from its top-left, its keys
+    /// go to it, and its screenshots show it.
+    ///
+    /// # Errors
+    /// No window of that app is open, or the compositor has no screen.
+    pub fn seat_aim_app(&mut self, seat: Seat, app: Option<&str>) -> Result<Aim, String> {
+        self.data.state.seat_aim_app(seat, app)
+    }
+
+    /// Aim `seat` at the window a foreign-toplevel identifier names, as a
+    /// shared window is named.
+    ///
+    /// # Errors
+    /// No such window is open on this desk.
+    pub fn seat_aim_window(&mut self, seat: Seat, identifier: &str) -> Result<Aim, String> {
+        self.data.state.seat_aim_window(seat, identifier)
+    }
+
+    /// What `seat` aims at now.
+    #[must_use]
+    pub fn seat_view(&self, seat: Seat) -> Option<Aim> {
+        self.data.state.seat_view(seat)
+    }
+
+    /// Where `seat` left its pointer, in the layout.
+    #[must_use]
+    pub fn seat_pointer(&self, seat: Seat) -> Option<(f64, f64)> {
+        self.data
+            .state
+            .seats
+            .get(seat)
+            .and_then(|held| held.pointer)
+    }
+
+    /// Route one input event as `seat`: its pointer, its keys, in the window it
+    /// aims at, with the person's pointer, focus and holds put back after.
+    /// Whether the seat took it (it takes none while the screen is locked).
+    ///
+    /// # Errors
+    /// The event could not be flushed to the clients.
+    pub fn seat_input(&mut self, seat: Seat, event: &InputEvent) -> Result<bool, Error> {
+        if let InputEvent::Key {
+            keycode,
+            pressed: false,
+        } = &event
+        {
+            // The seat lets go of the key before its release is delivered: it
+            // is not pressed into it again for the release.
+            self.data.state.seat_forget_key(seat, *keycode);
+        }
+        let Some(person) = self.data.state.seat_begin(seat) else {
+            return Ok(false);
+        };
+        self.data.state.seat_deliver(seat, event);
+        self.data.state.seat_end(seat, person);
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(true)
+    }
+
+    /// Type `text` as `seat`, by the keys the layout puts its characters on:
+    /// what the person's keyboard would type into that window. Whether every
+    /// character was a key of the layout (the rest are written as text).
+    ///
+    /// # Errors
+    /// The keys could not be flushed to the client.
+    pub fn seat_text(&mut self, seat: Seat, text: &str) -> Result<bool, Error> {
+        let Some(person) = self.data.state.seat_begin(seat) else {
+            return Ok(false);
+        };
+        self.sync_text_input();
+        let mut typed = true;
+        for ch in text.chars() {
+            let Some(stroke) = self.data.state.stroke_for(ch) else {
+                typed = false;
+                let _ = self.data.state.insert_active_text(&ch.to_string());
+                continue;
+            };
+            let time = self.data.state.now_ms();
+            for modifier in &stroke.modifiers {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                self.data.state.key(modifier.key, true, serial, time);
+            }
+            for pressed in [true, false] {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                self.data.state.key(stroke.key, pressed, serial, time);
+            }
+            for modifier in stroke.modifiers.iter().rev() {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                self.data.state.key(modifier.key, false, serial, time);
+            }
+        }
+        self.data.state.seat_end(seat, person);
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(typed)
+    }
+
+    /// Ask the window `seat` aims at to close, as its own close button would.
+    /// Whether it had a window to ask.
+    pub fn seat_close_window(&mut self, seat: Seat) -> bool {
+        let Some(aim) = self
+            .data
+            .state
+            .seats
+            .get(seat)
+            .and_then(|held| held.aim.clone())
+        else {
+            return false;
+        };
+        self.data.state.close_window(aim.id);
+        true
+    }
+
+    /// What `seat` sees now: its window's pixels, or the screen its pointer is
+    /// on.
+    ///
+    /// # Errors
+    /// The display is asleep, the window is gone, or nothing could be drawn.
+    pub fn seat_screenshot(&mut self, seat: Seat) -> Result<Screenshot, String> {
+        let aim = self
+            .data
+            .state
+            .seat_view(seat)
+            .ok_or_else(|| "this seat has ended".to_owned())?;
+        let target = if let Some(window) = &aim.window {
+            capture::Target::window(&window.identifier)
+        } else {
+            let pointer = (self.data.state.pointer.x, self.data.state.pointer.y);
+            let name = self
+                .outputs()
+                .into_iter()
+                .find(|output| {
+                    output.rect.is_some_and(|(x, y, w, h)| {
+                        pointer.0 >= f64::from(x)
+                            && pointer.0 < f64::from(x.saturating_add(w))
+                            && pointer.1 >= f64::from(y)
+                            && pointer.1 < f64::from(y.saturating_add(h))
+                    })
+                })
+                .map(|output| output.name)
+                .ok_or_else(|| "no display is on to take a picture of".to_owned())?;
+            capture::Target::output(name)
+        };
+        self.read_back(&target).map_err(|error| error.to_string())
     }
 
     /// Cut every remote input: nothing from another device reaches the seat

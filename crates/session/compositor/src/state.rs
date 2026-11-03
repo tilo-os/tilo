@@ -126,7 +126,7 @@ pub(crate) struct Closing {
 
 /// Where the pointer's events go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PointerTarget {
+pub(crate) enum PointerTarget {
     /// A client surface (or nothing): the seat's own focus tracks which.
     Clients,
     /// The hosted surface at this index of [`State::hosts`].
@@ -172,7 +172,12 @@ pub struct State {
     /// The primary monitor the policy was last told of.
     told_primary: Option<String>,
     pub(crate) pointer: Point<f64, Logical>,
-    pointer_target: PointerTarget,
+    pub(crate) pointer_target: PointerTarget,
+    /// The seats beside the person's: an agent's, a viewer's (§ seats).
+    pub(crate) seats: crate::seats::Seats,
+    /// A seat's keys are the app-facing seat's for this delivery: no hosted
+    /// surface takes them, and they reach the client the seat aims at.
+    pub(crate) seat_keys_only: bool,
     pub(crate) protocols: crate::protocols::Protocols,
     /// The GPU clients import their dma-bufs on, as `linux-dmabuf` told
     /// them ([`crate::State::enable_dmabuf`]); a render service allocates
@@ -337,6 +342,8 @@ impl State {
             told_primary: None,
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
+            seats: crate::seats::Seats::default(),
+            seat_keys_only: false,
             protocols,
             render_node: None,
             icons: crate::toplevel_icon::Icons::default(),
@@ -797,7 +804,12 @@ impl State {
                 horizontal,
                 vertical,
             } => self.pointer_axis(horizontal, vertical, time),
-            InputEvent::Key { keycode, pressed } => self.key(keycode, pressed, serial, time),
+            InputEvent::Key { keycode, pressed } => {
+                // The person's own keyboard, kept so a seat's next event puts
+                // their held keys aside and gives them back.
+                self.seats.hold_person_key(keycode, pressed);
+                self.key(keycode, pressed, serial, time);
+            }
             InputEvent::TouchDown { slot, x, y } => {
                 self.touch_down(slot, Point::from((x, y)), serial, time);
             }
@@ -819,7 +831,7 @@ impl State {
     /// Route a key: a press to the hosted surface that claims it, else to
     /// the topmost one that wants the keyboard, else to the focused client;
     /// a release to where its press went ([`crate::keys`]).
-    fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
+    pub(crate) fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -928,7 +940,7 @@ impl State {
     /// the top of the stack down. A held modifier's release reaches what it
     /// opened; a client holding the desktop's shortcuts has its releases too.
     fn release_host(&mut self, key: &HostKey) -> Option<usize> {
-        if self.shortcut_inhibit.is_active() {
+        if self.seat_keys_only || self.shortcut_inhibit.is_active() {
             return None;
         }
         let locked = self.locked();
@@ -964,6 +976,11 @@ impl State {
         repeats: bool,
         now: Instant,
     ) -> Option<usize> {
+        if self.seat_keys_only {
+            // A seat's key belongs to the client the seat aims at, whatever
+            // the person has open over it.
+            return None;
+        }
         let composing = self.composing();
         for index in (0..self.hosts.len()).rev() {
             if composing == Some(index) {
@@ -1030,7 +1047,7 @@ impl State {
         }
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64, time: u32) {
+    pub(crate) fn pointer_axis(&mut self, horizontal: f64, vertical: f64, time: u32) {
         if let PointerTarget::Host(index) = self.pointer_target {
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_axis(horizontal, vertical);
@@ -1121,6 +1138,11 @@ impl State {
     }
 
     pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+        // Somebody else already holds this button: the one pointer the windows
+        // see stays down until the last of them lets go.
+        if !self.seats.hold_person_button(button, pressed) {
+            return;
+        }
         if pressed {
             self.buttons_down.insert(button);
         } else {
@@ -1180,6 +1202,55 @@ impl State {
         }
         if !pressed {
             self.x11_drag_motion(self.pointer);
+        }
+    }
+
+    /// Deliver one pointer button as a seat pressed it: to the client under
+    /// the pointer, focusing nothing and raising nothing.
+    pub(crate) fn seat_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+        if pressed {
+            self.buttons_down.insert(button);
+        } else {
+            self.buttons_down.remove(&button);
+        }
+        self.pointer_target = PointerTarget::Clients;
+        let state = if pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        pointer.button(
+            self,
+            &ButtonEvent {
+                button,
+                state,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Give the window with `id` the keyboard, for a seat's keys: it is not
+    /// raised and stays inactive, so the person's desk looks as it did.
+    pub(crate) fn focus_window_id(&mut self, id: u64, serial: Serial) {
+        let surface = self
+            .space
+            .elements()
+            .find(|window| {
+                describe(&self.display, &self.icons, window).is_some_and(|info| info.id == id)
+            })
+            .and_then(|window| {
+                window
+                    .toplevel()
+                    .map(|toplevel| toplevel.wl_surface().clone())
+                    .or_else(|| crate::xwayland::x11_wl_surface(window))
+            });
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, surface, serial);
         }
     }
 
@@ -1569,7 +1640,7 @@ fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
 }
 
 /// What a policy learns about a toplevel.
-fn window_info(
+pub(crate) fn window_info(
     display: &DisplayHandle,
     icons: &crate::toplevel_icon::Icons,
     toplevel: &ToplevelSurface,
