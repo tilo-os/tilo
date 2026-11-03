@@ -81,10 +81,10 @@ pub(crate) fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceA
         | NeighbourMsg::SurfaceViewRequest { .. }
         // Ephemeral presence and liveness of a member who can see the
         // workspace; nothing is written to its state.
-        | NeighbourMsg::PresenceMoved { .. }
-        | NeighbourMsg::PresenceCleared { .. }
+        | NeighbourMsg::RetiredPresenceMoved { .. }
+        | NeighbourMsg::RetiredPresenceCleared { .. }
         | NeighbourMsg::Heartbeat { .. }
-        | NeighbourMsg::AppPresenceV2 { .. }
+        | NeighbourMsg::RetiredAppPresenceV2 { .. }
         | NeighbourMsg::LivePresence { .. }
         // The sender's own device certificate, which only the workspace's
         // governor may promote into its governance.
@@ -189,7 +189,7 @@ mod tests {
                 Some(change()),
             ),
             (
-                NeighbourMsg::PresenceMoved {
+                NeighbourMsg::RetiredPresenceMoved {
                     peer: 1,
                     user: "ada".into(),
                     key: "cursor".into(),
@@ -200,7 +200,7 @@ mod tests {
                 Some(read()),
             ),
             (
-                NeighbourMsg::PresenceCleared {
+                NeighbourMsg::RetiredPresenceCleared {
                     peer: 1,
                     key: "cursor".into(),
                 },
@@ -283,7 +283,7 @@ mod tests {
                 Some(comment()),
             ),
             (
-                NeighbourMsg::AppPresenceV2 {
+                NeighbourMsg::RetiredAppPresenceV2 {
                     peer: 1,
                     app_id: "so.tilo.notes".into(),
                     cluster_id: WORKSPACE.into(),

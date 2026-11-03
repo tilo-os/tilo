@@ -75,7 +75,7 @@ async fn a_native_client_over_https_shares_the_workspace_with_an_iroh_one() {
     subscribed(&https).await;
 
     let body = b"hello from the laptop".to_vec();
-    iroh.send(Envelope::Presence {
+    iroh.send(Envelope::RetiredPresence {
         workspace_id: workspace(),
         payload: AttributedPresence {
             author: laptop.cert.device_public_key,
@@ -87,7 +87,7 @@ async fn a_native_client_over_https_shares_the_workspace_with_an_iroh_one() {
     .unwrap();
     let seen = tilo_test_env::within("the presence reaches the HTTPS client", async {
         loop {
-            if let Some(Envelope::Presence { payload, .. }) = https.recv().await {
+            if let Some(Envelope::RetiredPresence { payload, .. }) = https.recv().await {
                 break AttributedPresence::decode(&payload).unwrap();
             }
         }

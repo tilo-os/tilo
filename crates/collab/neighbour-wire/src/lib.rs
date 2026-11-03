@@ -102,9 +102,10 @@ pub fn workspace_key(room: &str) -> Vec<u8> {
     .unwrap_or_default()
 }
 
-/// One presence message of a device's desktop in `room`: `key` names what the
-/// message is about (the workspace itself, a pointer's tile) and `payload` is
-/// what it says there.
+/// Retired: one presence message of a device's desktop in `room`. Presence is
+/// a frame on the workspace's live plane now
+/// ([`collab_types::presence::Presence`]); this stays only so a caller of the
+/// old encoding still compiles, and it goes with the retired generation.
 #[must_use]
 pub fn desktop_presence(
     peer: PeerId,
@@ -112,7 +113,7 @@ pub fn desktop_presence(
     key: Vec<u8>,
     payload: collab_types::PeerPresencePayload,
 ) -> NeighbourMsg {
-    NeighbourMsg::AppPresenceV2 {
+    NeighbourMsg::RetiredAppPresenceV2 {
         peer,
         app_id: DESKTOP_PRESENCE_APP.to_owned(),
         cluster_id: room.to_owned(),
@@ -160,7 +161,7 @@ pub type PresenceColour = Option<String>;
 
 /// Tagged envelope for everything that crosses the neighbour boundary.
 ///
-/// `f64` lives inside [`NeighbourMsg::PresenceMoved`] so we cannot derive
+/// `f64` lives inside [`NeighbourMsg::RetiredPresenceMoved`] so we cannot derive
 /// [`Eq`]; [`PartialEq`] is sufficient for tests and dispatch logic.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum NeighbourMsg {
@@ -190,15 +191,11 @@ pub enum NeighbourMsg {
     /// `room`. The blobs carry the workspace identity too; the receiver checks the two
     /// agree before merging.
     SyncResp { changes: Vec<Vec<u8>>, room: String },
-    /// Peer's presence cursor moved within `key`'s coordinate space.
-    ///
-    /// `peer` identifies the publishing **session** — all windows under one
-    /// session share one cursor, and the receiver's own per-connection ids never
-    /// leave the host that minted them. `user` is the session's claim of who is
-    /// there (the sender's local user id), not something the
-    /// receiver infers; empty falls back to showing the session handle.
-    /// `colour` is the colour the person there wears ([`PresenceColour`]).
-    PresenceMoved {
+    /// Retired: a peer's presence cursor moved within `key`'s coordinate
+    /// space. A pointer move is a frame on the workspace's live plane now; no
+    /// build produces this, and it stays only so every later Postcard
+    /// discriminant keeps its value.
+    RetiredPresenceMoved {
         peer: PeerId,
         user: String,
         key: PresenceKey,
@@ -207,8 +204,11 @@ pub enum NeighbourMsg {
         #[serde(default)]
         colour: PresenceColour,
     },
-    /// Peer's presence cursor disappeared from `key`'s coordinate space.
-    PresenceCleared { peer: PeerId, key: PresenceKey },
+    /// Retired: a peer's presence cursor disappeared from `key`'s coordinate
+    /// space. A leaving pointer is a frame on the workspace's live plane now;
+    /// no build produces this, and it stays only so every later Postcard
+    /// discriminant keeps its value.
+    RetiredPresenceCleared { peer: PeerId, key: PresenceKey },
     /// One encoded access unit (H.264/HEVC), frame (VP9) or temporal unit
     /// (AV1) for a shared surface, in the codec the preceding
     /// [`Self::SurfaceStreamStart`] named. `encoded_h264` keeps its historical
@@ -347,10 +347,11 @@ pub enum NeighbourMsg {
         /// to fan it to local apps or drop it with an audit-log entry.
         envelope: Box<collab_types::SignedOp>,
     },
-    /// App-level presence crossing the host boundary. Presence is cluster scoped,
-    /// so a participant remains visible while moving between apps in one workspace.
-    /// `colour` is the colour the person there wears ([`PresenceColour`]).
-    AppPresenceV2 {
+    /// Retired: app-level presence crossing the host boundary. An app's
+    /// presence is a frame on the workspace's live plane now; no build
+    /// produces this, and it stays only so every later Postcard discriminant
+    /// keeps its value.
+    RetiredAppPresenceV2 {
         peer: PeerId,
         app_id: String,
         cluster_id: String,
@@ -596,11 +597,13 @@ impl NeighbourMsg {
             // receiver must see before trusting the certificate.
             Self::IdentityAnnouncement { .. }
             // Never acted on; control consent rides `PermissionGrant`.
-            | Self::PermissionRequest { .. } => true,
+            | Self::PermissionRequest { .. }
+            // Presence is a frame on the workspace's live plane.
+            | Self::RetiredPresenceMoved { .. }
+            | Self::RetiredPresenceCleared { .. }
+            | Self::RetiredAppPresenceV2 { .. } => true,
             Self::SyncReq { .. }
             | Self::SyncResp { .. }
-            | Self::PresenceMoved { .. }
-            | Self::PresenceCleared { .. }
             | Self::SurfaceFrame { .. }
             | Self::SurfaceStreamStart { .. }
             | Self::SurfaceStreamEnd { .. }
@@ -609,7 +612,6 @@ impl NeighbourMsg {
             | Self::Heartbeat { .. }
             | Self::IdentityHello { .. }
             | Self::AppDocument { .. }
-            | Self::AppPresenceV2 { .. }
             | Self::ScrollbackRequest { .. }
             | Self::ScrollbackResponse { .. }
             | Self::IdentityAnnouncementV2 { .. }
@@ -634,8 +636,8 @@ impl NeighbourMsg {
         match self {
             Self::SyncReq { .. } => "SyncReq",
             Self::SyncResp { .. } => "SyncResp",
-            Self::PresenceMoved { .. } => "PresenceMoved",
-            Self::PresenceCleared { .. } => "PresenceCleared",
+            Self::RetiredPresenceMoved { .. } => "RetiredPresenceMoved",
+            Self::RetiredPresenceCleared { .. } => "RetiredPresenceCleared",
             Self::SurfaceFrame { .. } => "SurfaceFrame",
             Self::SurfaceStreamStart { .. } => "SurfaceStreamStart",
             Self::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
@@ -645,7 +647,7 @@ impl NeighbourMsg {
             Self::Heartbeat { .. } => "Heartbeat",
             Self::IdentityHello { .. } => "IdentityHello",
             Self::AppDocument { .. } => "AppDocument",
-            Self::AppPresenceV2 { .. } => "AppPresenceV2",
+            Self::RetiredAppPresenceV2 { .. } => "RetiredAppPresenceV2",
             Self::ScrollbackRequest { .. } => "ScrollbackRequest",
             Self::ScrollbackResponse { .. } => "ScrollbackResponse",
             Self::IdentityAnnouncement { .. } => "IdentityAnnouncement",
@@ -869,7 +871,7 @@ mod tests {
             ),
             (
                 "presence moved",
-                NeighbourMsg::PresenceMoved {
+                NeighbourMsg::RetiredPresenceMoved {
                     peer: 42,
                     user: "bob".into(),
                     key: "cursor".into(),
@@ -880,7 +882,7 @@ mod tests {
             ),
             (
                 "presence cleared",
-                NeighbourMsg::PresenceCleared {
+                NeighbourMsg::RetiredPresenceCleared {
                     peer: 42,
                     key: "cursor".into(),
                 },
@@ -1049,7 +1051,7 @@ mod tests {
             ),
             (
                 "app presence",
-                NeighbourMsg::AppPresenceV2 {
+                NeighbourMsg::RetiredAppPresenceV2 {
                     peer: 0x00AB_CDEF,
                     app_id: "notes".into(),
                     cluster_id: WORKSPACE.into(),

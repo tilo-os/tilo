@@ -326,7 +326,7 @@ impl RoomRecords {
         }
         .encode()
         .map_err(|error| error.to_string())?;
-        let envelope = Envelope::Presence {
+        let envelope = Envelope::RetiredPresence {
             workspace_id,
             payload,
         };

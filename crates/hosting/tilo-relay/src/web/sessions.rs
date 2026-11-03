@@ -335,7 +335,7 @@ impl Sessions {
     ) -> Result<(), SessionError> {
         let mut bytes = Vec::new();
         for envelope in &envelopes {
-            if let Envelope::LiveJoin { workspace_id } = envelope {
+            if let Envelope::RetiredLiveJoin { workspace_id } = envelope {
                 lock(&session.workspaces).insert(*workspace_id);
             }
             bytes.extend(

@@ -494,7 +494,7 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
             to: to_device_public_key,
             reason,
         }),
-        Envelope::LiveMember {
+        Envelope::RetiredLiveMember {
             workspace_id,
             device_public_key,
             active,
@@ -2753,7 +2753,7 @@ impl Task {
                 self.fail("protocol-rejected", reason.clone());
                 self.acknowledge(op, Err(reason));
             }
-            Envelope::Live {
+            Envelope::RetiredLive {
                 workspace_id,
                 from_device_public_key,
                 frame,

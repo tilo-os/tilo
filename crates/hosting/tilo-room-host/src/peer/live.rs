@@ -45,7 +45,7 @@ pub(super) async fn handle_live_join(
     for device in members {
         // Live state is never authority: a member notice lost to a full
         // queue costs only a late cursor.
-        let _ = session.outbound.try_send(Envelope::LiveMember {
+        let _ = session.outbound.try_send(Envelope::RetiredLiveMember {
             workspace_id,
             device_public_key: device,
             active: true,
@@ -262,7 +262,7 @@ pub(super) async fn handle_live(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
-    let stamped = Envelope::Live {
+    let stamped = Envelope::RetiredLive {
         workspace_id,
         from_device_public_key: peer.device_public_key,
         frame,
@@ -288,7 +288,7 @@ pub(super) async fn handle_presence(
     let mut slot = None;
     // A presence that is no toolkit presence may ask the room for content.
     let mut asks = None;
-    let Envelope::Presence { workspace_id, .. } = &env else {
+    let Envelope::RetiredPresence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
         ));
@@ -305,7 +305,7 @@ pub(super) async fn handle_presence(
         None => false,
     };
     if !attached
-        && let Envelope::Presence { payload, .. } = &mut env
+        && let Envelope::RetiredPresence { payload, .. } = &mut env
         && let Some(mut attributed) = crate::AttributedPresence::decode(payload)
     {
         // Co-edit receivers recover the author from this opaque wrapper.

@@ -1718,15 +1718,10 @@ fn other_member_arrives(lounge: &Lounge) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.publish_presence(
         tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
-        vec![
-            postcard::to_stdvec(&neighbour_wire::desktop_presence(
-                neighbour_wire::peer_handle(&lounge.page_device.device_public_key),
-                &lounge.workspace,
-                neighbour_wire::workspace_key(&lounge.workspace),
-                collab_types::PeerPresencePayload::Arrived,
-            ))
-            .expect("a presence body"),
-        ],
+        vec![collab_types::presence::Presence::desktop(
+            &lounge.workspace,
+            collab_types::PeerPresencePayload::Arrived,
+        )],
     )
     .expect("the other member says they are here");
 }
@@ -1735,23 +1730,14 @@ fn other_member_arrives(lounge: &Lounge) {
 /// `tab` in the workspace.
 fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
-    let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
-        space: collab_types::presence::PointerSpace::Tile {
-            workspace: lounge.workspace.clone(),
-            tab,
-        },
-    })
-    .expect("a pointer key");
-    let body = postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(&lounge.page_device.device_public_key),
-        &lounge.workspace,
-        key,
-        collab_types::PeerPresencePayload::Pointer { x, y },
-    ))
-    .expect("a pointer body");
     page.publish_presence(
         tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
-        vec![body],
+        vec![collab_types::presence::Presence::pointing(
+            &lounge.workspace,
+            tab,
+            x,
+            y,
+        )],
     )
     .expect("the other member's pointer moves");
 }

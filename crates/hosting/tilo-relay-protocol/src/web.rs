@@ -158,9 +158,9 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
     let payload = match envelope {
         Envelope::Delta { delta, .. } | Envelope::Commit { delta, .. } => delta.len(),
         Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
-        Envelope::Presence { payload, .. } => payload.len(),
+        Envelope::RetiredPresence { payload, .. } => payload.len(),
         Envelope::Compacted { statement, .. } => statement.len(),
-        Envelope::Live { frame, .. }
+        Envelope::RetiredLive { frame, .. }
         | Envelope::RemoteAction { frame, .. }
         | Envelope::HostAction { frame }
         | Envelope::RecordContentWant { frame, .. }

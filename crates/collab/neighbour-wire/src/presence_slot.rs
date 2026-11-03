@@ -49,7 +49,7 @@ impl PresenceSlot {
 
 impl NeighbourMsg {
     /// Postcard variant indices of the only messages that can have a
-    /// [`PresenceSlot`]: [`Self::PresenceMoved`] and [`Self::AppPresenceV2`].
+    /// [`PresenceSlot`]: [`Self::RetiredPresenceMoved`] and [`Self::RetiredAppPresenceV2`].
     /// A reader that sees any other first byte need not decode the message
     /// (it may be a video frame) to know it has none. Wire-frozen, like
     /// [`Self::APP_DOCUMENT_TAG`]; a unit test pins both.
@@ -59,10 +59,10 @@ impl NeighbourMsg {
     /// one from the same author, or `None` when every copy must be delivered.
     pub fn presence_slot(&self) -> Option<PresenceSlot> {
         match self {
-            Self::PresenceMoved { key, .. } => {
+            Self::RetiredPresenceMoved { key, .. } => {
                 Some(PresenceSlot::of("pointer", true, &[key.as_bytes()]))
             }
-            Self::AppPresenceV2 {
+            Self::RetiredAppPresenceV2 {
                 app_id,
                 cluster_id,
                 presence,
@@ -94,7 +94,7 @@ mod tests {
     use collab_types::PeerPresence;
 
     fn app(key: &[u8], payload: PeerPresencePayload) -> NeighbourMsg {
-        NeighbourMsg::AppPresenceV2 {
+        NeighbourMsg::RetiredAppPresenceV2 {
             peer: 7,
             app_id: "so.tilo.word-processor".into(),
             cluster_id: "workspace".into(),
@@ -107,7 +107,7 @@ mod tests {
     }
 
     fn pointer(key: &str, x: f64) -> NeighbourMsg {
-        NeighbourMsg::PresenceMoved {
+        NeighbourMsg::RetiredPresenceMoved {
             peer: 7,
             user: "user".into(),
             key: key.into(),
@@ -154,7 +154,7 @@ mod tests {
             ],
             NeighbourMsg::SLOTTED_PRESENCE_TAGS
         );
-        let cleared = NeighbourMsg::PresenceCleared {
+        let cleared = NeighbourMsg::RetiredPresenceCleared {
             peer: 7,
             key: "tile".into(),
         };
@@ -169,7 +169,7 @@ mod tests {
         );
         assert_eq!(app(b"tab", PeerPresencePayload::Left).presence_slot(), None);
         assert_eq!(
-            NeighbourMsg::PresenceCleared {
+            NeighbourMsg::RetiredPresenceCleared {
                 peer: 7,
                 key: "tile".into()
             }

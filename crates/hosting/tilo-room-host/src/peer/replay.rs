@@ -85,7 +85,7 @@ const fn state_frame_room(frame: &Envelope) -> Option<(u64, bool)> {
         Envelope::Delta { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
         | Envelope::RoomBootstrap { workspace_id, .. }
-        | Envelope::Presence { workspace_id, .. } => Some((*workspace_id, true)),
+        | Envelope::RetiredPresence { workspace_id, .. } => Some((*workspace_id, true)),
         Envelope::SyncResponse { workspace_id, .. } => Some((*workspace_id, false)),
         _ => None,
     }
