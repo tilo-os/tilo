@@ -1102,6 +1102,9 @@ pub struct Work {
     pub index_fields: u64,
     /// Items a filter was evaluated on one by one (one no column of the index answers).
     pub evaluated: u64,
+    /// Records publication looked at, one per record per turn: a change republishes what it
+    /// touched, whatever the workspace holds.
+    pub published: u64,
     /// Patches the views sent the window: what a frame changed on screen.
     pub patches: u64,
     /// Allocations on the thread that ran it, when the program counts them
@@ -1127,12 +1130,13 @@ impl Work {
             pages: reads.index.pages,
             index_fields: reads.index.fields,
             evaluated: reads.evaluated,
+            published: workspace.published.visited(),
             patches: 0,
             allocations: allocations(),
         }
     }
 
-    fn counts(self) -> [u64; 12] {
+    fn counts(self) -> [u64; 13] {
         [
             self.renders,
             self.items,
@@ -1144,12 +1148,13 @@ impl Work {
             self.pages,
             self.index_fields,
             self.evaluated,
+            self.published,
             self.patches,
             self.allocations,
         ]
     }
 
-    fn from_counts(c: [u64; 12]) -> Self {
+    fn from_counts(c: [u64; 13]) -> Self {
         let [
             renders,
             items,
@@ -1161,6 +1166,7 @@ impl Work {
             pages,
             index_fields,
             evaluated,
+            published,
             patches,
             allocations,
         ] = c;
@@ -1175,12 +1181,13 @@ impl Work {
             pages,
             index_fields,
             evaluated,
+            published,
             patches,
             allocations,
         }
     }
 
-    const NAMES: [&'static str; 12] = [
+    const NAMES: [&'static str; 13] = [
         "renders",
         "items",
         "located",
@@ -1191,13 +1198,14 @@ impl Work {
         "pages",
         "index_fields",
         "evaluated",
+        "published",
         "patches",
         "allocations",
     ];
 
     fn zip(self, other: Self, f: impl Fn(u64, u64) -> u64) -> Self {
         let (a, b) = (self.counts(), other.counts());
-        let mut out = [0u64; 12];
+        let mut out = [0u64; 13];
         for ((slot, x), y) in out.iter_mut().zip(a).zip(b) {
             *slot = f(x, y);
         }
@@ -1237,7 +1245,7 @@ impl Work {
 
     fn from_json(work: &Json) -> Option<Self> {
         work.get("renders")?;
-        let mut counts = [0u64; 12];
+        let mut counts = [0u64; 13];
         for (slot, name) in counts.iter_mut().zip(Self::NAMES) {
             // A record of before the index counts none of its reads.
             *slot = work.get(name).and_then(Json::as_u64).unwrap_or(0);

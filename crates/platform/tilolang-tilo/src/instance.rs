@@ -90,6 +90,16 @@ pub trait Publication {
     fn update(&self);
     /// Whether records are still being read off the frame.
     fn pending(&self) -> bool;
+    /// How many records the updates so far have looked at, one per record per turn: what
+    /// publishing a change costs, whatever the workspace holds.
+    fn visited(&self) -> u64 {
+        0
+    }
+    /// How many times the updates so far have read every record in full
+    /// ([`Publications::sweeps`](crate::publish::Publications::sweeps)).
+    fn sweeps(&self) -> u64 {
+        0
+    }
 }
 
 /// What an instance asks of whatever runs it.
@@ -558,6 +568,24 @@ impl Instance {
     #[must_use]
     pub fn host(&self) -> Option<Host> {
         self.host.borrow().clone()
+    }
+
+    /// How many records the instance's publication has looked at so far, one per record per
+    /// turn ([`Publication::visited`]).
+    #[must_use]
+    pub fn visited_records(&self) -> u64 {
+        self.publication
+            .as_ref()
+            .map_or(0, |publication| publication.visited())
+    }
+
+    /// How many times the instance's publication has read every record in full
+    /// ([`Publication::sweeps`]).
+    #[must_use]
+    pub fn sweeps(&self) -> u64 {
+        self.publication
+            .as_ref()
+            .map_or(0, |publication| publication.sweeps())
     }
 
     /// How long from the platform's clock now until the time a view of the window read
