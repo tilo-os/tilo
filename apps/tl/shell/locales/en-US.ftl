@@ -927,6 +927,8 @@ d-gctjtdv7 = Desk
 d-6jkhhsvr = Desk around
     .w-dock = Dock
 
+d-w3f6bqf5 = Screen
+
 d-bhxvwkho = Shown preset
 
 d-afjfzjl6 = Bar on edge
@@ -1138,6 +1140,8 @@ d-scru4wch = Strip controls
     .w-wide = Wide
 
 d-so5z33zr = Tab chip
+
+d-oyjbbzbk = Place content
 
 d-43am22do = Place view
 

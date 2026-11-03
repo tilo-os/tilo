@@ -181,6 +181,21 @@ pub struct Surface {
 /// never a search of its own (shell.md §8, "Finding what to place").
 pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 
+/// Whether `hit` names a resource the arrangement can place: an app's own
+/// search hit, or an action hit that acts on one. This is the one test a
+/// text typed on the canvas and an agent's `find` share, so both lead with
+/// the same result.
+#[must_use]
+pub fn names_a_resource(hit: &tilo_desktop_search::Hit) -> bool {
+    match &hit.target {
+        tilo_desktop_search::Target::Invoke(invoke) => {
+            invoke.address.action == tilo_desktop_search::OPEN_ACTION
+        }
+        tilo_desktop_search::Target::Action(_) => true,
+        _ => false,
+    }
+}
+
 /// The first resource `text` finds that a place can show, as the arrangement
 /// places it: the top hit that names a resource (an app's own search hit) and
 /// that `shows` accepts, else the resource such an action hit acts on, else

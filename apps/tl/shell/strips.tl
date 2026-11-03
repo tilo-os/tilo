@@ -140,7 +140,7 @@ view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
             }
         }
         if let p = shown {
-            place_view(p)
+            place_content(p)
         } else {
             ui.EmptyState("Nothing here", inline: true)
         }
@@ -173,6 +173,18 @@ view strip_controls(a: Arrangement, s: ArrangementStrip, shown: Option<Arrangeme
 /// One tab of a column: the place it stands for, lit when it is the place in front.
 view tab_chip(p: ArrangementPlace, current: Bool) {
     ui.Chip(place_title(p), selected: .some(current))
+}
+
+/// A place's body: its resource drawn inline through the view it names, as its own app's code
+/// (shell.md §8, "The canvas composes views"), or the well the app's window shows in when there
+/// is no resource here to draw (a terminal, a legacy window), filling the room it is given. The
+/// shell never draws a place's content itself; the pin, close and move controls are the frame's
+/// chrome, outside it (`place_controls`).
+///
+/// Every preset draws a place through this one view — a strip's body, a framed canvas pin, a
+/// space on the frameless canvas — so a place looks the same whichever preset shows it.
+view place_content(p: ArrangementPlace) {
+    place_view(p, fill)
 }
 
 /// What stands where a place's content goes: its record drawn through the view the place names

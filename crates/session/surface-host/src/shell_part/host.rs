@@ -103,6 +103,15 @@ impl SurfaceHost for ShellPart {
         self.widgets.pointer_button(button, pressed);
     }
 
+    /// A press landed somewhere else — a window over the shell, or another surface of the
+    /// session's: the field the person left gives the keyboard up, so what they type next
+    /// reaches whatever they pressed on. The shell keeps its record (what was typed stands);
+    /// only the caret goes.
+    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
+        self.input = true;
+        self.widgets.clear_focus();
+    }
+
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
         self.input = true;
         self.widgets.pointer_axis(horizontal, vertical);
@@ -135,7 +144,15 @@ impl SurfaceHost for ShellPart {
         // While a surface of the desk's is up it answers the keyboard: the switcher walks,
         // every surface closes on Esc, and a field in one takes what is typed. A modifier's
         // release reaches it this way too, since its press came before the surface was up.
-        self.cover || SurfaceHost::wants_keyboard(&self.widgets)
+        if self.cover {
+            return true;
+        }
+        // A field of the part's that the person put the caret in takes what is typed next: the
+        // canvas's entry, a conversation's line, the launcher's search, and every other field
+        // the shell draws. The part reports the same field as its [`Self::text_input`], so a
+        // field the input method composes into is a field the part's keys reach. A part with no
+        // such field leaves the keys to the window in front, as the desk under the windows does.
+        self.text_input().is_some()
     }
 
     /// The regions the shell's translucent material records: the compositor blurs what lies

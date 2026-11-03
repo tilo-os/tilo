@@ -1,3 +1,4 @@
+use crate::theme_document::ThemeIcons;
 pub use crate::theme_document::{
     MotionCurve, Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial,
     ThemeMotion, ThemeShape, ThemeType, ThemeWeight, ThemeWeights,
@@ -144,6 +145,11 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
             } else {
                 crate::tokens::Response::STOCK
             });
+    tokens.icon_stroke_px = document
+        .icons
+        .map_or(crate::icons::LUCIDE_DEFAULT_STROKE_PX as f32, |icons| {
+            clamp_to(icons.stroke, &ThemeIcons::STROKE_ADMITTED)
+        });
     tokens.selector = if document.palette.high_contrast {
         crate::tokens::SelectorFinish::OPAQUE
     } else {

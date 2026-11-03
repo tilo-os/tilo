@@ -179,8 +179,15 @@ impl Widget for IconWidget {
         if self.icon.is_brand() {
             self.icon.draw_filled(scene, transform, self.rect, color);
         } else {
+            // The theme's icon role sets the outline's weight; an explicit
+            // `with_stroke` still wins where a call site states one.
+            let stroke = if (self.stroke_px - LUCIDE_DEFAULT_STROKE_PX).abs() < f64::EPSILON {
+                f64::from(theme.tokens.icon_stroke_px)
+            } else {
+                self.stroke_px
+            };
             self.icon
-                .draw_with_stroke(scene, transform, self.rect, color, self.stroke_px);
+                .draw_with_stroke(scene, transform, self.rect, color, stroke);
         }
     }
 

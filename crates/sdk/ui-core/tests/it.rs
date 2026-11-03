@@ -181,6 +181,9 @@ mod workspace_view_test;
 
 mod canonical_record_owner;
 
+#[path = "finish_render.rs"]
+mod finish_render;
+
 mod application_contract;
 
 #[path = "bound_component_dispatch.rs"]

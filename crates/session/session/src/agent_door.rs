@@ -1153,6 +1153,13 @@ fn refuse_control(mut stream: UnixStream, message: &str) {
 enum DoorAsk {
     /// Everything they publish now, and the revision it stands at.
     Resources(tilo_actions::remote::Completer<Offered>),
+    /// What the session's one search finds by `needle`: the same search the
+    /// palette and text typed on the canvas run, answered here because the
+    /// search lives on the loop's thread.
+    Find {
+        needle: String,
+        done: crate::search::FoundSearch,
+    },
     /// Run one of their actions as `actor`; `reads_only` refuses one that
     /// changes anything.
     Invoke {
@@ -1270,9 +1277,15 @@ impl SessionDoors {
         (self.wake)();
     }
 
-    /// Answer what the connections asked since the last pass, from `doors` and the records
-    /// `services` keep for packages the session runs itself; `person` is whose calls are their
-    /// own, not someone's for them.
+    /// What the session's one search finds by `needle`, answered on the
+    /// loop's pass: the search lives on the thread holding the desktop.
+    pub(crate) fn find(&self, needle: String, done: crate::search::FoundSearch) {
+        self.ask(DoorAsk::Find { needle, done });
+    }
+
+    /// Answer what the connections asked since the last pass, from `doors`,
+    /// the `services` the session runs, and the one `search`; `person` is
+    /// whose calls are their own, not someone's for them.
     ///
     /// The services are borrowed briefly, one ask at a time: a change they carry out is the
     /// published action's own, so a run never needs the services held across a turn of the
@@ -1281,12 +1294,16 @@ impl SessionDoors {
         &self,
         doors: &tilo_surface_host::Doors,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+        search: &crate::search::SessionSearch,
         person: &str,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
                 DoorAsk::Resources(done) => done.complete(Offered::of(doors)),
+                DoorAsk::Find { needle, done } => {
+                    done.complete(crate::search::found_all(search.find(&needle)));
+                }
                 DoorAsk::Invoke {
                     actor,
                     reads_only,
@@ -1677,6 +1694,16 @@ impl ActionHost for Host {
         self.state
             .as_ref()
             .and_then(tilo_action_broker::collab_app_broker::AppBrokerState::content_puts)
+    }
+
+    /// The session's one search, the one the palette and text typed on the
+    /// canvas run: what an agent's `find` answers with, asked on the loop's
+    /// pass as the session's own doors are.
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        let session = Arc::clone(&self.session);
+        Some(Arc::new(crate::search::SearchThrough::new(Arc::new(
+            move |needle: String, done: crate::search::FoundSearch| session.find(needle, done),
+        ))) as Arc<dyn tilo_actions::remote::ResourceSearch>)
     }
 
     /// The records a connection reads outside their apps: the workspace's own, as the broker

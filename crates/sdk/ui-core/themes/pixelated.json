@@ -25,11 +25,12 @@
     "weights": { "body": "regular", "label": "semibold", "heading": "bold" }
   },
   "motion": { "character": 1.0, "curve": "none", "duration_scale": 1.0 },
+  "icons": { "stroke": 2.0 },
   "material": {
-    "window": { "painter": "pixelated", "cell": 4.0, "cover": 0.92 },
-    "control": { "painter": "pixelated", "cell": 4.0, "cover": 0.92 },
-    "floating": { "painter": "pixelated", "cell": 4.0, "cover": 0.72 },
-    "bar": { "painter": "pixelated", "cell": 4.0, "cover": 0.8 },
+    "window": { "painter": "pixelated", "cell": 4.0, "cover": 0.92, "grid": 0.22 },
+    "control": { "painter": "pixelated", "cell": 4.0, "cover": 0.92, "grid": 0.16 },
+    "floating": { "painter": "pixelated", "cell": 4.0, "cover": 0.72, "grid": 0.18 },
+    "bar": { "painter": "pixelated", "cell": 4.0, "cover": 0.8, "grid": 0.2 },
     "selector": { "strip": "floating", "rim_span": 0.0, "rim_alpha": 0.0, "hover_alpha": 0.75 }
   },
   "depth": { "kind": "none" }
