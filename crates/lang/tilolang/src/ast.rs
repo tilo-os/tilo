@@ -236,11 +236,53 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
-    /// `(title)` or `(body)`: what the field is to the platform; `(previously)`: what the type
-    /// held before, which only its migrations read.
-    pub marker: Option<Ident>,
+    /// What the field is to the platform (`(title)`, `(repeats: due)`); see
+    /// [`crate::types::FieldRole`].
+    pub marker: Option<FieldMarker>,
     pub default: Option<Expr>,
     pub span: Span,
+}
+
+/// A field's marker: `(title)`, `(body)`, `(previously)`, `(repeats: due)` or
+/// `(reminds: due, at, who: assignee)`. Its arguments name the type's own fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldMarker {
+    pub name: Ident,
+    /// The fields it names, in the order written.
+    pub args: Vec<MarkerArg>,
+    pub span: Span,
+}
+
+impl FieldMarker {
+    /// The marker as the declaration writes it, `repeats: due` or `reminds: due, at, who:
+    /// assignee`.
+    #[must_use]
+    pub fn text(&self) -> String {
+        if self.args.is_empty() {
+            return self.name.name.clone();
+        }
+        let args: Vec<String> = self.args.iter().map(MarkerArg::text).collect();
+        format!("{}: {}", self.name.name, args.join(", "))
+    }
+}
+
+/// One field a marker names: `due`, or `who: assignee` where it says what the field is to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerArg {
+    /// `who` for `who: assignee`; none for a field written bare.
+    pub name: Option<Ident>,
+    pub field: Ident,
+}
+
+impl MarkerArg {
+    /// The argument as the declaration writes it.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{}: {}", name.name, self.field.name),
+            None => self.field.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

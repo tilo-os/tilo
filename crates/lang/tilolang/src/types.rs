@@ -25,6 +25,88 @@ impl MergeKind {
     }
 }
 
+/// What a field is to the platform, as its declaration marks it: the text that names the
+/// record, the record's substance, what the type held before, and — for an item that comes
+/// round again or reminds someone — the fields a repeat counts from and a reminder reads. A
+/// host holding the record finds them here, without the app's code: which field repeats, which
+/// day it counts from, when it reminds, and whom.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldRole {
+    /// `(title)`: the text a person knows the record by.
+    Title,
+    /// `(body)`: the record's substance, shown where a title would stand.
+    Body,
+    /// `(previously)`: what the type held before, which only its migrations read.
+    Previously,
+    /// `(repeats: due)`: the field holds a `std.Repeat`, counting from the day named here.
+    Repeats { date: String },
+    /// `(reminds: due, at, who: assignee)`: the field holds a `std.Reminder` of the day named
+    /// here, at the time of day named here where the type has one, for the person named here
+    /// where it names one.
+    Reminds {
+        date: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        who: Option<String>,
+    },
+}
+
+impl FieldRole {
+    /// The word the marker is written with, without its fields.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Body => "body",
+            Self::Previously => "previously",
+            Self::Repeats { .. } => "repeats",
+            Self::Reminds { .. } => "reminds",
+        }
+    }
+
+    /// The marker as the declaration writes it, `repeats: due` or `reminds: due, at, who:
+    /// assignee`.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Title | Self::Body | Self::Previously => self.word().to_owned(),
+            Self::Repeats { date } => format!("repeats: {date}"),
+            Self::Reminds { date, time, who } => {
+                let mut text = format!("reminds: {date}");
+                if let Some(time) = time {
+                    text.push_str(", ");
+                    text.push_str(time);
+                }
+                if let Some(who) = who {
+                    text.push_str(", who: ");
+                    text.push_str(who);
+                }
+                text
+            }
+        }
+    }
+
+    /// Whether the field names the record (`(title)`).
+    #[must_use]
+    pub const fn is_title(&self) -> bool {
+        matches!(self, Self::Title)
+    }
+
+    /// Whether the field is the record's substance (`(body)`).
+    #[must_use]
+    pub const fn is_body(&self) -> bool {
+        matches!(self, Self::Body)
+    }
+
+    /// Whether the field is what the type held before (`(previously)`).
+    #[must_use]
+    pub const fn is_previously(&self) -> bool {
+        matches!(self, Self::Previously)
+    }
+}
+
 /// The effect class of an action, derived by the compiler (`effects`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -79,11 +161,13 @@ pub enum Ty {
     Identifier,
     /// `std.Repeat`: how a repeating item comes round again, held as its RFC 5545 rule text
     /// (`FREQ=WEEKLY;INTERVAL=2`), which carries `X-FROM=DONE` when the next occurrence counts
-    /// from the day it was completed (see [`crate::repeat`]); not a `Text`.
+    /// from the day it was completed (see [`crate::repeat`]), and its field is marked
+    /// `(repeats: due)`, naming the day it counts from; not a `Text`.
     Repeat,
     /// `std.Reminder`: how long before a due moment to remind, held as its RFC 5545 `TRIGGER`
-    /// duration (`-PT15M`), read against the person's zone (see [`crate::repeat`]); not a
-    /// `Text`.
+    /// duration (`-PT15M`), read against the person's zone (see [`crate::repeat`]), and its
+    /// field is marked `(reminds: due, at, who: assignee)`, naming the day, time of day and
+    /// person it reads; not a `Text`.
     Reminder,
     /// `RichText`: formatted text in which resources are referenced (a person, a channel, a
     /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of

@@ -689,7 +689,10 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
-            if f.role.as_deref() == Some("previously") {
+            if f.role
+                .as_ref()
+                .is_some_and(crate::types::FieldRole::is_previously)
+            {
                 self.err(
                     "E115",
                     a.value.span,

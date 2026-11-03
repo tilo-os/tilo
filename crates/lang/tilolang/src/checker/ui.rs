@@ -1038,7 +1038,12 @@ impl Checker<'_> {
         // does: the field is text, and the control declares `title`, so one that does not is
         // never sent a prop it does not declare. Any other control is given the value it binds
         // alone; a document's body is placed by the view as `ui.BlockEditor(bind: doc.body)`.
-        if titled && f.ty == Ty::Text && f.role.as_deref() == Some("title") {
+        if titled
+            && f.ty == Ty::Text
+            && f.role
+                .as_ref()
+                .is_some_and(crate::types::FieldRole::is_title)
+        {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropI,
                 vec![node.clone(), Ex::str("title"), Ex::int(1)],

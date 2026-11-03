@@ -4,7 +4,7 @@
 use crate::common::{codes, compile_body, compile_with};
 use tilolang::Diagnostic;
 
-const TASK: &str = "type Task {\n    title: Text (title)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Option<Time> = .none\n    repeats: Option<std.Repeat> = .none\n    completed: Set<Date>\n}\n";
+const TASK: &str = "type Task {\n    title: Text (title)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Option<Time> = .none\n    repeats: Option<std.Repeat> (repeats: due) = .none\n    completed: Set<Date>\n}\n";
 
 fn messages(src: &str) -> Vec<Diagnostic> {
     let full = format!("app t.x \"X\"\n{src}\n");
@@ -29,7 +29,7 @@ fn says(src: &str, code: &str, needle: &str) {
 #[test]
 fn a_repeat_is_held_as_its_rule_from_a_literal_checked_when_compiled() {
     let meta = compile_body(
-        "type Task {\n    repeats: std.Repeat = std.Repeat(\"rrule:freq=weekly;interval=2\")\n    reminders: Set<std.Reminder>\n}\nfn label(t: Task) -> Text {\n    return t.repeats.label()\n}\nfn next(t: Task, from: Date, done: Date) -> Date {\n    return t.repeats.next(from, done)\n}\nfn next_at(t: Task, at: Time, day: Date) -> Time {\n    return t.repeats.next_at(at, day)\n}",
+        "type Task {\n    due: Date\n    repeats: std.Repeat (repeats: due) = std.Repeat(\"rrule:freq=weekly;interval=2\")\n    reminders: Set<std.Reminder>\n}\nfn label(t: Task) -> Text {\n    return t.repeats.label()\n}\nfn next(t: Task, from: Date, done: Date) -> Date {\n    return t.repeats.next(from, done)\n}\nfn next_at(t: Task, at: Time, day: Date) -> Time {\n    return t.repeats.next_at(at, day)\n}",
     )
     .meta;
     let task = meta.types.iter().find(|t| t.name == "Task").expect("Task");
@@ -54,7 +54,7 @@ fn a_repeat_is_held_as_its_rule_from_a_literal_checked_when_compiled() {
 #[test]
 fn a_reminder_is_held_as_its_trigger_and_is_read_back_at_a_due_day() {
     let meta = compile_body(
-        "type Task {\n    reminds: std.Reminder = std.Reminder(\"P1DT2H\")\n}\nfn at(t: Task, due: Date, at: Option<Time>) -> Time {\n    return t.reminds.at(due, at)\n}\nfn label(t: Task) -> Text {\n    return t.reminds.label()\n}",
+        "type Task {\n    due: Date\n    reminds: std.Reminder (reminds: due) = std.Reminder(\"P1DT2H\")\n}\nfn at(t: Task, due: Date, at: Option<Time>) -> Time {\n    return t.reminds.at(due, at)\n}\nfn label(t: Task) -> Text {\n    return t.reminds.label()\n}",
     )
     .meta;
     let reminds = meta.types[0]
@@ -69,27 +69,27 @@ fn a_reminder_is_held_as_its_trigger_and_is_read_back_at_a_due_day() {
 #[test]
 fn a_repeat_or_a_reminder_refuses_text_it_cannot_hold() {
     says(
-        "type T {\n    r: std.Repeat = std.Repeat(\"FREQ=HOURLY\")\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due) = std.Repeat(\"FREQ=HOURLY\")\n}",
         "E099",
         "FREQ",
     );
     says(
-        "type T {\n    r: std.Repeat = std.Repeat(\"every day\")\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due) = std.Repeat(\"every day\")\n}",
         "E099",
         "FREQ",
     );
     says(
-        "type T {\n    r: std.Repeat = std.Repeat(\"FREQ=DAILY;BYMONTH=1\")\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due) = std.Repeat(\"FREQ=DAILY;BYMONTH=1\")\n}",
         "E099",
         "BYMONTH",
     );
     says(
-        "type T {\n    m: std.Reminder = std.Reminder(\"15m\")\n}",
+        "type T {\n    due: Date\n    m: std.Reminder (reminds: due) = std.Reminder(\"15m\")\n}",
         "E099",
         "starts with `P`",
     );
     says(
-        "type T {\n    m: std.Reminder = std.Reminder(\"PT15M before\")\n}",
+        "type T {\n    due: Date\n    m: std.Reminder (reminds: due) = std.Reminder(\"PT15M before\")\n}",
         "E099",
         "more after it",
     );
@@ -98,17 +98,17 @@ fn a_repeat_or_a_reminder_refuses_text_it_cannot_hold() {
 #[test]
 fn a_repeat_or_a_reminder_is_made_from_a_literal_and_never_from_computed_text() {
     says(
-        "type T {\n    r: std.Repeat = std.Repeat(\"FREQ=DAILY\")\n}\naction a(t: T, s: Text) {\n    t.r = std.Repeat(s)\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due) = std.Repeat(\"FREQ=DAILY\")\n}\naction a(t: T, s: Text) {\n    t.r = std.Repeat(s)\n}",
         "E099",
         "one string literal",
     );
     says(
-        "type T {\n    r: std.Repeat\n}\naction a(t: T) {\n    t.r = std.Repeat(text(\"FREQ={t.r}\"))\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\naction a(t: T) {\n    t.r = std.Repeat(text(\"FREQ={t.r}\"))\n}",
         "E099",
         "one string literal",
     );
     says(
-        "type T {\n    r: std.Repeat\n}\naction a(t: T) {\n    t.r = std.Repeat(\"FREQ=DAILY\") ?? std.Repeat(\"FREQ=WEEKLY\")\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\naction a(t: T) {\n    t.r = std.Repeat(\"FREQ=DAILY\") ?? std.Repeat(\"FREQ=WEEKLY\")\n}",
         "E106",
         "std.Repeat",
     );
@@ -117,7 +117,7 @@ fn a_repeat_or_a_reminder_is_made_from_a_literal_and_never_from_computed_text() 
 #[test]
 fn a_repeat_or_a_reminder_is_a_field_type_of_the_standard_library_and_nothing_else() {
     assert_eq!(
-        codes("type T {\n    r: std.Repeat\n}"),
+        codes("type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}"),
         Vec::<String>::new()
     );
     says(
@@ -125,13 +125,17 @@ fn a_repeat_or_a_reminder_is_a_field_type_of_the_standard_library_and_nothing_el
         "E013",
         "no type `Address`",
     );
-    says("type T {\n    r: Repeat\n}", "E013", "std.Repeat");
+    says(
+        "type T {\n    due: Date\n    r: Repeat (repeats: due)\n}",
+        "E013",
+        "std.Repeat",
+    );
 }
 
 #[test]
 fn a_repeat_reads_in_a_text_only_through_its_label() {
     says(
-        "type T {\n    r: std.Repeat\n}\nview v(t: T) {\n    text(\"{t.r}\")\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\nview v(t: T) {\n    text(\"{t.r}\")\n}",
         "E020",
         "its label",
     );
@@ -140,17 +144,17 @@ fn a_repeat_reads_in_a_text_only_through_its_label() {
 #[test]
 fn a_repeat_has_next_next_at_and_label_and_a_reminder_at_and_label() {
     says(
-        "type T {\n    r: std.Repeat\n}\nfn f(t: T, d: Date) -> Date {\n    return t.r.at(d, .none)\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\nfn f(t: T, d: Date) -> Date {\n    return t.r.at(d, .none)\n}",
         "E027",
         "its methods: next, next_at, label",
     );
     says(
-        "type T {\n    m: std.Reminder\n}\nfn f(t: T, d: Date) -> Date {\n    return t.m.next(d, d)\n}",
+        "type T {\n    due: Date\n    m: std.Reminder (reminds: due)\n}\nfn f(t: T, d: Date) -> Date {\n    return t.m.next(d, d)\n}",
         "E027",
         "its methods: at, label",
     );
     says(
-        "type T {\n    r: std.Repeat\n}\nfn f(t: T) -> Date {\n    return t.r.next(\"today\", \"tomorrow\")\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\nfn f(t: T) -> Date {\n    return t.r.next(\"today\", \"tomorrow\")\n}",
         "E020",
         "expected Date, found Text",
     );
@@ -160,7 +164,7 @@ fn a_repeat_has_next_next_at_and_label_and_a_reminder_at_and_label() {
 fn two_repeats_compare_by_their_stored_text() {
     assert_eq!(
         codes(
-            "type T {\n    r: std.Repeat\n}\nfn f(t: T) -> Bool {\n    return t.r == std.Repeat(\"FREQ=DAILY\")\n}"
+            "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\nfn f(t: T) -> Bool {\n    return t.r == std.Repeat(\"FREQ=DAILY\")\n}"
         ),
         Vec::<String>::new()
     );
@@ -177,7 +181,7 @@ fn completing_a_task_in_place_advances_it() {
     // Without the `Option`: the item repeats every time it is completed.
     assert_eq!(
         codes(
-            "type Task {\n    done: Bool = false\n    due: Option<Date> = .none\n    repeats: std.Repeat\n    completed: Set<Date>\n}\naction check(t: Task, done: Bool) {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}"
+            "type Task {\n    done: Bool = false\n    due: Option<Date> = .none\n    repeats: std.Repeat (repeats: due)\n    completed: Set<Date>\n}\naction check(t: Task, done: Bool) {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}"
         ),
         Vec::<String>::new()
     );
@@ -198,7 +202,7 @@ fn completing_needs_a_task_shaped_type_and_an_action() {
         "std.complete",
     );
     says(
-        "type Task {\n    done: Bool\n    due: Option<Date>\n    repeats: Option<std.Repeat>\n}\naction a(t: Task) {\n    let b = std.complete(t, true)\n}",
+        "type Task {\n    done: Bool\n    due: Option<Date>\n    repeats: Option<std.Repeat> (repeats: due)\n}\naction a(t: Task) {\n    let b = std.complete(t, true)\n}",
         "E118",
         "completed",
     );
@@ -230,15 +234,15 @@ fn completing_needs_a_task_shaped_type_and_an_action() {
 fn what_a_repeat_compiles_to_is_valid_wasm() {
     use crate::common::validate;
     let cases = [
-        "type T {\n    r: std.Repeat\n}\naction a(t: T, from: Date, done: Date) {\n    let d = t.r.next(from, done)\n}",
-        "type T {\n    r: std.Repeat\n}\naction a(t: T, at: Time, day: Date) {\n    let d = t.r.next_at(at, day)\n}",
-        "type T {\n    r: std.Repeat\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.r.label()\n}",
-        "type T {\n    m: std.Reminder\n    at: Option<Time>\n    due: Date\n    when: Option<Time>\n}\naction a(t: T) {\n    t.when = .some(t.m.at(t.due, t.at))\n}",
-        "type T {\n    m: std.Reminder\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.m.label()\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\naction a(t: T, from: Date, done: Date) {\n    let d = t.r.next(from, done)\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\naction a(t: T, at: Time, day: Date) {\n    let d = t.r.next_at(at, day)\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.r.label()\n}",
+        "type T {\n    m: std.Reminder (reminds: due, at)\n    at: Option<Time>\n    due: Date\n    when: Option<Time>\n}\naction a(t: T) {\n    t.when = .some(t.m.at(t.due, t.at))\n}",
+        "type T {\n    due: Date\n    m: std.Reminder (reminds: due)\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.m.label()\n}",
         &format!(
             "{TASK}action a(t: Task, done: Bool) {{\n    let again = std.complete(t, done)\n    t.done = done and not again\n}}"
         ),
-        "type T {\n    repeats: std.Repeat\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Time\n    completed: Set<Date>\n}\naction a(t: T, done: Bool) {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}",
+        "type T {\n    repeats: std.Repeat (repeats: due)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Time\n    completed: Set<Date>\n}\naction a(t: T, done: Bool) {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}",
     ];
     for src in cases {
         let wasm = compile_body(src).wasm;

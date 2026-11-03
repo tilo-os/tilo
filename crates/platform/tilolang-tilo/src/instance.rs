@@ -2841,10 +2841,12 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
     let Some((meta, ty)) = type_of(host, &resource.ty) else {
         return String::new();
     };
-    let titled = ty
-        .fields
-        .iter()
-        .find(|field| field.role.as_deref() == Some("title"));
+    let titled = ty.fields.iter().find(|field| {
+        field
+            .role
+            .as_ref()
+            .is_some_and(tilolang_runtime::meta::FieldRole::is_title)
+    });
     if let Some(field) = titled
         && let Ok(value) = host.runtime().read(resource, &field.id)
     {

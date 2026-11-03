@@ -1262,7 +1262,11 @@ impl Host {
                 let previously: Vec<&str> = ty
                     .fields
                     .iter()
-                    .filter(|f| f.role.as_deref() == Some("previously"))
+                    .filter(|f| {
+                        f.role
+                            .as_ref()
+                            .is_some_and(tilolang_runtime::meta::FieldRole::is_previously)
+                    })
                     .map(|f| f.id.as_str())
                     .collect();
                 for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {

@@ -730,7 +730,7 @@ fn own_text(
             continue;
         }
         let text: String = read_key(doc, obj, field.id.as_str()).ok()?;
-        let text = if field.role == crate::schema::FieldRole::Body {
+        let text = if matches!(field.role, crate::schema::FieldRole::Body) {
             text.lines()
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or_default()

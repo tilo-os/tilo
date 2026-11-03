@@ -1020,7 +1020,11 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
-        if f.role.as_deref() == Some("previously") && self.st.role.as_deref() != Some("migration") {
+        if f.role
+            .as_ref()
+            .is_some_and(crate::types::FieldRole::is_previously)
+            && self.st.role.as_deref() != Some("migration")
+        {
             self.err("E115", field.span, format!("`{}` is what `{}` held previously: nothing writes it any more, and only a `migration action` reads it; write where the type keeps it now", f.name, key.name));
             let _ = self.expr(value, None);
             return;

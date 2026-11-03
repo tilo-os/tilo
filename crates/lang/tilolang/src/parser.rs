@@ -5,11 +5,11 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
-    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, LetBind,
-    MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
-    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt, StmtKind, StrPart,
-    TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl,
-    ViewDecl,
+    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FlowDecl, FnDecl, Ident,
+    Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal,
+    RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt,
+    StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
+    UseDecl, VariantDecl, ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -1149,10 +1149,36 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let marker_at = self.span();
         let marker = if self.eat(&Tok::LParen) {
-            let m = self.ident("`title` or `body`")?;
+            let name = self.ident("`title`, `body`, `previously`, `repeats` or `reminds`")?;
+            let mut args = Vec::new();
+            if self.eat(&Tok::Colon) {
+                loop {
+                    let first = self.ident("a field of the type")?;
+                    let arg = if self.eat(&Tok::Colon) {
+                        MarkerArg {
+                            name: Some(first),
+                            field: self.ident("a field of the type")?,
+                        }
+                    } else {
+                        MarkerArg {
+                            name: None,
+                            field: first,
+                        }
+                    };
+                    args.push(arg);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
             self.expect(&Tok::RParen)?;
-            Some(m)
+            Some(FieldMarker {
+                name,
+                args,
+                span: marker_at.to(Span::new(self.prev_end(), self.prev_end())),
+            })
         } else {
             None
         };

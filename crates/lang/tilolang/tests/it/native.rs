@@ -136,7 +136,7 @@ fn fields_variants_and_the_app_carry_what_they_are() {
         note.fields
             .iter()
             .find(|x| x.name == f)
-            .and_then(|x| x.role.clone())
+            .and_then(|x| x.role.as_ref().map(tilolang::types::FieldRole::text))
     };
     assert_eq!(role("title").as_deref(), Some("title"));
     assert_eq!(role("body").as_deref(), Some("body"));

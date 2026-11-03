@@ -371,9 +371,10 @@ pub struct FieldMeta {
     pub doc: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
-    /// `title` or `body`: what the field is to the platform (`title: Text (title)`).
+    /// What the field is to the platform (`title: Text (title)`, `repeats:
+    /// Option<std.Repeat> (repeats: due)`), naming the type's own fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub role: Option<crate::types::FieldRole>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

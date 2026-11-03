@@ -1221,7 +1221,7 @@ impl Core {
         let role = |name: &str| {
             ty.fields
                 .iter()
-                .find(|field| field.role.as_deref() == Some(name))
+                .find(|field| field.role.as_ref().is_some_and(|role| role.word() == name))
         };
         let titled = role("title").map(|field| (field, false));
         if let Some((field, body)) = titled.or_else(|| role("body").map(|field| (field, true))) {

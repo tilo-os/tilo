@@ -1125,7 +1125,7 @@ impl Printer<'_> {
             text.push_str(&format!(" merge {}", m.kind.name()));
         }
         if let Some(m) = &f.marker {
-            text.push_str(&format!(" ({})", m.name));
+            text.push_str(&format!(" ({})", m.text()));
         }
         if let Some(d) = &f.default {
             let col = self.level * 4 + text.len() + 3;

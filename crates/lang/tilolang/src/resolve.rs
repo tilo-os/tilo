@@ -17,8 +17,8 @@ pub struct FieldInfo {
     pub merge: MergeKind,
     pub doc: String,
     pub default: Option<serde_json::Value>,
-    /// `title` or `body`, from the field's marker.
-    pub role: Option<String>,
+    /// What the field is to the platform, from its marker (`(title)`, `(repeats: due)`).
+    pub role: Option<crate::types::FieldRole>,
 }
 
 #[derive(Clone, Debug)]
@@ -956,9 +956,10 @@ impl Resolver<'_> {
                     continue;
                 }
                 let mut info = self.field(&t.name.name, f, lock);
-                info.role = self.marker(&t.name.name, f, &info, &fields);
+                info.role = None;
                 fields.push(info);
             }
+            self.roles(&t.name.name, t, &mut fields);
             self.env.types.push(TypeInfo {
                 key: TypeKey {
                     app: self.env.app.clone(),
@@ -1219,35 +1220,251 @@ impl Resolver<'_> {
         }
     }
 
-    /// The role a field's marker gives it: `(title)` or `(body)`, on a Text field, once per
-    /// type.
-    fn marker(
+    /// What the type's fields are to the platform, from their markers: `(title)`, `(body)`,
+    /// `(previously)`, a `std.Repeat`'s `(repeats: due)` and a `std.Reminder`'s `(reminds: due,
+    /// at, who: assignee)`. A marker names the type's own fields, and may name one declared
+    /// after it, so they are read once every field is known.
+    fn roles(&mut self, owner: &str, decl: &ast::TypeDecl, fields: &mut [FieldInfo]) {
+        for f in &decl.fields {
+            let Some(marker) = &f.marker else { continue };
+            let Some(at) = fields.iter().position(|x| x.name == f.name.name) else {
+                continue;
+            };
+            let info = fields[at].clone();
+            if let Some(role) = self.role(owner, marker, &info, fields) {
+                fields[at].role = Some(role);
+            }
+        }
+        // Nothing else says how an item comes round again or when it reminds: a field holding a
+        // repeat or a reminder names the day it reads.
+        // A field whose marker was refused already says what it is; the marker's own error is
+        // the one to read.
+        for f in &decl.fields {
+            if f.marker.is_some() {
+                continue;
+            }
+            let Some(info) = fields.iter().find(|x| x.name == f.name.name) else {
+                continue;
+            };
+            let Some(word) = held_in(&info.ty) else {
+                continue;
+            };
+            let app = self.env.app.clone();
+            let holds = info.ty.display(&app);
+            let declare = if word == "repeats" {
+                format!(
+                    "`{}: {holds} (repeats: due)`, naming the `Date` or `Option<Date>` field it counts from",
+                    f.name.name
+                )
+            } else {
+                format!(
+                    "`{}: {holds} (reminds: due, at, who: assignee)`, naming the `Date` or `Option<Date>` field it is due on, the `Time` or `Option<Time>` it is due at and the `Principal` or `Option<Principal>` of who it reminds, where the type has them",
+                    f.name.name
+                )
+            };
+            self.err(
+                "E092",
+                f.name.span,
+                format!(
+                    "`{owner}.{}` holds a {holds}, so it says which day it reads: the platform finds nothing else that says when it comes round again. Write {declare}",
+                    f.name.name
+                ),
+            );
+        }
+    }
+
+    /// The role a field's marker gives it, and what the marker must name for it: the text that
+    /// names the record, the record's substance, what the type held before, the day a repeat
+    /// counts from, and the day, time of day and person a reminder reads.
+    fn role(
         &mut self,
         owner: &str,
-        f: &ast::FieldDecl,
-        info: &FieldInfo,
-        before: &[FieldInfo],
-    ) -> Option<String> {
-        let m = f.marker.as_ref()?;
+        marker: &ast::FieldMarker,
+        marked: &FieldInfo,
+        fields: &[FieldInfo],
+    ) -> Option<crate::types::FieldRole> {
+        use crate::types::FieldRole;
+        let positional: Vec<&ast::Ident> = marker
+            .args
+            .iter()
+            .filter(|a| a.name.is_none())
+            .map(|a| &a.field)
+            .collect();
+        let named: Vec<(&str, &ast::Ident)> = marker
+            .args
+            .iter()
+            .filter_map(|a| Some((a.name.as_ref()?.name.as_str(), &a.field)))
+            .collect();
+        let word = marker.name.name.as_str();
         // What the type held before: kept in its records, read only by its migrations.
-        if m.name == "previously" {
-            return Some(m.name.clone());
+        if word == "previously" {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    "`(previously)` names no field: it is what the type held before, which only its migrations read",
+                );
+                return None;
+            }
+            return Some(FieldRole::Previously);
         }
-        if !matches!(m.name.as_str(), "title" | "body") {
-            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text, and any field `(previously)`, what the type held before, which only its migrations read", m.name));
-            return None;
+        if matches!(word, "title" | "body") {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!(
+                        "`({word})` names no field; only `(repeats: due)` and `(reminds: due, at, who: assignee)` do"
+                    ),
+                );
+                return None;
+            }
+            let fits = marked.ty == Ty::Text || (word == "body" && marked.ty == Ty::RichText);
+            if !fits {
+                let t = marked.ty.display(&self.env.app);
+                self.err("E092", marker.span, format!("only a Text field can be the {word}; `{}` is {t}. Mark a Text field instead, or remove `({word})`", marked.name));
+                return None;
+            }
+            if let Some(other) = fields
+                .iter()
+                .find(|x| x.role.as_ref().is_some_and(|role| role.word() == word))
+            {
+                self.err("E092", marker.span, format!("`{owner}` already has a {word} field, `{}`; a type has at most one. Remove `({word})` from one of them", other.name));
+                return None;
+            }
+            return Some(if word == "title" {
+                FieldRole::Title
+            } else {
+                FieldRole::Body
+            });
         }
-        let fits = info.ty == Ty::Text || (m.name == "body" && info.ty == Ty::RichText);
+        let (holds, wants, reads) = match word {
+            "repeats" => (
+                "repeats",
+                "`std.Repeat`",
+                "`(repeats: due)`, naming the `Date` or `Option<Date>` field it counts from",
+            ),
+            "reminds" => (
+                "reminds",
+                "`std.Reminder`",
+                "`(reminds: due, at, who: assignee)`, naming the `Date` or `Option<Date>` field it is due on, the `Time` or `Option<Time>` it is due at where the type has one, and the `Principal` or `Option<Principal>` field of who it reminds where it names one",
+            ),
+            _ => {
+                self.err("E092", marker.span, format!("`({word})` is not a field marker; a Text field can be marked `(title)`, what names the record, or `(body)`, its substance, any field `(previously)`, what the type held before, which only its migrations read, a `std.Repeat` field `(repeats: due)`, the day it counts from, and a `std.Reminder` field `(reminds: due, at, who: assignee)`"));
+                return None;
+            }
+        };
+        let fits = if word == "repeats" {
+            holds_a(&marked.ty, &Ty::Repeat)
+        } else {
+            holds_a(&marked.ty, &Ty::Reminder)
+        };
         if !fits {
-            let t = info.ty.display(&self.env.app);
-            self.err("E092", m.span, format!("only a Text field can be the {}; `{}` is {t}. Mark a Text field instead, or remove `({})`", m.name, f.name.name, m.name));
+            let t = marked.ty.display(&self.env.app);
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "only a {wants} field {holds}, so `({word}: …)` is not its marker: `{}` is {t}. Mark the item's {wants} field instead, and write {reads}",
+                    marked.name
+                ),
+            );
             return None;
         }
-        if let Some(other) = before.iter().find(|x| x.role.as_deref() == Some(&m.name)) {
-            self.err("E092", m.span, format!("`{owner}` already has a {} field, `{}`; a type has at most one. Remove `({})` from one of them", m.name, other.name, m.name));
+        let day = match positional.first() {
+            Some(day) => *day,
+            None => {
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!("`({word}: …)` names no field, so the platform cannot tell when it {}. Write {reads}", if word == "repeats" { "comes round again" } else { "reminds" }),
+                );
+                return None;
+            }
+        };
+        let most = if word == "repeats" { 1 } else { 2 };
+        if positional.len() > most {
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "`({word}: …)` reads one day{}; write {reads}",
+                    if word == "repeats" {
+                        ""
+                    } else {
+                        " and, where the type has one, one time of day"
+                    }
+                ),
+            );
             return None;
         }
-        Some(m.name.clone())
+        if let Some((name, _)) = named.iter().find(|(name, _)| *name != "who") {
+            self.err(
+                "E092",
+                marker.span,
+                format!("`({word}: …)` takes `who:` and the fields it reads; `{name}:` is not one of its names"),
+            );
+            return None;
+        }
+        let mut read: Vec<(&ast::Ident, &Ty, &str)> = vec![(day, &Ty::Date, "the day it is due")];
+        if let Some(time) = positional.get(1) {
+            read.push((time, &Ty::Time, "the time of day it is due at"));
+        }
+        let who = named
+            .iter()
+            .find(|(name, _)| *name == "who")
+            .map(|(_, f)| *f);
+        if let Some(who) = who {
+            read.push((who, &Ty::Principal, "who it reminds"));
+        }
+        for (field, want, what) in read {
+            let Some(found) = fields.iter().find(|x| x.name == field.name) else {
+                self.err(
+                    "E092",
+                    field.span,
+                    format!(
+                        "`{owner}` has no field `{}`; `({word}: …)` names {what}",
+                        field.name
+                    ),
+                );
+                return None;
+            };
+            if !holds_a(&found.ty, want) {
+                let t = found.ty.display(&self.env.app);
+                self.err(
+                    "E092",
+                    field.span,
+                    format!(
+                        "`{what}` is a {t}, and `({word}: …)` reads a {}; `{}` is {t}",
+                        want.display(&self.env.app),
+                        field.name
+                    ),
+                );
+                return None;
+            }
+        }
+        if fields
+            .iter()
+            .any(|x| x.role.as_ref().is_some_and(|role| role.word() == word))
+        {
+            self.err(
+                "E092",
+                marker.span,
+                format!("`{owner}` already has a field marked `({word}: …)`; a type has at most one. Remove one of them"),
+            );
+            return None;
+        }
+        Some(if word == "repeats" {
+            FieldRole::Repeats {
+                date: day.name.clone(),
+            }
+        } else {
+            FieldRole::Reminds {
+                date: day.name.clone(),
+                time: positional.get(1).map(|f| f.name.clone()),
+                who: who.map(|f| f.name.clone()),
+            }
+        })
     }
 
     /// The merge kind of a field. `Int` and `Float` are registers unless declared
@@ -2666,4 +2883,24 @@ pub fn find_package<'a>(available: &'a [PackageMeta], app: &str) -> Option<&'a P
             .iter()
             .find(|m| m.previously.iter().any(|old| old == app))
     })
+}
+
+/// Whether `ty` is `want`, or an `Option` of it.
+fn holds_a(ty: &Ty, want: &Ty) -> bool {
+    ty.same(want) || matches!(ty, Ty::Option(inner) if inner.same(want))
+}
+
+/// The marker word a field's type needs, where it needs one: a repeat says the day it counts
+/// from, a reminder the day, time of day and person it reads.
+fn held_in(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Repeat => Some("repeats"),
+        Ty::Reminder => Some("reminds"),
+        Ty::Option(inner) => match **inner {
+            Ty::Repeat => Some("repeats"),
+            Ty::Reminder => Some("reminds"),
+            _ => None,
+        },
+        _ => None,
+    }
 }

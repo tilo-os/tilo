@@ -268,11 +268,10 @@ impl Core {
             .iter()
             // Prose: a text that merges by splices. A register of text is a code or a label.
             .filter(|f| matches!(f.kind, FieldKind::Text | FieldKind::RichText))
-            .filter(|f| role(f).as_deref() != Some("secret"))
             .collect();
         let body = texts
             .iter()
-            .find(|f| role(f).as_deref() == Some("body"))
+            .find(|f| role(f).is_some_and(|role| role.is_body()))
             .map(|f| f.id.clone());
         texts
             .into_iter()
@@ -710,7 +709,7 @@ impl Core {
                 short_ty(&f.ty, app),
                 f.role
                     .as_ref()
-                    .map_or_else(String::new, |r| format!(" ({r})"))
+                    .map_or_else(String::new, |r| format!(" ({})", r.text()))
             );
             if !f.doc.is_empty() {
                 let _ = write!(out, "\n  {}", f.doc);
@@ -800,7 +799,7 @@ fn describe_type(meta: &crate::meta::Meta, t: &crate::meta::TypeMeta, alias: &st
         let role = f
             .role
             .as_ref()
-            .map_or_else(String::new, |r| format!(" ({r})"));
+            .map_or_else(String::new, |r| format!(" ({})", r.text()));
         let _ = write!(out, "\n    {}: {}{role}", f.name, short_ty(&f.ty, app));
     }
     out.push_str("\n}");
