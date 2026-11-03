@@ -465,7 +465,7 @@ view tinted_row(item: Item, tint: Text) {
         for i in 0..3 {
             assert!(view.row(&list, i).unwrap().is_some());
         }
-        let shown = |view: &mut ViewInstance| texts(&view.row(&list, 1).unwrap().unwrap());
+        let shown = |view: &mut ViewInstance| texts(view.row(&list, 1).unwrap().unwrap());
         assert_eq!(shown(&mut view), ["item 1", ""]);
 
         rows.call(
