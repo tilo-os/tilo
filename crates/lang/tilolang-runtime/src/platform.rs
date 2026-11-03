@@ -263,42 +263,8 @@ impl Core {
                 let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
             }
-            Imp::Mentions => {
-                // `mentions(c, field, Message)`: how many of `c`'s items name the person looking,
-                // that they have not seen: a channel's mention count, next to its unread count.
-                let coll = self.ref_arg(a.h(0)?)?;
-                let field = self.text(a.h(1)?)?;
-                let item = self.text(a.h(2)?)?;
-                let person = self.looking()?;
-                let count = self
-                    .mentions_of(&person, &coll.target, &field, &item)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(&coll.target);
-                self.note_seen_read(&person, &coll.target.id_string());
-                crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
-            }
-            Imp::FirstUnseen => {
-                // `first_unseen(c, field, Message)`: where the first unread item of `c`'s
-                // collection begins, read by the frame running, so the view runs again when it
-                // moves.
-                let coll = self.ref_arg(a.h(0)?)?;
-                let field = self.text(a.h(1)?)?;
-                let item = self.text(a.h(2)?)?;
-                let person = self.looking()?;
-                let found = self
-                    .first_unseen_of(&person, &coll.target, &field, &item)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                // The view read what the answer is made of: `c`'s own versions (which move when
-                // an item is posted) and the person's seen mark and reviewed runs (which move
-                // when they read on).
-                self.read_versions_of(&coll.target);
-                self.note_seen_read(&person, &coll.target.id_string());
-                let value = found.map_or_else(Value::none, |id| {
-                    let at = coll.target.item(&id, item);
-                    Value::some(Value::resource(&at))
-                });
-                self.ret_h(value)
-            }
+            Imp::Mentions => self.mentions_import(a),
+            Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
                 let meta = match subject {
@@ -343,6 +309,44 @@ impl Core {
             }
             _ => trap("not a platform import"),
         }
+    }
+
+    /// `mentions(c, field, Message)`: how many of `c`'s items name the person looking,
+    /// that they have not seen: a channel's mention count, next to its unread count.
+    fn mentions_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let coll = self.ref_arg(a.h(0)?)?;
+        let field = self.text(a.h(1)?)?;
+        let item = self.text(a.h(2)?)?;
+        let person = self.looking()?;
+        let count = self
+            .mentions_of(&person, &coll.target, &field, &item)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        self.read_versions_of(&coll.target);
+        self.note_seen_read(&person, &coll.target.id_string());
+        crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
+    }
+
+    /// `first_unseen(c, field, Message)`: where the first unread item of `c`'s
+    /// collection begins, read by the frame running, so the view runs again when it
+    /// moves.
+    fn first_unseen_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let coll = self.ref_arg(a.h(0)?)?;
+        let field = self.text(a.h(1)?)?;
+        let item = self.text(a.h(2)?)?;
+        let person = self.looking()?;
+        let found = self
+            .first_unseen_of(&person, &coll.target, &field, &item)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        // The view read what the answer is made of: `c`'s own versions (which move
+        // when an item is posted) and the person's seen mark and reviewed runs (which
+        // move when they read on).
+        self.read_versions_of(&coll.target);
+        self.note_seen_read(&person, &coll.target.id_string());
+        let value = found.map_or_else(Value::none, |id| {
+            let at = coll.target.item(&id, item);
+            Value::some(Value::resource(&at))
+        });
+        self.ret_h(value)
     }
 
     /// `workspace.me`: the person the view is shown to, which the frame running carries as the
