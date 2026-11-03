@@ -222,7 +222,7 @@ mod tests {
     use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
     use super::{CONNECT_WAIT, ConnectedLaunch, PUBLISH_WAIT};
     use crate::services::{LaunchContent, LaunchPlace, Launched};
-    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
     use tilo_actions::InvocationUpdate;
@@ -284,7 +284,7 @@ mod tests {
 
     fn broker() -> (Arc<AppBrokerState>, String) {
         let owner = hex::encode([41; 32]);
-        let mut workspace = Workspace::new(WorkspaceId(9), "Opens");
+        let mut workspace = Workspace::new(WorkspaceSlot(9), "Opens");
         workspace.set_owner(owner);
         let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
@@ -419,7 +419,7 @@ mod tests {
             IdentityStorage::Files,
         )
         .unwrap();
-        let mut workspace = Workspace::new(WorkspaceId(9), "Signed opens");
+        let mut workspace = Workspace::new(WorkspaceSlot(9), "Signed opens");
         let workspace_id = workspace.room().to_string();
         let (_, certificate) =
             tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();

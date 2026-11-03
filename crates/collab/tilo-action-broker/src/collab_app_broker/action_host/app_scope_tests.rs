@@ -16,7 +16,7 @@ use crate::services::{
     HostServices, KeyboardShortcutServices, LauncherServices, ShortcutLibraryRequest,
     ShortcutLibraryServices, WorkspaceGovernanceServices,
 };
-use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -199,7 +199,7 @@ struct Fixture {
 /// the workspace provider.
 fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
     let user = [41; 32];
-    let mut workspace = Workspace::new(WorkspaceId(81), "Scoped");
+    let mut workspace = Workspace::new(WorkspaceSlot(81), "Scoped");
     workspace.set_owner(hex::encode(user));
     workspace.shortcuts.push(
         serde_json::from_value(serde_json::json!({"id":"tidy","name":"Tidy","steps":[]})).unwrap(),
@@ -501,7 +501,7 @@ struct DirectoryFixture {
 
 fn directory_fixture(app_id: &str) -> DirectoryFixture {
     let user = [43; 32];
-    let mut workspace = Workspace::new(WorkspaceId(83), "Live directory");
+    let mut workspace = Workspace::new(WorkspaceSlot(83), "Live directory");
     workspace.set_owner(hex::encode(user));
     let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();

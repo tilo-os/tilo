@@ -1,6 +1,6 @@
 //! Viewer-local workspace requests. These never carry session mutation authority.
 use super::ActivityView;
-use tilo_desktop_model::{DesktopTree, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, WorkspaceSlot};
 
 pub const RESOURCE_ID: &str = "desktop:view";
 pub const OPERATION_TYPE: &str = "tilo.desktop.view";
@@ -10,20 +10,20 @@ pub const OPERATION_TYPE: &str = "tilo.desktop.view";
 pub enum WorkspaceViewRequest {
     Select {
         #[serde(with = "workspace_string")]
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     },
     OpenActivity {
         #[serde(with = "workspace_string")]
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
         view: ActivityView,
     },
     CloseActivity {
         #[serde(with = "workspace_string")]
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     },
 }
 impl WorkspaceViewRequest {
-    pub fn workspace(&self) -> WorkspaceId {
+    pub fn workspace(&self) -> WorkspaceSlot {
         match *self {
             Self::Select { workspace }
             | Self::OpenActivity { workspace, .. }
@@ -34,7 +34,7 @@ impl WorkspaceViewRequest {
     pub fn validate(&self, tree: &DesktopTree) -> Result<(), String> {
         tree.workspaces
             .iter()
-            .any(|w| w.id == self.workspace())
+            .any(|w| w.slot == self.workspace())
             .then_some(())
             .ok_or_else(|| "Workspace unavailable".into())
     }
@@ -82,7 +82,7 @@ pub fn workspace_view_descriptors(
                 &[("workspace", workspace.name.as_str().into())],
             ),
             request: WorkspaceViewRequest::Select {
-                workspace: workspace.id,
+                workspace: workspace.slot,
             },
         })
         .collect::<Vec<_>>();
@@ -108,7 +108,7 @@ pub fn workspace_view_descriptors(
                 id: id.into(),
                 label,
                 request: WorkspaceViewRequest::OpenActivity {
-                    workspace: workspace.id,
+                    workspace: workspace.slot,
                     view,
                 },
             });
@@ -118,22 +118,22 @@ pub fn workspace_view_descriptors(
 }
 mod workspace_string {
     use serde::{Deserialize, Deserializer, Serializer};
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
     #[allow(
         clippy::trivially_copy_pass_by_ref,
         reason = "serde `with` modules receive the field by reference; the lint's size limit, and so whether it fires, depends on the target"
     )]
-    pub fn serialize<S: Serializer>(id: &WorkspaceId, serializer: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(id: &WorkspaceSlot, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&id.0.to_string())
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<WorkspaceId, D::Error> {
+    ) -> Result<WorkspaceSlot, D::Error> {
         let value = String::deserialize(deserializer)?;
         let id = value.parse::<u64>().map_err(serde::de::Error::custom)?;
         if id.to_string() != value {
             return Err(serde::de::Error::custom("invalid opaque workspace id"));
         }
-        Ok(WorkspaceId(id))
+        Ok(WorkspaceSlot(id))
     }
 }

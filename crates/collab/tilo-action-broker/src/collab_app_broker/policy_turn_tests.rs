@@ -7,7 +7,7 @@ use super::*;
 // `CountedWorkspace`) exist on Linux.
 #[cfg(target_os = "linux")]
 use crate::policy_schedule::RECHECK_INTERVAL;
-use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
 use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
 
 const NS: u64 = 1_000_000_000;
@@ -77,7 +77,7 @@ fn owner_key() -> ed25519_dalek::SigningKey {
 /// A workspace of [`owner_key`] whose guest's membership ends at `guest_until`
 /// and whose agent's at `agent_until` (Unix seconds).
 fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) {
-    let mut workspace = Workspace::new(WorkspaceId(71), "Expiring");
+    let mut workspace = Workspace::new(WorkspaceSlot(71), "Expiring");
     let workspace_id = workspace.room().to_string();
     let owner = principal_id_for_root(owner_key().verifying_key().to_bytes());
     workspace.set_owner(owner.clone());

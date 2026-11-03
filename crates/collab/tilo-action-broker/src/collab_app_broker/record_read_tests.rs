@@ -15,7 +15,7 @@ use crate::collab_app_broker::principal_id_for_root;
 use crate::services::{
     DocumentBytes, HostServices, LocalPersonServices, NativeDocumentReads, RecordChangeServices,
 };
-use crate::test_support::{Grants as _, KindSet, Subject, TreePath, WorkspaceId, WorkspaceTree};
+use crate::test_support::{Grants as _, KindSet, Subject, TreePath, WorkspaceSlot, WorkspaceTree};
 
 const NOTES: &str = "so.tilo.lang.notes";
 const MAIL: &str = "so.tilo.lang.mail";
@@ -156,7 +156,7 @@ fn fixture_with(owner: Owner) -> Fixture {
         crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
     let certificate = session.device();
     let person = principal_id_for_root(certificate.user_public_key);
-    let mut workspace = crate::test_support::Workspace::new(WorkspaceId(71), "Record reads");
+    let mut workspace = crate::test_support::Workspace::new(WorkspaceSlot(71), "Record reads");
     workspace.set_owner(person.clone());
     let workspace_id = workspace.room().to_string();
     let scribe = workspace.admit_agent("scribe", KindSet::READ);

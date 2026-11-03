@@ -176,7 +176,7 @@ pub fn spawn_with_agent_grants(
         unreachable!("person key creates a person principal")
     };
     let mut workspace = tilo_action_broker::test_support::Workspace::in_workspace(
-        tilo_action_broker::test_support::WorkspaceId(1),
+        tilo_action_broker::test_support::WorkspaceSlot(1),
         tilo_action_broker::test_support::RoomId::parse(&TEST_WORKSPACE.to_string()).unwrap(),
         "Agent integration workspace",
     );

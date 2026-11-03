@@ -416,12 +416,12 @@ impl OriginalWorkspace {
         let origin = clock.new_origin();
         let mut workspace = match workspace.flatten() {
             Some(workspace) => crate::test_support::Workspace::in_workspace(
-                crate::test_support::WorkspaceId(83),
+                crate::test_support::WorkspaceSlot(83),
                 workspace,
                 "Original workspace",
             ),
             None => crate::test_support::Workspace::new(
-                crate::test_support::WorkspaceId(83),
+                crate::test_support::WorkspaceSlot(83),
                 "Original workspace",
             ),
         };

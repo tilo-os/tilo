@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{StripId, TabId, WorkspaceId};
+use tilo_desktop_model::{StripId, TabId, WorkspaceSlot};
 use ui::TextRole;
 use ui::num::{f32_of_f64, f64_of_usize};
 use ui::theme::Theme;
@@ -906,7 +906,7 @@ impl OverviewPanel {
     }
 
     /// The workspace `id` names, by its place among the cards.
-    pub(super) fn card_index(&self, id: WorkspaceId) -> Option<usize> {
+    pub(super) fn card_index(&self, id: WorkspaceSlot) -> Option<usize> {
         self.desk.cards.iter().position(|card| card.id == id)
     }
 }

@@ -3,13 +3,14 @@
 use std::collections::HashMap;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, RoomId, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    DesktopTree, GroupId, RoomId, Strip, StripId, WindowGroup, WindowWidth, Workspace,
+    WorkspaceSlot,
 };
 
 /// A single-workspace, single-strip tree carrying `n` empty window groups
 /// with ids `1..=n`.
 fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
-    let ws_id = WorkspaceId(100);
+    let slot = WorkspaceSlot(100);
     let strip_id = StripId(200);
     let group_ids: Vec<GroupId> = (1..=n).collect();
     let mut strip = Strip::new(strip_id, "Main");
@@ -24,13 +25,13 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
             focus_history: Vec::new(),
         })
         .collect();
-    let mut ws = Workspace::in_workspace(ws_id, RoomId::new(), "Test");
+    let mut ws = Workspace::in_workspace(slot, RoomId::new(), "Test");
     ws.strips.push(strip);
     let mut active_strip = HashMap::new();
-    active_strip.insert(ws_id, strip_id);
+    active_strip.insert(slot, strip_id);
     let tree = DesktopTree {
         workspaces: vec![ws],
-        active: ws_id,
+        active: slot,
         active_strip,
         ..DesktopTree::default()
     };

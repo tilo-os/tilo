@@ -15,7 +15,7 @@ use tilo_desktop_model::commands::{
 };
 use tilo_desktop_model::{
     AppKind, DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId,
+    WorkspaceSlot,
 };
 
 fn notes() -> TileContent {
@@ -38,7 +38,7 @@ fn create(_: &str, _: u64) -> Result<(String, TileContent), String> {
 }
 
 fn workspace_with_group() -> Workspace {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Shared");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Shared");
     workspace.strips.push(tilo_desktop_model::Strip {
         id: StripId(10),
         name: "Main".into(),
@@ -64,7 +64,7 @@ fn workspace_with_group() -> Workspace {
 
 #[test]
 fn a_failed_record_leaves_no_topology_and_the_last_close_keeps_its_strip() {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Empty");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Empty");
     let mut mint = minter(100);
     let open = DesktopCommand::OpenTab {
         app: "so.tilo.notes".into(),
@@ -247,9 +247,9 @@ fn edits_to_the_active_workspace_validate_names_and_show_a_new_strip() {
     let mut tree = DesktopTree {
         workspaces: vec![
             workspace_with_group(),
-            Workspace::new(WorkspaceId(2), "Other"),
+            Workspace::new(WorkspaceSlot(2), "Other"),
         ],
-        active: WorkspaceId(1),
+        active: WorkspaceSlot(1),
         ..DesktopTree::default()
     };
     let mut mint = minter(800);
@@ -264,7 +264,7 @@ fn edits_to_the_active_workspace_validate_names_and_show_a_new_strip() {
     .expect("a created strip is returned");
     assert_eq!(made, StripId(801));
     assert_eq!(tree.workspaces[0].strips[1].name, "Later");
-    assert_eq!(tree.active_strip.get(&WorkspaceId(1)), Some(&made));
+    assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), Some(&made));
     assert!(
         tree.workspaces[1].strips.is_empty(),
         "only the active workspace changes"
@@ -314,7 +314,7 @@ fn edits_to_the_active_workspace_validate_names_and_show_a_new_strip() {
         Ok(None)
     );
     assert_eq!(tree.workspaces[0].strips.len(), 1);
-    assert_eq!(tree.active_strip.get(&WorkspaceId(1)), Some(&StripId(10)));
+    assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(10)));
 }
 
 #[test]
@@ -499,7 +499,7 @@ fn a_group_moves_whole_into_an_empty_strip_and_a_stale_move_changes_nothing() {
 
 #[test]
 fn shortcut_commands_save_replace_and_delete_by_id_with_the_owner_as_saver() {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Desk");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Desk");
     let json = r#"{"id":"tidy","name":"Tidy","steps":[],"saved_by":"someone-else"}"#;
     let stamped = tilo_desktop_model::commands::stamp_saver(json, "owner").unwrap();
     let save = |shortcut_json: String| DesktopCommand::SaveShortcut { shortcut_json };
@@ -541,9 +541,9 @@ fn a_window_moves_to_another_workspaces_last_strip_and_the_person_stays() {
     let mut tree = DesktopTree {
         workspaces: vec![
             workspace_with_group(),
-            Workspace::new(WorkspaceId(2), "Other"),
+            Workspace::new(WorkspaceSlot(2), "Other"),
         ],
-        active: WorkspaceId(1),
+        active: WorkspaceSlot(1),
         ..DesktopTree::default()
     };
     let mut mint = minter(800);
@@ -551,13 +551,13 @@ fn a_window_moves_to_another_workspaces_last_strip_and_the_person_stays() {
     tilo_desktop_model::commands::move_tab_to_workspace(
         &mut tree,
         moved,
-        WorkspaceId(2),
+        WorkspaceSlot(2),
         &mut mint,
     )
     .unwrap();
     assert_eq!(
         tree.active,
-        WorkspaceId(1),
+        WorkspaceSlot(1),
         "the person stays where they are"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn a_window_moves_to_another_workspaces_last_strip_and_the_person_stays() {
         landed.window_groups[0].tabs[0].id, moved,
         "the same window arrives"
     );
-    assert_eq!(tree.active_strip.get(&WorkspaceId(2)), Some(&landed.id));
+    assert_eq!(tree.active_strip.get(&WorkspaceSlot(2)), Some(&landed.id));
     assert_eq!(
         tree.active_group_for(landed.id),
         Some(landed.window_groups[0].id)
@@ -586,7 +586,7 @@ fn a_window_moves_to_another_workspaces_last_strip_and_the_person_stays() {
         tilo_desktop_model::commands::move_tab_to_workspace(
             &mut tree,
             moved,
-            WorkspaceId(2),
+            WorkspaceSlot(2),
             &mut mint
         )
         .is_err(),
@@ -596,7 +596,7 @@ fn a_window_moves_to_another_workspaces_last_strip_and_the_person_stays() {
         tilo_desktop_model::commands::move_tab_to_workspace(
             &mut tree,
             9999,
-            WorkspaceId(2),
+            WorkspaceSlot(2),
             &mut mint
         )
         .is_err()

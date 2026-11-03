@@ -2,7 +2,7 @@
 use serde_json::json;
 use tilo_desktop_model::DropTarget;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
-use tilo_desktop_model::{AppKind, DesktopTree, IdMinter, StripId, WindowWidth, WorkspaceId};
+use tilo_desktop_model::{AppKind, DesktopTree, IdMinter, StripId, WindowWidth, WorkspaceSlot};
 
 fn gap(gap_index: usize) -> DropTarget {
     DropTarget::GroupGap { gap_index }
@@ -57,10 +57,10 @@ fn persisted_state_preserves_ids_defaults_and_record_binding() {
 fn peer_local_selection_does_not_change_another_desktop_or_topology() {
     let mut one = persisted_tree();
     let two = one.clone();
-    one.set_active(WorkspaceId(20));
+    one.set_active(WorkspaceSlot(20));
     one.set_active_group(StripId(11), 12);
     one.workspaces[0].strips[0].window_groups[0].maximized = true;
-    assert_eq!(two.active, WorkspaceId(10));
+    assert_eq!(two.active, WorkspaceSlot(10));
     assert!(two.active_group.is_empty());
     assert!(!two.workspaces[0].strips[0].window_groups[0].maximized);
     assert_eq!(
@@ -68,11 +68,11 @@ fn peer_local_selection_does_not_change_another_desktop_or_topology() {
         two.workspaces[0].strips[0].window_groups[0].tabs[1].id
     );
     assert!(one.switch_up());
-    assert_eq!(one.active, WorkspaceId(10));
+    assert_eq!(one.active, WorkspaceSlot(10));
     assert!(!one.switch_up());
     assert!(one.switch_down());
-    one.set_active(WorkspaceId(999));
-    assert_eq!(one.active, WorkspaceId(20));
+    one.set_active(WorkspaceSlot(999));
+    assert_eq!(one.active, WorkspaceSlot(20));
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn split_and_cross_strip_move_preserve_order_and_local_defaults() {
     assert_eq!(moved.target, gap(0));
     assert_eq!(tree.workspaces[0].strips[0].window_groups.len(), 1);
     assert_eq!(tree.workspaces[1].strips[0].window_groups[0].tabs[0].id, 13);
-    assert_eq!(tree.active, WorkspaceId(10));
+    assert_eq!(tree.active, WorkspaceSlot(10));
     assert!(
         tree.move_tab_across_strips(StripId(21), StripId(999), 13, 23, gap(0))
             .is_none()
@@ -149,7 +149,7 @@ fn native_flattening_keeps_numeric_local_selection_keys_loadable() {
     desktop.set_active_group(StripId(11), 12);
     let bytes = serde_json::to_vec(&Host { desktop }).unwrap();
     let loaded: Host = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(loaded.desktop.active_strip[&WorkspaceId(10)], StripId(11));
+    assert_eq!(loaded.desktop.active_strip[&WorkspaceSlot(10)], StripId(11));
     assert_eq!(loaded.desktop.active_group[&StripId(11)], 12);
 }
 

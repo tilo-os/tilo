@@ -566,7 +566,7 @@ impl DesktopHandle {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.id == active)
+            .find(|workspace| workspace.slot == active)
             .ok_or("there is no active workspace")?;
         let before: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
         apply_command(
@@ -674,7 +674,7 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
         workspace.strips.iter().find_map(|strip| {
             strip.window_groups.iter().find_map(|group| {
                 group.tabs.iter().any(|t| t.id == tab).then_some(RouteIds {
-                    workspace: workspace.id,
+                    workspace: workspace.slot,
                     strip: strip.id,
                     group: group.id,
                     tab,
@@ -1032,7 +1032,7 @@ impl DesktopSurface {
                 let (workspace, model) = find_tab(tree, ids.strip, tab)?;
                 match &model.tile {
                     tilo_desktop_model::TileContent::LocalApp { app_id, label, .. } => {
-                        Some((app_id.clone(), label.clone(), Some(workspace.id.raw())))
+                        Some((app_id.clone(), label.clone(), Some(workspace.slot.raw())))
                     }
                     _ => None,
                 }
@@ -2181,7 +2181,7 @@ impl DesktopSurface {
             .tree
             .workspaces
             .iter()
-            .find(|w| w.id == current.workspace)
+            .find(|w| w.slot == current.workspace)
             .and_then(|w| w.strips.iter().find(|s| s.id == current.strip))?;
         let windows: Vec<(GroupId, TabId)> = strip
             .window_groups
@@ -2277,7 +2277,7 @@ impl DesktopSurface {
 
 fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
     for workspace in &tree.workspaces {
-        minter.observe(workspace.id.0);
+        minter.observe(workspace.slot.0);
         for strip in &workspace.strips {
             minter.observe(strip.id.0);
             for group in &strip.window_groups {

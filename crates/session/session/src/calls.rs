@@ -1408,7 +1408,7 @@ mod tests {
     };
     use tilo_action_broker::collab_core::BrokerChannels;
     use tilo_compositor::OutputConfig;
-    use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceId};
+    use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceSlot};
     use tilo_network_actor::{HostIdentity, NetEvent, workspace_topic_id};
 
     use super::*;
@@ -1475,11 +1475,14 @@ mod tests {
     /// A desk showing one workspace, as this device holds it.
     fn desk_tree() -> DesktopTree {
         let workspace_id = workspace_id();
-        let workspace =
-            Workspace::in_workspace(WorkspaceId::of_room(workspace_id), workspace_id, "Desk");
+        let workspace = Workspace::in_workspace(
+            WorkspaceSlot::of_workspace(workspace_id),
+            workspace_id,
+            "Desk",
+        );
         DesktopTree {
             workspaces: vec![workspace.clone()],
-            active: workspace.id,
+            active: workspace.slot,
             ..DesktopTree::default()
         }
     }

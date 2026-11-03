@@ -1331,7 +1331,7 @@ fn the_night_light_action_warms_the_displays_and_switches_back() {
 fn active_workspace(session: &Session) -> Option<u64> {
     session
         .handle()
-        .read(|tree| tree.active_workspace().map(|workspace| workspace.id.0))
+        .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0))
 }
 
 /// The resource publishing `action` among everything the session
@@ -2115,7 +2115,7 @@ fn tabs_in(session: &Session, workspace: u64) -> Vec<u64> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .filter(|held| held.id.0 == workspace)
+            .filter(|held| held.slot.0 == workspace)
             .flat_map(|held| &held.strips)
             .flat_map(|strip| &strip.window_groups)
             .flat_map(|group| &group.tabs)
@@ -2237,7 +2237,7 @@ fn the_next_session_comes_up_where_this_one_was() {
         let index = session.handle().read(|tree| {
             tree.workspaces
                 .iter()
-                .position(|workspace| workspace.id.0 == open)
+                .position(|workspace| workspace.slot.0 == open)
         });
         assert_eq!(index, Some(1), "the second workspace is in front");
         kept
@@ -2254,7 +2254,7 @@ fn the_next_session_comes_up_where_this_one_was() {
     let index = second.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .position(|workspace| workspace.id.0 == open)
+            .position(|workspace| workspace.slot.0 == open)
     });
     assert_eq!(index, Some(1), "the workspace that was in front is");
 }

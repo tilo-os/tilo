@@ -233,7 +233,7 @@ fn place(session: &mut Session, resource: &str, x: i32, y: i32, width: i32, heig
         let tree = session.handle().read(Clone::clone);
         let workspace = tree.active_workspace().expect("a workspace is in front");
         (
-            workspace.id.0.to_string(),
+            workspace.slot.0.to_string(),
             workspace.strips.first().expect("a row").id.0,
             session.handle().mint_id(),
             session.handle().mint_id(),

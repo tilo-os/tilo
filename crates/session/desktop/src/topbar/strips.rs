@@ -58,7 +58,7 @@ impl TopBarChrome {
     }
 
     pub(super) fn sync_strips(&mut self, tree: &DesktopTree) {
-        let workspace = tree.workspaces.iter().find(|w| w.id == tree.active);
+        let workspace = tree.workspaces.iter().find(|w| w.slot == tree.active);
         self.strips.strips = workspace
             .map(|w| {
                 w.strips
@@ -424,7 +424,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use tilo_desktop_model::{Collaborator, Strip, Tab, TileContent, WindowGroup, WindowWidth};
-    use tilo_desktop_model::{Workspace, WorkspaceId};
+    use tilo_desktop_model::{Workspace, WorkspaceSlot};
     use ui::headless::Framed;
 
     struct Host {
@@ -467,7 +467,7 @@ mod tests {
     /// A workspace of three named strips, the first shown, with people on
     /// the other two.
     fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Home");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
         let mut games = Strip::new(StripId(11), "Games");
         games.window_groups = vec![group(1)];
         let mut quiet = Strip::new(StripId(12), "Quiet");
@@ -479,11 +479,11 @@ mod tests {
         bo.active_tab = Some(1002);
         workspace.collaborators = vec![ada, bo];
         let mut tree = DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
-        tree.active_strip.insert(WorkspaceId(1), StripId(10));
+        tree.active_strip.insert(WorkspaceSlot(1), StripId(10));
         tree
     }
 

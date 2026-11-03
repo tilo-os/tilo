@@ -278,7 +278,7 @@ mod tests {
 
     use ed25519_dalek::SigningKey;
     use tilo_action_policy::Role;
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
     use tilo_network_actor::HostIdentity;
     use tilo_peer_state::join::MemberRole;
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
@@ -342,8 +342,11 @@ mod tests {
                 )
                 .expect("this device takes the workspace as its governor has it");
         }
-        let mut workspace =
-            Workspace::in_workspace(WorkspaceId::of_room(workspace_id), workspace_id, "Test");
+        let mut workspace = Workspace::in_workspace(
+            WorkspaceSlot::of_workspace(workspace_id),
+            workspace_id,
+            "Test",
+        );
         workspace
             .policy
             .members
@@ -414,7 +417,7 @@ mod tests {
         let b_engine = Engine::open(
             identity(&b_cert, &b_key),
             Some(b_state.path()),
-            [(WorkspaceId::of_room(workspace_id), workspace_id)],
+            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("this desk's engine opens");
         governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
@@ -533,8 +536,11 @@ mod tests {
         let (workspace_id, policy, owner, desk, person) = the_owner_raised_ada();
         // What this desk had of the workspace's people before the change is
         // the owner's and this person's; after it, what the workspace has.
-        let mut workspace =
-            Workspace::in_workspace(WorkspaceId::of_room(workspace_id), workspace_id, "Test");
+        let mut workspace = Workspace::in_workspace(
+            WorkspaceSlot::of_workspace(workspace_id),
+            workspace_id,
+            "Test",
+        );
         workspace.set_owner(owner.clone());
         workspace.policy.members.insert(desk.clone(), Role::Editor);
         assert!(
@@ -1223,7 +1229,7 @@ mod tests {
             let engine = Engine::open(
                 identity(&cert, &key),
                 Some(state.path()),
-                [(WorkspaceId::of_room(workspace_id), workspace_id)],
+                [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
             )
             .expect("this computer's engine opens");
             let governor = TestGovernor::empty_interactive(
@@ -1405,14 +1411,14 @@ mod tests {
         let hers = Engine::open(
             identity(&her, &her_key),
             Some(her_state),
-            [(WorkspaceId::of_room(workspace_id), workspace_id)],
+            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("her engine opens");
         // This computer's device governs the workspace, and admits her.
         let mine = Engine::open(
             identity(cert, key),
             Some(state),
-            [(WorkspaceId::of_room(workspace_id), workspace_id)],
+            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("this computer's engine opens");
         let governor =
@@ -1453,7 +1459,7 @@ mod tests {
         let mine = Engine::open(
             identity(cert, key),
             Some(state),
-            [(WorkspaceId::of_room(workspace_id), workspace_id)],
+            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("this computer's engine opens");
         let governor =
@@ -1540,7 +1546,7 @@ mod tests {
         let mine = Engine::open(
             identity(cert, key),
             Some(state),
-            [(WorkspaceId::of_room(workspace_id), workspace_id)],
+            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("this computer's engine opens");
         let written = mine
@@ -1738,7 +1744,7 @@ mod tests {
         let mine = Engine::open(
             crate::sync::device_identity().expect("this computer is a device"),
             Some(state.path()),
-            [(WorkspaceId::of_room(workspace_id), workspace_id)],
+            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("this computer's engine opens");
         assert!(
@@ -1763,7 +1769,7 @@ mod tests {
         let engine = Engine::open(
             identity(cert, key),
             Some(state),
-            [(WorkspaceId::of_room(workspace_id), workspace_id)],
+            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("this computer's engine opens");
         let now = std::time::SystemTime::now();
@@ -1873,7 +1879,7 @@ mod tests {
             .read(|tree| {
                 tree.workspaces
                     .first()
-                    .map(|workspace| workspace.id.0.to_string())
+                    .map(|workspace| workspace.slot.0.to_string())
             })
             .expect("a workspace on the desk");
         let listed = listed_invitations(&mut session, &workspace);

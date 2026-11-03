@@ -1,7 +1,7 @@
 use crate::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg,
     PendingEnrollmentId, PendingEnrollmentStatus, RoomId, StatePeer, SystemTime, TransportOrigin,
-    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, limits, publication,
+    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceSlot, limits, publication,
     record,
 };
 use record::{StoredPendingEnrollment, StoredWorkspace};
@@ -130,7 +130,7 @@ impl NativeWorkspaceOwner {
     pub fn prepare_enrollment_into(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
-        local: Option<WorkspaceId>,
+        local: Option<WorkspaceSlot>,
         _now: SystemTime,
     ) -> Result<PendingEnrollmentId, String> {
         let bytes = intent.durable_bytes()?;
@@ -260,7 +260,7 @@ impl NativeWorkspaceOwner {
     }
     pub fn pending_enrollment_for_slot(
         &self,
-        local: WorkspaceId,
+        local: WorkspaceSlot,
     ) -> Result<Option<StoredPendingEnrollment>, String> {
         if !self.0.store.healthy() {
             return Err("native state writer is fenced".into());

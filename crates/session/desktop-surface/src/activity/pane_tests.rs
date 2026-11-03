@@ -11,7 +11,7 @@ mod tests {
 
     use super::*;
     use crate::activity::testing::TestTree as WorkspaceTree;
-    use tilo_desktop_model::WorkspaceId;
+    use tilo_desktop_model::WorkspaceSlot;
 
     /// The pane with a device that may mutate the workspace.
     fn native_pane() -> WorkspaceActivityPane {
@@ -26,17 +26,17 @@ mod tests {
 
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
-    fn busy_workspace() -> (WorkspaceTree, WorkspaceId, String) {
+    fn busy_workspace() -> (WorkspaceTree, WorkspaceSlot, String) {
         busy_workspace_written_by(None)
     }
 
     /// [`busy_workspace`], but the half-hour is a collaborator's: what Catch up
     /// exists to show.
-    fn peers_busy_workspace() -> (WorkspaceTree, WorkspaceId, String) {
+    fn peers_busy_workspace() -> (WorkspaceTree, WorkspaceSlot, String) {
         busy_workspace_written_by(Some(ActorId::from(b"ada-device".as_slice())))
     }
 
-    fn busy_workspace_written_by(peer: Option<ActorId>) -> (WorkspaceTree, WorkspaceId, String) {
+    fn busy_workspace_written_by(peer: Option<ActorId>) -> (WorkspaceTree, WorkspaceSlot, String) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let reader = tree.doc.get_actor().clone();
         if let Some(peer) = peer {
@@ -44,11 +44,11 @@ mod tests {
         }
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
-        let ws_id = tree.desktop.active;
+        let slot = tree.desktop.active;
 
         let granted = tree
             .grant_in_workspace(
-                ws_id,
+                slot,
                 &user,
                 CapOverride::grant(
                     Subject::app("files"),
@@ -58,7 +58,7 @@ mod tests {
             )
             .expect("the owner may grant in their own workspace");
         tree.grant_in_workspace(
-            ws_id,
+            slot,
             &user,
             CapOverride::grant(
                 Subject::app("terminal"),
@@ -67,14 +67,14 @@ mod tests {
             ),
         )
         .expect("the owner may grant in their own workspace");
-        assert!(tree.revoke_in_workspace(ws_id, &user, &granted));
+        assert!(tree.revoke_in_workspace(slot, &user, &granted));
 
-        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == slot) {
             ws.name = "Design review".to_string();
         }
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
-        (tree, ws_id, user)
+        (tree, slot, user)
     }
 
     #[test]
@@ -155,7 +155,7 @@ mod tests {
         let first = tree.active;
         let second = tree.append_empty_workspace("Second");
         tree.commit_workspace_change();
-        if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.id == first) {
+        if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == first) {
             workspace.name = "Renamed before switching".to_string();
         }
         tree.seed_doc_from_cache();
@@ -197,7 +197,12 @@ mod tests {
         let mut pane = native_pane();
         pane.refresh(&mut tree);
         tree.set_active(second);
-        if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.id == second) {
+        if let Some(workspace) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.slot == second)
+        {
             workspace.name = "Renamed".to_string();
         }
         tree.seed_doc_from_cache();
@@ -747,9 +752,9 @@ mod tests {
         let other = tree
             .workspaces
             .iter()
-            .find(|candidate| candidate.id != workspace)
+            .find(|candidate| candidate.slot != workspace)
             .unwrap()
-            .id;
+            .slot;
         assert_eq!(pane.glance_signal(other.raw()), (None, 0, 0));
         assert!(pane.digest_for_workspace(other.raw()).briefs.is_empty());
         pane.begin_view(workspace.raw());
@@ -923,14 +928,14 @@ mod tests {
     fn catch_up_persists_only_what_the_app_showed() {
         let (mut tree, workspace, _) = peers_busy_workspace();
         let records = RecordStore::in_memory();
-        let workspace_ref = tree.active_workspace().expect("workspace").room();
-        let workspace_id = workspace_ref.to_string();
+        let identity = tree.active_workspace().expect("workspace").room();
+        let identity_text = identity.to_string();
         for n in 0..12 {
             let id = RecordId::for_file(format!("result-{n}.note"));
             let kind = ui::RecordKind::new("note");
             assert!(records.open_record(&ui::RecordCheckout::new(id.clone(), kind.clone())));
             records.with(&id, |doc| {
-                ui::record::init(doc, &id, &kind, &workspace_id);
+                ui::record::init(doc, &id, &kind, &identity_text);
                 doc.commit();
                 doc.set_actor(ActorId::from(b"ada-device".as_slice()));
                 doc.put(automerge::ROOT, "body", format!("Result {n}"))
@@ -946,7 +951,7 @@ mod tests {
             });
             tree.desktop
                 .workspace_records_held
-                .entry(workspace_ref)
+                .entry(identity)
                 .or_default()
                 .insert(id.to_string(), kind.to_string());
         }
@@ -1016,9 +1021,9 @@ mod tests {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.id != home)
+            .find(|workspace| workspace.slot != home)
             .expect("demo has another workspace")
-            .id;
+            .slot;
         let departed_at = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(10_000))
             .expect("fixed test timestamp");
@@ -1043,7 +1048,7 @@ mod tests {
             tree.desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.id == home)
+                .find(|workspace| workspace.slot == home)
                 .expect("home workspace")
                 .name = "Board review".to_string();
             tree.seed_doc_from_cache();
@@ -1211,7 +1216,7 @@ mod tests {
     }
 
     /// A second workspace with its own governance, interleaved in one document.
-    fn two_workspace_tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
+    fn two_workspace_tree() -> (WorkspaceTree, WorkspaceSlot, WorkspaceSlot) {
         let (mut tree, first, user) = busy_workspace();
         let second = tree.append_empty_workspace("Research");
         tree.adopt_ownerless_workspaces(&user);
@@ -1375,7 +1380,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
-        let ws_id = tree.desktop.active;
+        let slot = tree.desktop.active;
 
         let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
         let last_week = CapOverride::grant(
@@ -1388,7 +1393,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.id == ws_id)
+                .find(|workspace| workspace.slot == slot)
                 .expect("active workspace");
             assert!(workspace.may_govern_at(
                 &user,
@@ -1401,7 +1406,7 @@ mod tests {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.id == ws_id)
+            .find(|workspace| workspace.slot == slot)
             .expect("active workspace")
             .sandbox
             .iter()
@@ -1410,14 +1415,14 @@ mod tests {
             .expect("stored grant");
         assert!(tilo_desktop_model::desktop_doc::insert_sandbox(
             &mut tree.doc,
-            ws_id,
+            slot,
             &stored
         ));
         tilo_resource::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
             .expect("the grant left a transaction to stamp");
 
         tree.grant_in_workspace(
-            ws_id,
+            slot,
             &user,
             CapOverride::grant(
                 Subject::app("files"),
@@ -1559,21 +1564,21 @@ mod tests {
 
     #[test]
     fn reverting_a_row_writes_a_new_forward_change() {
-        let (mut tree, ws_id, user) = busy_workspace();
+        let (mut tree, slot, user) = busy_workspace();
         let mut pane = pane_over(&mut tree);
 
         let before_name = tree
             .desktop
             .workspaces
             .iter()
-            .find(|w| w.id == ws_id)
+            .find(|w| w.slot == slot)
             .map(|w| w.name.clone())
             .unwrap();
         assert_eq!(before_name, "Design review");
         let versions_before = pane.entries().len();
 
         // Rename again, so there is something to revert back across.
-        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == slot) {
             ws.name = "Renamed by mistake".to_string();
         }
         tree.seed_doc_from_cache();
@@ -1590,7 +1595,7 @@ mod tests {
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|w| w.id == ws_id)
+                .find(|w| w.slot == slot)
                 .map(|w| w.name.as_str()),
             Some("Design review"),
             "the workspace is back to the state the row named"
@@ -1794,10 +1799,10 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
-        let ws_id = tree.desktop.active;
+        let slot = tree.desktop.active;
         for i in 0..240u64 {
             tree.grant_in_workspace(
-                ws_id,
+                slot,
                 &user,
                 CapOverride::grant(
                     Subject::app("files"),
@@ -2054,7 +2059,7 @@ mod tests {
     fn restoring_to_a_band_boundary_lands_on_the_state_at_that_boundary() {
         // The band header's [Restore] passes the band's last change, so this is
         // the production path for "restore to the end of this version".
-        let (mut tree, ws_id, _) = busy_workspace();
+        let (mut tree, slot, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
 
         // Find the change that named the workspace, and the state just after it.
@@ -2066,7 +2071,7 @@ mod tests {
         let boundary = pane.entries()[renamed_at].id;
 
         // Move on: rename again, so the document is no longer in that state.
-        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == slot) {
             ws.name = "Something else".to_string();
         }
         tree.seed_doc_from_cache();
@@ -2076,7 +2081,7 @@ mod tests {
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|w| w.id == ws_id)
+                .find(|w| w.slot == slot)
                 .map(|w| w.name.clone()),
             Some("Something else".to_string())
         );
@@ -2089,7 +2094,7 @@ mod tests {
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|w| w.id == ws_id)
+                .find(|w| w.slot == slot)
                 .map(|w| w.name.clone()),
             Some("Design review".to_string()),
             "the workspace is back in the state that boundary produced"
@@ -3376,7 +3381,7 @@ fn same_id_in(
     other_workspace: tilo_desktop_model::RoomId,
 ) -> tilo_desktop_model::Workspace {
     let mut other = tilo_desktop_model::Workspace::in_workspace(
-        workspace.id,
+        workspace.slot,
         other_workspace,
         workspace.name.clone(),
     );

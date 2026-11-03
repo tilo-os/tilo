@@ -7,7 +7,7 @@
 //! it arrive; let go where no strip lies, it stays where it was.
 
 use super::Shared;
-use tilo_desktop_model::{DesktopTree, DropTarget, StripId, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, DropTarget, StripId, WorkspaceSlot};
 use ui::widget::GroupRow;
 
 /// The strip a window dragged out of `strip` lands in: the next one below it
@@ -17,7 +17,7 @@ fn strip_that_way(
     tree: &DesktopTree,
     strip: StripId,
     down: bool,
-) -> Option<(WorkspaceId, StripId, usize)> {
+) -> Option<(WorkspaceSlot, StripId, usize)> {
     let workspace = tree
         .workspaces
         .iter()
@@ -29,7 +29,7 @@ fn strip_that_way(
         at.checked_sub(1)
             .and_then(|before| workspace.strips.get(before))
     }?;
-    Some((workspace.id, next.id, next.window_groups.len()))
+    Some((workspace.slot, next.id, next.window_groups.len()))
 }
 
 /// Carry out the drag `row` reports out of `strip`: the window goes to the

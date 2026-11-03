@@ -168,7 +168,7 @@ fn replay_checkpoint<T: ActivityTree>(
                     width_permille: group.width.permille(),
                 })
                 .collect();
-            workspaces.push((workspace.id.raw(), ReplayWorkspace { name, groups }));
+            workspaces.push((workspace.slot.raw(), ReplayWorkspace { name, groups }));
         }
     }
     Some(workspaces)

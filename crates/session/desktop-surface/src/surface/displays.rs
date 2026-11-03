@@ -147,7 +147,7 @@ impl Shared {
             let route = group.and_then(|group| {
                 let model = strip.window_groups.iter().find(|g| g.id == group)?;
                 Some(RouteIds {
-                    workspace: workspace.id,
+                    workspace: workspace.slot,
                     strip: strip_id,
                     group,
                     tab: model.active_tab,
@@ -206,11 +206,11 @@ impl Shared {
                 let model = strip.window_groups.iter().find(|g| g.id == group)?;
                 Some((group, model.active_tab))
             });
-        let workspace_id = workspace.id;
+        let slot = workspace.slot;
         match step(tree, strip, from, steps) {
             Some(Step::Window(group, tab)) => {
                 self.queue.push(Admitted::Select(RouteIds {
-                    workspace: workspace_id,
+                    workspace: slot,
                     strip: strip_id,
                     group,
                     tab,
@@ -438,7 +438,7 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{
         AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-        Workspace, WorkspaceId,
+        Workspace, WorkspaceSlot,
     };
 
     fn group(id: GroupId) -> WindowGroup {
@@ -476,12 +476,12 @@ mod tests {
     /// A tree whose one strip holds groups `ids`, the first `left` of them
     /// on the left display.
     fn docked(ids: &[GroupId], left: usize) -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Desk");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Desk");
         let mut strip = Strip::new(StripId(1), "S");
         strip.window_groups = ids.iter().map(|id| group(*id)).collect();
         workspace.strips = vec![strip];
         let mut tree = DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -499,12 +499,12 @@ mod tests {
 
     #[test]
     fn one_display_steps_along_the_strip_and_stops_at_its_ends() {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Desk");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Desk");
         let mut s = Strip::new(StripId(1), "S");
         s.window_groups = vec![group(1), group(2)];
         workspace.strips = vec![s];
         let tree = DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };

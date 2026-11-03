@@ -2001,7 +2001,7 @@ impl WorkspaceActivityPane {
                     redaction: None,
                     context: Some(receipt.context.clone()),
                 });
-                tags.push(Some(workspace.id.raw()));
+                tags.push(Some(workspace.slot.raw()));
             }
         }
         // Housekeeping and what came from outside stay in the workspace
@@ -2037,7 +2037,7 @@ impl WorkspaceActivityPane {
         let names: std::collections::HashMap<u64, String> = tree
             .workspaces
             .iter()
-            .map(|w| (w.id.raw(), w.name.clone()))
+            .map(|w| (w.slot.raw(), w.name.clone()))
             .collect();
 
         let mut rows: Vec<HistoryEntry> = Vec::with_capacity(self.derived.len());

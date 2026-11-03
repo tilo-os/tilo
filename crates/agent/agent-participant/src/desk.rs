@@ -117,7 +117,7 @@ mod tests {
 
     use super::*;
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
+    use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceSlot};
 
     fn tab(id: u64, app: &str) -> Tab {
         Tab {
@@ -146,7 +146,7 @@ mod tests {
     /// A desk with the person's strip (Chat) and the strip the agent's task
     /// runs on (Notes, which it works in), as one shared desktop change.
     fn desk() -> Vec<u8> {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Workspace");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
         workspace.strips = vec![
             Strip {
                 id: StripId(10),

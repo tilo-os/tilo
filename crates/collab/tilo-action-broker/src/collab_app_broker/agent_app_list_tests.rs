@@ -4,7 +4,7 @@
 //! that reads as "there are no apps".
 
 use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
-use crate::test_support::{Grants as _, KindSet, Subject, Workspace, WorkspaceId, WorkspaceTree};
+use crate::test_support::{Grants as _, KindSet, Subject, Workspace, WorkspaceSlot, WorkspaceTree};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, ActionHostError, Caller, CataloguePage,
@@ -47,7 +47,7 @@ impl crate::services::LauncherServices for Installed {
 /// A workspace owned by a person, with agent `scribe` admitted as an
 /// observer (it reads the workspace) and let use Notes.
 fn workspace() -> Workspace {
-    let mut workspace = Workspace::new(WorkspaceId(14), "Home");
+    let mut workspace = Workspace::new(WorkspaceSlot(14), "Home");
     workspace.set_owner("owner");
     workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
@@ -199,7 +199,7 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
     assert!(why.contains("no longer a member"), "{why}");
 
     // The workspace it was admitted to is gone from this device.
-    let elsewhere = Workspace::new(WorkspaceId(15), "Elsewhere");
+    let elsewhere = Workspace::new(WorkspaceSlot(15), "Elsewhere");
     let gone = Caller::local_agent("scribe").in_workspace(elsewhere.room().to_string());
     let why = reason(publishers(&state, &gone));
     assert!(why.contains("no longer on this device"), "{why}");

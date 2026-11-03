@@ -7,26 +7,29 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Local workspace identifier, newtype-wrapped over a salted `u64`
-/// minted by an [`IdMinter`].
+/// A workspace's slot on this desk: its local handle, newtype-wrapped over a
+/// salted `u64` minted by an [`IdMinter`]. Logs call it a slot. Stored under
+/// the `id` key it has always been written with, so a document from an older
+/// build still reads.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
 #[serde(transparent)]
-pub struct WorkspaceId(pub u64);
+pub struct WorkspaceSlot(pub u64);
 
-impl WorkspaceId {
+impl WorkspaceSlot {
     pub fn raw(&self) -> u64 {
         self.0
     }
 
-    /// The local id of the workspace with `identity`, the same on every device:
-    /// the workspace's transport shard, which Activity, the relay and custody
-    /// already derive from it (`tilo_workspace_join::room_workspace_id`, pinned
-    /// to the same value by the shell's tests). A new workspace takes it; one
-    /// stored before keeps the id it has.
+    /// The slot a workspace with `identity` takes on a desk that has never
+    /// held it: derived from the workspace's transport shard, which Activity,
+    /// the relay and custody already derive from the identity
+    /// (`tilo_workspace_join::room_workspace_id`, pinned to the same value by
+    /// the shell's tests). A new workspace takes it; one stored before keeps
+    /// the slot it has.
     #[must_use]
-    pub fn of_room(identity: RoomId) -> Self {
+    pub fn of_workspace(identity: RoomId) -> Self {
         // Encoded on the stack, as the transport derivation does.
         let mut canonical = [0u8; 36];
         let hash = blake3::derive_key(
@@ -45,7 +48,7 @@ impl WorkspaceId {
 }
 
 /// Durable, globally-unique identity of a collaboration workspace. Unlike
-/// [`WorkspaceId`] (a local counter) it is minted once as a random v4 uuid and
+/// [`WorkspaceSlot`] (a local counter) it is minted once as a random v4 uuid and
 /// carried rather than recomputed, so machines that have never met still agree
 /// on it. [`Self::nil`] is the unminted sentinel.
 #[derive(
@@ -95,19 +98,19 @@ impl From<uuid::Uuid> for RoomId {
     }
 }
 
-impl From<u64> for WorkspaceId {
+impl From<u64> for WorkspaceSlot {
     fn from(v: u64) -> Self {
         Self(v)
     }
 }
 
-impl From<WorkspaceId> for u64 {
-    fn from(v: WorkspaceId) -> Self {
+impl From<WorkspaceSlot> for u64 {
+    fn from(v: WorkspaceSlot) -> Self {
         v.0
     }
 }
 
-/// Local strip identifier, newtype-wrapped like [`WorkspaceId`].
+/// Local strip identifier, newtype-wrapped like [`WorkspaceSlot`].
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -321,11 +324,14 @@ mod tests {
         // to: every device and the relay derive the same id for a workspace.
         let identity = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
         assert_eq!(
-            WorkspaceId::of_room(identity).raw(),
+            WorkspaceSlot::of_workspace(identity).raw(),
             3_029_697_355_180_468_570
         );
         let other = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();
-        assert_ne!(WorkspaceId::of_room(other), WorkspaceId::of_room(identity));
+        assert_ne!(
+            WorkspaceSlot::of_workspace(other),
+            WorkspaceSlot::of_workspace(identity)
+        );
     }
 
     #[test]

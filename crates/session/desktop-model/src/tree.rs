@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::collaborator::Collaborator;
-use crate::ids::{GroupId, RoomId, StripId, WorkspaceId};
+use crate::ids::{GroupId, RoomId, StripId, WorkspaceSlot};
 use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
 use crate::workspace::Workspace;
@@ -40,9 +40,9 @@ pub struct DesktopTree {
     pub external_revision: u64,
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
-    pub active: WorkspaceId,
+    pub active: WorkspaceSlot,
     #[serde(deserialize_with = "deserialize_id_map")]
-    pub active_strip: HashMap<WorkspaceId, StripId>,
+    pub active_strip: HashMap<WorkspaceSlot, StripId>,
     /// Per-strip "active group" pointer, one level deeper than
     /// [`Self::active_strip`]. Missing means "fall back to the first
     /// non-closing group" (see [`Self::resolve_active_group`]).
@@ -90,7 +90,7 @@ impl Default for DesktopTree {
             workspace_epoch: 0,
             external_revision: 0,
             workspaces: Vec::new(),
-            active: WorkspaceId::default(),
+            active: WorkspaceSlot::default(),
             active_strip: HashMap::new(),
             active_group: HashMap::new(),
             outputs: OutputPartition::default(),
@@ -131,7 +131,7 @@ impl DesktopTree {
     }
 
     pub fn active_workspace(&self) -> Option<&Workspace> {
-        self.workspaces.iter().find(|w| w.id == self.active)
+        self.workspaces.iter().find(|w| w.slot == self.active)
     }
 
     /// The workspace holding a window of `app`, the first in the tree's
@@ -167,7 +167,7 @@ impl DesktopTree {
     pub fn active_strip_id(&self) -> Option<StripId> {
         let workspace = self.active_workspace()?;
         self.active_strip
-            .get(&workspace.id)
+            .get(&workspace.slot)
             .copied()
             .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
             .or_else(|| workspace.strips.first().map(|strip| strip.id))
@@ -204,7 +204,7 @@ impl DesktopTree {
             return active;
         }
         self.outputs
-            .shown_on(display, workspace.id)
+            .shown_on(display, workspace.slot)
             .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
             .or(active)
     }
@@ -216,7 +216,7 @@ impl DesktopTree {
         let Some(workspace) = self.active_workspace() else {
             return false;
         };
-        let ws = workspace.id;
+        let ws = workspace.slot;
         if !workspace.strips.iter().any(|s| s.id == strip) {
             return false;
         }
@@ -260,11 +260,11 @@ impl DesktopTree {
 
     /// The active workspace, its active strip, and the display focus is on
     /// in it: the one holding the focused group, else the focused display.
-    fn shown_strip_focus(&self) -> Option<(WorkspaceId, StripId, u32)> {
+    fn shown_strip_focus(&self) -> Option<(WorkspaceSlot, StripId, u32)> {
         if !self.is_partitioned() {
             return None;
         }
-        let ws = self.active_workspace()?.id;
+        let ws = self.active_workspace()?.slot;
         let strip = self.active_strip_id()?;
         let display = self
             .active_group_for(strip)
@@ -310,7 +310,7 @@ impl DesktopTree {
     /// Returns whether the active strip changed.
     pub fn focus_display(&mut self, display: u32) -> bool {
         let leaving = self.outputs.focused_display();
-        let ws = self.active_workspace().map(|w| w.id);
+        let ws = self.active_workspace().map(|w| w.slot);
         if let (Some(leaving), Some(ws), Some(strip)) = (leaving, ws, self.active_strip_id())
             && leaving != display
         {
@@ -327,7 +327,7 @@ impl DesktopTree {
     }
 
     pub fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
-        self.workspaces.iter_mut().find(|w| w.id == self.active)
+        self.workspaces.iter_mut().find(|w| w.slot == self.active)
     }
 
     /// The `(workspace, strip)` indices of `strip_id`, searching every

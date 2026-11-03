@@ -58,12 +58,12 @@ fn durable_fixture(
     let membership = membership.unwrap_or_else(|| {
         let mut tree = WorkspaceTree::default();
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(71),
+            crate::test_support::WorkspaceSlot(71),
             "Durable workspace",
         );
         workspace.set_owner(principal_id_for_root(root_key.verifying_key().to_bytes()));
         tree.workspaces.push(workspace);
-        tree.set_active(crate::test_support::WorkspaceId(71));
+        tree.set_active(crate::test_support::WorkspaceSlot(71));
         tree.persist_path = Some(root.join("state.json"));
         tree.shared()
     });

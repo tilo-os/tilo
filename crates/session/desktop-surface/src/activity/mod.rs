@@ -283,14 +283,14 @@ pub struct ActivityDeepLink {
 mod admitted_history_tests {
     use super::*;
     use automerge::{ROOT, transaction::Transactable};
-    use tilo_desktop_model::{Workspace, WorkspaceId};
+    use tilo_desktop_model::{Workspace, WorkspaceSlot};
 
     #[test]
     fn workspace_activity_real_workspace_topology_enters_pane_feed_and_replay() {
         use tilo_desktop_model::{
             AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
         };
-        let workspace = Workspace::new(WorkspaceId(9), "Actual workspace");
+        let workspace = Workspace::new(WorkspaceSlot(9), "Actual workspace");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
         doc.put(ROOT, "name", "Actual workspace").unwrap();
@@ -337,7 +337,7 @@ mod admitted_history_tests {
         write(&mut doc, &strips);
         let mut snapshot = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.id,
+                active: workspace.slot,
                 workspaces: vec![workspace],
                 ..Default::default()
             },

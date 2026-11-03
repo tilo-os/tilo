@@ -21,7 +21,7 @@ use std::rc::Rc;
 use tilo_sort::CompactSort as _;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
 use tilo_desktop_surface::activity::describer::{self, Describer, Job};
 use tilo_desktop_surface::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, WorkspaceDeparture,
@@ -315,7 +315,7 @@ impl PageHistory {
         crate::desktop::as_desk_document(&document, &self.author)
     }
 
-    fn bound(&self, tree: &DesktopTree, workspace: WorkspaceId) -> Vec<(String, RecordCheckout)> {
+    fn bound(&self, tree: &DesktopTree, workspace: WorkspaceSlot) -> Vec<(String, RecordCheckout)> {
         bound(&self.shared, tree, workspace)
             .into_iter()
             .map(|(_, app, checkout)| (app, checkout))
@@ -337,7 +337,7 @@ impl PageHistory {
 fn bound(
     shared: &crate::desktop::Shared,
     tree: &DesktopTree,
-    workspace: WorkspaceId,
+    workspace: WorkspaceSlot,
 ) -> Vec<(TabId, String, RecordCheckout)> {
     let apps: HashMap<TabId, String> = tree
         .workspaces
@@ -573,7 +573,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
     fn workspace_history(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     ) -> Option<ActivitySnapshot> {
         tree.workspaces.iter().find(|w| w.id == workspace)?;
         // The desk's history is the desk's document: every change in it, by
@@ -591,7 +591,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
     fn record_histories(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     ) -> Vec<DetachedRecordHistory> {
         self.bound(tree, workspace)
             .into_iter()

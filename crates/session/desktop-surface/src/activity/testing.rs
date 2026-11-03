@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
     AppKind, Collaborator, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, UserId,
-    WindowGroup, WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceId,
+    WindowGroup, WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceSlot,
 };
 
 /// The local user every [`TestHost`] answers for.
@@ -39,8 +39,8 @@ pub(crate) fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-fn empty_workspace(id: WorkspaceId, name: &str, strips: Vec<Strip>) -> Workspace {
-    let mut workspace = Workspace::in_workspace(id, RoomId::new(), name);
+fn empty_workspace(slot: WorkspaceSlot, name: &str, strips: Vec<Strip>) -> Workspace {
+    let mut workspace = Workspace::in_workspace(slot, RoomId::new(), name);
     workspace.strips = strips;
     workspace
 }
@@ -67,14 +67,14 @@ impl std::ops::DerefMut for TestTree {
 impl TestTree {
     /// One empty Home workspace.
     pub fn bootstrap_default() -> Self {
-        let ws_id = WorkspaceId(next_id());
+        let slot = WorkspaceSlot(next_id());
         let strip_id = StripId(next_id());
-        let home = empty_workspace(ws_id, "Home", vec![Strip::new(strip_id, "Main")]);
+        let home = empty_workspace(slot, "Home", vec![Strip::new(strip_id, "Main")]);
         let mut tree = Self {
             desktop: DesktopTree {
                 workspaces: vec![home],
-                active: ws_id,
-                active_strip: HashMap::from([(ws_id, strip_id)]),
+                active: slot,
+                active_strip: HashMap::from([(slot, strip_id)]),
                 ..DesktopTree::default()
             },
             ..Self::default()
@@ -85,7 +85,7 @@ impl TestTree {
 
     /// Home with four apps open, plus empty Research and Design workspaces.
     pub fn bootstrap_demo() -> Self {
-        let ws_id = WorkspaceId(next_id());
+        let slot = WorkspaceSlot(next_id());
         let strip_id = StripId(next_id());
         let group_id = next_id();
         let tab = |title: &str, kind: AppKind, label: &str| Tab {
@@ -113,7 +113,7 @@ impl TestTree {
             maximized: false,
             focus_history: Vec::new(),
         });
-        let mut home = empty_workspace(ws_id, "Home", vec![strip]);
+        let mut home = empty_workspace(slot, "Home", vec![strip]);
         home.collaborators = vec![
             Collaborator::new("alice", "Alice")
                 .with_cursor_color("#ec4899")
@@ -122,8 +122,8 @@ impl TestTree {
         let mut tree = Self {
             desktop: DesktopTree {
                 workspaces: vec![home],
-                active: ws_id,
-                active_strip: HashMap::from([(ws_id, strip_id)]),
+                active: slot,
+                active_strip: HashMap::from([(slot, strip_id)]),
                 active_group: HashMap::from([(strip_id, group_id)]),
                 ..DesktopTree::default()
             },
@@ -134,7 +134,7 @@ impl TestTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.id == research)
+            .find(|workspace| workspace.slot == research)
         {
             workspace.collaborators.push(
                 Collaborator::new("alice", "Alice")
@@ -165,22 +165,22 @@ impl TestTree {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
     }
 
-    pub fn set_active(&mut self, id: WorkspaceId) {
-        if self.desktop.workspaces.iter().any(|w| w.id == id) {
+    pub fn set_active(&mut self, id: WorkspaceSlot) {
+        if self.desktop.workspaces.iter().any(|w| w.slot == id) {
             self.desktop.active = id;
             tilo_desktop_model::desktop_doc::set_active(&mut self.doc, id);
         }
     }
 
-    pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
-        let ws_id = WorkspaceId(next_id());
+    pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceSlot {
+        let slot = WorkspaceSlot(next_id());
         let strip_id = StripId(next_id());
-        let workspace = empty_workspace(ws_id, name, vec![Strip::new(strip_id, "Main")]);
-        let workspace_id = workspace.room();
-        self.desktop.active_strip.insert(ws_id, strip_id);
+        let workspace = empty_workspace(slot, name, vec![Strip::new(strip_id, "Main")]);
+        let identity = workspace.room();
+        self.desktop.active_strip.insert(slot, strip_id);
         self.desktop.workspaces.push(workspace);
-        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, workspace_id);
-        ws_id
+        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, slot, name, identity);
+        slot
     }
 
     pub fn doc_append_tab_to_first_group_of_active_workspace(
@@ -199,8 +199,8 @@ impl TestTree {
         )
     }
 
-    fn doc_insert_sandbox(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
-        if tilo_desktop_model::desktop_doc::insert_sandbox(&mut self.doc, workspace_id, cap) {
+    fn doc_insert_sandbox(&mut self, slot: WorkspaceSlot, cap: &CapOverride) {
+        if tilo_desktop_model::desktop_doc::insert_sandbox(&mut self.doc, slot, cap) {
             self.commit_workspace_change();
         }
     }
@@ -209,7 +209,7 @@ impl TestTree {
     /// allowed to grant in the workspace.
     pub fn grant_in_workspace(
         &mut self,
-        workspace_id: WorkspaceId,
+        slot: WorkspaceSlot,
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
@@ -217,7 +217,7 @@ impl TestTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|w| w.id == workspace_id)?;
+            .find(|w| w.slot == slot)?;
         if !workspace.may_govern_at(
             grantor,
             tilo_action_policy::roles::governance::GRANT,
@@ -228,22 +228,17 @@ impl TestTree {
         let id = workspace
             .grant_sandbox(cap.granted_by(collab_types::caps::Principal::Person(grantor.clone())));
         let stored = workspace.sandbox.iter().find(|c| c.id == id).cloned()?;
-        self.doc_insert_sandbox(workspace_id, &stored);
+        self.doc_insert_sandbox(slot, &stored);
         Some(id)
     }
 
     pub fn revoke_in_workspace(
         &mut self,
-        workspace_id: WorkspaceId,
+        slot: WorkspaceSlot,
         revoker: &UserId,
         cap_id: &str,
     ) -> bool {
-        let Some(workspace) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)
-        else {
+        let Some(workspace) = self.desktop.workspaces.iter_mut().find(|w| w.slot == slot) else {
             return false;
         };
         if !workspace.may_govern_at(
@@ -254,18 +249,18 @@ impl TestTree {
         {
             return false;
         }
-        if tilo_desktop_model::desktop_doc::revoke_sandbox(&mut self.doc, workspace_id, cap_id) {
+        if tilo_desktop_model::desktop_doc::revoke_sandbox(&mut self.doc, slot, cap_id) {
             self.commit_workspace_change();
         }
         true
     }
 
-    pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
+    pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceSlot> {
         let mut adopted = Vec::new();
         for workspace in &mut self.desktop.workspaces {
             if workspace.owner().is_none() {
                 workspace.set_owner(user.clone());
-                adopted.push(workspace.id);
+                adopted.push(workspace.slot);
             }
         }
         for id in &adopted {
@@ -276,7 +271,7 @@ impl TestTree {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.id == *id)
+                .find(|w| w.slot == *id)
                 .map(|w| w.sandbox.clone())
                 .unwrap_or_default();
             for cap in caps {
@@ -288,7 +283,7 @@ impl TestTree {
 
     pub fn append_workspace_effect_receipt(
         &mut self,
-        workspace_id: WorkspaceId,
+        slot: WorkspaceSlot,
         invocation: tilo_actions::InvocationId,
         actor: &str,
         mut context: tilo_actions::ActionContext,
@@ -298,7 +293,7 @@ impl TestTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
+            .find(|workspace| workspace.slot == slot)
         else {
             return false;
         };
@@ -324,11 +319,7 @@ impl TestTree {
             completed_at: tilo_clock::unix_now_i64(),
         };
         workspace.effect_receipts.push(receipt.clone());
-        if tilo_desktop_model::desktop_doc::upsert_effect_receipt(
-            &mut self.doc,
-            workspace_id,
-            &receipt,
-        ) {
+        if tilo_desktop_model::desktop_doc::upsert_effect_receipt(&mut self.doc, slot, &receipt) {
             self.commit_workspace_change();
         }
         true

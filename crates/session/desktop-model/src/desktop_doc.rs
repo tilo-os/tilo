@@ -38,7 +38,7 @@ use tilo_action_policy::{Grant, GrantId, Preset, Role, Subject, WorkspacePolicy}
 
 use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
-use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
+use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
 use crate::projection::{
@@ -468,7 +468,7 @@ struct View {
         skip_serializing_if = "HashMap::is_empty",
         deserialize_with = "deserialize_id_map"
     )]
-    active_strip: HashMap<WorkspaceId, StripId>,
+    active_strip: HashMap<WorkspaceSlot, StripId>,
     #[serde(
         default,
         skip_serializing_if = "HashMap::is_empty",
@@ -609,7 +609,7 @@ pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
             doc,
             &list,
             &desktop.workspaces,
-            |ws| ws.id.raw(),
+            |ws| ws.slot.raw(),
             write_workspace,
         );
     }
@@ -760,7 +760,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 /// group seen for the first time gets local defaults.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     if let Some(raw) = doc.uint_at(&ROOT, ACTIVE_KEY) {
-        desktop.active = WorkspaceId::from(raw);
+        desktop.active = WorkspaceSlot::from(raw);
     }
     if obj(doc, &ROOT, WORKSPACES_KEY).is_none() {
         return;
@@ -769,7 +769,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     let mut rebuilt: Vec<Workspace> = Vec::with_capacity(entries.len());
     for (id_raw, entry) in &entries {
         let name = doc.str_at(entry, "name").unwrap_or_default();
-        let ws_id = WorkspaceId::from(*id_raw);
+        let slot = WorkspaceSlot::from(*id_raw);
         let identity = doc
             .str_at(entry, "room")
             .and_then(|v| RoomId::parse(v.as_str()))
@@ -778,15 +778,15 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         // it was given, whatever the document names, and a new one is made at
         // the identity the document names (one minted for it when it names
         // none).
-        let mut ws = match desktop.workspaces.iter().position(|w| w.id == ws_id) {
+        let mut ws = match desktop.workspaces.iter().position(|w| w.slot == slot) {
             Some(existing) => {
                 let mut existing = desktop.workspaces.remove(existing);
                 existing.name = name;
                 existing
             }
             None => match identity {
-                Some(identity) => Workspace::in_workspace(ws_id, identity, name),
-                None => Workspace::new(ws_id, name),
+                Some(identity) => Workspace::in_workspace(slot, identity, name),
+                None => Workspace::new(slot, name),
             },
         };
         let (owner, grants) = read_policy(doc, entry);
@@ -819,8 +819,8 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     desktop.workspaces = rebuilt;
 
     for (id_raw, entry) in entries {
-        let ws_id = WorkspaceId::from(id_raw);
-        let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+        let slot = WorkspaceSlot::from(id_raw);
+        let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.slot == slot) else {
             continue;
         };
         rebuild_strips(doc, &entry, ws);
@@ -985,10 +985,10 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
     group.tabs = tabs;
 }
 
-fn workspace_entry(doc: &AutoCommit, workspace_id: WorkspaceId) -> Option<ObjId> {
+fn workspace_entry(doc: &AutoCommit, slot: WorkspaceSlot) -> Option<ObjId> {
     workspace_entries(doc)
         .into_iter()
-        .find(|(id, _)| *id == workspace_id.raw())
+        .find(|(id, _)| *id == slot.raw())
         .map(|(_, entry)| entry)
 }
 
@@ -999,7 +999,7 @@ fn workspace_entry(doc: &AutoCommit, workspace_id: WorkspaceId) -> Option<ObjId>
 /// list for an unseeded document.
 pub fn append_workspace(
     doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
+    slot: WorkspaceSlot,
     name: &str,
     identity: RoomId,
 ) -> bool {
@@ -1012,10 +1012,10 @@ pub fn append_workspace(
     let Ok(entry) = doc.insert_object(&list, index, ObjType::Map) else {
         return false;
     };
-    let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
+    let _ = doc.put(&entry, "id", ScalarValue::Uint(slot.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
     let _ = doc.put(&entry, "room", identity.to_string());
-    let workspace = Workspace::in_workspace(workspace_id, identity, name);
+    let workspace = Workspace::in_workspace(slot, identity, name);
     sync_blob_map(
         doc,
         &entry,
@@ -1030,8 +1030,8 @@ pub fn append_workspace(
 }
 
 /// Record which workspace is showing.
-pub fn set_active(doc: &mut AutoCommit, workspace_id: WorkspaceId) {
-    let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(workspace_id.raw()));
+pub fn set_active(doc: &mut AutoCommit, slot: WorkspaceSlot) {
+    let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(slot.raw()));
 }
 
 /// Whether `change` did nothing but change how this device shows the desk:
@@ -1065,8 +1065,8 @@ pub fn set_author_names(doc: &mut AutoCommit, names: &std::collections::BTreeMap
 }
 
 /// Record a workspace's owner.
-pub fn set_owner(doc: &mut AutoCommit, workspace_id: WorkspaceId, owner: &str) -> bool {
-    workspace_entry(doc, workspace_id).is_some_and(|entry| doc.put(&entry, "owner", owner).is_ok())
+pub fn set_owner(doc: &mut AutoCommit, slot: WorkspaceSlot, owner: &str) -> bool {
+    workspace_entry(doc, slot).is_some_and(|entry| doc.put(&entry, "owner", owner).is_ok())
 }
 
 /// How many workspaces `doc` holds: none on a device that has not used its
@@ -1186,12 +1186,12 @@ pub fn write_shared(
 
 fn upsert_blob(
     doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
+    slot: WorkspaceSlot,
     map_key: &str,
     key: &str,
     value: &impl serde::Serialize,
 ) -> bool {
-    let Some(entry) = workspace_entry(doc, workspace_id) else {
+    let Some(entry) = workspace_entry(doc, slot) else {
         return false;
     };
     let Some(map) = map_or_create(doc, &entry, map_key) else {
@@ -1203,8 +1203,8 @@ fn upsert_blob(
     doc.put(&map, key, ScalarValue::Bytes(blob)).is_ok()
 }
 
-fn delete_blob(doc: &mut AutoCommit, workspace_id: WorkspaceId, map_key: &str, key: &str) -> bool {
-    let Some(entry) = workspace_entry(doc, workspace_id) else {
+fn delete_blob(doc: &mut AutoCommit, slot: WorkspaceSlot, map_key: &str, key: &str) -> bool {
+    let Some(entry) = workspace_entry(doc, slot) else {
         return false;
     };
     let Some(map) = obj(doc, &entry, map_key) else {
@@ -1216,40 +1216,40 @@ fn delete_blob(doc: &mut AutoCommit, workspace_id: WorkspaceId, map_key: &str, k
 /// Record a grant. Grants are a map keyed by id rather than a list:
 /// deleting a map key merges concurrently, while deleting list index 3 on
 /// two peers removes two different grants.
-pub fn insert_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, grant: &Grant) -> bool {
-    upsert_blob(doc, workspace_id, GRANTS_KEY, grant.id.as_str(), grant)
+pub fn insert_grant(doc: &mut AutoCommit, slot: WorkspaceSlot, grant: &Grant) -> bool {
+    upsert_blob(doc, slot, GRANTS_KEY, grant.id.as_str(), grant)
 }
 
 /// Delete a grant, so a revocation is not only local.
-pub fn revoke_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, id: &GrantId) -> bool {
-    delete_blob(doc, workspace_id, GRANTS_KEY, id.as_str())
+pub fn revoke_grant(doc: &mut AutoCommit, slot: WorkspaceSlot, id: &GrantId) -> bool {
+    delete_blob(doc, slot, GRANTS_KEY, id.as_str())
 }
 
 /// Record a sandbox capability.
-pub fn insert_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap: &CapOverride) -> bool {
-    upsert_blob(doc, workspace_id, SANDBOX_KEY, &cap.id, cap)
+pub fn insert_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap: &CapOverride) -> bool {
+    upsert_blob(doc, slot, SANDBOX_KEY, &cap.id, cap)
 }
 
 /// Delete a sandbox capability.
-pub fn revoke_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap_id: &str) -> bool {
-    delete_blob(doc, workspace_id, SANDBOX_KEY, cap_id)
+pub fn revoke_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap_id: &str) -> bool {
+    delete_blob(doc, slot, SANDBOX_KEY, cap_id)
 }
 
 /// Record a named grant set under its name's key.
-pub fn upsert_preset(doc: &mut AutoCommit, workspace_id: WorkspaceId, preset: &Preset) -> bool {
+pub fn upsert_preset(doc: &mut AutoCommit, slot: WorkspaceSlot, preset: &Preset) -> bool {
     let key = preset_key(&preset.name);
-    upsert_blob(doc, workspace_id, PRESETS_KEY, &key, preset)
+    upsert_blob(doc, slot, PRESETS_KEY, &key, preset)
 }
 
 /// Record a shortcut under its id, replacing any earlier version of it.
 pub fn upsert_shortcut(
     doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
+    slot: WorkspaceSlot,
     shortcut: &tilo_automation::SavedShortcut,
 ) -> bool {
     upsert_blob(
         doc,
-        workspace_id,
+        slot,
         WORKSPACE_AUTOMATIONS_KEY,
         shortcut.id(),
         shortcut,
@@ -1257,8 +1257,8 @@ pub fn upsert_shortcut(
 }
 
 /// Delete a shortcut, so the deletion is not only local.
-pub fn remove_shortcut(doc: &mut AutoCommit, workspace_id: WorkspaceId, shortcut_id: &str) -> bool {
-    let Some(entry) = workspace_entry(doc, workspace_id) else {
+pub fn remove_shortcut(doc: &mut AutoCommit, slot: WorkspaceSlot, shortcut_id: &str) -> bool {
+    let Some(entry) = workspace_entry(doc, slot) else {
         return false;
     };
     let Some(shortcuts) = obj(doc, &entry, WORKSPACE_AUTOMATIONS_KEY) else {
@@ -1271,12 +1271,12 @@ pub fn remove_shortcut(doc: &mut AutoCommit, workspace_id: WorkspaceId, shortcut
 /// Record a schedule claim under its schedule, replacing the earlier one.
 pub fn upsert_schedule_claim(
     doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
+    slot: WorkspaceSlot,
     claim: &tilo_automation::ScheduleClaim,
 ) -> bool {
     upsert_blob(
         doc,
-        workspace_id,
+        slot,
         WORKSPACE_SCHEDULE_CLAIMS_KEY,
         &claim.key(),
         claim,
@@ -1286,17 +1286,11 @@ pub fn upsert_schedule_claim(
 /// Record an effect receipt under its invocation.
 pub fn upsert_effect_receipt(
     doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
+    slot: WorkspaceSlot,
     receipt: &WorkspaceEffectReceipt,
 ) -> bool {
     let key = receipt.invocation.0.to_string();
-    upsert_blob(
-        doc,
-        workspace_id,
-        WORKSPACE_EFFECT_RECEIPTS_KEY,
-        &key,
-        receipt,
-    )
+    upsert_blob(doc, slot, WORKSPACE_EFFECT_RECEIPTS_KEY, &key, receipt)
 }
 
 /// Delete one tab, or its whole group when the tab was the group's last.
@@ -1489,18 +1483,18 @@ pub fn rewrite_group_tabs(doc: &mut AutoCommit, group_id: GroupId, tabs: &[Tab])
     true
 }
 
-/// Append a tab to a group of `workspace_id`: the group `group_id`, or with
+/// Append a tab to a group of `slot`: the group `group_id`, or with
 /// `None` the first group of the first strip. An empty `tile_blob` leaves
 /// the tile unset.
 pub fn append_tab(
     doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
+    slot: WorkspaceSlot,
     group_id: Option<GroupId>,
     tab_id: TabId,
     title: String,
     tile_blob: Vec<u8>,
 ) -> bool {
-    let Some(entry) = workspace_entry(doc, workspace_id) else {
+    let Some(entry) = workspace_entry(doc, slot) else {
         return false;
     };
     let Some(strips) = obj(doc, &entry, STRIPS_KEY) else {

@@ -86,7 +86,7 @@ pub struct DesktopSurface {
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
     retained_wakes: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
-    context: Option<(tilo_desktop_model::WorkspaceId, RoomId)>,
+    context: Option<(tilo_desktop_model::WorkspaceSlot, RoomId)>,
     empty_workspace_visible: Option<bool>,
     /// Each strip's row, by its place in the deck.
     rows: HashMap<StripId, usize>,
@@ -95,7 +95,7 @@ pub struct DesktopSurface {
     close_reports: Vec<ui::application::ComponentCloseReport>,
     tiles: HashMap<u64, tilo_desktop_model::TileContent>,
     selected_tabs: HashMap<tilo_desktop_model::GroupId, tilo_desktop_model::TabId>,
-    workspace_ids: Vec<tilo_desktop_model::WorkspaceId>,
+    slots: Vec<tilo_desktop_model::WorkspaceSlot>,
     selected_workspace: usize,
     selected_strip: usize,
     structure_dirty: bool,
@@ -232,7 +232,7 @@ impl DesktopSurface {
             .active_workspace()
             .and_then(|w| {
                 tree.active_strip
-                    .get(&w.id)
+                    .get(&w.slot)
                     .and_then(|id| w.strips.iter().position(|s| s.id == *id))
             })
             .unwrap_or(0);
@@ -253,7 +253,7 @@ impl DesktopSurface {
                     tree.workspaces.len(),
                     tree.workspaces
                         .iter()
-                        .position(|w| w.id == tree.active)
+                        .position(|w| w.slot == tree.active)
                         .unwrap_or(0),
                 )))
                 .push(Box::new(StripView::new(strips, active_strip)));
@@ -315,7 +315,7 @@ impl DesktopSurface {
             deck_index,
             navigation: crate::navigation::Navigation::default(),
             root,
-            context: tree.active_workspace().map(|w| (w.id, w.room())),
+            context: tree.active_workspace().map(|w| (w.slot, w.room())),
             empty_workspace_visible,
             component_wake,
             retained_wakes: vec![],
@@ -331,11 +331,11 @@ impl DesktopSurface {
                 .flat_map(|s| &s.window_groups)
                 .map(|g| (g.id, g.active_tab))
                 .collect(),
-            workspace_ids: tree.workspaces.iter().map(|w| w.id).collect(),
+            slots: tree.workspaces.iter().map(|w| w.slot).collect(),
             selected_workspace: tree
                 .workspaces
                 .iter()
-                .position(|w| w.id == tree.active)
+                .position(|w| w.slot == tree.active)
                 .unwrap_or(0),
             selected_strip: active_strip,
             structure_dirty: false,
@@ -434,7 +434,7 @@ impl DesktopSurface {
                 .iter()
                 .any(|wake| wake.load(std::sync::atomic::Ordering::Acquire))
     }
-    pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceId, RoomId)> {
+    pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceSlot, RoomId)> {
         self.context
     }
     /// The tabs this surface hosts.
@@ -667,7 +667,7 @@ impl DesktopSurface {
             && view.active_index() != self.selected_workspace
         {
             self.selected_workspace = view.active_index();
-            if let Some(id) = self.workspace_ids.get(self.selected_workspace) {
+            if let Some(id) = self.slots.get(self.selected_workspace) {
                 out.push(DesktopIntent::Local(LocalViewIntent::Workspace(*id)));
             }
         }
@@ -730,7 +730,7 @@ impl DesktopSurface {
         let Some(workspace) = tree.active_workspace() else {
             return ReconcileOutcome::RebuildRequired;
         };
-        if Some((workspace.id, workspace.room())) != self.context {
+        if Some((workspace.slot, workspace.room())) != self.context {
             return ReconcileOutcome::RebuildRequired;
         }
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
@@ -752,16 +752,16 @@ impl DesktopSurface {
         let mut failures = vec![];
         let mut reports = vec![];
         let mut changed = false;
-        self.workspace_ids = tree.workspaces.iter().map(|w| w.id).collect();
+        self.slots = tree.workspaces.iter().map(|w| w.slot).collect();
         self.selected_workspace = self
-            .workspace_ids
+            .slots
             .iter()
             .position(|id| *id == tree.active)
             .unwrap_or(0);
         self.selected_strip = workspace
             .strips
             .iter()
-            .position(|s| Some(&s.id) == tree.active_strip.get(&workspace.id))
+            .position(|s| Some(&s.id) == tree.active_strip.get(&workspace.slot))
             .unwrap_or(0);
         let shown = self.selected_strip;
         // What asked for it: a chord says so before acting

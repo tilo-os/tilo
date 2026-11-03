@@ -12566,7 +12566,7 @@ pub mod tests {
                     let fixture = local_directory_fixture();
                     let person = principal_id_for_root([0; 32]);
                     let mut other_workspace = crate::test_support::Workspace::new(
-                        crate::test_support::WorkspaceId(72),
+                        crate::test_support::WorkspaceSlot(72),
                         "Other publication workspace",
                     );
                     other_workspace.set_owner(person.clone());
@@ -12645,12 +12645,12 @@ pub mod tests {
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = crate::test_support::WorkspaceTree::default();
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(71),
+            crate::test_support::WorkspaceSlot(71),
             "Directory test workspace",
         );
         workspace.set_owner("fixture-owner".to_string());
         tree.workspaces.push(workspace);
-        tree.set_active(crate::test_support::WorkspaceId(71));
+        tree.set_active(crate::test_support::WorkspaceSlot(71));
         local_directory_fixture_with_membership(tree.shared())
     }
 
@@ -13414,7 +13414,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[20; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(1),
+            crate::test_support::WorkspaceSlot(1),
             "Member workspace",
         );
         let route = CrdtRoute::cluster(workspace.room().to_string());
@@ -13457,7 +13457,7 @@ pub mod tests {
         use tilo_actions::ActionKind::{Outside, Undoable};
         let root = SigningKey::from_bytes(&[24; 32]);
         let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(4), "Actions");
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(4), "Actions");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.room().to_string();
         let route = CrdtRoute::cluster(&workspace_id);
@@ -13523,7 +13523,7 @@ pub mod tests {
     fn a_foreign_device_is_capped_only_in_workspaces_it_does_not_govern() {
         let root = SigningKey::from_bytes(&[25; 32]);
         let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(5), "Own");
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(5), "Own");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
@@ -13579,7 +13579,7 @@ pub mod tests {
     fn a_foreign_device_joins_with_at_most_the_workspace_cap() {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(3), "Foreign");
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(3), "Foreign");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
         let route = CrdtRoute::cluster(workspace.room().to_string());
@@ -13629,7 +13629,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[44; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(44),
+            crate::test_support::WorkspaceSlot(44),
             "Agent workspace",
         );
         workspace.set_owner(principal);
@@ -13691,7 +13691,7 @@ pub mod tests {
         let bob_root = SigningKey::from_bytes(&[46; 32]);
         let bob = principal_id_for_root(bob_root.verifying_key().to_bytes());
         let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(45), "Hosted");
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(45), "Hosted");
         workspace.set_owner(owner.clone());
         let workspace_id = workspace.policy.workspace.clone();
         // Bob comments, and may launch the workspace's agents.
@@ -13821,7 +13821,7 @@ pub mod tests {
         let tide = "tide";
         let reed = "reed";
         let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(46), "Roster");
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(46), "Roster");
         workspace.set_owner(person.clone());
         let workspace_id = workspace.room().to_string();
         let other_person = "other-person";
@@ -14114,7 +14114,7 @@ pub mod tests {
         let member = SigningKey::from_bytes(&[45; 32]);
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(45),
+            crate::test_support::WorkspaceSlot(45),
             "Delegation workspace",
         );
         let route = CrdtRoute::cluster(workspace.room().to_string());
@@ -14133,7 +14133,7 @@ pub mod tests {
         let stranger = SigningKey::from_bytes(&[22; 32]);
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(2),
+            crate::test_support::WorkspaceSlot(2),
             "Revocation workspace",
         );
         let route = CrdtRoute::cluster(workspace.room().to_string());
@@ -14165,12 +14165,12 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[23; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut member_workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(3),
+            crate::test_support::WorkspaceSlot(3),
             "Member workspace",
         );
         member_workspace.set_owner(&principal);
         let other_workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(4),
+            crate::test_support::WorkspaceSlot(4),
             "Other workspace",
         );
         let replay_route = CrdtRoute::cluster(other_workspace.room().to_string());
@@ -14266,7 +14266,7 @@ pub mod tests {
         let device = SigningKey::from_bytes(&[25; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(5),
+            crate::test_support::WorkspaceSlot(5),
             "Typed document workspace",
         );
         workspace.set_owner(&principal);
@@ -14683,7 +14683,7 @@ pub mod tests {
     #[cfg(test)]
     fn counting_catalogue_state(owner: &str) -> CountingCatalogueFixture {
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(29),
+            crate::test_support::WorkspaceSlot(29),
             "Catalogue workspace",
         );
         workspace.set_owner(owner);
@@ -14791,7 +14791,7 @@ pub mod tests {
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
         let mut other = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(30),
+            crate::test_support::WorkspaceSlot(30),
             "Other catalogue workspace",
         );
         other.set_owner("same");
@@ -15005,7 +15005,7 @@ pub mod tests {
     #[test]
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(31),
+            crate::test_support::WorkspaceSlot(31),
             "Action workspace",
         );
         workspace.set_owner("owner");
@@ -15445,7 +15445,7 @@ pub mod tests {
     #[test]
     fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(32),
+            crate::test_support::WorkspaceSlot(32),
             "Agent effect workspace",
         );
         workspace.set_owner("owner");

@@ -1,13 +1,13 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use tilo_desktop::activity::{ActivitySnapshot, ActivityView, WorkspaceActivityPane};
 use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
 
 // Removing causal replay or writing to the admitted document while reviewing
 // must fail this regression. The root schema is a real admitted workspace document.
 #[test]
 fn workspace_activity_review_keeps_live_heads() {
-    let workspace = Workspace::new(WorkspaceId(1), "Design");
+    let workspace = Workspace::new(WorkspaceSlot(1), "Design");
     let mut doc = AutoCommit::new();
     doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
         .unwrap();
@@ -17,7 +17,7 @@ fn workspace_activity_review_keeps_live_heads() {
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..Default::default()
         },
@@ -44,7 +44,7 @@ fn workspace_activity_review_keeps_live_heads() {
 #[test]
 fn workspace_activity_names_workspace_events_and_leaves_bookkeeping_out() {
     use automerge::{ObjType, transaction::CommitOptions};
-    let workspace = Workspace::new(WorkspaceId(3), "Reading group");
+    let workspace = Workspace::new(WorkspaceSlot(3), "Reading group");
     let mut doc = AutoCommit::new();
     let stamp = |doc: &mut AutoCommit, at: i64| {
         doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
@@ -100,7 +100,7 @@ fn workspace_activity_names_workspace_events_and_leaves_bookkeeping_out() {
     stamp(&mut doc, 4);
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..Default::default()
         },
@@ -145,10 +145,10 @@ fn workspace_activity_names_workspace_events_and_leaves_bookkeeping_out() {
 #[test]
 fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloads() {
     use tilo_desktop::activity::view_actions::*;
-    let id = WorkspaceId(u64::MAX - 3);
-    let workspace = Workspace::new(id, "Same label");
+    let slot = WorkspaceSlot(u64::MAX - 3);
+    let workspace = Workspace::new(slot, "Same label");
     let tree = DesktopTree {
-        active: id,
+        active: slot,
         workspaces: vec![workspace],
         ..Default::default()
     };
@@ -162,7 +162,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
         assert_eq!(
             descriptor.request,
             WorkspaceViewRequest::OpenActivity {
-                workspace: id,
+                workspace: slot,
                 view
             }
         );
@@ -172,7 +172,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
         let operation = action.build_args([]).unwrap();
         assert_eq!(operation.type_id, OPERATION_TYPE);
         let encoded: serde_json::Value = serde_json::from_slice(&operation.payload).unwrap();
-        assert_eq!(encoded["workspace"], id.0.to_string());
+        assert_eq!(encoded["workspace"], slot.0.to_string());
         assert_eq!(
             serde_json::from_value::<WorkspaceViewRequest>(encoded).unwrap(),
             descriptor.request
@@ -181,7 +181,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
     assert!(
         descriptors
             .iter()
-            .any(|d| d.id == format!("workspace.select.{}", tree.room_of(id).unwrap()))
+            .any(|d| d.id == format!("workspace.select.{}", tree.room_of(slot).unwrap()))
     );
     assert!(
         workspace_view_descriptors(&tree, false)
@@ -194,14 +194,14 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
 fn workspace_activity_detached_record_origins_do_not_collide() {
     use tilo_desktop::activity::*;
     use ui::record::{RecordCheckout, RecordId, RecordKind};
-    let workspace = Workspace::new(WorkspaceId(9), "Design");
+    let workspace = Workspace::new(WorkspaceSlot(9), "Design");
     let mut doc = AutoCommit::new();
     doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
         .unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..Default::default()
         },
@@ -265,14 +265,14 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     use tilo_actions::{ActionContext, ChangeKind};
     use tilo_desktop::activity::*;
     use ui::record::{RecordCheckout, RecordId, RecordKind};
-    let workspace = Workspace::new(WorkspaceId(9), "Design");
+    let workspace = Workspace::new(WorkspaceSlot(9), "Design");
     let mut doc = AutoCommit::new();
     doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
         .unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..Default::default()
         },
@@ -347,14 +347,14 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
 fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     use tilo_desktop::activity::*;
     use ui::record::{RecordCheckout, RecordId, RecordKind};
-    let workspace = Workspace::new(WorkspaceId(9), "Design");
+    let workspace = Workspace::new(WorkspaceSlot(9), "Design");
     let mut doc = AutoCommit::new();
     doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
         .unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..Default::default()
         },
@@ -397,7 +397,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     use automerge::transaction::CommitOptions;
     use tilo_desktop_model::shared_record::device;
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
-    let workspace = Workspace::new(WorkspaceId(4), "Planning");
+    let workspace = Workspace::new(WorkspaceSlot(4), "Planning");
     let mut doc = AutoCommit::new();
     let stamp = |doc: &mut AutoCommit, at: i64| {
         doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
@@ -408,7 +408,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     doc.put(ROOT, "name", "Planning").unwrap();
     // Then a device lays the workspace out in its layout record, a window at
     // a time.
-    let mut layout = Workspace::in_workspace(workspace.id, workspace.room(), "Planning");
+    let mut layout = Workspace::in_workspace(workspace.slot, workspace.room(), "Planning");
     let mut strip = Strip::new(StripId::from((1 << 48) | 3), "Planning");
     for (at, group, tab, title) in [
         (1, (1 << 48) | 1, (1 << 48) | 2, "Notes"),
@@ -448,7 +448,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     }
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..Default::default()
         },

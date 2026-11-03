@@ -245,7 +245,7 @@ pub fn may_command(
 mod tests {
     use super::*;
     use crate::commands::{TabLocation, TabPlacement};
-    use crate::ids::{StripId, WorkspaceId};
+    use crate::ids::{StripId, WorkspaceSlot};
     use crate::layout::{Strip, Tab, TileContent, WindowGroup};
     use crate::width::WindowWidth;
 
@@ -293,7 +293,7 @@ mod tests {
     /// The Lounge: one strip (10) the workspace lists, the guest's window 1 and
     /// another guest's window 2 on it.
     fn lounge() -> (Workspace, Authors) {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
         let mut strip = Strip::new(StripId(10), "Lounge");
         strip.window_groups = [(100, 1), (200, 2)]
             .into_iter()

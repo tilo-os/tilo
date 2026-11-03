@@ -33,7 +33,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     use tilo_action_broker::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
-        test_support::{Workspace, WorkspaceId, WorkspaceTree},
+        test_support::{Workspace, WorkspaceSlot, WorkspaceTree},
     };
     if isolated_signing_identity(
         "standalone::tests::runtime_invocation_ownership_survives_device_normalization",
@@ -48,7 +48,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
-    let mut workspace = Workspace::in_workspace(WorkspaceId(41), placed, "Execution isolation");
+    let mut workspace = Workspace::in_workspace(WorkspaceSlot(41), placed, "Execution isolation");
     workspace.set_owner(actor.clone());
     let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree {

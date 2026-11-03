@@ -197,7 +197,7 @@ pub(super) fn foreign_changes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{StripId, WorkspaceId};
+    use crate::ids::{StripId, WorkspaceSlot};
     use crate::layout::{Strip, Tab, TileContent, WindowGroup};
     use crate::ownership::SharedDesktop;
     use crate::tree::DesktopTree;
@@ -205,7 +205,7 @@ mod tests {
     use crate::workspace::Workspace;
 
     fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
         let mut strip = Strip::new(StripId(10), "Lounge");
         for (id, _) in windows {
             strip.window_groups.push(WindowGroup {
@@ -229,7 +229,7 @@ mod tests {
         workspace.strips.push(strip);
         SharedDesktop {
             tree: DesktopTree {
-                active: workspace.id,
+                active: workspace.slot,
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             },

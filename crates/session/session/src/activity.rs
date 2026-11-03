@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey};
 use serde_json::Value;
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceSlot};
 use tilo_desktop_surface::HistorySource;
 use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
@@ -296,10 +296,10 @@ impl Activity {
     }
 
     /// The `RoomId` of `workspace`, as `tree` holds it.
-    fn room_of(tree: &DesktopTree, workspace: WorkspaceId) -> Option<RoomId> {
+    fn room_of(tree: &DesktopTree, workspace: WorkspaceSlot) -> Option<RoomId> {
         tree.workspaces
             .iter()
-            .find(|held| held.id == workspace)
+            .find(|held| held.slot == workspace)
             .map(Workspace::room)
     }
 
@@ -330,7 +330,7 @@ impl HistorySource for Activity {
     fn workspace_history(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     ) -> Option<ActivitySnapshot> {
         Self::room_of(tree, workspace)?;
         // The desk as it stands is the newest change of it: a workspace made
@@ -351,7 +351,7 @@ impl HistorySource for Activity {
     fn record_histories(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     ) -> Vec<DetachedRecordHistory> {
         let Some(workspace_id) = Self::room_of(tree, workspace) else {
             return Vec::new();
@@ -695,7 +695,7 @@ mod tests {
         surface: DesktopSurface,
         handle: DesktopHandle,
         activity: Activity,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     }
 
     impl Desk {

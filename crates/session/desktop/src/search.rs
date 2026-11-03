@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, Workspace,
-    WorkspaceId,
+    WorkspaceSlot,
 };
 
 use crate::i18n::{t, t_args};
@@ -34,7 +34,7 @@ pub enum WindowRowKind {
 pub enum WindowAction {
     /// Bring one tab to the front: its workspace, strip, group and tab.
     FocusTab {
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
         strip: StripId,
         group: GroupId,
         tab: TabId,
@@ -48,14 +48,14 @@ pub enum WindowAction {
     MoveTab {
         group: GroupId,
         tab: TabId,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     },
     /// Give another workspace its own copy of a client window's document,
     /// history included; the original window stays.
     CopyTab {
         group: GroupId,
         tab: TabId,
-        workspace: WorkspaceId,
+        workspace: WorkspaceSlot,
     },
     /// [`Self::MoveTab`] to the workspace the invocation names in its
     /// [`DESTINATION_PARAM`]: the one row a search for "move" offers.
@@ -180,7 +180,7 @@ pub fn group_close_id(group: GroupId) -> String {
 }
 
 /// The exact address of moving `tab` out of `group` to `workspace`.
-pub fn tab_move_id(group: GroupId, tab: TabId, workspace: WorkspaceId) -> String {
+pub fn tab_move_id(group: GroupId, tab: TabId, workspace: WorkspaceSlot) -> String {
     format!("tab.move:{group}:{tab}:{}", workspace.raw())
 }
 
@@ -197,7 +197,7 @@ pub fn tab_copy_to_id(group: GroupId, tab: TabId) -> String {
 }
 
 /// The exact address of copying `tab`'s document in `group` into `workspace`.
-pub fn tab_copy_id(group: GroupId, tab: TabId, workspace: WorkspaceId) -> String {
+pub fn tab_copy_id(group: GroupId, tab: TabId, workspace: WorkspaceSlot) -> String {
     format!("tab.copy:{group}:{tab}:{}", workspace.raw())
 }
 
@@ -292,7 +292,7 @@ impl Verbs {
 fn focused_group<'a>(tree: &'a DesktopTree, workspace: &'a Workspace) -> Option<&'a WindowGroup> {
     let strip = tree
         .active_strip
-        .get(&workspace.id)
+        .get(&workspace.slot)
         .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
         .or_else(|| workspace.strips.first())?;
     tree.active_group_for(strip.id)
@@ -352,7 +352,7 @@ fn move_rows(
     );
     let others: Vec<&Workspace> = workspaces
         .iter()
-        .filter(|other| other.id != workspace.id)
+        .filter(|other| other.slot != workspace.slot)
         .collect();
     if others.is_empty() {
         return;
@@ -368,7 +368,7 @@ fn move_rows(
         ))
     };
     for other in others {
-        let id = tab_move_id(group, tab.id, other.id);
+        let id = tab_move_id(group, tab.id, other.slot);
         if admit(&id, false) {
             let label = t_args(
                 "search-window-move-tab",
@@ -388,11 +388,11 @@ fn move_rows(
                 action: WindowAction::MoveTab {
                     group,
                     tab: tab.id,
-                    workspace: other.id,
+                    workspace: other.slot,
                 },
             });
         }
-        let id = tab_copy_id(group, tab.id, other.id);
+        let id = tab_copy_id(group, tab.id, other.slot);
         if copyable && admit(&id, false) {
             let label = t_args(
                 "search-window-copy-tab",
@@ -412,7 +412,7 @@ fn move_rows(
                 action: WindowAction::CopyTab {
                     group,
                     tab: tab.id,
-                    workspace: other.id,
+                    workspace: other.slot,
                 },
             });
         }
@@ -625,7 +625,7 @@ pub fn window_rows_with_sharing(
                         names: vec![tab.title.clone()],
                         hint: app_hint(&tab.tile),
                         action: WindowAction::FocusTab {
-                            workspace: workspace.id,
+                            workspace: workspace.slot,
                             strip: strip.id,
                             group: group_id,
                             tab: tab.id,
@@ -679,12 +679,12 @@ pub fn window_rows_revision(tree: &DesktopTree) -> String {
     let Some(workspace) = tree.active_workspace() else {
         return "desktop-windows:empty".into();
     };
-    let mut revision = format!("desktop-windows:{}", workspace.id.raw());
+    let mut revision = format!("desktop-windows:{}", workspace.slot.raw());
     if let Some(tab) = focused_tab(tree, workspace) {
         let _ = write!(revision, ":f{tab}");
     }
     for other in &tree.workspaces {
-        let _ = write!(revision, ":w{}:{}", other.id.raw(), other.name);
+        let _ = write!(revision, ":w{}:{}", other.slot.raw(), other.name);
     }
     for strip in &workspace.strips {
         let _ = write!(revision, ":s{}:{}", strip.id.raw(), strip.name);

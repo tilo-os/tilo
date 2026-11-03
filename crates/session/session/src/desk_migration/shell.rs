@@ -364,7 +364,7 @@ mod tests {
     use tilo_desktop_model::ids::RESERVED_SALT;
     use tilo_desktop_model::{
         IdMinter, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-        WorkspaceId, compose_id,
+        WorkspaceSlot, compose_id,
     };
 
     /// The two workspaces a device that used the shell left.
@@ -381,8 +381,8 @@ mod tests {
         let mut minter = IdMinter::new(7);
         let mut tree = DesktopTree::default();
         for name in [PLANS, RESEARCH] {
-            let mut workspace = Workspace::new(WorkspaceId(minter.mint()), name);
-            workspace.id = WorkspaceId::of_room(workspace.room());
+            let mut workspace = Workspace::new(WorkspaceSlot(minter.mint()), name);
+            workspace.slot = WorkspaceSlot::of_workspace(workspace.room());
             workspace.strips = [("Main", &["Notes", "Files"][..]), ("Side", &["Search"][..])]
                 .into_iter()
                 .map(|(strip_name, tabs)| {
@@ -394,7 +394,7 @@ mod tests {
                 .collect();
             tree.workspaces.push(workspace);
         }
-        tree.active = tree.workspaces[0].id;
+        tree.active = tree.workspaces[0].slot;
         let first_strip = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, first_strip);
         tree
@@ -482,7 +482,7 @@ mod tests {
                     strips.insert(0, strip);
                 }
             }
-            let first = desk.workspaces[0].id.raw().to_string();
+            let first = desk.workspaces[0].slot.raw().to_string();
             if let Some(active) = file["active_strip"].as_object_mut() {
                 active.insert(first, serde_json::json!(compose_id(RESERVED_SALT, 1)));
             }
@@ -505,7 +505,7 @@ mod tests {
             .iter()
             .map(|workspace| {
                 (
-                    workspace.id.raw(),
+                    workspace.slot.raw(),
                     workspace
                         .strips
                         .iter()
@@ -646,16 +646,16 @@ mod tests {
         lounge.push(touched);
         std::fs::write(&file, serde_json::to_vec(&written).expect("json"))
             .expect("the shell's desk is on disk");
-        let plans = left.workspaces[0].id;
-        let research = left.workspaces[1].id;
+        let plans = left.workspaces[0].slot;
+        let research = left.workspaces[1].slot;
 
         let desk = DeskDoc::load(Some(state.path()), Some(&file), "ada");
         let opened = desk.tree().expect("the shell's desk opens");
-        let strips = |id: WorkspaceId| {
+        let strips = |id: WorkspaceSlot| {
             opened
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.id == id)
+                .find(|workspace| workspace.slot == id)
                 .expect("the workspace came over")
                 .strips
                 .iter()

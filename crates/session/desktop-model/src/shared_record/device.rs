@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
-use crate::ids::{RoomId, TabId, WorkspaceId};
+use crate::ids::{RoomId, TabId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::projection::localise_tile;
@@ -91,19 +91,19 @@ fn written(tile: &TileContent, tab_title: &str) -> TileContent {
     }
 }
 
-/// The record's workspace for `identity`: the one under the workspace's own id,
+/// The record's workspace for `identity`: the one under the slot derived from it,
 /// else the first.
 fn record_workspace(
     desktop: SharedDesktop,
     identity: RoomId,
 ) -> Option<(Workspace, SharedDesktop)> {
     let mut desktop = desktop;
-    let id = WorkspaceId::of_room(identity);
+    let slot = WorkspaceSlot::of_workspace(identity);
     let index = desktop
         .tree
         .workspaces
         .iter()
-        .position(|w| w.id == id)
+        .position(|w| w.slot == slot)
         .unwrap_or(0);
     if index >= desktop.tree.workspaces.len() {
         return None;
@@ -178,7 +178,7 @@ pub fn write(
     let mut shared = held.as_ref().map_or_else(
         || {
             Workspace::in_workspace(
-                WorkspaceId::of_room(identity),
+                WorkspaceSlot::of_workspace(identity),
                 identity,
                 workspace.name.clone(),
             )
@@ -251,7 +251,7 @@ pub fn write(
         .collect();
     let desktop = SharedDesktop {
         tree: DesktopTree {
-            active: shared.id,
+            active: shared.slot,
             workspaces: vec![shared],
             ..DesktopTree::default()
         },

@@ -519,7 +519,7 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.id == tree.active)
+        .find(|workspace| workspace.slot == tree.active)
         .expect("a workspace is in front");
     let strip = workspace.strips.first_mut().expect("a strip is in front");
     let group = handle.mint_id();
@@ -1649,7 +1649,7 @@ fn tab_place(session: &Session, tab: u64) -> Option<(u64, String)> {
                     .window_groups
                     .iter()
                     .any(|group| group.tabs.iter().any(|t| t.id == tab))
-                    .then(|| (workspace.id.0, strip.name.clone()))
+                    .then(|| (workspace.slot.0, strip.name.clone()))
             })
         })
     })
@@ -1674,7 +1674,7 @@ fn second_strip(session: &mut Session, first: &str, second: &str, app: &str) -> 
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.id == tree.active)
+        .find(|workspace| workspace.slot == tree.active)
         .expect("a workspace is in front");
     first.clone_into(&mut workspace.strips[0].name);
     let mut added = tilo_desktop_model::Strip::new(strip, second);

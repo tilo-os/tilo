@@ -16,7 +16,8 @@ use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceSlot,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_surface_host::{Placement, WidgetHost};
@@ -77,18 +78,18 @@ fn desk_tree() -> DesktopTree {
         maximized: false,
         focus_history: Vec::new(),
     };
-    let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
         window_groups: vec![group],
     }];
     let mut tree = DesktopTree {
-        active: workspace.id,
+        active: workspace.slot,
         workspaces: vec![workspace],
         ..Default::default()
     };
-    tree.active_strip.insert(WorkspaceId(1), StripId(2));
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
     tree.active_group.insert(StripId(2), 3);
     tree
 }

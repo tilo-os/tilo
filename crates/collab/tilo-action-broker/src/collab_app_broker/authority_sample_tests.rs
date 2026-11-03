@@ -4,7 +4,7 @@
 //! workspace's effect-receipt history.
 use super::*;
 use crate::services::WorkspaceAuthority;
-use crate::test_support::{Workspace, WorkspaceId};
+use crate::test_support::{Workspace, WorkspaceSlot};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::AtomicUsize;
@@ -150,7 +150,7 @@ fn owner() -> String {
 }
 
 fn owned_workspace() -> (DesktopTree, String) {
-    let mut workspace = Workspace::new(WorkspaceId(91), "Sampled authority");
+    let mut workspace = Workspace::new(WorkspaceSlot(91), "Sampled authority");
     workspace.set_owner(owner());
     workspace.effect_receipts = (0..RECEIPTS)
         .map(|index| tilo_desktop_model::WorkspaceEffectReceipt {
@@ -163,7 +163,7 @@ fn owned_workspace() -> (DesktopTree, String) {
         .collect();
     let workspace_id = workspace.room().to_string();
     let tree = DesktopTree {
-        active: WorkspaceId(91),
+        active: WorkspaceSlot(91),
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };

@@ -733,12 +733,12 @@ fn commands(
         });
     }
     for workspace in &tree.workspaces {
-        if workspace.id != tree.active {
+        if workspace.slot != tree.active {
             out.push(CommandSpec {
                 id: format!(
                     "{}{}",
                     tilo_desktop_search::WORKSPACE_COMMAND_PREFIX,
-                    workspace.id.0
+                    workspace.slot.0
                 ),
                 title: format!("Switch to {}", workspace.name),
                 subtitle: Some("Workspace".into()),
@@ -1271,8 +1271,8 @@ impl DesktopSurface {
                 } else {
                     id.strip_prefix(tilo_desktop_search::WORKSPACE_COMMAND_PREFIX)
                         .and_then(|id| id.parse::<u64>().ok())
-                        .map(tilo_desktop_model::WorkspaceId)
-                        .filter(|id| shared.tree.workspaces.iter().any(|w| w.id == *id))
+                        .map(tilo_desktop_model::WorkspaceSlot)
+                        .filter(|id| shared.tree.workspaces.iter().any(|w| w.slot == *id))
                         .map(Admitted::Workspace)
                 }
             }

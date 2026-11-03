@@ -83,7 +83,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.id,
+                    before.slot,
                     workspace_id,
                     before.name,
                 );
@@ -302,7 +302,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    before.id,
+                    before.slot,
                     workspace_id,
                     before.name,
                 );

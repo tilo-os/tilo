@@ -267,7 +267,7 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
     };
     let active_strip = tree
         .active_strip
-        .get(&workspace.id)
+        .get(&workspace.slot)
         .copied()
         .or_else(|| workspace.strips.first().map(|strip| strip.id));
     // The tabs the focus history remembers, most recent first.
@@ -495,9 +495,9 @@ impl Desk {
                 .workspaces
                 .iter()
                 .map(|workspace| shell_part::WorkspaceReading {
-                    key: workspace.id.0.to_string(),
+                    key: workspace.slot.0.to_string(),
                     name: workspace.name.clone(),
-                    current: workspace.id == tree.active,
+                    current: workspace.slot == tree.active,
                 })
                 .collect(),
             // The native session runs no agent tasks of its own yet: none is published until a
@@ -520,9 +520,9 @@ impl Desk {
                 .workspaces
                 .iter()
                 .map(|workspace| shell_part::RoomReading {
-                    key: workspace.id.0.to_string(),
+                    key: workspace.slot.0.to_string(),
                     name: workspace.name.clone(),
-                    current: workspace.id == tree.active,
+                    current: workspace.slot == tree.active,
                     members: self.person.clone(),
                     present: 0,
                     activity: String::new(),
@@ -844,7 +844,7 @@ impl Desk {
                 Some(key) => tree
                     .workspaces
                     .iter()
-                    .find(|candidate| candidate.id.0.to_string() == key),
+                    .find(|candidate| candidate.slot.0.to_string() == key),
                 None => tree.active_workspace(),
             };
             workspace.map(Workspace::room)
@@ -1047,7 +1047,7 @@ impl Service for Desk {
         let known = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .any(|candidate| candidate.id.0.to_string() == workspace)
+                .any(|candidate| candidate.slot.0.to_string() == workspace)
         });
         if !known {
             return Err(DoorError::InvalidArguments(format!(

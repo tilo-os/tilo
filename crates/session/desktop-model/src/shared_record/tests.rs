@@ -18,7 +18,7 @@ fn tab(id: u64) -> Tab {
 
 /// One workspace, strip 10, a group per `(tab, group, who)` unless two share.
 fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
     let mut strip = Strip::new(StripId(10), "Lounge");
     for (tab_id, group, _) in windows {
         match strip.window_groups.iter_mut().find(|g| g.id == *group) {
@@ -36,7 +36,7 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
     workspace.strips.push(strip);
     SharedDesktop {
         tree: DesktopTree {
-            active: workspace.id,
+            active: workspace.slot,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         },
@@ -257,11 +257,11 @@ fn canonical_keeps_only_what_the_record_keeps() {
 /// A page's fresh desktop for a workspace it has not received yet: one workspace
 /// named after the workspace and one empty "Main" strip, under the page's own ids.
 fn fresh(workspace: u64, strip: u64, name: &str) -> SharedDesktop {
-    let mut fresh = Workspace::new(WorkspaceId(workspace), name);
+    let mut fresh = Workspace::new(WorkspaceSlot(workspace), name);
     fresh.strips.push(Strip::new(StripId(strip), "Main"));
     SharedDesktop {
         tree: DesktopTree {
-            active: fresh.id,
+            active: fresh.slot,
             workspaces: vec![fresh],
             ..DesktopTree::default()
         },
@@ -305,7 +305,7 @@ fn desktops_written_before_the_workspace_was_received_fold_into_its_workspace() 
             written.tree.workspaces[0].strips[0]
                 .window_groups
                 .push(group_of(500, 5));
-            let mut side = Workspace::new(WorkspaceId(55), "Side");
+            let mut side = Workspace::new(WorkspaceSlot(55), "Side");
             side.strips.push(Strip::new(StripId(550), "Main"));
             written.tree.workspaces.push(side);
         }

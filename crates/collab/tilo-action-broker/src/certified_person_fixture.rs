@@ -76,7 +76,7 @@ pub fn certified_person_fixture_for_seeds(
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let workspace_id = collab_types::personal_cluster(&certificate.user_public_key);
     let mut workspace = crate::test_support::Workspace::in_workspace(
-        crate::test_support::WorkspaceId(71),
+        crate::test_support::WorkspaceSlot(71),
         tilo_desktop_model::RoomId::parse(&workspace_id.to_string()).unwrap(),
         "Synthetic personal cluster",
     );
@@ -84,7 +84,7 @@ pub fn certified_person_fixture_for_seeds(
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);
     tree.persist_path = Some(evidence_home.root().join("workspace.json"));
-    tree.set_active(crate::test_support::WorkspaceId(71));
+    tree.set_active(crate::test_support::WorkspaceSlot(71));
     let fanout = Arc::new(FanoutState::new());
     let (state, _) = AppBrokerState::new(
         &fanout,

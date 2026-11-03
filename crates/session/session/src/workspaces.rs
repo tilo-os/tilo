@@ -888,7 +888,7 @@ fn reorder(tree: &mut DesktopTree, wanted: &[RoomId]) -> bool {
     let before: Vec<u64> = tree
         .workspaces
         .iter()
-        .map(|workspace| workspace.id.0)
+        .map(|workspace| workspace.slot.0)
         .collect();
     let mut rest = std::mem::take(&mut tree.workspaces);
     let mut arranged: Vec<Workspace> = Vec::with_capacity(rest.len());
@@ -901,7 +901,7 @@ fn reorder(tree: &mut DesktopTree, wanted: &[RoomId]) -> bool {
         }
     }
     arranged.append(&mut rest);
-    let after: Vec<u64> = arranged.iter().map(|workspace| workspace.id.0).collect();
+    let after: Vec<u64> = arranged.iter().map(|workspace| workspace.slot.0).collect();
     tree.workspaces = arranged;
     before != after
 }
@@ -1047,10 +1047,10 @@ impl crate::Shared {
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
             return;
         };
-        let id = tilo_desktop_model::WorkspaceId::of_room(workspace);
-        engine.bind(id, workspace);
+        let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
+        engine.bind(slot, workspace);
         let asked = sync.enroll(crate::sync::Enrolling {
-            workspace: id,
+            slot,
             workspace_id: workspace,
             invitation: joined.invitation.clone(),
         });
@@ -1058,7 +1058,7 @@ impl crate::Shared {
             Ok(()) => self.directory_store.expect_enrollment(&joined.workspace_id),
             Err(error) => {
                 tracing::warn!(%error, workspace = %joined.workspace_id, "the invitation was not redeemed");
-                engine.unbind(id);
+                engine.unbind(slot);
                 self.release_workspace(workspace);
                 self.directory_store.set_note(Some(error));
             }
@@ -1086,7 +1086,7 @@ impl crate::Shared {
                 .unwrap_or_else(|| key.clone());
             if enrolled.result.is_err() {
                 if let Some(engine) = &self.engine {
-                    engine.unbind(enrolled.workspace);
+                    engine.unbind(enrolled.slot);
                 }
                 self.release_workspace(enrolled.workspace_id);
             }
@@ -1182,7 +1182,7 @@ impl crate::Shared {
             tree.workspaces
                 .iter()
                 .find(|candidate| candidate.room() == workspace)
-                .map(|workspace| workspace.id.0.to_string())
+                .map(|workspace| workspace.slot.0.to_string())
         }) else {
             return;
         };
@@ -1199,7 +1199,7 @@ impl crate::Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
+    use tilo_desktop_model::{IdMinter, Workspace, WorkspaceSlot};
     use tilo_desktop_surface::seed_tree;
 
     /// The list as a later session opens it: a session flushes its writes
@@ -1262,7 +1262,7 @@ mod tests {
     fn open_here(handle: &DesktopHandle, workspace: RoomId, name: &str) {
         let mut tree = handle.read(Clone::clone);
         tree.workspaces.push(Workspace::in_workspace(
-            WorkspaceId::of_room(workspace),
+            WorkspaceSlot::of_workspace(workspace),
             workspace,
             name,
         ));
