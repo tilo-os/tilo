@@ -242,9 +242,9 @@ destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
 /// under it is done too, so clearing takes whole finished branches and never unfinished work
 /// with it, and a task done with a step still open under it stays.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
+    require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
     // Offered while something is done: whether a branch is finished is read once it runs, where
     // the tasks under each done one are walked.
-    require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
     let gone = tasks.items.filter(x -> x.done and tasks.items.descendants(x, .parent).all(d -> d.done))
     for x in gone {
         tasks.items.remove(x)
