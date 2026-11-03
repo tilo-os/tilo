@@ -295,3 +295,25 @@ fn picking_from_the_menus_emoji_bar_reports_the_emoji() {
     assert_eq!(fired[0].event, "pick");
     assert_eq!(fired[0].value, Some(Value::Text("🎉".into())));
 }
+
+#[test]
+fn a_run_of_grouped_commands_folds_into_one_row_that_opens_them() {
+    let queue = crate::Intents::default();
+    let grouped = |label: &str| {
+        MenuPart::Item(MenuItemProps {
+            label: label.into(),
+            group: Some("Due".into()),
+            choose: Event::View(Intent::new(&queue, label, "choose")),
+            ..MenuItemProps::default()
+        })
+    };
+    let entries = menu_entries(vec![grouped("Today"), grouped("Tomorrow")]);
+    let shown: Vec<Option<&str>> = entries.iter().map(|entry| entry.item().label()).collect();
+    assert_eq!(shown, [Some("Due")], "one run of a group is one row");
+    let entries = menu_entries(vec![grouped("Today")]);
+    assert_eq!(
+        entries[0].item().label(),
+        Some("Today"),
+        "a group of one command stays the command"
+    );
+}

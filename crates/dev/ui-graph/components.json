@@ -526,6 +526,13 @@
           "name": "in_menu",
           "doc": "It belongs in its header's menu rather than in the row ([`crate::widget::Button::in_menu`]).",
           "type": "bool"
+        },
+        {
+          "name": "group",
+          "doc": "The run of its owner's actions it stands in (`group: \"Due\"`), as the app names it: the header's menu shows rows of one run together, under the run's own row.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -4594,6 +4601,11 @@
           "type": "bool"
         },
         {
+          "name": "autofocus",
+          "doc": "It is where the person types next (an entry a command just opened): it takes the keyboard as soon as it is in the window, once.",
+          "type": "bool"
+        },
+        {
           "name": "changed_by",
           "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
           "type": {
@@ -5773,6 +5785,25 @@
           "doc": "Whether it is the one chosen now, in a menu of choices (a sort order).",
           "type": {
             "option": "bool"
+          }
+        },
+        {
+          "name": "disabled",
+          "doc": "It cannot run now (a `require` of its action does not hold). It is listed all the same, drawn as unavailable, and says `reason`.",
+          "type": "bool"
+        },
+        {
+          "name": "reason",
+          "doc": "Why it cannot run now, in the person's words (`require`'s own): read with the row, and kept beside the label so a person sees what it waits on.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "group",
+          "doc": "The run of commands it stands in (`group: \"Due\"`), as the app names it: consecutive rows of one run fold into one row that opens them.",
+          "type": {
+            "option": "text"
           }
         },
         {

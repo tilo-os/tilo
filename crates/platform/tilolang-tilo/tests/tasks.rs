@@ -806,7 +806,7 @@ fn a_subtask_dropped_inside_another_is_nested() {
     );
 }
 
-/// The menu's Indent and Outdent are the moves `Tab` and `Shift-Tab` make: under the task over
+/// The menu's Indent and Outdent are the moves `Ctrl+]` and `Ctrl+[` make: under the task over
 /// it, and out beside the one over it.
 #[test]
 fn a_subtask_indents_over_itself_and_outdents_beside_its_parent() {
@@ -818,7 +818,7 @@ fn a_subtask_indents_over_itself_and_outdents_beside_its_parent() {
     assert_eq!(
         target(&read(&ada, &shots, "parent")),
         target(&draft),
-        "Tab puts it under the task just over it"
+        "Ctrl+] puts it under the task just over it"
     );
     let view = task_page(&ada, &parent);
     let key = row_of(&view, &shots);
@@ -833,7 +833,7 @@ fn a_subtask_indents_over_itself_and_outdents_beside_its_parent() {
     assert_eq!(
         target(&read(&ada, &shots, "parent")),
         target(&parent),
-        "Shift-Tab puts it back beside the task over it"
+        "Ctrl+[ puts it back beside the task over it"
     );
     assert_eq!(
         titles(&ada),
@@ -1654,4 +1654,296 @@ fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
         .filter_map(|node| node.props.get("item").and_then(target))
         .collect();
     assert_eq!(listed, outlined, "the list and the outline agree");
+}
+
+/// One command a menu offers, as the person reads it.
+#[derive(Debug, PartialEq, Eq)]
+struct Command {
+    label: String,
+    key: Option<String>,
+    group: Option<String>,
+    reason: Option<String>,
+    enabled: bool,
+    destructive: bool,
+}
+
+fn flag(node: &UiNode, name: &str) -> bool {
+    match node.props.get(name) {
+        Some(Value::Bool(on)) => *on,
+        Some(Value::Int(on)) => *on != 0,
+        _ => false,
+    }
+}
+
+fn text_of(node: &UiNode, name: &str) -> Option<String> {
+    match node.props.get(name) {
+        Some(Value::Text(text)) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// A described `ui.MenuItem` as a command: it runs unless it says it is disabled, and says why
+/// beside its label.
+fn menu_command(node: &UiNode) -> Command {
+    Command {
+        label: text_of(node, "label").unwrap_or_default(),
+        key: text_of(node, "key"),
+        group: text_of(node, "group"),
+        reason: text_of(node, "reason"),
+        enabled: !flag(node, "disabled"),
+        destructive: flag(node, "destructive"),
+    }
+}
+
+/// A header command drawn behind the `...` door as a command.
+fn button_command(node: &UiNode) -> Command {
+    Command {
+        label: text_of(node, "label").unwrap_or_default(),
+        key: text_of(node, "key"),
+        group: text_of(node, "group"),
+        reason: text_of(node, "description"),
+        enabled: flag(node, "enabled"),
+        destructive: text_of(node, "role").as_deref() == Some("destructive"),
+    }
+}
+
+/// The commands every item menu offers, in the order a person reads them.
+fn spec_commands() -> Vec<&'static str> {
+    vec![
+        "Complete",
+        "Add subtask",
+        "Today",
+        "Tomorrow",
+        "Next week",
+        "Pick date…",
+        "No date",
+        "No priority",
+        "Low",
+        "Medium",
+        "High",
+        "Urgent",
+        "Project…",
+        "Inbox",
+        "Assign…",
+        "Indent",
+        "Outdent",
+        "Duplicate",
+        "Delete",
+    ]
+}
+
+fn labels(commands: &[Command]) -> Vec<&str> {
+    commands
+        .iter()
+        .map(|command| command.label.as_str())
+        .collect()
+}
+
+/// The home list's drawn row for a task.
+fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
+    view.poll_patches().unwrap();
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    let len = view.list_len(&list).unwrap_or(0);
+    let mut found = None;
+    for index in 0..len {
+        let stands = match view.row(&list, index) {
+            Ok(Some(row)) => {
+                all(row, "ui.ListItem")
+                    .first()
+                    .and_then(|item| item.props.get("item"))
+                    .and_then(target)
+                    == target(want)
+            }
+            _ => false,
+        };
+        if stands {
+            found = Some(index);
+            break;
+        }
+    }
+    let index = found.unwrap_or_else(|| panic!("no drawn row for the task"));
+    view.row(&list, index)
+        .expect("the row it listed")
+        .expect("the row it listed")
+}
+
+/// The commands a task's row offers from its own menu.
+fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
+    let row = home_row(view, want);
+    let menu = all(row, "slot")
+        .into_iter()
+        .find(|slot| slot.props.get("name") == Some(&Value::text("menu")))
+        .unwrap_or_else(|| panic!("the row offers a menu: {row:?}"));
+    all(menu, "ui.MenuItem")
+        .into_iter()
+        .map(menu_command)
+        .collect()
+}
+
+/// The commands a page offers behind its `...` door.
+fn page_commands(view: &ViewInstance) -> Vec<Command> {
+    all(view.tree(), "ui.Button")
+        .into_iter()
+        .filter(|button| flag(button, "in_menu"))
+        .map(button_command)
+        .collect()
+}
+
+/// A task's row menu is every command a person can run on that task, worded once, in one order:
+/// it takes something away before it adds, dates before priorities, and nothing a gesture alone
+/// runs.
+#[test]
+fn a_tasks_row_menu_offers_every_command_in_one_order() {
+    let (mut ada, root) = workspace();
+    let booked = call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    ada.commit();
+    let mut view = ada.view(APP);
+    let commands = row_commands(&mut view, &booked);
+    assert_eq!(labels(&commands), spec_commands(), "as a person reads them");
+    assert_eq!(
+        commands[0].key.as_deref(),
+        Some("Ctrl+enter"),
+        "the keys the app declares show as the keyboard spells them"
+    );
+    assert_eq!(
+        commands[0].group, None,
+        "a command of no run stands on its own"
+    );
+    assert_eq!(
+        commands[2].group.as_deref(),
+        Some("Due"),
+        "the dates are one run"
+    );
+    assert_eq!(commands[6].group.as_deref(), Some("Due"));
+    assert_eq!(commands[7].group.as_deref(), Some("Priority"));
+    assert!(
+        !commands[6].enabled && commands[6].reason.as_deref() == Some("It has no date"),
+        "a command that cannot run stays listed and says why: {:?}",
+        commands[6]
+    );
+    assert!(
+        !commands[7].enabled && commands[7].reason.as_deref() == Some("It has no priority"),
+        "what it already is cannot be chosen: {:?}",
+        commands[7]
+    );
+    assert_eq!(commands[15].key.as_deref(), Some("Ctrl+]"));
+    assert_eq!(commands[16].key.as_deref(), Some("Ctrl+["));
+    assert_eq!(
+        commands[17].key.as_deref(),
+        Some("Ctrl+Shift+d"),
+        "Duplicate"
+    );
+    let delete = commands.last().unwrap();
+    assert!(
+        delete.destructive,
+        "delete is drawn as taking something away"
+    );
+    assert_eq!(delete.key.as_deref(), Some("delete"));
+}
+
+/// The page a task opens offers the same commands, in the same order, with the same keys and the
+/// same reasons: one list of what a person can do to a task, drawn wherever it is asked for.
+#[test]
+fn a_tasks_page_menu_offers_what_its_row_does() {
+    let (mut ada, root) = workspace();
+    let booked = call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    ada.commit();
+    let mut home = ada.view(APP);
+    let row = row_commands(&mut home, &booked);
+    let page = task_page(&ada, &booked);
+    let behind_the_door = page_commands(&page);
+    assert_eq!(labels(&behind_the_door), spec_commands());
+    assert_eq!(behind_the_door, row, "the row and the page offer one menu");
+}
+
+/// Adding a subtask from a menu makes it right under the task, after the steps it already has,
+/// untitled, with a field that takes the keyboard so it can be named as it appears.
+#[test]
+fn adding_a_subtask_from_a_menu_names_it_inline_under_its_row() {
+    let (mut ada, root) = workspace();
+    let parent = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Write the launch post")],
+    );
+    call(
+        &ada,
+        "add_subtask",
+        vec![root.clone(), parent.clone(), Value::text("Outline")],
+    );
+    ada.commit();
+    let made = call(&ada, "add_subtask", vec![root, parent.clone()]);
+    ada.commit();
+    assert_eq!(
+        read(&ada, &made, "title"),
+        Value::text(""),
+        "it opens untitled, to be named"
+    );
+    assert_eq!(
+        target(&read(&ada, &made, "parent")),
+        target(&parent),
+        "it stands under the task the menu was opened on"
+    );
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Write the launch post"),
+            Value::text("Outline"),
+            Value::text(""),
+        ],
+        "and after the steps it already has"
+    );
+    let mut view = ada.view(APP);
+    let row = home_row(&mut view, &made);
+    let field = all(row, "ui.TextInput")
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("the untitled subtask draws a field: {row:?}"));
+    assert!(
+        flag(field, "autofocus"),
+        "the field takes the keyboard as the row appears: {:?}",
+        field.props
+    );
+    assert_eq!(text_of(field, "placeholder").as_deref(), Some("New task"));
+}
+
+/// What a person can do to a task is offered wherever actions are listed; the one gesture alone
+/// runs (`place`, and the moves the app makes itself) is listed nowhere.
+#[test]
+fn the_offered_actions_are_the_person_facing_ones() {
+    let (ada, _) = workspace();
+    let meta = &ada.host.package(APP).unwrap().meta;
+    let offered: Vec<&str> = meta
+        .offered_actions()
+        .map(|action| action.name.as_str())
+        .collect();
+    for wanted in [
+        "add_subtask",
+        "duplicate",
+        "due_today",
+        "due_tomorrow",
+        "due_next_week",
+        "due_clear",
+        "set_priority_low",
+        "assign",
+        "file",
+        "indent",
+        "outdent",
+        "remove",
+    ] {
+        assert!(
+            offered.contains(&wanted),
+            "{wanted} is offered: {offered:?}"
+        );
+    }
+    for gesture in ["place", "move_to", "quick_add", "copy_below"] {
+        assert!(
+            !offered.contains(&gesture),
+            "{gesture} runs from the app's own gestures alone: {offered:?}"
+        );
+    }
 }

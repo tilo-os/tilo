@@ -13,6 +13,7 @@ use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
 use crate::ids::Principal;
 use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
+use crate::registry::Package;
 use crate::render::Offer;
 use crate::seen::SeenMark;
 use crate::value::{ActionRef, RefValue, ResourceRef, Value};
@@ -1248,41 +1249,45 @@ impl Core {
         Ok(sentence(&ty.name))
     }
 
-    /// The actions offered on `subject`: its type's own that need nothing else (what else they
-    /// take has a default, which the invocation gets), the primary one first, and then the
-    /// actions of the resource holding it that take it as their second argument, each a
-    /// `host.Action`.
+    /// The actions offered on `subject`: its type's own that need nothing else (what else it
+    /// takes has a default, which the invocation gets, or a form asks), and the actions of the
+    /// resource holding it that take it as their second argument — in the order their packages
+    /// declare them, the primary one first, each a `host.Action`. An app declares its actions in
+    /// the order a person reads them, so a menu of one item lists them as it wrote them.
     fn actions_on(&self, subject: &RefValue) -> HResult<Vec<Value>> {
         let target = &subject.target;
         let packages = self.registry.borrow().packages();
-        let mut out = Vec::new();
+        let rank = |pkg: &Rc<Package>| {
+            packages
+                .iter()
+                .position(|p| Rc::ptr_eq(p, pkg))
+                .unwrap_or(usize::MAX)
+        };
+        let mut found: Vec<(bool, usize, usize, Offered)> = Vec::new();
         // The subject's own. Another app's resource names its type as `app#Type`, which
         // resolves to the id its package declares before the package is looked up.
-        let found = self.registry.borrow().type_id(&target.ty).and_then(|id| {
+        let own = self.registry.borrow().type_id(&target.ty).and_then(|id| {
             let registry = self.registry.borrow();
             registry.type_info(&id)
         });
-        if let Some((pkg, info)) = found {
-            let mut own: Vec<&ActionMeta> = pkg
-                .meta
-                .offered_actions()
-                .filter(|action| {
-                    action.params.split_first().is_some_and(|(first, rest)| {
-                        all_asked(&pkg.meta, rest)
-                            && !asks_for_own_item(&pkg.meta, info.id.as_str(), rest)
-                            && names_type(&pkg.meta, &first.ty, info.id.as_str())
-                    })
-                })
-                .collect();
-            own.sort_by_key(|action| action.role.as_deref() != Some("primary"));
-            for action in own {
+        if let Some((pkg, info)) = &own {
+            let at = rank(pkg);
+            for (index, action) in pkg.meta.offered_actions().enumerate() {
+                let takes_it = action.params.split_first().is_some_and(|(first, rest)| {
+                    all_asked(&pkg.meta, rest)
+                        && !asks_for_own_item(&pkg.meta, info.id.as_str(), rest)
+                        && names_type(&pkg.meta, &first.ty, info.id.as_str())
+                });
+                if !takes_it {
+                    continue;
+                }
                 let shown = Offered {
                     action,
                     args: vec![Value::Ref(subject.clone())],
                     rest: action.params.get(1..).unwrap_or_default(),
                     present: true,
                 };
-                out.extend(self.action_value(&shown, subject)?);
+                found.push((action.role.as_deref() == Some("primary"), at, index, shown));
             }
         }
         // The holder's, on it.
@@ -1292,7 +1297,8 @@ impl Core {
                 let Some(holder_info) = pkg.type_by_id(&holder_ty) else {
                     continue;
                 };
-                for action in pkg.meta.offered_actions() {
+                let at = rank(pkg);
+                for (index, action) in pkg.meta.offered_actions().enumerate() {
                     let [first, second, rest @ ..] = action.params.as_slice() else {
                         continue;
                     };
@@ -1316,9 +1322,14 @@ impl Core {
                         rest,
                         present: false,
                     };
-                    out.extend(self.action_value(&shown, subject)?);
+                    found.push((action.role.as_deref() == Some("primary"), at, index, shown));
                 }
             }
+        }
+        found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
+        let mut out = Vec::new();
+        for (_, _, _, shown) in found {
+            out.extend(self.action_value(&shown, subject)?);
         }
         Ok(out)
     }

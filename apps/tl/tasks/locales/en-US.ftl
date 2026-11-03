@@ -145,34 +145,61 @@ d-zjuy7y7f = New project
 d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
 
-d-dfu53sij = Snooze until…
-    .doc = Puts a task off until a day: it is due then.
+d-fykojijd = Add subtask
+    .doc = Adds a subtask under a task: a task of its own, in its project and section, with an empty title for the person to type.
 
-d-laxsa3x6 = File
-    .doc = Files a task under a project.
+d-tmwdrpev = Today
+    .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
 
-d-dshqxolf = Move to inbox
-    .doc = Takes a task out of its project, back to the inbox.
+d-wclcgiyt = Tomorrow
+    .doc = Makes a task due tomorrow.
 
-d-jqhwyztw = Set due date
-    .doc = Sets the day a task is due by, or clears it.
+d-tg5yjcju = Next week
+    .doc = Makes a task due at the end of next week.
 
-d-b5m5wz7r = Prioritize
+d-jqhwyztw = Pick date…
+    .doc = Makes a task due on a day the person picks.
+
+d-x5xnqddo = No date
+    .doc = Clears the day a task is due by: it waits in the inbox, undated.
+
+d-w43ij7uu = No priority
     .doc = Sets how much a task matters.
 
-d-fykojijd = Add subtask
-    .doc = Adds a subtask under a task: a task of its own, in its project and section.
+d-pdc7ukxu = Low
+    .doc = Marks a task as low priority.
+
+d-cpcxkauo = Medium
+    .doc = Marks a task as medium priority.
+
+d-kglmmfa7 = High
+    .doc = Marks a task as high priority.
+
+d-lrdm4l3c = Urgent
+    .doc = Marks a task as urgent.
+
+d-laxsa3x6 = Project…
+    .doc = Files a task under a project the person picks.
+
+d-dshqxolf = Inbox
+    .doc = Takes a task out of its project, back to the inbox.
+
+d-c6y4cxdd = Assign…
+    .doc = Gives a task to someone, or to nobody.
 
 d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task just over it, as Tab does in an outline: one change, undone as one.
+    .doc = Moves a task under the task just over it, as `Ctrl+]` does in an outline: one change, undone as one.
 
 d-khy6tj7s = Outdent
-    .doc = Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
+    .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
 
-d-ojzyzzxu = Remove
+d-23y3zdgu = Duplicate
+    .doc = Copies a task, with every task under it, just after the one it copies.
+
+d-ojzyzzxu = Delete
     .doc = Deletes a task and its subtasks.
 
 d-rjpcv6es = Clear done
@@ -202,9 +229,28 @@ d-scjlkb6d = Place
 d-kjbukd2o = Rename
     .doc = Renames a project.
 
+d-m2xarbfd = Copy below
+    .doc = Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it copies did; answers the last task the copies end with.
+
 d-qwizihx4 = Check~present
 
-d-gqnya75y = Snooze~present
+d-mdzqe3gc = Due today~present
+
+d-rnagsir2 = Due tomorrow~present
+
+d-fym3mxqc = Due next week~present
+
+d-ohw2ks6t = Due clear~present
+
+d-dpworviv = Set priority none~present
+
+d-vh3rraia = Set priority low~present
+
+d-ir7grgoz = Set priority medium~present
+
+d-g4wmwcnr = Set priority high~present
+
+d-lvbdxuzj = Set priority urgent~present
 
 d-day53wfn = Unfile~present
 
@@ -236,6 +282,9 @@ d-hc5ndp4x = Task card
 
 d-w63ba6ad = Task row
 
+d-fbmxxndm = Titled row
+    .w-new-task = New task
+
 d-rj4l44km = Task summary
 
 d-ypbiaiq3 = Task outline row
@@ -263,12 +312,14 @@ d-gu3twlv2-row1 = Project board for s
 
 d-mtmufg3w-row0 = Task page for p
 
-d-mtmufg3w-row1 = Task page for x
+d-mtmufg3w-row1 = Task page for a
 
-d-mtmufg3w-row2-row0 = Task page for c
+d-mtmufg3w-row2 = Task page for x
 
-d-mtmufg3w-row2-row1-row0 = Task page for c
+d-mtmufg3w-row3-row0 = Task page for c
 
-d-mtmufg3w-row2-row1 = Task page for v
+d-mtmufg3w-row3-row1-row0 = Task page for c
 
-d-mtmufg3w-row2 = Task page for s
+d-mtmufg3w-row3-row1 = Task page for v
+
+d-mtmufg3w-row3 = Task page for s

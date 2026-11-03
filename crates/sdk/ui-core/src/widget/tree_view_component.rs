@@ -198,6 +198,11 @@ struct Command {
     label: String,
     icon: Option<Icon>,
     destructive: bool,
+    checked: Option<bool>,
+    key: Option<String>,
+    group: Option<String>,
+    enabled: bool,
+    reason: Option<String>,
     run: Rc<dyn Fn()>,
 }
 
@@ -207,14 +212,22 @@ impl Command {
             label,
             icon,
             destructive,
-            checked: _,
-            key: _,
+            checked,
+            disabled,
+            reason,
+            group,
+            key,
             choose,
         } = props;
         Self {
             label,
             icon,
             destructive,
+            checked,
+            key,
+            group,
+            enabled: !disabled,
+            reason,
             run: choose.command().unwrap_or_else(|| Rc::new(|| {})),
         }
     }
@@ -226,8 +239,25 @@ impl Command {
         } else {
             MenuItem::action(self.label.clone(), move || run())
         };
-        match self.icon {
+        let item = match self.icon {
             Some(icon) => item.with_icon(icon),
+            None => item,
+        };
+        let item = match self.checked {
+            Some(checked) => item.with_checked(checked),
+            None => item,
+        };
+        let item = item.with_enabled(self.enabled);
+        let item = match &self.key {
+            Some(key) => item.with_shortcut(key.clone()),
+            None => item,
+        };
+        let item = match &self.reason {
+            Some(reason) => item.with_description(reason.clone()),
+            None => item,
+        };
+        match &self.group {
+            Some(group) => item.with_group(group.clone()),
             None => item,
         }
     }

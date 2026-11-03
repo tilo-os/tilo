@@ -139,7 +139,7 @@ view rows<T>(
             on select(x: T): open(x, front: false)
             on activate(x: T): open(x)
             for x in shown {
-                let takeable = actions(x).filter(a -> a.available)
+                let offered = actions(x)
                 let heading: Option<Date> = if let g = group { g(x) } else { .none }
                 let tail = if let c = closed { c(x) } else { false }
                 let under: Option<T> = if let p = parent { p(x) } else { .none }
@@ -155,23 +155,26 @@ view rows<T>(
                     progress: count,
                 ) {
                     menu: {
-                        for a in takeable {
+                        for a in offered {
                             ui.MenuItem(
                                 a.label,
                                 icon: a.icon,
                                 destructive: a.destructive,
                                 key: a.key,
+                                disabled: not a.available,
+                                reason: if a.available { .none } else { .some(a.reason) },
+                                group: a.group,
                             ) {
                                 on choose: a.run
                             }
                         }
                     }
                     swipe: {
-                        if let a = takeable.find(.destructive) {
+                        if let a = offered.find(a -> a.available and a.destructive) {
                             ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
                                 on swipe: a.run
                             }
-                        } else if let a = takeable.first() {
+                        } else if let a = offered.find(a -> a.available) {
                             ui.SwipeAction(a.label, icon: a.icon) {
                                 on swipe: a.run
                             }
@@ -220,19 +223,22 @@ view outline<T>(
         ) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
-                let takeable = actions(x).filter(a -> a.available)
+                let offered = actions(x)
                 let count: Option<Text> = if let c = progress { c(x) } else { .none }
                 ui.TreeViewNode(x, label(x), parent: parent(x), progress: count) {
                     on drop(moved: T): place(moved, .none, .some(x))
                     on into(moved: T): place(moved, .some(x), .none)
                     on check: toggled(x)
                     menu: {
-                        for a in takeable {
+                        for a in offered {
                             ui.MenuItem(
                                 a.label,
                                 icon: a.icon,
                                 destructive: a.destructive,
                                 key: a.key,
+                                disabled: not a.available,
+                                reason: if a.available { .none } else { .some(a.reason) },
+                                group: a.group,
                             ) {
                                 on choose: a.run
                             }
@@ -311,9 +317,11 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
             ui.Button(
                 a.label,
                 icon: a.icon,
+                role: if a.destructive { .destructive } else { .secondary },
                 toggled: a.on == .some(true),
                 key: a.key,
                 in_menu: true,
+                group: a.group,
                 enabled: a.available,
                 description: a.reason,
             ) {
@@ -424,15 +432,18 @@ view transcript<R, T>(
                 ui.VirtualList(transcript: true, unread: unread) {
                     for m in items {
                         let made = created(m)
-                        let takeable = actions(m).filter(a -> a.available)
+                        let offered = actions(m)
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
                             menu: {
-                                for a in takeable {
+                                for a in offered {
                                     ui.MenuItem(
                                         a.label,
                                         icon: a.icon,
                                         destructive: a.destructive,
                                         key: a.key,
+                                        disabled: not a.available,
+                                        reason: if a.available { .none } else { .some(a.reason) },
+                                        group: a.group,
                                     ) {
                                         on choose: a.run
                                     }

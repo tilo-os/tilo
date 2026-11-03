@@ -3281,8 +3281,8 @@ pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
 pub use context_menu::{
-    ContextMenu, MenuButton, MenuButtonProps, MenuItem, MenuItemProps, note_shift, shift_held,
-    shift_skips_confirmation,
+    ContextMenu, MenuButton, MenuButtonProps, MenuItem, MenuItemProps, MenuPick, note_shift,
+    shift_held, shift_skips_confirmation,
 };
 mod row_menu;
 pub use primitives::{

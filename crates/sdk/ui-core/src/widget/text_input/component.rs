@@ -21,6 +21,9 @@ pub struct TextInputProps {
     pub title: bool,
     /// Whether it can be typed into now.
     pub enabled: bool,
+    /// It is where the person types next (an entry a command just opened): it takes the
+    /// keyboard as soon as it is in the window, once.
+    pub autofocus: bool,
     /// Someone else changed the text and the person has not seen it yet: the field takes their
     /// colour. The host sets it, from what the field is bound to (task-legibility §3).
     pub changed_by: Option<Person>,
@@ -40,6 +43,7 @@ impl Default for TextInputProps {
             lines: None,
             title: false,
             enabled: true,
+            autofocus: false,
             changed_by: None,
             previous: None,
             submit: Event::None,
@@ -71,6 +75,7 @@ impl Described for TextInput {
             lines,
             title,
             enabled,
+            autofocus,
             changed_by,
             previous,
             submit,
@@ -96,6 +101,9 @@ impl Described for TextInput {
             .with_placeholder(&placeholder)
             .with_change(change)
             .disabled(!enabled);
+        if autofocus {
+            input = input.wants_focus();
+        }
         if let Some(lines) = lines {
             input = input
                 .multiline(true)

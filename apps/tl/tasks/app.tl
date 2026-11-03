@@ -204,52 +204,114 @@ action check(t: Task, done: Bool = not t.done) (
     }
 }
 
-/// Puts a task off until a day: it is due then.
-action snooze(t: Task, until: Date) (label: "Snooze until…", icon: .clock) {
+/// Adds a subtask under a task: a task of its own, in its project and section, with an empty
+/// title for the person to type. It stands with its siblings, and a task that was done opens
+/// again: there is work under it now.
+action add_subtask(tasks: Tasks, t: Task, title: Text = "") -> Task (
+    label: "Add subtask",
+    icon: .list_tree,
+    key: "Ctrl+Shift+N",
+) {
+    let made = tasks.items.insert(
+        Task(title: title, parent: .some(t), project: t.project, section: t.section),
+    )
+    if let last = tasks.items.filter(x -> x.parent == .some(t) and x != made).last() {
+        tasks.items.move(made, after: last)
+    } else { tasks.items.move(made, after: t) }
+    if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
+    made
+}
+
+/// Sets the day a task is due by, or clears it: the presets take the day, and one entry asks
+/// for any day.
+action due_today(t: Task) (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
     require not t.done "It is done already"
-    t.due = until
+    t.due = dated("today", now).day
 }
 
-/// Files a task under a project.
-action file(t: Task, p: Project) (label: "Move to {p.name}", icon: .folder, key: "Ctrl+Shift+M") {
-    t.project = p
+/// Makes a task due tomorrow.
+action due_tomorrow(t: Task) (label: "Tomorrow", icon: .calendar, group: "Due") {
+    require not t.done "It is done already"
+    t.due = dated("tomorrow", now).day
 }
 
-/// Takes a task out of its project, back to the inbox.
-action unfile(t: Task) (label: "Move to inbox", icon: .inbox) {
-    require t.project != .none "It is in the inbox already"
-    t.project = .none
+/// Makes a task due at the end of next week.
+action due_next_week(t: Task) (label: "Next week", icon: .calendar, group: "Due") {
+    require not t.done "It is done already"
+    t.due = dated("next week", now).day
 }
 
-/// Sets the day a task is due by, or clears it.
+/// Makes a task due on a day the person picks.
 action schedule(t: Task, due: Option<Date>) (
-    label: "Set due date",
+    label: "Pick date…",
     icon: .calendar,
     key: "Ctrl+D",
+    group: "Due",
 ) {
     t.due = due
 }
 
-/// Sets how much a task matters.
-action prioritize(t: Task, priority: Priority) (icon: .flag) {
-    t.priority = priority
+/// Clears the day a task is due by: it waits in the inbox, undated.
+action due_clear(t: Task) (label: "No date", group: "Due") {
+    require t.due != .none "It has no date"
+    t.due = .none
 }
 
-/// Adds a subtask under a task: a task of its own, in its project and section. A task that was
-/// done opens again: there is work under it now. The subtasks entry is how one is added.
-internal action add_subtask(tasks: Tasks, t: Task, title: Text) {
-    if title != "" {
-        tasks.items.insert(
-            Task(title: title, parent: .some(t), project: t.project, section: t.section),
-        )
-        if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
-    }
+/// Sets how much a task matters.
+action set_priority_none(t: Task) (label: "No priority", group: "Priority") {
+    require t.priority != .none "It has no priority"
+    t.priority = .none
+}
+
+/// Marks a task as low priority.
+action set_priority_low(t: Task) (label: "Low", icon: .flag, group: "Priority") {
+    require t.priority != .low "It is low already"
+    t.priority = .low
+}
+
+/// Marks a task as medium priority.
+action set_priority_medium(t: Task) (label: "Medium", icon: .flag, group: "Priority") {
+    require t.priority != .medium "It is medium already"
+    t.priority = .medium
+}
+
+/// Marks a task as high priority.
+action set_priority_high(t: Task) (label: "High", icon: .flag, group: "Priority") {
+    require t.priority != .high "It is high already"
+    t.priority = .high
+}
+
+/// Marks a task as urgent.
+action set_priority_urgent(t: Task) (label: "Urgent", icon: .triangle_alert, group: "Priority") {
+    require t.priority != .urgent "It is urgent already"
+    t.priority = .urgent
+}
+
+/// Files a task under a project the person picks.
+action file(t: Task, p: Project) (
+    label: "Project…",
+    icon: .folder,
+    key: "Ctrl+Shift+M",
+    group: "Move to project",
+) {
+    t.project = p
+}
+
+/// Takes a task out of its project, back to the inbox.
+action unfile(t: Task) (label: "Inbox", icon: .inbox, group: "Move to project") {
+    require t.project != .none "It is in the inbox already"
+    t.project = .none
+}
+
+/// Gives a task to someone, or to nobody.
+action assign(t: Task, who: Option<Principal>) (label: "Assign…", icon: .user) {
+    t.assignee = who
 }
 
 /// Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level
 /// for none), where `before` stands when it is given, or at the end of the top level. A task
 /// cannot go inside itself, and open work put under a done task opens it. The outline's drag,
-/// `Tab` and `Shift-Tab` name it; it is not a command of its own.
+/// `Ctrl+]` and `Ctrl+[` name it; it is not a command of its own.
 internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) {
     require not within(tasks.items, parent, moved)
         and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
@@ -267,9 +329,9 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
     }
 }
 
-/// Moves a task under the task just over it, as Tab does in an outline: one change, undone as
-/// one.
-action indent(t: Task) (label: "Indent", icon: .arrow_right, key: "Tab") {
+/// Moves a task under the task just over it, as `Ctrl+]` does in an outline: one change, undone
+/// as one.
+action indent(t: Task) (label: "Indent", icon: .arrow_right, key: "Ctrl+]") {
     let siblings = tasks.items.filter(x -> x.parent == t.parent)
     if let at = siblings.index_of(t) {
         if at > 0 {
@@ -278,8 +340,8 @@ action indent(t: Task) (label: "Indent", icon: .arrow_right, key: "Tab") {
     }
 }
 
-/// Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
-action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Shift+Tab") {
+/// Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
+action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[") {
     require t.parent != .none "It is at the top level already"
     if let p = t.parent {
         t.parent = p.parent
@@ -287,8 +349,22 @@ action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Shift+Tab") 
     }
 }
 
+/// Copies a task, with every task under it, just after the one it copies.
+action duplicate(tasks: Tasks, t: Task) -> Task (
+    label: "Duplicate",
+    icon: .copy,
+    key: "Ctrl+Shift+D",
+) {
+    let copy = tasks.items.insert(copied(t, t.parent))
+    if let last = last_below(tasks.items, t) {
+        tasks.items.move(copy, after: last)
+    } else { tasks.items.move(copy, after: t) }
+    copy_below(tasks, t, copy)
+    copy
+}
+
 /// Deletes a task and its subtasks.
-destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
+destructive action remove(tasks: Tasks, t: Task) (label: "Delete", icon: .trash, key: "Delete") {
     for x in tasks.items.descendants(t, .parent) {
         tasks.items.remove(x)
     }
@@ -384,6 +460,43 @@ fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
     } else { false }
 }
 
+/// `t` as a task of its own under `parent`: what a copy of it says, without the tasks under it.
+fn copied(t: Task, parent: Option<Task>) -> Task {
+    Task(
+        title: t.title,
+        done: t.done,
+        due: t.due,
+        at: t.at,
+        notes: t.notes,
+        assignee: t.assignee,
+        project: t.project,
+        section: t.section,
+        priority: t.priority,
+        parent: parent,
+    )
+}
+
+/// The task that ends the run `t` begins: the last task of the list that stands under `t`,
+/// `t` itself when none does.
+fn last_below(items: List<Task>, t: Task) -> Option<Task> {
+    items.filter(x -> x == t or items.ancestors(x, .parent).any(a -> a == t)).last()
+}
+
+/// Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it
+/// copies did; answers the last task the copies end with. It is what Duplicate runs, not a
+/// command of its own.
+internal action copy_below(tasks: Tasks, t: Task, copy: Task) -> Task {
+    for k in tasks.items.filter(x -> x.parent == .some(t)) {
+        // Where the copy of this one goes: after the run the copies under `copy` make so far,
+        // read before it is inserted, since it would end that run itself.
+        let after = last_below(tasks.items, copy)
+        let made = tasks.items.insert(copied(k, .some(copy)))
+        if let last = after { tasks.items.move(made, after: last) }
+        copy_below(tasks, k, made)
+    }
+    last_below(tasks.items, copy) ?? copy
+}
+
 /// How many of a task's subtasks are done, of all of them ("1/3"): its row in a list and its
 /// node in the page's outline read the two counts the list's index keeps.
 fn subtask_count(t: Task) -> Option<Text> {
@@ -472,7 +585,11 @@ view home(t: Tasks) {
                     parent_title: x -> x.parent?.title,
                     progress: x -> subtask_count(x),
                 ) { x ->
-                    task_row(x, .day)
+                    if x.title == "" {
+                        titled_row(x)
+                    } else {
+                        task_row(x, .day)
+                    }
                 }
             }
         }
@@ -518,7 +635,11 @@ view project_list(p: Project, draft: State<Text>) {
                     parent_title: x -> x.parent?.title,
                     progress: x -> subtask_count(x),
                 ) { x ->
-                    task_row(x, .project)
+                    if x.title == "" {
+                        titled_row(x)
+                    } else {
+                        task_row(x, .project)
+                    }
                 }
             }
         }
@@ -577,13 +698,25 @@ view task_card(t: Task, sections: List<Section>) {
                     }
                 }
             }
-            for a in actions(t).filter(a -> a.available) {
-                ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+            for a in actions(t) {
+                ui.MenuItem(
+                    a.label,
+                    icon: a.icon,
+                    destructive: a.destructive,
+                    key: a.key,
+                    disabled: not a.available,
+                    reason: if a.available { .none } else { .some(a.reason) },
+                    group: a.group,
+                ) {
                     on choose: a.run
                 }
             }
         }
-        task_row(t, .project)
+        if t.title == "" {
+            titled_row(t)
+        } else {
+            task_row(t, .project)
+        }
     }
 }
 
@@ -603,6 +736,12 @@ view task_row(t: Task, place: RowPlace) {
         mark: t.priority.icon(),
         avatar: t.assignee,
     )
+}
+
+/// A task added without a title yet: the field to type it in, which takes the keyboard, so the
+/// row a New task or an Add subtask made is where the person says what it is.
+view titled_row(t: Task) {
+    ui.TextInput(bind: t.title, placeholder: "New task", autofocus: true)
 }
 
 /// A task as the system shows it on a surface of its own — a result, a notice — where no page
@@ -659,9 +798,14 @@ view task_page(t: Task) {
         }
         field("Priority") {
             ui.MenuButton(t.priority.label(), icon: .flag) {
-                for c in cases(Priority) {
-                    ui.MenuItem(c.label(), checked: c == t.priority) {
-                        on choose: prioritize(t, c)
+                for a in actions(t).filter(a -> a.group == .some("Priority")) {
+                    ui.MenuItem(
+                        a.label,
+                        icon: a.icon,
+                        disabled: not a.available,
+                        reason: if a.available { .none } else { .some(a.reason) },
+                    ) {
+                        on choose: a.run
                     }
                 }
             }
@@ -810,6 +954,12 @@ scenario "a task's subtasks" -> Task {
     )
     tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
     copy
+}
+
+/// A task added but not yet named: its row is the field its title is typed in.
+scenario "a task being named" {
+    tasks.items.insert(Task(title: "Book the van", due: 2026-07-10))
+    tasks.items.insert(Task(title: ""))
 }
 
 /// A week everyone has finished.

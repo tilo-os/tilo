@@ -46,6 +46,10 @@ pub struct Button {
     /// It belongs in its header's menu, not in the row: the row's More
     /// button holds it, whatever room the row has.
     menu_only: bool,
+    /// The run of its owner's actions it stands in (`group: "Due"`), as the
+    /// app names it: the header's menu keeps rows of one run together, under
+    /// the run's own row.
+    menu_group: Option<String>,
     rect: Rect,
     is_hovered: bool,
     /// The press this button took, carried to a rebuilt button in its place.
@@ -194,6 +198,7 @@ impl Button {
             description: None,
             compact_presentation: None,
             menu_only: false,
+            menu_group: None,
             rect: Rect::ZERO,
             is_hovered: false,
             press: crate::pointer_replay::HeldPress::default(),
@@ -381,6 +386,39 @@ impl Button {
     pub fn in_menu(mut self) -> Self {
         self.menu_only = true;
         self
+    }
+
+    /// Name the run of its owner's actions the button stands in (`group: "Due"`): the
+    /// header's menu keeps a run's rows together, under the run's own row.
+    #[must_use]
+    pub fn with_menu_group(mut self, group: impl Into<String>) -> Self {
+        self.menu_group = Some(group.into());
+        self
+    }
+
+    /// What kind of action it is, as a menu row of the same command shows it.
+    pub(crate) fn kind(&self) -> ButtonRole {
+        self.role
+    }
+
+    /// The run of its owner's actions it stands in, when it names one.
+    pub(crate) fn menu_group(&self) -> Option<&str> {
+        self.menu_group.as_deref()
+    }
+
+    /// Its glyph, where it shows one.
+    pub(crate) fn glyph(&self) -> Option<crate::icons::Icon> {
+        self.icon
+    }
+
+    /// The plain key that presses it, where the app declared one.
+    pub(crate) fn declared_key(&self) -> Option<crate::platform::Shortcut> {
+        self.shortcut.clone()
+    }
+
+    /// Why it cannot be pressed now, where that says more than its label.
+    pub(crate) fn why_disabled(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 
     /// Draw `image` where the icon would be, and a small pill with `badge`

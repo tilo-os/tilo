@@ -66,6 +66,154 @@ impl MenuEntry {
         }
     }
 
+    /// Name the run of commands this one stands in (`group: "Due"`): consecutive
+    /// entries of one run fold into a row that opens them
+    /// ([`Self::fold_groups`]).
+    #[must_use]
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.item = self.item.with_group(group);
+        self
+    }
+
+    /// Say what choosing the row does beyond its name; assistive technology reads it.
+    #[must_use]
+    pub fn with_description(mut self, text: impl Into<String>) -> Self {
+        self.item = self.item.with_description(text);
+        self
+    }
+
+    /// The run of commands the entry stands in, when it names one.
+    fn group(&self) -> Option<&str> {
+        self.item.group()
+    }
+
+    /// A row that opens `entries` beside it: choosing one runs its command.
+    #[must_use]
+    pub fn submenu(
+        label: impl Into<String>,
+        icon: Option<crate::icons::Icon>,
+        entries: Vec<MenuEntry>,
+    ) -> Self {
+        let enabled = entries.iter().any(|entry| entry.item.is_enabled());
+        let checked = entries.iter().find_map(|entry| entry.item.checked());
+        let members: Vec<MenuItem> = entries
+            .into_iter()
+            .map(|entry| {
+                let mut item = match entry.item {
+                    MenuItem::Action {
+                        label,
+                        icon,
+                        checked,
+                        destructive,
+                        enabled,
+                        shortcut,
+                        description,
+                        ..
+                    } => {
+                        let item = if destructive {
+                            MenuItem::destructive_selection(label)
+                        } else {
+                            MenuItem::selection(label)
+                        };
+                        let item = match icon {
+                            Some(icon) => item.with_icon(icon),
+                            None => item,
+                        };
+                        let item = match checked {
+                            Some(checked) => item.with_checked(checked),
+                            None => item,
+                        };
+                        let item = item.with_enabled(enabled);
+                        let item = match shortcut {
+                            Some(shortcut) => item.with_shortcut(shortcut),
+                            None => item,
+                        };
+                        match description {
+                            Some(description) => item.with_description(description),
+                            None => item,
+                        }
+                    }
+                    other => other,
+                };
+                if let (Some(run), MenuItem::Action { action, .. }) = (entry.run.clone(), &mut item)
+                {
+                    *action = run;
+                }
+                item
+            })
+            .collect();
+        let mut row = MenuItem::submenu(label, members);
+        if let MenuItem::Action {
+            icon: row_icon,
+            enabled: row_enabled,
+            checked: row_checked,
+            ..
+        } = &mut row
+        {
+            *row_icon = icon;
+            *row_enabled = enabled;
+            *row_checked = checked;
+        }
+        Self {
+            item: row,
+            run: None,
+            more: None,
+        }
+    }
+
+    /// The entries with each run of consecutive commands of one group (`group: "Due"`)
+    /// folded into one entry named for the group, which opens them: the first entry
+    /// keeps the run's icon and shows a check when one of its commands is on. A run
+    /// of one command stays the command itself.
+    #[must_use]
+    pub fn fold_groups(entries: Vec<MenuEntry>) -> Vec<MenuEntry> {
+        Self::fold_numbered(entries.into_iter().enumerate().collect()).0
+    }
+
+    /// [`Self::fold_groups`], keeping what each folded entry stands for: the command
+    /// whose index it was given, or the indices of the run a group entry opens. A group
+    /// entry runs nothing itself; its members carry their own commands.
+    #[must_use]
+    pub fn fold_numbered(
+        rows: Vec<(usize, MenuEntry)>,
+    ) -> (Vec<MenuEntry>, Vec<crate::widget::MenuPick>) {
+        use crate::widget::MenuPick;
+        let mut folded: Vec<MenuEntry> = Vec::with_capacity(rows.len());
+        let mut picks: Vec<MenuPick> = Vec::with_capacity(rows.len());
+        let mut rest = rows.into_iter().peekable();
+        while let Some((index, entry)) = rest.next() {
+            let Some(group) = entry.group().map(str::to_owned) else {
+                folded.push(entry);
+                picks.push(MenuPick::One(index));
+                continue;
+            };
+            let mut run = vec![(index, entry)];
+            while rest
+                .peek()
+                .is_some_and(|(_, next)| next.group() == Some(group.as_str()))
+            {
+                if let Some(next) = rest.next() {
+                    run.push(next);
+                }
+            }
+            if run.len() == 1 {
+                let (index, entry) = run.pop().unwrap_or((index, MenuEntry::separator()));
+                folded.push(entry);
+                picks.push(MenuPick::One(index));
+                continue;
+            }
+            let icon = match run[0].1.item() {
+                MenuItem::Action { icon, .. } => *icon,
+                _ => None,
+            };
+            let indices: Vec<usize> = run.iter().map(|(index, _)| *index).collect();
+            let entries: Vec<MenuEntry> = run.into_iter().map(|(_, entry)| entry).collect();
+            folded.push(MenuEntry::submenu(group, icon, entries));
+            picks.push(MenuPick::Group(indices));
+        }
+        (folded, picks)
+    }
+
     /// A row of emoji to pick one from, as a menu's emoji bar: picking one fires the bar's
     /// `pick` with it; its last cell, when the bar has `more`, opens the emoji picker over the
     /// menu's place for any other.
@@ -104,6 +252,20 @@ impl MenuEntry {
     #[must_use]
     pub fn with_shortcut(mut self, keys: impl Into<crate::platform::Shortcut>) -> Self {
         self.item = self.item.with_shortcut(keys);
+        self
+    }
+
+    /// It takes something away: it is undone, not confirmed, and is drawn as such.
+    #[must_use]
+    pub fn with_destructive(mut self, destructive: bool) -> Self {
+        self.item = self.item.with_destructive(destructive);
+        self
+    }
+
+    /// The choice this row is now, for the ones that are a state.
+    #[must_use]
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.item = self.item.with_checked(checked);
         self
     }
 

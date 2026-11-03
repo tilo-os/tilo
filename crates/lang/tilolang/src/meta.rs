@@ -508,8 +508,13 @@ impl ActionMeta {
         self.role.as_deref() == Some("migration")
     }
 
-    /// Whether it is an `internal action`: never offered, because the person reaches it through
-    /// the app's own gesture (a drag, a lane's button, an entry), not from a list of commands.
+    /// Whether it is an `internal action`: only the app's own gestures run it (a drag, a lane's
+    /// button, an entry in the app's view), so no surface that lists a subject's actions offers
+    /// it — not the header, not an item's menu, not the palette, not an agent's choices.
+    ///
+    /// It is not a way to keep an action out of the header: that is `frequent`, which decides
+    /// between a button in the row and a row in the header's menu, while an action marked
+    /// `internal` is absent from every list.
     #[must_use]
     pub fn is_internal(&self) -> bool {
         self.role.as_deref() == Some("internal")
@@ -639,7 +644,9 @@ impl PackageMeta {
 
     /// The actions the platform offers: every action but the hidden ones of scenarios, the
     /// migrations, which the platform runs itself, and the internal ones, which only the app's own
-    /// gestures run.
+    /// gestures run. This is the one list every surface draws from — the header's buttons and
+    /// menu, an item's menu, the palette — so an offered action is always somewhere a person can
+    /// reach it.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()

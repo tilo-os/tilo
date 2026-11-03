@@ -28,11 +28,13 @@ use crate::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
 mod emoji_row;
+mod folding;
 mod published;
 mod query;
-use query::MenuQuery;
 
 pub use emoji_row::EmojiRow;
+pub use folding::MenuPick;
+use query::MenuQuery;
 
 /// What a menu row runs. Menus live on the UI thread with the widgets that
 /// open them, so a row takes the toolkit's usual single-threaded callback:
@@ -68,6 +70,10 @@ pub enum MenuItem {
         /// `Some` makes the row open a nested menu (with a chevron) instead
         /// of running `action`.
         submenu: Option<Vec<MenuItem>>,
+        /// The run of a resource's actions this row stands in (`group: "Due"`),
+        /// as the app names it: consecutive rows of one run fold into one row
+        /// that opens the run's commands ([`MenuItem::fold_groups`]).
+        group: Option<String>,
         /// The row's choice is confirmed before it runs, except that Shift
         /// skips the question for what Undo takes back
         /// ([`MenuItem::asking_first`]).
@@ -115,6 +121,7 @@ impl MenuItem {
             detail: None,
             description: None,
             submenu: None,
+            group: None,
             asks_first: false,
             address: None,
         }
@@ -579,14 +586,14 @@ impl ContextMenu {
 
     pub fn with_items(items: Vec<MenuItem>) -> Self {
         let mut menu = Self::new();
-        menu.items = items;
+        menu.items = MenuItem::fold_groups(items);
         menu.refilter();
         menu
     }
 
     /// Replace every row (closes an open nested menu).
     pub fn set_items(&mut self, items: Vec<MenuItem>) {
-        self.items = items;
+        self.items = MenuItem::fold_groups(items);
         self.own_rows = None;
         self.submenu = None;
         if self.hovered.is_some_and(|i| i >= self.items.len()) {

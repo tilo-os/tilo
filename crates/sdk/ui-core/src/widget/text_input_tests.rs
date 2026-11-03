@@ -196,3 +196,28 @@ mod menu;
 mod multiline;
 #[path = "text_input_pointer_tests.rs"]
 mod pointer;
+
+/// The field a command opens takes the keyboard once, and never asks again: a person who
+/// points elsewhere keeps the keyboard where they put it.
+#[test]
+fn a_field_that_asks_for_the_keyboard_asks_once() {
+    let mut field = TextInput::local()
+        .with_placeholder("New task")
+        .wants_focus();
+    assert_eq!(
+        field.take_focus_request().as_deref(),
+        Some(field.test_id().unwrap_or_default()),
+        "it asks as the window lays it out"
+    );
+    assert_eq!(
+        field.take_focus_request(),
+        None,
+        "and keeps its place after"
+    );
+    let mut quiet = TextInput::local().with_placeholder("New task");
+    assert_eq!(
+        quiet.take_focus_request(),
+        None,
+        "a field that says nothing asks nothing"
+    );
+}

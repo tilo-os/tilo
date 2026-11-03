@@ -61,8 +61,9 @@ that it ran. A migration is never offered. It cannot delete anything; moving ite
 collections keeps their ids and history.
 
 An `internal action` is never offered either: it is an ordinary action that only the app's own
-gestures run, described as such so that no header, menu or action bar lists it beside the
-commands a person chooses from. It is how an app says what a drag means:
+gestures run — a drag, an entry, a lane's button — so no surface that lists a subject's actions
+shows it: not the header, not an item's menu, not the palette. It is how an app says what a drag
+means:
 
 ```
 internal action place(t: Task, s: Option<Section>, at: Int) { ... }
@@ -74,6 +75,12 @@ The action is reachable from the description a gesture names it by — `reorder:
 `add:`, a key a control runs — and from `run(place(...))` in the app's own code. It cannot also
 be a `primary`, `destructive` or `migration` action, which are the other side of the same
 question: what a surface offers.
+
+`internal` is not how an action stays out of the header. Where a surface draws an offered action
+is not a property of the action's role: `frequent: true` puts it in the header row as a button,
+every other offered action sits in the header's menu beside the same commands an item's menu
+lists. Marking a command a person chooses `internal` takes it out of the header *and* out of
+every menu and the palette.
 
 To start a package, make a directory next to the others with one file:
 

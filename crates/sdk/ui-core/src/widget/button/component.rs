@@ -68,6 +68,9 @@ pub struct ButtonProps {
     /// It belongs in its header's menu rather than in the row
     /// ([`crate::widget::Button::in_menu`]).
     pub in_menu: bool,
+    /// The run of its owner's actions it stands in (`group: "Due"`), as the app names it: the
+    /// header's menu shows rows of one run together, under the run's own row.
+    pub group: Option<String>,
     /// It was pressed (a click, Enter or Space, an assistive technology).
     #[component(event)]
     pub press: Event,
@@ -91,6 +94,7 @@ impl Default for ButtonProps {
             dot: false,
             alert: false,
             in_menu: false,
+            group: None,
             press: Event::None,
         }
     }
@@ -116,6 +120,7 @@ impl Described for Button {
             dot,
             alert,
             in_menu,
+            group,
             press,
         } = props;
         let enabled = enabled && !press.is_none();
@@ -153,6 +158,9 @@ impl Described for Button {
         if let Some(why) = description.filter(|why| !why.trim().is_empty()) {
             button = button.with_description(&why).tooltip(why);
         }
+        if let Some(group) = group {
+            button = button.with_menu_group(group);
+        }
         match press {
             Event::None => button,
             Event::Action(binding) => button.on_action(binding),
@@ -189,6 +197,7 @@ impl Described for Button {
             && props.toggled.is_some() == self.toggled.is_some()
             && self.shows_count(count_content(props.count, props.dot).as_ref(), props.alert)
             && props.in_menu == self.is_menu_only()
+            && props.group == self.menu_group
             && props.description == self.description
             && props.press.is_none() == (self.action.is_none() && self.on_click.is_none());
         if !same_face || matches!(props.press, Event::Action(_)) {

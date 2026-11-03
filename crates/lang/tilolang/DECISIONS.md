@@ -120,12 +120,14 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
-- **Roles say what a surface does with an action, and only `internal` and `scenario` hide one.**
+- **A role says what an action is; only `internal` and `scenario` keep it from being listed.**
   `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
   skips the `scenario` actions and those with a hiding role, so a gesture-only action
-  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in a
-  `std` header or menu, or in an agent's choices, while the app can still name it where the
-  gesture wants it.
+  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in an
+  item's menu, in a `std` header or menu, or in an agent's choices, while the app can still name
+  it where the gesture wants it. Where an offered action shows is a separate question that
+  `frequent` answers alone, so hiding an action from the header by marking it `internal` is a
+  bug: it disappears from the menus too.
 - **A window's header shows its primary action and the commands the app marks `frequent` as
   buttons, and every other action in the header's one menu.** `std.header` builds them that
   way: a button per primary and per `frequent` action, and a `ui.Button(..., in_menu: true)`

@@ -2971,11 +2971,14 @@ impl NavShell {
             if !header.more.take_open_request() {
                 continue;
             }
+            // The menu rows read as the actions' own: their glyph, the key that runs them,
+            // what they wait on, and the run of commands each stands in.
             let items = header
                 .actions
                 .iter()
                 .skip(shown)
-                .map(|action| {
+                .enumerate()
+                .map(|(index, action)| {
                     let node = action.accessibility();
                     let name = node
                         .as_ref()
@@ -2986,10 +2989,29 @@ impl NavShell {
                     if let Some(checked) = node.as_ref().and_then(|node| node.state.checked) {
                         item = item.with_checked(checked);
                     }
-                    item
+                    let Some(button) = action.as_any().and_then(|any| any.downcast_ref::<Button>())
+                    else {
+                        return (index, item);
+                    };
+                    if let Some(icon) = button.glyph() {
+                        item = item.with_icon(icon);
+                    }
+                    if let Some(key) = button.declared_key() {
+                        item = item.with_shortcut(key);
+                    }
+                    if let Some(why) = button.why_disabled() {
+                        item = item.with_description(why);
+                    }
+                    let item = item
+                        .with_destructive(button.kind() == crate::widget::ButtonRole::Destructive);
+                    let item = match button.menu_group() {
+                        Some(group) => item.with_group(group),
+                        None => item,
+                    };
+                    (index, item)
                 })
                 .collect();
-            header.more.open(items, viewport);
+            header.more.open_numbered(items, viewport);
             self.paint_dirty = true;
         }
     }

@@ -390,6 +390,9 @@ pub struct TextInput {
     /// frame is due. Cleared by [`Widget::mark_drawn`]: a field that has not
     /// changed shows what the screen already holds.
     repaint: bool,
+    /// The field was made for the person to type in right away (an entry a command just
+    /// opened): it asks for the keyboard once ([`Self::wants_focus`]).
+    focus_wanted: bool,
     /// App-local notification hook. The comparison value prevents cursor,
     /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
@@ -853,6 +856,7 @@ impl TextInput {
             compact_multiline: false,
             dirty: false,
             repaint: true,
+            focus_wanted: false,
             on_change: None,
             action: None,
             last_notified_text: String::new(),
@@ -3849,6 +3853,15 @@ impl TextInput {
         self
     }
 
+    /// Ask for the keyboard as soon as this field is in the tree: the entry a command just
+    /// opened is where the person types next, and they should not have to point at it. Asked
+    /// once, when the window next lays out.
+    #[must_use]
+    pub fn wants_focus(mut self) -> Self {
+        self.focus_wanted = true;
+        self
+    }
+
     /// Set the stable label announced for this field by assistive technology.
     /// Placeholder text is intentionally not used as the label because it
     /// disappears after entry and often describes format rather than purpose.
@@ -5930,6 +5943,13 @@ impl crate::widget::ResourceOperations for TextInput {
 impl Widget for TextInput {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+
+    /// A field made for the person to type in right away takes the keyboard in the tree it
+    /// stands in, once. It names itself as the runner finds it ([`Self::test_id`]).
+    fn take_focus_request(&mut self) -> Option<String> {
+        std::mem::take(&mut self.focus_wanted)
+            .then(|| self.test_id().unwrap_or_default().to_owned())
     }
 
     crate::provides!(

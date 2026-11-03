@@ -1576,7 +1576,16 @@ mod cases {
         );
         let item = returned_ref(w.call(&apps.todo, "new_task", vec![res(&list)]));
         v.poll_patches().unwrap();
-        assert_eq!(item_titled(v.tree(), ""), item);
+        // A task added without a title stands as the field its title is typed in, until it has
+        // one: the row is where the person says what the task is.
+        let made = of_kind(v.tree(), "ui.ListItem");
+        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
+        assert_eq!(
+            of_kind(made[0], "ui.TextInput").len(),
+            1,
+            "{}",
+            dump(v.tree())
+        );
         let editor = w.rt.open_resource(&me(), &item, None).unwrap();
         assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
         let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();

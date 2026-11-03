@@ -1323,10 +1323,9 @@ mod windows {
     use std::path::Path;
     use std::rc::Rc;
 
+    use super::stage;
     use ui::kurbo::Rect;
     use ui::widget::Widget;
-
-    use super::stage;
 
     fn packages() -> (String, Rc<stage::Packages>) {
         let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
@@ -2104,10 +2103,9 @@ mod board_lane {
     use std::path::Path;
     use std::rc::Rc;
 
+    use super::stage;
     use ui::kurbo::Rect;
     use ui::widget::Widget;
-
-    use super::stage;
 
     const BOARD: &str = "so.tilo.lang.layoutboard";
 
