@@ -35,6 +35,8 @@ automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-automerge.workspace = true
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# The session's door: a service publishes what it keeps there.
+tilo-service = { path = "../../session/service" }
 
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }

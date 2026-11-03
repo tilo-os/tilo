@@ -36,6 +36,13 @@ impl Invoker {
         Self { invoker, writer }
     }
 
+    /// `invoker`'s change (the session's own decision of who acted: the person
+    /// in a gesture, an agent, or the app), committed under the actor `writer`.
+    #[must_use]
+    pub fn of(invoker: ActionInvoker, writer: Option<Vec<u8>>) -> Self {
+        Self { invoker, writer }
+    }
+
     /// The person seated at this device acting for themselves, committed as
     /// `person`.
     #[must_use]
@@ -110,8 +117,9 @@ pub struct Record {
     /// The app that keeps it, for the tree it offers.
     app: Option<(&'static str, &'static str)>,
     /// The tree, and the heads it was published at: what a view is offered is
-    /// recomputed only when the document moved.
-    published: Option<(Vec<automerge::ChangeHash>, ResourceSpec)>,
+    /// recomputed only when the document moved. Refreshed through a shared
+    /// reference, so a service publishes what its records offer by `&self`.
+    published: std::cell::RefCell<Option<(Vec<automerge::ChangeHash>, ResourceSpec)>>,
     /// Where it is kept, when it is on disk ([`Record::open_kept`]).
     #[cfg(feature = "store")]
     kept: Option<crate::store::Kept>,
@@ -225,7 +233,7 @@ impl Record {
             registry: registry_of(model),
             app: model.app_id().zip(model.app_title()),
             doc,
-            published: None,
+            published: std::cell::RefCell::new(None),
             #[cfg(feature = "store")]
             kept: None,
             moved: true,
@@ -274,9 +282,9 @@ impl Record {
     ///
     /// # Errors
     /// The document does not read as the model.
-    pub fn offers(&mut self) -> Result<ResourceSpec, RecordError> {
-        let heads = self.doc.get_heads();
-        if let Some((at, spec)) = &self.published
+    pub fn offers(&self) -> Result<ResourceSpec, RecordError> {
+        let heads = self.doc.committed_document().get_heads();
+        if let Some((at, spec)) = &*self.published.borrow()
             && *at == heads
         {
             return Ok(spec.clone());
@@ -285,7 +293,7 @@ impl Record {
         if spec.app_id.is_none() {
             spec.app_id = self.app.map(|(id, _)| id.to_owned());
         }
-        self.published = Some((heads, spec.clone()));
+        *self.published.borrow_mut() = Some((heads, spec.clone()));
         Ok(spec)
     }
 
@@ -294,7 +302,7 @@ impl Record {
     ///
     /// # Errors
     /// The document does not read as the model.
-    pub fn reading(&mut self) -> Result<Json, RecordError> {
+    pub fn reading(&self) -> Result<Json, RecordError> {
         let spec = self.offers()?;
         let state = self.kind.read(&self.doc)?;
         let mut reading = self.kind.to_json(state.as_ref())?;
@@ -316,7 +324,7 @@ impl Record {
     /// # Errors
     /// The record does not read as the model, or what it names is not a part
     /// of it.
-    pub fn read(&mut self, resource: &str) -> Option<Result<Json, RecordError>> {
+    pub fn read(&self, resource: &str) -> Option<Result<Json, RecordError>> {
         if resource == self.address {
             return Some(self.reading());
         }
@@ -360,7 +368,7 @@ impl Record {
         self.commit(encoded, context, invoker.writer.as_deref())?;
         // What it made is published before it is answered, so a view's next
         // reading names it.
-        self.published = None;
+        *self.published.borrow_mut() = None;
         Ok(ActionOutput {
             value: None,
             resources: Vec::new(),
@@ -398,7 +406,7 @@ impl Record {
     /// tree it offers is published again.
     fn changed(&mut self) {
         self.moved = true;
-        self.published = None;
+        *self.published.borrow_mut() = None;
     }
 
     /// Keep the document where it is kept, when it is on disk.
@@ -410,7 +418,14 @@ impl Record {
         kept.write(&mut self.doc).map_err(RecordError::Store)
     }
 
+    /// Nothing to keep: a record in memory.
     #[cfg(not(feature = "store"))]
+    #[allow(
+        clippy::unnecessary_wraps,
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        reason = "a record on disk answers as one in memory does, whether or not there is anything to keep"
+    )]
     fn persist(&mut self) -> Result<(), RecordError> {
         Ok(())
     }

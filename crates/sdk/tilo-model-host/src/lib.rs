@@ -33,9 +33,11 @@
 //! addresses it would have used had it kept the record itself.
 
 mod record;
+pub mod service;
 #[cfg(feature = "store")]
 mod store;
 
 pub use record::{Invoker, Opened, Record, RecordError};
+pub use service::ModelService;
 #[cfg(feature = "store")]
 pub use store::Kept;

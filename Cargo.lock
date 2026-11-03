@@ -19779,6 +19779,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-resource",
+ "tilo-service",
  "tracing",
  "workspace-hack",
 ]

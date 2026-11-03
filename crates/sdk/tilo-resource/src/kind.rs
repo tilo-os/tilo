@@ -128,6 +128,10 @@ fn no_initialize(_doc: &mut Doc) -> Result<(), ModelError> {
     ))
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a kind's migration answers as a type's migration does, whether or not it changes anything"
+)]
 fn no_migrate(_doc: &mut Doc) -> Result<bool, ModelError> {
     Ok(false)
 }
