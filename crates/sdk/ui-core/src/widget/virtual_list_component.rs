@@ -173,6 +173,11 @@ pub struct VirtualListProps {
     /// ([`ListItemProps::parent`]), with a disclosure on the rows that have subtasks, folding
     /// them away. The list works the tree out of the items as it builds their rows.
     pub tree: bool,
+    /// The title over the group of rows whose item names no group: a list grouped by a thing
+    /// some items lack (a day, a place) heads those rows with it, never folding them under the
+    /// last group that names one. The rows keep the order their list gives. `None` leaves them
+    /// among the others.
+    pub ungrouped_title: Option<String>,
     /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
     /// the "New messages" divider stands over the row that shows it, and while that is above
     /// the view a pill at the foot offers to take the reader back to it. `None` draws neither.
@@ -218,6 +223,9 @@ pub struct DescribedRows {
     restyled: RefCell<Vec<String>>,
     /// Rows standing in for removed items, after the items ([`VirtualListProps::removed`]).
     removed: Rc<Vec<ListItemProps>>,
+    /// The heading over the rows whose item names no group
+    /// ([`VirtualListProps::ungrouped_title`]).
+    ungrouped: Option<String>,
 }
 
 /// The rows of a list that stand in for items removed unseen: [`ListItemProps`] marked
@@ -317,6 +325,7 @@ impl DescribedRows {
         Self {
             held: self.held.clone(),
             removed: Rc::clone(&self.removed),
+            ungrouped: self.ungrouped.clone(),
             ..Self::default()
         }
     }
@@ -503,8 +512,8 @@ impl ListModel for DescribedRows {
         waiting || !self.restyled.borrow().is_empty()
     }
 
-    /// What the row is grouped by: its item's heading, or the list's tail for an item done
-    /// with.
+    /// What the row is grouped by: its item's heading, the list's tail for an item done
+    /// with, or the list's heading for the items that name none.
     fn group_at(&self, index: usize) -> Option<super::RowGroup> {
         let key = self.key_at(index)?;
         self.with_item(&key, |item| {
@@ -515,12 +524,11 @@ impl ListModel for DescribedRows {
                 return None;
             }
             if item.tail {
-                Some(super::RowGroup::Tail)
-            } else {
-                item.group
-                    .as_deref()
-                    .filter(|heading| !heading.is_empty())
-                    .map(|heading| super::RowGroup::Heading(heading.to_owned()))
+                return Some(super::RowGroup::Tail);
+            }
+            match item.group.as_deref().filter(|heading| !heading.is_empty()) {
+                Some(heading) => Some(super::RowGroup::Heading(heading.to_owned())),
+                None => self.ungrouped.clone().map(super::RowGroup::Heading),
             }
         })
         .flatten()
@@ -573,6 +581,8 @@ struct Face {
     rendered: Option<usize>,
     /// The removed items' rows, by key.
     removed: Vec<String>,
+    /// The heading over the rows whose item names no group.
+    ungrouped: Option<String>,
 }
 
 /// The identity of the rows a host renders, when it renders them.
@@ -1033,6 +1043,7 @@ impl Described for DescribedList {
             transcript,
             tail_title,
             tree,
+            ungrouped_title,
             unread,
             mut rows,
             removed,
@@ -1049,8 +1060,10 @@ impl Described for DescribedList {
             transcript,
             rendered: rendered(&rows),
             removed: removed.keys(),
+            ungrouped: ungrouped_title.clone(),
         };
         rows.removed = removed.0;
+        rows.ungrouped = ungrouped_title;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         if transcript {
             // The divider stands over the row that shows the item: a row says which item it
@@ -1156,6 +1169,7 @@ impl Described for DescribedList {
             transcript: props.transcript,
             rendered: rendered(&props.rows),
             removed: props.removed.keys(),
+            ungrouped: props.ungrouped_title.clone(),
         };
         if face.rendered.is_some() && face == self.face {
             // The unread row moved without the list's items changing: the list takes it, and

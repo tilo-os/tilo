@@ -13,7 +13,8 @@ pub const MEASURE_REM: f32 = 40.0;
 pub struct PageLayout {
     measure: Option<Length>,
     /// Take the height the page is given: a canvas (a board, a map) fills the pane it is in
-    /// instead of being as tall as what it holds.
+    /// instead of being as tall as what it holds, and keeps its gutter above and below rather
+    /// than beside it.
     fill: bool,
     class: Option<WidthClass>,
     /// One row of the page's content, which a virtual list stacks: the gutter at the sides
@@ -54,6 +55,10 @@ impl Layout for PageLayout {
 
     fn container(&self, resolved: &Resolved) -> Style {
         let gutter = length(self.gutter(resolved));
+        // A page that fills its pane is a surface that lays out its own parts (a board's lanes,
+        // a desk's strips): it takes the pane's whole width, and what it holds keeps its own
+        // gutter at the sides. Its height gutter stays the page's.
+        let side = if self.fill { length(0.0_f32) } else { gutter };
         let (top, bottom) = match self.row {
             Some(RowSpacing::Halves) => {
                 let half = length(resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0);
@@ -70,8 +75,8 @@ impl Layout for PageLayout {
             flex_direction: taffy::FlexDirection::Column,
             align_items: Some(taffy::AlignItems::Center),
             padding: taffy::Rect {
-                left: gutter,
-                right: gutter,
+                left: side,
+                right: side,
                 top,
                 bottom,
             },
@@ -137,7 +142,9 @@ impl Arranged<PageLayout> {
     }
 
     /// `page(fill)`: the height the page is given, for a canvas that fills its pane (a board's
-    /// lanes, a map, a media page) instead of growing with what it holds.
+    /// lanes, a map, a media page) instead of growing with what it holds. A page that fills its
+    /// pane is a surface: it also takes the pane's whole width, and what it holds keeps its own
+    /// gutter at the sides.
     #[must_use]
     pub const fn filling(mut self) -> Self {
         self.layout.fill = true;

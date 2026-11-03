@@ -1,12 +1,12 @@
 //! Anti-entropy: a peer asks for the changes its materialized heads lack.
 
-use super::{AuthenticatedPeer, Envelope, PeerError, RoomOperation, SessionCtx, StateSource};
+use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, StateSource, WorkspaceOperation};
 
 /// Handle `SyncRequest`: reply with exactly the changes the requester is
 /// missing, computed against this host's materialized pinned doc.
 /// Read-only — does not touch subscriptions or the pending queues, so a
 /// peer can reconcile whether or not it is currently subscribed. The
-/// room's membership gates the requester, as it does on `Subscribe`.
+/// workspace's membership gates the requester, as it does on `Subscribe`.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the membership guard keeps the roster fixed until the reply is classified"
@@ -24,7 +24,7 @@ pub(super) async fn handle_sync_request(
         }));
     };
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session.admits(&wr, peer, RoomOperation::State) {
+    if !session.admits(&wr, peer, WorkspaceOperation::State) {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             reason: "device not in workspace membership".into(),

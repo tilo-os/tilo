@@ -23,21 +23,28 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let writer_device = enrol(&author, "writer", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start_browser(&owner, &host, state.path(), Some("https://entry.example")).await;
-    let workspace = hosted.relay.rooms().unwrap().create("Links").await.unwrap();
+    let workspace = hosted
+        .relay
+        .workspaces()
+        .unwrap()
+        .create("Links")
+        .await
+        .unwrap();
     admit_person(
         &hosted,
         &host,
-        &workspace.room,
+        &workspace.workspace,
         &writer_device,
         MemberRole::Editor,
     )
     .await;
-    let mut publisher = open_admitted_peer(&hosted, &writer_device, &host, &workspace.room).await;
+    let mut publisher =
+        open_admitted_peer(&hosted, &writer_device, &host, &workspace.workspace).await;
     let writer = hex::encode(writer_device.cert.user_public_key);
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
-        &workspace.room,
+        &workspace.workspace,
         &writer,
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -73,14 +80,14 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let (id, kind) = published_message(&source, &message);
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: workspace.room.clone(),
+        cluster_id: workspace.workspace.clone(),
         record: source.wire_record().into(),
     };
     publisher
         .peer
         .publish(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
-    let route = part_route(&workspace.room, &chat::parts::part(0));
+    let route = part_route(&workspace.workspace, &chat::parts::part(0));
     for (_, mutation) in source.take_record_mutations() {
         publisher.peer.publish(route.clone(), &mutation).unwrap();
     }
@@ -102,7 +109,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     };
     let url = output.value.as_ref().unwrap()["url"].as_str().unwrap();
     assert!(url.starts_with("https://entry.example/app/#/@"), "{url}");
-    assert!(url.contains(&workspace.room), "{url}");
+    assert!(url.contains(&workspace.workspace), "{url}");
     let entries = tilo_reference::link::WebEntries::new(vec![
         tilo_reference::link::WebEntry::new("https://entry.example/").unwrap(),
     ]);

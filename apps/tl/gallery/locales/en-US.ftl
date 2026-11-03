@@ -86,7 +86,7 @@ d-aia654wv = Places
 d-t7ydaknu = Chrome
 
 d-lhci3noh = Controls
-    .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
+    .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
     .noun = { $count ->
         [one] controls
        *[other] controlses
@@ -108,6 +108,12 @@ d-lvaal6xy = Share
 
 d-rzo2wdf2 = Room
     .doc = The room it is in.
+
+d-cb2aj7ey = Owner
+    .doc = Who looks after the report.
+
+d-rkns6vsj = Reviewer
+    .doc = Who reviews it, nobody picked yet.
 
 d-us66ciy2 = Showing
     .doc = Which view shows.
@@ -385,6 +391,9 @@ d-z5ai6zk5 = Controls
     .w-summary = Summary
     .w-details = Details
     .w-history = History
+    .w-people = People
+    .w-who-looks-after-it = Who looks after it
+    .w-who-reviews-it-still-to-be = Who reviews it, still to be picked
     .w-draft = Draft
     .w-review = Review
     .w-send = Send

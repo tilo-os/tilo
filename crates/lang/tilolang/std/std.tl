@@ -91,10 +91,11 @@ view list<R, T, S>(
 
 /// The items of a list as the rows of a column, or what it says while it has none. Give
 /// `group` and the list stands under a heading for each run of items it names, the heading held
-/// at the top while the person scrolls it (each item's day, written the platform's way); give
-/// `closed` and the items it is true of stand last, under `closed_title`, folded away until the
-/// person opens them. Give `parent` and the items stand as a tree: each indented under the item
-/// it is a subtask of, with a disclosure that folds its subtasks away.
+/// at the top while the person scrolls it (each item's day, written the platform's way); the
+/// items that name none stand under a heading of their own, never under the last group that
+/// names one; give `closed` and the items it is true of stand last, under `closed_title`,
+/// folded away until the person opens them. Give `parent` and the items stand as a tree: each
+/// indented under the item it is a subtask of, with a disclosure that folds its subtasks away.
 view rows<T>(
     items: List<T>,
     empty: Text,
@@ -117,6 +118,11 @@ view rows<T>(
             ui.EmptyState(empty, icon: icon)
         }
     } else {
+        // An item that names no group stands under a heading of its own, in the order the
+        // caller gave, rather than under the last group's heading.
+        let ungrouped: Option<Text> = if let g = group {
+            .some(phrase("tilolang-no-date"))
+        } else { .none }
         // The items done with stand last, under the one heading their group folds: a sort is
         // stable, so the order the caller gave holds among them and among the rest.
         let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
@@ -126,6 +132,7 @@ view rows<T>(
             in_column: true,
             tail_title: .some(closed_title),
             tree: nested,
+            ungrouped_title: ungrouped,
         ) {
             on select(x: T): open(x, front: false)
             on activate(x: T): open(x)

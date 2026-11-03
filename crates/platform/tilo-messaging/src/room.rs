@@ -1,7 +1,7 @@
 //! The person's Tilo messages where no native messaging host runs (a web
 //! page): sent and kept as the private conversations of the room the
 //! person is in, which its governor serves to every device of the room
-//! (`tilo_relay_protocol::rooms::private`). A page reaches that door over
+//! (`tilo_relay_protocol::workspaces::private`). A page reaches that door over
 //! its HTTPS session; the device certificate the session proved is the
 //! sender, so this host holds no key or credential of its own.
 //!
@@ -24,7 +24,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use tilo_contact_directory::routing::Route;
-use tilo_relay_protocol::rooms::private::{
+use tilo_relay_protocol::workspaces::private::{
     PrivateConversation, PrivateOperation, PrivateReply, read_whole,
 };
 use zeroize::Zeroizing;
@@ -205,7 +205,7 @@ fn key(value: &str) -> bool {
 fn page(
     route: Route,
     me: &str,
-    messages: &[tilo_relay_protocol::rooms::private::PrivateMessage],
+    messages: &[tilo_relay_protocol::workspaces::private::PrivateMessage],
     cursor: Option<&HistoryCursor>,
     limit: usize,
 ) -> Result<HistoryPage, HistoryError> {
@@ -615,13 +615,15 @@ mod tests {
     #[test]
     fn pages_end_at_the_cursor_and_say_whether_older_messages_wait() {
         let messages: Vec<_> = (1..=5u64)
-            .map(|n| tilo_relay_protocol::rooms::private::PrivateMessage {
-                id: format!("m{n}"),
-                sender: if n % 2 == 0 { ME } else { PEER }.into(),
-                sequence: n,
-                received_at: 0,
-                text: format!("text {n}"),
-            })
+            .map(
+                |n| tilo_relay_protocol::workspaces::private::PrivateMessage {
+                    id: format!("m{n}"),
+                    sender: if n % 2 == 0 { ME } else { PEER }.into(),
+                    sequence: n,
+                    received_at: 0,
+                    text: format!("text {n}"),
+                },
+            )
             .collect();
         let route = route(PEER, "tilo:account");
         let newest = page(route.clone(), ME, &messages, None, 2).unwrap();

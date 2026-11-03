@@ -1,30 +1,30 @@
-//! The files members post in a room's Chat, kept by the room's host so
-//! they stay in the room after the member who posted them leaves.
+//! The files members post in a workspace's Chat, kept by the workspace's host so
+//! they stay in the workspace after the member who posted them leaves.
 //!
-//! A member's device keeps what it posts and answers whoever asks the room
+//! A member's device keeps what it posts and answers whoever asks the workspace
 //! for it, as long as it is online. The host asks too: each time a member's
 //! write reaches a part of the Chat's messages, it reads the attachments
 //! there, and each time one reaches the Chat's own record, the pictures and
 //! recordings of the feedback reports filed there ([`reported`]); it asks the
-//! room for every one it does not keep yet, on its own presence, as any
+//! workspace for every one it does not keep yet, on its own presence, as any
 //! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
 //! assembled and verified as a page assembles them
 //! ([`tilo_browser_peer::content::ContentWants`]) and kept in the host's one
 //! blob store, beside what its bots fetched ([`super::installed::FsBlobs`]),
 //! which already answers members' requests for content the host keeps
-//! ([`crate::rooms::RoomContent`]).
+//! ([`crate::workspaces::WorkspaceContent`]).
 //!
 //! What a host keeps is bounded ([`AttachmentLimits`]): a file larger than
-//! the cap is not asked for or kept, and past a member's or the room's
-//! quota the oldest files that member posted, or the room's oldest, go
+//! the cap is not asked for or kept, and past a member's or the workspace's
+//! quota the oldest files that member posted, or the workspace's oldest, go
 //! first. A member's quota bounds what the host takes in of their files in
 //! any hour too: past it, their next file is asked for once the hour has
-//! room again. The pieces answering the host's requests count against these
+//! workspace again. The pieces answering the host's requests count against these
 //! quotas alone, not a member's general content budget
-//! ([`crate::rooms::ContentKeeper::expects`]), so a file as large as the cap
+//! ([`crate::workspaces::ContentKeeper::expects`]), so a file as large as the cap
 //! reaches the host. A file the host kept before for another reason (its bots fetched
 //! it) is neither counted nor ever let go of here. Which files it keeps,
-//! and for whom is kept in a ledger beside the room's state, so
+//! and for whom is kept in a ledger beside the workspace's state, so
 //! a restart keeps counting.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,7 +38,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::CHAT;
 use super::installed::FsBlobs;
-use crate::rooms::{ContentKeeper, RecordWrite, Rooms};
+use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
 
 /// How long the host waits before it asks again for files nobody answered.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(90);
@@ -58,9 +58,9 @@ pub struct AttachmentLimits {
     /// oldest go first. The host takes in no more of a member's files in
     /// any hour either.
     pub member_bytes: u64,
-    /// What the room's files may take together; past it, the room's oldest
+    /// What the workspace's files may take together; past it, the workspace's oldest
     /// go first.
-    pub room_bytes: u64,
+    pub workspace_bytes: u64,
 }
 
 impl Default for AttachmentLimits {
@@ -69,7 +69,7 @@ impl Default for AttachmentLimits {
         Self {
             file_bytes: 25 * MIB,
             member_bytes: 250 * MIB,
-            room_bytes: 2048 * MIB,
+            workspace_bytes: 2048 * MIB,
         }
     }
 }
@@ -134,10 +134,10 @@ struct Taken {
     bytes: u64,
 }
 
-/// The host's copy of the files a room's members post in its Chat.
-pub struct RoomAttachments {
-    rooms: Rooms,
-    room: String,
+/// The host's copy of the files a workspace's members post in its Chat.
+pub struct WorkspaceAttachments {
+    workspaces: Workspaces,
+    workspace: String,
     /// This host's device: what its requests name, and what answers to
     /// them are addressed to.
     host: [u8; 32],
@@ -220,13 +220,13 @@ fn now_ms() -> u64 {
     tilo_clock::unix_now_ns() / 1_000_000
 }
 
-impl RoomAttachments {
-    /// The host `host` of `room` keeping its members' files in `blobs`
+impl WorkspaceAttachments {
+    /// The host `host` of `workspace` keeping its members' files in `blobs`
     /// within `limits`, counted in the ledger at `ledger`.
     #[must_use]
     pub fn new(
-        rooms: Rooms,
-        room: String,
+        workspaces: Workspaces,
+        workspace: String,
         host: [u8; 32],
         blobs: Arc<FsBlobs>,
         ledger: PathBuf,
@@ -237,8 +237,8 @@ impl RoomAttachments {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         Arc::new(Self {
-            rooms,
-            room,
+            workspaces,
+            workspace,
             host,
             blobs,
             ledger,
@@ -253,13 +253,13 @@ impl RoomAttachments {
         })
     }
 
-    /// Keep the room's members' files from now on: the pieces members send
+    /// Keep the workspace's members' files from now on: the pieces members send
     /// the host come here, every part of the Chat is read once, and each
-    /// member write to a part after, until the room is no longer governed
+    /// member write to a part after, until the workspace is no longer governed
     /// here.
     pub async fn run(self: Arc<Self>) {
-        self.rooms.keep_content(self.clone());
-        let mut writes = self.rooms.record_writes();
+        self.workspaces.keep_content(self.clone());
+        let mut writes = self.workspaces.record_writes();
         let mut again = tokio::time::interval(ASK_AGAIN);
         again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut read = tokio::time::interval(READ_EVERY);
@@ -293,11 +293,11 @@ impl RoomAttachments {
         }
     }
 
-    /// The record of this room's Chat `write` went to, if it went to one
+    /// The record of this workspace's Chat `write` went to, if it went to one
     /// that references files: a part of its messages or its own record,
     /// where feedback reports are filed.
     fn part_of(&self, write: &RecordWrite) -> Option<String> {
-        if write.room != self.room || write.app != CHAT {
+        if write.workspace != self.workspace || write.app != CHAT {
             return None;
         }
         if write.record == CHAT_RECORD {
@@ -310,12 +310,12 @@ impl RoomAttachments {
     }
 
     async fn read_all(&self) {
-        let Ok(routes) = self.rooms.record_routes(&self.room).await else {
+        let Ok(routes) = self.workspaces.record_routes(&self.workspace).await else {
             return;
         };
         for (app, record) in routes {
             let write = RecordWrite {
-                room: self.room.clone(),
+                workspace: self.workspace.clone(),
                 app,
                 record,
             };
@@ -325,14 +325,18 @@ impl RoomAttachments {
         }
     }
 
-    /// Ask the room for the files `part` references that the host does not
+    /// Ask the workspace for the files `part` references that the host does not
     /// keep yet.
     async fn read_part(&self, part: &str) {
-        let bytes = match self.rooms.record_document(&self.room, CHAT, part).await {
+        let bytes = match self
+            .workspaces
+            .record_document(&self.workspace, CHAT, part)
+            .await
+        {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return,
             Err(error) => {
-                tracing::debug!(room = %self.room, part, %error, "chat part not readable for its files");
+                tracing::debug!(workspace = %self.workspace, part, %error, "chat part not readable for its files");
                 return;
             }
         };
@@ -349,8 +353,8 @@ impl RoomAttachments {
             }
         }
         for ask in asks {
-            if let Err(error) = self.rooms.ask_members(&self.room, ask).await {
-                tracing::debug!(room = %self.room, %error, "could not ask the room for a file");
+            if let Err(error) = self.workspaces.ask_members(&self.workspace, ask).await {
+                tracing::debug!(workspace = %self.workspace, %error, "could not ask the room for a file");
             }
         }
     }
@@ -371,7 +375,7 @@ impl RoomAttachments {
                     state.wants.ask(
                         &self.host,
                         file.member.clone(),
-                        (CHAT, &self.room),
+                        (CHAT, &self.workspace),
                         &file.hash,
                         now_ms,
                     )
@@ -413,7 +417,7 @@ impl RoomAttachments {
     }
 
     /// Keep `bytes`, the whole and verified file `hash` `member` posted,
-    /// and let the oldest files go past the member's and the room's quota.
+    /// and let the oldest files go past the member's and the workspace's quota.
     fn keep(&self, state: &mut State, member: &str, hash: &str, bytes: &[u8]) {
         let Ok(size) = u64::try_from(bytes.len()) else {
             return;
@@ -422,7 +426,7 @@ impl RoomAttachments {
             return;
         }
         if let Err(error) = tilo_connector::BlobAccess::store(&*self.blobs, bytes) {
-            tracing::warn!(room = %self.room, %error, "could not keep a member's file");
+            tracing::warn!(workspace = %self.workspace, %error, "could not keep a member's file");
             return;
         }
         // A picture's message names no size: what came counts.
@@ -445,7 +449,7 @@ impl RoomAttachments {
             };
             self.let_go(state, &oldest);
         }
-        while state.ledger.total(None) > self.limits.room_bytes {
+        while state.ledger.total(None) > self.limits.workspace_bytes {
             let Some(oldest) = state.ledger.oldest(None) else {
                 break;
             };
@@ -458,7 +462,7 @@ impl RoomAttachments {
         state.ledger.kept.remove(hash);
         state.ledger.let_go.insert(hash.to_owned());
         if let Err(error) = self.blobs.remove(hash) {
-            tracing::warn!(room = %self.room, %error, "could not let a member's file go");
+            tracing::warn!(workspace = %self.workspace, %error, "could not let a member's file go");
         }
     }
 
@@ -470,7 +474,7 @@ impl RoomAttachments {
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = saved {
-            tracing::warn!(room = %self.room, %error, "could not save the ledger of kept files");
+            tracing::warn!(workspace = %self.workspace, %error, "could not save the ledger of kept files");
         }
     }
 
@@ -486,9 +490,9 @@ impl RoomAttachments {
     }
 }
 
-impl ContentKeeper for RoomAttachments {
-    fn piece(&self, room: &str, _from: [u8; 32], frame: &[u8]) {
-        if room != self.room {
+impl ContentKeeper for WorkspaceAttachments {
+    fn piece(&self, workspace: &str, _from: [u8; 32], frame: &[u8]) {
+        if workspace != self.workspace {
             return;
         }
         // A file over the cap is not taken in piece by piece either.
@@ -504,8 +508,8 @@ impl ContentKeeper for RoomAttachments {
         }
     }
 
-    fn expects(&self, room: &str, frame: &[u8]) -> bool {
-        room == self.room
+    fn expects(&self, workspace: &str, frame: &[u8]) -> bool {
+        workspace == self.workspace
             && !matches!(
                 postcard::from_bytes(frame),
                 Ok(neighbour_wire::NeighbourMsg::RecordContentPiece { total, .. })

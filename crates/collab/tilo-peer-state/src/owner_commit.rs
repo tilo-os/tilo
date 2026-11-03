@@ -105,6 +105,11 @@ pub enum CommitTarget {
     JoinAdmission {
         device: [u8; 32],
     },
+    /// The pair of people a device of one of them announced, making their
+    /// record the two people's ([`crate::workspace::direct_pair`]).
+    DirectPair {
+        device: [u8; 32],
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {

@@ -688,6 +688,120 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     );
 }
 
+/// A still window is not a frame source: left alone, it produces no frames at all, and a frame
+/// something outside it forces re-measures nothing, syncs nothing and asks no History surface
+/// anything, because nothing it shows moved.
+#[test]
+fn a_still_window_produces_no_frames() {
+    let mut app = staged("a busy week");
+    // The live window's own tick: take up what the app's workers woke it for.
+    app.frame();
+    // The frame that settles the window left the witness the next frame is read against.
+    app.harness().relayout();
+    assert!(
+        !moving(&mut app),
+        "the window rests before it is left alone"
+    );
+
+    let start = ui::time::Instant::now();
+    let mut produced = 0;
+    let mut cpu = std::time::Duration::ZERO;
+    for step in 0..30 {
+        let at = start + ui::time::Duration::from_millis(16 * step);
+        let began = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
+        if with_monotonic_time(at, || app.frame()) {
+            produced += 1;
+        }
+        cpu += ui::rt::thread_cpu_time()
+            .expect("a thread's CPU clock")
+            .saturating_sub(began);
+    }
+    assert_eq!(
+        produced, 0,
+        "an idle window produces no frame: what it would draw, it already shows"
+    );
+    assert!(
+        cpu < std::time::Duration::from_millis(50),
+        "half a second of idle ticks costs {:.2} ms CPU, not a frame's worth per tick",
+        cpu.as_secs_f64() * 1000.0
+    );
+    assert!(
+        app.harness().queued_work_sources().is_empty(),
+        "an idle window queues no work: {:?}",
+        app.harness().queued_work_sources()
+    );
+    assert_eq!(
+        app.harness().frame_requesters(),
+        Vec::new(),
+        "no widget asks an idle window for a frame"
+    );
+    assert_eq!(
+        app.harness().redraw_sources(),
+        Vec::<String>::new(),
+        "no widget asks an idle window to repaint it"
+    );
+
+    // A frame the window itself asks for while nothing of the app changed — a mark
+    // filling in — costs the paint of what moved: no measure, no sync, no History
+    // surface asked anything.
+    let mark = the_mark_box(&mut app);
+    let (x, y) = (mark[0] + mark[2] / 2.0, mark[1] + mark[3] / 2.0);
+    let pressed = start + ui::time::Duration::from_millis(200);
+    with_monotonic_time(pressed, || app.harness().click_at(x, y));
+    let (samples, drew, layout, quiet) = {
+        let mut step = 0;
+        loop {
+            step += 1;
+            assert!(step <= 20, "the mark settles");
+            let at = pressed + ui::time::Duration::from_millis(16 * step);
+            let quiet_before = app.harness().quiet_frames();
+            let (drew, samples) =
+                ui::tilo_resource::profiling::observe(|| with_monotonic_time(at, || app.frame()));
+            let quiet = app.harness().quiet_frames() > quiet_before;
+            let layout = app.harness().last_relayout();
+            if !moving(&mut app) {
+                break (samples, drew, layout, quiet);
+            }
+        }
+    };
+    assert!(
+        drew,
+        "the frame that ends the mark is one the window asked for"
+    );
+    assert!(
+        quiet,
+        "a still frame syncs and publishes nothing: {samples:?}"
+    );
+    assert_eq!(
+        layout.marked_dirty, 0,
+        "a still frame marks nothing for a measure"
+    );
+    assert!(!layout.rebuilt, "a still frame rebuilds no layout");
+    let calls = |phase: &str| {
+        samples
+            .iter()
+            .filter(|sample| sample.phase == phase)
+            .map(|sample| sample.calls)
+            .sum::<usize>()
+    };
+    assert_eq!(
+        calls("ui.frame_sync"),
+        0,
+        "a still frame syncs no app: {samples:?}"
+    );
+    assert_eq!(
+        calls("ui.history_root_validation"),
+        0,
+        "a still frame asks History nothing: {samples:?}"
+    );
+    let loud: Vec<&str> = samples
+        .iter()
+        .map(|sample| sample.phase)
+        .filter(|phase| phase.starts_with("ui.loud."))
+        .collect();
+    assert!(loud.is_empty(), "a still frame is quiet, not {loud:?}");
+}
+
 fn median_ms(times: &[std::time::Duration]) -> f64 {
     let mut sorted: Vec<f64> = times.iter().map(|t| t.as_secs_f64() * 1000.0).collect();
     sorted.sort_by(f64::total_cmp);

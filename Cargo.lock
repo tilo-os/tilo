@@ -2153,6 +2153,7 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "chat",
+ "collab-types",
  "durable-store",
  "emoji",
  "fnv",
@@ -21408,6 +21409,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-frame-metrics",
+ "tilo-fs-client",
  "tilo-identity-authority",
  "tilo-identity-host",
  "tilo-installed-apps",
@@ -22795,6 +22797,8 @@ name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "chrono",
+ "chrono-tz",
  "foldhash 0.1.5",
  "regex",
  "serde",
@@ -22804,6 +22808,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-doc",
+ "tilo-recurrence",
  "tilo-reference",
  "tilo-resource",
  "tilolang",

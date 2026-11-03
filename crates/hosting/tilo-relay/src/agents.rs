@@ -9,12 +9,12 @@
 //!   delegation together (`ApproverDecision::IssueDelegate`), so consent is one
 //!   step and the host never holds the root.
 //! - **Admission.** Approved delegations are registered in the relay's agent
-//!   register, which confines the device to its rooms; withdrawn ones are
-//!   refused from the next access audit on. Each room this relay governs
+//!   register, which confines the device to its workspaces; withdrawn ones are
+//!   refused from the next access audit on. Each workspace this relay governs
 //!   that the delegation names puts the agent on its governed roster
-//!   (`RoomOperation::DelegateMembership`), and every change to its grant is
+//!   (`WorkspaceOperation::DelegateMembership`), and every change to its grant is
 //!   carried onto those rosters: a withdrawn or narrowed grant takes it off
-//!   the room and its channels.
+//!   the workspace and its channels.
 //! - **Asking first.** An action the person's grants leave to them is put
 //!   to their approving device as a question for that one invocation
 //!   ([`CertificationProtocol::confirm`]); the agent runs it only on the
@@ -62,8 +62,8 @@ pub struct RelayAgentLink {
     user_public_key: [u8; 32],
     certification: CertificationProtocol,
     agents: AgentRegistry,
-    /// The rooms this relay governs, whose rosters follow each agent's grant.
-    rooms: Option<crate::rooms::Rooms>,
+    /// The workspaces this relay governs, whose rosters follow each agent's grant.
+    workspaces: Option<crate::workspaces::Workspaces>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -77,20 +77,20 @@ impl Relay {
             user_public_key: web.relay.identity.user_public_key,
             certification: web.certification.clone(),
             agents: web.relay.agents.clone(),
-            rooms: self.rooms().cloned(),
+            workspaces: self.workspaces().cloned(),
             runtime: tokio::runtime::Handle::current(),
         }
     }
 }
 
 impl RelayAgentLink {
-    /// Bring agent `device`'s place on the rosters of the governed rooms in
+    /// Bring agent `device`'s place on the rosters of the governed workspaces in
     /// line with the register, off the caller's thread. `cert` is the
     /// agent's certificate when it was just approved or restored.
     fn reconcile_rooms(&self, device: [u8; 32], cert: Option<DeviceCert>) {
-        if let Some(rooms) = self.rooms.clone() {
+        if let Some(workspaces) = self.workspaces.clone() {
             self.runtime.spawn(async move {
-                rooms.reconcile_agent(device, cert.as_ref()).await;
+                workspaces.reconcile_agent(device, cert.as_ref()).await;
             });
         }
     }
@@ -139,7 +139,7 @@ impl AgentHostLink for RelayAgentLink {
 
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String> {
         crate::daemon::register_agent_in(&self.agents, &self.user_public_key, cert, delegation)?;
-        // The governed rooms it names put it on their rosters.
+        // The governed workspaces it names put it on their rosters.
         self.reconcile_rooms(delegation.device_public_key, Some(cert.clone()));
         Ok(())
     }
@@ -147,7 +147,7 @@ impl AgentHostLink for RelayAgentLink {
     fn withdraw(&self, device_public_key: [u8; 32]) {
         self.agents.write_recover().insert(device_public_key, None);
         crate::authority_epoch::bump();
-        // Governed rooms take it off their channels and refuse its writes.
+        // Governed workspaces take it off their channels and refuse its writes.
         self.reconcile_rooms(device_public_key, None);
     }
 
@@ -189,9 +189,9 @@ impl RelayWitness {
         if !its_own {
             return Err(ActionHostError::NotPermitted);
         }
-        let room = caller
+        let workspace = caller
             .workspace()
-            .filter(|room| agent.scope.rooms.iter().any(|granted| granted == room))
+            .filter(|workspace| agent.scope.rooms.iter().any(|granted| granted == workspace))
             .ok_or(ActionHostError::NotPermitted)?;
         let mut id = [0_u8; 32];
         getrandom::fill(&mut id).map_err(|error| ActionHostError::Unavailable {
@@ -220,7 +220,7 @@ impl RelayWitness {
                         .find(|facet| facet.key == tilo_actions::RISK_FACET)
                 })
                 .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
         })
     }
@@ -290,17 +290,17 @@ pub struct AgentOptions {
     /// The apps agents may open, and whose records pages may act on through
     /// the host; this machine's registry when `None`.
     pub catalogue: Option<CatalogueFactory>,
-    /// The model the host lends its rooms' reporters to look over their
+    /// The model the host lends its workspaces' reporters to look over their
     /// reports' reviews, if any.
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
 }
 
-/// The host's app-serving plane: agents and the rooms' page actions.
+/// The host's app-serving plane: agents and the workspaces' page actions.
 struct HostActionsPlane(HostActions);
 
-/// The app-serving plane of a host that runs no agents: the rooms' page
-/// actions alone. A member's own actions on a room record (linking their
-/// account on the room's Discord from the profile card) need nothing more.
+/// The app-serving plane of a host that runs no agents: the workspaces' page
+/// actions alone. A member's own actions on a workspace record (linking their
+/// account on the workspace's Discord from the profile card) need nothing more.
 struct WorkspaceRecordsPlane(WorkspaceActions);
 
 impl crate::AppServingPlane for WorkspaceRecordsPlane {
@@ -337,11 +337,11 @@ impl crate::AppServingPlane for HostActionsPlane {
     }
 }
 
-/// The relay's own device, as the room actions service joins its rooms.
+/// The relay's own device, as the workspace actions service joins its workspaces.
 struct RelayRecordsLink {
     user_public_key: [u8; 32],
     member: WorkspaceMember,
-    rooms: Option<crate::rooms::Rooms>,
+    workspaces: Option<crate::workspaces::Workspaces>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
@@ -368,7 +368,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         record: &str,
     ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
         self.member.runtime.block_on(
-            self.rooms
+            self.workspaces
                 .as_ref()?
                 .resource_view_policy(workspace, caller, app, record),
         )
@@ -381,9 +381,9 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         source: &tilo_peer_state::document_frame::DocumentRoute,
     ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {
         self.member.runtime.block_on(
-            self.rooms
+            self.workspaces
                 .as_ref()
-                .ok_or("governed rooms unavailable")?
+                .ok_or("governed workspaces unavailable")?
                 .resource_view_document(workspace, caller, source),
         )
     }
@@ -395,18 +395,18 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
     ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
         self.member
             .runtime
-            .block_on(self.rooms.as_ref()?.own_route_keys(route, create))
+            .block_on(self.workspaces.as_ref()?.own_route_keys(route, create))
     }
 
     fn view_locator(
         &self,
-        room: &str,
+        workspace: &str,
         provider: &str,
     ) -> Option<tilo_actions::remote::ResourceViewLocator> {
         let origin = self.browser_origin.read().ok()?.clone()?;
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: (*origin).clone(),
-            workspace: room.to_owned(),
+            workspace: workspace.to_owned(),
             host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
             provider: provider.to_owned(),
             web_entry: self.web_entry.clone(),
@@ -414,29 +414,29 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
     }
 
     fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
-        self.rooms.as_ref().is_some_and(|rooms| {
+        self.workspaces.as_ref().is_some_and(|workspaces| {
             self.member
                 .runtime
-                .block_on(rooms.bot_personas(workspace, installation))
+                .block_on(workspaces.bot_personas(workspace, installation))
         })
     }
 
-    /// What the room's host keeps ([`crate::rooms::Rooms::kept_content`]):
+    /// What the workspace's host keeps ([`crate::workspaces::Workspaces::kept_content`]):
     /// a bridged person's avatar its bots fetched, a file or a feedback
     /// report's picture a member posted. A relay keeping no content for the
-    /// room answers none, which refuses an appearance naming an avatar.
+    /// workspace answers none, which refuses an appearance naming an avatar.
     fn content_blob(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
-        let rooms = self.rooms.as_ref()?;
+        let workspaces = self.workspaces.as_ref()?;
         self.member
             .runtime
-            .block_on(rooms.kept_content(workspace, hash))
+            .block_on(workspaces.kept_content(workspace, hash))
     }
 }
 
-/// Start `cfg`'s relay serving its rooms' records to pages, without agents:
+/// Start `cfg`'s relay serving its workspaces' records to pages, without agents:
 /// the host mounts a record of an app in `catalogue` (this machine's
-/// registry when `None`) and runs an action on it for whoever the room's
-/// policy lets ask, as it does beside agents in [`start`]. Its rooms'
+/// registry when `None`) and runs an action on it for whoever the workspace's
+/// policy lets ask, as it does beside agents in [`start`]. Its workspaces'
 /// reporters may have `feedback_reviewer` look over their reports.
 ///
 /// # Errors
@@ -457,7 +457,7 @@ pub async fn start_serving_records(
     Ok(relay)
 }
 
-/// Give `rooms` the records `relay` holds, joined as its own device.
+/// Give `workspaces` the records `relay` holds, joined as its own device.
 fn attach_records(
     actions: &WorkspaceActions,
     relay: &Relay,
@@ -467,14 +467,14 @@ fn attach_records(
 ) -> Result<(), RelayError> {
     actions
         .attach(Arc::new(RelayRecordsLink {
-            user_public_key: relay.room_records().user_public_key(),
-            rooms: relay.rooms().cloned(),
+            user_public_key: relay.workspace_records().user_public_key(),
+            workspaces: relay.workspaces().cloned(),
             browser_origin: Arc::clone(&relay.browser_origin),
             web_entry,
             feedback_reviewer,
             member: WorkspaceMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
-                key: relay.room_records().signing_key().clone(),
+                key: relay.workspace_records().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
             },
         }))

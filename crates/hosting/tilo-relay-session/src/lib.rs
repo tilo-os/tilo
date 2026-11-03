@@ -2,8 +2,8 @@
 //!
 //! A device that talks to a relay needs the authenticated session client
 //! ([`RelayClient`]), the co-edit session over it ([`RelayCoeditSession`]),
-//! anti-entropy ([`antientropy`]), resume positions ([`position`]), room
-//! administration ([`rooms`]: the names of the actions a relay serves) and
+//! anti-entropy ([`antientropy`]), resume positions ([`position`]), workspace
+//! administration ([`workspaces`]: the names of the actions a relay serves) and
 //! the workspace join client
 //! ([`workspace_join::WorkspaceJoinClient`]). None of them needs the daemon's
 //! store, delivery or join records, so they live here and the daemon
@@ -19,9 +19,9 @@ pub mod client;
 pub mod coedit;
 pub mod pointer_pacing;
 pub mod position;
-pub mod rooms;
 mod session_carrier;
 pub mod workspace_join;
+pub mod workspaces;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

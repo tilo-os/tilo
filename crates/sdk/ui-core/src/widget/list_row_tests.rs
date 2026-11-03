@@ -487,6 +487,37 @@ fn accessibility_names_the_badge_and_reads_parts_and_actions() {
 }
 
 #[test]
+fn an_item_nobody_has_named_shows_a_muted_placeholder_and_is_spoken_by_it() {
+    let untitled = crate::i18n::I18nManager::lookup_plain("list-row-untitled");
+    assert_ne!(untitled, "list-row-untitled", "the placeholder is a phrase");
+    assert!(
+        !untitled.is_empty(),
+        "a row of an item nobody has named yet shows words"
+    );
+    // The row paints, so it is visible and pressable, and is announced by the placeholder.
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut scene = Scene::new();
+    let row = ListRow::new("r", "");
+    ListRowFace::new("").paint(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        Rect::new(0.0, 0.0, 320.0, 40.0),
+    );
+    assert!(
+        !scene.encoding().resources.glyph_runs.is_empty(),
+        "an empty title paints its placeholder"
+    );
+    let node = Widget::accessibility(&row).unwrap();
+    assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
+
+    // A title with nothing but space is no name either; one that says something is itself.
+    let node = Widget::accessibility(&ListRow::new("r", "  ")).unwrap();
+    assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
+    let node = Widget::accessibility(&ListRow::new("r", "Groceries")).unwrap();
+    assert_eq!(node.name.as_deref(), Some("Groceries"));
+}
+
+#[test]
 fn retained_row_activates_by_pointer_and_accessibility() {
     let hits = Rc::new(Cell::new(0));
     let counter = Rc::clone(&hits);

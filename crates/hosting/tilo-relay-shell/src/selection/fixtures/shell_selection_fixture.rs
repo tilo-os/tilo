@@ -1,17 +1,17 @@
 //! Builds the shell-selection scenario the store, peer and persistence tests
 //! replay, at test time.
 //!
-//! A governor owns a room with a chat, a notes page and a Writer document and
+//! A governor owns a workspace with a chat, a notes page and a Writer document and
 //! admits a second device of the same person. It publishes a full
 //! checkpoint (the baseline). The other device then writes one signed change
 //! to the Writer document; the governor admits it and publishes the
-//! route-selective tail: the room's coverage delta and the Writer's covered
-//! snapshot. A room-only rename follows as one more room delta. The governor
+//! route-selective tail: the workspace's coverage delta and the Writer's covered
+//! snapshot. A workspace-only rename follows as one more workspace delta. The governor
 //! finally publishes the next full checkpoint. Every identity comes from a
 //! fixed seed here, and the scenario is built only through the ordinary
 //! `StatePeer` APIs, so it follows whatever they currently sign and write.
 //!
-//! Layout written by [`write`]: `manifest.json` (room, authority, certificates,
+//! Layout written by [`write`]: `manifest.json` (workspace, authority, certificates,
 //! admission time, final rows, and per batch each message's file, retention
 //! kind, channel, size and BLAKE3 hash), `baseline/`, `tail/` and
 //! `checkpoint2/` holding the postcard `NeighbourMsg` bodies, and the peer
@@ -27,7 +27,7 @@ use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
-const ROOM: &str = "a85778ff-9b1d-47f1-8baf-b3aa8b22ddfd";
+const WORKSPACE_ID: &str = "a85778ff-9b1d-47f1-8baf-b3aa8b22ddfd";
 const BASE_NS: u64 = 1_790_000_000_000_000_000;
 /// The admission time the tests replay at.
 const NOW_OFFSET_SECS: u64 = 10;
@@ -70,7 +70,7 @@ fn document(actor: u8, fields: &[(&str, &str)]) -> Vec<u8> {
     doc.save()
 }
 
-/// How a route-selective publication is retained: the room's changes since
+/// How a route-selective publication is retained: the workspace's changes since
 /// the last publication as a delta, each touched route's covered snapshot as
 /// a checkpoint.
 fn kind_of(message: &NeighbourMsg) -> Retention {
@@ -112,7 +112,7 @@ impl Batch {
 
 /// The generated scenario, before it is written to disk.
 pub(super) struct ShellSelectionFixture {
-    pub(crate) room: String,
+    pub(crate) workspace: String,
     pub(crate) authority: DeviceCert,
     pub(crate) certificates: Vec<DeviceCert>,
     pub(crate) baseline: Batch,
@@ -146,7 +146,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
         DeviceCapabilities::member(),
     );
     let mut owner = StatePeer::new(
-        ROOM,
+        WORKSPACE_ID,
         authority.clone(),
         vec![authority.clone()],
         RevocationList::new(),
@@ -164,7 +164,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
         .install_seed(
             tilo_peer_state::SeedState {
                 workspace_changes: tilo_peer_state::seed_workspace(
-                    ROOM,
+                    WORKSPACE_ID,
                     &authority,
                     std::slice::from_ref(&authority),
                 )
@@ -230,13 +230,15 @@ pub(super) fn generate() -> ShellSelectionFixture {
     );
     assert!(owner.covers(&original));
 
-    // A room-only rename: one more room delta.
+    // A workspace-only rename: one more workspace delta.
     let before = owner.clone();
-    let mut room = owner.admitted_workspace().unwrap().clone();
-    let heads = room.get_heads();
-    room.put(ROOT, "name", "selectively renamed room").unwrap();
-    room.commit();
-    let changes = room
+    let mut workspace = owner.admitted_workspace().unwrap().clone();
+    let heads = workspace.get_heads();
+    workspace
+        .put(ROOT, "name", "selectively renamed room")
+        .unwrap();
+    workspace.commit();
+    let changes = workspace
         .get_changes(&heads)
         .into_iter()
         .map(|change| change.raw_bytes().to_vec())
@@ -245,7 +247,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
         .receive_from(
             TransportOrigin::RelayDelta(authority.device_public_key),
             NeighbourMsg::SyncResp {
-                room: ROOM.into(),
+                room: WORKSPACE_ID.into(),
                 changes,
             },
             at(5),
@@ -267,7 +269,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
         .durable_bootstrap_messages(&key, at(6), 4)
         .unwrap();
     ShellSelectionFixture {
-        room: ROOM.into(),
+        workspace: WORKSPACE_ID.into(),
         certificates: owner.certificates(),
         authority,
         baseline: Batch::checkpoint(baseline),
@@ -312,7 +314,7 @@ pub(super) fn write(fixture: &ShellSelectionFixture, dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     let manifest = serde_json::json!({
         "version": 1,
-        "room": fixture.room,
+        "room": fixture.workspace,
         "authority": fixture.authority,
         "certificates": fixture.certificates,
         "now_ns": BASE_NS + NOW_OFFSET_SECS * 1_000_000_000,

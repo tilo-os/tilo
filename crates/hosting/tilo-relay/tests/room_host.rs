@@ -9,12 +9,12 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteA
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceHostTrust;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_relay::host::{HostConfig, HostIdentity, HostMode, RoomHost};
-use tilo_relay::rooms::{
-    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest,
-    LIST_ROOMS, RoomListing, RoomSummary, ask_host,
-};
+use tilo_relay::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_relay::workspaces::{
+    ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    IssueInvitationRequest, LIST_ROOMS, WorkspaceListing, WorkspaceSummary, ask_host,
+};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -34,7 +34,7 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
 
 /// A room host on `device`'s own endpoint, routed as its embedder routes it.
 struct Hosted {
-    host: RoomHost,
+    host: WorkspaceHost,
     router: Router,
     _state: tempfile::TempDir,
 }
@@ -42,7 +42,7 @@ struct Hosted {
 async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
     let state = tempfile::tempdir().unwrap();
     let endpoint = device_endpoint(device).await;
-    let host = RoomHost::open(
+    let host = WorkspaceHost::open(
         HostConfig::new(state.path().to_path_buf(), HostMode::Device),
         HostIdentity {
             user_public_key: user.user_pk,
@@ -164,15 +164,20 @@ async fn own_device_enters(
     alice: &TestUser,
     phone: &TestDevice,
     hosted: &Hosted,
-    room: &RoomSummary,
+    room: &WorkspaceSummary,
 ) -> RelayClient {
     let session = own_session(alice, phone, hosted).await;
-    let listed: Vec<RoomListing> = host_action(&session, LIST_ROOMS, serde_json::json!({})).await;
-    assert!(listed.iter().any(|listed| listed.room == room.room));
-    let entered: EnteredRoom = host_action(
+    let listed: Vec<WorkspaceListing> =
+        host_action(&session, LIST_ROOMS, serde_json::json!({})).await;
+    assert!(
+        listed
+            .iter()
+            .any(|listed| listed.workspace == room.workspace)
+    );
+    let entered: EnteredWorkspace = host_action(
         &session,
         ENTER_ROOM,
-        serde_json::json!({ "room": room.room }),
+        serde_json::json!({ "room": room.workspace }),
     )
     .await;
     let own = entered.invitation.decode().unwrap();
@@ -209,15 +214,15 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     let bob = TestUser::fresh("Bob");
     let bobs_phone = bob.enrol("phone", DeviceCapabilities::member());
     let hosted = host_on(&alice, &laptop).await;
-    let room = hosted.host.rooms().create("Plans").await.unwrap();
+    let room = hosted.host.workspaces().create("Plans").await.unwrap();
 
     // The laptop governs and serves the room itself: its join answers name
     // it so, with no host capability.
     let invitation = hosted
         .host
-        .rooms()
+        .workspaces()
         .issue(
-            &room.room,
+            &room.workspace,
             &laptop.cert,
             IssueInvitationRequest {
                 request_id: [3; 32],
@@ -251,7 +256,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
         )
         .await
         .unwrap();
-    assert_eq!(admission.bootstrap.room, room.room);
+    assert_eq!(admission.bootstrap.room, room.workspace);
     let WorkspaceHostTrust::InteractiveOwner(trust) = admission.trust else {
         panic!("a device host is the room's own governor, not a certified host");
     };
@@ -290,8 +295,8 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     let session = own_device_enters(&alice, &phone, &hosted, &room).await;
     let members = hosted
         .host
-        .rooms()
-        .summary(&room.room)
+        .workspaces()
+        .summary(&room.workspace)
         .await
         .unwrap()
         .members;
@@ -382,7 +387,7 @@ async fn a_router_built_before_any_room_refuses_until_its_host_is_installed() {
     assert!(dial().await.is_err(), "no room is hosted here yet");
 
     let state = tempfile::tempdir().unwrap();
-    let host = RoomHost::open(
+    let host = WorkspaceHost::open(
         HostConfig::new(state.path().to_path_buf(), HostMode::Device),
         HostIdentity {
             user_public_key: alice.user_pk,

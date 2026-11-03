@@ -57,7 +57,7 @@ impl TrustPolicy {
         match self {
             Self::AllowMatchingUser => &cert.user_public_key == own_user_pubkey,
             // Every session checks this on every envelope, and a public
-            // room lists each of its guests: encode the one key once and
+            // workspace lists each of its guests: encode the one key once and
             // compare text, rather than decode (and allocate) every entry.
             Self::AllowList { users } => {
                 let mut own = [0u8; 64];

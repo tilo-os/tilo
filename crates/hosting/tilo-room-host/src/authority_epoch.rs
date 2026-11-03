@@ -2,7 +2,7 @@
 //!
 //! A session that is already admitted is re-checked when something its
 //! admission depended on may have changed, instead of on a fixed clock:
-//! revocations, the relay-wide trust policy, a room's membership, its
+//! revocations, the relay-wide trust policy, a workspace's membership, its
 //! signed-authority users and its authenticated-admission switch, the live
 //! subscriber a session registered, and agent delegations. Every writer of
 //! those calls [`bump`]; consumers hold a [`subscribe`]d receiver and re-check
@@ -10,7 +10,7 @@
 //!
 //! The epoch is a `watch`, not a `Notify`: it keeps the latest value, so a
 //! consumer busy with its previous re-check cannot miss a change made
-//! meanwhile. It is process-wide rather than per relay so that a room's
+//! meanwhile. It is process-wide rather than per relay so that a workspace's
 //! runtime can announce its own narrowing without a handle threaded into every
 //! place it is opened. Two relays in one process (only tests run that way)
 //! wake each other's consumers needlessly; a spurious wake costs one in-memory

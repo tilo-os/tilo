@@ -547,11 +547,9 @@ mod tests {
 
     #[test]
     fn a_catalogue_of_another_format_is_refused() {
-        let other = Catalogue {
-            format: FORMAT_VERSION + 1,
-            toolkit: "0".into(),
-            components: Vec::new(),
-        };
+        // A catalogue otherwise as this build writes it, numbered as another format's.
+        let mut other = catalogue().clone();
+        other.format = FORMAT_VERSION + 1;
         let text = serde_json::to_string(&other).unwrap_or_default();
         assert!(Catalogue::from_json(&text).is_err());
     }

@@ -1855,6 +1855,10 @@ impl Platform for ShellPlatform {
         i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
+    }
+
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
     }

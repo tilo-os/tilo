@@ -96,7 +96,8 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::Int => FieldType::Int,
         Ty::Float => FieldType::Float,
         Ty::Bool => FieldType::Bool,
-        Ty::Text => FieldType::Text,
+        // A repeat and a reminder are text as they are held, so a picker writes them.
+        Ty::Text | Ty::Repeat | Ty::Reminder => FieldType::Text,
         Ty::RichText => FieldType::RichText,
         Ty::Date => FieldType::Date,
         Ty::Time => FieldType::Time,
@@ -170,7 +171,8 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
         Ty::Int => json!({"type": "integer"}),
         Ty::Float => json!({"type": "number"}),
         Ty::Bool => json!({"type": "boolean"}),
-        Ty::Text | Ty::RichText => json!({"type": "string"}),
+        // A rule and a trigger as RFC 5545 writes them, `FREQ=WEEKLY` and `-PT15M`.
+        Ty::Text | Ty::RichText | Ty::Repeat | Ty::Reminder => json!({"type": "string"}),
         Ty::Date => json!({"type": "string", "format": "date"}),
         Ty::Time => json!({"type": "string", "format": "date-time"}),
         // An account of some service, as its URI (`mailto:jane@x.com`).
@@ -239,7 +241,9 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
         Some(Ty::Float) => ParamType::Number,
         Some(Ty::Bool) => ParamType::Boolean,
         Some(Ty::Time) => ParamType::DateTime,
-        Some(Ty::Text | Ty::RichText | Ty::Date | Ty::Identifier) => ParamType::Text,
+        Some(Ty::Text | Ty::RichText | Ty::Date | Ty::Identifier | Ty::Repeat | Ty::Reminder) => {
+            ParamType::Text
+        }
         Some(Ty::Enum(key)) if plain_cases(meta, key).is_some() => ParamType::Text,
         Some(Ty::List(_) | Ty::Set(_) | Ty::Collection(_) | Ty::Tuple(_)) => ParamType::Array,
         _ => ParamType::Object,

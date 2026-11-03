@@ -56,6 +56,9 @@ tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = tr
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
 # framework's `ui::ActionHost`.
 tilo-actions = { path = "../../crates/collab/actions" }
+# A direct conversation is a record of the pair its two people share; its id
+# names the workspace and the two people's root keys.
+collab-types = { path = "../../crates/collab/collab-types" }
 # The address a message carries when it was authored by selecting something —
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).

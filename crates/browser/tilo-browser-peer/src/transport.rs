@@ -336,7 +336,7 @@ impl RelayCollabTransport {
                 | PeerEvent::RecordOpened { .. }
                 | PeerEvent::ContentWanted { .. }
                 | PeerEvent::Voice(_)
-                | PeerEvent::RoomLayout { .. } => {}
+                | PeerEvent::WorkspaceLayout { .. } => {}
             }
         }
         if self.confirm_pending

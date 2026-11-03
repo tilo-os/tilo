@@ -83,7 +83,7 @@ mod service {
 
     use accounts::person::{ACCOUNTS_OWNER, PersonAccounts};
     use tilo_messaging::room::{PrivateAnswer, PrivateDoor, RoomEnrollment, RoomMessaging};
-    use tilo_relay_protocol::rooms::private::PrivateOperation;
+    use tilo_relay_protocol::workspaces::private::PrivateOperation;
     use tilo_ui::application::HostContext;
     use tilo_ui::record::person::PersonRecords;
 

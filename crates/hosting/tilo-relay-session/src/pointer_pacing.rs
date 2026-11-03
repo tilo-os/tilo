@@ -28,7 +28,7 @@
 //! - **Order where it matters.** Anything but a delta or other latest-state
 //!   presence (a caret, a selection, a typing range) takes every held pointer
 //!   ahead of it, in the same write: an app's `Left` never overtakes its last
-//!   pointer, and nothing is written for a room after its `Unsubscribe`.
+//!   pointer, and nothing is written for a workspace after its `Unsubscribe`.
 //!   Deltas and carets may pass a held pointer, as the relay lets them.
 //!
 //! Only slots the sender itself declares as motion
@@ -44,7 +44,7 @@ pub use crate::coedit::POINTER_GAP;
 use crate::coedit::{AttributedPresence, presence_slot};
 use crate::transport::Envelope;
 
-/// One pointer slot of one room: `(workspace_id, slot id)`.
+/// One pointer slot of one workspace: `(workspace_id, slot id)`.
 pub type PointerKey = (u64, u64);
 
 /// How an outbound message is paced.
@@ -59,7 +59,7 @@ pub enum Pacing {
     Ordered,
 }
 
-/// How presence with `slot` in room `workspace_id` is paced: a motion slot is
+/// How presence with `slot` in workspace `workspace_id` is paced: a motion slot is
 /// held, any other slot passes, and a message without one is an event.
 #[must_use]
 pub fn slot_pacing(workspace_id: u64, slot: Option<neighbour_wire::PresenceSlot>) -> Pacing {

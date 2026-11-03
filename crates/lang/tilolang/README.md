@@ -393,6 +393,15 @@ A named filter reads only the type's own fields and literals (`not done`, `due !
 is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com")`, a bare
 `jane@x.com` or `+4930…` taken as `mailto:` or `tel:`; `.scheme` and `.value` read its parts.
 
+`std.Repeat` and `std.Reminder` are held as their RFC 5545 text too: a repeat is its rule
+(`std.Repeat("FREQ=WEEKLY;INTERVAL=2")`, `…;X-FROM=DONE` to count from the day it was
+completed) and a reminder its trigger duration (`std.Reminder("-PT15M")`), both from a string
+literal. `.next(from, done_on)`, `.next_at(at, day)` and `.at(due, at)` read them in the
+person's zone, so a wall time of day survives a change of clocks, and `.label()` says what they
+do in the reader's words ("Every 2 weeks", "15 minutes before"). An action completes a repeating
+item in one call: `let again = std.complete(t, done)` adds the day to the item's
+`completed: Set<Date>` and moves `due` and `at` to the next occurrence.
+
 `query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
 that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,
 checked against what each compares: a Bool; a case, or several (`[.open, .blocked]`); a Date

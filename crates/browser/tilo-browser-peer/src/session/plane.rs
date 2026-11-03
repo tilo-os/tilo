@@ -25,11 +25,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tilo_call_lane::Roster;
-use tilo_live::plane::{Join, Plane};
+#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+use tilo_live::plane::Join;
+use tilo_live::plane::Plane;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{Command, Host, Link, PeerEvent, Task, lock};
+#[cfg(feature = "iroh")]
+use super::Host;
+use super::{Command, Link, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
 
 /// The wait before a plane this page could not reach is asked for again.
@@ -560,7 +564,7 @@ impl Task {
                 // plane does not admit the page to the plane's channel; one
                 // that does not admit the page at all is asked again as soon
                 // as its admission may have moved.
-                let seated = lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true);
+                let seated = lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true);
                 let wait = if seated { REFUSED_MS } else { RETRY_MS };
                 self.planes
                     .refused(workspace_id, tilo_clock::unix_now_ms().saturating_add(wait));

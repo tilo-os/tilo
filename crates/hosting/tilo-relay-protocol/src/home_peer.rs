@@ -111,7 +111,7 @@ pub struct HomePeerRegistration {
     /// manage a headless peer.
     #[serde(default)]
     pub device_cert: Option<tilo_user_identity::DeviceCert>,
-    /// Relay room shards this peer was last configured to retain.
+    /// Relay workspace shards this peer was last configured to retain.
     pub relay_workspace_ids: Vec<u64>,
 }
 

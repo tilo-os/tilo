@@ -30,7 +30,7 @@ const COMMIT_RUN: usize = READ_AHEAD;
 /// The delivery budget an inbound frame holds while it waits.
 type Budget = Arc<tokio::sync::OwnedSemaphorePermit>;
 
-/// The next lagging room this connection can resume: a `SubscribeFrom` at
+/// The next lagging workspace this connection can resume: a `SubscribeFrom` at
 /// its current position, handled as if the device had sent it. A current
 /// plain subscription catches up through the same authorized full replay.
 fn lag_resume(session: &SessionCtx<'_>, subscribed: &[u64]) -> Option<Envelope> {
@@ -210,7 +210,7 @@ pub(super) struct SessionReaderLoop<'s, R> {
     catching_up: bool,
     access_audit: &'s mut AccessAudit,
     authority: &'s mut tokio::sync::watch::Receiver<u64>,
-    /// The queues a lagging room waits on to drain before it resumes.
+    /// The queues a lagging workspace waits on to drain before it resumes.
     outbound: &'s mpsc::Sender<Envelope>,
     state_outbound: &'s mpsc::Sender<StateDelivery>,
     /// Where state replies and replays go to the writer.
@@ -326,7 +326,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 }
             },
             () = cx.session.lag.wake.notified() => { self.catching_up = true; Ok(None) }
-            // A lagging room resumes once everything already queued
+            // A lagging workspace resumes once everything already queued
             // for this connection is written, so its replay starts
             // where the wire left off. A replay still being written
             // counts too: resuming under it would replace the session
@@ -373,7 +373,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             // A replay handed to the writer still checks its subscription
             // until its Ready; unsubscribing under it would end the whole
             // connection. The reply to an earlier subscribe (one the device
-            // sent, or a lagging room's resume) comes first, then this.
+            // sent, or a lagging workspace's resume) comes first, then this.
             self.inbound
                 .overtake_while(Box::pin(cx.replays_written()), cx)
                 .await?;

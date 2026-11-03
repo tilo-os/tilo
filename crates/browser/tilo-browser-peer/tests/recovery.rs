@@ -78,7 +78,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     ready(&[&peer]).await;
     let status = peer.status();
     assert!(status.generation > before);
-    assert!(status.rooms.values().all(|ready| *ready));
+    assert!(status.workspaces.values().all(|ready| *ready));
     assert!(
         status
             .failures

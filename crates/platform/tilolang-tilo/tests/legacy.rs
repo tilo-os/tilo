@@ -9,6 +9,7 @@
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value as AmValue};
 use tilo_resource::collection::{collection_entries, in_stored_order, read_entry};
+use tilolang::source::PackageSource;
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
@@ -588,12 +589,11 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
 /// id Todo's records were written under.
 fn todo_as_tasks() -> (String, &'static str) {
     let (source, ids) = app!("tasks");
-    let header = source.lines().next().unwrap();
-    assert!(
-        header.starts_with("app so.tilo.lang.tasks ")
-            && header.contains("previously: so.tilo.lang.todo"),
-        "{header}"
-    );
+    // Read as the compiler reads it: the header's wrapping is the formatter's
+    // business, what it declares is not.
+    let (app, previously, _) = PackageSource::single(source).header_with_previously();
+    assert_eq!(app.as_deref(), Some("so.tilo.lang.tasks"), "{source}");
+    assert_eq!(previously, vec!["so.tilo.lang.todo".to_owned()], "{source}");
     (source.to_owned(), ids)
 }
 

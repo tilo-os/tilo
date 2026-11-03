@@ -86,6 +86,15 @@ pub trait Chained: Resource {
     /// The chain the parts belong to: part `n` is `chain().part(n)`.
     fn chain() -> RecordId;
 
+    /// The chain that belongs beside `base` rather than beside the app's own
+    /// record: the messages of one direct conversation, kept in the record
+    /// the two people share ([`RecordId::of_direct`]). [`Self::chain`] for
+    /// every chain there is only one of.
+    fn chain_beside(base: &RecordId) -> RecordId {
+        let _ = base;
+        Self::chain()
+    }
+
     /// The part `action` changes, given the parts this device holds, oldest
     /// first: the one holding the item it names, or for a new item the head
     /// (or the next part, once the head is full).
@@ -162,6 +171,8 @@ type Base<P> = Rc<dyn Fn() -> Rc<<<P as Chained>::Base as Resource>::State>>;
 pub(crate) struct ChainState<P: Chained> {
     workspace: WorkspaceRecords,
     base: Base<P>,
+    /// The chain the parts belong to.
+    chain: RecordId,
     id: String,
     kind: RecordKind,
     parts: RefCell<BTreeMap<u64, Live<P>>>,
@@ -182,6 +193,17 @@ pub(crate) struct ChainState<P: Chained> {
 impl<P: Chained> ChainState<P> {
     /// Hold the chain in `workspace`, with its head when this device has one.
     pub(crate) fn open(workspace: WorkspaceRecords, base: Base<P>) -> Option<Self> {
+        Self::open_at(workspace, base, P::chain())
+    }
+
+    /// [`Self::open`] of the chain `chain` rather than the app's own: the
+    /// messages of one direct conversation, which lives beside the record
+    /// the two people share ([`Chained::chain_beside`]).
+    pub(crate) fn open_at(
+        workspace: WorkspaceRecords,
+        base: Base<P>,
+        chain: RecordId,
+    ) -> Option<Self> {
         let mut doc = ui_core::automerge::AutoCommit::new();
         P::initialize(&mut doc)
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "chain part has no genesis"))
@@ -191,10 +213,12 @@ impl<P: Chained> ChainState<P> {
             .ok()?
             .state()
             .clone();
+        let id = ui_core::record::chain_resource_id(&chain);
         let state = Self {
             workspace,
             base,
-            id: ui_core::record::chain_resource_id(&P::chain()),
+            chain,
+            id,
             kind: RecordKind::new(P::KIND),
             parts: RefCell::default(),
             waiting: RefCell::default(),
@@ -212,7 +236,7 @@ impl<P: Chained> ChainState<P> {
     }
 
     fn checkout(&self, index: u64) -> RecordCheckout {
-        RecordCheckout::new(P::chain().part(index), self.kind.clone())
+        RecordCheckout::new(self.chain.part(index), self.kind.clone())
     }
 
     /// The parts held, oldest first.
@@ -247,7 +271,7 @@ impl<P: Chained> ChainState<P> {
             match self
                 .workspace
                 .store
-                .read(&P::chain().part(*index), |doc| live.sync(doc))
+                .read(&self.chain.part(*index), |doc| live.sync(doc))
             {
                 Some(Ok(true)) => {
                     // Its history arrived, or a first change was made here.
@@ -267,7 +291,7 @@ impl<P: Chained> ChainState<P> {
             let parts = self.parts.borrow();
             self.workspace
                 .store
-                .open_parts(&P::chain())
+                .open_parts(&self.chain)
                 .into_iter()
                 .filter(|index| !parts.contains_key(index))
                 .collect()
@@ -327,7 +351,7 @@ impl<P: Chained> ChainState<P> {
             let now = if self
                 .workspace
                 .store
-                .workspace_answered(&P::chain().part(index))
+                .workspace_answered(&self.chain.part(index))
             {
                 PartArrival::Unavailable
             } else {
@@ -348,13 +372,13 @@ impl<P: Chained> ChainState<P> {
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
-        let kept = self.workspace.store.held_parts(&P::chain()).last().copied();
+        let kept = self.workspace.store.held_parts(&self.chain).last().copied();
         // A part a peer started is the same record here (each part's genesis
         // is the same everywhere): started here, it syncs on its route.
         let started = self
             .workspace
             .store
-            .announced_parts(&P::chain())
+            .announced_parts(&self.chain)
             .last()
             .copied();
         let Some(newest) = kept.max(started) else {
@@ -507,7 +531,7 @@ impl<P: Chained> ChainState<P> {
     }
 
     fn follow(&self, index: u64) -> Result<(), String> {
-        let part = P::chain().part(index);
+        let part = self.chain.part(index);
         // An older part is brought up to the part's storage version before
         // it is read, as the app's record is when it opens: once, as the
         // same housekeeping change on every device.
@@ -679,7 +703,7 @@ impl<P: Chained> ChainState<P> {
         let now = self
             .workspace
             .store
-            .with(&P::chain().part(edit.part), |doc| {
+            .with(&self.chain.part(edit.part), |doc| {
                 super::history::version_name(&doc.get_heads())
             })
             .unwrap_or_default();
@@ -708,7 +732,7 @@ impl<P: Chained> ChainState<P> {
                 place,
             ));
         }
-        let id = P::chain().part(index);
+        let id = self.chain.part(index);
         let created = self
             .workspace
             .store
@@ -1080,7 +1104,7 @@ impl<P: Chained> Chain<P> {
     {
         use tilo_resource::Fields as _;
         self.state.start(index)?;
-        let id = P::chain().part(index);
+        let id = self.state.chain.part(index);
         self.state
             .workspace
             .store
@@ -1181,7 +1205,7 @@ impl<P: Chained> Chain<P> {
         self.state
             .workspace
             .store
-            .read(&P::chain().part(index), |doc| doc.clone().save())
+            .read(&self.state.chain.part(index), |doc| doc.clone().save())
     }
 
     /// What this chain's dispatcher handed to the door and nothing took yet
@@ -1219,11 +1243,14 @@ fn detached_dispatch<P: Chained>(
     )
 }
 
-/// The chains a window's views opened, by part type: one per type; and the
-/// child records they opened, by container.
+/// The chains a window's views opened, by part type and chain: one per each;
+/// and the child records they opened, by container.
+/// The chains a window holds, by part type and chain.
+type HeldChains = BTreeMap<(&'static str, String), Rc<dyn Any>>;
+
 #[derive(Default)]
 pub(crate) struct Chains {
-    held: RefCell<BTreeMap<&'static str, Rc<dyn Any>>>,
+    held: RefCell<HeldChains>,
     /// The child records held, by their container's address.
     children: RefCell<BTreeMap<String, Rc<dyn Any>>>,
     doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
@@ -1236,17 +1263,55 @@ impl Chains {
         workspace: Option<&WorkspaceRecords>,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
-        if let Some(held) = self.held.borrow().get(P::KIND) {
-            return Rc::clone(held).downcast::<ChainState<P>>().ok();
+        let chain = P::chain();
+        if let Some(held) = self.opened::<P>(&chain) {
+            return Some(held);
         }
-        let state = Rc::new(ChainState::<P>::open(workspace?.clone(), Rc::new(base))?);
-        self.held
-            .borrow_mut()
-            .insert(P::KIND, Rc::clone(&state) as Rc<dyn Any>);
+        let workspace = workspace?.clone();
+        let state = Rc::new(ChainState::<P>::open(workspace, Rc::new(base))?);
+        self.hold(&chain, &state);
+        Some(state)
+    }
+
+    /// The chain of `P` that lives beside the record `base`
+    /// ([`Chained::chain_beside`]), opened in `workspace` on first use.
+    pub(crate) fn open_beside<P: Chained>(
+        &self,
+        workspace: Option<&WorkspaceRecords>,
+        base: &RecordId,
+        base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
+    ) -> Option<Rc<ChainState<P>>> {
+        let chain = P::chain_beside(base);
+        if let Some(held) = self.opened::<P>(&chain) {
+            return Some(held);
+        }
+        let workspace = workspace?.clone();
+        let state = Rc::new(ChainState::<P>::open_at(
+            workspace,
+            Rc::new(base_state),
+            chain.clone(),
+        )?);
+        self.hold(&chain, &state);
+        Some(state)
+    }
+
+    /// The chain of `P` held for `chain`, if the views opened it.
+    fn opened<P: Chained>(&self, chain: &RecordId) -> Option<Rc<ChainState<P>>> {
+        let held = self.held.borrow();
+        let held = held.get(&(P::KIND, chain.as_str().to_owned()))?;
+        Rc::clone(held).downcast::<ChainState<P>>().ok()
+    }
+
+    /// Keep `state` for the views that ask for its chain again, published
+    /// and answered beside the others.
+    fn hold<P: Chained>(&self, chain: &RecordId, state: &Rc<ChainState<P>>) {
+        self.held.borrow_mut().insert(
+            (P::KIND, chain.as_str().to_owned()),
+            Rc::clone(state) as Rc<dyn Any>,
+        );
         self.doors
             .borrow_mut()
-            .push(Rc::clone(&state) as Rc<dyn RecordDoor>);
-        Some(state)
+            .push(Rc::clone(state) as Rc<dyn RecordDoor>);
     }
 
     /// The children of `C` the parent lists, held in `workspace` on first use:

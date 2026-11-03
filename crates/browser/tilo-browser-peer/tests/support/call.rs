@@ -20,9 +20,9 @@ use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::daemon::Relay;
-use tilo_relay::rooms::{IssueInvitationRequest, IssuedInvitation};
 use tilo_relay::web::WebHandle;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_relay::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, CallState, Directions, VoiceGrant};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -68,7 +68,7 @@ pub fn granted(envelope: Envelope) -> Option<VoiceGrant> {
 /// owner's.
 pub async fn enter(relay: &Relay, device: &DeviceCert, workspace: &str) {
     relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .enter(workspace, device)
         .await
@@ -85,7 +85,7 @@ pub async fn issue(
 ) -> IssuedInvitation {
     let person = person.verifying_key().to_bytes();
     relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .issue(
             workspace,
@@ -281,14 +281,14 @@ impl GovernedCall {
         let TestHost { relay, web, lookup } =
             start_workspace_host(&alice, &host, state.path(), false).await;
         let address = relay.node_addr();
-        let workspace = relay.rooms().unwrap().create("Standup").await.unwrap();
-        enter(&relay, &laptop.cert, &workspace.room).await;
+        let workspace = relay.workspaces().unwrap().create("Standup").await.unwrap();
+        enter(&relay, &laptop.cert, &workspace.workspace).await;
 
         // Alice's chat gets a voice channel; the workspace's governor learns it.
         let (owner, channel) = create_voice_channel(
             address,
             workspace.workspace_id,
-            &workspace.room,
+            &workspace.workspace,
             &host.cert,
             &laptop,
         )
@@ -321,7 +321,7 @@ impl GovernedCall {
             laptop,
             relay,
             web,
-            cluster_id: workspace.room,
+            cluster_id: workspace.workspace,
             workspace_id: workspace.workspace_id,
             owner,
             channel,

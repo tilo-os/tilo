@@ -356,7 +356,7 @@ pub struct PresenceFrame {
     /// frame restates the same reaction, which plays nothing.
     #[serde(default)]
     pub reaction: Option<LiveReaction>,
-    /// The publisher's latest wave at someone in the room. Only the person
+    /// The publisher's latest wave at someone in the workspace. Only the person
     /// waved at shows it, once per new [`LiveWave::seq`]; restating the
     /// frame restates the same wave, which shows nothing.
     #[serde(default)]
@@ -421,7 +421,7 @@ impl CursorChat {
 /// Largest wave target: a member's live publisher, as hex.
 pub const MAX_WAVE_TARGET_BYTES: usize = 64;
 
-/// A wave at one member of the room: "hello", to them, from the publisher.
+/// A wave at one member of the workspace: "hello", to them, from the publisher.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveWave {
@@ -777,13 +777,13 @@ impl SealedLiveFrame {
     /// authentication or canonical-frame failure from [`Self::open`].
     pub fn open_in_record<E: std::fmt::Display>(
         &self,
-        room: &str,
+        workspace: &str,
         record: &LiveRecord,
         open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
     ) -> std::result::Result<LiveFrame, LiveSealError> {
         if self.record != record.digest()
             || self.channel_id()
-                != collab_types::document_channel_id(&record.app, room, &record.record)
+                != collab_types::document_channel_id(&record.app, workspace, &record.record)
         {
             return Err(LiveSealError::Mismatch);
         }
@@ -1003,8 +1003,8 @@ mod tests {
     #[test]
     fn opening_for_a_mounted_record_refuses_a_different_record_or_channel() {
         let expected = record();
-        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let channel = collab_types::document_channel_id(&expected.app, room, &expected.record);
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&expected.app, workspace, &expected.record);
         let bytes = SealedLiveFrame::seal(&semantic(), |_, retention, cleartext: &[u8]| {
             Ok::<_, String>((
                 EncryptionMetadata::content_key(3, channel, retention),
@@ -1013,7 +1013,7 @@ mod tests {
         })
         .unwrap();
         let sealed = SealedLiveFrame::decode(&bytes).unwrap();
-        let opened = sealed.open_in_record(room, &expected, |_, _, bytes| {
+        let opened = sealed.open_in_record(workspace, &expected, |_, _, bytes| {
             Ok::<_, String>(bytes.to_vec())
         });
         assert_eq!(opened.unwrap(), semantic());
@@ -1021,10 +1021,10 @@ mod tests {
             record: "other".into(),
             ..expected.clone()
         };
-        for (room, record) in [(room, other), ("another-room", expected.clone())] {
+        for (workspace, record) in [(workspace, other), ("another-room", expected.clone())] {
             assert!(matches!(
                 sealed.open_in_record(
-                    room,
+                    workspace,
                     &record,
                     |_, _, _| -> std::result::Result<Vec<u8>, String> {
                         panic!("a different mounted audience must be refused before opening")
@@ -1039,7 +1039,7 @@ mod tests {
         wrong_channel.channel = [9; 16];
         assert!(
             wrong_channel
-                .open_in_record(room, &expected, |_, _, _| {
+                .open_in_record(workspace, &expected, |_, _, _| {
                     Err::<Vec<u8>, String>("must not open".into())
                 })
                 .is_err()
@@ -1104,8 +1104,8 @@ mod tests {
             app: "so.tilo.chat".into(),
             record: String::new(),
         };
-        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&primary.app, workspace, &primary.record);
         let frame = LiveFrame::Presence(PresenceFrame {
             place: None,
             chat: None,
@@ -1134,7 +1134,7 @@ mod tests {
         let sealed = SealedLiveFrame::decode(&bytes).unwrap();
         assert_eq!(
             sealed
-                .open_in_record(room, &primary, |_, _, bytes| {
+                .open_in_record(workspace, &primary, |_, _, bytes| {
                     Ok::<_, String>(bytes.to_vec())
                 })
                 .unwrap(),
@@ -1146,7 +1146,7 @@ mod tests {
         };
         assert!(matches!(
             sealed.open_in_record(
-                room,
+                workspace,
                 &named,
                 |_, _, _| -> std::result::Result<Vec<u8>, String> {
                     panic!("a different record must be refused before opening")

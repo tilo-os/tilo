@@ -1,10 +1,10 @@
-//! An installed Shortcut bot, run on the host that governs its room.
+//! An installed Shortcut bot, run on the host that governs its workspace.
 //!
 //! The runner follows the records of the apps the bot's program names and
 //! the event logs of the connectors it listens to. Each change and each
 //! connector event goes through the dispatcher; every firing is queued and
 //! run unattended through the bot's door ([`BotDoor`]) over its own
-//! replicas of the room's records, and what a run changed is published by
+//! replicas of the workspace's records, and what a run changed is published by
 //! the governor signed by the bot's own device, so every member admits it
 //! as the bot's. An outbox entry a step queues is handed to the connector's
 //! worker.
@@ -35,7 +35,7 @@ use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
-use crate::rooms::{MemberMark, Rooms};
+use crate::workspaces::{MemberMark, Workspaces};
 
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
@@ -43,8 +43,8 @@ use tilo_automation::grant::OUTBOX_FIELD;
 use tilo_lock::MutexRecover as _;
 /// How long the runner waits with nothing to do before it looks again.
 const IDLE: Duration = Duration::from_secs(30);
-/// The input a program declares to be told the room's members and roles.
-const ROOM_INPUT: &str = "room";
+/// The input a program declares to be told the workspace's members and roles.
+const ROOM_INPUT: &str = "workspace";
 /// The input a program declares to be told the workspace's own emoji: each
 /// name with its picture's content address, the picture kept in the
 /// content store its connectors read, so an op may attach it.
@@ -57,7 +57,7 @@ pub struct InstalledBot {
     /// The installation's id; the bot acts as `bot:<installation>`.
     pub installation: String,
     /// Where it was installed from: the directory entry it came from, or the
-    /// program file on this host when the room runs a program it ships.
+    /// program file on this host when the workspace runs a program it ships.
     pub entry: String,
     /// Its name: the directory listing's, or the program's own when it is a
     /// program file (a path names nobody).
@@ -68,7 +68,7 @@ pub struct InstalledBot {
     pub inputs: Map<String, Value>,
     /// When it was installed, ms since the epoch.
     pub installed_at_ms: i64,
-    /// The version it runs, as the room asked for it (empty for a program
+    /// The version it runs, as the workspace asked for it (empty for a program
     /// file, whose text is what runs): a request for another one replaces
     /// the program and keeps the installation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -110,8 +110,8 @@ struct Progress {
     /// Firings that will not run again on their own, newest last.
     #[serde(default)]
     dead_letters: VecDeque<DeadLetter>,
-    /// The room's members as last seen, for a program that follows the
-    /// room's governance.
+    /// The workspace's members as last seen, for a program that follows the
+    /// workspace's governance.
     #[serde(default)]
     members: Option<BTreeMap<String, MemberMark>>,
 }
@@ -178,13 +178,13 @@ impl RunHooks for Unattended {
 /// How a firing went on this host.
 enum Fired {
     Ran(Box<tilo_automation::RunReport>),
-    /// It ran, and the room refused what it changed, for this reason.
+    /// It ran, and the workspace refused what it changed, for this reason.
     Refused(String),
 }
 
 pub struct BotRunner {
-    rooms: Rooms,
-    room: String,
+    workspaces: Workspaces,
+    workspace: String,
     host: DeviceCert,
     /// The bot's own device, which signs what its runs change.
     bot_key: ed25519_dalek::SigningKey,
@@ -200,20 +200,20 @@ pub struct BotRunner {
     state_file: PathBuf,
     /// The emoji pictures already kept for the connectors, by address.
     kept: Mutex<BTreeSet<String>>,
-    /// How many more changes are published before the room is made to
+    /// How many more changes are published before the workspace is made to
     /// refuse one, for a test.
     #[cfg(test)]
     refuse_after: Mutex<Option<usize>>,
 }
 
 impl BotRunner {
-    /// The runner of `bot` in `room`, installed by the room's root whose
+    /// The runner of `bot` in `workspace`, installed by the workspace's root whose
     /// device `host` governs it, signing as the bot's device `bot_key`
     /// (see [`super::membership::HostRootCertifier::device_key`]), its
     /// connectors already started, its progress kept in `state_file`.
     pub fn new(
-        rooms: Rooms,
-        room: String,
+        workspaces: Workspaces,
+        workspace: String,
         host: DeviceCert,
         bot_key: ed25519_dalek::SigningKey,
         bot: InstalledBot,
@@ -241,7 +241,7 @@ impl BotRunner {
         );
         let installer = hex::encode(host.user_public_key);
         let standing = bot_standing(
-            &room,
+            &workspace,
             &installer,
             &bot.installation,
             &shortcut,
@@ -249,7 +249,7 @@ impl BotRunner {
         );
         let held = Arc::new(Mutex::new(HeldRecords::new(
             catalogue.clone(),
-            room.clone(),
+            workspace.clone(),
             ReplicaActor::Bot {
                 installation: bot.installation.clone(),
                 installer: installer.clone(),
@@ -276,8 +276,8 @@ impl BotRunner {
         ));
         let progress = read_progress(&state_file)?;
         Ok(Self {
-            rooms,
-            room,
+            workspaces,
+            workspace,
             host,
             bot_key,
             catalogue,
@@ -295,7 +295,7 @@ impl BotRunner {
         })
     }
 
-    /// Have the room refuse the change published after `published` more.
+    /// Have the workspace refuse the change published after `published` more.
     #[cfg(test)]
     pub(crate) fn refuse_change_after(&self, published: usize) {
         *self.refuse_after.lock_recover() = Some(published);
@@ -323,12 +323,12 @@ impl BotRunner {
         self.progress.dead_letters.iter()
     }
 
-    /// Run until the room is no longer governed here. The first pass
+    /// Run until the workspace is no longer governed here. The first pass
     /// catches up on everything since the kept cursors, so a restarted
     /// host answers what happened while it was down.
     pub async fn run(mut self) {
-        let mut writes = self.rooms.record_writes();
-        let mut governance = self.rooms.governance_changes();
+        let mut writes = self.workspaces.record_writes();
+        let mut governance = self.workspaces.governance_changes();
         // Any connector's new event wakes the runner.
         let events = Arc::new(tokio::sync::Notify::new());
         for process in self.connectors.values() {
@@ -400,7 +400,7 @@ impl BotRunner {
                 Ok(Fired::Refused(reason)) => {
                     // What the run changed before the refused change stands
                     // and the rest was dropped: run it again, from the
-                    // room's records, so it finishes what it started.
+                    // workspace's records, so it finishes what it started.
                     self.progress
                         .queue
                         .refused(&reason, tilo_clock::unix_now_ms_i64())
@@ -441,15 +441,17 @@ impl BotRunner {
         let mut firings = Vec::new();
         if self.follows_governance() {
             let (generation, members) = self
-                .rooms
-                .membership(&self.room)
+                .workspaces
+                .membership(&self.workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            // Like a record, the room's membership first seen is where the
+            // Like a record, the workspace's membership first seen is where the
             // bot starts.
             if let Some(before) = self.progress.members.replace(members.clone()) {
                 let owner = hex::encode(self.host.user_public_key);
-                for event in governance_events(&self.room, &owner, generation, &before, &members) {
+                for event in
+                    governance_events(&self.workspace, &owner, generation, &before, &members)
+                {
                     firings.extend(
                         tilo_automation::dispatch::dispatch(&armed, Event::Record(&event)).firings,
                     );
@@ -464,10 +466,10 @@ impl BotRunner {
             let mut doc = AutoCommit::load(&saved).map_err(|error| error.to_string())?;
             let heads: Vec<String> = doc.get_heads().iter().map(ToString::to_string).collect();
             // A record first seen starts at its heads: a bot answers what
-            // happens after it is installed, not the room's past. A new
+            // happens after it is installed, not the workspace's past. A new
             // part of a chain of an app the bot already follows (the next
             // part of a chat's messages) is what happened since: read whole.
-            // So is a record every app of the room opens (the workspace's
+            // So is a record every app of the workspace opens (the workspace's
             // emoji), which its first change creates.
             let part = ui::record::RecordId::parse(&record)
                 .is_some_and(|record| record.chain_part().is_some())
@@ -491,7 +493,7 @@ impl BotRunner {
                 })
                 .unwrap_or_default();
             for (event, _) in tilo_agent_participant::bot::events_since(
-                &self.room,
+                &self.workspace,
                 &record,
                 &kind,
                 doc.document(),
@@ -536,7 +538,7 @@ impl BotRunner {
             .any(|key| key.starts_with(&prefix))
     }
 
-    /// Whether the program listens to the room's own governance.
+    /// Whether the program listens to the workspace's own governance.
     fn follows_governance(&self) -> bool {
         self.shortcut.triggers.iter().any(|trigger| {
             matches!(trigger, TriggerSpec::RecordChanged { kind, .. } if kind == tilo_action_policy::roles::ROOM_KIND)
@@ -544,7 +546,7 @@ impl BotRunner {
     }
 
     /// The bot's own inputs, with each the host binds that its program
-    /// declares: the room's members, the workspace's emoji.
+    /// declares: the workspace's members, the workspace's emoji.
     async fn host_inputs(&self) -> Result<Map<String, Value>, String> {
         let declares = |name: &str| self.shortcut.inputs.iter().any(|input| input.name == name);
         let mut inputs = self.bot.inputs.clone();
@@ -559,7 +561,7 @@ impl BotRunner {
 
     /// Run `firing` through the bot's door and publish what it changed.
     async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
-        // The replicas are brought up to the room's records first, so the
+        // The replicas are brought up to the workspace's records first, so the
         // run reads what members did up to now: each app's own records,
         // then the parts of the chains they keep beside them. A record the
         // bot cannot hold is left out of the run (and said), not every run
@@ -572,7 +574,7 @@ impl BotRunner {
             if let Some(saved) = self.read(&app, &record).await? {
                 let route = DocumentRoute {
                     app_id: app.clone(),
-                    cluster_id: self.room.clone(),
+                    cluster_id: self.workspace.clone(),
                     record,
                 };
                 let held = Arc::clone(&self.held);
@@ -593,7 +595,7 @@ impl BotRunner {
             self.host.user_public_key,
             self.bot_key.verifying_key().to_bytes(),
         )
-        .in_workspace(self.room.clone());
+        .in_workspace(self.workspace.clone());
         let (door, shortcut, handle) = (
             Arc::clone(&self.door),
             Arc::clone(&self.shortcut),
@@ -630,8 +632,8 @@ impl BotRunner {
         while let Some((index, (route, mutation))) = changes.next() {
             if let Err(refusal) = self.publish(&route, mutation).await {
                 // The refused change, and every later one built on it, stay
-                // out of the room; the bot's replicas they touched start
-                // over from the room's records, or every later change of
+                // out of the workspace; the bot's replicas they touched start
+                // over from the workspace's records, or every later change of
                 // theirs would carry the refused one and be refused too.
                 let touched: BTreeSet<DocumentRoute> = std::iter::once(route.clone())
                     .chain(changes.map(|(_, (route, _))| route))
@@ -643,7 +645,7 @@ impl BotRunner {
                 drop(held);
                 self.door.forget_steps();
                 let reason = format!(
-                    "the room refused the bot's change to {}/{}: {refusal}",
+                    "the workspace refused the bot's change to {}/{}: {refusal}",
                     route.app_id, route.record
                 );
                 tracing::warn!(
@@ -662,16 +664,16 @@ impl BotRunner {
         Ok(Fired::Ran(Box::new(report)))
     }
 
-    /// Who is in the room and in what role, as of now: `{"members":
+    /// Who is in the workspace and in what role, as of now: `{"members":
     /// [{"person", "role"}]}`, removed people left out. A program reads it
     /// to judge an outside request by the requester's standing here.
     pub(crate) async fn room_input(&self) -> Result<Value, String> {
         let summary = self
-            .rooms
-            .summary(&self.room)
+            .workspaces
+            .summary(&self.workspace)
             .await
             .map_err(|error| error.to_string())?;
-        // The room's root owns it whether or not governance lists the
+        // The workspace's root owns it whether or not governance lists the
         // person as a member.
         let root = hex::encode(self.host.user_public_key);
         let mut members = vec![serde_json::json!({ "person": root, "role": "owner" })];
@@ -701,7 +703,7 @@ impl BotRunner {
         Ok(serde_json::json!({ "members": members }))
     }
 
-    /// The workspace's own emoji as the room holds them now: `{"emoji":
+    /// The workspace's own emoji as the workspace holds them now: `{"emoji":
     /// [{"name", "picture"}]}`, each picture its content address. The
     /// pictures live in the emoji record itself, which a bot does not hold
     /// (`HeldRecords`), so the host reads them and keeps each in the
@@ -730,11 +732,11 @@ impl BotRunner {
         Ok(serde_json::json!({ "emoji": listed }))
     }
 
-    /// The room's readable records of the apps the bot works with.
+    /// The workspace's readable records of the apps the bot works with.
     async fn routes(&self) -> Result<Vec<(String, String)>, String> {
         Ok(self
-            .rooms
-            .record_routes(&self.room)
+            .workspaces
+            .record_routes(&self.workspace)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -743,15 +745,15 @@ impl BotRunner {
     }
 
     async fn read(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
-        self.rooms
-            .record_document(&self.room, app, record)
+        self.workspaces
+            .record_document(&self.workspace, app, record)
             .await
             .map_err(|error| error.to_string())
     }
 
-    /// Put a run's changes into the room's record, signed by the bot's
+    /// Put a run's changes into the workspace's record, signed by the bot's
     /// device, so every member admits them as the bot's. Fails when the
-    /// room did not take them (outside the bot's grants, or from a bot it
+    /// workspace did not take them (outside the bot's grants, or from a bot it
     /// does not let act).
     async fn publish(
         &self,
@@ -765,9 +767,9 @@ impl BotRunner {
         let bytes = match mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
         };
-        self.rooms
+        self.workspaces
             .publish_as_bot(
-                &self.room,
+                &self.workspace,
                 &self.host,
                 &self.bot_key,
                 &self.catalogue,
@@ -797,11 +799,11 @@ fn read_progress(path: &Path) -> Result<Progress, String> {
 }
 
 /// What installation `installation` may do: what its installer, the
-/// room's root, may, bounded to the grant its program carries (or, for a
+/// workspace's root, may, bounded to the grant its program carries (or, for a
 /// program that carries none, the one derived from its steps and
 /// triggers), and to settling its connectors' outboxes.
 fn bot_standing(
-    room: &str,
+    workspace: &str,
     installer: &str,
     installation: &str,
     shortcut: &Shortcut,
@@ -820,7 +822,7 @@ fn bot_standing(
         shortcut.grant.clone()
     };
     // Settling an entry is the bot recording what its connector answered.
-    // It takes the entry out of the outbox, which the room judges as
+    // It takes the entry out of the outbox, which the workspace judges as
     // reaching outside, as it did: the connector reached it.
     rules.extend(connectors.iter().flat_map(|app| {
         let app = TreePath::root().any(Level::Workspace).app(app.clone());
@@ -850,18 +852,18 @@ fn bot_standing(
             )
         })
         .collect();
-    Standing::person(WorkspacePolicy::new(room, installer), installer).bounded_by(bot, grants)
+    Standing::person(WorkspacePolicy::new(workspace, installer), installer).bounded_by(bot, grants)
 }
 
-/// What changed in the room's membership from `before` to `after`, as
-/// the room's own governance verbs on its `tilo.room` resource: `add-member`
+/// What changed in the workspace's membership from `before` to `after`, as
+/// the workspace's own governance verbs on its `tilo.room` resource: `add-member`
 /// (joined, or came back), `set-role`, `remove-member` (removed, or left),
 /// `ban` and `unban`, each with `person` (hex root) and, where it has one,
 /// `role`. A program follows them as any record's changes; the change id
-/// names the room's governance generation, so each event fires once.
+/// names the workspace's governance generation, so each event fires once.
 #[must_use]
 pub fn governance_events(
-    room: &str,
+    workspace: &str,
     owner: &str,
     generation: u64,
     before: &BTreeMap<String, MemberMark>,
@@ -876,14 +878,14 @@ pub fn governance_events(
         }
         let arguments: Map<String, Value> = args.iter().cloned().collect();
         let change = blake3::hash(
-            serde_json::to_string(&(room, generation, verb, person, role))
+            serde_json::to_string(&(workspace, generation, verb, person, role))
                 .unwrap_or_default()
                 .as_bytes(),
         )
         .to_hex()
         .to_string();
         events.push(tilo_automation::dispatch::RecordEvent {
-            workspace: room.to_owned(),
+            workspace: workspace.to_owned(),
             record: String::new(),
             kind: tilo_action_policy::roles::ROOM_KIND.to_owned(),
             change,
@@ -937,19 +939,19 @@ pub fn governance_events(
     events
 }
 
-/// The app id the room's governance verbs are named under.
+/// The app id the workspace's governance verbs are named under.
 const ROOM_APP: &str = "so.tilo.desktop";
 
-/// The bot `entry` installed in the room with `inputs`: the installation
-/// kept under `dir` when the room installed it before, else a new one.
+/// The bot `entry` installed in the workspace with `inputs`: the installation
+/// kept under `dir` when the workspace installed it before, else a new one.
 /// `entry` is a program file on this host, or a directory entry fetched
 /// and verified from the first enabled registry at the `version` input.
 ///
 /// A kept installation from a program file runs the file as it is now: the
 /// host's image ships the program, and a fix to it (a grant the bot was
-/// missing) reaches a room installed by an older image. The installation,
+/// missing) reaches a workspace installed by an older image. The installation,
 /// its name, its inputs and when it was installed stay; [`super::membership::keep_member`]
-/// then updates the room's row to the new program and its grants.
+/// then updates the workspace's row to the new program and its grants.
 ///
 /// # Errors
 /// The program cannot be read, fetched, verified or parsed, or the
@@ -966,7 +968,7 @@ pub async fn install(
 /// at the `version` input) instead of the listed one when given. A kept
 /// installation asked for another version runs it from now on and stays
 /// the same bot: its installation, name, inputs and install time are kept,
-/// and [`super::membership::keep_member`] moves the room's row to the new
+/// and [`super::membership::keep_member`] moves the workspace's row to the new
 /// program and its grants.
 ///
 /// # Errors
@@ -1142,10 +1144,10 @@ pub fn has_connector_secret(app_id: &str, purpose: &'static str) -> bool {
 }
 
 /// What a host gives the connectors its bots listen to: where each worker
-/// program is, the blobs they fetch and publish (served to the room's
+/// program is, the blobs they fetch and publish (served to the workspace's
 /// members once the first connector runs), and what the host serves
 /// publicly that a bridge's posts point at (avatars of authors it bridged
-/// out, links to the room's resources).
+/// out, links to the workspace's resources).
 #[derive(Clone)]
 pub struct ConnectorHost {
     /// Worker programs by connector, where the default place is not used.
@@ -1171,19 +1173,19 @@ impl ConnectorHost {
         }
     }
 
-    /// The blob store connectors use, served to `rooms` the first time.
+    /// The blob store connectors use, served to `workspaces` the first time.
     #[must_use]
-    pub fn blobs(&self, rooms: &Rooms) -> Arc<dyn tilo_connector::BlobAccess> {
-        self.store(rooms)
+    pub fn blobs(&self, workspaces: &Workspaces) -> Arc<dyn tilo_connector::BlobAccess> {
+        self.store(workspaces)
     }
 
-    /// The host's one blob store, served to `rooms` the first time: what
+    /// The host's one blob store, served to `workspaces` the first time: what
     /// connectors fetch and the files members post are kept side by side
     /// ([`super::attachments`]).
     #[must_use]
-    pub fn store(&self, rooms: &Rooms) -> Arc<FsBlobs> {
+    pub fn store(&self, workspaces: &Workspaces) -> Arc<FsBlobs> {
         if !self.served.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            rooms.serve_content(self.blobs.clone());
+            workspaces.serve_content(self.blobs.clone());
         }
         self.blobs.clone()
     }
@@ -1253,9 +1255,9 @@ impl FsBlobs {
     }
 }
 
-/// Members of the rooms this host's bots act in get what the bots fetched
+/// Members of the workspaces this host's bots act in get what the bots fetched
 /// (a bridged person's avatar) and the surfaces the host signs with.
-impl crate::rooms::RoomContent for FsBlobs {
+impl crate::workspaces::WorkspaceContent for FsBlobs {
     fn read(&self, _room: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
         crate::surfaces::surface_of(app, hash)
             .or_else(|| tilo_connector::BlobAccess::read(self, hash))

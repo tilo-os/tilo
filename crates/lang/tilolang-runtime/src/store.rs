@@ -177,7 +177,9 @@ impl FieldRead {
                     Ty::Bool => Lit::Bool(false),
                     Ty::Int => Lit::Int(0),
                     Ty::Float => Lit::Float(tilolang::pred::Float(0.0)),
-                    Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Lit::Text(String::new()),
+                    Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
+                        Lit::Text(String::new())
+                    }
                     _ => Lit::Absent,
                 },
             },
@@ -654,6 +656,16 @@ impl Listing {
     /// showing that as the length says it is up to that many.
     pub fn len_is_exact(&self) -> bool {
         self.paged.as_ref().is_none_or(|paged| paged.len_is_exact())
+    }
+
+    /// The items it holds: [`Self::len`] where that is its length, a listing that checks its
+    /// items as it reads them read to its end, which is what saying how many it holds costs.
+    /// [`Self::len`] is the length the store knows without reading it; this is the count.
+    pub fn count(&self) -> usize {
+        if self.len_is_exact() {
+            return self.len();
+        }
+        self.iter().count()
     }
 
     pub fn is_empty(&self) -> bool {

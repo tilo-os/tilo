@@ -20,7 +20,7 @@
 //! the channel are the ones this device opens a lane to.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -417,16 +417,11 @@ async fn open(
     let (access, keys) = call_keys(sources, workspace_id, channel)?;
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
-    let (calls, accepted) = tilo_call_lane::Calls::new(
-        hello(&target, channel, tilo_call_lane::Lane::Audio),
-        roster.clone(),
-    );
+    let (calls, accepted) = lane_calls(&target, channel, tilo_call_lane::Lane::Audio, &roster);
     // The call's pictures run on their own lane, sealed with the same keys:
     // a camera or a screen never waits behind a microphone's datagrams.
-    let (video_calls, video_accepted) = tilo_call_lane::Calls::new(
-        hello(&target, channel, tilo_call_lane::Lane::Video),
-        roster.clone(),
-    );
+    let (video_calls, video_accepted) =
+        lane_calls(&target, channel, tilo_call_lane::Lane::Video, &roster);
     let video = tilo_call_lane::Video::new(own);
     if let Some(keys) = &keys {
         video.set_keys(keys, roster.clone(), &scope);
@@ -436,6 +431,7 @@ async fn open(
         .as_ref()
         .and_then(|keys| tilo_call_lane::Microphone::new(keys, own, &scope, REPEATS).ok());
     let live = keys.is_some();
+    let (lost, lost_lanes) = tokio::sync::mpsc::unbounded_channel();
     let current = keys.map(|keys| Current {
         opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
         keys,
@@ -467,6 +463,9 @@ async fn open(
             screen: None,
         }),
         peers: Mutex::new(Vec::new()),
+        lanes: Mutex::new(BTreeMap::new()),
+        next_lane: AtomicU64::new(0),
+        lost,
         sources: microphones,
         caller: tilo_portal::PortalCaller {
             app_id: target.app.clone(),
@@ -482,17 +481,21 @@ async fn open(
         #[cfg(test)]
         played: sources.played.clone(),
     });
+    // Both devices know the other is in the call: of the two, one dials and
+    // the other answers, so a pair holds one lane rather than two.
     let dialled = sources
         .calls
         .callers(&target.channel)
         .into_iter()
-        .filter(|device| *device != own)
-        // Both devices know the other is in the call and would dial it: the
-        // one whose id is smaller dials, so a pair holds one connection per
-        // lane. Two would each close the one the other kept.
-        .filter(|device| own < *device)
+        .filter(|device| shared.dials(*device))
         .collect();
-    tokio::spawn(run(Arc::clone(&shared), dialled, accepted, video_accepted));
+    tokio::spawn(run(
+        Arc::clone(&shared),
+        dialled,
+        lost_lanes,
+        accepted,
+        video_accepted,
+    ));
     Ok(Box::new(Call {
         shared,
         inputs: offered,
@@ -511,6 +514,20 @@ fn hello(
         call: target.channel.clone(),
         lane,
     }
+}
+
+/// One lane of this call: the [`tilo_call_lane::Calls`] that carries it, and
+/// the lanes other devices open on it.
+fn lane_calls(
+    target: &CallTarget,
+    channel: collab_types::ChannelId,
+    lane: tilo_call_lane::Lane,
+    roster: &tilo_call_lane::Roster,
+) -> (
+    tilo_call_lane::Calls,
+    tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
+) {
+    tilo_call_lane::Calls::new(hello(target, channel, lane), roster.clone())
 }
 
 /// The keys the call's channel holds, or why the call cannot be carried: keys
@@ -688,6 +705,14 @@ struct Shared {
     side: Mutex<Side>,
     /// The lanes this device opened or took, one per device in the call.
     peers: Mutex<Vec<tilo_call_lane::Peer>>,
+    /// Which of this device's lanes is the call's lane to each device, by
+    /// lane: a lane that ends is only a lane lost while it is still the one
+    /// the call holds.
+    lanes: Mutex<BTreeMap<(tilo_call_lane::Lane, [u8; 32]), u64>>,
+    /// The generation of the next lane this device opens or takes.
+    next_lane: AtomicU64,
+    /// The lanes that ended, for the call to dial the device again.
+    lost: tokio::sync::mpsc::UnboundedSender<(tilo_call_lane::Lane, [u8; 32])>,
     /// The microphones this call may send.
     sources: Vec<Source>,
     /// This call's pictures: what this device sends, and what arrived here
@@ -1010,7 +1035,15 @@ impl Shared {
             return;
         }
         let device = peer.remote();
-        self.video.add(peer);
+        let generation = self.lane_up(tilo_call_lane::Lane::Video, device);
+        self.video.add(peer.clone());
+        let losing = Arc::downgrade(self);
+        tokio::spawn(async move {
+            peer.ended().await;
+            if let Some(shared) = losing.upgrade() {
+                shared.lane_ended(tilo_call_lane::Lane::Video, device, generation);
+            }
+        });
         // A device that joined after the app said what it shows hears it
         // now, as a lane that joins later does.
         let persons = self.presence.persons(&self.call);
@@ -1027,8 +1060,26 @@ impl Shared {
             return;
         }
         let remote = peer.remote();
+        // This is the call's lane to that device from now on: what the lane
+        // before it carried is forgotten, so the stream on this one starts at
+        // its own place and is heard at once, and the lane it replaced goes.
+        self.forget(remote);
+        let generation = self.lane_up(tilo_call_lane::Lane::Audio, remote);
+        {
+            let mut peers = self.peers.lock_recover();
+            let mut kept = Vec::with_capacity(peers.len().saturating_add(1));
+            for old in peers.drain(..) {
+                if old.remote() == remote {
+                    old.close();
+                } else {
+                    kept.push(old);
+                }
+            }
+            kept.push(peer.clone());
+            *peers = kept;
+        }
         let hearing = Arc::downgrade(self);
-        let receiver = peer.clone();
+        let receiver = peer;
         tokio::spawn(async move {
             while let Ok(datagram) = receiver.received().await {
                 let Some(shared) = hearing.upgrade() else {
@@ -1039,8 +1090,50 @@ impl Shared {
                 }
                 shared.hear(remote, &datagram);
             }
+            // The lane ended: what it carried is forgotten, and the device is
+            // dialled again.
+            if let Some(shared) = hearing.upgrade() {
+                shared.lane_ended(tilo_call_lane::Lane::Audio, remote, generation);
+            }
         });
-        self.peers.lock_recover().push(peer);
+    }
+
+    /// Forget what was heard from `device`: a lane that ended, or a stream
+    /// that starts over on a fresh one, is a new voice with its own place and
+    /// its own decoder, not a continuation of the one before it.
+    fn forget(&self, device: [u8; 32]) {
+        self.side.lock_recover().voice.forget(device);
+    }
+
+    /// Make `lane` to `device` the call's lane from now on, and say which
+    /// generation it is: a lane whose end is reported is only lost while it
+    /// is still the one the call holds.
+    fn lane_up(&self, lane: tilo_call_lane::Lane, device: [u8; 32]) -> u64 {
+        let generation = self.next_lane.fetch_add(1, Ordering::Relaxed);
+        self.lanes.lock_recover().insert((lane, device), generation);
+        generation
+    }
+
+    /// A lane to `device` ended: what it carried is forgotten, and the call
+    /// dials the device again, unless another lane replaced it since.
+    fn lane_ended(&self, lane: tilo_call_lane::Lane, device: [u8; 32], generation: u64) {
+        {
+            let mut lanes = self.lanes.lock_recover();
+            if lanes.get(&(lane, device)) != Some(&generation) {
+                return;
+            }
+            lanes.remove(&(lane, device));
+        }
+        if lane == tilo_call_lane::Lane::Audio {
+            self.forget(device);
+        }
+        let _ = self.lost.send((lane, device));
+    }
+
+    /// Whether this device dials the lane to `device`: the device of the two
+    /// whose key is smaller does, so a pair holds one lane.
+    fn dials(&self, device: [u8; 32]) -> bool {
+        self.own < device
     }
 
     /// Play what `sender` sent in `datagram`, unless the person is deafened:
@@ -1223,6 +1316,7 @@ impl Shared {
 async fn run(
     shared: Arc<Shared>,
     dialled: Vec<[u8; 32]>,
+    mut lost: tokio::sync::mpsc::UnboundedReceiver<(tilo_call_lane::Lane, [u8; 32])>,
     mut accepted: tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
     mut accepted_video: tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
 ) {
@@ -1233,35 +1327,19 @@ async fn run(
     // dialling.
     let (joined, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let (video_joined, mut video_arrived) = tokio::sync::mpsc::unbounded_channel();
+    // The lanes this call is opening: one dial at a time per lane, so a lane
+    // that ended goes back to the one path that dials it without a second
+    // lane to the same device.
+    let mut opening: BTreeSet<(tilo_call_lane::Lane, [u8; 32])> = BTreeSet::new();
     for device in dialled {
-        for (calls, joined) in [
-            (shared.calls.clone(), joined.clone()),
-            (shared.video_calls.clone(), video_joined.clone()),
-        ] {
-            let endpoint = shared.endpoint.clone();
-            let joined = joined.clone();
-            let call = Arc::downgrade(&shared);
-            tokio::spawn(async move {
-                let Ok(remote) = iroh::EndpointId::from_bytes(&device) else {
-                    return;
-                };
-                loop {
-                    let Some(live) = call.upgrade() else {
-                        return;
-                    };
-                    if live.closed() {
-                        return;
-                    }
-                    drop(live);
-                    match calls.dial(&endpoint, iroh::EndpointAddr::new(remote)).await {
-                        Ok(peer) => {
-                            let _ = joined.send(peer);
-                            return;
-                        }
-                        Err(_) => tokio::time::sleep(REDIAL).await,
-                    }
-                }
-            });
+        for lane in [tilo_call_lane::Lane::Audio, tilo_call_lane::Lane::Video] {
+            dial_lane(
+                &shared,
+                &mut opening,
+                lane,
+                device,
+                (&joined, &video_joined),
+            );
         }
     }
     let mut beat = tokio::time::interval(PUMP);
@@ -1272,10 +1350,17 @@ async fn run(
             break;
         }
         tokio::select! {
-            Some(peer) = accepted.recv() => shared.join_peer(peer),
-            Some(peer) = accepted_video.recv() => shared.join_peer(peer),
-            Some(peer) = arrived.recv() => shared.join_peer(peer),
-            Some(peer) = video_arrived.recv() => shared.join_peer(peer),
+            Some(peer) = accepted.recv() => lane_joined(&shared, &mut opening, peer),
+            Some(peer) = accepted_video.recv() => lane_joined(&shared, &mut opening, peer),
+            Some(peer) = arrived.recv() => lane_joined(&shared, &mut opening, peer),
+            Some(peer) = video_arrived.recv() => lane_joined(&shared, &mut opening, peer),
+            Some((lane, device)) = lost.recv() => dial_lane(
+                &shared,
+                &mut opening,
+                lane,
+                device,
+                (&joined, &video_joined),
+            ),
             _ = beat.tick() => {}
         }
         shared.pump();
@@ -1286,6 +1371,62 @@ async fn run(
         }
     }
     shared.close();
+}
+
+/// Dial `lane` to `device`, unless this device does not dial the pair or is
+/// already dialling that lane: the one path a lane is opened by, whether the
+/// call is starting or a lane that ended is coming back.
+fn dial_lane(
+    shared: &Arc<Shared>,
+    opening: &mut BTreeSet<(tilo_call_lane::Lane, [u8; 32])>,
+    lane: tilo_call_lane::Lane,
+    device: [u8; 32],
+    joined: (
+        &tokio::sync::mpsc::UnboundedSender<tilo_call_lane::Peer>,
+        &tokio::sync::mpsc::UnboundedSender<tilo_call_lane::Peer>,
+    ),
+) {
+    if !shared.dials(device) || !opening.insert((lane, device)) {
+        return;
+    }
+    let (audio_joined, video_joined) = joined;
+    let (calls, joined) = match lane {
+        tilo_call_lane::Lane::Audio => (shared.calls.clone(), audio_joined.clone()),
+        tilo_call_lane::Lane::Video => (shared.video_calls.clone(), video_joined.clone()),
+    };
+    let endpoint = shared.endpoint.clone();
+    let call = Arc::downgrade(shared);
+    tokio::spawn(async move {
+        let Ok(remote) = iroh::EndpointId::from_bytes(&device) else {
+            return;
+        };
+        loop {
+            let Some(live) = call.upgrade() else {
+                return;
+            };
+            if live.closed() {
+                return;
+            }
+            drop(live);
+            match calls.dial(&endpoint, iroh::EndpointAddr::new(remote)).await {
+                Ok(peer) => {
+                    let _ = joined.send(peer);
+                    return;
+                }
+                Err(_) => tokio::time::sleep(REDIAL).await,
+            }
+        }
+    });
+}
+
+/// Take the lane `peer` carries, which this call is no longer dialling.
+fn lane_joined(
+    shared: &Arc<Shared>,
+    opening: &mut BTreeSet<(tilo_call_lane::Lane, [u8; 32])>,
+    peer: tilo_call_lane::Peer,
+) {
+    opening.remove(&(peer.lane(), peer.remote()));
+    shared.join_peer(peer);
 }
 
 /// The desktop this session shares: the pass that draws it hands it the
@@ -1722,6 +1863,14 @@ mod tests {
         (energy / samples).sqrt()
     }
 
+    /// The instant `bound` from now: the moment a sound a person made has to
+    /// be heard by.
+    fn within(bound: Duration) -> Instant {
+        Instant::now()
+            .checked_add(bound)
+            .expect("a deadline this machine reaches")
+    }
+
     /// Wait until this side of the call does, or does not, hear the tone.
     ///
     /// What it waits for is the call's own audio: moved by the call's worker
@@ -1804,31 +1953,41 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn two_devices_in_one_call_hear_each_other_until_a_mute_a_deafen_or_a_leave() {
-        let person = person_key();
-        let laptop = device(&person, 0x11, "Laptop");
-        let desk = device(&person, 0x22, "Desk");
+    /// Two of one person's devices in one call, each hearing the other's
+    /// tone: the devices' sides of it, and which of them dials the pair.
+    struct Pair {
+        left: Carrier,
+        right: Carrier,
+        here: Box<dyn MediaSession>,
+        there: Box<dyn MediaSession>,
+        /// Whether the left device dials the pair: of two devices, the one
+        /// whose key is smaller does.
+        left_dials: bool,
+        /// The channel's keys, kept for as long as the call reads them.
+        _keys: tempfile::TempDir,
+    }
+
+    /// One call between two of the person's devices, both heard in it.
+    #[allow(
+        clippy::future_not_send,
+        reason = "a session's client is not Send, and the test runtime does not need it to be"
+    )]
+    async fn one_call(laptop: &Client, desk: &Client) -> Pair {
         laptop.connect(desk.endpoint_addr());
         desk.connect(laptop.endpoint_addr());
         laptop.follow_desktop(&desk_tree());
         desk.follow_desktop(&desk_tree());
         // Each session hears the other say it is in the channel's call.
-        for (here, there) in [(&laptop, 0x22_u8), (&desk, 0x11_u8)] {
+        for (here, there) in [(laptop, 0x22_u8), (desk, 0x11_u8)] {
             here.hear(hello(there, "the other device"));
             presence(here, there, collab_types::PeerPresencePayload::Arrived);
             availability(here, there, Some(call_presence()));
         }
-        bound(&laptop).await;
-        bound(&desk).await;
-        let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
-        let left = carrier(&laptop, &keys);
-        let right = carrier(&desk, &keys);
-        assert_eq!(
-            left.calls.callers(CHANNEL),
-            vec![*public(0x22).as_bytes()],
-            "the call opens a lane to the other device in the channel"
-        );
+        bound(laptop).await;
+        bound(desk).await;
+        let (keys, kept) = keys(0x11, 0x11, &[0x11, 0x22]);
+        let left = carrier(laptop, &keys);
+        let right = carrier(desk, &keys);
         let mut here = left
             .factory
             .prepare(target())
@@ -1839,15 +1998,127 @@ mod tests {
             .prepare(target())
             .await
             .expect("the other device's side of it");
+        here.start_capture("tone").expect("the test's tone");
+        there.start_capture("tone").expect("the test's tone");
+        wait_heard("each device hears the other's tone", &left.probe, true).await;
+        wait_heard("the other device hears this one's tone", &right.probe, true).await;
+        Pair {
+            left_dials: *public(0x11).as_bytes() < *public(0x22).as_bytes(),
+            left,
+            right,
+            here,
+            there,
+            _keys: kept,
+        }
+    }
+
+    /// One device of a call leaves it and comes back: the device that stayed
+    /// hears it again within a second of its return, and it hears the one
+    /// that stayed.
+    ///
+    /// `dialer_leaves` picks which of the pair goes — the one that dials the
+    /// other's lane, or the one that only answers it — because both ends of a
+    /// lane that ended have to bring it back, and each does it its own way.
+    #[allow(
+        clippy::future_not_send,
+        reason = "a session's client is not Send, and the test runtime does not need it to be"
+    )]
+    async fn leaves_and_rejoins(dialer_leaves: bool) {
+        let person = person_key();
+        let laptop = device(&person, 0x11, "Laptop");
+        let desk = device(&person, 0x22, "Desk");
+        let Pair {
+            left,
+            right,
+            mut here,
+            mut there,
+            left_dials,
+            ..
+        } = one_call(&laptop, &desk).await;
+        let (leaving, staying, rejoining) = if left_dials == dialer_leaves {
+            (&mut here, &right, &left)
+        } else {
+            (&mut there, &left, &right)
+        };
+        // Heard for a while, the device owns a place in the playout of the
+        // one that stays, well past the start of a stream: a stream that
+        // starts over would take that long to be heard again.
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        wait_heard("the device is heard before it leaves", &staying.probe, true).await;
+        // Left, this device is heard by no one, and its lane is gone.
+        leaving.close();
+        assert_eq!(
+            leaving.tick(Instant::now()),
+            Err(Issue::SessionEnded),
+            "a left call is over"
+        );
+        wait_heard(
+            "a device that left is heard by no one",
+            &staying.probe,
+            false,
+        )
+        .await;
+        // Back in the call, it is heard again at once: its stream starts at
+        // the place its own playhead gives it, not behind where the device
+        // that stayed was already playing the stream it lost.
+        let mut back = rejoining
+            .factory
+            .prepare(target())
+            .await
+            .expect("the device rejoins the call");
+        back.start_capture("tone").expect("the test's tone");
+        wait_heard_by(
+            "a device that rejoined is heard again",
+            &staying.probe,
+            true,
+            within(Duration::from_secs(1)),
+        )
+        .await;
+        wait_heard_by(
+            "a device that rejoined hears the call",
+            &rejoining.probe,
+            true,
+            within(Duration::from_secs(1)),
+        )
+        .await;
+        back.close();
+    }
+
+    /// A device that leaves the call and rejoins is heard again at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_device_that_leaves_a_call_and_rejoins_is_heard_again_at_once() {
+        leaves_and_rejoins(true).await;
+    }
+
+    /// A lane that dropped is dialled again by the device that dials it, so
+    /// the device on the other end is heard as soon as it is back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_lane_that_dropped_is_dialled_again_and_its_device_is_heard() {
+        leaves_and_rejoins(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_devices_in_one_call_hear_each_other_until_a_mute_a_deafen_or_a_leave() {
+        let person = person_key();
+        let laptop = device(&person, 0x11, "Laptop");
+        let desk = device(&person, 0x22, "Desk");
+        let Pair {
+            left,
+            right,
+            mut here,
+            mut there,
+            ..
+        } = one_call(&laptop, &desk).await;
+        assert_eq!(
+            left.calls.callers(CHANNEL),
+            vec![*public(0x22).as_bytes()],
+            "the call opens a lane to the other device in the channel"
+        );
         assert_eq!(
             here.tick(Instant::now()),
             Ok(State::Live),
             "a call with the channel's keys is live"
         );
-        here.start_capture("tone").expect("the test's tone");
-        there.start_capture("tone").expect("the test's tone");
-        wait_heard("each device hears the other's tone", &left.probe, true).await;
-        wait_heard("the other device hears this one's tone", &right.probe, true).await;
 
         // The tone has been heard this long before this device is muted: a
         // stream that starts over when it unmutes is behind by every frame

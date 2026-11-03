@@ -528,7 +528,7 @@ view project_board(p: Project) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
                 let loose = lane_of(p, .none)
-                ui.BoardLane(title: "No section", count: loose.len(), action: "New task") {
+                ui.BoardLane(title: "No section", count: loose.count(), action: "New task") {
                     on act: add_to(p, .none)
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     for t in loose {
@@ -537,7 +537,7 @@ view project_board(p: Project) {
                 }
                 for s in sections {
                     let cards = lane_of(p, .some(s))
-                    ui.BoardLane(s, title: s.name, count: cards.len(), action: "New task") {
+                    ui.BoardLane(s, title: s.name, count: cards.count(), action: "New task") {
                         on act: add_to(p, .some(s))
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
                         for t in cards {

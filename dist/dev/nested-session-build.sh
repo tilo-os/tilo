@@ -217,7 +217,7 @@ chromium_engine=$target/nested-session-chromium
 build_chromium_engine() {
     local key began=$SECONDS
     key=$( { cat scripts/browser/cef-lock.json scripts/browser/build-host.py
-             find apps/browser/chromium crates/browser/tilo-chromium-blocker -type f -print \
+             find apps/browser/chromium crates/browser/chromium-blocker -type f -print \
                  | LC_ALL=C sort | xargs sha256sum; } \
            | sha256sum | cut -c1-64)
     if [[ -f $chromium_engine/.key && $(<"$chromium_engine/.key") == "$key" \

@@ -283,7 +283,7 @@ pub(crate) const CALLED_SEAMS: &[(&str, &str)] = &[
 /// one, or moving the app off it, removes its line; a call to a seam this
 /// session leaves unserved and this list does not name fails the guard.
 #[cfg(test)]
-pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &["browser_service_sessions", "file_clipboard"];
+pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &["browser_service_sessions"];
 
 #[cfg(test)]
 mod tests {

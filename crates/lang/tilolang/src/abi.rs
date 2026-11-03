@@ -94,6 +94,7 @@ imports! {
     CollRemove = "coll_remove" ([H, H, H] -> []);
     CollMove = "coll_move" ([H, H, H, H, I32] -> []);
     CollWhere = "coll_where" ([H, H] -> [H]);
+    CollCount = "coll_count" ([H] -> [I64]);
     SetAdd = "set_add" ([H, H, H] -> []);
     SetRemove = "set_remove" ([H, H, H] -> []);
     MapPut = "map_put" ([H, H, H, H] -> []);
@@ -208,6 +209,12 @@ imports! {
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
     Dated = "dated" ([H, H] -> [H]);
+    RepeatNext = "repeat_next" ([H, H, H] -> [H]);
+    RepeatNextAt = "repeat_next_at" ([H, H, H] -> [H]);
+    RepeatLabel = "repeat_label" ([H] -> [H]);
+    ReminderAt = "reminder_at" ([H, H, H] -> [H]);
+    ReminderLabel = "reminder_label" ([H] -> [H]);
+    Today = "today" ([] -> [H]);
     EventPart = "event_part" ([I32] -> [H]);
     CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);

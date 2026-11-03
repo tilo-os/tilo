@@ -5,8 +5,9 @@
 
 use super::{
     AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, RelayTrust, ReplayCatchup,
-    ReplayPendingTarget, RoomOperation, SessionCtx, SharedWorkspace, current_session,
-    enqueue_state, lost_session, mpsc, over_change_limit, room_access, trace_native_publication,
+    ReplayPendingTarget, SessionCtx, SharedWorkspace, WorkspaceOperation, current_session,
+    enqueue_state, lost_session, mpsc, over_change_limit, trace_native_publication,
+    workspace_access,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -33,11 +34,11 @@ impl StateSession {
             lag: None,
         }
     }
-    /// A live delivery to room `workspace_id` did not fit this session's
+    /// A live delivery to workspace `workspace_id` did not fit this session's
     /// queue or the live byte budget; its pending entry stays on disk and the
-    /// connection resumes the room from there once its queues drain. That
+    /// connection resumes the workspace from there once its queues drain. That
     /// holds between a replay's final cut and its `Ready` too, where a busy
-    /// room fills the not yet written live queue. Only a session without a
+    /// workspace fills the not yet written live queue. Only a session without a
     /// lag to resume is fenced at that boundary, so its reconnect catches up.
     pub(super) fn fall_behind(
         &self,
@@ -62,7 +63,7 @@ impl StateSession {
             })
     }
 }
-/// The rooms whose live deliveries a connection could not take and left on
+/// The workspaces whose live deliveries a connection could not take and left on
 /// disk (its pending queue and the retained log). Once the connection's
 /// queues drain it resumes each of them from its position, so the replay
 /// carries exactly what it missed; a lagging reader costs disk and latency,
@@ -70,25 +71,25 @@ impl StateSession {
 /// its ordinary full retained replay, with current authorization checked again.
 #[derive(Default)]
 pub struct Lag {
-    rooms: std::sync::Mutex<std::collections::BTreeSet<u64>>,
+    workspaces: std::sync::Mutex<std::collections::BTreeSet<u64>>,
     pub(super) wake: tokio::sync::Notify,
 }
 impl Lag {
     pub(super) fn mark(&self, workspace_id: u64) {
         // Counted, not timed: how often a live delivery fell back to replay.
         crate::timing::window("state.lag_mark", crate::timing::start());
-        let first = self.rooms.lock_recover().insert(workspace_id);
+        let first = self.workspaces.lock_recover().insert(workspace_id);
         if first {
             self.wake.notify_one();
         }
     }
 
     pub(super) fn next(&self) -> Option<u64> {
-        self.rooms.lock_recover().pop_first()
+        self.workspaces.lock_recover().pop_first()
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.rooms.lock_recover().is_empty()
+        self.workspaces.lock_recover().is_empty()
     }
 }
 
@@ -162,32 +163,32 @@ impl StateSource {
             agents: &self.agents,
         }
     }
-    /// Whether `peer` may hold state in `runtime`'s room under this source's
+    /// Whether `peer` may hold state in `runtime`'s workspace under this source's
     /// trust: the source itself, or a recipient of its frames.
     pub(super) fn admits(
         &self,
         runtime: &crate::workspace::WorkspaceRuntime,
         peer: &AuthenticatedPeer,
     ) -> bool {
-        room_access::decide(runtime, &self.trust(), peer, RoomOperation::State).admitted()
+        workspace_access::decide(runtime, &self.trust(), peer, WorkspaceOperation::State).admitted()
     }
-    /// Whether this source may still hold the room's state over its current
+    /// Whether this source may still hold the workspace's state over its current
     /// session: what keeps its subscription and its frames flowing.
     pub fn authorized(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
-        self.authorized_for(runtime, RoomOperation::State)
+        self.authorized_for(runtime, WorkspaceOperation::State)
     }
-    /// Whether this source may take a frame of its own into the room now: a
-    /// spectator holds the room's state, and never publishes into it.
+    /// Whether this source may take a frame of its own into the workspace now: a
+    /// spectator holds the workspace's state, and never publishes into it.
     fn publishes(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
-        self.authorized_for(runtime, RoomOperation::Publish)
+        self.authorized_for(runtime, WorkspaceOperation::Publish)
     }
     fn authorized_for(
         &self,
         runtime: &crate::workspace::WorkspaceRuntime,
-        op: RoomOperation,
+        op: WorkspaceOperation,
     ) -> bool {
         self.alive()
-            && room_access::decide(runtime, &self.trust(), &self.peer, op).admitted()
+            && workspace_access::decide(runtime, &self.trust(), &self.peer, op).admitted()
             && match &self.lease {
                 Some(lease) => {
                     lease.load(std::sync::atomic::Ordering::SeqCst)
@@ -286,23 +287,23 @@ pub(crate) struct StateDelivery {
     pub(super) source: Option<StateSource>,
     pub(super) _budget: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
     pub(super) live: Arc<std::sync::atomic::AtomicBool>,
-    /// What the fan-out that authorised this delivery under the room's lock
+    /// What the fan-out that authorised this delivery under the workspace's lock
     /// read; `None` when the writer must authorise it under the lock again.
     pub(super) fanned: Option<FanoutStamp>,
 }
 
 /// The state a fan-out authorised its deliveries in: the authority epoch
-/// ([`crate::authority_epoch`]) and the room's membership generation, read
-/// under the room's lock before any recipient was checked.
+/// ([`crate::authority_epoch`]) and the workspace's membership generation, read
+/// under the workspace's lock before any recipient was checked.
 ///
 /// Everything that authorisation read for a device recipient and a device
-/// author either narrows only with an epoch bump (membership, the room's
+/// author either narrows only with an epoch bump (membership, the workspace's
 /// admission, subscriptions, revocations, the trust policy, agent
 /// delegations), changes the delivery's own lease flag, or runs out by the
 /// clock, which the writer checks without the lock. So
 /// while the epoch and generation read the same, the writer need not take
-/// the room's lock to authorise the delivery again: a crowd's writers took
-/// it once per member for every commit, and every turn of the room queued
+/// the workspace's lock to authorise the delivery again: a crowd's writers took
+/// it once per member for every commit, and every turn of the workspace queued
 /// behind them.
 #[derive(Clone)]
 pub(crate) struct FanoutStamp {
@@ -312,7 +313,7 @@ pub(crate) struct FanoutStamp {
 }
 
 impl FanoutStamp {
-    /// The stamp of a fan-out holding `runtime`'s lock, unless the room's
+    /// The stamp of a fan-out holding `runtime`'s lock, unless the workspace's
     /// membership is read from disk on every authorisation (no live watch
     /// vouches for it), which only the lock-holding check does.
     pub(super) fn of(runtime: &crate::workspace::WorkspaceRuntime) -> Option<Self> {
@@ -336,7 +337,7 @@ impl FanoutStamp {
 
 impl StateDelivery {
     /// Whether this delivery is still authorised exactly as its fan-out
-    /// authorised it, decided without the room's lock: its lease is live,
+    /// authorised it, decided without the workspace's lock: its lease is live,
     /// nothing the fan-out read has changed ([`FanoutStamp`]), and neither
     /// the recipient's nor the author's certificate or agent delegation has
     /// run out since. `false` means only that the writer must ask under the
@@ -504,7 +505,12 @@ pub(super) async fn handle_delta(
         // subscriber; a follow-up write must close rather than refuse twice.
         let runtime = ws.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(lost_session(&runtime, peer, session, RoomOperation::State));
+            return Err(lost_session(
+                &runtime,
+                peer,
+                session,
+                WorkspaceOperation::State,
+            ));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -573,12 +579,12 @@ pub(super) async fn handle_delta(
     Ok(None)
 }
 
-/// Hand `body`, a change `author` made that the relay kept, to the room's
+/// Hand `body`, a change `author` made that the relay kept, to the workspace's
 /// governor through `tap`. Never dropped: the governor's copy is a replica
-/// of the room's records, and a replica that skipped a change would hold
+/// of the workspace's records, and a replica that skipped a change would hold
 /// a different record than everyone else. A governor that has fallen
 /// behind holds the author back until it takes the change in. Nothing is
-/// sent once the governor stopped following (the room closed).
+/// sent once the governor stopped following (the workspace closed).
 pub(crate) async fn tell_governor(
     tap: &tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)>,
     author: [u8; 32],
@@ -594,7 +600,7 @@ pub(crate) async fn tell_governor(
 /// host attached to the workspace carries its members' changes under their
 /// own keys, so each is decided as that member's, never as that of the host
 /// that carried it; one claiming this host's own device is decided as the
-/// carrying host's: what this host's device writes, the room's governor's
+/// carrying host's: what this host's device writes, the workspace's governor's
 /// own, never reaches it from another host to be taken in.
 pub(super) fn deciding_author(
     peer: &AuthenticatedPeer,
@@ -609,26 +615,26 @@ pub(super) fn deciding_author(
     }
 }
 
-/// Why the room refuses `env`, `author`'s change, when it writes the room's
+/// Why the workspace refuses `env`, `author`'s change, when it writes the workspace's
 /// shared layout: its topology or its shared desktop
-/// ([`crate::rooms::Rooms::decide_layout_write`]); `None` for any other
-/// change, and in a room this relay does not govern.
+/// ([`crate::workspaces::Workspaces::decide_layout_write`]); `None` for any other
+/// change, and in a workspace this relay does not govern.
 pub(super) async fn desktop_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
 ) -> Option<String> {
     let body = governor_notice(env)?;
-    if !crate::rooms::writes_desktop(&body) && !writes_topology(&body) {
+    if !crate::workspaces::writes_desktop(&body) && !writes_topology(&body) {
         return None;
     }
-    let authority = ws.lock().await.room_authority.clone()?;
+    let authority = ws.lock().await.workspace_authority.clone()?;
     let reason = authority
-        .rooms()?
-        .decide_layout_write(authority.room(), author, &body)
+        .workspaces()?
+        .decide_layout_write(authority.workspace(), author, &body)
         .await
         .err()?;
-    if reason == crate::rooms::LAYOUT_REFUSAL {
+    if reason == crate::workspaces::LAYOUT_REFUSAL {
         tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
     } else {
         tracing::warn!(%reason, device = %hex::encode(author), "refused a shared layout change");
@@ -636,7 +642,7 @@ pub(super) async fn desktop_refusal(
     Some(reason)
 }
 
-/// Whether `body` is a change to some room's document (`SyncResp`), told
+/// Whether `body` is a change to some workspace's document (`SyncResp`), told
 /// apart without decoding the changes it carries.
 fn writes_topology(body: &[u8]) -> bool {
     matches!(
@@ -645,8 +651,8 @@ fn writes_topology(body: &[u8]) -> bool {
     )
 }
 
-/// What the room's governor follows of `env`, a member's state change: its
-/// retained body. The room's governor takes part in its channels and creates
+/// What the workspace's governor follows of `env`, a member's state change: its
+/// retained body. The workspace's governor takes part in its channels and creates
 /// records from these, so every change the relay keeps must reach it, one
 /// sent alone and one in a checkpoint prefix alike.
 pub(super) fn governor_notice(env: &Envelope) -> Option<Vec<u8>> {
@@ -698,7 +704,12 @@ pub(super) async fn handle_delta_prefix(
         }
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(lost_session(&runtime, peer, session, RoomOperation::State));
+            return Err(lost_session(
+                &runtime,
+                peer,
+                session,
+                WorkspaceOperation::State,
+            ));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
@@ -731,7 +742,7 @@ pub(super) async fn handle_delta_prefix(
         }
     }
     let governor_tap = workspace.lock().await.governor_tap.clone();
-    // Every change of the prefix reaches the room's governor once it is
+    // Every change of the prefix reaches the workspace's governor once it is
     // kept, as one sent alone does (`handle_delta`): an access request and
     // the next checkpoint arriving together must not hide the request from
     // the governor's own participant.
@@ -768,13 +779,13 @@ pub(super) async fn authorized_state_source(
     Ok(source.publishes(&runtime).then_some(source))
 }
 
-/// Why the relay took none of `peer`'s frames into the room.
+/// Why the relay took none of `peer`'s frames into the workspace.
 pub(super) fn unpublished(
     runtime: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
 ) -> &'static str {
-    if room_access::watches_only(runtime, peer) {
-        room_access::DenyReason::WatchOnly.reason()
+    if workspace_access::watches_only(runtime, peer) {
+        workspace_access::DenyReason::WatchOnly.reason()
     } else {
         "workspace membership changed"
     }

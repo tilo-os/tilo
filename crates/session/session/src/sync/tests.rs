@@ -191,8 +191,8 @@ fn hello(from: u8, user: u8, device_label: &str) -> NetEvent {
 }
 
 /// Where a peer's pointer moved, on the tile of `tab` of `workspace`.
-fn pointer_moved(sync: &Client, from: u8, workspace: &str, tab: u64, point: (f64, f64)) {
-    let frame = Presence::pointing(workspace, tab, point.0 as f32, point.1 as f32);
+fn pointer_moved(sync: &Client, from: u8, workspace: &str, tab: u64, point: (f32, f32)) {
+    let frame = Presence::pointing(workspace, tab, point.0, point.1);
     sync.heard_presence(workspace, device(from), &frame);
 }
 

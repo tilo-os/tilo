@@ -30,7 +30,7 @@ async fn heard(page: &PeerHandle, workspace: &str, personal: bool) {
         told |= page.drain().into_iter().any(|event| {
             matches!(
                 event,
-                PeerEvent::RoomLayout { workspace: r, personal: p } if r == workspace && p == personal
+                PeerEvent::WorkspaceLayout { workspace: r, personal: p } if r == workspace && p == personal
             )
         });
         let known = page.status().personal_rooms.contains(workspace) == personal;
@@ -46,11 +46,17 @@ async fn a_page_keeps_to_its_workspaces_layout_scope() {
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspace = host.relay.rooms().unwrap().create("Team").await.unwrap();
-    host.relay
-        .rooms()
+    let workspace = host
+        .relay
+        .workspaces()
         .unwrap()
-        .enter(&workspace.room, &laptop.cert)
+        .create("Team")
+        .await
+        .unwrap();
+    host.relay
+        .workspaces()
+        .unwrap()
+        .enter(&workspace.workspace, &laptop.cert)
         .await
         .unwrap();
     let page = start_peer(
@@ -62,29 +68,29 @@ async fn a_page_keeps_to_its_workspaces_layout_scope() {
     page.join(workspace.workspace_id).unwrap();
     ready(&[&page]).await;
     wait_for("the workspace to let the page in", || async {
-        (page.status().rooms.get(&workspace.workspace_id) == Some(&true)).then_some(())
+        (page.status().workspaces.get(&workspace.workspace_id) == Some(&true)).then_some(())
     })
     .await;
     assert!(
-        !page.status().personal_rooms.contains(&workspace.room),
+        !page.status().personal_rooms.contains(&workspace.workspace),
         "a workspace shares its members' layout until its governance says otherwise"
     );
 
     host.relay
-        .rooms()
+        .workspaces()
         .unwrap()
-        .set_layout(&workspace.room, WorkspaceLayout::Personal)
+        .set_layout(&workspace.workspace, WorkspaceLayout::Personal)
         .await
         .unwrap();
-    heard(&page, &workspace.room, true).await;
+    heard(&page, &workspace.workspace, true).await;
 
     host.relay
-        .rooms()
+        .workspaces()
         .unwrap()
-        .set_layout(&workspace.room, WorkspaceLayout::Shared)
+        .set_layout(&workspace.workspace, WorkspaceLayout::Shared)
         .await
         .unwrap();
-    heard(&page, &workspace.room, false).await;
+    heard(&page, &workspace.workspace, false).await;
 }
 
 /// A page joining a workspace of its person that the host does not govern
@@ -109,7 +115,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     support::in_workspace(&page, workspace_id).await;
     let summary = host
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .summary(workspace)
         .await
@@ -127,7 +133,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     support::in_workspace(&again, workspace_id).await;
     assert_eq!(
         host.relay
-            .rooms()
+            .workspaces()
             .unwrap()
             .summary(workspace)
             .await

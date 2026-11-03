@@ -80,6 +80,7 @@ mod engine;
 mod env;
 pub mod fabric;
 mod feeds;
+mod file_clipboard;
 mod fs_authority;
 mod held;
 mod here;
@@ -399,6 +400,9 @@ struct Shared {
     /// The second search last read who is here: people and the calls they are
     /// in change with the clock as well as with what arrives.
     here_at: Cell<u64>,
+    /// What presence stood at when search last read who is here, so a person
+    /// arriving inside that second is listed at once.
+    here_seen: Cell<u64>,
     /// The title each window had when search last recorded where it was.
     places_seen: RefCell<std::collections::HashMap<u64, String>>,
     /// The daemon's notifications on the desktop, as the session publishes
@@ -1824,6 +1828,7 @@ impl Session {
             session_actions: options.session_actions,
             observed: RefCell::new(None),
             here_at: Cell::new(0),
+            here_seen: Cell::new(0),
             places_seen: RefCell::default(),
             notifications: Rc::new(RefCell::new(notifications::SessionNotifications::new(
                 options
@@ -2695,6 +2700,13 @@ impl Session {
         self.feed_portal();
         self.feed_capabilities();
         self.feed_window_artwork();
+        // What Files copied goes on the desktop's clipboard, as a file
+        // manager's copy does: the person pastes it into any app.
+        if let Some(plane) = &self.action_plane {
+            for files in plane.file_clipboard.take_published() {
+                crate::mount::clipboard::offer_files(&mut self.compositor, &files);
+            }
+        }
         // What the apps copied since the last pass joins the history; a copy
         // chosen in it is pasted once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);

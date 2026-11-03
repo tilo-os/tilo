@@ -359,6 +359,9 @@ pub struct Hosted {
     /// a file reaches them from. `None` on a session that runs none, where
     /// Files' send has no route at all.
     pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
+    /// Files' clipboard: what a person copied or cut there, pasted into a
+    /// folder of this desktop's, and what it put on the desktop's clipboard.
+    pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -707,6 +710,7 @@ fn seams(
         tools,
         task_programs,
         nearby,
+        file_clipboard,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // The desk decides who may administer a workspace's identity, and the
@@ -883,13 +887,11 @@ fn seams(
         nearby_transfer: Seam::when(nearby.map(|nearby| {
             nearby as std::sync::Arc<dyn tilo_action_broker::services::NearbyTransferServices>
         })),
-        // Files reads and opens what a person selected through the portal's
-        // selection; this session gives an app no route to that selection.
-        file_clipboard: Seam::unserved(
-            "Files reads and opens the files a person selected through the portal's selection, \
-             and this session gives an app no route to it: Files' selected-open and clipboard \
-             calls are refused",
-        ),
+        // A person copies and cuts in Files and pastes the copy in another
+        // folder or another app: what they copied is offered here, and every
+        // file of it is pasted by the same engine the desktop's own paste of
+        // files runs.
+        file_clipboard: Seam::served(file_clipboard),
         app_action_access: Seam::served(app_action_access),
         // A grant for an app to take another app's action is kept in a
         // workspace's own record, which this session's engine commits; the
@@ -1002,6 +1004,9 @@ pub(crate) struct Plane {
     /// The service apps join a call through, when this session carries
     /// calls at all.
     pub(crate) calls_service: Option<tilo_native_media::NativeMediaService>,
+    /// Files' clipboard, whose copies the loop puts on the desktop's
+    /// clipboard: what the person pastes into any other app.
+    pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
 }
 
 impl Plane {
@@ -1207,6 +1212,9 @@ mod tests {
             lists,
             tools: None,
             task_programs: None,
+            file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
+                std::sync::Arc::new(|| ()),
+            )),
         }
     }
 

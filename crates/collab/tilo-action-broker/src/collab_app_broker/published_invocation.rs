@@ -281,6 +281,17 @@ impl OriginalInvocationData {
                     return Err("original person conversation send text changed".into());
                 }
             }
+            PersonChatCommand::Announce { .. } => {
+                // The app announces its own pair; no action asks for it.
+                return Err("pair announcement is not an action".into());
+            }
+            PersonChatCommand::Import { .. } => {
+                // Importing the old private store is a native snapshot too.
+                return Err("private conversation import is not an action".into());
+            }
+            PersonChatCommand::Pairs => {
+                return Err("a person's pairs are a private native snapshot, not an action".into());
+            }
         }
         let original = OriginalInvocation {
             broker: Arc::downgrade(state),

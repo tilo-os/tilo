@@ -355,6 +355,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// The record the two people of `pair` share that `owner` keeps, as the
+    /// app's views open it.
+    pub fn shared_direct<P: Resource>(
+        &mut self,
+        owner: &'static str,
+        pair: &str,
+    ) -> Option<super::WorkspaceRecord<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_direct::<P>(owner, pair))
+            .flatten()
+    }
+
     /// The person's shared record `P`, as the app's views open it.
     pub fn shared_person<P: tilo_resource::SharedRecord>(
         &mut self,

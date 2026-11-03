@@ -1,5 +1,5 @@
 //! The shell retention authority a relay binding may pin: which device
-//! governs retention for one room. Shared by the relay configuration and the
+//! governs retention for one workspace. Shared by the relay configuration and the
 //! peer state that checks retained publications against it.
 
 use serde::{Deserialize, Serialize};
@@ -10,39 +10,41 @@ use tilo_user_identity::DeviceCert;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "AuthorityFields")]
 pub struct RetentionAuthority {
-    room: String,
+    #[serde(rename = "room")]
+    workspace: String,
     governor: DeviceCert,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorityFields {
-    room: String,
+    #[serde(rename = "room")]
+    workspace: String,
     governor: DeviceCert,
 }
 impl TryFrom<AuthorityFields> for RetentionAuthority {
     type Error = String;
     fn try_from(value: AuthorityFields) -> Result<Self, String> {
-        Self::new(&value.room, value.governor)
+        Self::new(&value.workspace, value.governor)
     }
 }
 impl RetentionAuthority {
-    pub fn new(room: &str, governor: DeviceCert) -> Result<Self, String> {
-        if uuid::Uuid::parse_str(room)
+    pub fn new(workspace: &str, governor: DeviceCert) -> Result<Self, String> {
+        if uuid::Uuid::parse_str(workspace)
             .map_err(|e| e.to_string())?
             .to_string()
-            != room
+            != workspace
         {
-            return Err("retention authority requires canonical room UUID".into());
+            return Err("retention authority requires canonical workspace UUID".into());
         }
         tilo_user_identity::verify_device_cert(&governor).map_err(|e| e.to_string())?;
         Ok(Self {
-            room: room.into(),
+            workspace: workspace.into(),
             governor,
         })
     }
-    /// The room whose retention this authority governs.
-    pub fn room(&self) -> &str {
-        &self.room
+    /// The workspace whose retention this authority governs.
+    pub fn workspace(&self) -> &str {
+        &self.workspace
     }
     /// The governing device's certificate.
     pub fn governor(&self) -> &DeviceCert {

@@ -1428,14 +1428,15 @@ impl Resolver<'_> {
                 }
             };
         }
-        if let Some(args) = identifier_call(e) {
-            return match identifier_value(args) {
-                Ok(text) if ty.same(&Ty::Identifier) => Some(serde_json::Value::String(text)),
+        if let Some((held, args)) = std_text_call(e) {
+            return match std_text_value(&held, args) {
+                Ok(text) if held.same(ty) => Some(serde_json::Value::String(text)),
                 Ok(_) => {
+                    let found = held.display("");
                     self.err(
                         "E020",
                         e.span,
-                        format!("the default is std.Identifier but the field has type {ty}"),
+                        format!("the default is {found} but the field has type {ty}"),
                     );
                     None
                 }
@@ -1628,11 +1629,16 @@ impl Resolver<'_> {
             } else {
                 known.join(", ")
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Action, View and {known}"));
+            let held = if std_text_ty(&[crate::stdlib::NS, single]).is_some() {
+                format!("; the standard library has `std.{single}`")
+            } else {
+                String::new()
+            };
+            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Action, View and {known}{held}"));
             return Ty::Error;
         }
-        if dotted == ["std", "Identifier"] {
-            return Ty::Identifier;
+        if let Some(ty) = std_text_ty(&dotted) {
+            return ty;
         }
         if dotted == ["std", "RichText"] {
             return Ty::RichText;
@@ -1644,7 +1650,7 @@ impl Resolver<'_> {
             self.err(
                 "E013",
                 span,
-                format!("the standard library has no type `{name}`; its types are `std.Identifier` and `std.RichText`"),
+                format!("the standard library has no type `{name}`; its types are `std.Identifier`, `std.Repeat`, `std.Reminder` and `std.RichText`"),
             );
             return Ty::Error;
         }
@@ -2423,30 +2429,60 @@ pub fn date_value(kind: &str, args: &[ast::Arg]) -> Result<(Ty, String), String>
     Ok((ty, text))
 }
 
-/// The arguments of `std.Identifier(...)`, when `e` is that call.
-pub fn identifier_call(e: &Expr) -> Option<&[ast::Arg]> {
+/// The standard library's types whose value is the text it is made from, by the path source
+/// writes: `std.Identifier`, `std.Repeat` and `std.Reminder`.
+pub fn std_text_ty(dotted: &[&str]) -> Option<Ty> {
+    match dotted {
+        ["std", "Identifier"] => Some(Ty::Identifier),
+        ["std", "Repeat"] => Some(Ty::Repeat),
+        ["std", "Reminder"] => Some(Ty::Reminder),
+        _ => None,
+    }
+}
+
+/// The std type and the arguments of a call that makes one of those values, when `e` is one:
+/// `std.Repeat("FREQ=DAILY")`, `std.Identifier("mailto:jane@x.com")`.
+pub fn std_text_call(e: &Expr) -> Option<(Ty, &[ast::Arg])> {
     let ExprKind::Call { callee, args } = &e.kind else {
         return None;
     };
     let ExprKind::Field { base, name } = &callee.kind else {
         return None;
     };
-    (matches!(&base.kind, ExprKind::Ident(ns) if ns == crate::stdlib::NS)
-        && name.name == "Identifier")
-        .then_some(args.as_slice())
+    let ExprKind::Ident(ns) = &base.kind else {
+        return None;
+    };
+    if ns != crate::stdlib::NS {
+        return None;
+    }
+    std_text_ty(&[ns, name.name.as_str()]).map(|ty| (ty, args.as_slice()))
 }
 
-/// `std.Identifier("mailto:jane@x.com")`, or a bare form (`std.Identifier("jane@x.com")`): the
-/// identifier as it is held, checked at compile time.
-pub fn identifier_value(args: &[ast::Arg]) -> Result<String, String> {
+/// The text a value of a text-held std type is made from, checked at compile time: the value
+/// is its text, so a value computed at run time would be one no reader knows.
+pub fn std_text_value(ty: &Ty, args: &[ast::Arg]) -> Result<String, String> {
+    let (what, example) = match ty {
+        Ty::Repeat => ("std.Repeat", "std.Repeat(\"FREQ=WEEKLY\")"),
+        Ty::Reminder => ("std.Reminder", "std.Reminder(\"-PT15M\")"),
+        _ => (
+            "std.Identifier",
+            "std.Identifier(\"mailto:jane@example.com\")",
+        ),
+    };
     let text = match args {
         [ast::Arg { name: None, value }] => plain_text(value),
         _ => None,
     };
     let Some(text) = text else {
-        return Err("`std.Identifier(...)` takes one string literal, such as `std.Identifier(\"mailto:jane@example.com\")`".into());
+        return Err(format!(
+            "`{what}(...)` takes one string literal, such as `{example}`; a {what} cannot be made from computed text"
+        ));
     };
-    crate::identifier::normalize(&text)
+    match ty {
+        Ty::Repeat => crate::repeat::Repeat::parse(&text).map(|repeat| repeat.text()),
+        Ty::Reminder => crate::repeat::Reminder::parse(&text).map(|reminder| reminder.text()),
+        _ => crate::identifier::normalize(&text),
+    }
 }
 
 /// The text of a string literal without interpolation.

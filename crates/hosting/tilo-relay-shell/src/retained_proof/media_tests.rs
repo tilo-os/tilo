@@ -1,6 +1,6 @@
 //! Media-call governance as a historical retention proof replays it: the same
-//! room policy and bound Chat guards `StatePeer` applies live must refuse a
-//! retained room or snapshot that violates them.
+//! workspace policy and bound Chat guards `StatePeer` applies live must refuse a
+//! retained workspace or snapshot that violates them.
 use super::*;
 use automerge::{ObjType, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -13,7 +13,7 @@ use tilo_peer_state::{
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "so.tilo.chat";
 /// The certificate of the owner's device `key` signs for.
 fn own_device(peer: &StatePeer, key: &SigningKey) -> DeviceCert {
@@ -40,7 +40,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
         .checked_add(Duration::from_secs(2000))
         .unwrap();
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE_ID,
         certificate.clone(),
         vec![],
         RevocationList::new(),
@@ -57,7 +57,8 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     chat.put(&channel, "workspace", "home").unwrap();
     peer.install_seed(
         SeedState {
-            workspace_changes: seed_workspace(ROOM, &certificate, &[certificate.clone()]).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE_ID, &certificate, &[certificate.clone()])
+                .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),
@@ -74,7 +75,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
 }
 fn message(doc: &mut AutoCommit) -> NeighbourMsg {
     NeighbourMsg::SyncResp {
-        room: ROOM.into(),
+        room: WORKSPACE_ID.into(),
         changes: doc
             .get_changes(&[])
             .iter()
@@ -91,7 +92,7 @@ fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
     };
     media::WorkspaceMediaV1 {
         version: 1,
-        workspace: *uuid::Uuid::parse_str(ROOM).unwrap().as_bytes(),
+        workspace: *uuid::Uuid::parse_str(WORKSPACE_ID).unwrap().as_bytes(),
         authorization_revision: 1,
         authorization_basis: media::security_basis(peer.admitted_workspace().unwrap(), &[])
             .unwrap(),
@@ -155,17 +156,19 @@ fn shell_channel() -> [u8; 32] {
 #[test]
 fn retained_room_rejects_malformed_present_media_policy() {
     let (peer, key, _) = fixture();
-    let mut room = peer.admitted_workspace().unwrap().clone();
-    room.put(ROOT, media::FIELD, "not policy bytes").unwrap();
-    let body = postcard::to_allocvec(&message(&mut room)).unwrap();
-    let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
+    let mut workspace = peer.admitted_workspace().unwrap().clone();
+    workspace
+        .put(ROOT, media::FIELD, "not policy bytes")
+        .unwrap();
+    let body = postcard::to_allocvec(&message(&mut workspace)).unwrap();
+    let authority = RetentionAuthority::new(WORKSPACE_ID, own_device(&peer, &key)).unwrap();
     assert!(
-        verify_room(
+        verify_workspace(
             &authority,
             key.verifying_key().to_bytes(),
             shell_channel(),
             &body,
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             None
         )
         .is_err()
@@ -191,9 +194,9 @@ fn signed_snapshot(
         .collect();
     let mut envelope = SignedOp::new_unsigned(
         DocumentMutation::Snapshot(bytes).encode().unwrap(),
-        collab_types::document_artifact_id(APP, ROOM, ""),
+        collab_types::document_artifact_id(APP, WORKSPACE_ID, ""),
         collab_types::Ed25519PublicKey::from_bytes(author),
-        collab_types::document_attestation_id(APP, ROOM, ""),
+        collab_types::document_attestation_id(APP, WORKSPACE_ID, ""),
         collab_types::OpKind::Change,
         now,
         seq,
@@ -202,7 +205,7 @@ fn signed_snapshot(
     let mut watermarks = prior.watermarks.clone();
     watermarks.insert(hex::encode(author), seq);
     let coverage = Coverage {
-        workspace: ROOM.into(),
+        workspace: WORKSPACE_ID.into(),
         app: APP.into(),
         record: String::new(),
         payload_hash: *blake3::hash(&envelope.payload).as_bytes(),
@@ -214,7 +217,7 @@ fn signed_snapshot(
     let message = NeighbourMsg::AppDocument {
         peer: peer_handle(&author),
         app_id: APP.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE_ID.into(),
         record_id: String::new(),
         envelope: Box::new(envelope),
     };
@@ -229,35 +232,35 @@ fn retained_snapshot_rejects_mismatched_exact_channel() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
-    let verify_room = |message: &NeighbourMsg| {
-        verify_room(
+    let authority = RetentionAuthority::new(WORKSPACE_ID, own_device(&peer, &key)).unwrap();
+    let verify_workspace = |message: &NeighbourMsg| {
+        verify_workspace(
             &authority,
             key.verifying_key().to_bytes(),
             shell_channel(),
             &postcard::to_allocvec(message).unwrap(),
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             None,
         )
         .unwrap()
     };
-    let room = verify_room(&batch[0]);
+    let workspace = verify_workspace(&batch[0]);
     let channel = *blake3::hash(format!("app\0{APP}\0").as_bytes()).as_bytes();
     assert!(
         verify_snapshot(
-            &room,
+            &workspace,
             key.verifying_key().to_bytes(),
             channel,
             &postcard::to_allocvec(&batch[1]).unwrap()
         )
         .is_ok()
     );
-    let prior = room
+    let prior = workspace
         .coverages()
         .unwrap()
         .remove(&tilo_peer_state::coverage::route_key(APP, ""))
         .unwrap();
-    // A room that pairs `snapshot` exactly, so only the binding can refuse it.
+    // A workspace that pairs `snapshot` exactly, so only the binding can refuse it.
     let paired = |snapshot: Vec<u8>| {
         let (signed, coverage) = signed_snapshot(&key, now, &prior, snapshot);
         let mut document = peer.admitted_workspace().unwrap().clone();
@@ -270,12 +273,12 @@ fn retained_snapshot_rejects_mismatched_exact_channel() {
             )]),
         )
         .unwrap();
-        (verify_room(&message(&mut document)), signed)
+        (verify_workspace(&message(&mut document)), signed)
     };
-    let (room, renamed) = paired(edited_chat(&peer, 5));
+    let (workspace, renamed) = paired(edited_chat(&peer, 5));
     assert!(
         verify_snapshot(
-            &room,
+            &workspace,
             key.verifying_key().to_bytes(),
             channel,
             &postcard::to_allocvec(&renamed).unwrap()
@@ -283,10 +286,10 @@ fn retained_snapshot_rejects_mismatched_exact_channel() {
         .is_ok(),
         "an edit the binding allows pairs and verifies"
     );
-    let (room, bad) = paired(edited_chat(&peer, 2));
+    let (workspace, bad) = paired(edited_chat(&peer, 2));
     assert!(
         verify_snapshot(
-            &room,
+            &workspace,
             key.verifying_key().to_bytes(),
             channel,
             &postcard::to_allocvec(&bad).unwrap()
@@ -316,29 +319,30 @@ fn members() -> (StatePeer, SigningKey, SystemTime) {
     let roster = std::iter::once(original.owner_certificates()[0].clone())
         .chain(members.iter().cloned())
         .collect::<Vec<_>>();
-    let mut room = workspace::candidate(
+    let mut workspace = workspace::candidate(
         None,
-        &seed_workspace(ROOM, &original.owner_certificates()[0], &roster).unwrap(),
+        &seed_workspace(WORKSPACE_ID, &original.owner_certificates()[0], &roster).unwrap(),
     )
     .unwrap();
-    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
+    let caps = workspace.get(ROOT, "members").unwrap().unwrap().1;
     for (cert, role) in [(&members[0], Role::Editor), (&members[1], Role::Viewer)] {
-        room.put(
-            &caps,
-            hex::encode(cert.user_public_key),
-            ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
-        )
-        .unwrap();
+        workspace
+            .put(
+                &caps,
+                hex::encode(cert.user_public_key),
+                ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
+            )
+            .unwrap();
     }
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE_ID,
         original.owner_certificates()[0].clone(),
         roster,
         RevocationList::new(),
         now,
     )
     .unwrap();
-    let NeighbourMsg::SyncResp { changes, .. } = message(&mut room) else {
+    let NeighbourMsg::SyncResp { changes, .. } = message(&mut workspace) else {
         panic!("unexpected fixture shape")
     };
     peer.install_seed(
@@ -376,14 +380,14 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
         .publish_governed_revocations(&[revocation], &key, now)
         .unwrap();
     let before = peer.admitted_workspace().unwrap().clone();
-    let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
+    let authority = RetentionAuthority::new(WORKSPACE_ID, own_device(&peer, &key)).unwrap();
     let mut current = before;
-    let proof = verify_room(
+    let proof = verify_workspace(
         &authority,
         key.verifying_key().to_bytes(),
         shell_channel(),
         &postcard::to_allocvec(&message(&mut current)).unwrap(),
-        RoomInput::Checkpoint,
+        WorkspaceInput::Checkpoint,
         None,
     )
     .unwrap();
@@ -419,12 +423,12 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
         )
         .unwrap();
     assert!(
-        verify_room(
+        verify_workspace(
             &authority,
             key.verifying_key().to_bytes(),
             shell_channel(),
             &postcard::to_allocvec(&message(&mut current)).unwrap(),
-            RoomInput::Checkpoint,
+            WorkspaceInput::Checkpoint,
             Some(&proof)
         )
         .is_err()

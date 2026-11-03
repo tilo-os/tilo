@@ -306,6 +306,8 @@ close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
 
 block-image-untitled = Picture
+# The title a row shows for an item nobody has named yet.
+list-row-untitled = Untitled
 block-image-missing = Not on this device yet
 notes-image-edit = Edit description
 notes-image-done = Done

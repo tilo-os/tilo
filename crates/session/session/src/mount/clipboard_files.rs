@@ -210,14 +210,16 @@ impl Paste {
     /// Start pasting `files` into `destination`, staged and recorded as the
     /// module describes. The receiving folder is read, the receipt written
     /// and the copies made on the worker, so the caller never waits on a
-    /// disk.
+    /// disk. `None` when another paste is still running: there is one receipt,
+    /// so a second paste would overwrite the record the first is recovered
+    /// from.
     pub(crate) fn start(
         files: &CopiedFiles,
         destination: &Path,
         conflict: Conflict,
         now_ms: u64,
         wake: &tilo_service::Wake,
-    ) -> Self {
+    ) -> Option<Self> {
         Self::spawn(
             Job::Paste {
                 files: files.clone(),
@@ -232,31 +234,35 @@ impl Paste {
     /// The paste a session that stopped was in the middle of, to be undone.
     /// `None` when it left nothing behind.
     pub(crate) fn unfinished(wake: &tilo_service::Wake) -> Option<Self> {
-        read_receipt().map(|receipt| Self::spawn(Job::Undo(receipt), wake))
+        let receipt = read_receipt()?;
+        Self::spawn(Job::Undo(receipt), wake)
     }
 
-    fn spawn(job: Job, wake: &tilo_service::Wake) -> Self {
+    fn spawn(job: Job, wake: &tilo_service::Wake) -> Option<Self> {
+        let slot = Slot::take()?;
         let progress = Arc::new(Mutex::new(Progress::default()));
         let shared = Arc::clone(&progress);
         let wake = Arc::clone(wake);
         match thread::Builder::new()
             .name("file-paste".to_owned())
-            .spawn(move || run(&job, &shared, &wake))
-        {
-            Ok(worker) => Self {
+            .spawn(move || {
+                run(&job, &shared, &wake);
+                drop(slot);
+            }) {
+            Ok(worker) => Some(Self {
                 progress,
                 worker: Some(worker),
-            },
+            }),
             Err(error) => {
                 tracing::warn!(%error, "the paste of files could not be started");
                 let mut state = progress.lock_recover();
                 state.refusal = Some(Refused::Stopped(error.to_string()));
                 state.finished = true;
                 drop(state);
-                Self {
+                Some(Self {
                     progress,
                     worker: None,
-                }
+                })
             }
         }
     }
@@ -280,6 +286,25 @@ impl Paste {
             refusal: state.refusal,
             undone: state.undone,
         }
+    }
+}
+
+/// The one paste a session carries at a time: the receipt is one file, so a
+/// second paste written down beside the first would leave neither whole.
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The running paste's claim on the receipt, held until its worker is done.
+struct Slot;
+
+impl Slot {
+    fn take() -> Option<Self> {
+        (!RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel)).then_some(Self)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        RUNNING.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 

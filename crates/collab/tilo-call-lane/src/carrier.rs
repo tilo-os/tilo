@@ -361,6 +361,12 @@ impl Peer {
         self.connection.read_datagram().await
     }
 
+    /// Ends when this lane does: a device whose lane went away opens another
+    /// one on the same path it opened this one.
+    pub async fn ended(&self) {
+        self.connection.closed().await;
+    }
+
     /// The frames this peer's transport lost, and the packets it sent, as the
     /// connection counts them: what a sender sizes its repeats from.
     #[must_use]

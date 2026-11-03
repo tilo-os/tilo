@@ -296,6 +296,29 @@ where
 }
 
 impl Shared {
+    /// This workspace's members and the devices among them that may relay its
+    /// live plane, in the order every device tries them; `None` — after
+    /// withdrawing the plane — when the membership is unknown or names no
+    /// relay.
+    fn relay_candidates(&self, workspace: WorkspaceId) -> Option<(Vec<Member>, Vec<[u8; 32]>)> {
+        let members = match channels::members_of(&self.engine, workspace) {
+            Ok(members) => members,
+            Err(error) => {
+                tracing::debug!(%workspace, %error, "the live plane's membership is unknown");
+                self.withdraw(workspace);
+                return None;
+            }
+        };
+        let candidates = relays_of(&members, now_ns());
+        if candidates.is_empty() {
+            // No member may relay it: the workspace has no live plane.
+            tracing::debug!(%workspace, "no member may relay this workspace's live plane");
+            self.withdraw(workspace);
+            return None;
+        }
+        Some((members, candidates))
+    }
+
     /// Read `workspace` as it is now and join through the first of its relays
     /// this device reaches, move the plane's keys and roster when they changed,
     /// or leave when the workspace names no relay any more.
@@ -305,21 +328,9 @@ impl Shared {
         endpoint: &Endpoint,
         relay: Option<&Relay>,
     ) {
-        let members = match channels::members_of(&self.engine, workspace) {
-            Ok(members) => members,
-            Err(error) => {
-                tracing::debug!(%workspace, %error, "the live plane's membership is unknown");
-                self.withdraw(workspace);
-                return;
-            }
-        };
-        let candidates = relays_of(&members, now_ns());
-        if candidates.is_empty() {
-            // No member may relay it: the workspace has no live plane.
-            tracing::debug!(%workspace, "no member may relay this workspace's live plane");
-            self.withdraw(workspace);
+        let Some((members, candidates)) = self.relay_candidates(workspace) else {
             return;
-        }
+        };
         // The plane's tracks are sealed under the workspace's media channel:
         // taking part in it asks the workspace's devices for access, and the
         // plane opens on the keys arriving.

@@ -98,8 +98,8 @@ use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
-    AppModel, Button, Element, ModelPath, SearchField, StructureChange, TaffyTreeExt, Widget,
-    WidgetLayoutError,
+    AppModel, Button, DescribedList, Element, ModelPath, SearchField, StructureChange,
+    TaffyTreeExt, Widget, WidgetLayoutError,
 };
 
 mod back;
@@ -2507,6 +2507,12 @@ impl NavShell {
     /// The overview as the widget the app gave it.
     pub fn overview_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
         downcast(self.app_body_mut(Column::Overview))
+    }
+
+    /// The overview's first list, however the app wraps it inside its view of
+    /// the column: the rows it shows and the person's choice among them.
+    pub fn overview_list_mut(&mut self) -> Option<&mut DescribedList> {
+        crate::widget::find_mut::<DescribedList>(self.app_body_mut(Column::Overview)?)
     }
 
     /// The content as the widget the app gave it.

@@ -240,6 +240,15 @@ impl ViewStorage {
         })
     }
 
+    /// The records every app of the window's workspace opens, for what
+    /// settles after the view that asked for one: `None` where the window
+    /// keeps no workspace records (a view of a past version).
+    pub(crate) fn workspace_handle(&self) -> Option<super::WorkspaceHandle> {
+        self.workspace
+            .as_ref()
+            .map(super::workspace::WorkspaceState::handle)
+    }
+
     /// The chain of `P` the app keeps beside its record, opened on first
     /// use, its actions reading the app's record from `base`. `None` where
     /// the window keeps no records in a workspace (a view of a past version).
@@ -249,6 +258,19 @@ impl ViewStorage {
     ) -> Option<Rc<super::chain::ChainState<P>>> {
         super::controls::opened_in_workspace::<P>();
         self.chains.open::<P>(self.records.as_ref(), base)
+    }
+
+    /// The chain of `P` that lives beside the record `base` rather than
+    /// beside the app's own ([`super::Chained::chain_beside`]), opened on
+    /// first use, its actions reading that record from `base_state`.
+    pub(crate) fn chain_beside<P: super::Chained>(
+        &self,
+        base: &ui_core::record::RecordId,
+        base_state: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
+    ) -> Option<Rc<super::chain::ChainState<P>>> {
+        super::controls::opened_in_workspace::<P>();
+        self.chains
+            .open_beside::<P>(self.records.as_ref(), base, base_state)
     }
 
     /// The children of `C` the parent lists, held on first use, the parent
@@ -312,6 +334,16 @@ impl ViewStorage {
         owner: &'static str,
     ) -> Option<super::workspace::WorkspaceRecord<P>> {
         self.workspace.as_ref()?.open::<P>(owner)
+    }
+
+    /// The record the two people of `pair` share, that `owner` keeps, opened
+    /// on first use.
+    pub(crate) fn shared_direct<P: tilo_resource::Resource>(
+        &self,
+        owner: &'static str,
+        pair: &str,
+    ) -> Option<super::workspace::WorkspaceRecord<P>> {
+        self.workspace.as_ref()?.open_direct::<P>(owner, pair)
     }
 
     /// The shared record of the person's `P`.

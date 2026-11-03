@@ -37,7 +37,7 @@ use tokio::sync::watch;
 use super::{Sessions, WebConfig, tls};
 use crate::auth::AuthenticatedPeer;
 use crate::host::RelayProtocol;
-use crate::room_access::{self, RoomOperation};
+use crate::workspace_access::{self, WorkspaceOperation};
 
 /// One participant's live session: whose it is, the scope it publishes in, and
 /// whether the workspace still admits it.
@@ -226,7 +226,7 @@ impl Pages {
 
     /// Whether the workspace's governance admits `peer`'s device to take its
     /// own frames into the workspace now: the same answer every plane of the
-    /// workspace takes, read from the room as it stands.
+    /// workspace takes, read from the workspace as it stands.
     fn admits_member(&self, peer: &AuthenticatedPeer, workspace: u64) -> bool {
         let Ok(workspaces) = self.relay.workspaces.try_lock() else {
             return false;
@@ -235,10 +235,16 @@ impl Pages {
             return false;
         };
         drop(workspaces);
-        let Ok(room) = workspace.try_lock() else {
+        let Ok(runtime) = workspace.try_lock() else {
             return false;
         };
-        room_access::decide(&room, &self.relay.trust(), peer, RoomOperation::Publish).admitted()
+        workspace_access::decide(
+            &runtime,
+            &self.relay.trust(),
+            peer,
+            WorkspaceOperation::Publish,
+        )
+        .admitted()
     }
 
     /// Admit the page behind `proof`'s session token, while that session is

@@ -150,8 +150,8 @@ impl JoinedChannel {
             (self.verified_identity.broker_actor().id().to_owned(), None)
         };
         let local_action = action.to_owned();
-        let peer = self.peer_id;
-        let admitted = self.verified_identity.clone();
+        let (peer, admitted) = (self.peer_id, self.verified_identity.clone());
+        let app_id = route.app_id.clone();
         let state = Arc::downgrade(&self.state);
         let check = Arc::new(move |needed: ActionKind| {
             local.revalidate()?;
@@ -210,6 +210,7 @@ impl JoinedChannel {
             // with its process.
             peer: self.connection_id,
             window,
+            app_id,
             duplicate,
             workspace,
             owner,

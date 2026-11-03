@@ -90,10 +90,14 @@ impl Board {
     pub fn new() -> Self {
         Self {
             // The lanes stand the height of the board, so each one's cards scroll under its
-            // header instead of the whole board growing past the pane.
+            // header instead of the whole board growing past the pane. They keep a gutter at
+            // the board's sides too: the first and last lane sit the same distance from the
+            // pane's edges, so a board scrolled to its end leaves after the last lane the air
+            // it began with before the first.
             row: Row::new()
                 .no_wrap()
-                .with_align_items(taffy::AlignItems::Stretch),
+                .with_align_items(taffy::AlignItems::Stretch)
+                .with_padding_rhythm(Some(Rhythm::Group), None),
             lanes: Vec::new(),
             drag: None,
             cursor: Point::ZERO,
@@ -658,6 +662,48 @@ mod tests {
             shown.windows(2).all(|pair| pair[0].y1 <= pair[1].y0),
             "the cards are in order, one under the other"
         );
+    }
+
+    /// The lanes keep the board's gutter at both ends: a pane as wide as three card measures,
+    /// the gaps between them and a gutter at each side holds all three lanes whole, the first
+    /// a gutter in from the leading edge and the last the same distance from the trailing one.
+    #[test]
+    fn a_board_keeps_a_gutter_at_both_ends_of_its_lanes() {
+        let theme = Theme::dark();
+        let lane = CardWidth::Regular.min_width(&theme);
+        let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a pane width"
+        )]
+        let pane = (3.0 * lane + 2.0 * gap + 2.0 * gutter) as u32;
+        let mut lanes = Board::new();
+        for key in ["todo", "doing", "done"] {
+            let header = Box::new(Text::new(key)) as Element;
+            lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())]);
+        }
+        let host =
+            crate::headless::FrameHarness::for_root(crate::State::new(), lanes, (pane, 600), theme);
+        let root = host.root::<Board>();
+        let rects = root.lane_rects();
+        assert_eq!(rects.len(), 3, "three lanes");
+        let board = root.get_rect();
+        assert!(
+            (rects[0].x0 - board.x0 - gutter).abs() < 1.0,
+            "the first lane stands a gutter in from the leading edge: {rects:?} in {board:?}"
+        );
+        assert!(
+            (board.x1 - rects[2].x1 - gutter).abs() < 1.0,
+            "the last lane stands the same gutter in from the trailing edge: {rects:?} in {board:?}"
+        );
+        for (index, rect) in rects.iter().enumerate() {
+            assert!(
+                rect.x0 >= board.x0 && rect.x1 <= board.x1,
+                "lane {index} stands whole in the board: {rect:?} in {board:?}"
+            );
+        }
     }
 
     #[test]

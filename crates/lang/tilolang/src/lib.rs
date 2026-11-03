@@ -61,6 +61,7 @@ pub mod parser;
 pub mod pred;
 mod prims;
 pub mod print;
+pub mod repeat;
 pub mod resolve;
 pub mod search;
 pub mod source;

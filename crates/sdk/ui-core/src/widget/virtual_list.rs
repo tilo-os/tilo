@@ -211,25 +211,8 @@ type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 
-/// A row's selection with its neighbours', for a delegate that paints its
-/// own selection: a run of selected rows is one lift
-/// ([`crate::chrome::RowJoin`]), and a separator hides beside a selected
-/// row.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RowSelection {
-    pub selected: bool,
-    pub above: bool,
-    pub below: bool,
-    /// A row follows this one.
-    pub has_next: bool,
-}
-
-impl RowSelection {
-    /// The lift's join with its selected neighbours.
-    pub fn join(self) -> crate::chrome::RowJoin {
-        crate::chrome::RowJoin::new(self.above, self.below)
-    }
-}
+use super::row_selection::selection_sink;
+pub use super::row_selection::{RowSelection, RowSelectionSink};
 
 struct MountedRow<K> {
     key: K,
@@ -1375,15 +1358,13 @@ impl<M: ListModel> VirtualList<M> {
         let delegate = self.delegate_selection;
         let mut rebuild = false;
         for (row, selection) in self.mounted.iter_mut().zip(selections) {
-            if delegate
-                && let Some(list_row) = row
-                    .widget
-                    .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
-            {
-                list_row.set_selected(selection.selected);
-                list_row.set_join(selection.join());
-                list_row.set_separator(selection.has_next, selection.below);
+            let sink = if delegate {
+                selection_sink(&mut *row.widget)
+            } else {
+                None
+            };
+            if let Some(sink) = sink {
+                sink.take_selection(selection);
                 row.selection = selection;
             } else if row.selection != selection {
                 rebuild = true;

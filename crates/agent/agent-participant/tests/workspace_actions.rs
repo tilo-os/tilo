@@ -105,17 +105,17 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let hosted = start(&identity_key, &host, state.path()).await;
     let workspace = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create("Native resource fixture")
         .await
         .unwrap();
     let mut browser =
-        Browser::open_workspace(&hosted, &browser_device, &host, &workspace.room).await;
+        Browser::open_workspace(&hosted, &browser_device, &host, &workspace.workspace).await;
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
-        &workspace.room,
+        &workspace.workspace,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -172,7 +172,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     assert_eq!(serde_json::to_value(&shared.reference).unwrap(), reference);
     let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: workspace.room.clone(),
+        cluster_id: workspace.workspace.clone(),
         record: source.wire_record().into(),
     };
     browser
@@ -180,14 +180,14 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .publish(record, &source.take_mutation().unwrap())
         .unwrap();
     // The message's own record is the part, published on its own route.
-    let route = resource_support::part_route(&workspace.room, &part);
+    let route = resource_support::part_route(&workspace.workspace, &part);
     for (changed, mutation) in source.take_record_mutations() {
         assert_eq!(changed, part);
         browser.peer.publish(route.clone(), &mutation).unwrap();
     }
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
-        &workspace.room,
+        &workspace.workspace,
         "ada",
         ui::permissions::Role::Owner,
     );
@@ -283,7 +283,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     let locator = page.locator.unwrap();
     assert_eq!(locator.origin, hosted.web.origin);
-    assert_eq!(locator.workspace, workspace.room);
+    assert_eq!(locator.workspace, workspace.workspace);
     assert_eq!(
         locator.host_device,
         hex::encode(host.cert.device_public_key)
@@ -324,13 +324,13 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     let other_workspace = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .create("Isolated resource fixture")
         .await
         .unwrap();
     let mut other =
-        Browser::open_workspace(&hosted, &browser_device, &host, &other_workspace.room).await;
+        Browser::open_workspace(&hosted, &browser_device, &host, &other_workspace.workspace).await;
     assert!(
         other.catalogue(query.clone()).await.is_err(),
         "an exact reference from another workspace must not produce views or a locator"
@@ -620,8 +620,8 @@ impl Browser {
             ready(&[&peer]).await;
             let (reply, answer) = tokio::sync::oneshot::channel();
             peer.rooms_then(
-                tilo_relay_protocol::rooms::RoomsRequest::Enter {
-                    room: cluster_id.into(),
+                tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
+                    workspace: cluster_id.into(),
                 },
                 Box::new(move |result| {
                     let _ = reply.send(result);
@@ -633,7 +633,7 @@ impl Browser {
                     .await
                     .unwrap()
                     .unwrap(),
-                tilo_relay_protocol::rooms::RoomsReply::Room(_)
+                tilo_relay_protocol::workspaces::WorkspacesReply::Workspace(_)
             ));
             peer.join(workspace).unwrap();
         }
@@ -1145,7 +1145,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     }
     let retained = hosted
         .relay
-        .room_records()
+        .workspace_records()
         .retained(support::workspace())
         .await
         .unwrap();
@@ -1425,7 +1425,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     let retained = hosted
         .relay
-        .room_records()
+        .workspace_records()
         .retained(support::workspace())
         .await
         .unwrap();

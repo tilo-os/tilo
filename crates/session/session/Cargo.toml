@@ -88,6 +88,9 @@ greetd-client = { path = "../greetd-client" }
 # The host's own filesystem moves a paste depends on: a rename that never
 # overwrites a name, and the Trash a replaced name goes to.
 host-fs = { path = "../../system/host-fs" }
+# The filesystem daemon's content store, as this desktop session reaches it:
+# what names an agent as the cause of the writes Files made for a person.
+runtime-fs = { package = "tilo-fs-client", version = "0.1.0", path = "../../runtime/tilo-fs-client" }
 # What the person picks in the emoji picker is remembered between sessions.
 emoji = { path = "../../text/emoji" }
 tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }

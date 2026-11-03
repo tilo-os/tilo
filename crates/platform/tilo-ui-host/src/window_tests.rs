@@ -928,3 +928,78 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
         "a turn switches it on"
     );
 }
+
+/// A page whose overview is one list over the rows the app renders, as `std.rows` builds it:
+/// the list inside the page an app docks its composer or bar under.
+fn list_page() -> Vec<ToUi> {
+    let mut list = UiNode::empty("ui.VirtualList", "list");
+    list.props.insert("in_column".to_owned(), Value::Bool(true));
+    let mut docked = UiNode::empty("ui.Docked", "docked");
+    docked.children.push(list);
+    let mut overview = UiNode::empty("slot", "overview");
+    overview
+        .props
+        .insert("name".to_owned(), Value::text("overview"));
+    overview.children.push(docked);
+    let mut shell = UiNode::empty("ui.NavShell", "shell");
+    shell.children.push(overview);
+    vec![ToUi::Open {
+        lane: Lane::Root,
+        target: doc(),
+        tree: shell,
+        front: None,
+    }]
+}
+
+/// The list of the view's overview.
+fn overview_list(window: &mut AppWindow) -> &mut ui::widget::DescribedList {
+    window
+        .shell_mut()
+        .and_then(|shell| shell.overview_list_mut())
+        .expect("the overview's list")
+}
+
+#[test]
+fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(&mut app, &list_page());
+    // The view beside the list opens before the app has rendered any of the list's rows: the
+    // list cannot name the row of the view it shows until they come.
+    send(&mut app, &opened_note("a", "Alpha"));
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the views were taken: {:?}",
+        window.failed()
+    );
+    send(
+        &mut app,
+        &[ToUi::Rows {
+            lane: Lane::Root,
+            list: "list".to_owned(),
+            len: 2,
+            start: 0,
+            keys: vec!["notes/a".to_owned(), "notes/b".to_owned()],
+            rows: vec![
+                UiNode::empty("ui.ListItem", "notes/a"),
+                UiNode::empty("ui.ListItem", "notes/b"),
+            ],
+        }],
+    );
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the rows were taken: {:?}",
+        window.failed()
+    );
+    let list = overview_list(&mut window)
+        .list()
+        .expect("the overview's list");
+    let selection = list.selection();
+    assert!(
+        selection.is_selected(&"notes/a".to_owned()),
+        "the row of the view shown is the selected one"
+    );
+    assert!(!selection.is_selected(&"notes/b".to_owned()), "only it is");
+}

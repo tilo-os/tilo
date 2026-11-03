@@ -256,6 +256,11 @@ pub(crate) fn start_action_plane(
     let action_offload = offload_route(actions.as_ref(), content.as_ref());
     // The fabric this session acts on, and what its services offer on it.
     let fabric = acting_fabric(options, sync);
+    // Files' clipboard lives beside the broker that answers it, and its copies
+    // reach the loop that has the compositor through the same wake.
+    let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
+        options.wake.handle(),
+    ));
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -290,6 +295,9 @@ pub(crate) fn start_action_plane(
             tools,
             task_programs,
             nearby,
+            // What a person copies or cuts in Files, pasted here, and what
+            // the loop puts on the desktop's clipboard for another app.
+            file_clipboard: std::sync::Arc::clone(&file_clipboard),
         },
     )?;
     // What arrives on this device's action plane is answered by the broker
@@ -307,6 +315,7 @@ pub(crate) fn start_action_plane(
         broker,
         calls,
         calls_service,
+        file_clipboard,
     }))
 }
 

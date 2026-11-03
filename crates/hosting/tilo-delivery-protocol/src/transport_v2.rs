@@ -38,7 +38,7 @@ pub use presence::{
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EnvelopeV2 {
     State(Envelope),
-    /// Retired: a device opened the broker private lane in a room. Actions
+    /// Retired: a device opened the broker private lane in a workspace. Actions
     /// travel to another device on its own connection now; nothing sends
     /// this, and its place is kept so stored bytes still decode.
     RetiredEnableActions,
@@ -54,7 +54,7 @@ pub enum EnvelopeV2 {
     RetiredDelivered,
     /// Retired: a lane spoke the broker's protocol extensions.
     RetiredEnableBrokerClient,
-    /// Retired: a lane named the durable broker host of its room.
+    /// Retired: a lane named the durable broker host of its workspace.
     RetiredRegisterBroker,
     /// Retired: [`Self::RetiredDelivered`] carrying the source's certificate.
     RetiredCertifiedDelivered,
@@ -73,7 +73,7 @@ pub enum EnvelopeV2 {
         #[serde(with = "serde_bytes")]
         delta: Vec<u8>,
     },
-    /// Presence payloads for one room, each coded against the session's
+    /// Presence payloads for one workspace, each coded against the session's
     /// presence slots ([`PresenceItem`]). [`SessionReader`] returns one
     /// `State(Envelope::RetiredPresence)` per item, in order.
     PresenceBatch {

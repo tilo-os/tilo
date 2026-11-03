@@ -5,7 +5,7 @@
 //! governance. Every member reads the version the room runs from its
 //! governance.
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
-use tilo_relay_session::rooms::govern::{self, RoomLink};
+use tilo_relay_session::workspaces::govern::{self, WorkspaceLink};
 
 use super::*;
 
@@ -35,15 +35,15 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     let laptop = ada.enrol("ada-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Lounge").await.unwrap();
-    super::members::admit(&relay, &host, &laptop, &room.room).await;
+    let workspaces = relay.workspaces().unwrap();
+    let room = workspaces.create("Lounge").await.unwrap();
+    super::members::admit(&relay, &host, &laptop, &room.workspace).await;
     let address = relay.node_addr();
-    let link: RoomLink = RoomLink {
+    let link: WorkspaceLink = WorkspaceLink {
         relay: address.id,
         direct: address.ip_addrs().next().copied(),
         workspace_id: room.workspace_id,
-        room: room.room.clone(),
+        workspace: room.workspace.clone(),
     }
     .to_string()
     .parse()
@@ -53,7 +53,14 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
         let (cert, key) = (laptop.cert.clone(), laptop.sk.clone());
         async move {
             let client = govern::connect(&link, cert, key).await?;
-            govern::invoke(&client, link.workspace_id, &link.room, action, argument).await
+            govern::invoke(
+                &client,
+                link.workspace_id,
+                &link.workspace,
+                action,
+                argument,
+            )
+            .await
         }
     };
 
@@ -65,7 +72,13 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     .await
     .unwrap_err();
     assert!(refused.contains("no such action"), "{refused}");
-    assert!(rooms.app_versions(&room.room).await.unwrap().is_empty());
+    assert!(
+        workspaces
+            .app_versions(&room.workspace)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     // The owner lets Ada install apps: she is the room's developer.
     let who = hex::encode(laptop.cert.user_public_key);
@@ -73,15 +86,15 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
         Grant::new(
             format!("developer:{action}:{who}"),
             Subject::Person(who.clone()),
-            roles::governance_action(&room.room, action),
+            roles::governance_action(&room.workspace, action),
             KindSet::ALL,
             Answer::Allow,
             Subject::Person(hex::encode(host.cert.user_public_key)),
         )
     };
-    rooms
+    workspaces
         .put_room_grants(
-            &room.room,
+            &room.workspace,
             &host.cert,
             [7; 32],
             vec![
@@ -106,7 +119,7 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     )
     .await
     .unwrap();
-    let running = rooms.app_versions(&room.room).await.unwrap();
+    let running = workspaces.app_versions(&room.workspace).await.unwrap();
     assert_eq!(running.len(), 1);
     assert_eq!(running[0].release.version, "1.5.0-dev.2");
     assert!(running[0].release.dev, "a developer's own build says so");
@@ -126,7 +139,13 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     // refuses it from her.
     let refused = push("request-bot", bot).await;
     assert!(refused.is_err(), "{refused:?}");
-    assert!(rooms.bot_requests(&room.room).await.unwrap().is_empty());
+    assert!(
+        workspaces
+            .bot_requests(&room.workspace)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     relay.shutdown().await;
 }
 
@@ -148,8 +167,11 @@ fn surface_of(version: u8) -> [u8; 32] {
 }
 
 /// The topic the room's host holds.
-async fn hosted_topic(rooms: &tilo_relay::rooms::Rooms, room: &str) -> Option<String> {
-    let bytes = rooms.record_document(room, APP, "").await.unwrap()?;
+async fn hosted_topic(
+    workspaces: &tilo_relay::workspaces::Workspaces,
+    room: &str,
+) -> Option<String> {
+    let bytes = workspaces.record_document(room, APP, "").await.unwrap()?;
     let doc = AutoCommit::load(&bytes).unwrap();
     doc.get(ROOT, "topic")
         .unwrap()
@@ -183,20 +205,20 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Lounge").await.unwrap();
-    super::members::admit(&relay, &host, &laptop, &room.room).await;
-    super::members::admit(&relay, &host, &phone, &room.room).await;
+    let workspaces = relay.workspaces().unwrap();
+    let room = workspaces.create("Lounge").await.unwrap();
+    super::members::admit(&relay, &host, &laptop, &room.workspace).await;
+    super::members::admit(&relay, &host, &phone, &room.workspace).await;
     let who = hex::encode(laptop.cert.user_public_key);
-    rooms
+    workspaces
         .put_room_grants(
-            &room.room,
+            &room.workspace,
             &host.cert,
             [7; 32],
             vec![Grant::new(
                 format!("developer:install-app:{who}"),
                 Subject::Person(who.clone()),
-                roles::governance_action(&room.room, governance::INSTALL_APP),
+                roles::governance_action(&room.workspace, governance::INSTALL_APP),
                 KindSet::ALL,
                 Answer::Allow,
                 Subject::Person(hex::encode(host.cert.user_public_key)),
@@ -207,7 +229,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
 
     // Bob's replica, from the room's history; he edits with v1.
     let mut bob_peer = StatePeer::new(
-        &room.room,
+        &room.workspace,
         host.cert.clone(),
         vec![host.cert.clone()],
         RevocationList::new(),
@@ -234,7 +256,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
         .unwrap();
     publish(&bob_session, &first);
     tilo_test_env::within("Bob's v1 edit in the room", async {
-        while hosted_topic(rooms, &room.room).await.as_deref() != Some("v1") {
+        while hosted_topic(workspaces, &room.workspace).await.as_deref() != Some("v1") {
             tokio::task::yield_now().await;
         }
     })
@@ -243,16 +265,16 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
     // Ada hands the room her v2 package and makes it the room's version.
     let package = b"a developer's v2 build of the fixture app".repeat(9000);
     let address = relay.node_addr();
-    let link = RoomLink {
+    let link = WorkspaceLink {
         relay: address.id,
         direct: address.ip_addrs().next().copied(),
         workspace_id: room.workspace_id,
-        room: room.room.clone(),
+        workspace: room.workspace.clone(),
     };
     let client = govern::connect(&link, laptop.cert.clone(), laptop.sk.clone())
         .await
         .unwrap();
-    let file = govern::upload(&client, room.workspace_id, &room.room, &package)
+    let file = govern::upload(&client, room.workspace_id, &room.workspace, &package)
         .await
         .unwrap();
     let mut v2 = release(laptop.cert.user_public_key, "2.0.0-dev.1", 2);
@@ -262,7 +284,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
     govern::invoke(
         &client,
         room.workspace_id,
-        &room.room,
+        &room.workspace,
         governance::INSTALL_APP,
         v2,
     )
@@ -306,7 +328,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
             postcard::to_stdvec(&NeighbourMsg::RecordContentWant {
                 requester: tilo_peer_state::peer_handle(&phone.device_pubkey()),
                 app_id: APP.into(),
-                cluster_id: room.room.clone(),
+                cluster_id: room.workspace.clone(),
                 hash: wanted.clone(),
             })
             .unwrap(),
@@ -335,7 +357,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
         .expect("the package is the room's version");
     assert!(release.check_file(b"something else").is_err());
     assert_eq!(
-        hosted_topic(rooms, &room.room).await.as_deref(),
+        hosted_topic(workspaces, &room.workspace).await.as_deref(),
         Some("v1"),
         "an edit made with another version than the room's is held"
     );
@@ -354,7 +376,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
         .unwrap();
     publish(&bob_session, &again);
     tilo_test_env::within("Bob's edit made behind is in the room", async {
-        while hosted_topic(rooms, &room.room).await.as_deref() != Some("while behind") {
+        while hosted_topic(workspaces, &room.workspace).await.as_deref() != Some("while behind") {
             tokio::task::yield_now().await;
         }
     })

@@ -1597,6 +1597,8 @@ pub(crate) type SelectedDescriptorSource =
 pub struct FileClipboardContext {
     pub(crate) peer: u64,
     pub(crate) window: String,
+    /// The app whose window asked: the one the broker admitted as Files.
+    pub(crate) app_id: String,
     pub(crate) duplicate: SelectedDescriptorSource,
     pub(crate) workspace: String,
     pub(crate) owner: String,
@@ -1623,6 +1625,10 @@ impl FileClipboardContext {
     }
     pub fn peer(&self) -> u64 {
         self.peer
+    }
+    /// The app whose window asked.
+    pub fn app_id(&self) -> &str {
+        &self.app_id
     }
     pub fn workspace(&self) -> &str {
         &self.workspace

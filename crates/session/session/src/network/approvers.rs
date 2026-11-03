@@ -212,7 +212,7 @@ fn details(question: &PendingConfirmation) -> serde_json::Value {
         action: question.action_label.clone(),
         resource: question.resource_label.clone(),
         risk: question.risk.clone(),
-        workspace: question.room.clone(),
+        workspace: question.workspace.clone(),
     })
     .unwrap_or_default()
 }

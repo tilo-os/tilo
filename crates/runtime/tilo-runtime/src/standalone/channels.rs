@@ -182,12 +182,12 @@ pub(super) struct DeviceChannelKeys {
 }
 
 impl DeviceChannelKeys {
-    pub(super) fn handle(keys: ChannelKeyProvider) -> tilo_room_host::rooms::DeviceKeys {
+    pub(super) fn handle(keys: ChannelKeyProvider) -> tilo_room_host::workspaces::DeviceKeys {
         Arc::new(Self { keys })
     }
 }
 
-impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
+impl tilo_room_host::workspaces::ChannelKeys for DeviceChannelKeys {
     fn channel_keys<'a>(
         &'a self,
         workspace: &'a str,
