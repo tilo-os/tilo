@@ -133,6 +133,9 @@ pub struct Scrollable {
     /// The content is wrapped to fill at least the viewport
     /// ([`Self::with_content_min_viewport_height`]).
     content_fills_viewport: bool,
+    /// The content is at least as wide as the viewport while it only scrolls
+    /// sideways ([`Self::with_content_min_viewport_width`]).
+    content_fills_viewport_width: bool,
     child: Option<Element>,
     /// A content shown in place of another since the host last read it
     /// ([`Self::replace_child`]): described.
@@ -321,6 +324,7 @@ impl Scrollable {
             max_height: None,
             fill_parent_height: false,
             content_fills_viewport: false,
+            content_fills_viewport_width: false,
             child: None,
             structure: crate::widget::StructureChange::None,
             child_node: None,
@@ -424,6 +428,16 @@ impl Scrollable {
             }
             self.content_fills_viewport = true;
         }
+        self
+    }
+
+    /// Keep content that only scrolls sideways at least as wide as the
+    /// viewport: a row whose children share its width by weight fills the
+    /// view when they fit, and still grows past it, to scroll, when their
+    /// own least widths need more room.
+    #[must_use]
+    pub fn with_content_min_viewport_width(mut self) -> Self {
+        self.content_fills_viewport_width = true;
         self
     }
 
@@ -1233,6 +1247,9 @@ impl Widget for Scrollable {
         {
             let mut style = current.clone();
             style.size.width = Dimension::auto();
+            if self.content_fills_viewport_width {
+                style.min_size.width = Dimension::percent(1.0);
+            }
             style.flex_shrink = 0.0;
             let _ = taffy.set_style(child, style);
         }

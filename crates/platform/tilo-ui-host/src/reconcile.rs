@@ -1015,6 +1015,13 @@ impl Reconciler {
         } else {
             Scrollable::new_vertical().fit_content_height()
         };
+        // A row that shares the desk's width by weight fills it when its
+        // children fit, and scrolls once their least widths need more.
+        let scroll = if filling && across == Some("horizontal") {
+            scroll.with_content_min_viewport_width()
+        } else {
+            scroll
+        };
         Box::new(scroll.with_child(Box::new(inner)))
     }
 
