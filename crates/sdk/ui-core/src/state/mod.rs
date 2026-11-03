@@ -49,6 +49,23 @@ impl DocumentFrontier {
         delta
     }
 
+    /// Everything the document holds that the destination does not, whoever
+    /// made it: for a destination that mirrors the record whole, such as a
+    /// page replicating an open record, not for a route, which publishes this
+    /// replica's own changes alone ([`Self::pending_delta`]).
+    pub fn pending_mirror_delta(&mut self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
+        let current = doc.get_heads();
+        if current == self.heads {
+            // Nothing was made since the frontier: no change to walk for.
+            return (Vec::new(), current);
+        }
+        let delta = doc.save_after(&self.heads);
+        if delta.is_empty() {
+            self.heads.clone_from(&current);
+        }
+        (delta, current)
+    }
+
     /// Build a delta without advancing the frontier. Call [`Self::advance`]
     /// only after the durable transport accepts it; a saturated/disconnected
     /// queue can then be retried instead of silently losing the mutation.
@@ -62,21 +79,32 @@ impl DocumentFrontier {
         if !delta.is_empty() {
             return (delta, current);
         }
-        // Nothing this device holds is missing at the destination: what it
-        // delivered plus what it accepted covers the document.
+        // Everything this replica would publish is there already: what the
+        // route delivered covers what arrived, and the frontier says so
+        // without another clone.
         self.advance(current.clone());
         (Vec::new(), current)
     }
 
     /// What this device holds that the destination does not, as an
-    /// incremental payload: the changes after the frontier, without the ones
-    /// the destination delivered.
+    /// incremental payload: this replica's own changes after the frontier.
+    ///
+    /// Another replica's change is never in it, whether or not this frontier
+    /// was told it arrived: a change is published by the replica that made
+    /// it, and the identity service signs a change for the action that names
+    /// it. A route that handed a change on would publish history its device
+    /// did not make, which no action of its own names. History a route does
+    /// not get this way — another device's, or this one's from before a join —
+    /// arrives whole, in the snapshot a route publishes when it opens and when
+    /// a holder asks for one.
     pub fn delta(&self, doc: &mut AutoCommit) -> Vec<u8> {
+        let actor = doc.get_actor().clone();
         let mut bytes = Vec::new();
         for change in doc.get_changes(&self.heads) {
-            if !self.observed.contains(&change.hash()) {
-                bytes.extend_from_slice(change.raw_bytes());
+            if change.actor_id() != &actor || self.observed.contains(&change.hash()) {
+                continue;
             }
+            bytes.extend_from_slice(change.raw_bytes());
         }
         bytes
     }
@@ -596,6 +624,36 @@ mod tests {
         // The whole payload applies.
         assert!(state.load_incremental(&first).unwrap() > 0);
         assert_eq!(state.doc.get_heads(), peer.get_heads());
+    }
+
+    #[test]
+    fn a_frontier_publishes_only_this_replicas_changes() {
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::random());
+        doc.put(ROOT, "mine", "this device").unwrap();
+        doc.commit();
+        let mine = doc.get_heads();
+        // Another device adds to the same document, and this replica takes
+        // the change in.
+        let mut other = AutoCommit::load(&doc.save())
+            .unwrap()
+            .with_actor(automerge::ActorId::random());
+        other.put(ROOT, "from_room", "another device").unwrap();
+        other.commit();
+        doc.load_incremental(&other.save_after(&mine)).unwrap();
+        assert_eq!(
+            doc.get_heads(),
+            other.get_heads(),
+            "the change is held here"
+        );
+        // A frontier never told the delivered change arrived publishes this
+        // replica's change alone: a change goes out from the replica that
+        // made it, and the snapshot handshake carries the rest.
+        let mut frontier = DocumentFrontier::default();
+        let (delta, heads) = frontier.pending_delta(&mut doc);
+        let published = automerge::Automerge::parse_changes(&delta).unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].actor_id(), doc.get_actor());
+        assert_eq!(heads, doc.get_heads());
     }
 
     #[test]

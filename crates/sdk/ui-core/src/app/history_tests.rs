@@ -2791,11 +2791,10 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
             route: route.clone(),
             epoch: uuid::Uuid::new_v4(),
         });
-    let primary =
-        |fixture: &mut RoutedOwners| fixture.app.pending_primary_document_delta().unwrap();
-    let (_, published) = primary(&mut fixture);
+    let primary = |fixture: &mut RoutedOwners| fixture.app.pending_primary_document().unwrap();
+    let (_, published) = primary(&mut fixture).expect("the record whole at first");
     fixture.app.advance_primary_document(published);
-    assert!(primary(&mut fixture).0.is_empty());
+    assert!(primary(&mut fixture).is_none());
     // Binding the primary document has the route republish its record
     // whole once; after that nothing is pending on either.
     fixture.app.publish_owned_documents();
@@ -2818,7 +2817,7 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
             sent(&fixture)
         );
         assert!(
-            primary(&mut fixture).0.is_empty(),
+            primary(&mut fixture).is_none(),
             "nor as the primary document"
         );
     }
@@ -2841,8 +2840,12 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
         other => panic!("expected exactly the local incremental, got {other:?}"),
     }
     fixture.app.document_routes.sent.clear();
-    let (delta, published) = primary(&mut fixture);
-    assert_eq!(delta, expected, "the primary document publishes it too");
+    let (mutation, published) = primary(&mut fixture).expect("the local change travels");
+    assert_eq!(
+        mutation.data(),
+        expected,
+        "the primary document publishes it too"
+    );
     fixture.app.advance_primary_document(published);
 
     // Unsent local history interleaved with a committed read is still
@@ -2873,7 +2876,9 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
         other => panic!("expected one incremental with the unsent local change, got {other:?}"),
     }
     assert_eq!(
-        primary(&mut fixture).0,
+        primary(&mut fixture)
+            .map(|(mutation, _)| mutation.data().to_vec())
+            .expect("the primary document keeps them too"),
         expected,
         "and the primary document keeps them too"
     );
@@ -6328,26 +6333,18 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
     );
 
     let mut bound = RoutedPrimary::new(PrimaryMetadataShape::None);
-    let (delta, heads) = bound.app.pending_primary_document_delta().unwrap();
-    assert!(!delta.is_empty());
+    let (delta, heads) = bound
+        .app
+        .pending_primary_document()
+        .unwrap()
+        .expect("the record whole at first");
+    assert!(!delta.data().is_empty());
     bound.app.advance_primary_document(heads);
-    assert!(
-        bound
-            .app
-            .pending_primary_document_delta()
-            .unwrap()
-            .0
-            .is_empty()
-    );
+    assert!(bound.app.pending_primary_document().unwrap().is_none());
     bound.app.collaboration.manager.fail_publication_for_test();
     bound.app.refresh_document_routes();
     assert!(
-        !bound
-            .app
-            .pending_primary_document_delta()
-            .unwrap()
-            .0
-            .is_empty(),
+        bound.app.pending_primary_document().unwrap().is_some(),
         "canonical primary owner must replay its accepted history too"
     );
 }

@@ -3873,7 +3873,7 @@ impl RecordStore {
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
-            let (delta, heads) = frontier.pending_delta(doc);
+            let (delta, heads) = frontier.pending_mirror_delta(doc);
             if delta.is_empty() {
                 actions.notices.replicating();
             } else {

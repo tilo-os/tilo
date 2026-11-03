@@ -29,9 +29,14 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
                 automerge::transaction::Transactable::base_heads,
             )
             .unwrap();
-        let (initial, heads) = fixture.app.pending_primary_document_delta().unwrap();
-        let mut remote = automerge::AutoCommit::new();
-        remote.load_incremental(&initial).unwrap();
+        let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();
+        // A route's first publication is the record whole, so a replica that
+        // holds nothing of it can take it in.
+        assert!(matches!(
+            initial,
+            collab_types::DocumentMutation::Snapshot(_)
+        ));
+        let mut remote = automerge::AutoCommit::load(initial.data()).unwrap();
         assert_eq!(crate::record::identity(&remote).unwrap(), binding.checkout);
         assert!(remote.get(ROOT, "host-only").unwrap().is_none());
         fixture.app.advance_primary_document(heads);
@@ -47,7 +52,12 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
                 doc.put(ROOT, "local-only", "retry me").unwrap();
             })
             .unwrap();
-        let (rejected, _) = fixture.app.pending_primary_document_delta().unwrap();
+        let (rejected, _) = fixture
+            .app
+            .pending_primary_document()
+            .unwrap()
+            .map(|(mutation, heads)| (mutation.data().to_vec(), heads))
+            .unwrap();
         assert!(!rejected.is_empty());
         // Saving or a late-join snapshot must not consume the transport cursor.
         let snapshot = fixture.app.primary_document_snapshot().unwrap();
@@ -57,7 +67,12 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         );
         fixture.records.try_flush().unwrap();
         assert_eq!(
-            fixture.app.pending_primary_document_delta().unwrap().0,
+            fixture
+                .app
+                .pending_primary_document()
+                .unwrap()
+                .map(|(mutation, _)| mutation.data().to_vec())
+                .unwrap_or_default(),
             rejected
         );
         assert!(
@@ -68,7 +83,12 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
                 ))
                 .unwrap()
         );
-        let (retry, accepted) = fixture.app.pending_primary_document_delta().unwrap();
+        let (retry, accepted) = fixture
+            .app
+            .pending_primary_document()
+            .unwrap()
+            .map(|(mutation, heads)| (mutation.data().to_vec(), heads))
+            .unwrap();
         assert!(
             !retry.is_empty(),
             "inbound changes cannot acknowledge a rejected local send"
@@ -84,12 +104,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         );
         fixture.app.advance_primary_document(accepted);
         assert!(
-            fixture
-                .app
-                .pending_primary_document_delta()
-                .unwrap()
-                .0
-                .is_empty(),
+            fixture.app.pending_primary_document().unwrap().is_none(),
             "no inbound echo"
         );
         assert!(
@@ -208,10 +223,14 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
     // Case `native_bound_sync_retains_out_of_order_dependencies_without_echoing_them`.
     {
         let mut fixture = ActionFixture::broker();
-        let (initial, heads) = fixture.app.pending_primary_document_delta().unwrap();
+        let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();
+        assert!(matches!(
+            initial,
+            collab_types::DocumentMutation::Snapshot(_)
+        ));
         fixture.app.advance_primary_document(heads);
         let binding = fixture.bindings[0].clone();
-        let mut remote = automerge::AutoCommit::load(&initial).unwrap();
+        let mut remote = automerge::AutoCommit::load(initial.data()).unwrap();
         remote.set_actor(automerge::ActorId::from(b"out-of-order-peer".as_slice()));
         let shared = remote.get_heads();
         remote.put(ROOT, "first-remote", "one").unwrap();
@@ -244,14 +263,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
                 );
             })
             .unwrap();
-        assert!(
-            fixture
-                .app
-                .pending_primary_document_delta()
-                .unwrap()
-                .0
-                .is_empty()
-        );
+        assert!(fixture.app.pending_primary_document().unwrap().is_none());
         assert!(
             !fixture
                 .app
@@ -272,17 +284,10 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
     // Case `native_bound_sync_requires_live_matching_route_and_resends_after_reconnection`.
     {
         let mut fixture = ActionFixture::broker();
-        let (initial, heads) = fixture.app.pending_primary_document_delta().unwrap();
-        assert!(!initial.is_empty());
+        let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();
+        assert!(!initial.data().is_empty());
         fixture.app.advance_primary_document(heads);
-        assert!(
-            fixture
-                .app
-                .pending_primary_document_delta()
-                .unwrap()
-                .0
-                .is_empty()
-        );
+        assert!(fixture.app.pending_primary_document().unwrap().is_none());
         // Two views share one record; changing transport epoch must resend that
         // record, even though its heads and both view lifetimes are unchanged.
         fixture
@@ -292,14 +297,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             .as_mut()
             .unwrap()
             .epoch = uuid::Uuid::new_v4();
-        assert!(
-            !fixture
-                .app
-                .pending_primary_document_delta()
-                .unwrap()
-                .0
-                .is_empty()
-        );
+        assert!(fixture.app.pending_primary_document().unwrap().is_some());
         let route = fixture
             .app
             .actions
@@ -308,7 +306,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             .unwrap();
         let outer = fixture.app.state.doc.get_heads();
         assert!(fixture.app.primary_document_snapshot().is_err());
-        assert!(fixture.app.pending_primary_document_delta().is_err());
+        assert!(fixture.app.pending_primary_document().is_err());
         let mut wrong = route.clone();
         wrong.route.app_id = "com.example.foreign".into();
         fixture.app.actions.bound_broker_route_for_test = Some(wrong);
