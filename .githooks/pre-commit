@@ -160,38 +160,80 @@ tl_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
       esac
     done | sort -u)
 if [ -n "$tl_packages" ]; then
-  # A binary from this tree prints this tree's canonical form. TILO_TLC names
-  # one built elsewhere: a tree whose builds run on a builder has none in
-  # target/.
+  # The compiler's own sources and manifests. A formatter older than any of them
+  # prints an earlier revision's canonical form, so it is not this tree's: that
+  # is what makes a binary in target/ one this hook may use.
+  tl_sources=("$root/Cargo.lock" "$root/Cargo.toml"
+    "$root/crates/lang/tilolang/Cargo.toml" "$root/crates/lang/tilolang/src"
+    "$root/crates/lang/tilolang-cli/Cargo.toml" "$root/crates/lang/tilolang-cli/src")
+
+  # Picks the freshest formatter this tree has built into target/, under any
+  # profile: debug, release, `fast` for the dev loop, and the session's own copy
+  # in target/nested-session/bin. Answers --help because a binary for another
+  # platform cannot run here and one that is not the formatter does not know
+  # `fmt`; both are skipped rather than failing the commit.
   tl_fmt=""
-  if [ -n "${TILO_TLC:-}" ] && [ -x "${TILO_TLC}" ]; then
-    tl_fmt=$TILO_TLC
-  fi
-  for c in "$root/target/debug/tlc" "$root/target/release/tlc" \
-           "$root/target/debug/tilolangc" "$root/target/release/tilolangc" \
-           "$(command -v tlc 2>/dev/null || true)" \
-           "$(command -v tilolangc 2>/dev/null || true)"; do
-    if [ -z "$tl_fmt" ] && [ -n "$c" ] && [ -x "$c" ]; then tl_fmt=$c; fi
-  done
+  tl_find_fmt() {
+    local built=() c newer_count
+    while IFS= read -r -d '' c; do built+=("$c"); done < <(
+      find "$root/target" -maxdepth 4 -type f \
+        \( -name tlc -o -name tilolangc -o -name tilolang \) -print0 2>/dev/null)
+    [ "${#built[@]}" -gt 0 ] || return 0
+    while IFS= read -r c; do
+      if [ -n "$c" ] && [ -x "$c" ]; then
+        newer_count=$(find "${tl_sources[@]}" -newer "$c" -print 2>/dev/null | wc -l)
+        [ "$newer_count" -gt 0 ] && continue
+        case "$("$c" --help 2>&1)" in
+          *fmt*) tl_fmt=$c; return 0 ;;
+        esac
+      fi
+    done < <(ls -td -- "${built[@]}" 2>/dev/null || true)
+  }
+  tl_find_fmt
   if [ -z "$tl_fmt" ]; then
-    # The formatter is this tree's compiler, so build its one binary; in a tree
-    # that is already built that is a link, seconds. A tree whose builds run
-    # elsewhere leaves no binary here, which is remembered so that one commit
-    # pays it rather than every commit.
-    tl_none="$(git rev-parse --path-format=absolute --git-common-dir)/tilolang-fmt-unavailable"
-    if [ ! -e "$tl_none" ] && command -v cargo >/dev/null 2>&1; then
-      if (cd "$root" && cargo build --quiet --locked -p tilolang --bin tlc) >/dev/null 2>&1 \
-         && [ -x "$root/target/debug/tlc" ]; then
-        tl_fmt="$root/target/debug/tlc"
+    # The formatter is this tree's compiler, so build its one binary. A build
+    # that fails is not retried by every commit: this worktree remembers it, and
+    # why, for an hour. It is this worktree's, never the clone's, so one tree
+    # that cannot build now does not silence the others.
+    tl_build_state="$(git rev-parse --path-format=absolute --git-dir)/tilolang-fmt-build"
+    tl_failed=""
+    if [ -e "$tl_build_state" ]; then
+      tl_when=$(cut -d' ' -f1 "$tl_build_state")
+      case "$tl_when" in '' | *[!0-9]*) tl_when=0 ;; esac
+      tl_age=$(( $(date +%s) - tl_when ))
+      tl_ago="$((tl_age / 60)) min ago"
+      [ "$tl_age" -lt 60 ] && tl_ago="just now"
+      if [ "$tl_age" -lt 3600 ]; then
+        tl_failed="a build failed $tl_ago: $(cut -d' ' -f2- "$tl_build_state")"
+      fi
+    fi
+    if [ -z "$tl_failed" ]; then
+      if ! command -v cargo >/dev/null 2>&1; then
+        tl_failed="there is no cargo on PATH to build one with"
       else
-        : > "$tl_none"
+        tl_log="$tl_build_state.log"
+        tl_why=""
+        if (cd "$root" && cargo build --quiet --locked -p tilolang --bin tlc) \
+             >"$tl_log" 2>&1; then
+          tl_find_fmt
+        else
+          tl_why=$(tail -n 1 "$tl_log" | cut -c1-200)
+        fi
+        rm -f "$tl_log"
+        if [ -n "$tl_fmt" ]; then
+          rm -f "$tl_build_state"
+        else
+          tl_why=${tl_why:-"the build left no formatter in target/"}
+          printf '%s %s\n' "$(date +%s)" "$tl_why" >"$tl_build_state"
+          tl_failed="a build failed: $tl_why"
+        fi
       fi
     fi
   fi
   if [ -z "$tl_fmt" ]; then
     # No binary to format with, so these are left as they are: the compiler's
     # canonical-form tests, which CI runs, hold the invariant either way.
-    note "tilolang fmt: no formatter to check the staged .tl files with (build tlc, or point TILO_TLC at one)"
+    note "tilolang fmt: no formatter for the staged .tl files: $tl_failed"
   else
     tl_formatted=0
     tl_unformatted=""
