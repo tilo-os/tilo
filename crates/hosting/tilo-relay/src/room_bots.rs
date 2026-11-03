@@ -1,15 +1,15 @@
-//! The bots installed in a room this host governs, run on the host.
+//! The bots installed in a workspace this host governs, run on the host.
 //!
-//! The host follows the room's records through its own copy: each member
-//! write it takes in ([`Rooms::record_writes`]) wakes the bots that watch
+//! The host follows the workspace's records through its own copy: each member
+//! write it takes in ([`Workspaces::record_writes`]) wakes the bots that watch
 //! that record, which read the changes after their cursor as record events
 //! ([`tilo_agent_participant::bot::events_since`]). A bot acts through its
 //! own confined replica of the record, as the installation for its
-//! installer, and what it changed reaches the room as an ordinary change
+//! installer, and what it changed reaches the workspace as an ordinary change
 //! the governor publishes, so members merge it like anyone's and history
 //! names the bot.
 //!
-//! The room's moderation agent is the first bot run this way: a filed
+//! The workspace's moderation agent is the first bot run this way: a filed
 //! report wakes it, and it looks at every person with open reports, so a
 //! report filed while the host was down is still answered at the next
 //! start.
@@ -21,23 +21,23 @@ use tilo_action_policy::{
 };
 use tilo_agent_participant::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
-use tilo_relay_session::rooms::RemoveMemberRequest;
+use tilo_relay_session::workspaces::RemoveMemberRequest;
 use tilo_resource::Resource as _;
 use tilo_user_identity::DeviceCert;
 
 use crate::moderation::{ReplicaDoor, files_a_report};
-use crate::rooms::{RecordWrite, Rooms};
+use crate::workspaces::{RecordWrite, Workspaces};
 
-/// The app whose record holds the room's reports and decisions.
+/// The app whose record holds the workspace's reports and decisions.
 const CHAT: &str = "so.tilo.chat";
-/// The installation id the room's moderation agent acts as.
+/// The installation id the workspace's moderation agent acts as.
 pub const MODERATION_INSTALLATION: &str = "moderation";
 
-/// Enforces one of the moderation agent's governance changes on `room` as
-/// the room's root, held to the room's policy like a Moderator's own.
+/// Enforces one of the moderation agent's governance changes on `workspace` as
+/// the workspace's root, held to the workspace's policy like a Moderator's own.
 pub async fn govern(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     host: &DeviceCert,
     change: &Change,
 ) -> Result<(), String> {
@@ -61,20 +61,22 @@ pub async fn govern(
     };
     let done = match change {
         Change::Restrict { until_ms, .. } => {
-            rooms.restrict_member(room, host, request, *until_ms).await
+            workspaces
+                .restrict_member(workspace, host, request, *until_ms)
+                .await
         }
-        Change::Unrestrict { .. } => rooms.unrestrict_member(room, host, request).await,
-        Change::Ban { .. } => rooms.ban_member(room, host, request).await,
-        _ => rooms.unban_member(room, host, request).await,
+        Change::Unrestrict { .. } => workspaces.unrestrict_member(workspace, host, request).await,
+        Change::Ban { .. } => workspaces.ban_member(workspace, host, request).await,
+        _ => workspaces.unban_member(workspace, host, request).await,
     };
     done.map(drop).map_err(|error| error.to_string())
 }
 
-/// The room's moderation agent, installed by the room's root and woken by
+/// The workspace's moderation agent, installed by the workspace's root and woken by
 /// filed reports.
 pub struct ModerationBot<J> {
-    rooms: Rooms,
-    room: String,
+    workspaces: Workspaces,
+    workspace: String,
     host: DeviceCert,
     agent: std::sync::Arc<ModerationAgent<J>>,
     /// The chat record's heads the agent has read up to, hex; `None` until
@@ -83,25 +85,30 @@ pub struct ModerationBot<J> {
 }
 
 impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
-    /// The agent for `room`, governed here by `host` on the root's behalf.
+    /// The agent for `workspace`, governed here by `host` on the root's behalf.
     #[must_use]
-    pub fn new(rooms: Rooms, room: String, host: DeviceCert, agent: ModerationAgent<J>) -> Self {
+    pub fn new(
+        workspaces: Workspaces,
+        workspace: String,
+        host: DeviceCert,
+        agent: ModerationAgent<J>,
+    ) -> Self {
         Self {
-            rooms,
-            room,
+            workspaces,
+            workspace,
             host,
             agent: std::sync::Arc::new(agent),
             cursor: None,
         }
     }
 
-    /// Answer the room's reports at start, then each time a member's write
-    /// to the chat files one, until the room is no longer governed here.
+    /// Answer the workspace's reports at start, then each time a member's write
+    /// to the chat files one, until the workspace is no longer governed here.
     pub async fn run(mut self) {
-        let mut writes = self.rooms.record_writes();
+        let mut writes = self.workspaces.record_writes();
         loop {
             if let Err(error) = self.wake().await {
-                tracing::warn!(room = %self.room, %error, "moderation agent did not finish a look");
+                tracing::warn!(workspace = %self.workspace, %error, "moderation agent did not finish a look");
             }
             loop {
                 match writes.recv().await {
@@ -116,7 +123,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     fn watches(&self, write: &RecordWrite) -> bool {
-        write.room == self.room && write.app == CHAT && write.record.is_empty()
+        write.workspace == self.workspace && write.app == CHAT && write.record.is_empty()
     }
 
     /// Read the chat's changes after the cursor and, when one of them filed
@@ -128,23 +135,27 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         let Some(bytes) = self.record().await? else {
             return Ok(());
         };
-        let (reported, heads) = reports_since(&self.room, &bytes, self.cursor.as_deref())?;
+        let (reported, heads) = reports_since(&self.workspace, &bytes, self.cursor.as_deref())?;
         if !reported {
             self.cursor = Some(heads);
             return Ok(());
         }
         let root = hex::encode(self.host.user_public_key);
         let parts = self.parts().await?;
-        let (rooms, governed, host) = (self.rooms.clone(), self.room.clone(), self.host.clone());
+        let (workspaces, governed, host) = (
+            self.workspaces.clone(),
+            self.workspace.clone(),
+            self.host.clone(),
+        );
         let agent = std::sync::Arc::clone(&self.agent);
         let handle = tokio::runtime::Handle::current();
         // The replica runs app code in a confined worker and is driven
         // synchronously from one thread, so the whole look is held on a
-        // blocking thread; the room's locks are only taken per call.
+        // blocking thread; the workspace's locks are only taken per call.
         let (mutation, beside) = tokio::task::spawn_blocking(move || {
             let mut replica = bot_replica(&governed, &root, bytes, parts)?;
             let mut govern =
-                |change: Change| handle.block_on(govern(&rooms, &governed, &host, &change));
+                |change: Change| handle.block_on(govern(&workspaces, &governed, &host, &change));
             let mut door = chat_door(&mut replica, &mut govern);
             let moderation = door.moderation().unwrap_or_default();
             for person in ModerationAgent::<J>::reported(&moderation) {
@@ -175,16 +186,16 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             self.publish(record.as_str(), mutation).await?;
         }
         let bytes = self.record().await?.unwrap_or_default();
-        self.cursor = Some(reports_since(&self.room, &bytes, None)?.1);
+        self.cursor = Some(reports_since(&self.workspace, &bytes, None)?.1);
         Ok(())
     }
 
-    /// The parts of the chat's messages the room holds, each whole.
+    /// The parts of the chat's messages the workspace holds, each whole.
     async fn parts(&self) -> Result<Vec<(ui::record::RecordId, Vec<u8>)>, String> {
         let mut parts = Vec::new();
         for (app, record) in self
-            .rooms
-            .record_routes(&self.room)
+            .workspaces
+            .record_routes(&self.workspace)
             .await
             .map_err(|error| error.to_string())?
         {
@@ -194,8 +205,8 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                 continue;
             };
             if let Some(bytes) = self
-                .rooms
-                .record_document(&self.room, CHAT, &record)
+                .workspaces
+                .record_document(&self.workspace, CHAT, &record)
                 .await
                 .map_err(|error| error.to_string())?
             {
@@ -206,22 +217,22 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     async fn record(&self) -> Result<Option<Vec<u8>>, String> {
-        self.rooms
-            .record_document(&self.room, CHAT, "")
+        self.workspaces
+            .record_document(&self.workspace, CHAT, "")
             .await
             .map_err(|error| error.to_string())
     }
 
-    /// Put the bot's changes into the room's chat record (`""`) or one of
+    /// Put the bot's changes into the workspace's chat record (`""`) or one of
     /// its parts, as the governor publishes any change: they keep their own
     /// entries, so history names the bot for its installer.
     async fn publish(&self, record: &str, mutation: DocumentMutation) -> Result<(), String> {
         let bytes = match mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
         };
-        self.rooms
+        self.workspaces
             .author_application(
-                &self.room,
+                &self.workspace,
                 &self.host,
                 &AppCatalogue::native(),
                 CHAT,
@@ -240,7 +251,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
 /// Whether a change after `since` filed a report (always, with no cursor
 /// yet), and the record's heads, hex.
 fn reports_since(
-    room: &str,
+    workspace: &str,
     bytes: &[u8],
     since: Option<&[String]>,
 ) -> Result<(bool, Vec<String>), String> {
@@ -250,7 +261,7 @@ fn reports_since(
         return Ok((true, heads));
     };
     let events = tilo_agent_participant::bot::events_since(
-        room,
+        workspace,
         "",
         chat::Chat::KIND,
         doc.document(),
@@ -262,11 +273,11 @@ fn reports_since(
     ))
 }
 
-/// The moderation agent's replica of the room's chat, holding the parts of
+/// The moderation agent's replica of the workspace's chat, holding the parts of
 /// its messages beside it: the root's installation, granted reading and
-/// undoable changes in the room.
+/// undoable changes in the workspace.
 fn bot_replica(
-    room: &str,
+    workspace: &str,
     installer: &str,
     bytes: Vec<u8>,
     parts: Vec<(ui::record::RecordId, Vec<u8>)>,
@@ -275,17 +286,17 @@ fn bot_replica(
     let grant = Grant::new(
         format!("bot:{MODERATION_INSTALLATION}"),
         bot.clone(),
-        TreePath::workspace(room),
+        TreePath::workspace(workspace),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         Subject::person(installer),
     );
-    let standing = Standing::person(WorkspacePolicy::new(room, installer), installer)
+    let standing = Standing::person(WorkspacePolicy::new(workspace, installer), installer)
         .bounded_by(bot, vec![grant]);
     let mut replica = Replica::open(
         &AppCatalogue::native(),
         CHAT,
-        room,
+        workspace,
         &format!("bot:{MODERATION_INSTALLATION}"),
         ReplicaActor::Bot {
             installation: MODERATION_INSTALLATION.into(),
@@ -318,7 +329,7 @@ fn chat_door<'a>(
 
 /// The record `doc` holds, read as this build's `R` once it is brought up to
 /// `R`'s storage version by the app's own migration
-/// ([`tilo_resource::evolution::migrate`]). A room an older relay or older
+/// ([`tilo_resource::evolution::migrate`]). A workspace an older relay or older
 /// devices wrote is read, never refused: a newer relay starts on an older
 /// relay's state. The migration deletes nothing and rewrites no id, and it
 /// is the same change every device migrating the record makes.
@@ -334,8 +345,8 @@ where
     R::read(doc).map_err(|error| error.to_string())
 }
 
-/// The record of `app` a room keeps and seeds: the primary of an app that
-/// keeps one per room (chat), else the room's default record, which every
+/// The record of `app` a workspace keeps and seeds: the primary of an app that
+/// keeps one per workspace (chat), else the workspace's default record, which every
 /// member's first window of the app opens.
 #[must_use]
 pub fn workspace_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &str) -> String {

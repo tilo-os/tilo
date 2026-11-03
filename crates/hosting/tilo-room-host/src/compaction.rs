@@ -28,7 +28,7 @@
 //! The host's snapshot is retained, never fanned out: connected devices
 //! already hold its content. Its certificate is retained beside it, so a
 //! replay carries it first (certificate lineages lead a replay) and a native
-//! shell accepts the host-signed state. Rooms whose replay a native shell
+//! shell accepts the host-signed state. Workspaces whose replay a native shell
 //! selects (a bound `shell_binding`) are left to that selection.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -199,7 +199,7 @@ struct Inner {
 /// Opens a sealed document frame, or refuses it.
 pub(crate) type Opener<'a> = dyn Fn(&collab_types::SignedOp) -> Option<Vec<u8>> + 'a;
 
-/// The content keys of the record channels a host takes part in (the rooms
+/// The content keys of the record channels a host takes part in (the workspaces
 /// it governs as a node that may own workspaces). It is a member of each
 /// channel's group, so it reads and seals a sealed record like any member.
 pub(crate) trait ParticipantKeys: Send + Sync {
@@ -765,7 +765,7 @@ impl Compactor {
     /// the channel the host asked that member about.
     ///
     /// Only the device asked answers, while it still subscribes: removing a
-    /// device from the room drops its subscription at once, though its
+    /// device from the workspace drops its subscription at once, though its
     /// session lives until the next access audit. A statement from anyone
     /// else leaves the request open for the device asked.
     ///

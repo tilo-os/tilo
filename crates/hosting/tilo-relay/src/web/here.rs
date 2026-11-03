@@ -224,7 +224,7 @@ impl SummaryConfig {
 
 /// The configured summarizer of this process, read from the environment
 /// once. An invalid configuration is logged and leaves summaries
-/// deterministic: the room keeps serving, only without model prose.
+/// deterministic: the workspace keeps serving, only without model prose.
 pub(crate) fn from_env() -> Option<Arc<Summarizer>> {
     static CONFIGURED: OnceLock<Option<Arc<Summarizer>>> = OnceLock::new();
     CONFIGURED
@@ -327,7 +327,7 @@ pub(crate) struct Summarizer {
 struct Budget {
     /// When each call of the last hour started, oldest first.
     calls: VecDeque<Instant>,
-    /// Whether running out was logged since the budget last had room.
+    /// Whether running out was logged since the budget last had workspace.
     exhausted_logged: bool,
 }
 
@@ -463,7 +463,7 @@ impl Entry {
 /// device publishing there with the person its grant certified: one whose
 /// page has not posted yet gets a bare line (no name, no status) that pairs
 /// their device with their person. A page learns whose device a member is,
-/// and so the colour the room settles for them, from the first answer after
+/// and so the colour the workspace settles for them, from the first answer after
 /// that member appears, not once their own page gets round to posting.
 pub(crate) fn pair_members(reply: &mut HereReply, members: &[([u8; 32], [u8; 32])]) {
     let listed: HashSet<[u8; 32]> = reply.people.iter().map(|person| person.device).collect();
@@ -941,7 +941,7 @@ mod tests {
 
     /// A member who just joined is paired with their person in the very
     /// first answer anyone gets after they appear, though their own page
-    /// has not posted yet: the colour the room settles for them is known on
+    /// has not posted yet: the colour the workspace settles for them is known on
     /// the first frame, never guessed and corrected later.
     #[test]
     fn the_first_answer_pairs_a_member_whose_page_has_not_posted() {
@@ -1117,7 +1117,7 @@ mod tests {
         assert_eq!(fake.calls(), 3);
         assert!(post([5; 32], &[1], after(start, 300)).1.is_none());
         assert!(post(DEVICE, &[1, 2, 3], after(start, 400)).1.is_none());
-        // An hour after the first call, the budget has room again.
+        // An hour after the first call, the budget has workspace again.
         assert!(post(DEVICE, &[1, 2, 3], after(start, 3600)).1.is_some());
     }
 

@@ -586,7 +586,7 @@ async fn every_web_app_over_the_session() {
     browser.close();
     let retained = host
         .relay
-        .room_records()
+        .workspace_records()
         .retained(workspace())
         .await
         .unwrap();

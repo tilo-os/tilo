@@ -14,18 +14,18 @@ use thiserror::Error;
 pub const METRICS_FILE: &str = "metrics.json";
 
 /// The relay's own state root under the `--state` of `tilo-relay room`: it
-/// keeps [`METRICS_FILE`] there. A room host reads the snapshot from here.
+/// keeps [`METRICS_FILE`] there. A workspace host reads the snapshot from here.
 #[must_use]
-pub fn room_relay_root(room_state: &Path) -> PathBuf {
-    room_state.join("relay")
+pub fn room_relay_root(workspace_state: &Path) -> PathBuf {
+    workspace_state.join("relay")
 }
 
 /// Where the connector workers of a `tilo-relay room` keep their counters as
-/// Prometheus text, one `<app>.prom` each, under its `--state`. A room host
-/// appends these to its metrics page.
+/// Prometheus text, one `<app>.prom` each, under its `--state`. A workspace
+/// host appends these to its metrics page.
 #[must_use]
-pub fn room_textfile_dir(room_state: &Path) -> PathBuf {
-    room_state.join("metrics.d")
+pub fn room_textfile_dir(workspace_state: &Path) -> PathBuf {
+    workspace_state.join("metrics.d")
 }
 
 /// Immutable copy of every relay counter for status reports.
@@ -66,10 +66,11 @@ pub struct MetricsSnapshot {
     /// the counters above).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sessions_open: u64,
-    /// Egress per workspace (relay room), for the frames that belong to one.
-    /// Lists only rooms that were sent something since the daemon started.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub rooms: BTreeMap<u64, RoomEgress>,
+    /// Egress per workspace, for the frames that belong to one. Lists only
+    /// workspaces that were sent something since the daemon started. It keeps
+    /// the key `rooms`, which status readers and dashboards read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "rooms")]
+    pub workspaces: BTreeMap<u64, WorkspaceEgress>,
 }
 
 #[allow(
@@ -80,12 +81,12 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-/// Bytes one relay room's frames put on the wire since the daemon started.
+/// Bytes one relay workspace's frames put on the wire since the daemon started.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RoomEgress {
-    /// Every frame of the room written to a peer session.
+pub struct WorkspaceEgress {
+    /// Every frame of the workspace written to a peer session.
     pub bytes_sent: u64,
-    /// The room's live fan-out frames (deltas and presence), not replay.
+    /// The workspace's live fan-out frames (deltas and presence), not replay.
     pub bytes_sent_live: u64,
 }
 
@@ -140,9 +141,9 @@ mod tests {
             deltas_fanned_out: 9,
             bytes_sent: 1_200,
             bytes_sent_live: 900,
-            rooms: BTreeMap::from([(
+            workspaces: BTreeMap::from([(
                 7,
-                RoomEgress {
+                WorkspaceEgress {
                     bytes_sent: 1_000,
                     bytes_sent_live: 900,
                 },

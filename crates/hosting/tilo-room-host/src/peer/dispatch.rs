@@ -168,7 +168,7 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceRefused { .. }
         | Envelope::VoiceCallList { .. }
         | Envelope::RecordOpened { .. }
-        | Envelope::RoomBootstrap { .. } => Ok(None),
+        | Envelope::WorkspaceBootstrap { .. } => Ok(None),
     }
 }
 

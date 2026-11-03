@@ -3,9 +3,10 @@
 //! checkpoint batch publish through the same steps.
 
 use super::{
-    Arc, Envelope, FanoutStamp, HashMap, Invariant, LiveEnvelope, ReplayCatchup, RoomOperation,
+    Arc, Envelope, FanoutStamp, HashMap, Invariant, LiveEnvelope, ReplayCatchup,
     SelectedPublication, SessionLives, StateCommit, StateDelivery, StateSession, StateSource, Step,
-    Subscriber, captured_live_current, gated_checkpoint_channel, live_audience, mpsc, room_access,
+    Subscriber, WorkspaceOperation, captured_live_current, gated_checkpoint_channel, live_audience,
+    mpsc, workspace_access,
 };
 
 /// A live frame's share of the relay's live-byte budget: `Ok(None)` for a
@@ -97,7 +98,7 @@ pub(super) fn live_budget(envelope: &LiveEnvelope) -> LiveBudget {
 
 /// One frame of a publication, with what its recipients are checked against.
 /// It borrows the frame and its budget, which the publisher holds past the
-/// room's lock, so their last references never drop under it.
+/// workspace's lock, so their last references never drop under it.
 pub(super) struct LiveFrame<'a> {
     envelope: &'a LiveEnvelope,
     budget: &'a LiveBudget,
@@ -117,7 +118,7 @@ impl<'a> LiveFrame<'a> {
         source: Option<&StateSource>,
         host: bool,
     ) -> Self {
-        // The host's own change (a room's or a channel's governance) reaches
+        // The host's own change (a workspace's or a channel's governance) reaches
         // every live device: a governor that rebases or rolls over sends it
         // as checkpoints alone, which no delta before them covers.
         let payloads = &**runtime.store.payloads();
@@ -160,7 +161,7 @@ fn record_reach(
     }
 }
 
-/// Fan one frame out to a commit's captured sessions, under the room's lock.
+/// Fan one frame out to a commit's captured sessions, under the workspace's lock.
 pub(super) struct LiveFanout<'a> {
     pub(super) frame: &'a LiveFrame<'a>,
     /// The frame's source; `None` for a host-authored frame.
@@ -206,13 +207,13 @@ impl LiveFanout<'_> {
         }
         let target = runtime.state_sessions.get(recipient)?;
         // A host-authored frame has no source trust to ask, and
-        // checks the recipient's room listing only.
+        // checks the recipient's workspace listing only.
         let admitted = match self.source {
             Some(source) => source.admits(runtime, &target.peer),
-            None => room_access::listed(
-                room_access::Room::current(runtime),
+            None => workspace_access::listed(
+                workspace_access::WorkspaceFacts::current(runtime),
                 &target.peer,
-                RoomOperation::State,
+                WorkspaceOperation::State,
             ),
         };
         if !admitted {
@@ -227,7 +228,7 @@ impl LiveFanout<'_> {
             return None;
         }
         // An on-demand record's changes go to who opened it; a host this
-        // workspace is attached to keeps all of the room.
+        // workspace is attached to keeps all of the workspace.
         if let crate::store::record_sync::Reach::Opened(channel) = self.frame.reach
             && !runtime.attached(recipient)
             && !runtime.holds_record(recipient, &channel)

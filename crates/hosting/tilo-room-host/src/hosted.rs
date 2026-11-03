@@ -1,31 +1,31 @@
-//! Rooms this host serves for the device of its own person that governs
+//! Workspaces this host serves for the device of its own person that governs
 //! them: a hosting member.
 //!
-//! The governor asks with [`HOST_ROOM`](tilo_relay_session::rooms::HOST_ROOM)
-//! after admitting this host's device to the room, handing it the room as a
+//! The governor asks with [`HOST_ROOM`](tilo_relay_session::workspaces::HOST_ROOM)
+//! after admitting this host's device to the workspace, handing it the workspace as a
 //! joining member gets it (its signed governance, roster and revocations)
 //! and its own signed address. This host then
 //!
-//! - keeps a record of the room under `<state_root>/hosted/<room>.json`, its
-//!   own, never the room's files;
-//! - attaches to the governor's host for the room's workspace, and only
+//! - keeps a record of the workspace under `<state_root>/hosted/<workspace>.json`, its
+//!   own, never the workspace's files;
+//! - attaches to the governor's host for the workspace, and only
 //!   that workspace ([`crate::attach`]): subscribing replays what the
 //!   governor retains, and live fan-out carries the rest both ways;
-//! - follows the room's governance with a replica that governs nothing: each
+//! - follows the workspace's governance with a replica that governs nothing: each
 //!   governance change the governor publishes is verified against the
-//!   room's pinned authority, and the members it admits are what this host
+//!   workspace's pinned authority, and the members it admits are what this host
 //!   admits ([`crate::host::GovernedAccessWriter`]), also while the governor
 //!   is offline;
-//! - answers the governor with its own signed address, which the room's
+//! - answers the governor with its own signed address, which the workspace's
 //!   join answers carry beside the governor's.
 //!
-//! It stops serving the room when the governor's devices ask
-//! ([`UNHOST_ROOM`](tilo_relay_session::rooms::UNHOST_ROOM)) or when the
-//! room's governance no longer admits this host's device. The room's files
+//! It stops serving the workspace when the governor's devices ask
+//! ([`UNHOST_ROOM`](tilo_relay_session::workspaces::UNHOST_ROOM)) or when the
+//! workspace's governance no longer admits this host's device. The workspace's files
 //! stay on disk either way.
 //!
-//! Only a certified host serves rooms for its person this way: a device
-//! hosts the rooms placed on it, and runs nothing for anyone else's.
+//! Only a certified host serves workspaces for its person this way: a device
+//! hosts the workspaces placed on it, and runs nothing for anyone else's.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,49 +43,52 @@ use web_time::SystemTime;
 
 use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
-use crate::rooms::RoomServices;
+use crate::workspaces::WorkspaceServices;
 
-/// Governance changes the follower of one room has yet to take in.
+/// Governance changes the follower of one workspace has yet to take in.
 const NOTICES: usize = 256;
 
-/// What a governor hands the host it asks to serve one of its rooms.
+/// What a governor hands the host it asks to serve one of its workspaces.
 #[derive(Clone, Debug)]
-pub struct HostRoomRequest {
-    /// The room's UUID.
-    pub room: String,
-    /// The room's workspace.
+pub struct HostWorkspaceRequest {
+    /// The workspace's UUID.
+    pub workspace: String,
+    /// The workspace's transport shard.
     pub workspace_id: u64,
-    /// The governor's own signed address for the room.
+    /// The governor's own signed address for the workspace.
     pub governor_hint: TransportHint,
-    /// The room as the governor admits a joining member to it, this host's
+    /// The workspace as the governor admits a joining member to it, this host's
     /// device admitted.
     pub bootstrap: JoinBootstrap,
 }
 
-/// The record a hosting member keeps of each room it serves.
+/// The record a hosting member keeps of each workspace it serves.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct HostedRecord {
-    room: String,
+    /// The workspace's UUID; keeps the key `room` the record was first
+    /// written under.
+    #[serde(rename = "room")]
+    workspace: String,
     workspace_id: u64,
     /// The governor's signed address, postcard in hex.
     governor_hint: String,
-    /// The room as the governor handed it over, postcard in hex.
+    /// The workspace as the governor handed it over, postcard in hex.
     bootstrap: String,
 }
 
 impl HostedRecord {
-    fn of(request: &HostRoomRequest) -> Result<Self, String> {
+    fn of(request: &HostWorkspaceRequest) -> Result<Self, String> {
         Ok(Self {
-            room: request.room.clone(),
+            workspace: request.workspace.clone(),
             workspace_id: request.workspace_id,
             governor_hint: hex::encode(encode(&request.governor_hint)?),
             bootstrap: hex::encode(encode(&request.bootstrap)?),
         })
     }
 
-    fn request(&self) -> Result<HostRoomRequest, String> {
-        Ok(HostRoomRequest {
-            room: self.room.clone(),
+    fn request(&self) -> Result<HostWorkspaceRequest, String> {
+        Ok(HostWorkspaceRequest {
+            workspace: self.workspace.clone(),
             workspace_id: self.workspace_id,
             governor_hint: decode_hex(&self.governor_hint)?,
             bootstrap: decode_hex(&self.bootstrap)?,
@@ -112,17 +115,17 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// The rooms this host serves for its person's governing devices.
+/// The workspaces this host serves for its person's governing devices.
 pub(crate) struct Hosting {
     dir: PathBuf,
-    services: RoomServices,
-    /// Each served room's follower, by room. Dropping one stops the room's
+    services: WorkspaceServices,
+    /// Each served workspace's follower, by workspace. Dropping one stops the workspace's
     /// attach session and its following.
     served: std::sync::Mutex<HashMap<String, AbortOnDrop>>,
 }
 
 impl Hosting {
-    pub(crate) fn new(services: RoomServices) -> Self {
+    pub(crate) fn new(services: WorkspaceServices) -> Self {
         Self {
             dir: services.access.state_root().join("hosted"),
             services,
@@ -130,12 +133,12 @@ impl Hosting {
         }
     }
 
-    fn record_path(&self, room: &str) -> PathBuf {
-        self.dir.join(format!("{room}.json"))
+    fn record_path(&self, workspace: &str) -> PathBuf {
+        self.dir.join(format!("{workspace}.json"))
     }
 
-    /// Serve again every room recorded here, as the host opens. A record
-    /// that no longer holds up is skipped with a warning; its room is
+    /// Serve again every workspace recorded here, as the host opens. A record
+    /// that no longer holds up is skipped with a warning; its workspace is
     /// served again when its governor asks.
     pub(crate) async fn resume(&self) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
@@ -155,12 +158,12 @@ impl Hosting {
             }
             .await;
             if let Err(error) = resumed {
-                tracing::warn!(path = %path.display(), %error, "a hosted room was not served again");
+                tracing::warn!(path = %path.display(), %error, "a hosted workspace was not served again");
             }
         }
     }
 
-    /// Serve `request.room` for its governor, `caller`'s request; answer
+    /// Serve `request.workspace` for its governor, `caller`'s request; answer
     /// this host's own signed address for it. Asked again, it starts over
     /// from what the governor hands it now.
     ///
@@ -168,57 +171,65 @@ impl Hosting {
     ///
     /// This host is not a certified host, the caller or the governor is not
     /// a device of this host's person, the request does not hold up, or the
-    /// room's governance does not admit this host's device.
-    pub(crate) async fn host_room(
+    /// workspace's governance does not admit this host's device.
+    pub(crate) async fn host_workspace(
         &self,
         caller: &DeviceCert,
-        request: &HostRoomRequest,
+        request: &HostWorkspaceRequest,
     ) -> Result<TransportHint, String> {
         let own = &self.services.cert;
         if caller.user_public_key != own.user_public_key {
-            return Err("only its own person's devices ask a host to serve a room".into());
+            return Err("only its own person's devices ask a host to serve a workspace".into());
         }
         if self.services.mode != WorkspaceHostMode::CertifiedHost {
-            return Err("a device hosts only the rooms placed on it".into());
+            return Err("a device hosts only the workspaces placed on it".into());
         }
         let hint = self.serve(request, false).await?;
         let record = HostedRecord::of(request)?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
-        write_durably(&self.dir, &self.record_path(&request.room), &bytes)?;
-        tracing::info!(room = %request.room, workspace_id = request.workspace_id, "serving a room for its governor");
+        write_durably(&self.dir, &self.record_path(&request.workspace), &bytes)?;
+        tracing::info!(workspace = %request.workspace, workspace_id = request.workspace_id, "serving a workspace for its governor");
         Ok(hint)
     }
 
-    /// Stop serving `room`, `caller`'s request: its attach session and
+    /// Stop serving `workspace`, `caller`'s request: its attach session and
     /// following end, nobody is admitted to it here any more, and this
-    /// host's record of it goes. The room's files stay.
+    /// host's record of it goes. The workspace's files stay.
     ///
     /// # Errors
     ///
-    /// The caller is not a device of this host's person, or the room's
+    /// The caller is not a device of this host's person, or the workspace's
     /// access could not be narrowed.
-    pub(crate) async fn unhost_room(
+    pub(crate) async fn unhost_workspace(
         &self,
         caller: &DeviceCert,
-        room: &str,
+        workspace: &str,
     ) -> Result<bool, String> {
         if caller.user_public_key != self.services.cert.user_public_key {
-            return Err("only its own person's devices ask a host to stop serving a room".into());
+            return Err(
+                "only its own person's devices ask a host to stop serving a workspace".into(),
+            );
         }
-        let path = self.record_path(room);
-        // No record: the room was not hosted here. One that does not read
-        // is an error, never "not hosted": that would forget the room while
+        let path = self.record_path(workspace);
+        // No record: the workspace was not hosted here. One that does not read
+        // is an error, never "not hosted": that would forget the workspace while
         // it went on being served.
         let workspace_id = match std::fs::read_to_string(&path) {
             Ok(text) => Some(
                 serde_json::from_str::<HostedRecord>(&text)
-                    .map_err(|error| format!("the room's hosting record does not read: {error}"))?
+                    .map_err(|error| {
+                        format!("the workspace's hosting record does not read: {error}")
+                    })?
                     .workspace_id,
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(format!("the room's hosting record does not read: {error}")),
+            Err(error) => {
+                return Err(format!(
+                    "the workspace's hosting record does not read: {error}"
+                ));
+            }
         };
-        let served = self.served.lock_recover().remove(room).is_some();
+        let served = self.served.lock_recover().remove(workspace).is_some();
         if let Some(workspace_id) = workspace_id {
             stop_serving(&self.services, workspace_id).await?;
         }
@@ -228,17 +239,17 @@ impl Hosting {
             Err(error) => return Err(error.to_string()),
         }
         if served || workspace_id.is_some() {
-            tracing::info!(%room, "no longer serving a room for its governor");
+            tracing::info!(%workspace, "no longer serving a workspace for its governor");
         }
         Ok(served || workspace_id.is_some())
     }
 
     /// Check `request`, admit what its governance admits, and start
-    /// following the room and attaching it to its governor. `resumed` takes
-    /// in what this host retained of the room since it was handed over.
+    /// following the workspace and attaching it to its governor. `resumed` takes
+    /// in what this host retained of the workspace since it was handed over.
     async fn serve(
         &self,
-        request: &HostRoomRequest,
+        request: &HostWorkspaceRequest,
         resumed: bool,
     ) -> Result<TransportHint, String> {
         let services = &self.services;
@@ -248,19 +259,19 @@ impl Hosting {
         governor
             .validate_bootstrap(&request.bootstrap)
             .map_err(|error| error.to_string())?;
-        // The owner device serving the room, whose own address the hint is.
+        // The owner device serving the workspace, whose own address the hint is.
         let authority = governor.host_device_certificate.clone();
-        if governor.room != request.room
+        if governor.room != request.workspace
             || governor.workspace_id != request.workspace_id
             || authority.user_public_key != own.user_public_key
         {
-            return Err("the room is not served by a device of this host's person".into());
+            return Err("the workspace is not served by a device of this host's person".into());
         }
         let now = SystemTime::now();
         let mut peer = replica(&request.bootstrap, now)?;
         if resumed {
-            // What the room published since it was handed over, as this host
-            // retained it; the room's workspace opens with its access.
+            // What the workspace published since it was handed over, as this host
+            // retained it; the workspace opens with its access.
             admit(services, request.workspace_id, &peer, now).await?;
             let retained = services.records.retained(request.workspace_id).await?;
             for body in retained {
@@ -276,23 +287,23 @@ impl Hosting {
             .await
             .get(&request.workspace_id)
             .cloned()
-            .ok_or("the room's workspace did not open")?;
+            .ok_or("the workspace did not open")?;
         let (tap, notices) = tokio::sync::mpsc::channel(NOTICES);
         let replica = Arc::new(HostedReplica {
             peer: std::sync::Mutex::new(peer.clone()),
-            room_host: request.bootstrap.host.clone(),
+            host_device: request.bootstrap.host.clone(),
             generation: request.bootstrap.generation,
         });
         {
             let mut runtime = workspace.lock().await;
-            if runtime.room_authority.is_some() {
-                return Err("this host governs that room itself".into());
+            if runtime.workspace_authority.is_some() {
+                return Err("this host governs that workspace itself".into());
             }
             runtime.governor_tap = Some(tap);
             runtime.hosted_replica = Some(Arc::clone(&replica));
             // The governor is a host this workspace is attached to from the
             // start: the session it answers this host's with keeps all of
-            // the room, on-demand records included, whichever of the two
+            // the workspace, on-demand records included, whichever of the two
             // sessions comes up first.
             runtime.note_attached_host(authority.device_public_key);
         }
@@ -315,29 +326,29 @@ impl Hosting {
                 addr: governor.endpoint_addr.clone(),
                 device: authority.device_public_key,
             },
-            format!("governor of {}", request.room),
+            format!("governor of {}", request.workspace),
             &services.arrivals,
         );
         let follower = Follower {
             services: services.clone(),
-            room: request.room.clone(),
+            workspace: request.workspace.clone(),
             workspace_id: request.workspace_id,
             governor: authority.device_public_key,
-            record: self.record_path(&request.room),
+            record: self.record_path(&request.workspace),
             peer,
             replica,
         };
         let task = tokio::spawn(follower.run(notices, AbortOnDrop(dialer)));
         self.served
             .lock_recover()
-            .insert(request.room.clone(), AbortOnDrop(task));
+            .insert(request.workspace.clone(), AbortOnDrop(task));
         own_hint(services, &governor)
     }
 }
 
-/// This host's own signed address for the room `governor` addresses.
+/// This host's own signed address for the workspace `governor` addresses.
 fn own_hint(
-    services: &RoomServices,
+    services: &WorkspaceServices,
     governor: &IrohWorkspaceHostHintV1,
 ) -> Result<TransportHint, String> {
     let endpoint_addr = services.endpoint.addr();
@@ -359,7 +370,7 @@ fn own_hint(
     .map_err(|error| error.to_string())
 }
 
-/// A replica of the room `bootstrap` hands over, governing nothing: its
+/// A replica of the workspace `bootstrap` hands over, governing nothing: its
 /// governance admitted from the bootstrap's signed messages. Record writes
 /// are not this replica's to follow.
 fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
@@ -371,7 +382,7 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
         now,
     )?;
     // This host's copy: it writes under the host's own actor, never the
-    // one its device's replica of the room writes under.
+    // one its device's replica of the workspace writes under.
     peer.write_as_workspace_host();
     let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
     for bytes in &bootstrap.governance_messages {
@@ -383,7 +394,7 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
         peer.receive_from(origin, message, now)?;
     }
     if !peer.has_governance() {
-        return Err("the room was handed over without its governance".into());
+        return Err("the workspace was handed over without its governance".into());
     }
     Ok(peer)
 }
@@ -394,7 +405,7 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
     let message = match postcard::from_bytes::<NeighbourMsg>(body) {
         Ok(message) => message,
         Err(error) => {
-            tracing::warn!(room = %peer.workspace_id(), %error, "a change the governor published does not decode");
+            tracing::warn!(workspace = %peer.workspace_id(), %error, "a change the governor published does not decode");
             return false;
         }
     };
@@ -404,13 +415,13 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
     match peer.receive_from(TransportOrigin::RetainedRelayDelta(governor), message, now) {
         Ok(outcome) => outcome.changed || outcome.metadata_changed,
         Err(error) => {
-            tracing::debug!(room = %peer.workspace_id(), %error, "a governance change was not taken in");
+            tracing::debug!(workspace = %peer.workspace_id(), %error, "a governance change was not taken in");
             false
         }
     }
 }
 
-/// Admit to the room's workspace exactly the members `peer`'s governance
+/// Admit to the workspace exactly the members `peer`'s governance
 /// admits, opening the workspace when it is not yet.
 ///
 /// # Errors
@@ -418,7 +429,7 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
 /// The governance does not admit this host's device, or the access could not
 /// be written.
 async fn admit(
-    services: &RoomServices,
+    services: &WorkspaceServices,
     workspace_id: u64,
     peer: &StatePeer,
     now: SystemTime,
@@ -428,7 +439,7 @@ async fn admit(
         .member_devices
         .contains(&services.cert.device_public_key)
     {
-        return Err("the room's governance does not admit this host".into());
+        return Err("the workspace's governance does not admit this host".into());
     }
     services
         .access
@@ -438,7 +449,7 @@ async fn admit(
 }
 
 /// Stop handing `workspace_id`'s changes to a follower.
-async fn stop_following(services: &RoomServices, workspace_id: u64) {
+async fn stop_following(services: &WorkspaceServices, workspace_id: u64) {
     let workspace = services.workspaces.lock().await.get(&workspace_id).cloned();
     if let Some(workspace) = workspace {
         let mut runtime = workspace.lock().await;
@@ -447,23 +458,23 @@ async fn stop_following(services: &RoomServices, workspace_id: u64) {
     }
 }
 
-/// This host's replica of a hosted room as subscribing devices see it,
-/// current with each governance change the room's governor published.
+/// This host's replica of a hosted workspace as subscribing devices see it,
+/// current with each governance change the workspace's governor published.
 pub(crate) struct HostedReplica {
     peer: std::sync::Mutex<StatePeer>,
-    /// The device that answered the room's join for its owner.
-    room_host: DeviceCert,
+    /// The device that answered the workspace's join for its owner.
+    host_device: DeviceCert,
     generation: u64,
 }
 
 impl HostedReplica {
-    /// The membership answer `device` builds its replica of the room from
-    /// ([`crate::rooms::member_bootstrap`]).
+    /// The membership answer `device` builds its replica of the workspace from
+    /// ([`crate::workspaces::member_bootstrap`]).
     pub(crate) fn bootstrap(&self, workspace_id: u64, device: &DeviceCert) -> Option<Vec<u8>> {
         let peer = self.peer.lock_recover();
-        crate::rooms::member_bootstrap(
+        crate::workspaces::member_bootstrap(
             &peer,
-            &self.room_host,
+            &self.host_device,
             workspace_id,
             self.generation,
             device,
@@ -474,7 +485,7 @@ impl HostedReplica {
 /// Admit nobody to `workspace_id` any more, stop handing its changes to a
 /// follower, and take it out of this host's registry. Its files stay: a
 /// later request to serve it starts from them.
-async fn stop_serving(services: &RoomServices, workspace_id: u64) -> Result<(), String> {
+async fn stop_serving(services: &WorkspaceServices, workspace_id: u64) -> Result<(), String> {
     stop_following(services, workspace_id).await;
     services
         .access
@@ -492,10 +503,10 @@ async fn stop_serving(services: &RoomServices, workspace_id: u64) -> Result<(), 
     Ok(())
 }
 
-/// Follows one served room's governance.
+/// Follows one served workspace's governance.
 struct Follower {
-    services: RoomServices,
-    room: String,
+    services: WorkspaceServices,
+    workspace: String,
     workspace_id: u64,
     governor: [u8; 32],
     record: PathBuf,
@@ -505,8 +516,8 @@ struct Follower {
 }
 
 impl Follower {
-    /// Take in each change the room's workspace hands over, for as long as
-    /// the room is served. `dialer` attaches the room and ends with it.
+    /// Take in each change the workspace hands over, for as long as
+    /// the workspace is served. `dialer` attaches the workspace and ends with it.
     async fn run(
         mut self,
         mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>,
@@ -524,26 +535,26 @@ impl Follower {
             match admit(&self.services, self.workspace_id, &self.peer, now).await {
                 Ok(()) => {}
                 Err(error) if self.dropped(now) => {
-                    tracing::info!(room = %self.room, %error, "the room's governance no longer admits this host");
+                    tracing::info!(workspace = %self.workspace, %error, "the room's governance no longer admits this host");
                     break;
                 }
                 Err(error) => {
-                    tracing::warn!(room = %self.room, %error, "a hosted room's access was not updated");
+                    tracing::warn!(workspace = %self.workspace, %error, "a hosted room's access was not updated");
                 }
             }
         }
         drop(dialer);
         if self.dropped(SystemTime::now()) {
             if let Err(error) = stop_serving(&self.services, self.workspace_id).await {
-                tracing::warn!(room = %self.room, %error, "a room no longer hosted here was not closed");
+                tracing::warn!(workspace = %self.workspace, %error, "a room no longer hosted here was not closed");
             }
             if let Err(error) = std::fs::remove_file(&self.record) {
-                tracing::debug!(room = %self.room, %error, "the hosted room's record was not removed");
+                tracing::debug!(workspace = %self.workspace, %error, "the hosted room's record was not removed");
             }
         }
     }
 
-    /// Whether the room's governance no longer admits this host's device.
+    /// Whether the workspace's governance no longer admits this host's device.
     fn dropped(&self, now: SystemTime) -> bool {
         self.peer
             .governance()

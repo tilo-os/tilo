@@ -3,17 +3,17 @@
 //! subscriber audit that ends a session whose access lapsed.
 
 use super::{
-    AuthenticatedPeer, Decision, Envelope, PeerError, RoomOperation, SessionCtx, UnavailableReason,
-    mpsc, room_access, unix_now_ns,
+    AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, UnavailableReason,
+    WorkspaceOperation, mpsc, unix_now_ns, workspace_access,
 };
 
 /// Membership + revocation re-check for every workspace this peer is
 /// subscribed to, run when [`AccessAudit`] says. Reloads membership
 /// from disk when the membership watch saw it change, or on every audit
-/// while no live watch covers the room, and ends the session if the
+/// while no live watch covers the workspace, and ends the session if the
 /// device's own cert was revoked or it fell out of membership.
 ///
-/// Returns whether every subscribed room's membership is change-notified,
+/// Returns whether every subscribed workspace's membership is change-notified,
 /// so the next audit can wait for a change instead of the disk.
 pub(super) async fn audit_subscriber_access(
     peer: &AuthenticatedPeer,
@@ -22,7 +22,7 @@ pub(super) async fn audit_subscriber_access(
 ) -> Result<bool, PeerError> {
     let mut watched = true;
     // Relay-wide first, so a revoked or untrusted device ends even with no
-    // bound room left to ask.
+    // bound workspace left to ask.
     session
         .trust()
         .cert(peer, unix_now_ns())
@@ -34,17 +34,17 @@ pub(super) async fn audit_subscriber_access(
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
         watched &= workspace.membership_is_current();
         let lost = (!current_session(&workspace, peer, session.outbound))
-            .then(|| lost_session(&workspace, peer, session, RoomOperation::Subscribe));
-        let decision = session.decide(&workspace, peer, RoomOperation::Subscribe);
+            .then(|| lost_session(&workspace, peer, session, WorkspaceOperation::Subscribe));
+        let decision = session.decide(&workspace, peer, WorkspaceOperation::Subscribe);
         drop(workspace);
         if let Some(lost) = lost {
             return Err(lost);
         }
         // A live subscription was enrolled when it subscribed: a device the
-        // room would only enrol now is no longer a member.
+        // workspace would only enrol now is no longer a member.
         match decision {
             Decision::Admit => {}
-            Decision::AdmitAndEnrol | Decision::Deny(room_access::DenyReason::NotAMember) => {
+            Decision::AdmitAndEnrol | Decision::Deny(workspace_access::DenyReason::NotAMember) => {
                 return Err(PeerError::Protocol(
                     "device was removed from workspace membership".into(),
                 ));
@@ -67,19 +67,20 @@ pub(super) fn session_peer_authorized(peer: &AuthenticatedPeer, session: &Sessio
     session.trust().cert(peer, unix_now_ns()).is_ok()
 }
 
-/// May this connection originate (or receive) a remote action in this room
+/// May this connection originate (or receive) a remote action in this workspace
 /// right now? One rule for v1 `RemoteAction` and v2 `Directed`: a current,
 /// unrevoked, trusted device certificate; an agent only inside its live
-/// delegation; and current room membership. Whether it is the caller's own
+/// delegation; and current workspace membership. Whether it is the caller's own
 /// session is a separate check, since only the caller's channel is known.
 pub(super) fn action_peer_admitted(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<(), UnavailableReason> {
-    // Private authority is explicit and current: a same-owner room enrols an
+    // Private authority is explicit and current: a same-owner workspace enrols an
     // owner device on Subscribe, never here.
-    if !current_action_peer(peer, session) || !session.admits(wr, peer, RoomOperation::RemoteAction)
+    if !current_action_peer(peer, session)
+        || !session.admits(wr, peer, WorkspaceOperation::RemoteAction)
     {
         return Err(UnavailableReason::NotAuthorised);
     }
@@ -100,13 +101,13 @@ pub(super) fn unavailable_target(
 /// Why this connection no longer holds `peer`'s subscriber slot. A newer
 /// connection of the same device took it over while the device is still
 /// let in for `op`: a normal handover (a page that reconnected, a second
-/// tab). Anything else, a slot the room dropped or a device it no longer
+/// tab). Anything else, a slot the workspace dropped or a device it no longer
 /// admits, is the authorization change it is, replaced or not.
 pub(super) fn lost_session(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    op: RoomOperation,
+    op: WorkspaceOperation,
 ) -> PeerError {
     if wr.subscribers.contains_key(&peer.device_public_key)
         && session_peer_authorized(peer, session)

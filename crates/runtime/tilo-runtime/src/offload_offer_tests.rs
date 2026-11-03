@@ -57,7 +57,7 @@ impl Media {
     }
 }
 
-impl RoomMedia for Media {
+impl WorkspaceMedia for Media {
     fn len<'a>(
         &'a self,
         scope: &'a BlobScope,
@@ -278,7 +278,7 @@ fn door(
     request: &OffloadRequest,
 ) -> Arc<dyn ActionOffload> {
     let route = offer_offload(
-        Arc::clone(media) as Arc<dyn RoomMedia>,
+        Arc::clone(media) as Arc<dyn WorkspaceMedia>,
         Arc::clone(peers) as Arc<dyn OffloadPeers>,
     )
     .expect("offload is on");
@@ -383,7 +383,7 @@ fn a_job_never_run_here_is_not_sent_away() {
         content: Vec::new(),
     }));
     let route = offer_offload(
-        Arc::clone(&media) as Arc<dyn RoomMedia>,
+        Arc::clone(&media) as Arc<dyn WorkspaceMedia>,
         Arc::clone(&peers) as Arc<dyn OffloadPeers>,
     )
     .expect("offload is on");
@@ -493,7 +493,7 @@ fn a_job_whose_input_is_not_here_runs_here() {
         content: Vec::new(),
     }));
     let route = offer_offload(
-        Arc::clone(&media) as Arc<dyn RoomMedia>,
+        Arc::clone(&media) as Arc<dyn WorkspaceMedia>,
         Arc::clone(&peers) as Arc<dyn OffloadPeers>,
     )
     .expect("offload is on");
@@ -538,7 +538,7 @@ fn a_route_handed_no_invocation_runs_here() {
 /// Offload turned off installs no route at all: every job runs here.
 #[test]
 fn offload_turned_off_installs_no_route() {
-    let media: Arc<dyn RoomMedia> = Arc::new(Media::default());
+    let media: Arc<dyn WorkspaceMedia> = Arc::new(Media::default());
     let peers: Arc<dyn OffloadPeers> = Arc::new(Peers::new(Reply::Silent));
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(OFFLOAD_ENV, "off");

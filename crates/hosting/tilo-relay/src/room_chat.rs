@@ -1,5 +1,5 @@
-//! The chat a persistent public room opens with: the channels its operator
-//! names, in place of the `#chat` every room opens with, and its `#voice`.
+//! The chat a persistent public workspace opens with: the channels its operator
+//! names, in place of the `#chat` every workspace opens with, and its `#voice`.
 //! Their ids are derived from their names, so what maps onto them (a bridged
 //! Discord server's channels) finds the same ones on every start.
 
@@ -31,7 +31,7 @@ pub(crate) fn channel_id(name: &str) -> String {
 }
 
 /// Give the chat `doc` the starting `channels` (names) while it has only
-/// the `#chat` and `#voice` every room opens with. They take `#chat`'s
+/// the `#chat` and `#voice` every workspace opens with. They take `#chat`'s
 /// place: a visitor's first channel is the operator's first, not an empty
 /// `#chat` apart from the rest, and they list uncategorised above `#voice`,
 /// since the sidebar is titled "Channels" already. `#chat` goes only while
@@ -68,7 +68,7 @@ pub(crate) fn settle_chat(
         if !read {
             target.channels.remove(&opener);
         }
-        // Above `#voice` and whatever else opened the room, in the
+        // Above `#voice` and whatever else opened the workspace, in the
         // operator's order.
         let mut at = target
             .channels
@@ -122,7 +122,7 @@ pub(crate) fn settle_feedback_channel(
         return Ok(());
     }
     let mut target = current.clone();
-    // After the last channel of the room's own, above `#voice`.
+    // After the last channel of the workspace's own, above `#voice`.
     let at = target
         .channels
         .iter()
@@ -188,7 +188,7 @@ mod tests {
         Replica::<R>::new().doc().clone()
     }
 
-    /// The chat as the room's host prepares it: opened with `#chat` and
+    /// The chat as the workspace's host prepares it: opened with `#chat` and
     /// `#voice`.
     fn prepared_chat() -> automerge::AutoCommit {
         let mut doc = record::<chat::Chat>();
@@ -300,7 +300,7 @@ mod tests {
         assert!(chat.categories.is_empty());
     }
 
-    /// The feedback channel is added after the room's channels, and again
+    /// The feedback channel is added after the workspace's channels, and again
     /// after anyone removed it, but never twice.
     #[test]
     fn the_feedback_channel_is_there_on_every_start() {

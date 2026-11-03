@@ -76,7 +76,7 @@ pub(super) async fn handle_remote_action(
         return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
     if to == *session.own_device_public_key {
-        // Never hold the room across the plane: it may take its time.
+        // Never hold the workspace across the plane: it may take its time.
         drop(wr);
         let Some(plane) = session.app_serving else {
             return refuse(U::UnsupportedPeer, "this host does not serve apps");
@@ -207,8 +207,8 @@ fn host_action_envelope(message: tilo_actions::remote::RemoteActionMessage) -> O
 
 /// Write the answer `reply` resolves to on the connection once it is ready;
 /// an answer the plane drops is `abandoned` instead (a refusal, or `None` for
-/// a message that needed no answer). The answer waits for room in the
-/// connection's queue rather than being dropped when the room's own traffic
+/// a message that needed no answer). The answer waits for workspace in the
+/// connection's queue rather than being dropped when the workspace's own traffic
 /// filled it, and ends with the connection.
 fn answer_later(
     reply: tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>,
@@ -241,7 +241,7 @@ fn answer_later(
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the plane has it, so a request that needs an
 /// application's help never stalls this peer's other traffic. `Err` when
-/// the frame cannot be used. The caller was already admitted for the room
+/// the frame cannot be used. The caller was already admitted for the workspace
 /// by [`handle_remote_action`], agent delegation included.
 fn serve_locally(
     peer: &AuthenticatedPeer,

@@ -1358,7 +1358,7 @@ impl WorkspaceStore {
     /// them and every read of what the lineage held.
     ///
     /// A checkpoint is staged so when it starts its lineage (the identity
-    /// record each newcomer of a room retains first), which depends on
+    /// record each newcomer of a workspace retains first), which depends on
     /// nothing retained, or when it stands alone and replaces every record
     /// of the lineage's generation (a device's next access request or
     /// acknowledgement): the generation it replaces is then read here, and

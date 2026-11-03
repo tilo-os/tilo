@@ -1,12 +1,12 @@
 //! The page's door to its workspace's private person conversations: the
 //! toolkit's `ui::person_chat` asks the workspace's governor over this page's
-//! session (`tilo_relay_protocol::rooms::private`), the same door and
+//! session (`tilo_relay_protocol::workspaces::private`), the same door and
 //! governor code a native device reaches over iroh, authenticated by the
 //! device certificate the session proved. Nothing waits on the page thread:
 //! each answer comes back through the toolkit's callbacks.
 
 use tilo_browser_peer::PeerHandle;
-use tilo_relay_protocol::rooms::private::{
+use tilo_relay_protocol::workspaces::private::{
     PrivateCall, PrivateOperation, PrivateReply, read_whole,
 };
 use ui::person_chat::{Answer, AnswerDone, Contact, Conversation, Message, Request, WatchDone};
@@ -72,7 +72,7 @@ impl PagePrivate {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.handle.private_then(
             PrivateCall {
-                room: self.workspace.clone(),
+                workspace: self.workspace.clone(),
                 operation,
             },
             Box::new(move |answer| {

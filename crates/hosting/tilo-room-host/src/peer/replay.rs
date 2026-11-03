@@ -4,9 +4,9 @@
 
 use super::{
     Arc, AsyncWriteExt, AuthenticatedPeer, Envelope, Invariant, PeerError, ReplayAdvance,
-    ReplayHandle, ReplayTicket, RoomOperation, SessionCtx, SharedWorkspace, StateSource, Step,
-    StoreError, WrittenBatch, current_session, encode_charged, room_access, test_point,
-    trace_native_publication, unix_now_ns,
+    ReplayHandle, ReplayTicket, SessionCtx, SharedWorkspace, StateSource, Step, StoreError,
+    WorkspaceOperation, WrittenBatch, current_session, encode_charged, test_point,
+    trace_native_publication, unix_now_ns, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -78,21 +78,21 @@ pub(super) async fn authorize_state_frame(
     authorize_state_recipient(id, subscribed, peer, session).await
 }
 
-/// The room a state frame goes to, and whether it needs this connection to
-/// be the room's current subscriber; `None` for frames that need neither.
+/// The workspace a state frame goes to, and whether it needs this connection to
+/// be the workspace's current subscriber; `None` for frames that need neither.
 const fn state_frame_room(frame: &Envelope) -> Option<(u64, bool)> {
     match frame {
         Envelope::Delta { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
-        | Envelope::RoomBootstrap { workspace_id, .. }
+        | Envelope::WorkspaceBootstrap { workspace_id, .. }
         | Envelope::RetiredPresence { workspace_id, .. } => Some((*workspace_id, true)),
         Envelope::SyncResponse { workspace_id, .. } => Some((*workspace_id, false)),
         _ => None,
     }
 }
 
-/// [`authorize_state_frame`] for a frame to room `id`; `subscribed` frames
-/// (deltas, presence, `Ready`) also need this connection to be the room's
+/// [`authorize_state_frame`] for a frame to workspace `id`; `subscribed` frames
+/// (deltas, presence, `Ready`) also need this connection to be the workspace's
 /// current subscriber.
 #[expect(
     clippy::significant_drop_tightening,
@@ -112,7 +112,7 @@ pub(super) async fn authorize_state_recipient(
         .cloned()
         .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))?;
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session.admits(&wr, peer, RoomOperation::State)
+    if !session.admits(&wr, peer, WorkspaceOperation::State)
         || ((subscribed || wr.subscribers.contains_key(&peer.device_public_key))
             && !current_session(&wr, peer, session.outbound))
     {
@@ -122,13 +122,13 @@ pub(super) async fn authorize_state_recipient(
     }
     Ok(())
 }
-/// Write the room's bootstrap for `peer` ahead of its replay
-/// ([`Envelope::RoomBootstrap`]), in a room this relay governs or hosts for
+/// Write the workspace's bootstrap for `peer` ahead of its replay
+/// ([`Envelope::WorkspaceBootstrap`]), in a workspace this relay governs or hosts for
 /// its governor: what a member device builds its replica from before it
-/// admits the replay. A host attached to the room keeps its own replica and
+/// admits the replay. A host attached to the workspace keeps its own replica and
 /// gets none; this host's own device takes one wherever it
 /// connects, so that the app-serving peer of a host that may act as host
-/// decides its rooms like any other member.
+/// decides its workspaces like any other member.
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     workspace_id: u64,
     ws: &SharedWorkspace,
@@ -144,23 +144,26 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     let (authority, hosted) = {
         let runtime = ws.lock().await;
         (
-            runtime.room_authority.clone(),
+            runtime.workspace_authority.clone(),
             runtime.hosted_replica.clone(),
         )
     };
-    let bootstrap =
-        match authority.and_then(|authority| authority.rooms().map(|rooms| (rooms, authority))) {
-            Some((rooms, authority)) => {
-                rooms
-                    .subscriber_bootstrap(authority.room(), &peer.cert)
-                    .await
-            }
-            None => hosted.and_then(|replica| replica.bootstrap(workspace_id, &peer.cert)),
-        };
+    let bootstrap = match authority.and_then(|authority| {
+        authority
+            .workspaces()
+            .map(|workspaces| (workspaces, authority))
+    }) {
+        Some((workspaces, authority)) => {
+            workspaces
+                .subscriber_bootstrap(authority.workspace(), &peer.cert)
+                .await
+        }
+        None => hosted.and_then(|replica| replica.bootstrap(workspace_id, &peer.cert)),
+    };
     let Some(bootstrap) = bootstrap else {
         return Ok(());
     };
-    let envelope = Envelope::RoomBootstrap {
+    let envelope = Envelope::WorkspaceBootstrap {
         workspace_id,
         bootstrap,
     };
@@ -171,7 +174,7 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// One subscription's replay as [`finish_replay_write`] drives it: the room,
+/// One subscription's replay as [`finish_replay_write`] drives it: the workspace,
 /// its persistence owner, and the replay ticket's authority and catch-up.
 #[derive(Clone, Copy)]
 struct ReplayRun<'r> {
@@ -232,7 +235,7 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         let readying = crate::timing::start();
         authorize_state_frame(&reply, peer, session).await?;
         if let Some((catchup, workspace, source, ticket)) = &completed_replay {
-            test_point!(pause(room workspace, "replay-before-ready")
+            test_point!(pause(workspace workspace, "replay-before-ready")
                 on crate::persistence::handle(workspace).await.workers());
             authorize_replay_boundary(workspace, source, &ticket.authority, catchup).await?;
             if !ticket.authority.bound_active() {
@@ -349,15 +352,15 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
     write: &mut W,
 ) -> Result<WrittenBatch, PeerError> {
     // A batch is authorised once, as presence authorises each
-    // room's run: checked per frame, a crowd's replays queued
-    // every writer in the room on its lock for every frame.
-    let mut rooms: Vec<(u64, bool)> = Vec::new();
-    for room in frames.frames().filter_map(state_frame_room) {
-        if !rooms.contains(&room) {
-            rooms.push(room);
+    // workspace's run: checked per frame, a crowd's replays queued
+    // every writer in the workspace on its lock for every frame.
+    let mut workspaces: Vec<(u64, bool)> = Vec::new();
+    for workspace in frames.frames().filter_map(state_frame_room) {
+        if !workspaces.contains(&workspace) {
+            workspaces.push(workspace);
         }
     }
-    for (id, subscribed) in rooms {
+    for (id, subscribed) in workspaces {
         authorize_state_recipient(id, subscribed, peer, session).await?;
     }
     authorize_replay(
@@ -635,15 +638,15 @@ fn authorize_replay_now(
     let locking = crate::timing::start();
     let runtime = workspace.blocking_lock();
     crate::timing::window("replay.authorize_lock", locking);
-    let room = members.as_deref().map_or_else(
-        || room_access::Room::current(&runtime),
-        |listed| room_access::Room::with_listed(&runtime, listed),
+    let workspace = members.as_deref().map_or_else(
+        || workspace_access::WorkspaceFacts::current(&runtime),
+        |listed| workspace_access::WorkspaceFacts::with_listed(&runtime, listed),
     );
-    let member = room_access::decide_in(
-        room,
+    let member = workspace_access::decide_in(
+        workspace,
         &source.trust(),
         &source.peer,
-        RoomOperation::Replay,
+        WorkspaceOperation::Replay,
         unix_now_ns(),
     )
     .admitted();

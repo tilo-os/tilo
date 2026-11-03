@@ -243,7 +243,7 @@ pub(crate) const ARCHIVE_DIR: &str = "archive-v1";
 
 impl WorkspaceStore {
     /// Take every entry of `channel` out of what any replay reads, and keep
-    /// it in a new archive under [`ARCHIVE_DIR`]: a room's document started
+    /// it in a new archive under [`ARCHIVE_DIR`]: a workspace's document started
     /// over from a base at an admission, and the history before it is no
     /// newcomer's to read, yet stays as it was for those who held it. Must run
     /// on the persistence owner. Returns how many entries it archived.

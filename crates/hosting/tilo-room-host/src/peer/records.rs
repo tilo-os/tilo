@@ -1,7 +1,7 @@
 //! Opening an on-demand record: a record a joining device is not replayed
 //! ([`crate::store::record_sync`]) is sent to it once it asks.
 
-use super::{AuthenticatedPeer, Envelope, PeerError, RoomOperation, SessionCtx};
+use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
 
 /// Handle `OpenRecord`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then send
@@ -35,7 +35,7 @@ pub(super) async fn handle_open_record(
     };
     let store = {
         let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
-        if !session.admits(&runtime, peer, RoomOperation::State) {
+        if !session.admits(&runtime, peer, WorkspaceOperation::State) {
             return refused("device not in workspace membership");
         }
         runtime.hold_record(&peer.device_public_key, channel);

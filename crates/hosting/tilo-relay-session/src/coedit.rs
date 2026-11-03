@@ -407,7 +407,7 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// Ask the room's governor to change its calls; the answer arrives as
+    /// Ask the workspace's governor to change its calls; the answer arrives as
     /// [`VoiceEvent::Result`] carrying `request`.
     ///
     /// # Errors
@@ -448,7 +448,7 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// Ask for the room's calls with who is in each; answered with
+    /// Ask for the workspace's calls with who is in each; answered with
     /// [`VoiceEvent::Calls`].
     ///
     /// # Errors

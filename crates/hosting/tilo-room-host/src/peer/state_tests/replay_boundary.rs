@@ -1,5 +1,5 @@
 //! Live deliveries that reach a session between its subscribe replay's final
-//! cut and its `Ready`, while the room keeps committing.
+//! cut and its `Ready`, while the workspace keeps committing.
 use super::*;
 
 /// Put the recipient's session between a replay's final cut and its `Ready`,
@@ -27,7 +27,7 @@ async fn at_replay_boundary(
     (session.live.clone(), session.lag.clone())
 }
 
-/// A delivery of another room taking the recipient's only queue slot.
+/// A delivery of another workspace taking the recipient's only queue slot.
 async fn fill_with_cross_workspace(fixture: &Fixture) {
     let runtime = fixture.workspace.lock().await;
     let session = &runtime.state_sessions[&fixture.recipient.device_public_key];
@@ -84,7 +84,7 @@ async fn replay_boundary_live_byte_exhaustion_without_lag_fences_exact_session()
 async fn replay_boundary_full_live_queue_lags_instead_of_ending_the_session() {
     let mut fixture = Fixture::with_delivery_capacity(1);
     let (live, lag) = at_replay_boundary(&fixture, true).await;
-    // The room keeps committing while the replay waits to write `Ready`.
+    // The workspace keeps committing while the replay waits to write `Ready`.
     for kind in 3..6 {
         fixture.enqueue(kind).await;
     }
@@ -182,7 +182,7 @@ async fn overflow_before_final_ready_lags_and_ready_still_follows() {
             session.lag.clone().unwrap(),
         )
     };
-    // The live queue is not written until `Ready`: fill it, then the room
+    // The live queue is not written until `Ready`: fill it, then the workspace
     // commits once more.
     while state_tx
         .try_send(StateDelivery {
@@ -212,7 +212,7 @@ async fn overflow_before_final_ready_lags_and_ready_still_follows() {
 async fn replay_fenced_before_final_ready_never_writes_ready() {
     let fixture = Arc::new(Fixture::new());
     let (release, task) = replay_held_before_ready(&fixture).await;
-    // The device leaves the room while its replay waits to write `Ready`.
+    // The device leaves the workspace while its replay waits to write `Ready`.
     let live = {
         let mut runtime = fixture.workspace.lock().await;
         let live = runtime.state_sessions[&fixture.recipient.device_public_key]

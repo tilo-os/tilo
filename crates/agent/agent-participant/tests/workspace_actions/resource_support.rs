@@ -1,7 +1,7 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
 use super::{BTreeMap, Browser, Device, Host, Hosted, RevocationList, ready, start_peer, support};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_relay::rooms::IssueInvitationRequest;
+use tilo_relay::workspaces::IssueInvitationRequest;
 
 pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
@@ -43,7 +43,7 @@ pub(super) async fn admit_person(
 ) {
     let invitation = hosted
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .issue(
             workspace,

@@ -2,7 +2,7 @@
 //! session, addressed to the relay's own device: a workspace's own governance
 //! (`tilo.workspace`) and a member's own business in it (`tilo.member`).
 //! It is the action surface agents, scripts and screen readers use, which
-//! the relay decides by the same `Rooms::authorize` its other doors do.
+//! the relay decides by the same `Workspaces::authorize` its other doors do.
 //!
 //! The answer is taken here, in the actor, rather than on the compositor
 //! thread that delivers every other remote-action answer: the shell asks

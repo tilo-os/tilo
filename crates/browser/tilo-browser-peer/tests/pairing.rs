@@ -382,7 +382,13 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     let person = |key: &SigningKey| key.verifying_key().to_bytes();
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspace = host.relay.rooms().unwrap().create("Lounge").await.unwrap();
+    let workspace = host
+        .relay
+        .workspaces()
+        .unwrap()
+        .create("Lounge")
+        .await
+        .unwrap();
     for guest in [&bob, &dave, &erin] {
         let browser = new_key();
         let browser_cert = guest_certificate(
@@ -395,7 +401,14 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         .unwrap();
         redeem(
             &host,
-            door(&host, &alice, &host_device, &workspace.room, person(guest)).await,
+            door(
+                &host,
+                &alice,
+                &host_device,
+                &workspace.workspace,
+                person(guest),
+            )
+            .await,
             &browser_cert,
             &browser,
         )
@@ -628,7 +641,13 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspace = host.relay.rooms().unwrap().create("Lounge").await.unwrap();
+    let workspace = host
+        .relay
+        .workspaces()
+        .unwrap()
+        .create("Lounge")
+        .await
+        .unwrap();
     let https = host.https();
 
     // Bob came in through the door on his laptop, whose page holds his root.
@@ -645,7 +664,7 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     .unwrap();
     let laptop = enter(
         &host,
-        door(&host, &alice, &host_device, &workspace.room, user).await,
+        door(&host, &alice, &host_device, &workspace.workspace, user).await,
         &laptop_cert,
         &laptop_key,
         &host_device.cert,
@@ -672,7 +691,7 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     // The door lets the phone in as Bob: one member, on two devices.
     let phone_peer = enter(
         &host,
-        door(&host, &alice, &host_device, &workspace.room, user).await,
+        door(&host, &alice, &host_device, &workspace.workspace, user).await,
         &cert,
         &phone_key,
         &host_cert,
@@ -681,9 +700,9 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     .await;
     let summary = host
         .relay
-        .rooms()
+        .workspaces()
         .unwrap()
-        .summary(&workspace.room)
+        .summary(&workspace.workspace)
         .await
         .unwrap();
     let bobs: Vec<_> = summary

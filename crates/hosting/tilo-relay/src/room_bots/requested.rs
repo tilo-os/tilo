@@ -1,12 +1,12 @@
-//! The bots a room asks its host to run.
+//! The bots a workspace asks its host to run.
 //!
-//! A room member who may install bots asks for one from the registry's
-//! directory (`request-bot`); the request is kept in the room's governance,
-//! so every member sees which bots the room wants. The host that governs
-//! the room follows those requests: it installs each requested bot as
+//! A workspace member who may install bots asks for one from the registry's
+//! directory (`request-bot`); the request is kept in the workspace's governance,
+//! so every member sees which bots the workspace wants. The host that governs
+//! the workspace follows those requests: it installs each requested bot as
 //! itself, keeps it a governed member and runs it, and when a request is
 //! taken back it stops the bot and uninstalls it. Bots the operator named
-//! when starting the room are the operator's and are left alone.
+//! when starting the workspace are the operator's and are left alone.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -20,12 +20,12 @@ use tilo_user_identity::DeviceCert;
 
 use super::installed::{self, BotRunner, InstalledBot};
 use super::membership::{HostRootCertifier, keep_renewed};
-use crate::rooms::Rooms;
+use crate::workspaces::Workspaces;
 
-/// How long the host waits before it reads the room's requests again.
+/// How long the host waits before it reads the workspace's requests again.
 const FOLLOW: Duration = Duration::from_secs(30);
 
-/// What following the room's requests changes now.
+/// What following the workspace's requests changes now.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
     /// Requests no bot runs for yet.
@@ -52,7 +52,7 @@ pub fn release(request: &tilo_peer_state::workspace_membership::BotRequest) -> S
     }
 }
 
-/// Compare the room's `requests` with the releases `running` by entry.
+/// Compare the workspace's `requests` with the releases `running` by entry.
 /// Entries in `operator` are the operator's bots: never started or stopped
 /// here.
 #[must_use]
@@ -85,15 +85,15 @@ pub fn plan(
     plan
 }
 
-/// What the host keeps to follow a room's requests.
+/// What the host keeps to follow a workspace's requests.
 pub struct Follower {
-    /// The rooms this host governs.
-    pub rooms: Rooms,
-    /// The room whose requests it follows.
-    pub room: String,
-    /// The host's device in the room, which governs the bots it installs.
+    /// The workspaces this host governs.
+    pub workspaces: Workspaces,
+    /// The workspace whose requests it follows.
+    pub workspace: String,
+    /// The host's device in the workspace, which governs the bots it installs.
     pub host: DeviceCert,
-    /// The room root the host signs its bots' devices and delegations with.
+    /// The workspace root the host signs its bots' devices and delegations with.
     pub root: SigningKey,
     /// The host's state directory; each requested bot keeps its
     /// installation under `requested-bots/<entry>`.
@@ -142,12 +142,12 @@ impl Drop for Followed {
 }
 
 impl Follower {
-    /// Follow the room's requests for as long as the host runs: at once
-    /// when the room's governance changes (a request asked for, replaced or
+    /// Follow the workspace's requests for as long as the host runs: at once
+    /// when the workspace's governance changes (a request asked for, replaced or
     /// taken back), and every so often besides.
     pub async fn run(self) {
         let mut followed = Followed::default();
-        let mut changes = self.rooms.governance_changes();
+        let mut changes = self.workspaces.governance_changes();
         loop {
             self.follow_requests(&mut followed).await;
             let wait = tokio::time::sleep(FOLLOW);
@@ -156,7 +156,7 @@ impl Follower {
                 tokio::select! {
                     () = &mut wait => break,
                     change = changes.recv() => match change {
-                        Ok(room) if room == self.room => break,
+                        Ok(workspace) if workspace == self.workspace => break,
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -169,11 +169,11 @@ impl Follower {
         }
     }
 
-    /// Read the room's requests and start, replace and stop bots to match.
+    /// Read the workspace's requests and start, replace and stop bots to match.
     pub async fn follow_requests(&self, followed: &mut Followed) {
-        match self.rooms.bot_requests(&self.room).await {
+        match self.workspaces.bot_requests(&self.workspace).await {
             Ok(requests) => self.follow(&requests, &mut followed.0).await,
-            Err(error) => tracing::warn!(%error, "could not read the room's bot requests"),
+            Err(error) => tracing::warn!(%error, "could not read the workspace's bot requests"),
         }
     }
 
@@ -189,7 +189,7 @@ impl Follower {
             }
         }
         for request in plan.replace {
-            // The same bot runs the new release: its runs stop, the room's
+            // The same bot runs the new release: its runs stop, the workspace's
             // row takes the new program and grants, and it carries on from
             // where its runs had read up to.
             if let Some(bot) = running.remove(&request.request.entry) {
@@ -242,14 +242,20 @@ impl Follower {
             .connectors_for(&shortcut, &request.request.inputs, &mut bot)
             .await?;
         let certifier = HostRootCertifier::new(self.root.clone());
-        // The room's row names this program and its grants before the bot
+        // The workspace's row names this program and its grants before the bot
         // runs it, so its first changes are judged by them.
-        super::membership::keep_member(&self.rooms, &self.room, &self.host, &certifier, &bot)
-            .await?;
+        super::membership::keep_member(
+            &self.workspaces,
+            &self.workspace,
+            &self.host,
+            &certifier,
+            &bot,
+        )
+        .await?;
         let running = tokio::spawn(
             BotRunner::new(
-                self.rooms.clone(),
-                self.room.clone(),
+                self.workspaces.clone(),
+                self.workspace.clone(),
                 self.host.clone(),
                 certifier.device_key(&bot.installation),
                 bot.clone(),
@@ -261,8 +267,8 @@ impl Follower {
         let installation = bot.installation.clone();
         let tasks = vec![
             tokio::spawn(keep_renewed(
-                self.rooms.clone(),
-                self.room.clone(),
+                self.workspaces.clone(),
+                self.workspace.clone(),
                 self.host.clone(),
                 certifier,
                 bot,
@@ -277,8 +283,8 @@ impl Follower {
     }
 
     /// Start the connectors a requested bot listens to. A member who may
-    /// install bots sets one up as the room's operator would: its secret
-    /// through the room's `set-connector-secret` (kept in this host's store),
+    /// install bots sets one up as the workspace's operator would: its secret
+    /// through the workspace's `set-connector-secret` (kept in this host's store),
     /// its settings as the request's inputs (a bridge's `guild=` and
     /// `server=`). Only the Discord bridge is set up this way.
     ///
@@ -303,14 +309,16 @@ impl Follower {
         let mut settings = BTreeMap::new();
         for app in &wanted {
             if app != discord::APP {
-                return Err(format!("{app} is not a connector a room member can set up"));
+                return Err(format!(
+                    "{app} is not a connector a workspace member can set up"
+                ));
             }
             if !installed::has_connector_secret(app, discord::TOKEN_PURPOSE) {
                 return Err("the Discord bridge waits for its bot token".into());
             }
             let env = discord::link_bridge(
-                &self.rooms,
-                &self.room,
+                &self.workspaces,
+                &self.workspace,
                 &self.host,
                 inputs,
                 bot,
@@ -319,7 +327,7 @@ impl Follower {
             .await?;
             settings.insert(app.clone(), env);
         }
-        let blobs = host.blobs(&self.rooms);
+        let blobs = host.blobs(&self.workspaces);
         installed::start_connectors(&wanted, &self.state, &host.workers, &settings, &blobs).await
     }
 
@@ -334,9 +342,9 @@ impl Follower {
             }
         };
         match self
-            .rooms
+            .workspaces
             .govern_bot(
-                &self.room,
+                &self.workspace,
                 &self.host,
                 WorkspaceMembershipCommand::UninstallBot { installation },
             )
@@ -366,7 +374,7 @@ pub fn bot_dir(state: &Path, entry: &str) -> PathBuf {
     state.join("requested-bots").join(slug)
 }
 
-/// Keep `follower` running beside the room, for as long as the host runs.
+/// Keep `follower` running beside the workspace, for as long as the host runs.
 #[must_use]
 pub fn spawn(follower: Follower) -> tokio::task::JoinHandle<()> {
     tokio::spawn(follower.run())
@@ -450,10 +458,10 @@ mod tests {
 
     #[test]
     fn every_requested_bot_keeps_its_installation_in_a_directory_of_its_own() {
-        let state = Path::new("/var/lib/room");
+        let state = Path::new("/var/lib/workspace");
         assert_eq!(
             bot_dir(state, "so.tilo.bots.standup"),
-            Path::new("/var/lib/room/requested-bots/so.tilo.bots.standup")
+            Path::new("/var/lib/workspace/requested-bots/so.tilo.bots.standup")
         );
         assert_ne!(
             bot_dir(state, "so.tilo.bots.standup"),

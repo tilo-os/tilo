@@ -20,7 +20,7 @@
 //! it only through the `tilo_relay_store::shell` seam, binding through the
 //! adapter [`ShellPayloads::replay`] returns ([`NeighbourReplay`]).
 //! [`retained_proof`] is the historical proof selection judges by: it pairs
-//! a retained room with its snapshots and tails against the pinned governor,
+//! a retained workspace with its snapshots and tails against the pinned governor,
 //! decoding every peer-supplied Automerge body in `tilo_automerge_isolate`.
 //!
 //! An adapter that classifies nothing makes the host keep every entry and
@@ -54,7 +54,7 @@ tilo_automerge_isolate::test_worker!();
 pub struct Route {
     /// Application id.
     pub app_id: String,
-    /// Room (cluster) id.
+    /// Workspace (cluster) id.
     pub cluster_id: String,
     /// Record wire name.
     pub record_id: String,
@@ -89,7 +89,7 @@ pub enum CheckpointKind {
         /// The user public key the list belongs to.
         user: [u8; 32],
     },
-    /// A device's certificate, introducing it to the room: each replaces
+    /// A device's certificate, introducing it to the workspace: each replaces
     /// that device's last.
     Identity,
     /// A compaction baseline: a shell tree or document checkpoint.

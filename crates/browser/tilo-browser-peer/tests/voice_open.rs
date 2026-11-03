@@ -64,12 +64,12 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     let TestHost { relay, web, .. } =
         start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
-    let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
-    enter(&relay, &laptop.cert, &workspace.room).await;
+    let workspace = relay.workspaces().unwrap().create("Lounge").await.unwrap();
+    enter(&relay, &laptop.cert, &workspace.workspace).await;
     let (owner, channel) = create_voice_channel(
         address.clone(),
         workspace.workspace_id,
-        &workspace.room,
+        &workspace.workspace,
         &host.cert,
         &laptop,
     )
@@ -85,7 +85,14 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     // starts for him, though only the owner may end or moderate it.
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+    invite(
+        &relay,
+        &laptop.cert,
+        &workspace.workspace,
+        &bob,
+        &bob_laptop,
+    )
+    .await;
     let bob_link = session(address.clone(), workspace.workspace_id, &bob_laptop).await;
     let opened = wait_for("the governor to learn the voice channel", || {
         let bob_link = &bob_link;
@@ -124,7 +131,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
             &format!("alice-device-{index}"),
             DeviceCapabilities::primary(),
         );
-        enter(&relay, &device.cert, &workspace.room).await;
+        enter(&relay, &device.cert, &workspace.workspace).await;
         links.push(session(address.clone(), workspace.workspace_id, &device).await);
     }
     let mut joined = Vec::new();

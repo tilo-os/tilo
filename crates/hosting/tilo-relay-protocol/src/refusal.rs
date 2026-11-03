@@ -168,7 +168,7 @@ mod older_wording_tests {
     use super::*;
 
     // A host deployed before a workspace was called one everywhere still
-    // sends reasons that name the room. The device reading them classifies
+    // sends reasons that name the workspace. The device reading them classifies
     // them exactly as it classifies the wording it writes now.
     #[test]
     fn a_reason_written_before_the_wording_changed_reads_the_same() {

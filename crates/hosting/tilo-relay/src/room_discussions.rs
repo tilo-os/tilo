@@ -1,8 +1,8 @@
-//! The discussion threads a persistent public room keeps for what is
+//! The discussion threads a persistent public workspace keeps for what is
 //! published outside it.
 //!
 //! A text published elsewhere — an essay on a site, whose readers arrive by
-//! a link naming it — has its discussion in the room's chat: one channel per
+//! a link naming it — has its discussion in the workspace's chat: one channel per
 //! text, named the text's title and about the address it is read at. Its id
 //! comes from the text's slug, so the same text reaches one thread on every
 //! start, whatever order the operator announces them in, and a channel
@@ -23,7 +23,7 @@ const TITLE_MAX: usize = 200;
 /// The longest address a thread is about, in bytes.
 const ADDRESS_MAX: usize = 2048;
 
-/// A text published outside the room, announced so its readers have a
+/// A text published outside the workspace, announced so its readers have a
 /// discussion thread to arrive in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Published {
@@ -36,7 +36,7 @@ impl Published {
     ///
     /// # Errors
     /// The address is not an `http`/`https` one naming a site, or the title
-    /// is blank; either could name no thread, and the room would start with
+    /// is blank; either could name no thread, and the workspace would start with
     /// a thread nobody finds.
     pub fn new(address: &str, title: &str) -> Result<Self, String> {
         let address = address.trim();
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(
             channels(&doc)[0].1,
             "Quiet software, discussed",
-            "a thread the room already keeps is left as it is"
+            "a thread the workspace already keeps is left as it is"
         );
     }
 

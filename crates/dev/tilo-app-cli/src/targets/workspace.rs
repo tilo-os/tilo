@@ -4,7 +4,7 @@
 //! The workspace's host is the SDK's own, `tilo-relay room --persistent`, on
 //! this machine: it governs the workspace, so it keys every record's channel
 //! and what one person does reaches everyone else, and it admits people one
-//! by one as persons of their own (`tilo_relay_protocol::room_operator`).
+//! by one as persons of their own (`tilo_relay_protocol::operator`).
 //! This module is that host's operator and the workspace's door: every
 //! browser that opens the served join page creates a person of its own, asks
 //! `/__tilo/room/join`, and is pre-admitted as an Editor of the workspace.

@@ -10,7 +10,7 @@ use anyhow::Context;
 use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
-use tilo_relay_protocol::room_operator::{self, OperatorCommand, RefusalReason, RoomEvent};
+use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, RefusalReason};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
@@ -286,7 +286,7 @@ pub async fn start_relay_lending(
     lent: Lent,
 ) -> anyhow::Result<HostedRelay> {
     if let Some(max) = env_count("TILO_RELAY_MAX_ROOM_GRANTS") {
-        cfg.max_room_grants = Some(max);
+        cfg.max_workspace_grants = Some(max);
     }
     announce_web_entry(&mut cfg, args);
     let lock =
@@ -310,7 +310,7 @@ pub async fn start_relay_lending(
         let relay =
             tilo_relay::agents::start_serving_records(cfg, identity, None, lent.feedback_reviewer)
                 .await
-                .context("start the relay serving its rooms' records")?;
+                .context("start the relay serving its workspaces' records")?;
         return Ok(HostedRelay {
             relay,
             agents: None,
@@ -684,7 +684,7 @@ async fn approve_every_browser(
             .await
             .context("list agents' questions")?
         {
-            tracing::info!(question = %asked.question(), room = %asked.room, "allowing an agent's action once");
+            tracing::info!(question = %asked.question(), workspace = %asked.workspace, "allowing an agent's action once");
             approver
                 .answer(asked.id, tilo_relay::certify::ConfirmationAnswer::AllowOnce)
                 .await
@@ -727,7 +727,7 @@ async fn approve_every_browser(
                 );
                 tracing::info!(
                     agent = %agent.proposal.label,
-                    rooms = ?agent.proposal.scope.rooms,
+                    workspaces = ?agent.proposal.scope.rooms,
                     apps = ?agent.proposal.scope.apps,
                     pairing_code = %pending.pairing_code,
                     "approving an agent grant"
@@ -905,9 +905,10 @@ pub async fn dev(
     Ok(())
 }
 
-/// `tilo-relay room`.
+/// `tilo-relay room`: the subcommand keeps the name deployed hosts and
+/// ops scripts run.
 #[derive(clap::Args, Clone, Debug)]
-pub struct RoomArgs {
+pub struct WorkspaceArgs {
     #[command(flatten)]
     pub web: WebArgs,
     /// The room's throwaway user root, host device and documents. The
@@ -1046,7 +1047,7 @@ async fn approve_admitted(
     root: &SigningKey,
     mut operator: tokio::sync::mpsc::Receiver<OperatorLine>,
     mut admissions: Admissions,
-    mut report: impl FnMut(RoomEvent),
+    mut report: impl FnMut(OperatorEvent),
 ) -> anyhow::Result<()> {
     loop {
         if !admissions.codes.is_empty() {
@@ -1077,7 +1078,7 @@ async fn approve_admitted(
                                 .await
                                 .context("deny a certification request")?;
                         }
-                        RoomEvent::AdmitRefused {
+                        OperatorEvent::AdmitRefused {
                             pairing_code,
                             reason,
                         }
@@ -1105,11 +1106,11 @@ async fn approve_admitted(
                 )) => {
                     // Not the command itself: a wait-list command carries an
                     // email address, which no log keeps.
-                    anyhow::bail!("a short-lived room takes no command but admit and shutdown");
+                    anyhow::bail!("a short-lived workspace takes no command but admit and shutdown");
                 }
                 Some(Err(error)) => {
-                    tracing::error!(%error, "unreadable room operator line");
-                    anyhow::bail!("unreadable room operator line: {error}");
+                    tracing::error!(%error, "unreadable workspace operator line");
+                    anyhow::bail!("unreadable workspace operator line: {error}");
                 }
             },
         }
@@ -1122,7 +1123,7 @@ async fn certify_admitted(
     approver: &mut tilo_relay_client::Approver,
     root: &SigningKey,
     pending: tilo_relay::certify::PendingCertification,
-) -> anyhow::Result<RoomEvent> {
+) -> anyhow::Result<OperatorEvent> {
     let decision = issue_device_cert(
         &pending.request,
         root,
@@ -1142,13 +1143,13 @@ async fn certify_admitted(
         .await
         .context("answer a certification request")?;
     Ok(if certified {
-        RoomEvent::MemberCertified {
+        OperatorEvent::MemberCertified {
             device: hex::encode(pending.request.device_public_key),
             label: pending.request.device_label,
             pairing_code: pending.pairing_code,
         }
     } else {
-        RoomEvent::AdmitRefused {
+        OperatorEvent::AdmitRefused {
             pairing_code: pending.pairing_code,
             reason: RefusalReason::PolicyDenied,
         }
@@ -1158,7 +1159,7 @@ async fn certify_admitted(
 /// A short-lived shared room: a throwaway user root kept under `--state`,
 /// the browser listener, and an approver that certifies only the browsers
 /// the operator admits. It speaks [`room_operator`]: commands on stdin,
-/// events on stdout, starting with [`RoomEvent::Started`].
+/// events on stdout, starting with [`OperatorEvent::Started`].
 ///
 /// # Errors
 /// The state directory, relay or listener cannot be set up.
@@ -1166,8 +1167,8 @@ async fn certify_admitted(
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
 )]
-pub async fn room(
-    args: RoomArgs,
+pub async fn workspace(
+    args: WorkspaceArgs,
     shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     // Every change the room receives is decided against its app's surface,
@@ -1183,15 +1184,15 @@ pub async fn room(
     }
     let state = args.state;
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
-    let listen = args.web.web.context("a room needs --web")?;
+    let listen = args.web.web.context("a workspace needs --web")?;
     let operator = operator_lines()?;
     let [root, host, approver_key] = dev_identity(&state)?;
     let user = root.verifying_key().to_bytes();
-    let host_cert = enrol(&root, &host, "room host", DeviceCapabilities::host())?;
+    let host_cert = enrol(&root, &host, "workspace host", DeviceCapabilities::host())?;
     let approver_cert = enrol(
         &root,
         &approver_key,
-        "room approver",
+        "workspace approver",
         DeviceCapabilities::primary(),
     )?;
     let config = tilo_relay::RelayConfig {
@@ -1218,14 +1219,14 @@ pub async fn room(
         .context("start the browser listener")?;
     println!(
         "{}",
-        RoomEvent::Started {
-            version: room_operator::VERSION,
+        OperatorEvent::Started {
+            version: operator::VERSION,
             origin: web.origin.clone(),
             plain_origin: web.plain_origin.clone(),
             user_public_key: hex::encode(user),
             certificate_sha256: web.certificate_sha256.clone(),
             allowed_origins: args.web.allowed_origins.clone(),
-            room: None,
+            workspace: None,
         }
         .to_line()
     );
@@ -1241,13 +1242,13 @@ pub async fn room(
         &RevocationList::new(),
     )
     .await
-    .context("connect the room approver")?;
+    .context("connect the workspace approver")?;
     tokio::select! {
         result = approve_admitted(
             approver,
             &root,
             operator,
-            Admissions::new(Duration::from_secs(room_operator::ADMIT_WAIT_SECS)),
+            Admissions::new(Duration::from_secs(operator::ADMIT_WAIT_SECS)),
             |event| println!("{}", event.to_line()),
         ) => result?,
         result = shutdown => result?,
@@ -1503,7 +1504,7 @@ mod tests {
         assert_eq!(
             lines.recv().await,
             Some(Ok(OperatorCommand::Shutdown {})),
-            "the operator closing stdin ends the room"
+            "the operator closing stdin ends the workspace"
         );
     }
 
@@ -1519,11 +1520,11 @@ mod tests {
         iroh::endpoint::Endpoint,
     ) {
         let [root, host, approver_key] = [key(), key(), key()];
-        let host_cert = enrol(&root, &host, "room host", DeviceCapabilities::host()).unwrap();
+        let host_cert = enrol(&root, &host, "workspace host", DeviceCapabilities::host()).unwrap();
         let approver_cert = enrol(
             &root,
             &approver_key,
-            "room approver",
+            "workspace approver",
             DeviceCapabilities::primary(),
         )
         .unwrap();
@@ -1604,7 +1605,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(10), reported.recv())
                 .await
                 .expect("an unmatched code was never refused"),
-            Some(RoomEvent::AdmitRefused {
+            Some(OperatorEvent::AdmitRefused {
                 pairing_code: wrong.into(),
                 reason: RefusalReason::NoMatchingRequest,
             })
@@ -1624,7 +1625,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(20), reported.recv())
                 .await
                 .expect("the admitted browser was never certified"),
-            Some(RoomEvent::MemberCertified {
+            Some(OperatorEvent::MemberCertified {
                 device,
                 label: "Browser".into(),
                 pairing_code: code,

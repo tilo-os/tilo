@@ -238,7 +238,7 @@ impl CertificationProtocol {
             || proposal.delegate.installation().is_some_and(str::is_empty)
             || proposal.scope.rooms.is_empty()
         {
-            return Err("a delegate proposal names its delegate and rooms".into());
+            return Err("a delegate proposal names its delegate and workspaces".into());
         }
         self.enqueue_with(request, Some(proposal), now_ns, false, None)
             .map(|(digest, code, _)| (digest, code))
@@ -619,7 +619,7 @@ mod confirmation_tests {
             action_label: "Clear history".into(),
             resource_label: "Calculator".into(),
             risk: "destructive".into(),
-            room: "room".into(),
+            workspace: "room".into(),
             expires_at_ns: unix_now_ns().saturating_add(u64::try_from(wait.as_nanos()).unwrap()),
         }
     }

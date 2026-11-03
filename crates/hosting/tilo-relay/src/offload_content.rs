@@ -29,8 +29,8 @@ pub enum BindError {
     /// The local bytes do not match the manifest.
     #[error("the file's local content does not match its manifest")]
     Integrity,
-    /// Where the rooms' media is kept did not answer.
-    #[error("the room's media: {0}")]
+    /// Where the workspaces' media is kept did not answer.
+    #[error("the workspace's media: {0}")]
     Media(String),
 }
 

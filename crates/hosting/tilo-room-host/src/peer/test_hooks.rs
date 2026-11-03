@@ -7,28 +7,28 @@ use super::SharedWorkspace;
 ///
 /// Outside `cfg(test)` every form expands to nothing and none of its
 /// arguments is evaluated, so a point costs production nothing. A root is a
-/// `&Path` expression, or `room WS` for the store root of the
-/// `SharedWorkspace` `WS`, read under the room's lock and released before
+/// `&Path` expression, or `workspace WS` for the store root of the
+/// `SharedWorkspace` `WS`, read under the workspace's lock and released before
 /// the barrier is reached.
 ///
 /// - `pause(ROOT, "name")` waits while a test holds the barrier.
 /// - `signal(ROOT, "name")` reports the point reached, without waiting.
 /// - `check(ROOT, "name")?` pauses, then returns the failure a test injected.
 /// - `pause(ROOT, "name") on WORKERS` pauses on a blocking worker of the
-///   `WORKERS` pool, so the room's async owner is not parked.
+///   `WORKERS` pool, so the workspace's async owner is not parked.
 /// - `if COND => POINT` reaches `POINT` only when `COND` holds.
 /// - `if COND => check(ROOT, "name") else VALUE = FAULT` rebinds `VALUE` to
 ///   `FAULT` when `COND` holds and the check fails; `ROOT` is read only when
 ///   `COND` holds.
 macro_rules! test_point {
-    (if $cond:expr => $op:ident(room $workspace:expr, $name:literal) $($rest:tt)*) => {
+    (if $cond:expr => $op:ident(workspace $workspace:expr, $name:literal) $($rest:tt)*) => {
         crate::peer::test_hooks::test_point!(
             if $cond => $op(
                 &crate::peer::test_hooks::store_root(&$workspace).await, $name
             ) $($rest)*
         )
     };
-    ($op:ident(room $workspace:expr, $name:literal) $($rest:tt)*) => {
+    ($op:ident(workspace $workspace:expr, $name:literal) $($rest:tt)*) => {
         crate::peer::test_hooks::test_point!(
             $op(&crate::peer::test_hooks::store_root(&$workspace).await, $name) $($rest)*
         )

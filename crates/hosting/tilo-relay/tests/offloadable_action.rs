@@ -28,13 +28,13 @@ use tilo_peer_state::actions::{ActionPlane, NoActions};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
-use tilo_relay::host::{HostConfig, HostIdentity, HostMode, RoomHost};
+use tilo_relay::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 use tilo_relay::host_jobs::ComputeJobs;
-use tilo_relay::rooms::IssueInvitationRequest;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{ComputeContentStore, ComputeSandbox, ComputeSandboxInvocation};
 use tilo_runtime::offload::{
-    BindError, MediaFuture, OutputContent, PlanePeers, RoomMedia, offer_offload,
+    BindError, MediaFuture, OutputContent, PlanePeers, WorkspaceMedia, offer_offload,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -147,7 +147,7 @@ impl Media {
     }
 }
 
-impl RoomMedia for Media {
+impl WorkspaceMedia for Media {
     fn len<'a>(
         &'a self,
         _scope: &'a BlobScope,
@@ -215,7 +215,7 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
 /// A host governing its own workspaces, on its own endpoint, routed as its
 /// embedder routes it.
 struct Hosted {
-    host: RoomHost,
+    host: WorkspaceHost,
     _router: Router,
     _state: tempfile::TempDir,
 }
@@ -223,7 +223,7 @@ struct Hosted {
 async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
     let state = tempfile::tempdir().unwrap();
     let endpoint = device_endpoint(device).await;
-    let host = RoomHost::open(
+    let host = WorkspaceHost::open(
         HostConfig::new(state.path().to_path_buf(), HostMode::Device),
         HostIdentity {
             user_public_key: user.user_pk,
@@ -259,7 +259,7 @@ async fn invited(
 ) {
     let invitation = hosted
         .host
-        .rooms()
+        .workspaces()
         .issue(
             workspace,
             hosted.host.device_cert(),
@@ -383,8 +383,8 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // are the workspace's, so the device that asks reads them exactly where
     // the host does.
     let hosted = host_on(&owner, &desk).await;
-    let created = hosted.host.rooms().create("Photos").await.unwrap();
-    let workspace = created.room.clone();
+    let created = hosted.host.workspaces().create("Photos").await.unwrap();
+    let workspace = created.workspace.clone();
     let content = Arc::new(Media::default());
     let photographs: Vec<Vec<u8>> = (0..IMAGES)
         .map(|seed| photograph(u32::try_from(seed).unwrap()))
@@ -406,7 +406,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     };
     hosted
         .host
-        .rooms()
+        .workspaces()
         .run_jobs(jobs(Arc::clone(&content), "host"));
 
     // The laptop is a member device of the workspace: it joined it, as any
@@ -423,8 +423,11 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
         Arc::clone(&content) as Arc<dyn OutputContent>,
         tokio::runtime::Handle::current(),
     );
-    let route = offer_offload(Arc::clone(&content) as Arc<dyn RoomMedia>, Arc::new(peers))
-        .expect("offload is not turned off");
+    let route = offer_offload(
+        Arc::clone(&content) as Arc<dyn WorkspaceMedia>,
+        Arc::new(peers),
+    )
+    .expect("offload is not turned off");
 
     // An agent asks for thumbnails of every photograph, one named twice.
     let mut named = hashes.clone();
@@ -488,7 +491,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // and the action stays here.
     hosted
         .host
-        .rooms()
+        .workspaces()
         .run_jobs(jobs(Arc::new(Media::default()), "empty"));
     let third = tilo_test_env::within(
         "the round the host no longer wins",
@@ -504,7 +507,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // nobody to ask, so the action stays here rather than waiting for an
     // answer that cannot come.
     let unconnected = offer_offload(
-        Arc::clone(&content) as Arc<dyn RoomMedia>,
+        Arc::clone(&content) as Arc<dyn WorkspaceMedia>,
         Arc::new(
             PlanePeers::new(
                 plane,
@@ -542,7 +545,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
 /// job is refused where it is sent, and the offer a full host answers says so.
 #[tokio::test]
 async fn a_host_at_its_capacity_takes_no_second_job() {
-    use tilo_room_host::rooms::HostJobs as _;
+    use tilo_room_host::workspaces::HostJobs as _;
     let desk = TestUser::fresh("capacity host").enrol("desk", DeviceCapabilities::primary());
     let root = tempfile::tempdir().unwrap();
     let content = Arc::new(Media::default());
@@ -600,7 +603,7 @@ async fn a_host_at_its_capacity_takes_no_second_job() {
 /// run, and runs the action itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_refuses_a_job_it_does_not_hold_the_inputs_for() {
-    use tilo_room_host::rooms::HostJobs as _;
+    use tilo_room_host::workspaces::HostJobs as _;
     let desk = TestUser::fresh("job host").enrol("desk", DeviceCapabilities::primary());
     let root = tempfile::tempdir().unwrap();
     let (package, _) = installed_package(&root.path().join("host"), PACKAGE, ENTRYPOINT);
