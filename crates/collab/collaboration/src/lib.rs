@@ -1429,7 +1429,11 @@ impl CollaborationManager {
             Ok(()) => self.action_directory = DirectoryOffer::Published,
             // A transport that serves no directory is asked again only on a new route.
             Err(TransportError::Unsupported) => self.action_directory = DirectoryOffer::Unsupported,
-            Err(_) => {}
+            Err(error) => {
+                // The offer stays unoffered, so a later publish asks again;
+                // until then the app's actions are not offered to anyone.
+                tracing::warn!(%error, "collab: action directory offer failed");
+            }
         }
     }
 
@@ -1679,7 +1683,7 @@ impl CollaborationManager {
         // custody and applying the existing certification/commit policy.
         let result = self.submit(TransportCommand::ToRoute(route, req));
         if let Err(error) = &result {
-            tracing::debug!(%error, cause = "transport_queue_refusal", "document route handoff refused");
+            tracing::warn!(%error, cause = "transport_queue_refusal", "document route handoff refused");
         }
         Ok(result?)
     }

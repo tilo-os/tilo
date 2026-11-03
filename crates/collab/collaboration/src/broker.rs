@@ -113,7 +113,7 @@ async fn publish_presence(
     publish: impl std::future::Future<Output = Result<(), runtime_portal::NotAvailable>>,
 ) {
     if let Err(error) = publish.await {
-        tracing::debug!(%error, presence = what, "collab: presence publish refused");
+        tracing::warn!(%error, presence = what, "collab: presence publish refused");
     }
 }
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
@@ -3697,7 +3697,7 @@ fn follow_channel_keys(
                     return;
                 }
                 Err(error) => {
-                    tracing::debug!(%error, "collab: the broker does not say when channel keys change; asking on a timer");
+                    tracing::info!(%error, "collab: the broker does not say when channel keys change; asking on a timer");
                     let _ = signals.send(KeySignal::Unpushed);
                     return;
                 }
@@ -4557,6 +4557,8 @@ async fn ensure_sdk_route(
         tracing::warn!(%error, "collab: late-join snapshot request failed");
     }
 
+    // Each of these lanes is optional: without it the channel runs, and the
+    // warn the `map_err` closure writes says which feature it lost and why.
     let checks = super::approved_checks::register(channel_id.clone(), channel.clone())
         .map_err(|error| {
             tracing::warn!(%error, "collab: approved project check lane unavailable");
@@ -6207,12 +6209,12 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::OfferContent { hash, bytes } => {
             if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {
-                tracing::debug!(%error, %hash, "collab: offering record content failed");
+                tracing::warn!(%error, %hash, "collab: offering record content failed");
             }
         }
         CollabRequest::WantContent { hash } => {
             if let Err(error) = route.channel.want_blob(&hash).await {
-                tracing::debug!(%error, %hash, "collab: asking for record content failed");
+                tracing::warn!(%error, %hash, "collab: asking for record content failed");
             }
         }
         CollabRequest::RequestDocumentSnapshot => {
@@ -6345,7 +6347,12 @@ async fn dispatch_sdk_request(
                         .collect();
                     (ops, payloads, oldest_seq, batch.done)
                 }
-                Err(_) => (Vec::new(), Vec::new(), None, true),
+                Err(error) => {
+                    // The app is told the history ends here, so the reason it
+                    // saw nothing must be in the journal.
+                    tracing::warn!(%error, "collab: scrollback could not be read; the app is told history ends here");
+                    (Vec::new(), Vec::new(), None, true)
+                }
             };
             let _ = inbound_tx
                 .send_document(CollabEvent::ScrollbackBatch {

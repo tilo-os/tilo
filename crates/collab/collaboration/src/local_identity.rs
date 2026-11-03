@@ -177,7 +177,10 @@ fn bound_metadata() -> Option<runtime_identity::IdentityMetadata> {
             let path = environment.paths.public_identity_record.as_deref()?;
             runtime_identity::load_metadata_from_path(path).ok()
         }
-        Err(_) => None,
+        Err(error) => {
+            tracing::warn!(%error, "the bound identity record could not be read; this app runs with no local identity");
+            None
+        }
     }
 }
 

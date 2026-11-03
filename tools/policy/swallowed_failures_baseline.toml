@@ -3,16 +3,6 @@
 # --update records a file that shed some. Report the error, or mark a
 # genuinely ignorable failure with `// ignored-failure: <why>`.
 [files]
-"crates/collab/collaboration/src/action_directory/effective.rs" = 1
-"crates/collab/collaboration/src/app_surface.rs" = 4
-"crates/collab/collaboration/src/broker.rs" = 5
-"crates/collab/collaboration/src/broker_key_fetch.rs" = 1
-"crates/collab/collaboration/src/change_waits.rs" = 4
-"crates/collab/collaboration/src/lib.rs" = 2
-"crates/collab/collaboration/src/local_identity.rs" = 1
-"crates/collab/collaboration/src/peer.rs" = 1
-"crates/collab/collaboration/src/record.rs" = 2
-"crates/collab/collaboration/src/record/file_identity.rs" = 1
 "crates/sdk/tilo-app/src/framework/chain.rs" = 2
 "crates/sdk/tilo-app/src/framework/controls.rs" = 2
 "crates/sdk/tilo-app/src/framework/dispatch.rs" = 1
