@@ -80,8 +80,7 @@ impl AppLists {
         // the loop (`crate::app_icons::entry_icon`) finds it read already.
         let scan = desktop_entry::cache::cached_scan();
         // An installed Tilo app may keep a desktop entry of its own, as its
-        // bundle does; that entry is the same app, listed once
-        // (`applications`) and not again as one of the machine's.
+        // bundle does: that entry is the same app, listed once.
         let tilo_apps =
             app_catalogue::Installed::from_ids(installed.iter().map(|app| app.package_id.clone()));
         // The entries Tilo keeps for the person's downloaded programs are
@@ -91,12 +90,7 @@ impl AppLists {
         let host_apps = scan
             .entries
             .iter()
-            .filter(|entry| {
-                !entry.no_display
-                    && !entry.hidden
-                    && entry.downloaded.is_none()
-                    && !tilo_apps.contains(&entry.id)
-            })
+            .filter(|entry| machine_entry(entry, &tilo_apps))
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -343,6 +337,19 @@ fn listed_apps(
     });
     listed.truncate(MAX_LISTED_APPS);
     listed
+}
+
+/// Whether a desktop entry is one of the machine's own to list: it shows,
+/// is not a program Tilo downloaded (search lists those itself), and is not
+/// an installed Tilo app's own entry — that app is listed as itself.
+fn machine_entry(
+    entry: &desktop_entry::DesktopEntry,
+    tilo_apps: &app_catalogue::Installed,
+) -> bool {
+    !entry.no_display
+        && !entry.hidden
+        && entry.downloaded.is_none()
+        && !tilo_apps.contains(&entry.id)
 }
 
 /// Each app's declared reach of the action door, from its signed manifest:
