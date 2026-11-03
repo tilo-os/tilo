@@ -267,6 +267,7 @@ impl HistoryOwner {
             sent: &mut crate::state::DocumentFrontier,
             needs_snapshot: bool,
             blocked: bool,
+            own: &crate::state::WritingActors,
             provenance: &crate::invocation_scope::InvocationProvenance,
         ) -> OwnedDocumentPublication {
             if document.pending_ops() != 0 {
@@ -295,7 +296,7 @@ impl HistoryOwner {
             let mutation = if needs_snapshot {
                 collab_types::DocumentMutation::Snapshot(document.save())
             } else {
-                let delta = sent.delta(&mut document);
+                let delta = sent.delta(&mut document, own);
                 if delta.is_empty() {
                     // What arrived is all the document gained, and the
                     // destination delivered it: it is missing nothing, and
@@ -319,6 +320,12 @@ impl HistoryOwner {
         let provenance = store
             .invocation_provenance(&checkout.id)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
+        // The writers this replica writes the record as: a change an action
+        // made as another collaborator is this replica's own even though the
+        // document now writes as the record's writer again.
+        let own = store
+            .writing_actors(&checkout.id)
+            .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
         match &self.0 {
             OwnerKind::Component(binding) => binding
                 .read_document(outer, |document, _| {
@@ -327,6 +334,7 @@ impl HistoryOwner {
                         sent,
                         needs_snapshot,
                         blocked,
+                        &own,
                         &provenance.borrow(),
                     )
                 })
@@ -350,6 +358,7 @@ impl HistoryOwner {
                             sent,
                             needs_snapshot,
                             blocked,
+                            &own,
                             &provenance.borrow(),
                         )
                     })
