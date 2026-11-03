@@ -122,7 +122,7 @@ pub enum HostError {
     #[error("governed access: {0}")]
     GovernedAccess(String),
     /// The workspaces could not be opened.
-    #[error("governed rooms: {0}")]
+    #[error("governed workspaces: {0}")]
     Workspaces(String),
     /// A member's handshake failed.
     #[error("handshake: {0}")]

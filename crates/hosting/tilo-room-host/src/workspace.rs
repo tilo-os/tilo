@@ -77,11 +77,11 @@ pub struct WorkspaceRuntime {
     /// retained body a device's admitted delta carries. Bounded; a full queue
     /// drops the notice.
     pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
-    /// The in-process authority governing this workspace's workspace, if any: it
+    /// The in-process authority governing this workspace, if any: it
     /// answers the workspace's calls.
     pub workspace_authority: Option<crate::workspaces::WorkspaceAuthority>,
     /// This host's replica of a workspace it hosts for a governor elsewhere, if
-    /// it hosts this workspace's workspace: what a subscribing device builds its
+    /// it hosts this workspace: what a subscribing device builds its
     /// own replica from.
     pub(crate) hosted_replica: Option<std::sync::Arc<crate::hosted::HostedReplica>>,
     /// The standing of each member device, as the workspace's governor projects

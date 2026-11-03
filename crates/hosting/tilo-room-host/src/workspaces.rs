@@ -5,7 +5,7 @@
 //! removes members, and publishes each decision as signed workspace governance
 //! every member verifies. Here that authority is the relay hosting the workspace.
 //! Its own device is the workspace's governor: it keeps the workspace's [`StatePeer`],
-//! publishes governance as its own retained changes of the workspace's workspace,
+//! publishes governance as its own retained changes of the workspace,
 //! and hands the governed member set to the relay's admission after every
 //! decision, so a member it admits can subscribe at once and a member it
 //! removes is cut off.
@@ -437,17 +437,17 @@ impl GovernedWorkspace {
         let (version, _) =
             postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
         if version != RECORD_VERSION {
-            return Err(format!("room record version {version} is unknown"));
+            return Err(format!("workspace record version {version} is unknown"));
         }
         let record: WorkspaceRecord =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
         if record.authority != *authority {
-            return Err("room is governed by a different device".into());
+            return Err("workspace is governed by a different device".into());
         }
         if !crate::room_workspace_id_matches(&record.workspace, record.workspace_id)
             || record.published > record.outgoing.len()
         {
-            return Err("room record is inconsistent".into());
+            return Err("workspace record is inconsistent".into());
         }
         let mut parts = peer_parts::PeerParts::open(&path)?;
         let mut peer = StatePeer::restore(
@@ -531,7 +531,9 @@ impl GovernedWorkspace {
                 .and_then(|message| {
                     neighbour_wire::retention(&message, entry.checkpoint)
                         .map(|(channel, _)| channel)
-                        .ok_or_else(|| "room governance message has no retention channel".into())
+                        .ok_or_else(|| {
+                            "workspace governance message has no retention channel".into()
+                        })
                 });
             let channel = match channel {
                 Ok(channel) => channel,
@@ -706,7 +708,7 @@ impl GovernedWorkspace {
             .record
             .generation
             .checked_add(1)
-            .ok_or("room generation exhausted")?;
+            .ok_or("workspace generation exhausted")?;
         let copying = crate::timing::start();
         let mut record = self.record.clone();
         crate::timing::window("room.commit.record", copying);
@@ -836,7 +838,7 @@ use tilo_peer_state::workspace_membership::valid_workspace_name as valid_name;
 fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
     peer.write_as_workspace_host();
     peer.select_admission_v5()
-        .map_err(|error| format!("room exceeds exact admission bounds: {error}"))
+        .map_err(|error| format!("workspace exceeds exact admission bounds: {error}"))
 }
 
 fn prepare_governance(
@@ -869,7 +871,7 @@ fn publication(
     checkpoint: bool,
 ) -> Result<Publication, String> {
     let (_, kind) = neighbour_wire::retention(message, checkpoint)
-        .ok_or("room governance message has no retention channel")?;
+        .ok_or("workspace governance message has no retention channel")?;
     Ok(Publication {
         bytes: postcard::to_stdvec(message).map_err(|error| error.to_string())?,
         checkpoint: kind == Retention::Checkpoint,
@@ -1038,7 +1040,7 @@ pub struct RecordWrite {
     pub record: String,
 }
 
-/// The authority governing one workspace, as the workspace's workspace refers to it.
+/// The authority governing one workspace, as the workspace's governance refers to it.
 #[derive(Clone)]
 pub struct WorkspaceAuthority {
     workspaces: std::sync::Weak<WorkspacesInner>,
@@ -1704,7 +1706,7 @@ impl Workspaces {
             .ok_or_else(|| CollaborationError::new("this relay does not govern that room"))
     }
 
-    /// Pin the workspace's workspace, admitting only its governed members, and
+    /// Pin the workspace, admitting only its governed members, and
     /// follow its members' writes: create the records they start and keep the
     /// governor's copy of the others current, as calls bind to chat records.
     ///

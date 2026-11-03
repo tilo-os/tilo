@@ -42,7 +42,7 @@ impl Workspaces {
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
             if let Err(error) = self.carry_revocations(&mut workspace, &entries).await {
-                tracing::warn!(workspace = %workspace.workspace(), %error, "a room did not take a revocation");
+                tracing::warn!(workspace = %workspace.workspace(), %error, "a workspace did not take a revocation");
                 refused = Err(error);
             }
         }
@@ -120,7 +120,7 @@ impl Workspaces {
             workspace.commit(candidate, key, now, |record, _| {
                 Ok(record.collaboration.clone())
             })?;
-            tracing::info!(workspace = %workspace.workspace(), revocations = carry.len(), "room carries revocations");
+            tracing::info!(workspace = %workspace.workspace(), revocations = carry.len(), "workspace carries revocations");
         }
         self.settle(workspace).await
     }

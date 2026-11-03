@@ -8,7 +8,7 @@
 //!
 //! - keeps a record of the workspace under `<state_root>/hosted/<workspace>.json`, its
 //!   own, never the workspace's files;
-//! - attaches to the governor's host for the workspace's workspace, and only
+//! - attaches to the governor's host for the workspace, and only
 //!   that workspace ([`crate::attach`]): subscribing replays what the
 //!   governor retains, and live fan-out carries the rest both ways;
 //! - follows the workspace's governance with a replica that governs nothing: each
@@ -271,7 +271,7 @@ impl Hosting {
         let mut peer = replica(&request.bootstrap, now)?;
         if resumed {
             // What the workspace published since it was handed over, as this host
-            // retained it; the workspace's workspace opens with its access.
+            // retained it; the workspace opens with its access.
             admit(services, request.workspace_id, &peer, now).await?;
             let retained = services.records.retained(request.workspace_id).await?;
             for body in retained {
@@ -421,7 +421,7 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
     }
 }
 
-/// Admit to the workspace's workspace exactly the members `peer`'s governance
+/// Admit to the workspace exactly the members `peer`'s governance
 /// admits, opening the workspace when it is not yet.
 ///
 /// # Errors
@@ -516,7 +516,7 @@ struct Follower {
 }
 
 impl Follower {
-    /// Take in each change the workspace's workspace hands over, for as long as
+    /// Take in each change the workspace hands over, for as long as
     /// the workspace is served. `dialer` attaches the workspace and ends with it.
     async fn run(
         mut self,
