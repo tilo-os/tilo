@@ -14,9 +14,9 @@
 /// agent arrange the same way, attributed and undoable.
 ///
 /// Rows of several strips stand side by side across the row's width, each strip taking the share
-/// its own width names; a row whose strips ask for more than the desk holds scrolls sideways
-/// rather than squeezing a window under its share, and a narrow output stacks them instead, one
-/// window under the other, since a phone cannot hold two windows beside each other.
+/// its own width names. A row too narrow to hold two windows beside each other pans sideways
+/// instead, each window keeping a window's width and the row the strip's height, since a phone
+/// cannot hold two windows side by side.
 /// The places of the strip `strip`, in the order the record keeps them.
 fn places_of(a: Arrangement, strip: Text) -> List<ArrangementPlace> {
     a.places.filter(p -> p.strip == strip)
@@ -96,59 +96,73 @@ view preset_menu(v: Viewing) {
 }
 
 /// The desk's windows, filling the room between the bar and the dock: the maximized strips alone
-/// when one is, else each row of the workspace in front with its strips side by side.
+/// when one is, else each row of the workspace in front with its strips side by side. The rows
+/// stand in a desk that fills the room it is given, so a window is as tall as the desk and its
+/// app is the whole of it under the window's one bar.
 view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
     let maximizing = maximized_strips(a)
     if not maximizing.is_empty() {
         row(gap: .group, fill) {
             for s in maximizing {
-                strip_window(a, v, s, lists, fill)
+                strip_window(a, v, s, lists, fill(1))
             }
         }
     } else {
         scroll(axis: .both) {
-            page(full) {
-                stack(gap: .group, fill) {
-                    for workspace in a.workspaces {
-                        for row in rows_of(a, workspace.key) {
-                            row_of(a, v, row, lists, fill)
-                        }
-                    }
+            stack(gap: .group, fill) {
+                for workspace in a.workspaces {
+                    workspace_rows(a, v, workspace.key, lists, fill(1))
                 }
             }
         }
     }
 }
 
-/// One row: the band across the desk, named while the desk holds more than one so a person can
-/// tell them apart, with its strips side by side across the room the row is given, each taking
-/// the share its own width names. A phone's or a tablet's output cannot hold a window beside
-/// another, so there each strip stands under the last, a window of its own height, in the page.
-view row_of(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
-    let roomy = space.width_class == .expanded or space.width_class == .wide
+/// The rows of one workspace, filling the room the desk gives them: a workspace's rows stand
+/// under one another, each the height of its share of the desk.
+view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
+    stack(gap: .group, fill) {
+        for held in rows_of(a, workspace) {
+            rows_of_the_desk(a, v, held, lists, fill(1))
+        }
+    }
+}
+
+/// One row of the desk: the band across it, named while the desk holds more than one so a person
+/// can tell them apart, with its strips side by side across the room the row is given, each
+/// taking the share its own width names. A row too narrow to give every window a window's least
+/// width pans across its windows instead, each keeping that width and the row the strip's height,
+/// rather than squeezing a window under its own bar.
+view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
     let strips = strips_of(a, held.key)
+    let count = strips.len()
+    let each = if count == 0 { space.width } else { space.width / count.to_float() }
     stack(gap: .related, fill) {
         if a.rows.len() > 1 {
             ui.Text(held.name, role: .subheading)
         }
-        if not roomy {
-            stack(gap: .group) {
+        if each >= 12.0 {
+            row(gap: .group, fill) {
                 for s in strips {
-                    strip_window(a, v, s, lists, aspect: 4/3)
+                    // Its share of the row by the width it names: a desk of more windows than
+                    // it holds gives each a narrower share, as the chrome's own row does.
+                    strip_window(a, v, s, lists, fill(if s.width > 0 { s.width } else { 667 }))
                 }
                 if strips.is_empty() {
                     ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
                 }
             }
         } else {
-            row(gap: .group, fill) {
-                for s in strips {
-                    // Its share of the row, never under what its own width names: a window
-                    // narrower than its share is worse than the row scrolling to it whole.
-                    strip_window(a, v, s, lists, fill(if s.width > 0 { s.width } else { 667 }), min: if s.width <= 500 { 26rem } else if s.width < 900 { 51rem } else { 76rem })
-                }
-                if strips.is_empty() {
-                    ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+            scroll(axis: .horizontal, fill) {
+                row(gap: .group, fill) {
+                    for s in strips {
+                        // The least a window may stand at: narrow enough for a phone's strip,
+                        // wide enough for a window's bar and the app's own header under it.
+                        strip_window(a, v, s, lists, fill(1), min: 12rem)
+                    }
+                    if strips.is_empty() {
+                        ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                    }
                 }
             }
         }

@@ -1918,6 +1918,24 @@ scenario "a desk of places" -> Arrangement {
     a
 }
 
+/// A window of several places: a strip holding three notes, the first of them in front, beside a
+/// strip of one. The face of every surface that shows a group (§3): one window bar, the places
+/// as its tabs, the place in front filling the window under them.
+scenario "a window of several places" -> Arrangement {
+    let v = viewing
+    v.showing = .strips
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let group = a_strip(a, row, "Notes", 667)
+    a_note_place(a, group, 0)
+    a_note_place(a, group, 1)
+    a_note_place(a, group, 2)
+    let single = a_strip(a, row, "Terminal", 667)
+    a_foreign_place(a, single, 3, "A terminal")
+    v.focused = group
+    a
+}
+
 /// A strip with nothing on it yet, beside a strip with one place: the state a person starts
 /// from when they make a strip.
 scenario "an empty strip" -> Arrangement {

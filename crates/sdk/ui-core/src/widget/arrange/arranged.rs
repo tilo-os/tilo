@@ -56,6 +56,7 @@ impl Resolved {
     #[must_use]
     pub const fn gap(&self, step: Rhythm) -> f32 {
         match step {
+            Rhythm::None => 0.0,
             Rhythm::Tight => self.gaps[0],
             Rhythm::Related => self.gaps[1],
             Rhythm::Sibling => self.gaps[2],

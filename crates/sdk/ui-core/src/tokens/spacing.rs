@@ -28,6 +28,9 @@ pub struct Spacing {
 /// with, so the gap follows density, `ui_scale` and a custom spacing scale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rhythm {
+    /// Neighbours that meet: a window's bar and the content under it are one surface, not two
+    /// things standing beside each other, so nothing separates them.
+    None,
     /// The smallest gap two neighbours may have: a label and its caption.
     Tight,
     /// Controls inside one cluster.
@@ -72,6 +75,7 @@ impl RhythmScale {
     #[must_use]
     pub fn get(&self, step: Rhythm) -> f32 {
         match step {
+            Rhythm::None => 0.0,
             Rhythm::Tight => self.tight,
             Rhythm::Related => self.related,
             Rhythm::Sibling => self.sibling,

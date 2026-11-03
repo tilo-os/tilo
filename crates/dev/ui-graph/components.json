@@ -5231,7 +5231,8 @@
           "doc": "The window's name: what assistive technology reads, and the title of the frame's own bar when the content has no header row to hold the controls.",
           "type": {
             "option": "text"
-          }
+          },
+          "data": true
         },
         {
           "name": "focused",

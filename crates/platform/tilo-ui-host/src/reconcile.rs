@@ -812,15 +812,49 @@ impl Reconciler {
     fn slots(&mut self, node: &UiNode) -> Vec<Slot> {
         placed(node)
             .into_iter()
-            .map(|child| self.slot(node, child))
+            .map(|child| self.slot(node, &child))
             .collect()
     }
 
     /// How `child` is sized in its container `parent` ([`placement_in`]), and, for a fragment
     /// that fills because `parent` passes its fill on, the weight it passes on in turn: placed
     /// before it is built, so what it holds is placed knowing it.
-    fn place(&mut self, parent: &UiNode, child: &UiNode) -> Placement {
+    fn place(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Placement {
+        let child = placed.node;
+        let through = &placed.through;
         let inherited = self.filling.get(&parent.key).copied();
+        let mut placement = placement_in(parent, inherited, child);
+        // A fragment draws nothing of its own, so what it asks for is the child standing under
+        // it: a `for`'s fill reaches each row it places in a row or a grid, and the narrowest
+        // width it names floors each of them.
+        let mut passed = inherited;
+        let mut aspect = None;
+        for fragment in through {
+            passed = number(fragment, "fill").or(passed);
+            if prop(child, "min").is_none()
+                && let Some(min) = length(fragment, "min")
+            {
+                placement.fit.width.min = Some(min);
+            }
+            if prop(child, "max").is_none()
+                && let Some(max) = length(fragment, "max")
+            {
+                placement.fit.width.max = Some(max);
+            }
+            if prop(child, "aspect").is_none() && aspect.is_none() {
+                aspect = number(fragment, "aspect");
+            }
+        }
+        // The child's own arguments win; else it takes the weight the fragments pass on.
+        if let Some(weight) = passed.filter(|_| number(child, "fill").is_none()) {
+            let (min, max) = (placement.fit.width.min, placement.fit.width.max);
+            placement.fit = Fit::fill(weight);
+            placement.fit.width.min = min;
+            placement.fit.width.max = max;
+        }
+        if let Some(ratio) = aspect {
+            placement.fit = placement.fit.aspect(ratio);
+        }
         match fragment_fill(parent, inherited, child) {
             Some(weight) if child.kind == "fragment" => {
                 self.filling.insert(child.key.clone(), weight);
@@ -829,12 +863,13 @@ impl Reconciler {
                 self.filling.remove(&child.key);
             }
         }
-        placement_in(parent, inherited, child)
+        placement
     }
 
     /// `child`, built, as a slot of its container `parent`.
-    fn slot(&mut self, parent: &UiNode, child: &UiNode) -> Slot {
-        let Placement { fit, span, at } = self.place(parent, child);
+    fn slot(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Slot {
+        let child = placed.node;
+        let Placement { fit, span, at } = self.place(parent, placed);
         let mut slot = Slot::new(self.build(child));
         slot.fit = fit;
         slot.span = span;
@@ -952,11 +987,15 @@ impl Reconciler {
     }
 
     fn scroll(&mut self, node: &UiNode) -> Element {
-        let inner = Stack::stack()
+        let mut inner = Stack::stack()
             .fill_width()
             .gap(Rhythm::Sibling)
             .with_id(format!("{}~content", node.key));
-        let mut inner = inner;
+        // A two-way surface holds a view, not a document: what stands in it fills it, so a
+        // desk's rows of windows are as tall as the desk, and pan sideways by their width.
+        if token(node, "axis") == Some("both") {
+            inner = inner.fill_height();
+        }
         for slot in self.slots(node) {
             inner = inner.push_slot(slot);
         }
@@ -1402,7 +1441,7 @@ impl Reconciler {
                         break;
                     };
                     let mut slot = Slot::new(widget);
-                    let Placement { fit, span, at } = self.place(old_node, child);
+                    let Placement { fit, span, at } = self.place(old_node, &child);
                     slot.fit = fit;
                     slot.span = span;
                     slot.at = at;
@@ -1434,15 +1473,16 @@ impl Reconciler {
         for index in (0..held.len()).rev() {
             let gone = held
                 .get(index)
-                .is_some_and(|old| !placing.iter().any(|child| child.key == old.key));
+                .is_some_and(|old| !placing.iter().any(|child| child.node.key == old.node.key));
             if gone {
                 host.remove(index);
                 held.remove(index);
             }
         }
         for (index, child) in placing.into_iter().enumerate() {
-            let Some(at) = held.iter().position(|old| old.key == child.key) else {
-                let slot = self.slot(new_node, child);
+            let node = child.node;
+            let Some(at) = held.iter().position(|old| old.node.key == node.key) else {
+                let slot = self.slot(new_node, &child);
                 host.insert(index, slot);
                 held.insert(index, child);
                 continue;
@@ -1452,13 +1492,13 @@ impl Reconciler {
                 let moved = held.remove(at);
                 held.insert(index, moved);
             }
-            let Some(&old_child) = held.get(index) else {
+            let Some(old_child) = held.get(index).map(|old| old.node) else {
                 continue;
             };
-            let placement = self.place(new_node, child);
+            let placement = self.place(new_node, &child);
             let replaced = host
                 .child_mut(index)
-                .and_then(|widget| self.update_in(widget, old_child, child));
+                .and_then(|widget| self.update_in(widget, old_child, node));
             if let Some(replaced) = replaced {
                 host.replace(index, replaced);
             }
@@ -1562,22 +1602,41 @@ fn frames(node: &UiNode) -> bool {
 /// arrives as a fragment; there each of its children is a cell or an item of its own, where a
 /// fragment built as a stack would pile them into one. Elsewhere a fragment is a slot of its
 /// own, its children stacked tight.
-fn placed(node: &UiNode) -> Vec<&UiNode> {
-    fn flatten<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+fn placed(node: &UiNode) -> Vec<Placed<'_>> {
+    // A row and a grid place every child a loop's fragment holds, as slots of their own, so a
+    // row's items share the row's spans one by one. Every other container does the same for a
+    // fragment holding one child: a fragment draws nothing of its own, so a loop's sizing and
+    // placement belong to the one node it places.
+    let every = matches!(node.kind.as_str(), "grid" | "row");
+    fn flatten<'a>(
+        node: &'a UiNode,
+        every: bool,
+        through: &mut Vec<&'a UiNode>,
+        out: &mut Vec<Placed<'a>>,
+    ) {
         for child in &node.children {
-            if child.kind == "fragment" {
-                flatten(child, out);
+            if child.kind == "fragment" && (every || child.children.len() == 1) {
+                through.push(child);
+                flatten(child, every, through, out);
+                through.pop();
             } else {
-                out.push(child);
+                out.push(Placed {
+                    node: child,
+                    through: through.clone(),
+                });
             }
         }
     }
-    if !matches!(node.kind.as_str(), "grid" | "row") {
-        return node.children.iter().collect();
-    }
     let mut out = Vec::new();
-    flatten(node, &mut out);
+    flatten(node, every, &mut Vec::new(), &mut out);
     out
+}
+
+/// A child a container places, and the fragments it stands through, outermost first: a fragment
+/// draws nothing of its own, so the sizing and placement it asks for are the child's.
+struct Placed<'a> {
+    node: &'a UiNode,
+    through: Vec<&'a UiNode>,
 }
 
 fn holds_cards(node: &UiNode) -> bool {

@@ -35,10 +35,10 @@ use crate::component::{Component, Described, SlotViews};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::{SpacingStep, TextRole};
+use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::arrange::{Align, At, Fit, Layers, Length, Slot, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
-use crate::widget::tabs::TAB_BAR_HEIGHT;
+use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
 use crate::widget::window_controls::WindowControls;
 use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 
@@ -127,9 +127,32 @@ const BODY: usize = 1;
 /// In the frame's own bar: the window's tabs, its name, then the room the controls keep.
 const TABS: usize = 0;
 const NAME: usize = 1;
+const AFTER: usize = 2;
 
 fn empty() -> Element {
     Box::new(Spacer::token(SpacingStep::S0))
+}
+
+/// How the tabs stand in the frame's own bar: the bar of a window of several places is
+/// theirs, so they take its room; a window of one leaves that slot empty.
+fn tabs_fit(tabbed: bool) -> Fit {
+    if tabbed { Fit::fill(1.0) } else { Fit::hug() }
+}
+
+/// How the room after the tabs stands in the bar: what the tabs leave, which a window of one
+/// gives to its name.
+fn after_fit(tabbed: bool) -> Fit {
+    if tabbed { Fit::hug() } else { Fit::fill(1.0) }
+}
+
+/// Whether `widget` holds the window's tabs: a view names the tabs slot on every window, so
+/// what the slot holds says whether this window has tabs, never the slot's mere presence.
+fn holds_tabs(widget: &dyn Widget) -> bool {
+    let tabs = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<TabStrip>())
+        .is_some();
+    tabs || widget.children().iter().any(|child| holds_tabs(*child))
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -138,7 +161,8 @@ fn slot(element: Element, fit: Fit) -> Slot {
     slot
 }
 
-/// The fit of a bar: one bar tall, hugging what it holds across.
+/// The fit of a bar: at least one bar tall, hugging what it holds across. A window narrow
+/// enough that its name wraps stands a taller bar rather than a title past it.
 fn bar_fit(shown: bool) -> Fit {
     let mut fit = Fit::hug();
     if shown {
@@ -148,7 +172,6 @@ fn bar_fit(shown: bool) -> Fit {
         )]
         let height = Length::Dp(TAB_BAR_HEIGHT as f32);
         fit.height.min = Some(height);
-        fit.height.max = Some(height);
     }
     fit
 }
@@ -165,15 +188,18 @@ impl Described for WindowFrame {
             tabs,
             body,
         } = props;
-        let tabbed = tabs.is_some();
+        let tabbed = tabs.as_deref().is_some_and(holds_tabs);
         let own = Stack::row()
             .align(Align::Center)
-            .push_slot(slot(tabs.unwrap_or_else(empty), Fit::hug()))
+            .push_slot(slot(tabs.unwrap_or_else(empty), tabs_fit(tabbed)))
             .push_slot(slot(empty(), Fit::hug()))
-            .push_slot(slot(empty(), Fit::fill(1.0)));
+            .push_slot(slot(empty(), after_fit(tabbed)));
         let column = Stack::stack()
             .fill_width()
             .fill_height()
+            // The bar sits on the content: a window is one surface, so nothing separates the
+            // two, whichever bar the window shows.
+            .gap(Rhythm::None)
             .push_slot(slot(Box::new(own), bar_fit(tabbed)))
             .push_slot(slot(body.unwrap_or_else(empty), Fit::fill(1.0)));
         let controls = Stack::row()
@@ -209,7 +235,7 @@ impl Described for WindowFrame {
         let changed = self.focused != props.focused
             || self.name != props.name
             || self.lists_actions != props.lists_actions
-            || self.tabbed != props.tabs.is_some();
+            || self.tabbed != props.tabs.as_deref().is_some_and(holds_tabs);
         if self.name != props.name {
             // The own bar shows the name: build it again with the new one.
             self.title = None;
@@ -253,9 +279,6 @@ impl SlotViews for WindowFrame {
     }
 
     fn remove(&mut self, _index: usize) {
-        if self.editing == 1 {
-            self.tabbed = false;
-        }
         self.put(empty());
     }
 
@@ -310,7 +333,15 @@ impl WindowFrame {
                 if let Some(row) = self.own_bar_row() {
                     let _ = row.replace(TABS, view);
                 }
-                self.tabbed = true;
+                self.tabbed = self
+                    .own_bar_row()
+                    .and_then(|row| row.children().get(TABS).copied())
+                    .is_some_and(holds_tabs);
+                let tabbed = self.tabbed;
+                if let Some(row) = self.own_bar_row() {
+                    row.set_placement(TABS, tabs_fit(tabbed), 1, None);
+                    row.set_placement(AFTER, after_fit(tabbed), 1, None);
+                }
             }
             _ => {
                 if let Some(column) = self.column() {
@@ -487,12 +518,17 @@ impl Decorator for WindowFrame {
                 reason = "a window's bar room fits f32"
             )]
             let room = Length::Dp(room as f32);
-            for index in [TABS, NAME] {
-                let mut fit = Fit::hug();
-                fit.width.max = Some(room);
-                if let Some(row) = self.own_bar_row() {
-                    row.set_placement(index, fit, 1, None);
-                }
+            // A window of several places shows them as its bar: the strip takes that room
+            // whole. The name beside it is the bar of a window of one, so it hugs what it
+            // says.
+            let tabbed = self.tabbed;
+            if let Some(row) = self.own_bar_row() {
+                let mut tabs = tabs_fit(tabbed);
+                tabs.width.max = Some(room);
+                let mut name = Fit::hug();
+                name.width.max = Some(room);
+                row.set_placement(TABS, tabs, 1, None);
+                row.set_placement(NAME, name, 1, None);
             }
         }
         self.metrics = Some(m);
