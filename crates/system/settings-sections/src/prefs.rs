@@ -1745,11 +1745,13 @@ impl AppearancePrefs {
     pub fn pick_theme(
         &mut self,
         #[param(
-            "The theme: Automatic, Dark, Light, Dark graphite, Dark cool or Dark soft"
+            "The theme: Automatic, Dark, Light, Dark graphite, Dark cool, Dark soft, Glass, Block, Pixelated or Liquid Glass"
         )]
         theme: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        if !Self::THEMES.contains(&theme.as_str()) {
+        // Any theme the toolkit ships, by its name or id, and Automatic.
+        let automatic = settings_store::day_schedule::is_automatic(&theme.to_ascii_lowercase());
+        if !automatic && ui::theme::Preset::find(&theme).is_none() {
             return Err(ui::tilo_resource::Refusal::new(format!(
                 "`{theme}` is not a theme"
             )));
@@ -1775,6 +1777,10 @@ impl AppearancePrefs {
         "Dark graphite",
         "Dark cool",
         "Dark soft",
+        "Glass",
+        "Block",
+        "Pixelated",
+        "Liquid Glass",
     ];
     /// Show `name` from [`Self::THEMES`]: Automatic, or a preset that becomes
     /// the theme of its own mode.
@@ -2199,5 +2205,36 @@ mod power_storage_tests {
         );
         assert_eq!(power.battery_suspend_minutes, None);
         assert_eq!((power.blank_minutes, power.lock_minutes), (10, 5));
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    #![allow(clippy::unwrap_used, reason = "test assertions")]
+
+    use super::AppearancePrefs;
+
+    /// Every look the toolkit ships can be chosen through the published action, by the name a
+    /// person reads, and is what the store then holds; a name no theme has is refused.
+    #[test]
+    fn every_shipped_look_can_be_chosen() {
+        for (name, id) in [
+            ("Glass", "glass"),
+            ("Block", "block"),
+            ("Pixelated", "pixelated"),
+            ("Liquid Glass", "liquid-glass"),
+        ] {
+            let mut prefs = AppearancePrefs::default();
+            prefs.pick_theme(name.to_owned()).unwrap();
+            assert_eq!(prefs.dark_theme, id, "{name}");
+            assert_eq!(prefs.mode, "dark", "{name}");
+            assert_eq!(prefs.theme_choice(), name);
+            assert!(AppearancePrefs::THEMES.contains(&name), "{name} is offered");
+        }
+        assert!(
+            AppearancePrefs::default()
+                .pick_theme("Crimson".to_owned())
+                .is_err()
+        );
     }
 }
