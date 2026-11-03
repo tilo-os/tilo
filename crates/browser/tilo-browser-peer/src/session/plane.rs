@@ -245,21 +245,40 @@ pub(crate) fn join(
 /// WebTransport: it seals and opens as itself, under the workspace scope's
 /// keys, and the serving device copies bytes it cannot open.
 #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one join: the carrier, the host and the plane's own terms"
-)]
-pub(crate) fn join_native(
-    endpoint: iroh::Endpoint,
-    host: iroh_base::EndpointAddr,
-    commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
-    cert: tilo_user_identity::DeviceCert,
-    device: [u8; 32],
-    workspace_id: u64,
-    workspace: String,
-    keys: ChannelContentKeys,
-    members: BTreeSet<[u8; 32]>,
-) {
+pub(crate) struct NativeJoin {
+    /// The endpoint this device dials from.
+    pub endpoint: iroh::Endpoint,
+    /// The serving device's address.
+    pub host: iroh_base::EndpointAddr,
+    /// Where the outcome goes.
+    pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
+    /// This device's certificate, presented as the grant.
+    pub cert: tilo_user_identity::DeviceCert,
+    /// This device.
+    pub device: [u8; 32],
+    /// The workspace joined.
+    pub workspace_id: u64,
+    /// The workspace.
+    pub workspace: String,
+    /// The workspace's content keys.
+    pub keys: ChannelContentKeys,
+    /// The workspace's members.
+    pub members: BTreeSet<[u8; 32]>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+pub(crate) fn join_native(join: NativeJoin) {
+    let NativeJoin {
+        endpoint,
+        host,
+        commands,
+        cert,
+        device,
+        workspace_id,
+        workspace,
+        keys,
+        members,
+    } = join;
     n0_future::task::spawn(async move {
         let joined = native(&endpoint, host, &cert, device, &workspace, keys, members).await;
         if let Some(commands) = commands.upgrade() {
@@ -489,17 +508,17 @@ impl Task {
                         Some(url) => addr.clone().with_relay_url(url.clone()),
                         None => addr.clone(),
                     };
-                    join_native(
-                        endpoint.clone(),
+                    join_native(NativeJoin {
+                        endpoint: endpoint.clone(),
                         host,
-                        self.commands.clone(),
-                        self.config.cert.clone(),
-                        self.config.cert.device_public_key,
+                        commands: self.commands.clone(),
+                        cert: self.config.cert.clone(),
+                        device: self.config.cert.device_public_key,
                         workspace_id,
                         workspace,
                         keys,
                         members,
-                    );
+                    });
                 }
             }
         }

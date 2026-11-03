@@ -516,7 +516,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         );
         agent.pump();
         for event in browser_events.drain() {
-            let PeerEvent::Presence { from, body, .. } = event else {
+            let PeerEvent::LivePlane {
+                from,
+                track: tilo_browser_peer::Track::Presence,
+                body,
+                ..
+            } = event
+            else {
                 continue;
             };
             if from == agent_cert.device_public_key
@@ -553,8 +559,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             .publish_presence(
                 workspace(),
                 vec![
-                    support::pointer_body(&browser_key, 12.0, 34.0),
-                    support::shell_body(&browser_key, "Ada"),
+                    support::pointer_body(12.0, 34.0),
+                    support::shell_body("Ada"),
                 ],
             )
             .unwrap();

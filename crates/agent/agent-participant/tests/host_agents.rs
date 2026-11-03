@@ -453,7 +453,12 @@ impl Browser {
         let task = tokio::spawn(async move {
             loop {
                 for event in events.drain() {
-                    let PeerEvent::Presence { body, .. } = event else {
+                    let PeerEvent::LivePlane {
+                        track: tilo_browser_peer::Track::Presence,
+                        body,
+                        ..
+                    } = event
+                    else {
                         continue;
                     };
                     if let Some(collab_types::PeerPresencePayload::Shell(shell)) =

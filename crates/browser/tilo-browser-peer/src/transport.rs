@@ -331,6 +331,7 @@ impl RelayCollabTransport {
                 | PeerEvent::RemoteAction { .. }
                 | PeerEvent::RemoteActionUndeliverable { .. }
                 | PeerEvent::Presence { .. }
+                | PeerEvent::LivePlane { .. }
                 | PeerEvent::CompactionRequested { .. }
                 | PeerEvent::RecordOpened { .. }
                 | PeerEvent::ContentWanted { .. }

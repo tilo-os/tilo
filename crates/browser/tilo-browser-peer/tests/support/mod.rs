@@ -69,44 +69,24 @@ pub fn members_document(event: &PeerEvent) -> bool {
     matches!(event, PeerEvent::Document(document) if !is_host(&document.author))
 }
 
-/// What a member said of itself in `body` (a postcard `NeighbourMsg` the
-/// host stamped with its device), when it is a desktop's presence.
+/// What a member said of itself in `body` (a presence frame the plane
+/// carried), when it is a desktop's presence.
 pub fn presence(body: &[u8]) -> Option<collab_types::PeerPresencePayload> {
-    let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
-    match message {
-        neighbour_wire::NeighbourMsg::AppPresenceV2 {
-            app_id, presence, ..
-        } if app_id == neighbour_wire::DESKTOP_PRESENCE_APP => Some(presence.payload),
-        _ => None,
-    }
+    let said = collab_types::presence::Presence::decode(body)?;
+    (said.app == collab_types::presence::DESKTOP_APP).then_some(said.payload)
 }
 
-/// The presence message saying `device`'s pointer is at `(x, y)` over tab 1
-/// of the test workspace: what a page publishes as its cursor moves.
-pub fn pointer_body(device: &[u8; 32], x: f32, y: f32) -> Vec<u8> {
-    let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
-        space: collab_types::presence::PointerSpace::Tile {
-            workspace: WORKSPACE.to_owned(),
-            tab: 1,
-        },
-    })
-    .unwrap();
-    postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(device),
-        WORKSPACE,
-        key,
-        collab_types::PeerPresencePayload::Pointer { x, y },
-    ))
-    .unwrap()
+/// The presence frame saying the publishing device's pointer is at `(x, y)`
+/// over tab 1 of the test workspace: what a page says as its cursor moves.
+pub fn pointer_body(x: f32, y: f32) -> collab_types::presence::Presence {
+    collab_types::presence::Presence::pointing(WORKSPACE, 1, x, y)
 }
 
-/// The presence message saying `device` shows itself as `label`: the view of
-/// itself a native member publishes.
-pub fn shell_body(device: &[u8; 32], label: &str) -> Vec<u8> {
-    postcard::to_stdvec(&neighbour_wire::desktop_presence(
-        neighbour_wire::peer_handle(device),
+/// The presence frame saying the publishing device shows itself as `label`:
+/// the view of itself a native member publishes.
+pub fn shell_body(label: &str) -> collab_types::presence::Presence {
+    collab_types::presence::Presence::desktop(
         WORKSPACE,
-        neighbour_wire::workspace_key(WORKSPACE),
         collab_types::PeerPresencePayload::Shell(Box::new(collab_types::presence::ShellPresence {
             seq: 1,
             sent_at_ms: 1,
@@ -121,8 +101,7 @@ pub fn shell_body(device: &[u8; 32], label: &str) -> Vec<u8> {
             chat: None,
             reaction: None,
         })),
-    ))
-    .unwrap()
+    )
 }
 
 pub fn workspace() -> u64 {

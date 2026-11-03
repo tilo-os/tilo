@@ -297,7 +297,12 @@ async fn every_web_app_over_the_session() {
                             .or_default()
                             .push(bytes);
                     }
-                } else if let PeerEvent::Presence { from, body, .. } = event
+                } else if let PeerEvent::LivePlane {
+                    from,
+                    track: tilo_browser_peer::Track::Presence,
+                    body,
+                    ..
+                } = event
                     && from == agent_key
                     && let Some(collab_types::PeerPresencePayload::Shell(shell)) =
                         support::presence(&body)
@@ -350,7 +355,13 @@ async fn every_web_app_over_the_session() {
         while presence.is_none() && Instant::now() <= deadline {
             agent.pump();
             for event in browser_events.drain() {
-                let PeerEvent::Presence { from, body, .. } = event else {
+                let PeerEvent::LivePlane {
+                    from,
+                    track: tilo_browser_peer::Track::Presence,
+                    body,
+                    ..
+                } = event
+                else {
                     continue;
                 };
                 if from == agent_key
