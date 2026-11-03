@@ -254,11 +254,14 @@ destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
     tasks.items.remove(t)
 }
 
-/// Deletes every done task, and answers how many went. A done task's steps are done too, so
-/// clearing takes whole finished branches and never unfinished work with it.
+/// Deletes every finished task, and answers how many went: a task is finished when everything
+/// under it is done too, so clearing takes whole finished branches and never unfinished work
+/// with it, and a task done with a step still open under it stays.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
+    // Offered while something is done: whether a branch is finished is read once it runs, where
+    // the tasks under each done one are walked.
     require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
-    let gone = tasks.items.filter(x -> x.done)
+    let gone = tasks.items.filter(x -> x.done and tasks.items.descendants(x, .parent).all(d -> d.done))
     for x in gone {
         tasks.items.remove(x)
     }
@@ -598,6 +601,8 @@ scenario "a busy week" -> Task {
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
     tasks.items.insert(Task(title: "Pack the books", project: flat, done: true))
     let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
+    // Checked off before the step under it was added: a list written by the version that kept
+    // steps apart, or a check made while someone else added that step. Clearing keeps the step.
     let outline = tasks.items.insert(Task(title: "Outline", done: true, parent: .some(copy), project: launch))
     tasks.items.insert(Task(title: "Collect the beta quotes", parent: .some(outline), project: launch))
     tasks.items.insert(Task(title: "First draft", parent: .some(copy), project: launch))
@@ -615,6 +620,8 @@ scenario "a busy week" -> Task {
 scenario "a task's subtasks" -> Task {
     let launch = tasks.projects.insert(Project(name: "Website launch"))
     let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
+    // Checked off before the step under it was added: a list written by the version that kept
+    // steps apart, or a check made while someone else added that step. Clearing keeps the step.
     let outline = tasks.items.insert(Task(title: "Outline", done: true, parent: .some(copy), project: launch))
     tasks.items.insert(Task(title: "Collect the quotes from the beta testers", parent: .some(outline), project: launch))
     tasks.items.insert(Task(title: "First draft, with the quotes from the beta testers", parent: .some(copy), project: launch))

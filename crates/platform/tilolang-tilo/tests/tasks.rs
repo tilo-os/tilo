@@ -842,3 +842,66 @@ fn a_rows_checkbox_checks_the_tasks_under_it() {
         );
     }
 }
+
+/// A step added while someone else checks the task off leaves that task done with the step
+/// open under it. A clear takes the finished branch and keeps the step: unfinished work is
+/// never taken with a task that was checked off before it existed.
+#[test]
+fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
+    let (mut ada, root) = workspace();
+    let parent = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Write the launch post")],
+    );
+    ada.commit();
+    call(
+        &ada,
+        "add_subtask",
+        vec![root.clone(), parent.clone(), Value::text("Outline")],
+    );
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    ben.host.sync_from(&ben.doc);
+    // Ada checks the task off while Ben, not yet seeing that, puts a step under it.
+    call(&ada, "check", vec![parent.clone()]);
+    ada.commit();
+    call(
+        &ben,
+        "add_subtask",
+        vec![
+            root.clone(),
+            parent.clone(),
+            Value::text("Gather the quotes"),
+        ],
+    );
+    ben.commit();
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        read(&ada, &parent, "done"),
+        Value::Bool(true),
+        "checked off before the step was there"
+    );
+    assert_eq!(
+        read(&ada, &task(&ada, "Gather the quotes"), "done"),
+        Value::Bool(false),
+        "the step came after the check"
+    );
+
+    // Outline is finished with nothing under it, so it goes; the task whose step is still open
+    // stays with that step.
+    assert_eq!(
+        call(&ada, "clear_done", vec![root]),
+        Value::Int(1),
+        "one finished task went"
+    );
+    ada.commit();
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Write the launch post"),
+            Value::text("Gather the quotes"),
+        ],
+        "the step that is not done stays under its task"
+    );
+}
