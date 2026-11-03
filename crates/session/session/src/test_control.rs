@@ -91,6 +91,10 @@ use tilo_surface_host::Doors;
 use crate::agent_door::{self, PeerRefusal};
 use crate::engine::Engine;
 
+mod seat;
+
+use seat::{AgentSeat, asked_of_seat};
+
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
 /// session binds the socket at when its command line names none and the default is not wanted,
 /// and what it prints with the path it opened.
@@ -278,6 +282,9 @@ pub(crate) struct Control {
     /// The desk state the loop last published, as its stamp.
     published: std::cell::Cell<Option<u64>>,
     changes: Arc<Changes>,
+    /// The seat each agent admitted at the door drives, and the window it
+    /// aims at last.
+    seats: RefCell<BTreeMap<String, seat::AgentSeat>>,
 }
 
 /// One socket: where it listens, whose it is, and what its connections answer from.
@@ -300,6 +307,9 @@ enum Gate {
     /// A program inside an app this session started: it acts in that app's
     /// workspace, with the app's own permissions, never the owner's.
     App,
+    /// An admitted agent's own seat: its pointer, its keys and the window it
+    /// aims at, with none of the person's desk.
+    Seat,
 }
 
 /// The workspace a connection of the app door acts in, and the app it acts as.
@@ -315,12 +325,27 @@ pub(crate) struct Scope {
 struct Context {
     gate: Gate,
     scope: Option<Arc<Scope>>,
+    /// The agent whose seat this connection is, at the seat door.
+    seat: Option<Arc<str>>,
 }
 
 impl Context {
     /// A connection of the socket `gate` serves: no app narrower than it.
     const fn at(gate: Gate) -> Self {
-        Self { gate, scope: None }
+        Self {
+            gate,
+            scope: None,
+            seat: None,
+        }
+    }
+
+    /// A connection of an admitted agent's own seat: it drives that seat, and nothing else.
+    fn at_seat(agent: &str) -> Self {
+        Self {
+            gate: Gate::Seat,
+            scope: None,
+            seat: Some(agent.into()),
+        }
     }
 }
 
@@ -334,6 +359,8 @@ enum Op {
     ActionsEnumerate,
     ActionsInvoke,
     ActionsStatus,
+    AgentLeave,
+    AgentSeat,
     ClickAt,
     ClickNamed,
     Drag,
@@ -362,11 +389,13 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 30] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
         Self::ActionsStatus,
+        Self::AgentLeave,
+        Self::AgentSeat,
         Self::ClickAt,
         Self::ClickNamed,
         Self::Drag,
@@ -400,6 +429,8 @@ impl Op {
             "actions_enumerate" => Self::ActionsEnumerate,
             "actions_invoke" => Self::ActionsInvoke,
             "actions_status" => Self::ActionsStatus,
+            "agent_leave" => Self::AgentLeave,
+            "agent_seat" => Self::AgentSeat,
             "click_at" => Self::ClickAt,
             "click_named" => Self::ClickNamed,
             "drag" => Self::Drag,
@@ -435,6 +466,8 @@ impl Op {
             Self::ActionsEnumerate => "actions_enumerate",
             Self::ActionsInvoke => "actions_invoke",
             Self::ActionsStatus => "actions_status",
+            Self::AgentLeave => "agent_leave",
+            Self::AgentSeat => "agent_seat",
             Self::ClickAt => "click_at",
             Self::ClickNamed => "click_named",
             Self::Drag => "drag",
@@ -484,17 +517,52 @@ impl Op {
     }
 }
 
+impl Op {
+    /// Whether a seat's own connection serves it: an agent's hands drive its pointer, its
+    /// keys, its window and the frames it shows there, and nothing of the person's desk.
+    const fn seat_serves(self) -> bool {
+        matches!(
+            self,
+            Self::AgentLeave
+                | Self::AgentSeat
+                | Self::Drag
+                | Self::Key
+                | Self::KeyDown
+                | Self::KeyUp
+                | Self::PointerButton
+                | Self::PointerMove
+                | Self::Scroll
+                | Self::Snapshot
+                | Self::Type
+                | Self::Watch
+        )
+    }
+}
+
 /// Whether the socket at `gate` answers `op`: the one place the protocol's ops are divided
-/// between the two doors.
+/// between the doors.
 fn served(gate: Gate, op: Op) -> bool {
     match gate {
         Gate::Dev => true,
         Gate::Owner | Gate::App => op.owner_serves(),
+        Gate::Seat => op.seat_serves(),
     }
 }
 
-/// The answer the owner's door gives what only a development socket serves.
-fn not_this_doors(op: Op) -> Json {
+/// The answer a door gives what it does not serve.
+fn not_this_doors(gate: Gate, op: Op) -> Json {
+    if gate == Gate::Seat {
+        return refusal(
+            "not_permitted",
+            &format!(
+                "an agent's seat drives its own pointer, its own keys, its own window and the \
+                 frames it shows there (`agent_leave`, `agent_seat`, `drag`, `key`, `key_down`, \
+                 `key_up`, `pointer_button`, `pointer_move`, `scroll`, `snapshot`, `type` and \
+                 `watch`), not `{}`; the person's desk is not its",
+                op.name()
+            ),
+        );
+    }
     refusal(
         "not_permitted",
         &format!(
@@ -581,6 +649,7 @@ impl Control {
             held: RefCell::new(BTreeSet::new()),
             published: std::cell::Cell::new(None),
             changes,
+            seats: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -621,8 +690,30 @@ impl Control {
         }) = self.asked.try_recv()
         {
             let _ = answer.send(loop_answer(
-                op, &request, &ctx, compositor, desk, &self.held,
+                op,
+                &request,
+                &ctx,
+                compositor,
+                desk,
+                &self.held,
+                &self.seats,
             ));
+        }
+        self.sweep(compositor, desk);
+    }
+
+    /// Close the seat of every agent the door no longer admits: the person's
+    /// Stop on its presence takes its hands with it.
+    fn sweep(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
+        let gone: Vec<AgentSeat> = {
+            let mut seats = self.seats.borrow_mut();
+            seats
+                .extract_if(.., |agent, _| !desk.seats.admits(agent))
+                .map(|(_, held)| held)
+                .collect()
+        };
+        for held in gone {
+            compositor.close_seat(held.seat);
         }
     }
 
@@ -740,8 +831,15 @@ pub(crate) fn serve_app(
     let ctx = Context {
         gate: Gate::App,
         scope: Some(Arc::new(Scope { app, workspace })),
+        seat: None,
     };
     serve_connection(stream, &ctx, door, Some(first));
+}
+
+/// Serve one connection of an admitted agent's own seat: its computer tools drive a seat of its
+/// own, in the window it aims at. `first` is the line the agent door already read.
+pub(crate) fn serve_seat(stream: UnixStream, first: String, agent: &str, door: &Door) {
+    serve_connection(stream, &Context::at_seat(agent), door, Some(first));
 }
 
 /// A connection's writer: shared with the thread that streams the desk's state, so a state line
@@ -781,7 +879,7 @@ fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Optio
             Err(error) => refusal("parse_error", &error.to_string()),
             Ok(request) => match Op::of(&request) {
                 None => unsupported(ctx, &request),
-                Some(op) if !served(ctx.gate, op) => not_this_doors(op),
+                Some(op) if !served(ctx.gate, op) => not_this_doors(ctx.gate, op),
                 Some(op) => match asked_here(op, &request, &writer, &mut watching, ctx, door) {
                     Some(answer) => answer,
                     // The loop answers every request it takes; a session that ends drops it
@@ -925,7 +1023,11 @@ fn loop_answer(
     compositor: &mut Compositor,
     desk: &Desk<'_>,
     held: &RefCell<BTreeSet<u32>>,
+    seats: &RefCell<BTreeMap<String, AgentSeat>>,
 ) -> Json {
+    if let Some(answer) = asked_of_seat(op, request, ctx, compositor, desk, seats) {
+        return answer;
+    }
     if let Some(answer) = asked_of_desk(ctx, op, request, compositor, desk) {
         return answer;
     }
@@ -2584,6 +2686,22 @@ mod tests {
             Op::Watch,
             Op::Windows,
         ];
+        // A seat's own connection drives its pointer, its keys, its window and its frames, and
+        // nothing of the person's desk.
+        let seat = [
+            Op::AgentLeave,
+            Op::AgentSeat,
+            Op::Drag,
+            Op::Key,
+            Op::KeyDown,
+            Op::KeyUp,
+            Op::PointerButton,
+            Op::PointerMove,
+            Op::Scroll,
+            Op::Snapshot,
+            Op::Type,
+            Op::Watch,
+        ];
         for op in Op::ALL {
             let served_there = owner.contains(&op);
             assert!(served(Gate::Dev, op), "a development socket answers {op:?}");
@@ -2591,6 +2709,11 @@ mod tests {
                 served(Gate::Owner, op),
                 served_there,
                 "the owner's door and {op:?}"
+            );
+            assert_eq!(
+                served(Gate::Seat, op),
+                seat.contains(&op),
+                "an agent's seat and {op:?}"
             );
             assert_eq!(
                 Op::of(&json!({"op": op.name()})),
@@ -2601,7 +2724,7 @@ mod tests {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 28, "the protocol's ops");
+        assert_eq!(names.len(), 30, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");

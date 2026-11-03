@@ -20,7 +20,7 @@
     reason = "test fixtures: a failed step is the assertion, and the sessions outlive every call"
 )]
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -31,7 +31,7 @@ use serde_json::Value;
 use tilo_action_policy::{Role, share::is_of_share};
 use tilo_actions::ResourceSpec;
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
-use tilo_compositor::{Compositor, InputEvent, OutputConfig};
+use tilo_compositor::{Compositor, InputEvent, OutputConfig, Selection};
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, WINDOW_KIND, tab_resource_id};
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
@@ -43,14 +43,22 @@ use tilo_network_actor::{NetEvent, WorkspaceId as Topic};
 use tilo_window_share::streaming::InputEvent as SharedInput;
 use tokio::sync::mpsc::UnboundedReceiver;
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_pointer, wl_pointer::WlPointer,
-    wl_registry, wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard, wl_keyboard::WlKeyboard,
+    wl_pointer, wl_pointer::WlPointer, wl_registry, wl_registry::WlRegistry, wl_seat,
+    wl_seat::WlSeat, wl_shm, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    zwp_text_input_v3,
+    zwp_text_input_v3::{ContentHint, ContentPurpose, ZwpTextInputV3},
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
+};
+use wayland_protocols_misc::zwp_input_method_v2::client::{
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2::ZwpInputMethodV2,
 };
 
 use super::SHARES_RESOURCE;
@@ -430,7 +438,13 @@ fn allow_input(member: &mut Member, tab: u64, on: bool) {
 /// Move the pointer over the window of `surface` on `host`, as a member
 /// viewing it does.
 fn move_pointer(viewer: &Member, host: &Member, surface: u64, x: f64, y: f64) {
-    let event = postcard::to_stdvec(&SharedInput::PointerMotion { x, y }).expect("input");
+    send_input(viewer, host, surface, &SharedInput::PointerMotion { x, y });
+}
+
+/// Send one input event for the window of `surface` on `host`, as a member
+/// viewing it does.
+fn send_input(viewer: &Member, host: &Member, surface: u64, event: &SharedInput) {
+    let event = postcard::to_stdvec(event).expect("input");
     let ws = host
         .sync
         .workspace_topic(WORKSPACE)
@@ -499,13 +513,30 @@ struct Seen {
     configured: bool,
     size: Option<(i32, i32)>,
     pointer_inside: bool,
+    /// How often the pointer came in: a seat's event leaves it as it found
+    /// it.
+    enters: usize,
     motions: Vec<(f64, f64)>,
+    keyboard: Option<WlKeyboard>,
+    /// The keys the window's keyboard heard, as `(keycode, pressed)`.
+    keys: Vec<(u32, bool)>,
+    text_input_manager: Option<ZwpTextInputManagerV3>,
+    text_input: Option<ZwpTextInputV3>,
+    /// The input method this client runs for the seat: a text field only
+    /// takes its text through one.
+    input_method_manager: Option<ZwpInputMethodManagerV2>,
+    #[allow(dead_code, reason = "held so the seat keeps its input method")]
+    input_method: Option<ZwpInputMethodV2>,
+    /// The text its text field was given, as an input method gives it.
+    committed: Vec<String>,
     closed: bool,
 }
 
 impl TestClient {
     fn connect(compositor: &mut Compositor) -> Self {
-        let socket = compositor.connect_client().expect("client socket");
+        // The session starts the apps it shows and trusts them, as it starts
+        // the input method a text field is typed into.
+        let socket = compositor.connect_trusted_client().expect("client socket");
         let connection = Connection::from_socket(socket).expect("connection");
         let queue = connection.new_event_queue();
         connection.display().get_registry(&queue.handle(), ());
@@ -559,6 +590,32 @@ impl TestClient {
         }
     }
 
+    /// Give the window a text field: a `text-input-v3` object on its surface,
+    /// waiting for typing.
+    fn own_text_field(&mut self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .text_input_manager
+            .as_ref()
+            .expect("zwp_text_input_manager_v3");
+        let seat = self.seen.seat.as_ref().expect("wl_seat");
+        // The seat composes for a text field only while an input method
+        // serves it, as the person's on-screen keyboard does.
+        let input_method = self
+            .seen
+            .input_method_manager
+            .as_ref()
+            .expect("zwp_input_method_manager_v2")
+            .get_input_method(seat, &qh, ());
+        self.seen.input_method = Some(input_method);
+        let field = manager.get_text_input(seat, &qh, ());
+        field.set_content_type(ContentHint::empty(), ContentPurpose::Normal);
+        field.enable();
+        field.commit();
+        self.seen.text_input = Some(field);
+    }
+
     /// Attach a buffer of one colour (RGBA) and commit it.
     fn show(&self, width: i32, height: i32, rgba: [u8; 4]) {
         let qh = self.queue.handle();
@@ -609,6 +666,12 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
+                "zwp_text_input_manager_v3" => {
+                    seen.text_input_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_input_method_manager_v2" => {
+                    seen.input_method_manager = Some(registry.bind(name, 1, qh, ()));
+                }
                 _ => {}
             }
         }
@@ -677,10 +740,13 @@ impl Dispatch<WlSeat, ()> for Seen {
         if let wl_seat::Event::Capabilities {
             capabilities: WEnum::Value(capabilities),
         } = event
-            && capabilities.contains(wl_seat::Capability::Pointer)
-            && seen.pointer.is_none()
         {
-            seen.pointer = Some(seat.get_pointer(qh, ()));
+            if capabilities.contains(wl_seat::Capability::Pointer) && seen.pointer.is_none() {
+                seen.pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if capabilities.contains(wl_seat::Capability::Keyboard) && seen.keyboard.is_none() {
+                seen.keyboard = Some(seat.get_keyboard(qh, ()));
+            }
         }
     }
 }
@@ -695,7 +761,10 @@ impl Dispatch<WlPointer, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { .. } => seen.pointer_inside = true,
+            wl_pointer::Event::Enter { .. } => {
+                seen.pointer_inside = true;
+                seen.enters = seen.enters.saturating_add(1);
+            }
             wl_pointer::Event::Leave { .. } => seen.pointer_inside = false,
             wl_pointer::Event::Motion {
                 surface_x,
@@ -707,6 +776,45 @@ impl Dispatch<WlPointer, ()> for Seen {
     }
 }
 
+impl Dispatch<WlKeyboard, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WlKeyboard,
+        event: wl_keyboard::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Key {
+            key,
+            state: WEnum::Value(state),
+            ..
+        } = event
+        {
+            seen.keys
+                .push((key, state == wl_keyboard::KeyState::Pressed));
+        }
+    }
+}
+
+impl Dispatch<ZwpTextInputV3, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_text_input_v3::Event::CommitString { text: Some(text) } = event {
+            seen.committed.push(text);
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
+delegate_noop!(Seen: ignore ZwpInputMethodManagerV2);
+delegate_noop!(Seen: ignore ZwpInputMethodV2);
 delegate_noop!(Seen: ignore WlCompositor);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
@@ -719,7 +827,11 @@ delegate_noop!(Seen: ignore WlSurface);
 fn mapped(session: &mut Session, app_id: &str) -> TestClient {
     let mut client = TestClient::connect(session.compositor());
     until_window(session, &mut client, |_, seen| {
-        seen.wm_base.is_some() && seen.seat.is_some()
+        seen.wm_base.is_some()
+            && seen.seat.is_some()
+            && seen.text_input_manager.is_some()
+            && seen.input_method_manager.is_some()
+            && seen.keyboard.is_some()
     });
     client.open_window(app_id);
     until_window(session, &mut client, |_, seen| seen.configured);
@@ -953,14 +1065,10 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
         })
         .expect("the pointer moves over the picture");
     until(&mut host, &mut window, &mut viewer, |_, _, client| {
-        client
-            .as_ref()
-            .is_some_and(|client| client.seen.pointer_inside)
+        client.as_ref().is_some_and(|client| client.seen.enters > 0)
     });
     assert!(
-        window
-            .as_ref()
-            .is_some_and(|window| window.seen.pointer_inside),
+        window.as_ref().is_some_and(|window| window.seen.enters > 0),
         "the person's pointer reached the window"
     );
 }
@@ -1184,14 +1292,10 @@ fn remote_input_reaches_the_window_until_the_cut_chord() {
     });
     move_pointer(&viewer, &host, tab, centre.0, centre.1);
     until(&mut host, &mut window, &mut viewer, |_, _, client| {
-        client
-            .as_ref()
-            .is_some_and(|client| client.seen.pointer_inside)
+        client.as_ref().is_some_and(|client| client.seen.enters > 0)
     });
     assert!(
-        window
-            .as_ref()
-            .is_some_and(|window| window.seen.pointer_inside),
+        window.as_ref().is_some_and(|window| window.seen.enters > 0),
         "the member's pointer reached the window"
     );
     // Once it is over the window, moving it moves the window's own pointer.
@@ -1221,6 +1325,145 @@ fn remote_input_reaches_the_window_until_the_cut_chord() {
     assert_eq!(
         before, after,
         "after the cut chord the member's input no longer reaches the window"
+    );
+}
+
+/// A member controlling a shared window types, pastes and closes through its
+/// own seat: its text reaches the window's field, its clipboard becomes this
+/// desktop's, and its close closes the window.
+#[test]
+fn a_viewers_keys_text_clipboard_and_close_reach_the_shared_window() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let mut host = member(0xe1, own_desk());
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    share(&mut host, APP, tab);
+    let mut viewer = member(0xf1, showing(host.sync.publisher(), APP, tab));
+    watch(&mut viewer, tab);
+    viewing(&mut host, &mut window, &mut viewer, tab);
+    allow_input(&mut host, tab, true);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .and_then(|shared| shared["viewers"].as_array())
+            .is_some_and(|viewers| {
+                viewers
+                    .iter()
+                    .any(|viewer| viewer["can_control"].as_bool() == Some(true))
+            })
+    });
+
+    // The window has a field, enabled at the compositor before the member
+    // writes into it.
+    if let Some(window) = window.as_mut() {
+        window.own_text_field();
+    }
+    // The field is enabled at the compositor before the member writes into
+    // it: a seat's text goes to the field the person types into.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while host.session.compositor().dictation_field().is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "the window's text field took the focus"
+        );
+        if let Some(window) = window.as_mut() {
+            window.exchange();
+        }
+        host.session.step(Duration::from_millis(2)).expect("step");
+        if let Some(window) = window.as_mut() {
+            window.exchange();
+        }
+        carry(&mut host, &viewer);
+        carry(&mut viewer, &host);
+    }
+
+    // The member's keyboard reaches the window through its seat.
+    send_input(
+        &viewer,
+        &host,
+        tab,
+        &SharedInput::Key {
+            keysym: 30,
+            pressed: true,
+            modifiers: 0,
+        },
+    );
+    send_input(
+        &viewer,
+        &host,
+        tab,
+        &SharedInput::Key {
+            keysym: 30,
+            pressed: false,
+            modifiers: 0,
+        },
+    );
+    settle(&mut host, &mut window, &mut viewer);
+    until(&mut host, &mut window, &mut viewer, |_, _, client| {
+        client
+            .as_ref()
+            .is_some_and(|client| client.seen.keys.len() >= 2)
+    });
+    let seen_keys = window.as_ref().map(|window| window.seen.keys.clone());
+    assert_eq!(
+        seen_keys,
+        Some(vec![(30, true), (30, false)]),
+        "the member's keystroke reached the window as one press and its release"
+    );
+
+    // What its input method composed is written into the field.
+    send_input(
+        &viewer,
+        &host,
+        tab,
+        &SharedInput::Text {
+            text: "\u{1f642}".to_owned(),
+        },
+    );
+    until(&mut host, &mut window, &mut viewer, |_, _, client| {
+        client
+            .as_ref()
+            .is_some_and(|client| !client.seen.committed.is_empty())
+    });
+    assert_eq!(
+        window.as_ref().map(|window| window.seen.committed.clone()),
+        Some(vec!["\u{1f642}".to_owned()]),
+        "the member's composed text reached the window's field"
+    );
+
+    // What it pasted is this desktop's clipboard, for the window's own paste.
+    send_input(
+        &viewer,
+        &host,
+        tab,
+        &SharedInput::ClipboardText {
+            text: "pasted words".to_owned(),
+        },
+    );
+    settle(&mut host, &mut window, &mut viewer);
+    let mut reader = host
+        .session
+        .compositor()
+        .receive_selection(Selection::Clipboard, "text/plain")
+        .expect("the member's text is the clipboard");
+    let mut pasted = Vec::new();
+    reader
+        .read_to_end(&mut pasted)
+        .expect("the clipboard reads");
+    assert_eq!(
+        pasted, b"pasted words",
+        "the member's clipboard became this desktop's"
+    );
+
+    // The member closed its view: the window is asked to close, as a
+    // person's close of its tab does.
+    send_input(&viewer, &host, tab, &SharedInput::Close);
+    until(&mut host, &mut window, &mut viewer, |_, _, client| {
+        client.as_ref().is_some_and(|client| client.seen.closed)
+    });
+    assert!(
+        window.as_ref().is_some_and(|window| window.seen.closed),
+        "the member's close closed the window"
     );
 }
 
@@ -1404,14 +1647,10 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     let centre = received_centre(&member);
     move_pointer(&member, &host, tab, centre.0, centre.1);
     until(&mut host, &mut window, &mut member, |_, _, client| {
-        client
-            .as_ref()
-            .is_some_and(|client| client.seen.pointer_inside)
+        client.as_ref().is_some_and(|client| client.seen.enters > 0)
     });
     assert!(
-        window
-            .as_ref()
-            .is_some_and(|window| window.seen.pointer_inside),
+        window.as_ref().is_some_and(|window| window.seen.enters > 0),
         "the member's input reached the window"
     );
 }
