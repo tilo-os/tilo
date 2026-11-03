@@ -210,18 +210,13 @@ default view shell_settings for Shell
 /// other root, as any view reads a root of the package it uses. A change of the arrangement runs
 /// the preset body; a change of the desk reading runs the bar.
 ///
+/// The whole screen is `screen`'s view (`desk.tl`), which this calls: a person meets the same
+/// desk as a window and as a display, and neither drifts from the other.
+///
 /// The traditional desktop is the one preset that is the chrome's too: picking its layout
 /// (`apply` of `windows_desktop`) lays the desk out that way, as picking it in the switch does.
 view desk_view(a: Arrangement) {
-    let v = viewing
-    if (v.showing == .desktop or bar_is_traditional(shell)) and not space.compact {
-        layers(fill) {
-            traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
-            desk(root Desk, fill)
-        }
-    } else {
-        desk_around(root Desk, .some(a), fill)
-    }
+    screen(a, fill)
 }
 
 /// The time, to the minute, and the timer Clocks runs beside it: its label and what it has

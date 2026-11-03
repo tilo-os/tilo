@@ -81,19 +81,19 @@ view framed_place(a: Arrangement, p: ArrangementPlace) {
             place_controls(a, p)
         }
         body: {
-            place_view(p, fill)
+            place_content(p)
         }
     }
 }
 
 /// A place on the frameless canvas: its resource's view standing as content (or its window's
 /// well), with a line naming what it is rather than a frame around it. The controls stand
-/// outside it.
+/// outside it, and the content itself is `place_content`'s, as every preset draws it.
 view space_content(a: Arrangement, p: ArrangementPlace) {
     stack(gap: .related, fill) {
         place_controls(a, p)
         ui.Text(place_title(p), role: .label, secondary: true)
-        place_view(p, fill)
+        place_content(p)
     }
 }
 
