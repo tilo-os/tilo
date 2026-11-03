@@ -654,7 +654,7 @@ impl Loop {
         let now = unix_now();
         let Some((workspace, name)) = handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| (held.room().to_string(), held.name.clone()))
+                .map(|held| (held.id().to_string(), held.name.clone()))
         }) else {
             let _ = decide.send(Consent::Refuse(word("agent-door-no-workspace")));
             return;
@@ -837,8 +837,8 @@ impl Loop {
         let Some(room) = tree
             .workspaces
             .iter()
-            .find(|held| held.room().to_string() == workspace)
-            .map(tilo_desktop_model::Workspace::room)
+            .find(|held| held.id().to_string() == workspace)
+            .map(tilo_desktop_model::Workspace::id)
         else {
             return Err(word("agent-door-workspace-gone"));
         };
@@ -859,7 +859,7 @@ impl Loop {
         handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .find(|held| held.room().to_string() == workspace)
+                .find(|held| held.id().to_string() == workspace)
                 .is_some_and(|held| held.agent_role_at(agent, now).is_some())
         })
     }
@@ -1157,6 +1157,25 @@ enum DoorAsk {
             Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
         >,
     },
+    /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
+    /// document and the packages a program reading it loads, or `None` for one no service keeps
+    /// a record of.
+    Record {
+        app: String,
+        done: tilo_actions::remote::Completer<Option<tilo_service::Record>>,
+    },
+    /// The compiled modules of every package the session runs itself, which a task's host
+    /// loads to run its programs against: each its description embedded, and the packages it
+    /// uses first.
+    Modules(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::Module>>),
+    /// Run the change `change` of a record a service keeps for a package the session runs
+    /// itself, as `actor`, on the pass: its answer as the door gives it, or `None` when no
+    /// service keeps that app's record.
+    Change {
+        actor: tilo_actions::remote::CallerPrincipal,
+        change: tilo_actions::remote::RecordChange,
+        done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionHostError>>>,
+    },
 }
 
 /// What the session's own doors offer now, and the revision it stands at:
@@ -1202,6 +1221,19 @@ pub(crate) struct SessionDoors {
     person: String,
 }
 
+/// How long a connection's thread waits on the session's pass for an answer (its record, a
+/// change, the modules): the loop answers each pass, so this is only a bound on a frozen
+/// session rather than a wait that should ever reach it.
+const WAIT: Duration = Duration::from_secs(30);
+
+/// A session that did not answer within [`WAIT`]: it is frozen, and nothing is done elsewhere
+/// in its place.
+fn unanswered() -> ActionHostError {
+    ActionHostError::Unavailable {
+        reason: "the session did not answer".to_owned(),
+    }
+}
+
 impl SessionDoors {
     /// The seam `wake` wakes the loop on, shared by every connection that
     /// asks the session's own doors, and the runs' program hosts (`runs`)
@@ -1220,9 +1252,19 @@ impl SessionDoors {
         (self.wake)();
     }
 
-    /// Answer what the connections asked since the last pass, from `doors`;
-    /// `person` is whose calls are their own, not someone's for them.
-    pub(crate) fn answer(&self, doors: &tilo_surface_host::Doors, person: &str) {
+    /// Answer what the connections asked since the last pass, from `doors` and the records
+    /// `services` keep for packages the session runs itself; `person` is whose calls are their
+    /// own, not someone's for them.
+    ///
+    /// The services are borrowed briefly, one ask at a time: a change they carry out is the
+    /// published action's own, so a run never needs the services held across a turn of the
+    /// loop, and no borrow outlives a single answer.
+    pub(crate) fn answer(
+        &self,
+        doors: &tilo_surface_host::Doors,
+        services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+        person: &str,
+    ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
@@ -1252,9 +1294,81 @@ impl SessionDoors {
                     };
                     done.complete(ran);
                 }
+                DoorAsk::Record { app, done } => {
+                    done.complete(services.borrow().record(&app));
+                }
+                DoorAsk::Modules(done) => {
+                    let modules: Vec<runtime_portal::tilolang_host::Module> = services
+                        .borrow()
+                        .records()
+                        .into_iter()
+                        .flat_map(|record| {
+                            record.packages.into_iter().map(|wasm| {
+                                runtime_portal::tilolang_host::Module {
+                                    wasm: wasm.to_vec(),
+                                    ids: String::new(),
+                                    imports: Vec::new(),
+                                }
+                            })
+                        })
+                        .collect();
+                    done.complete(modules);
+                }
+                DoorAsk::Change {
+                    actor,
+                    change,
+                    done,
+                } => done.complete(change_through(services, &actor, &change)),
             }
         }
     }
+}
+
+/// Run the change `change` of a record `services` keep for a package the session runs itself
+/// (the shell), as `actor`: the published action is the record's own, run on the pass that
+/// publishes it, as the record's origin runs it. `None` when no service keeps that app's
+/// record, which is then the workspace's, changed through the broker.
+fn change_through(
+    services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+    actor: &tilo_actions::remote::CallerPrincipal,
+    change: &tilo_actions::remote::RecordChange,
+) -> Option<Result<serde_json::Value, ActionHostError>> {
+    use tilo_actions::remote::CallerPrincipal;
+    // Who the change is attributed to: the agent acting for its person, or the person.
+    let invoker = match actor {
+        CallerPrincipal::Agent(agent) => {
+            tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
+                .with_kind(tilo_actions::ActorKind::Agent)
+        }
+        CallerPrincipal::Person(person) => tilo_actions::ActionInvoker::actor(person.clone()),
+        _ => return None,
+    };
+    services.borrow().record(&change.app)?;
+    let ran = services.borrow_mut().invoke_as(
+        &invoker,
+        &change.resource,
+        &change.action,
+        &change.arguments,
+    );
+    Some(match ran {
+        Ok(output) => {
+            let document = services
+                .borrow()
+                .record(&change.app)
+                .map(|record| record.document);
+            let output = match output {
+                tilo_service::Started::Done(output) => serde_json::json!({
+                    "value": output.value,
+                    "resources": output.resources,
+                }),
+                tilo_service::Started::Accepted => serde_json::Value::Null,
+            };
+            Ok(serde_json::json!({"ok": output, "change": document}))
+        }
+        Err(error) => Err(ActionHostError::Unavailable {
+            reason: error.to_string(),
+        }),
+    })
 }
 
 /// What the session's own actions answered, by invocation, for a later look.
@@ -1523,6 +1637,118 @@ impl ActionHost for Host {
             .as_ref()
             .and_then(tilo_action_broker::collab_app_broker::AppBrokerState::content_puts)
     }
+
+    /// The records a connection reads outside their apps: the workspace's own, as the broker
+    /// decides them, and the records of packages this session runs itself (the shell), which
+    /// its services keep: a program reads them by the app, as it reads Notes', with no case of
+    /// its own.
+    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+        Some(Arc::new(ServiceReads {
+            state: self.state.as_ref().map(Arc::downgrade),
+            session: Arc::clone(&self.session),
+        }))
+    }
+
+    /// The changes a connection makes to those records: a package the session runs itself is
+    /// changed through its own services, and any other app's at its record's origin.
+    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+        Some(Arc::new(ServiceChanges {
+            state: self.state.as_ref().map(Arc::downgrade),
+            session: Arc::clone(&self.session),
+        }))
+    }
+}
+
+/// The records the session's services keep for packages it runs itself (the shell), read by a
+/// connection as any app's: the record of each such package is published as its app's committed
+/// document, and the workspace's own through the broker it starts.
+struct ServiceReads {
+    /// The broker, once the session starts one: a workspace's own records are read through it.
+    state: Option<std::sync::Weak<AppBrokerState>>,
+    /// What a connection asks the session on its pass: the record a package it runs itself
+    /// keeps.
+    session: Arc<SessionDoors>,
+}
+
+impl tilo_actions::remote::RecordReads for ServiceReads {
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::RecordAddress,
+    ) -> Result<tilo_actions::remote::RecordCopy, ActionHostError> {
+        let (done, asked) = tilo_actions::remote::pending();
+        self.session.ask(DoorAsk::Record {
+            app: address.app.clone(),
+            done,
+        });
+        match asked.wait_timeout(WAIT) {
+            Ok(Some(Some(record))) => {
+                return Ok(tilo_actions::remote::RecordCopy::Document(record.document));
+            }
+            // A session that did not answer keeps the record still: reading the workspace's
+            // copy instead would answer from somewhere else.
+            Err(_) => return Err(unanswered()),
+            Ok(None | Some(None)) => {}
+        }
+        // Any other app's record is the workspace's, read through the broker.
+        let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) else {
+            return Err(ActionHostError::Unavailable {
+                reason: "this desktop keeps no records of its own".to_owned(),
+            });
+        };
+        let Some(reads) = state.record_reads() else {
+            return Err(ActionHostError::Unavailable {
+                reason: tilo_actions::remote::RECORD_READS_UNAVAILABLE.to_owned(),
+            });
+        };
+        reads.read(caller, address)
+    }
+}
+
+/// The records the session's services keep for packages it runs itself, changed by a
+/// connection as any app's: the change is the published action's own, run on the pass that
+/// publishes the records, by the service keeping them.
+struct ServiceChanges {
+    /// The broker, once the session starts one: a workspace's own records are changed at their
+    /// origin through it.
+    state: Option<std::sync::Weak<AppBrokerState>>,
+    /// What a connection asks the session on its pass.
+    session: Arc<SessionDoors>,
+}
+
+impl tilo_actions::remote::RecordChanges for ServiceChanges {
+    fn apply(
+        &self,
+        caller: &Caller,
+        change: &tilo_actions::remote::RecordChange,
+    ) -> Result<serde_json::Value, ActionHostError> {
+        let (done, answered) = tilo_actions::remote::pending();
+        self.session.ask(DoorAsk::Change {
+            actor: caller.principal().clone(),
+            change: change.clone(),
+            done,
+        });
+        match answered.wait_timeout(WAIT) {
+            Ok(Some(Some(answer))) => return answer,
+            // The session may still make the change: making it at the origin as well would
+            // make it twice.
+            Err(_) => return Err(unanswered()),
+            // No service keeps a record of that app: the workspace's own, changed at its
+            // origin through the broker.
+            Ok(None | Some(None)) => {}
+        }
+        let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) else {
+            return Err(ActionHostError::Unavailable {
+                reason: "this desktop keeps no records of its own".to_owned(),
+            });
+        };
+        let Some(changes) = state.record_changes() else {
+            return Err(ActionHostError::Unavailable {
+                reason: "this desktop applies no task's changes at a record's origin".to_owned(),
+            });
+        };
+        changes.apply(caller, change)
+    }
 }
 
 /// Where the session's door starts a connection's task host: a thread of the
@@ -1536,14 +1762,24 @@ pub(crate) struct TaskHosts {
     person: std::sync::Mutex<Option<String>>,
     /// Where each run's host connections are kept, for the person's lines in its conversation.
     runs: crate::run_programs::Shared,
+    /// What a connection asks the session's own doors, for the records the packages it runs
+    /// itself keep: its task host names the modules they are read by, before it starts, on the
+    /// loop's pass.
+    session: Arc<SessionDoors>,
 }
 
 impl TaskHosts {
-    /// The hosts of the task connections `person` asks about, whose programs run as `person`.
-    pub(crate) fn new(person: &str, runs: crate::run_programs::Shared) -> Self {
+    /// The hosts of the task connections `person` asks about, whose programs run as `person`,
+    /// reading the session's own records through `session`.
+    pub(crate) fn new(
+        person: &str,
+        runs: crate::run_programs::Shared,
+        session: Arc<SessionDoors>,
+    ) -> Self {
         Self {
             person: std::sync::Mutex::new(Some(person.to_owned())),
             runs,
+            session,
         }
     }
 }
@@ -1554,9 +1790,13 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
         // The person's own connection into the same session, for the lines they type in the
         // run's conversation: it runs there, where the `let`s the agent's programs bound are.
         let (person_ours, person_host) = UnixStream::pair()?;
-        // The session runs no installed tilolang app's package yet: the task's programs name
-        // the platform's own (the device and its arrangement, Settings).
-        let encoded = runtime_portal::tilolang_host::encode_modules(&[]);
+        // The modules the task's programs are compiled against: every package the session runs
+        // itself (the shell), whose records a program reads by the app, and the platform's own
+        // (the device and its arrangement, Settings).
+        let (done, whole) = tilo_actions::remote::pending();
+        self.session.ask(DoorAsk::Modules(done));
+        let modules = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
+        let encoded = runtime_portal::tilolang_host::encode_modules(&modules);
         let modules = tilo_render_protocol::shm::sealed_blob("tilolang-modules", &encoded)?;
         let request = runtime_portal::tilolang_host::TaskRequest {
             task: task.to_owned(),
@@ -1642,8 +1882,11 @@ fn serve_connection(
         return;
     };
     let facts = facts_of(pid, launches);
-    let runs = std::sync::Arc::clone(&session.runs);
-    let tasks = Arc::new(TaskHosts::new(&session.person, runs));
+    let tasks = Arc::new(TaskHosts::new(
+        &session.person,
+        std::sync::Arc::clone(&session.runs),
+        Arc::clone(&session),
+    ));
     let admitted = Arc::clone(&tasks);
     let seat = seats.joining();
     let seat_stream = stream.try_clone().ok();

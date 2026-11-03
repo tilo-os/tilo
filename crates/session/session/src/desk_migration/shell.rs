@@ -382,7 +382,7 @@ mod tests {
         let mut tree = DesktopTree::default();
         for name in [PLANS, RESEARCH] {
             let mut workspace = Workspace::new(WorkspaceSlot(minter.mint()), name);
-            workspace.slot = WorkspaceSlot::of_workspace(workspace.room());
+            workspace.slot = WorkspaceSlot::of_workspace(workspace.id());
             workspace.strips = [("Main", &["Notes", "Files"][..]), ("Side", &["Search"][..])]
                 .into_iter()
                 .map(|(strip_name, tabs)| {

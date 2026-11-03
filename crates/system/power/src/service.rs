@@ -183,21 +183,16 @@ pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<P
     for ev in events {
         match ev {
             BatteryEvent::Low(pct) => signals.push(PowerSignal::Notify(PowerNotification {
-                summary: "Battery low".into(),
-                body: format!("{pct}% remaining. Consider plugging in."),
+                percent: *pct,
                 critical: false,
+                suspending: false,
             })),
             BatteryEvent::Critical(pct) => {
                 let suspending = policy.critical_action == PowerAction::Suspend;
-                let tail = if suspending {
-                    "Suspending to protect your work."
-                } else {
-                    "Please plug in now."
-                };
                 signals.push(PowerSignal::Notify(PowerNotification {
-                    summary: "Battery critically low".into(),
-                    body: format!("{pct}% remaining. {tail}"),
+                    percent: *pct,
                     critical: true,
+                    suspending,
                 }));
                 if suspending {
                     suspend = true;
@@ -1089,8 +1084,9 @@ mod tests {
             assert_eq!(signals.len(), 1);
             match &signals[0] {
                 PowerSignal::Notify(n) => {
+                    assert_eq!(n.percent, 12);
                     assert!(!n.critical);
-                    assert!(n.body.contains("12%"));
+                    assert!(!n.suspending, "the low heads-up sleeps nothing");
                 }
                 other => panic!("expected a notify, got {other:?}"),
             }
@@ -1102,7 +1098,10 @@ mod tests {
             };
             let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(4)], &p);
             assert!(suspend, "critical + suspend policy ⇒ auto-suspend");
-            assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
+            assert!(matches!(
+                signals[0],
+                PowerSignal::Notify(ref n) if n.critical && n.suspending && n.percent == 4
+            ));
         }
         {
             let p = PowerPolicy {
@@ -1113,7 +1112,10 @@ mod tests {
             assert!(!suspend, "ignore policy ⇒ warn only, no suspend");
             // Still warns (critical toast), just doesn't act.
             assert_eq!(signals.len(), 1);
-            assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
+            assert!(matches!(
+                signals[0],
+                PowerSignal::Notify(ref n) if n.critical && !n.suspending
+            ));
         }
         {
             let p = PowerPolicy::default();

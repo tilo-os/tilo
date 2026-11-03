@@ -139,11 +139,25 @@ pub(super) fn held_clock() -> ui::time::testing::SharedWall {
 }
 
 #[test]
+fn pixel_parity_frames_match_the_old_shells_scenes() {
+    // The set builds six sessions one after another in one thread, and a
+    // session is built under a stack the size of a whole desk: the room a
+    // test thread gets by default is not enough for the last of them, and a
+    // harness that overflows takes the rest of the suite with it.
+    std::thread::Builder::new()
+        .name("pixel-parity".into())
+        .stack_size(64 << 20)
+        .spawn(capture_parity_frames)
+        .expect("the parity harness thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one harness captures the whole parity set in a fixed order"
 )]
-fn pixel_parity_frames_match_the_old_shells_scenes() {
+fn capture_parity_frames() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
     std::fs::create_dir_all(parity_dir()).expect("create the parity directory");

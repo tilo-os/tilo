@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_action_broker::services::{OwnDeviceActions, OwnDeviceOutcome};
@@ -23,12 +24,14 @@ use tilo_actions::remote::{
     Pending, own_device, pending,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{
     ActionPlane, FOLLOW_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
 };
+use tilo_power_mgmt::InhibitToken;
+use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
 use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
 
 use crate::engine::Engine;
@@ -70,7 +73,7 @@ impl DeviceActions {
         endpoint: Endpoint,
         engine: Option<Arc<Engine>>,
     ) -> Self {
-        let dispatch = DeviceDispatch::default();
+        let dispatch = DeviceDispatch::for_user(identity.device_cert.user_public_key);
         let plane = ActionPlane::over(
             identity.device_signing_key.clone(),
             Arc::new(dispatch.clone()),
@@ -100,6 +103,15 @@ impl DeviceActions {
     /// own door, once it serves.
     pub(crate) fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
         self.0.dispatch.install(host);
+    }
+
+    /// Hold this machine awake through `power`, the holds its idle timer
+    /// reads, while another of the person's devices uses it: requests from
+    /// there renew a suspend-only lease, so the machine does not fall asleep
+    /// mid-task while the screen still blanks, the session still locks, and
+    /// lid close and critical battery still suspend.
+    pub(crate) fn attach_power(&self, power: tilo_session_power::PowerLink) {
+        self.0.dispatch.attach_power(power);
     }
 
     /// Where one of the person's devices is, as this session was told.
@@ -254,24 +266,87 @@ fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnD
     }
 }
 
+/// How long one request from another of the person's devices keeps this
+/// machine from idle-suspending.
+const REMOTE_USE_LEASE: Duration = Duration::from_secs(600);
+
 /// The one place a request that arrived on this device is handed to: the
 /// broker's door, once it serves. Until then a request is answered as
 /// unavailable rather than left waiting, and so after the broker retires.
-#[derive(Clone, Default)]
-struct DeviceDispatch(Arc<Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>>);
+///
+/// It also counts the requests from the person's other devices as use of
+/// this one, holding the machine awake for a lease after each.
+#[derive(Clone)]
+struct DeviceDispatch(Arc<DispatchInner>);
+
+struct DispatchInner {
+    /// What answers a request that arrived here.
+    host: Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
+    /// The person this device belongs to: what arrives from another of their
+    /// devices is them using this one.
+    user: [u8; 32],
+    /// This machine's holds, once the session's power link serves.
+    power: Mutex<Option<tilo_session_power::PowerLink>>,
+    /// The suspend lease the person's other devices hold, renewed in place.
+    remote_use: Mutex<Option<InhibitToken>>,
+}
 
 impl DeviceDispatch {
+    fn for_user(user: [u8; 32]) -> Self {
+        Self(Arc::new(DispatchInner {
+            host: Mutex::default(),
+            user,
+            power: Mutex::default(),
+            remote_use: Mutex::default(),
+        }))
+    }
+
     fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
-        *self.0.lock_recover() = Some(host);
+        *self.0.host.lock_recover() = Some(host);
+    }
+
+    fn attach_power(&self, power: tilo_session_power::PowerLink) {
+        *self.0.power.lock_recover() = Some(power);
     }
 
     fn host(&self) -> Result<Arc<dyn ActionHost + Send + Sync>, ActionHostError> {
         self.0
+            .host
             .lock_recover()
             .clone()
             .ok_or_else(|| ActionHostError::Unavailable {
                 reason: "this device is not serving its actions".into(),
             })
+    }
+
+    /// A request from another of the person's own devices is use of this one:
+    /// renew the suspend-only lease. The reason names what holds the machine
+    /// in quick settings and in logind's inhibitor list.
+    fn note_remote_use(&self, caller: &Caller) {
+        if caller.is_foreign_device()
+            || caller.user_public_key() != Some(&self.0.user)
+            || caller.device_public_key().is_none()
+        {
+            return;
+        }
+        let Some(power) = self.0.power.lock_recover().clone() else {
+            return;
+        };
+        let Some(until) = Instant::now().checked_add(REMOTE_USE_LEASE) else {
+            return;
+        };
+        let reason = crate::i18n::t("remote-use-hold");
+        let mut lease = self.0.remote_use.lock_recover();
+        let renewed = lease
+            .as_ref()
+            .is_some_and(|lease| lease.renew_until(reason.clone(), until));
+        if !renewed {
+            *lease = Some(
+                power
+                    .registry()
+                    .acquire_until(reason, INHIBIT_SUSPEND, until),
+            );
+        }
     }
 }
 
@@ -292,6 +367,7 @@ impl ActionHost for DeviceDispatch {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.note_remote_use(caller);
         match self.host() {
             Ok(host) => host.invoke(caller, request),
             Err(error) => Pending::ready(Err(error)),
@@ -336,7 +412,7 @@ impl Workspaces for HeldWorkspaces {
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&StatePeer) + Send),
     ) -> ReadFuture<'a> {
-        let (Some(engine), Some(workspace_id)) = (&self.0, RoomId::parse(workspace)) else {
+        let (Some(engine), Some(workspace_id)) = (&self.0, WorkspaceId::parse(workspace)) else {
             return Box::pin(std::future::ready(false));
         };
         // This session's workspace is its own store: the read takes the
@@ -503,7 +579,7 @@ mod tests {
             // What the workspace's admission of the other device changed
             // reaches this device's own copy of the workspace, as it would
             // over the person's devices.
-            let workspace_id = RoomId::parse(WORKSPACE).expect("a workspace");
+            let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
             let now = std::time::SystemTime::now();
             for (bytes, _) in governor.outgoing() {
                 engine
@@ -1066,5 +1142,92 @@ mod tests {
         };
         assert_eq!(reason, "no device offered to run it");
         endpoint.close().await;
+    }
+
+    /// When a lease taken at `now` lapses, and the moments either side of it.
+    fn lease_ends(now: Instant) -> Instant {
+        now.checked_add(REMOTE_USE_LEASE).expect("a lease deadline")
+    }
+
+    /// A request from another of the person's own devices is them using this
+    /// machine: suspend is held off for a lease after it, nothing else is.
+    #[test]
+    fn a_request_from_another_of_the_persons_devices_holds_suspend_off() {
+        use tilo_actions::remote::PendingPoll;
+        use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
+
+        let user = [0x51; 32];
+        let dispatch = DeviceDispatch::for_user(user);
+        let power = tilo_session_power::PowerLink::default();
+        dispatch.attach_power(power.clone());
+        let registry = power.registry();
+        let (_, request) = invocation([0x52; 32], "notes.append");
+        let theirs = Caller::authenticated(user, [0x53; 32]);
+        let now = Instant::now();
+        let lapse = lease_ends(now);
+        let mut answer = dispatch.invoke(&theirs, request.clone());
+        assert!(
+            matches!(answer.poll_ready(), PendingPoll::Ready(Err(_))),
+            "no broker serves here yet"
+        );
+        assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, now));
+        assert!(
+            !registry.is_inhibited_for_at(INHIBIT_IDLE, now),
+            "the screen still blanks and locks"
+        );
+        assert_eq!(
+            registry.active_reasons_for(INHIBIT_SUSPEND),
+            vec![crate::i18n::t("remote-use-hold")],
+            "quick settings and logind name what holds the machine"
+        );
+        assert!(
+            registry.is_inhibited_for_at(
+                INHIBIT_SUSPEND,
+                lapse
+                    .checked_sub(Duration::from_secs(1))
+                    .expect("just before the lease lapses")
+            ),
+            "the lease is long enough for the next request"
+        );
+        assert!(
+            !registry.is_inhibited_for_at(
+                INHIBIT_SUSPEND,
+                lapse
+                    .checked_add(Duration::from_secs(1))
+                    .expect("just after the lease lapses")
+            ),
+            "and lapses once they stop"
+        );
+
+        // The next request through the same device renews that one hold.
+        let later = Instant::now();
+        let _pending = dispatch.invoke(&theirs, request.clone());
+        assert_eq!(registry.count(), 1, "one lease, renewed in place");
+        assert!(
+            registry.is_inhibited_for_at(
+                INHIBIT_SUSPEND,
+                lease_ends(later)
+                    .checked_sub(Duration::from_secs(1))
+                    .expect("just before the renewed lease lapses")
+            ),
+            "the renewal counts from the later request"
+        );
+
+        // Someone else's device, a foreign device, or a caller admitted here
+        // is not the person using this machine from elsewhere.
+        let nobody = DeviceDispatch::for_user(user);
+        let power = tilo_session_power::PowerLink::default();
+        nobody.attach_power(power.clone());
+        let _pending = nobody.invoke(
+            &Caller::authenticated([0x54; 32], [0x55; 32]),
+            request.clone(),
+        );
+        let _pending = nobody.invoke(
+            &Caller::authenticated(user, [0x56; 32]).from_foreign_device(true),
+            request.clone(),
+        );
+        let _pending = nobody.invoke(&Caller::local_person("person"), request);
+        assert!(!power.suspend_held(), "nothing of theirs holds the machine");
+        assert!(nobody.0.remote_use.lock_recover().is_none());
     }
 }

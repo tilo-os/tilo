@@ -826,7 +826,7 @@ async fn answer_pre_admit(
     {
         return RoomEvent::PreAdmitRefused {
             token_sha256,
-            reason: "the room takes people by invitation only".into(),
+            reason: "the workspace takes people by invitation only".into(),
             removed: false,
             invite_only: true,
         };

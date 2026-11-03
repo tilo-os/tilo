@@ -1042,7 +1042,7 @@ fn presence_bodies(value: &JsPresence, peer: u64, room: &str) -> Result<Vec<Vec<
         Some(crate::browser::pointers::JsPointer::Tile { tile, at }) => {
             let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
                 space: collab_types::presence::PointerSpace::Tile {
-                    room: room.to_owned(),
+                    workspace: room.to_owned(),
                     tab: tile.tab,
                 },
             })
@@ -1122,7 +1122,7 @@ fn workspace_number(text: &str) -> Result<u64, JsError> {
 fn pointer_cleared(peer: u64, room: &str) -> Result<Vec<u8>, JsError> {
     let key = serde_json::to_string(&collab_types::presence::PresenceKey::Pointer {
         space: collab_types::presence::PointerSpace::Tile {
-            room: room.to_owned(),
+            workspace: room.to_owned(),
             tab: 0,
         },
     })

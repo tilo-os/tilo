@@ -2,36 +2,38 @@
 //!
 //! [`crate::transport::Envelope::CommitRefused`] carries the host's reason
 //! as text meant for logs: the receipt check's wording, the member budget's,
-//! the room's. The author's device keeps that text for its log and shows the
-//! person [`plain_reason`] of it instead.
+//! the workspace's. The author's device keeps that text for its log and shows
+//! the person [`plain_reason`] of it instead.
 
 /// The member change budget's refusal ([`crate::config::MemberLimitsConfig`]).
 pub const TOO_MANY_CHANGES: &str = "too many changes; slow down";
 /// The member content budget's refusal.
 pub const TOO_MUCH_CONTENT: &str = "too much content this hour";
-/// The refusal of a member's windows or layout by a room whose layout is
-/// personal, as a public room's is: it shares none, so a page keeps its
-/// person's layout to itself once it hears this.
-pub const PERSONAL_LAYOUT: &str =
-    "the room's layout is personal, as a public room's is: it takes no member's windows or layout";
+/// The refusal of a member's windows or layout by a workspace whose layout
+/// is personal, as a public workspace's is: it shares none, so a page keeps
+/// its person's layout to itself once it hears this.
+pub const PERSONAL_LAYOUT: &str = "the workspace's layout is personal, as a public workspace's is: it takes no member's windows or layout";
 
 /// Sending too fast: the change budget refused it.
 pub const PLAIN_TOO_FAST: &str = "You're sending too fast; slow down a moment.";
 /// The hourly content budget refused it.
 pub const PLAIN_TOO_MUCH: &str = "You've shared too much this hour; try again later.";
-/// The room's grants or its app's surface do not allow the change.
-pub const PLAIN_NOT_ALLOWED: &str = "This room doesn't allow that.";
-/// The person only watches the room.
-pub const PLAIN_WATCHING: &str = "You can only watch this room.";
+/// The workspace's grants or its app's surface do not allow the change.
+pub const PLAIN_NOT_ALLOWED: &str = "This workspace doesn't allow that.";
+/// The person only watches the workspace.
+pub const PLAIN_WATCHING: &str = "You can only watch this workspace.";
 /// The person is no longer a member, or this device no longer counts as one.
-pub const PLAIN_NOT_A_MEMBER: &str = "You're no longer a member of this room.";
+pub const PLAIN_NOT_A_MEMBER: &str = "You're no longer a member of this workspace.";
 /// The session was not ready for the change; sending it again may work.
-pub const PLAIN_NOT_READY: &str = "The room wasn't ready for this change; try again.";
+pub const PLAIN_NOT_READY: &str = "The workspace wasn't ready for this change; try again.";
 /// Anything else.
-pub const PLAIN_REFUSED: &str = "The room didn't accept this change.";
+pub const PLAIN_REFUSED: &str = "The workspace didn't accept this change.";
 
 // Wordings of the receipt check (`collab_types::ReceiptRefusal`), the
-// room's shared-desktop rules and its access decisions.
+// workspace's shared-desktop rules and its access decisions. Each needle
+// matches both the wording hosts wrote when they called a workspace a room
+// and the wording they write now, so a device classifies a refusal from a
+// host that has not been updated the same way.
 const NOT_ALLOWED: &[&str] = &[
     "is not granted",
     "publishes no",
@@ -46,6 +48,7 @@ const NOT_ALLOWED: &[&str] = &[
 const WATCHING: &[&str] = &[
     "only watches",
     "watching this room",
+    "watching this workspace",
     "from those who only watch",
 ];
 const NOT_A_MEMBER: &[&str] = &[
@@ -57,6 +60,7 @@ const NOT_A_MEMBER: &[&str] = &[
     "withdrawn",
     "delegation expired",
     "not delegated this room",
+    "not delegated this workspace",
 ];
 const NOT_READY: &[&str] = &[
     "before subscribing",
@@ -156,5 +160,33 @@ mod tests {
             PLAIN_NOT_READY
         );
         assert_eq!(plain_reason("something new"), PLAIN_REFUSED);
+    }
+}
+
+#[cfg(test)]
+mod older_wording_tests {
+    use super::*;
+
+    // A host deployed before a workspace was called one everywhere still
+    // sends reasons that name the room. The device reading them classifies
+    // them exactly as it classifies the wording it writes now.
+    #[test]
+    fn a_reason_written_before_the_wording_changed_reads_the_same() {
+        for (old, new, plain) in [
+            (
+                "a spectator only watches this room",
+                "a spectator only watches this workspace",
+                PLAIN_WATCHING,
+            ),
+            (
+                "the author is not delegated this room",
+                "the author is not delegated this workspace",
+                PLAIN_NOT_A_MEMBER,
+            ),
+            ("something new", "something new", PLAIN_REFUSED),
+        ] {
+            assert_eq!(plain_reason(old), plain, "{old}");
+            assert_eq!(plain_reason(old), plain_reason(new), "{old} vs {new}");
+        }
     }
 }

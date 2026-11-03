@@ -13,13 +13,15 @@
 //! loop has: the lock screen's frame, which logind's sleep delay waits for,
 //! and the idle latch, which a hold taken between two ticks has to release.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tilo_compositor::{Compositor, IdleConfig};
+use tilo_compositor::{Compositor, IdleConfig, WindowInfo};
 use tilo_power_mgmt::PowerSignal;
 use tilo_session_power::PowerLink;
 
+use crate::i18n::t;
 use crate::{Error, Options, Session, SessionConfig, a11y_settings};
 
 /// What the session keeps of its power between frames.
@@ -157,19 +159,31 @@ impl Session {
         let Some(link) = self.machine.link.clone() else {
             return Ok(());
         };
+        // The windows whose video or slideshow asks the screen to stay on,
+        // as the names the person would read. Only what is on screen asks:
+        // a video left in a hidden tab or on another workspace is nobody
+        // watching, and these are the holds quick settings and logind name
+        // when the person asks what keeps the machine awake.
+        let inhibitors: BTreeMap<u64, String> = self
+            .compositor
+            .visible_idle_inhibitors()
+            .iter()
+            .map(|window| (window.id, idle_inhibitor_name(window)))
+            .collect();
+        link.set_idle_inhibitors(&inhibitors);
         // Nothing sleeps while something holds the machine, and nothing
         // dims, blanks or locks while an app says the person is watching: a
         // video, a download, a remote session.
         self.compositor.hold_awake(link.suspend_held());
         self.compositor.hold_idle(link.idle_held());
         for signal in link.bridge().drain_signals() {
-            self.follow_power_signal(&link, signal)?;
+            self.follow_power_signal(&link, &signal)?;
         }
         Ok(())
     }
 
     /// Carry out one instruction from the service over logind.
-    fn follow_power_signal(&mut self, link: &PowerLink, signal: PowerSignal) -> Result<(), Error> {
+    fn follow_power_signal(&mut self, link: &PowerLink, signal: &PowerSignal) -> Result<(), Error> {
         match signal {
             PowerSignal::Lock => self.lock_for_power()?,
             PowerSignal::PreparingForSleep => {
@@ -222,11 +236,30 @@ impl Session {
                 // person's policy: its idle-suspend timer is the one that
                 // now applies.
                 let mut policy = link.policy();
-                policy.idle_suspend = idle_suspend;
+                policy.idle_suspend = *idle_suspend;
                 link.set_policy(policy);
                 apply(&mut self.compositor, link);
             }
-            PowerSignal::Notify(notice) => link.note_notice(&notice),
+            PowerSignal::Notify(battery) => {
+                // What the service saw on the pack in the words this
+                // session's own catalogue has, so the heads-up reads on
+                // every desk as the machine's news rather than an app's
+                // claim.
+                let notice = crate::notices::battery_notice(
+                    battery.percent,
+                    battery.critical,
+                    battery.suspending,
+                );
+                // The battery's own reading carries the same words for the
+                // surfaces that draw the pack's state, so a bar and the
+                // person's notifications never disagree.
+                link.note_notice(tilo_session_power::Notice {
+                    summary: notice.title.clone(),
+                    body: notice.body.clone(),
+                    critical: battery.critical,
+                });
+                self.shared.notifications.borrow().tell(notice);
+            }
         }
         Ok(())
     }
@@ -290,5 +323,16 @@ impl Session {
         if let Err(error) = (self.shared.session_actions)(crate::SessionAction::Suspend) {
             tracing::warn!(%error, "suspend");
         }
+    }
+}
+
+/// What the window holding the idle timer off is called to the person: the
+/// window's own title and its app, the app alone, or that an app it is.
+fn idle_inhibitor_name(window: &WindowInfo) -> String {
+    match (window.app_id.as_deref(), window.title.as_deref()) {
+        (Some(app), Some(title)) => crate::app_names::window_name(app, title),
+        (Some(app), None) => crate::app_names::app_name(app),
+        (None, Some(title)) => title.to_owned(),
+        (None, None) => t("idle-inhibit-unnamed-app"),
     }
 }

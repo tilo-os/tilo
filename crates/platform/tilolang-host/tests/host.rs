@@ -1279,6 +1279,28 @@ struct Typed {
     broker: Vec<String>,
     /// The resource labels the instance's directory finds for what was typed, asked after.
     found: Vec<String>,
+    /// How many records publication looked at while the keys were typed.
+    visited: u64,
+    /// How many times it read every record in full while the keys were typed.
+    swept: u64,
+}
+
+/// How many records the instance's publication has looked at so far.
+fn visited(host: &TilolangHost) -> u64 {
+    host.instances()
+        .next()
+        .expect("the app runs")
+        .instance()
+        .visited_records()
+}
+
+/// How many times the instance's publication has read every record in full so far.
+fn swept(host: &TilolangHost) -> u64 {
+    host.instances()
+        .next()
+        .expect("the app runs")
+        .instance()
+        .sweeps()
 }
 
 /// The resource labels of the surface the broker holds once it applied every delta the
@@ -1386,15 +1408,20 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
     let target = window.detail_target.clone().expect("the note is open");
     let documents = documents_sent(&sent);
     let (mut built, mut relabeled) = (0, 0);
+    let mut seen: u64 = 0;
+    let mut sweeps: u64 = 0;
     let mut shown = String::new();
     for (seq, key) in typed.chars().enumerate() {
         let at = u32::try_from(shown.len()).unwrap();
         shown.push(key);
         let edit = key_edit(rich, &target, &input, seq, at, &shown, key);
+        let (before, before_sweeps) = (visited(&host), swept(&host));
         let ((), phases) = tilo_resource::profiling::observe(|| {
             window.send(&[edit]);
             settle(&mut host, &mut window);
         });
+        seen = seen.saturating_add(visited(&host).saturating_sub(before));
+        sweeps = sweeps.saturating_add(swept(&host).saturating_sub(before_sweeps));
         built = calls(&phases, "tl.host.publish").saturating_add(built);
         relabeled = calls(&phases, "tl.host.relabel").saturating_add(relabeled);
     }
@@ -1429,6 +1456,8 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         labels,
         broker: broker_labels(&sent),
         found,
+        visited: seen,
+        swept: sweeps,
     }
 }
 
@@ -1437,6 +1466,7 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
     // A new note's title is empty, so its body's first text is its label until it has a
     // title: each key of the body publishes that label alone, with one note or with two
     // hundred, never the whole notebook's surface.
+    let mut held_by = Vec::new();
     for held in [1, 200] {
         let body = typing(held, "Write something", "draft");
         assert_eq!(
@@ -1444,11 +1474,36 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
             (0, 5),
             "typing a body published the surface (whole, labels) with {held} notes"
         );
+        held_by.push((held, body.visited));
+        assert_eq!(
+            body.swept, 0,
+            "typing a body read every record in full {} times with {held} notes",
+            body.swept
+        );
     }
+    // A key republishes the note it typed into, and no other record the notebook holds: what a
+    // turn costs is the same with one note as with two hundred.
+    assert!(
+        held_by[0].1 >= 5 && held_by[0].1 <= 10,
+        "five keys looked at {} records",
+        held_by[0].1
+    );
+    assert_eq!(
+        held_by[0].1, held_by[1].1,
+        "five keys looked at {} records with one note, {} with 200",
+        held_by[0].1, held_by[1].1
+    );
     // A note's title is its label: each key publishes that label alone, the same work with one
     // note as with two hundred, and never the whole surface.
+    let mut held_by = Vec::new();
     for held in [1, 200] {
         let title = typing(held, "Untitled", "abc");
+        held_by.push((held, title.visited));
+        assert_eq!(
+            title.swept, 0,
+            "typing a title read every record in full {} times with {held} notes",
+            title.swept
+        );
         assert_eq!(
             title.built, 0,
             "typing a title built the whole surface with {held} notes"
@@ -1480,6 +1535,16 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
             "the broker's copy still names the note by an earlier title with {held} notes"
         );
     }
+    assert!(
+        held_by[0].1 >= 3 && held_by[0].1 <= 6,
+        "three keys looked at {} records",
+        held_by[0].1
+    );
+    assert_eq!(
+        held_by[0].1, held_by[1].1,
+        "three keys looked at {} records with one note, {} with 200",
+        held_by[0].1, held_by[1].1
+    );
 }
 
 /// The title of the note `target` names, as the instance's runtime reads it.

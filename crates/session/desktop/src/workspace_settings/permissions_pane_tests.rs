@@ -10,7 +10,7 @@ use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceSlot}
 const OWNER: &str = "owner-user";
 
 fn app_actor(ws: &Workspace, app: &str) -> collab_types::caps::Actor {
-    collab_types::caps::Actor::app(app).in_workspace(ws.room().to_string())
+    collab_types::caps::Actor::app(app).in_workspace(ws.id().to_string())
 }
 
 fn ws_with_grants() -> Workspace {

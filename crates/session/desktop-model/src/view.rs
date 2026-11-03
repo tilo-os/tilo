@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::ids::{RoomId, WorkspaceSlot};
+use crate::ids::{WorkspaceId, WorkspaceSlot};
 use crate::tree::DesktopTree;
 use crate::workspace::Workspace;
 
@@ -15,31 +15,31 @@ impl DesktopTree {
         self.salt
     }
 
-    /// Every workspace this device is in, deduplicated, in workspace order. A
-    /// workspace whose workspace is still the unminted sentinel is skipped.
-    pub fn rooms(&self) -> Vec<RoomId> {
+    /// The id of every workspace this device is in, deduplicated, in workspace
+    /// order. A workspace whose id is still the unminted sentinel is skipped.
+    pub fn workspace_ids(&self) -> Vec<WorkspaceId> {
         let mut seen = HashSet::new();
         self.workspaces
             .iter()
-            .map(Workspace::room)
+            .map(Workspace::id)
             .filter(|r| !r.is_nil() && seen.insert(*r))
             .collect()
     }
 
     /// The durable workspace identity of `slot` — what turns a local
     /// handle into the value the wire speaks.
-    pub fn room_of(&self, slot: WorkspaceSlot) -> Option<RoomId> {
+    pub fn id_of(&self, slot: WorkspaceSlot) -> Option<WorkspaceId> {
         self.workspaces
             .iter()
             .find(|w| w.slot == slot)
-            .map(Workspace::room)
+            .map(Workspace::id)
     }
 
     /// Tell the tree which records `workspace`'s index holds. Returns whether
     /// this was news, so the caller can skip re-asking when nothing moved.
     pub fn set_workspace_records(
         &mut self,
-        identity: RoomId,
+        identity: WorkspaceId,
         held: BTreeMap<String, String>,
     ) -> bool {
         match self.workspace_records_held.get(&identity) {
@@ -53,7 +53,7 @@ impl DesktopTree {
 
     /// Take the references peers have added since this was last called.
     /// Drained rather than read so a queue that only grows isn't a leak.
-    pub fn take_inbound_workspace_records(&mut self) -> Vec<(RoomId, String, String)> {
+    pub fn take_inbound_workspace_records(&mut self) -> Vec<(WorkspaceId, String, String)> {
         std::mem::take(&mut self.workspace_records_inbound)
     }
 
@@ -113,17 +113,14 @@ mod tests {
         assert!(!tree.switch_down());
         tree.set_active(WorkspaceSlot(9));
         assert_eq!(tree.active, WorkspaceSlot(2));
-        assert_eq!(tree.rooms().len(), 2);
-        assert_eq!(
-            tree.room_of(WorkspaceSlot(1)),
-            Some(tree.workspaces[0].room())
-        );
+        assert_eq!(tree.workspace_ids().len(), 2);
+        assert_eq!(tree.id_of(WorkspaceSlot(1)), Some(tree.workspaces[0].id()));
     }
 
     #[test]
     fn workspace_records_report_only_news() {
         let mut tree = DesktopTree::default();
-        let identity = RoomId::new();
+        let identity = WorkspaceId::new();
         let held = BTreeMap::from([("r".to_owned(), "doc".to_owned())]);
         assert!(tree.set_workspace_records(identity, held.clone()));
         assert!(!tree.set_workspace_records(identity, held));

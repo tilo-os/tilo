@@ -129,7 +129,7 @@ impl StatePeer {
             .workspace_doc
             .as_deref()
             .ok_or("workspace governance missing")?;
-        let workspace = tilo_desktop_model::ids::RoomId::parse(&self.core.workspace)
+        let workspace = tilo_desktop_model::ids::WorkspaceId::parse(&self.core.workspace)
             .ok_or("the workspace is not a UUID")?;
         let mut workspace = tilo_desktop_model::Workspace::in_workspace(
             tilo_desktop_model::ids::WorkspaceSlot(0),

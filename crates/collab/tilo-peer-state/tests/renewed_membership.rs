@@ -13,7 +13,7 @@ use ed25519_dalek::SigningKey;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitation};
 use tilo_peer_state::join::{
     self, JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
@@ -251,7 +251,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let person = SigningKey::from_bytes(&[91; 32]);
     let key = SigningKey::from_bytes(&[92; 32]);
     let device = testing::certificate(&person, &key, "Desktop");
-    let workspace = RoomId::parse(WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
     let joined_at = SystemTime::now();
     let joined_ns = testing::ns(joined_at).unwrap();
     let governor = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));

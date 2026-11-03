@@ -45,8 +45,8 @@ impl Core {
             Imp::RichPart => {
                 let r = self.rich_arg(a.h(0)?)?;
                 let part = match a.h(1)? {
-                    PART_EXCERPT => Value::Text(self.read_rich(&r, true)?),
-                    PART_TEXT => Value::Text(self.read_rich(&r, false)?),
+                    PART_EXCERPT => Value::Text(self.read_rich(&r, true)),
+                    PART_TEXT => Value::Text(self.read_rich(&r, false)),
                     PART_REFERENCES => Value::List(self.referenced(&r)?),
                     PART_PEOPLE => Value::List(
                         r.references()
@@ -84,10 +84,7 @@ impl Core {
     /// for `excerpt`): each reference as the store says it reads for them
     /// ([`crate::store::Store::reading`]). A view that reads it is read again when a resource
     /// it refers to changes.
-    ///
-    /// # Errors
-    /// A trap when the frame cannot note what it read.
-    pub fn read_rich(&self, r: &RichValue, excerpt: bool) -> HResult<String> {
+    pub fn read_rich(&self, r: &RichValue, excerpt: bool) -> String {
         let unshared = self.unshared();
         let mut reads: Vec<(String, String)> = Vec::new();
         let text = {
@@ -117,9 +114,9 @@ impl Core {
             }
         };
         if !reads.is_empty() && self.frames.borrow().depth() > 0 {
-            self.note_reads(reads)?;
+            self.note_reads(reads);
         }
-        Ok(text)
+        text
     }
 
     /// What a reference to a resource the reader cannot read says, in their language: the

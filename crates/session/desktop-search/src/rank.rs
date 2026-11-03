@@ -5,14 +5,13 @@ use ui::search::FieldWeight;
 use ui::search::system::{RankField, provider_score, rank_fields};
 
 /// An app's searchable fields: its name in every language and its identity,
-/// its category and description, and every other word it is known by — the keywords its
-/// manifest declares (the generated registry knows them for every first-party
-/// app), and the initials of its name.
+/// its kind, and every other word it is known by — the keywords its
+/// manifest declares (the generated registry knows them for every
+/// first-party app), and the initials of its name.
 pub fn application_fields(
     name: &str,
     package_id: &str,
     category: Option<&str>,
-    description: Option<&str>,
 ) -> Vec<(String, FieldWeight)> {
     #[cfg(test)]
     FIELD_BUILDS.with(|builds| builds.set(builds.get().saturating_add(1)));
@@ -21,7 +20,6 @@ pub fn application_fields(
         name,
         package_id,
         category,
-        description,
         crate::availability::names_for(package_id).iter().copied(),
         keywords.iter().copied(),
     )
@@ -139,8 +137,8 @@ mod tests {
         let ranker =
             ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
         let rows = [
-            application_fields("Sheets", "so.tilo.sheets", None, None),
-            application_fields("Hex Editor", "so.tilo.hex-editor", None, None),
+            application_fields("Sheets", "so.tilo.sheets", None),
+            application_fields("Hex Editor", "so.tilo.hex-editor", None),
         ];
         assert_eq!(
             rank_rows(&ranker, "sheets", &rows)[0],
@@ -151,5 +149,32 @@ mod tests {
             Some(MAX_PROVIDER_SCORE)
         );
         assert_eq!(rank_rows(&ranker, "zzz", &rows)[0], None);
+    }
+
+    /// An app row is found by a word that names it begun — its name, its
+    /// kind, a word it is known by — never by a near miss or by a word it
+    /// appears inside: "notes" is Notes, not Nodes or Footnotes, and not the
+    /// tenth of the catalogue whose blurb mentions notes.
+    #[test]
+    fn an_app_is_found_by_a_name_begun_never_by_a_near_miss() {
+        let ranker =
+            ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
+        let rows = [
+            application_fields("Notes", "so.tilo.notes", Some("Office")),
+            application_fields("Nodes", "so.tilo.nodes", None),
+            application_fields("Footnotes", "so.tilo.footnotes", None),
+            application_fields("Notepad", "so.tilo.notepad", None),
+        ];
+        let ranks = rank_rows(&ranker, "notes", &rows);
+        assert!(ranks[0].is_some(), "the app called Notes");
+        assert_eq!(ranks[1], None, "a name one typo away is not its name");
+        assert_eq!(ranks[2], None, "nor is the word inside another");
+        assert_eq!(ranks[3], None, "nor is one that begins with less typed");
+        let begun = rank_rows(
+            &ranker,
+            "note",
+            &[application_fields("Notepad", "so.tilo.notepad", None)],
+        )[0];
+        assert!(begun.is_some(), "a name begun is: Note for Notepad");
     }
 }

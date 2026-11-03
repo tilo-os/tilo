@@ -76,6 +76,10 @@ display scales 1, 1.5 and 2 and text scales 1 and 1.5. It reports overflow, clip
 hit targets that are too small, pages that scroll sideways and edges between device pixels, each at
 a view path. Agents run it like the type checker.
 
+`--key Tab`, `--key Down`, `--key Space` press keys into a window before it is read, in the order
+given and at the `--dump` size, so a check and a shot show the layout a person reaches by keyboard
+rather than only its first frame.
+
 ## 7. On the platform
 
 The primitives are shared ui-core layout widgets (`Stack`, `Row`, `Grid`, `Split`, `Page`,

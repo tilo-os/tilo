@@ -1,5 +1,5 @@
 use crate::owner::application_record::tests::fixture;
-use crate::owner::{RoomId, testing};
+use crate::owner::{WorkspaceId, testing};
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 
@@ -41,7 +41,7 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     );
     let reopened = crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
     reopened
-        .with_current(RoomId::parse(testing::WORKSPACE).unwrap(), |view| {
+        .with_current(WorkspaceId::parse(testing::WORKSPACE).unwrap(), |view| {
             let now = std::time::SystemTime::now();
             let policy = view
                 .peer()
@@ -88,7 +88,7 @@ fn app_authorship_refuses_forged_person_and_invalid_package() {
 #[test]
 fn the_owners_own_grants_never_restrict_their_app_delegation() {
     let fixture = fixture();
-    let workspace = RoomId::parse(testing::WORKSPACE).unwrap();
+    let workspace = WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let messages = fixture
         .owner
         .with_current(workspace, |view| {

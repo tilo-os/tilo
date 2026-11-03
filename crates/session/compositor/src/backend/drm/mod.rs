@@ -402,6 +402,14 @@ impl Backend for DrmBackend {
         true
     }
 
+    fn switch_vt(&mut self, vt: i32) -> Result<(), BackendError> {
+        let mut inner = self.inner.borrow_mut();
+        inner
+            .session
+            .change_vt(vt)
+            .map_err(|error| BackendError(format!("switching to virtual terminal {vt}: {error:?}")))
+    }
+
     fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
         let inner = self.inner.borrow();
         let profiles = color::color_profiles();

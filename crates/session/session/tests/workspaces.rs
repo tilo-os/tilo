@@ -54,7 +54,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
                 (
                     workspace.slot.0.to_string(),
                     workspace.name.clone(),
-                    workspace.room().to_string(),
+                    workspace.id().to_string(),
                 )
             })
             .collect()
@@ -116,7 +116,7 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
         // A workspace is the same on every device, by the id its key
         // derives: the one the person starts from opens again by that id, not
         // by one only this desk knew.
-        let workspace = tilo_desktop_model::RoomId::parse(&workspace).expect("a workspace");
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace).expect("a workspace");
         assert_eq!(
             id,
             tilo_desktop_model::WorkspaceSlot::of_workspace(workspace)
@@ -216,7 +216,7 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
         .handle()
         .read(|tree| {
             tree.active_workspace()
-                .map(tilo_desktop_model::Workspace::room)
+                .map(tilo_desktop_model::Workspace::id)
         })
         .map(|workspace| workspace.to_string())
         .expect("a workspace in front");

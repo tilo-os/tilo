@@ -5,7 +5,7 @@
 //! device that keeps only its ciphertext, another member's device — has it
 //! from the moment it exists.
 use crate::owner::record::StoredWorkspace;
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, RoomId, publication};
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use crate::workspace_membership::valid_workspace_name;
 use crate::{StatePeer, workspace_seed};
 use ed25519_dalek::SigningKey;
@@ -29,7 +29,7 @@ impl NativeWorkspaceOwner {
         device: &DeviceCert,
         key: &SigningKey,
         now: SystemTime,
-    ) -> Result<RoomId, String> {
+    ) -> Result<WorkspaceId, String> {
         let name = valid_workspace_name(name)?;
         if device.device_public_key != key.verifying_key().to_bytes() {
             return Err("a workspace is founded with its own device's key".into());
@@ -39,8 +39,8 @@ impl NativeWorkspaceOwner {
         }
         let _turn = self.0.mutation.lock();
         let workspace = uuid::Uuid::new_v4().hyphenated().to_string();
-        let id =
-            RoomId::parse(&workspace).ok_or("a founded workspace has a canonical workspace")?;
+        let id = WorkspaceId::parse(&workspace)
+            .ok_or("a founded workspace has a canonical workspace")?;
         if self.0.authority.read().workspaces.contains_key(&id) {
             return Err("this device holds that workspace already".into());
         }

@@ -756,7 +756,7 @@ fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String> {
     )
     .map_err(|error| format!("that invitation is not for you: {error}"))?;
     let workspace = verified.grant().room.clone();
-    tilo_desktop_model::RoomId::parse(&workspace)
+    tilo_desktop_model::WorkspaceId::parse(&workspace)
         .ok_or_else(|| "that invitation names an invalid workspace".to_owned())?;
     Ok(Granted {
         workspace,
@@ -776,7 +776,7 @@ enum Pasted {
     /// a link named, which must be that workspace.
     Site {
         entry: url::Url,
-        workspace: Option<tilo_desktop_model::RoomId>,
+        workspace: Option<tilo_desktop_model::WorkspaceId>,
     },
 }
 
@@ -809,13 +809,13 @@ fn classify(text: &str) -> Result<Pasted, String> {
             if link.secrets.pair.is_some() {
                 return Err("that link pairs a device with a host, not a workspace".to_owned());
             }
-            let tilo_reference::link::Scope::Room { room, .. } = link.target.scope else {
+            let tilo_reference::link::Scope::Room { id: room, .. } = link.target.scope else {
                 return Ok(Pasted::Site {
                     entry,
                     workspace: None,
                 });
             };
-            let workspace = tilo_desktop_model::RoomId::from(room);
+            let workspace = tilo_desktop_model::WorkspaceId::from(room);
             if let Some(invitation) = link.secrets.invite {
                 return Ok(Pasted::Invitation {
                     text: invitation.expose().to_owned(),
@@ -935,7 +935,7 @@ fn join(door: &url::Url, person: &Person) -> Result<Granted, String> {
     )
     .map_err(|error| format!("the workspace did not let you in: {error}"))?;
     let workspace = verified.grant().room.clone();
-    tilo_desktop_model::RoomId::parse(&workspace)
+    tilo_desktop_model::WorkspaceId::parse(&workspace)
         .ok_or_else(|| "the door named an invalid workspace".to_owned())?;
     Ok(Granted {
         workspace,
@@ -1159,7 +1159,7 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
             .iter()
             .map(|workspace| {
                 (
-                    workspace.room().to_string(),
+                    workspace.id().to_string(),
                     (workspace.slot.0.to_string(), workspace.name.clone()),
                 )
             })

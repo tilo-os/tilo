@@ -24,9 +24,9 @@ fn rows_of(a: Arrangement, workspace: Text) -> List<ArrangementRow> {
     a.rows.filter(r -> r.workspace == workspace)
 }
 
-/// The preset switch: the three ways of showing the same arrangement, the one in use lit, so a
-/// person moves between the strips, the framed canvas and the spaces canvas as shell.md §6 picks.
-/// Switching keeps every place where it was, drawn the other way.
+/// The preset switch: the four ways of showing the same arrangement, the one in use lit, so a
+/// person moves between the strips, the framed canvas, the spaces canvas and the traditional
+/// desktop as shell.md §6 picks. Switching keeps every place where it was, drawn the other way.
 view preset_switch(v: Viewing) {
     row(gap: .tight, align: .center, wrap: true) {
         ui.Chip("Strips", icon: .columns_2, selected: .some(v.showing == .strips)) {
@@ -37,6 +37,9 @@ view preset_switch(v: Viewing) {
         }
         ui.Chip("Spaces", icon: .layout_grid, selected: .some(v.showing == .spaces)) {
             on press: show_preset(v, .spaces)
+        }
+        ui.Chip("Desktop", icon: .monitor, selected: .some(v.showing == .desktop)) {
+            on press: show_preset(v, .desktop)
         }
     }
 }

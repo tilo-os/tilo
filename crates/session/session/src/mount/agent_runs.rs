@@ -16,14 +16,14 @@ impl Shared {
         let (front, workspaces) = self.handle.read(|tree| {
             let front = tree
                 .active_workspace()
-                .map(|held| held.room().to_string())
+                .map(|held| held.id().to_string())
                 .unwrap_or_default();
             let workspaces = tree
                 .workspaces
                 .iter()
                 .map(|held| {
                     tilo_agent_runs::WorkspaceFacts::new(
-                        &held.room().to_string(),
+                        &held.id().to_string(),
                         held.agent_members_at(now)
                             .into_iter()
                             .map(|(agent, _)| agent)

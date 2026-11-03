@@ -72,6 +72,21 @@ pub trait Service {
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError>;
 
+    /// [`Self::invoke`] as `invoker` (an agent, a script), which what the change makes is
+    /// attributed to. The default runs it as the person seated here, as [`Self::invoke`] does.
+    ///
+    /// # Errors
+    /// The door's refusal.
+    fn invoke_as(
+        &mut self,
+        _invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        self.invoke(resource, action, arguments)
+    }
+
     /// Take in what landed from the device since the last call. Whether a
     /// reading changed.
     fn poll(&mut self) -> bool {
@@ -95,6 +110,69 @@ pub trait Service {
     fn module(&self, _app: &str) -> Option<std::sync::Arc<[u8]>> {
         None
     }
+
+    /// The record of the app `app` this service keeps, when the session runs the app's package
+    /// itself (the shell) and its records are the person's as any app's: what a connection the
+    /// session admits — a REPL, an agent's task — reads and changes by the app, as it does
+    /// Notes'. `None` for a service that keeps no record, or none of that app.
+    fn record(&self, _app: &str) -> Option<Record> {
+        None
+    }
+
+    /// Every record [`Self::record`] answers, each with the app it is of: what a connection the
+    /// session admits reads by the app.
+    fn records(&self) -> Vec<Record> {
+        Vec::new()
+    }
+
+    /// Publish the package `share` names, which the session runs itself (the shell), with the
+    /// records an app's are: its roots are made, and what its parts write into the document
+    /// it keeps them in (`share.records`) is published to every connection from then on.
+    ///
+    /// The default keeps none: a service that runs no package of its own has nothing to share.
+    ///
+    /// # Errors
+    /// The package's roots cannot be made, or its record does not apply.
+    fn share(&mut self, _share: &Share<'_>) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Take in what the parts of a [`Self::share`]d package wrote into the document they share.
+    /// Whether anything was.
+    ///
+    /// # Errors
+    /// The changes do not apply.
+    fn follow(&mut self) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+/// A package the session runs itself, handed to [`Service::share`]: which it is, its compiled
+/// module, and the document its parts keep the records in.
+pub struct Share<'a> {
+    /// The app's id, as its package names it (`so.tilo.shell`).
+    pub app: &'a str,
+    /// Its compiled module, its description embedded.
+    pub wasm: &'a [u8],
+    /// The document its parts commit into: the record, which the service publishes and the
+    /// parts draw from. The service keeps it and takes in what they write there.
+    pub records: &'a std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>,
+}
+
+/// A record an app keeps, as [`Service::record`] publishes it: the app, its id there, the
+/// document, and the packages whose code a reader of it needs.
+pub struct Record {
+    /// The app the record is of, as its package names it (`so.tilo.shell`).
+    pub app: String,
+    /// The record's id in its app, as the workspace names it (empty for a package's record of
+    /// the workspace).
+    pub id: String,
+    /// The document: its committed content, as Automerge writes it.
+    pub document: Vec<u8>,
+    /// The compiled module of the app and of each package it uses, each its description
+    /// embedded: what a task's host loads to run a program that reads the record by the app's
+    /// own package.
+    pub packages: Vec<std::sync::Arc<[u8]>>,
 }
 
 /// `resource` offering every action of the vocabulary `E`.
@@ -196,6 +274,85 @@ impl Services {
     #[must_use]
     pub fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         self.started.iter().find_map(|service| service.module(app))
+    }
+
+    /// The record of the app `app`, from the service keeping it; see [`Service::record`].
+    #[must_use]
+    pub fn record(&self, app: &str) -> Option<Record> {
+        self.started.iter().find_map(|service| service.record(app))
+    }
+
+    /// Every record the services keep for apps the session runs itself, by the app: what a
+    /// connection the session admits reads by the app, as it does any app's records.
+    #[must_use]
+    pub fn records(&self) -> Vec<Record> {
+        self.started
+            .iter()
+            .flat_map(|service| service.records())
+            .collect()
+    }
+
+    /// Publish the package `share` names, which the session runs itself (the shell), with the
+    /// apps' records: offered to every service, the one keeping those records takes it.
+    ///
+    /// # Errors
+    /// A service's record does not apply.
+    pub fn share(&mut self, share: &Share<'_>) -> Result<(), String> {
+        for service in &mut self.started {
+            service.share(share)?;
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// Take in what the parts of the packages [`Self::share`]d wrote into the documents they
+    /// share since the last pass, and publish it. Whether anything was.
+    ///
+    /// # Errors
+    /// A service's shared record does not apply.
+    pub fn follow_shared(&mut self) -> Result<bool, String> {
+        let mut followed = false;
+        for service in &mut self.started {
+            followed |= service.follow()?;
+        }
+        if followed {
+            self.changed();
+        }
+        Ok(followed)
+    }
+
+    /// [`Self::invoke`] as `invoker` (an agent, a script): what the change it makes is
+    /// attributed to. The service's own door decides whether the caller may.
+    ///
+    /// # Errors
+    /// The service's refusal.
+    pub fn invoke_as(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let address = ActionAddress::new(resource, action);
+        let index = self
+            .started
+            .iter()
+            .position(|service| {
+                tilo_actions::door::resolve(&service.resources(), &address).is_some()
+            })
+            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        let started = self
+            .started
+            .get_mut(index)
+            .ok_or_else(|| DoorError::Unknown(address.clone()))?
+            .invoke_as(invoker, resource, action, arguments);
+        if let Some(stirred) = self.stirred.get_mut(index) {
+            *stirred = true;
+        }
+        if started.is_ok() {
+            self.changed();
+        }
+        started
     }
 
     /// Where what they publish stands: equal revisions publish the same.

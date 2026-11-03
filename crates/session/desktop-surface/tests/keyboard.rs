@@ -525,7 +525,7 @@ impl TileSource for Source {
                 detail: String::new(),
             });
         }
-        let workspace = workspace.room().to_string();
+        let workspace = workspace.id().to_string();
         NEXT.with_borrow_mut(|slot| *slot = Some((tab.id, Rc::clone(&self.typed))));
         let definition = ApplicationDefinition {
             app_id: APP.into(),

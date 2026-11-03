@@ -1066,6 +1066,18 @@ impl Host {
         self.inner.packages.borrow().clone()
     }
 
+    /// The ids of the loaded packages, in the order they loaded: what a publisher compares to
+    /// know the host runs other packages now.
+    #[must_use]
+    pub fn package_ids(&self) -> Vec<tilolang_runtime::PackageId> {
+        self.inner
+            .packages
+            .borrow()
+            .iter()
+            .map(|package| package.id.clone())
+            .collect()
+    }
+
     /// The loaded package `app`.
     #[must_use]
     pub fn package(&self, app: &str) -> Option<Package> {

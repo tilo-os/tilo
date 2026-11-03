@@ -960,7 +960,7 @@ impl Checker<'_> {
             "E014",
             span,
             format!(
-                "package `{alias}` has no `{name}`{hint}; its actions are called, such as {}",
+                "package `{alias}` has no `{name}`{hint}; it declares {}",
                 if actions.is_empty() {
                     "(none)".to_owned()
                 } else {

@@ -135,6 +135,18 @@ pub trait FabricLink {
         false
     }
 
+    /// Offer what this device publishes about disk unlock to the person's
+    /// other devices, as this device's own record in its next snapshot: the
+    /// sibling halves it holds for the person's other devices, and the
+    /// auto-approvals they set here. Replaces what it offered before.
+    ///
+    /// A link whose transport does not carry this yet ignores the offer;
+    /// what their devices published still merges in from
+    /// [`Self::device_fabric`].
+    fn share_unlock(&self, unlock: crate::unlock::UnlockFabricState) {
+        let _ = unlock;
+    }
+
     /// The person's devices and the outputs each says it shows, as the
     /// shared arrangement lays them out. Empty while this session is no
     /// certified device of theirs.
@@ -235,5 +247,9 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
         (**self).person_displays()
+    }
+
+    fn share_unlock(&self, unlock: crate::unlock::UnlockFabricState) {
+        (**self).share_unlock(unlock);
     }
 }

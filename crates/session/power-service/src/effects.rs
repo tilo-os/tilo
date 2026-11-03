@@ -48,6 +48,14 @@ pub enum SleepAction {
         #[param("The ticket `keep-awake` returned")]
         ticket: String,
     },
+    /// Put the machine to sleep now, whatever the idle timers say.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "moon",
+        keywords = "sleep now, suspend, sleep key, ruhezustand, standby"
+    )]
+    Sleep,
     /// What pressing the power key does, as the policy resolves it.
     #[effect(
         own_device,

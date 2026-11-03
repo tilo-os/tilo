@@ -82,9 +82,9 @@ fn find<'a>(records: &'a [Record], scenario: &str, size: &str) -> Option<&'a Rec
 }
 
 /// The counts of what a scenario shows and changes: the boundaries it renders, the item
-/// references it builds, the patches it sends, what it reads of the record one by one, and the
-/// index's directories, pages and fields it reads.
-fn shown(work: Work) -> [(&'static str, u64); 9] {
+/// references it builds, the patches it sends, what it reads of the record one by one, the
+/// index's directories, pages and fields it reads, and the records publication looked at.
+fn shown(work: Work) -> [(&'static str, u64); 10] {
     [
         ("renders", work.renders),
         ("items", work.items),
@@ -95,6 +95,7 @@ fn shown(work: Work) -> [(&'static str, u64); 9] {
         ("dirs", work.dirs),
         ("pages", work.pages),
         ("index_fields", work.index_fields),
+        ("published", work.published),
     ]
 }
 

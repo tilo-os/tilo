@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey};
 use serde_json::Value;
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_desktop_surface::HistorySource;
 use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
@@ -87,7 +87,7 @@ struct Inner {
     restored: RefCell<Option<DesktopTree>>,
     /// The resources the person opened from the history, for the session to
     /// open their app on.
-    openings: RefCell<Vec<(RoomId, ui::HistoryResourceTarget)>>,
+    openings: RefCell<Vec<(WorkspaceId, ui::HistoryResourceTarget)>>,
     /// The windows' end of what they ask of the activity, and what they
     /// follow.
     requests: ActivityRequests,
@@ -215,7 +215,7 @@ impl Activity {
 
     /// The resources the person opened from the history since this was last
     /// taken, each with the workspace it was opened in.
-    pub(crate) fn take_openings(&self) -> Vec<(RoomId, ui::HistoryResourceTarget)> {
+    pub(crate) fn take_openings(&self) -> Vec<(WorkspaceId, ui::HistoryResourceTarget)> {
         std::mem::take(&mut *self.0.openings.borrow_mut())
     }
 
@@ -295,18 +295,21 @@ impl Activity {
         wrote
     }
 
-    /// The `RoomId` of `workspace`, as `tree` holds it.
-    fn room_of(tree: &DesktopTree, workspace: WorkspaceSlot) -> Option<RoomId> {
+    /// The `WorkspaceId` of `workspace`, as `tree` holds it.
+    fn id_of(tree: &DesktopTree, workspace: WorkspaceSlot) -> Option<WorkspaceId> {
         tree.workspaces
             .iter()
             .find(|held| held.slot == workspace)
-            .map(Workspace::room)
+            .map(Workspace::id)
     }
 
     /// The records the workspace `workspace_id` holds, as the worker last
     /// read them: made when the history is first read for the workspace, and
     /// following them from then on.
-    fn records_of(&self, workspace_id: RoomId) -> Option<Rc<Watched<Vec<DetachedRecordHistory>>>> {
+    fn records_of(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<Rc<Watched<Vec<DetachedRecordHistory>>>> {
         let store = self.0.store.clone()?;
         let key = workspace_id.to_string();
         if let Some(known) = self.0.records.borrow().get(&key) {
@@ -332,7 +335,7 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         workspace: WorkspaceSlot,
     ) -> Option<ActivitySnapshot> {
-        Self::room_of(tree, workspace)?;
+        Self::id_of(tree, workspace)?;
         // The desk as it stands is the newest change of it: a workspace made
         // this pass is in the document the pane reads, not only in the tree.
         self.record_desk(tree, now_seconds());
@@ -353,7 +356,7 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         workspace: WorkspaceSlot,
     ) -> Vec<DetachedRecordHistory> {
-        let Some(workspace_id) = Self::room_of(tree, workspace) else {
+        let Some(workspace_id) = Self::id_of(tree, workspace) else {
             return Vec::new();
         };
         let Some(watch) = self.records_of(workspace_id) else {
@@ -406,7 +409,7 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         target: &ui::HistoryResourceTarget,
     ) -> Option<tilo_desktop_model::TabId> {
-        let workspace_id = tree.active_workspace().map(Workspace::room)?;
+        let workspace_id = tree.active_workspace().map(Workspace::id)?;
         self.0
             .openings
             .borrow_mut()

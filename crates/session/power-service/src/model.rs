@@ -1,5 +1,5 @@
-//! What the service publishes: the battery as it reads, the policy in
-//! force, and the notice a surface has not shown yet.
+//! What the service publishes: the battery as it reads and the policy in
+//! force.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,14 +34,15 @@ pub struct Battery {
     /// the values it takes; absent where the hardware offers none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charge_limit: Option<ChargeCapCapability>,
+
     /// The notice no surface has shown yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<Notice>,
 }
 
 /// The battery's reading as a view of another language reads it: the pack's charge, its
-/// state and the time left. The charge limit and the notice are the settings page's and the
-/// banner's, which read them through the service's own types.
+/// state and the time left. The charge limit is the settings page's, which
+/// reads it through the service's own types.
 impl tilo_resource::JsonSchema for Battery {
     fn json_schema() -> serde_json::Value {
         serde_json::json!({

@@ -599,11 +599,11 @@ impl Compositor {
         self.data.state.idle.session.is_locked()
     }
 
-    /// Whether the lock client has drawn: a buffer is on a surface the
-    /// outputs show, so the lock screen, and not the desk's last frame, is
-    /// what the person sees.
+    /// Whether the lock is what the outputs show: the lock client's own
+    /// frame is on one of them, or the session draws the lock itself because
+    /// the lock screen's app could not show it.
     pub fn lock_drawn(&self) -> bool {
-        self.data.state.lock_drawn()
+        self.data.state.lock_drawn() || self.data.state.lock_view_shows()
     }
 
     /// Whether a surface of the session's own takes the keyboard now: a
@@ -1129,6 +1129,13 @@ impl Compositor {
         self.data.state.lock_by_idle()
     }
 
+    /// Whether the idle dim holds the backlight lowered, so nothing else —
+    /// the session's ambient light loop — raises it behind the person's back.
+    #[must_use]
+    pub fn dim_holds_backlight(&self) -> bool {
+        self.data.state.idle.dimmer.holds_backlight()
+    }
+
     /// How long since the person last touched this device.
     #[must_use]
     pub fn input_idle(&self) -> std::time::Duration {
@@ -1201,6 +1208,33 @@ impl Compositor {
             .session
             .request_unlock(std::time::Instant::now());
         self.apply_idle(transitions)
+    }
+
+    /// Switch the machine to virtual terminal `vt` (numbered from 1), as
+    /// Ctrl+Alt+F1..F12 does: the way out of a desktop that cannot give the
+    /// machine back, to log in on a text console, end a stuck program or
+    /// start Tilo again.
+    ///
+    /// # Errors
+    /// The backend drives no virtual terminals, or the seat refused the
+    /// switch.
+    pub fn change_vt(&mut self, vt: i32) -> Result<(), Error> {
+        self.data.backend.switch_vt(vt)?;
+        Ok(())
+    }
+
+    /// Bind the liveness door beside the control socket at `control`: a
+    /// heartbeat answered on the loop, and every thread's state and
+    /// backtrace when asked. The socket is `control`'s with `.live` after
+    /// it ([`tilo_liveness::socket_path`]). `None` when this compositor has
+    /// no loop to answer from, or the socket could not be bound.
+    pub fn serve_liveness(
+        &self,
+        control: &std::path::Path,
+        bind: impl FnOnce(&std::path::Path) -> std::io::Result<std::os::unix::net::UnixListener>,
+    ) -> Option<tilo_liveness::Server> {
+        let handle = self.data.state.loop_handle.as_ref()?;
+        tilo_liveness::serve(control, handle, bind)
     }
 
     /// Switch every panel off now, as the idle timeout would (the power
@@ -1900,6 +1934,12 @@ impl Compositor {
     /// Whether a client keeps the session from idling (idle-inhibit).
     pub fn idle_inhibited(&self) -> bool {
         self.data.state.idle_inhibited()
+    }
+
+    /// The windows whose idle inhibitor is on screen: what holds the machine
+    /// awake, for the session to say who it is.
+    pub fn visible_idle_inhibitors(&self) -> Vec<WindowInfo> {
+        self.data.state.visible_idle_inhibitors()
     }
 
     /// The window with keyboard focus.

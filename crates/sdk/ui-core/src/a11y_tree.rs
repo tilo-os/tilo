@@ -1138,6 +1138,23 @@ fn verbs(role: Role, s: &AccessState) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::Activate),
         });
     }
+    // A control that models whether it is expanded offers the verb the AccessKit bridge
+    // offers it: a disclosure, whatever its role, opens and closes.
+    if let Some(expanded) = s.expanded.filter(|_| !s.disabled) {
+        out.push(if expanded {
+            SemanticAction {
+                name: "collapse".into(),
+                label: "Collapse".into(),
+                kind: SemanticActionKind::Verb(Action::Collapse),
+            }
+        } else {
+            SemanticAction {
+                name: "expand".into(),
+                label: "Expand".into(),
+                kind: SemanticActionKind::Verb(Action::Expand),
+            }
+        });
+    }
     match role {
         Role::Slider | Role::Separator | Role::SpinButton if !s.disabled => {
             out.push(SemanticAction {
@@ -1159,21 +1176,6 @@ fn verbs(role: Role, s: &AccessState) -> Vec<SemanticAction> {
             }
         }
         Role::ComboBox | Role::TreeItem => {
-            if let Some(expanded) = s.expanded {
-                if expanded {
-                    out.push(SemanticAction {
-                        name: "collapse".into(),
-                        label: "Collapse".into(),
-                        kind: SemanticActionKind::Verb(Action::Collapse),
-                    });
-                } else {
-                    out.push(SemanticAction {
-                        name: "expand".into(),
-                        label: "Expand".into(),
-                        kind: SemanticActionKind::Verb(Action::Expand),
-                    });
-                }
-            }
             if matches!(role, Role::ComboBox) && !s.read_only && !s.disabled {
                 out.push(SemanticAction {
                     name: "set-value".into(),

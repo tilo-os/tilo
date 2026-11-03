@@ -300,7 +300,7 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, ChangeView,
+            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, CallFn, ChangeView,
             CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere,
             CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
             EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen, FloatToStr,
@@ -360,8 +360,8 @@ impl Core {
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
             | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
             | ResourceRef => self.resource_import(imp, a),
-            ActRef | Invoke | TryInvoke | IsError | Outside | OutsideAt | Withdraw | ModelCall
-            | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
+            ActRef | Invoke | TryInvoke | CallFn | IsError | Outside | OutsideAt | Withdraw
+            | ModelCall | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
             | PrincipalNamed | InvokerPush | InvokerPop => self.effect_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet

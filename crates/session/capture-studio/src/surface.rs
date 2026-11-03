@@ -246,7 +246,7 @@ impl StudioSurface {
         match scene.replay {
             Some(seconds) => {
                 if was.is_none() {
-                    self.widget.set_replay_active(true, AudioCaptureMode::None);
+                    self.widget.set_replay_active(true, scene.replay_audio);
                 }
                 self.widget.set_replay_buffered_seconds(seconds);
             }
@@ -386,6 +386,7 @@ impl StudioSurface {
             anchors: Vec::new(),
             targets,
             include_pointer: false,
+            audio: AudioCaptureMode::None,
             destination: CaptureDestination::File,
         }
     }
@@ -441,6 +442,7 @@ fn take(intent: &CaptureIntent) -> Take {
             .map(|target| target.id.clone())
             .collect(),
         include_pointer: intent.include_pointer,
+        audio: intent.audio,
         destination: intent.destination,
     }
 }
@@ -629,5 +631,38 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
         }
         self.dirty = true;
         Ok(Effected::done())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recording_takes_the_sound_the_person_chose() {
+        let intent = CaptureIntent {
+            mode: CaptureMode::Recording,
+            source: SourceMode::Display,
+            destination: CaptureDestination::File,
+            regions: Vec::new(),
+            anchors: Vec::new(),
+            include_pointer: false,
+            audio: AudioCaptureMode::SystemAndMicrophone,
+            pip_layout: ui::widget::PipLayout::Auto,
+            targets: Vec::new(),
+            recording_command: None,
+            replay_command: None,
+            screenshot_command: None,
+        };
+        assert_eq!(
+            take(&intent).audio,
+            AudioCaptureMode::SystemAndMicrophone,
+            "what the bar offered to record is what the session is asked for"
+        );
+        assert_eq!(
+            Take::default().audio,
+            AudioCaptureMode::None,
+            "a take nobody asked sound of is silent"
+        );
     }
 }

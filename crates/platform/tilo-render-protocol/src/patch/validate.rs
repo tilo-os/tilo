@@ -502,7 +502,7 @@ impl<'a> Validator<'a> {
                 self.key(case)?;
                 for (name, held) in fields {
                     self.key(name)?;
-                    self.value(held, depth + 1)?;
+                    self.value(held, depth.saturating_add(1))?;
                 }
                 Ok(())
             }
@@ -781,7 +781,9 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Icon | Type::Time, Value::Text(_))
         | (Type::Picture, Value::Picture(_))
         | (Type::RichText, Value::Rich(_))
-        | (Type::Action, Value::Action(_)) => true,
+        | (Type::Action, Value::Action(_))
+        // The case's fields are read against the catalogue's set where the node is built.
+        | (Type::Cases { .. }, Value::Case { .. }) => true,
         (Type::Option(inner), Value::Opt(Some(held))) => fits(held, inner),
         (Type::Option(inner), other) => fits(other, inner),
         (_, Value::Opt(Some(held))) => fits(held, ty),
@@ -796,8 +798,6 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         ) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),
-        // The case's fields are read against the catalogue's set where the node is built.
-        (Type::Cases { .. }, Value::Case { .. }) => true,
         (Type::List(inner) | Type::Set(inner), Value::List(items)) => {
             items.iter().all(|item| fits(item, inner))
         }

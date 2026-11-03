@@ -350,6 +350,13 @@ impl FabricLink for SessionFabric {
     fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
         self.runtime.lock_recover().person_devices()
     }
+
+    fn share_unlock(&self, unlock: tilo_device_fabric::unlock::UnlockFabricState) {
+        let taken = self.runtime.lock_recover().set_unlock(unlock);
+        if let Err(error) = taken {
+            tracing::debug!(%error, "this device's disk unlock is not shared");
+        }
+    }
 }
 
 /// What this session does with the actions the person's other devices sent
@@ -384,6 +391,9 @@ impl crate::Session {
         {
             return;
         }
+        if crate::certification::handle_action(fabric, envelope) {
+            return;
+        }
         if tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
         {
@@ -392,13 +402,11 @@ impl crate::Session {
         match &envelope.action {
             PersonalFabricAction::ResumeMedia { .. } => self.offer_media(fabric, envelope),
             // Nothing on this session holds a media offer, and what the
-            // person's devices sent each other before this session ran a
-            // fabric — placement, input, accessories, files, notifications,
-            // calls, displays, wake, certification — is the shell's
-            // device-fabric runtime's to carry, so these are dropped rather
-            // than half-acted on. The speaker services above answer for
-            // theirs; the rest reach here only when their own preconditions
-            // refuse.
+            // person's devices send each other that no service here carries —
+            // placement, input, accessories, files, notifications, calls,
+            // displays, wake — is dropped rather than half-acted on. The
+            // speaker services and the certification above answer for theirs;
+            // the rest reach here only when their own preconditions refuse.
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
@@ -453,6 +461,8 @@ impl crate::Session {
             | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
             | PersonalFabricAction::ShowTab { .. }
+            // The device-certification exchange answered above, for the other
+            // door's preconditions.
             | PersonalFabricAction::CertifyAsk { .. }
             | PersonalFabricAction::CertifyAnswer { .. }
             | PersonalFabricAction::SpeakerGroupInvite { .. }

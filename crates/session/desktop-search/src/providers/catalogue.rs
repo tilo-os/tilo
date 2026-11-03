@@ -30,6 +30,13 @@ const CATALOGUE_STEP: i32 = 3;
 /// the person already has.
 const STORE_PAGE_INTENT: f32 = -2.0;
 
+/// What the palette groups an app the person does not have under: the Store,
+/// beside the apps they do have. One query then finds what is here first, and
+/// the catalogue's many offers stay one group of their own.
+fn store_kind() -> ResourceKind {
+    ResourceKind::Custom(crate::i18n::t("search-kind-store"))
+}
+
 /// The Store's page of app `id`, where it can be reviewed, blocked or
 /// installed by hand; `None` for an id no Store link may carry.
 #[must_use]
@@ -72,7 +79,6 @@ impl StoreCatalogue {
                     .chain(&entry.keywords)
                     .map(|word| (word.clone(), FieldWeight::KEYWORD)),
             );
-            found.push((entry.tagline.clone(), FieldWeight::SUBTITLE));
             found.push((entry.id.clone(), FieldWeight::IDENTITY));
             fields.push(found);
             rows.push(Row::App(at));
@@ -80,10 +86,11 @@ impl StoreCatalogue {
                 continue;
             }
             for (document, kind) in entry.resource_types.iter().enumerate() {
-                fields.push(vec![
-                    (kind.label.clone(), FieldWeight::TITLE),
-                    (entry.name.clone(), FieldWeight::SUBTITLE),
-                ]);
+                // The kind of document names the row; the app it belongs to
+                // is what the row says under it, not another name for it —
+                // else every document an app offers answers to the app's own
+                // name.
+                fields.push(vec![(kind.label.clone(), FieldWeight::TITLE)]);
                 rows.push(Row::Document(at, document));
             }
             for (action, offer) in entry.actions.iter().enumerate() {
@@ -141,7 +148,7 @@ impl StoreCatalogue {
                     entry.name.clone(),
                     (!entry.tagline.is_empty()).then(|| entry.tagline.clone()),
                     facts,
-                    ResourceKind::Application,
+                    store_kind(),
                     target,
                 )
             }
@@ -153,7 +160,7 @@ impl StoreCatalogue {
                     kind.label.clone(),
                     Some(entry.name.clone()),
                     Vec::new(),
-                    ResourceKind::Application,
+                    store_kind(),
                     Target::Launch {
                         app: entry.id.clone(),
                     },
@@ -287,8 +294,14 @@ mod tests {
             }
         );
         assert!(app.score < MAX_PROVIDER_SCORE, "below an installed app");
+        assert_eq!(
+            app.kind,
+            store_kind(),
+            "an app to get is the Store's, not one the person has"
+        );
         let workbook = catalogue.query("workbook");
         assert_eq!(workbook[0].subtitle.as_deref(), Some("Sheets"));
+        assert_eq!(workbook[0].kind, store_kind(), "nor is its document");
         let tasks = catalogue.query("show tasks");
         let Target::Invoke(target) = &tasks[0].target else {
             panic!("an offered action runs by address");

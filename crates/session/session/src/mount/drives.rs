@@ -58,6 +58,9 @@ pub struct Drives {
     notifications: Notifications,
     /// The medium each live notice is about, by notification id.
     told: RefCell<BTreeMap<u32, Medium>>,
+    /// The media attached, as they appeared: what an app's drive list is
+    /// served from, whether or not the person kept its notice.
+    attached: RefCell<Vec<Medium>>,
     /// The notification the person acted on and how, from the service's
     /// taps, which run wherever it publishes.
     asked: Receiver<(u32, String)>,
@@ -80,6 +83,7 @@ impl Drives {
             media,
             notifications,
             told: RefCell::new(BTreeMap::new()),
+            attached: RefCell::new(Vec::new()),
             asked: actions,
             opening: RefCell::new(Vec::new()),
         }
@@ -91,10 +95,20 @@ impl Drives {
     pub fn follow(&self, apps: Option<&Apps>) {
         for medium in self.media.appeared() {
             let id = notices::announce_medium(&self.notifications, &medium);
-            self.told.borrow_mut().insert(id, medium);
+            self.told.borrow_mut().insert(id, medium.clone());
+            self.attached.borrow_mut().push(medium);
         }
         self.act_on_notices(apps);
         self.forget_closed_notices();
+    }
+
+    /// The media attached now: the ones that appeared, less those whose
+    /// mount is gone, which is a medium the person pulled out.
+    #[must_use]
+    pub fn live(&self) -> Vec<Medium> {
+        let mut attached = self.attached.borrow_mut();
+        attached.retain(|medium| medium.mount.exists());
+        attached.clone()
     }
 
     /// What the person asked of a notice: the eject goes to the media, and
@@ -150,7 +164,7 @@ impl Drives {
 /// Files opening `mount`, which is where a medium the person plugged in is:
 /// the folder is what they want to see, so it is opened by the app that
 /// shows folders rather than routed by its type.
-fn files_on(mount: &std::path::Path) -> Launch {
+pub(crate) fn files_on(mount: &std::path::Path) -> Launch {
     Launch::Package {
         app: tilo_desktop_model::app::AppKind::FileExplorer.app_id(),
         open: Some(Open::File(mount.to_path_buf())),

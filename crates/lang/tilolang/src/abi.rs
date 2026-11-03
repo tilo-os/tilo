@@ -136,6 +136,7 @@ imports! {
     ActRef = "act_ref" ([H, H] -> [H]);
     Invoke = "invoke" ([H] -> [H]);
     TryInvoke = "try_invoke" ([H] -> [H]);
+    CallFn = "call_fn" ([H, H] -> [H]);
     Outside = "outside" ([H, H] -> [H]);
     OutsideAt = "outside_at" ([H, H, H] -> [H]);
     Withdraw = "withdraw" ([H, H] -> [H]);

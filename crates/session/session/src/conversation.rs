@@ -36,6 +36,7 @@ impl crate::Shared {
             .lend_starter(std::sync::Arc::new(agent_door::TaskHosts::new(
                 &self.person,
                 std::sync::Arc::clone(&self.run_programs),
+                std::sync::Arc::clone(&self.session_doors),
             )));
         // The door's host, over the broker when this session runs one and the session's own
         // doors alone otherwise: a line that reads nothing still runs, and one that reads an app

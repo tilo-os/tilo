@@ -88,6 +88,43 @@ pub(crate) fn open(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding<'_
     seat.presentation().open(false);
 }
 
+/// Open the sheet on the workspace `workspace` asks for, on `route`'s tab:
+/// what an app naming a route asks of the person's own settings.
+///
+/// # Errors
+/// The person is looking at another workspace — a request never switches
+/// what they see — or this session shows no workspace settings.
+pub(crate) fn open_route(
+    seat: Option<&sheet::WorkspaceSettingsSeat>,
+    fed: &Feeding<'_>,
+    workspace: &str,
+    route: runtime_portal::tools::WorkspaceSettingsRoute,
+) -> Result<(), String> {
+    let seat = seat.ok_or("this session shows no workspace settings")?;
+    let front = fed
+        .handle
+        .read(|tree| tree.active_workspace().map(|front| front.id().to_string()));
+    if front.as_deref() != Some(workspace) {
+        return Err("workspace settings opens for the workspace in front".to_owned());
+    }
+    show(seat, fed, tab_of(route), None);
+    seat.reset();
+    seat.presentation().open(false);
+    Ok(())
+}
+
+/// The tab a route names, as the sheet's own tabs are keyed.
+fn tab_of(route: runtime_portal::tools::WorkspaceSettingsRoute) -> sheet::Tab {
+    use runtime_portal::tools::WorkspaceSettingsRoute;
+    match route {
+        WorkspaceSettingsRoute::General => sheet::Tab::General,
+        WorkspaceSettingsRoute::Members => sheet::Tab::People,
+        WorkspaceSettingsRoute::PrivacySecurity => sheet::Tab::Permissions,
+        WorkspaceSettingsRoute::AppsFiles => sheet::Tab::Apps,
+        WorkspaceSettingsRoute::Emoji => sheet::Tab::Emoji,
+    }
+}
+
 /// Keep the sheet's panes current while it is up: the workspace changes
 /// while the sheet is open (a role set, a grant given), and so does what
 /// other people do in it — the workspace's emoji among them.
@@ -370,7 +407,7 @@ fn govern(
     if changed.is_empty() {
         return;
     }
-    let workspace_id = workspace.room();
+    let workspace_id = workspace.id();
     let governance = fed
         .engine
         .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
@@ -640,7 +677,7 @@ fn settings(
 /// devices to show it on: it is theirs only while they are in it.
 fn general(tree: &DesktopTree, personal: Option<&RefCell<Personal>>) -> sheet::General {
     let devices = match (tree.active_workspace(), personal) {
-        (Some(workspace), Some(personal)) => personal.borrow().device_choices(workspace.room()),
+        (Some(workspace), Some(personal)) => personal.borrow().device_choices(workspace.id()),
         _ => Vec::new(),
     };
     let at = tree.active_workspace().and_then(|workspace| {
@@ -701,8 +738,7 @@ fn toggle_device(
         tracing::debug!(%device, "not a device key: nothing changed");
         return false;
     };
-    let Some(workspace_id) = handle.read(|tree| tree.active_workspace().map(Workspace::room))
-    else {
+    let Some(workspace_id) = handle.read(|tree| tree.active_workspace().map(Workspace::id)) else {
         return false;
     };
     let mut personal = personal.borrow_mut();

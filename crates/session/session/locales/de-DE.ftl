@@ -2,6 +2,17 @@
 # Medien-Codecs, eine beendete Sitzung oder ein angehaltener Computer, ein
 # Update, das auf einen Neustart wartet, und eine Grafik, die nicht mehr
 # reagiert.
+battery-app-name = Energie
+battery-low-title = Akku fast leer
+battery-low-body = Noch { $percent } %. Lade das Gerät an, um weiterzuarbeiten.
+battery-critical-title = Akku kritisch leer
+battery-critical-suspend-body = Noch { $percent } %. Die Arbeit wird gesichert und das Gerät schläft ein.
+battery-critical-plug-body = Noch { $percent } %. Lade das Gerät bitte jetzt an.
+
+idle-inhibit-unnamed-app = Eine App
+
+remote-use-hold = Fernzugriff von einem anderen deiner Geräte
+
 storage-app-name = Speicher
 storage-volume-home = deine Dateien
 storage-volume-system = das System
@@ -143,6 +154,9 @@ drives-eject = Auswerfen
 app-list-app-name = Apps
 app-list-gone-title = App nicht gefunden
 app-list-gone-body = Sie ist nicht mehr unter deinen Apps.
+
+lock-screen-failed-title = Sperrbildschirm startete nicht
+lock-screen-failed-body = Tilo zeichnet die Sperre selbst: dasselbe Passwort entsperrt diesen Rechner.
 app-list-uninstalled = { $name } deinstalliert
 app-list-uninstalled-file = Ihre Datei liegt im Papierkorb.
 app-list-uninstalled-files = Alle ihre Kopien liegen im Papierkorb.

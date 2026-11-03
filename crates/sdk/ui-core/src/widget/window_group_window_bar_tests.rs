@@ -526,6 +526,39 @@ fn an_apps_slots_live_in_the_bar_and_the_content_starts_under_it() {
     }
 }
 
+/// The name a window's bar shows: the location its app names, or the
+/// window's own title while the app names none. A blank label names
+/// nothing — an app whose window has nothing open to name — so the bar
+/// says what the window is instead of standing empty.
+#[test]
+fn a_window_whose_app_names_no_location_shows_its_own_name() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark().with_reduce_motion(true);
+    for count in [1, 2] {
+        for label in [None, Some(String::new()), Some("   ".to_owned())] {
+            let mut g = pages(count);
+            let mut toolbar = slots();
+            match label.clone() {
+                Some(label) => toolbar.location.as_mut().unwrap().label = label,
+                None => toolbar.location = None,
+            }
+            assert!(g.set_tab_toolbar(1, Some(toolbar)));
+            lay_out(&mut g, &theme);
+            let shown = g
+                .bar_for_tests()
+                .toolbar_row()
+                .toolbar()
+                .and_then(|toolbar| toolbar.location.as_ref())
+                .map(|location| location.label.clone());
+            assert_eq!(
+                shown.as_deref(),
+                Some("Page 1"),
+                "{count} tab(s), label {label:?}: the window says what it is"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_fullscreen_windows_bar_fades_over_the_content_and_reduced_motion_cuts() {
     let start = crate::time::now();

@@ -21,11 +21,12 @@
     reason = "frames are bounded by the displays' pixels, far from the integers' limits"
 )]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use tilo_capture_studio::audio::{Availability, Track as AudioTrack};
 use tilo_capture_studio::{
     Ask, Frame, Kept, REPLAY_FPS, Recorder, Recording, Refusal, Scene, Selection, Sent, Settings,
     Studio, Take,
@@ -37,8 +38,8 @@ use tilo_portal::CaptureError;
 use tilo_surface_host::Doors;
 use ui::vello::kurbo::Rect;
 use ui::widget::{
-    CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept, ScreenshotSendDevice,
-    SourceMode,
+    AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept,
+    ScreenshotSendDevice, SourceMode,
 };
 
 use crate::Options;
@@ -73,6 +74,9 @@ pub(crate) struct CaptureStudio {
     asking: Option<Asked>,
     /// What feeds the recorder now: a recording, or the replay buffer.
     feeding: Option<Feeding>,
+    /// What the machine can record, probed once the bar first comes up: a
+    /// session that never records opens no probe.
+    audio: Cell<Option<Availability>>,
     /// The recording that runs, as the studio shows it.
     recording: Option<Recording>,
     /// Seconds of the last half minute ready to clip.
@@ -98,6 +102,8 @@ struct Asked {
 struct Feeding {
     take: Take,
     recorder: Recorder,
+    /// The sound going into it, in the recorder's track order.
+    audio: Vec<AudioTrack>,
     /// The file written: the recording's, or `None` while only the replay
     /// buffer is fed.
     path: Option<PathBuf>,
@@ -143,6 +149,7 @@ pub(crate) fn mount(
                 sent: None,
                 asking: None,
                 feeding: None,
+                audio: Cell::new(None),
                 recording: None,
                 replay: None,
                 replay_saves: 0,
@@ -327,7 +334,13 @@ impl CaptureStudio {
     }
 
     fn start(&mut self, take: Take, compositor: &mut Compositor) {
-        let path = crate::capture::unique(&self.directory, "recording", "mp4");
+        let audio = match AudioTrack::start(take.audio) {
+            Ok(audio) => audio,
+            Err(error) => {
+                tracing::warn!(%error, "a recording's sound was not started");
+                return;
+            }
+        };
         let frame = match grab(compositor, &take, self.presentation().place()) {
             Ok(frame) => frame,
             Err(error) => {
@@ -335,14 +348,17 @@ impl CaptureStudio {
                 return;
             }
         };
-        let recorder = match Recorder::new(Settings::for_size(frame.width, frame.height)) {
+        let mut recorder = match Recorder::with_audio(
+            Settings::for_size(frame.width, frame.height),
+            audio.iter().map(|track| track.name().to_owned()).collect(),
+        ) {
             Ok(recorder) => recorder,
             Err(error) => {
                 tracing::warn!(%error, "no encoder takes this screen's size");
                 return;
             }
         };
-        let mut recorder = recorder;
+        let path = crate::capture::unique(&self.directory, "recording", recorder.extension());
         if let Err(error) = recorder.start(path.clone()) {
             tracing::warn!(%error, "a recording file was not opened");
             return;
@@ -355,6 +371,7 @@ impl CaptureStudio {
         self.feeding = Some(Feeding {
             take,
             recorder,
+            audio,
             path: Some(path.clone()),
             last: Some(Instant::now()),
             paused: false,
@@ -366,7 +383,7 @@ impl CaptureStudio {
     }
 
     fn stop(&mut self) {
-        let Some(feeding) = self.feeding.take() else {
+        let Some(mut feeding) = self.feeding.take() else {
             return;
         };
         if feeding.path.is_none() {
@@ -374,6 +391,10 @@ impl CaptureStudio {
             self.feeding = Some(feeding);
             return;
         }
+        // What was heard up to the stop is in the file too.
+        feeding.drain_audio(true);
+        // The recorders end with the file: Drop kills each process group.
+        feeding.audio.clear();
         let mut recorder = feeding.recorder;
         match recorder.stop() {
             Ok(Some(path)) => tracing::info!(path = %path.display(), "a recording was finished"),
@@ -395,7 +416,17 @@ impl CaptureStudio {
                 return;
             }
         };
-        let mut recorder = match Recorder::new(Settings::for_size(frame.width, frame.height)) {
+        let audio = match AudioTrack::start(take.audio) {
+            Ok(audio) => audio,
+            Err(error) => {
+                tracing::warn!(%error, "the replay buffer's sound was not started");
+                return;
+            }
+        };
+        let mut recorder = match Recorder::with_audio(
+            Settings::for_size(frame.width, frame.height),
+            audio.iter().map(|track| track.name().to_owned()).collect(),
+        ) {
             Ok(recorder) => recorder,
             Err(error) => {
                 tracing::warn!(%error, "no encoder takes this screen's size");
@@ -409,6 +440,7 @@ impl CaptureStudio {
         self.feeding = Some(Feeding {
             take,
             recorder,
+            audio,
             path: None,
             last: Some(Instant::now()),
             paused: false,
@@ -450,6 +482,8 @@ impl CaptureStudio {
             return;
         };
         if feeding.paused {
+            // The pause is not recorded; its sound is not either.
+            feeding.drain_audio(false);
             return;
         }
         let now = Instant::now();
@@ -457,6 +491,7 @@ impl CaptureStudio {
             .last
             .is_some_and(|last| now.saturating_duration_since(last) < FRAME_INTERVAL)
         {
+            feeding.drain_audio(true);
             return;
         }
         feeding.last = Some(now);
@@ -477,6 +512,7 @@ impl CaptureStudio {
             self.replay = None;
             return;
         }
+        feeding.drain_audio(true);
         if feeding.path.is_none() {
             let seconds = feeding.recorder.buffered() / usize::try_from(REPLAY_FPS).unwrap_or(30);
             self.replay = Some(u8::try_from(seconds.min(30)).unwrap_or(30));
@@ -552,26 +588,87 @@ impl CaptureStudio {
         }
     }
 
+    /// What this machine can record, probed when the bar is first up: the
+    /// person's toggles offer only sounds that would start.
+    fn audio_availability(&self) -> Availability {
+        if let Some(audio) = self.audio.get() {
+            return audio;
+        }
+        if !self.presentation().is_drawn() {
+            return Availability::default();
+        }
+        let audio = tilo_capture_studio::audio::probe();
+        self.audio.set(Some(audio));
+        audio
+    }
+
+    /// The sound the replay buffer takes: the one its feed was started with.
+    fn replay_audio(&self) -> AudioCaptureMode {
+        self.feeding
+            .as_ref()
+            .filter(|feeding| feeding.path.is_none())
+            .map_or(AudioCaptureMode::None, |feeding| feeding.take.audio)
+    }
+
     /// Hand the studio what it shows now.
     fn publish(&self, compositor: &Compositor) {
         let devices: Vec<ScreenshotSendDevice> = self
             .fabric
             .as_ref()
             .map_or_else(Vec::new, capture_send::devices);
+        let audio = self.audio_availability();
         let scene = Scene {
             windows: windows(compositor, self.presentation().place()),
             asking: self.asking.as_ref().map(|asked| asked.selection),
-            system_audio: false,
-            microphone: false,
+            system_audio: audio.system,
+            microphone: audio.microphone,
             kept: self.last.clone(),
             devices,
             sent: self.sent.clone(),
             recording: self.recording.clone(),
             replay: self.replay,
+            replay_audio: self.replay_audio(),
             replay_saves: self.replay_saves,
             ..Scene::default()
         };
         self.seat.link().publish(scene);
+    }
+}
+
+impl Feeding {
+    /// Take the sound captured since the last pass into the file, in the
+    /// recorder's track order: with `keep` false — a pause — it is discarded,
+    /// so the recording resumes at the current sound. A source that ended is
+    /// dropped with a warning rather than written as a silent gap, and its
+    /// track keeps its place.
+    fn drain_audio(&mut self, keep: bool) {
+        let mut ended = Vec::new();
+        for (index, track) in self.audio.iter_mut().enumerate() {
+            match track.drain(keep) {
+                Ok(pcm) if keep && !pcm.is_empty() => {
+                    if let Err(error) = self.recorder.audio(track.mux(), &pcm) {
+                        tracing::warn!(
+                            %error,
+                            source = track.name(),
+                            "a recording's sound was not written"
+                        );
+                        ended.push(index);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        source = track.name(),
+                        "a recording's sound stopped"
+                    );
+                    ended.push(index);
+                }
+            }
+        }
+        for index in ended.into_iter().rev() {
+            self.audio.remove(index);
+        }
     }
 }
 

@@ -9,7 +9,7 @@ struct Fixture {
     /// tests leave the thread scoped to a profile whose registry names no
     /// identity, and reading custody from disk needs one.
     _profile: tilo_paths::ProfileScope,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     ended: Arc<SessionAdmission>,
     other: Arc<SessionAdmission>,
 }
@@ -21,7 +21,7 @@ impl Fixture {
         // reach the machine's own identity store.
         let profile = tilo_paths::scope_profile(std::env::temp_dir());
 
-        let workspace = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let workspace = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
         let (joined, directory) = Joined::test_hosting(workspace).await;
         let joined =
             Arc::try_unwrap(joined).unwrap_or_else(|_| panic!("fixture holds no sessions"));

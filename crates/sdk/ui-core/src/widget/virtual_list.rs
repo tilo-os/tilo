@@ -159,7 +159,8 @@ pub trait ListModel {
     }
 
     /// What the row `index` is grouped by, when the model groups its rows: the list draws the
-    /// heading over the first row of each group ([`RowGroup`]). `None` for a row in no group,
+    /// heading over the first row of each group ([`RowGroup`]), a disclosure the keyboard
+    /// reaches like a row and assistive technology reads as one. `None` for a row in no group,
     /// or a model that groups nothing.
     fn group_at(&self, _index: usize) -> Option<RowGroup> {
         None
@@ -325,6 +326,9 @@ pub struct VirtualList<M: ListModel> {
     /// selects it.
     follow_focus: bool,
     focused_key: Option<M::Key>,
+    /// The group's heading holding the keyboard (the second is the index of the first row
+    /// under it): a heading is a stop of the list's own, opened from the keyboard.
+    focused_group: Option<(String, usize)>,
     /// What has been typed into the focused list ([`ListModel::label`]).
     typing: crate::type_ahead::TypeAhead,
     on_select: Option<SelectCallback<M::Key>>,
@@ -500,6 +504,7 @@ impl<M: ListModel> VirtualList<M> {
             multi_select: false,
             follow_focus: false,
             focused_key: None,
+            focused_group: None,
             typing: crate::type_ahead::TypeAhead::default(),
             on_select: None,
             view: None,
@@ -583,7 +588,7 @@ impl<M: ListModel> VirtualList<M> {
         let Some(index) = self.model.index_of(key) else {
             return false;
         };
-        self.focused_key = Some(key.clone());
+        self.focus_row(key.clone());
         let now = crate::motion::frame_now();
         let width = self.rect.width();
         match self
@@ -845,9 +850,20 @@ impl<M: ListModel> VirtualList<M> {
             .focused_key
             .take()
             .filter(|key| self.model.index_of(key).is_some());
+        // A heading the rows moved away from lets the keyboard go.
+        self.focused_group = self.focused_group.take().filter(|(heading, index)| {
+            groups::group_of(&self.model, *index, self.tail_title.as_deref())
+                .is_some_and(|group| group.0 == *heading)
+        });
         self.request_dirty = true;
         self.keep_end();
         self.visible_window_changed();
+    }
+
+    /// The row `key` takes the keyboard: a heading that had it lets go.
+    fn focus_row(&mut self, key: M::Key) {
+        self.focused_group = None;
+        self.focused_key = Some(key);
     }
 
     /// Follow the list's end, as a transcript does: it opens at its last row, and while it
@@ -1620,7 +1636,7 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(at) = self.model.index_of(&source) {
             self.scroll_to_index(at);
         }
-        self.focused_key = Some(source);
+        self.focus_row(source);
         true
     }
 
@@ -1656,7 +1672,7 @@ impl<M: ListModel> VirtualList<M> {
         let toggle = state.control_key() || state.super_key();
         let extend = state.shift_key();
         self.apply_selection(key.clone(), toggle, extend);
-        self.focused_key = Some(key.clone());
+        self.focus_row(key.clone());
         if toggle || extend {
             self.clicks.record(key);
         } else if self.clicks.register(key.clone()) {
@@ -1680,7 +1696,7 @@ impl<M: ListModel> VirtualList<M> {
         if !self.selection.is_selected(&key) {
             self.apply_selection(key.clone(), false, false);
         }
-        self.focused_key = Some(key.clone());
+        self.focus_row(key.clone());
         let rect = match (
             self.viewport.item_view_top(index),
             self.viewport.item_height(index),
@@ -1710,7 +1726,7 @@ impl<M: ListModel> VirtualList<M> {
         let Some(key) = self.model.key_at(index) else {
             return false;
         };
-        self.focused_key = Some(key.clone());
+        self.focus_row(key.clone());
         self.select_focused(key, extend);
         self.scroll_to_index(index);
         true
@@ -1739,7 +1755,7 @@ impl<M: ListModel> VirtualList<M> {
         let Some(key) = self.model.key_at(index) else {
             return false;
         };
-        self.focused_key = Some(key.clone());
+        self.focus_row(key.clone());
         self.select_focused(key, extend);
         self.visible_window_changed();
         scrolled || index != current
@@ -1750,26 +1766,34 @@ impl<M: ListModel> VirtualList<M> {
         if count == 0 {
             return false;
         }
-        let current = self
-            .focused_key
-            .as_ref()
-            .and_then(|key| self.model.index_of(key));
-        match super::rows::row_step(key, current, count) {
-            Some(RowStep::To(index)) => return self.focus_index(index, extend),
-            Some(RowStep::Page(forward)) => return self.page_focus(forward, extend),
-            None => {}
+        let current = self.keyboard_row();
+        // The arrow keys walk the headings and the rows alike ([`Stop`]).
+        if let Some(moved) = self.move_stop(key, extend) {
+            return moved;
+        }
+        if let Some(RowStep::Page(forward)) = super::rows::row_step(key, current, count) {
+            return self.page_focus(forward, extend);
         }
         match key {
-            Key::Named(NamedKey::Enter) => self.focused_key.clone().is_some_and(|key| {
-                let ready = self
-                    .model
-                    .index_of(&key)
-                    .is_some_and(|index| matches!(self.model.row_state(index), Arrival::Ready(())));
-                if ready {
-                    self.activate_key(key);
+            // A heading holding the keyboard folds and unfolds its group, as its band does
+            // under the pointer.
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                if let Some(heading) = self.heading_keyboard() {
+                    return self.toggle_heading(&heading);
                 }
-                ready
-            }),
+                if key == &Key::Named(NamedKey::Space) {
+                    return false;
+                }
+                self.focused_key.clone().is_some_and(|key| {
+                    let ready = self.model.index_of(&key).is_some_and(|index| {
+                        matches!(self.model.row_state(index), Arrival::Ready(()))
+                    });
+                    if ready {
+                        self.activate_key(key);
+                    }
+                    ready
+                })
+            }
             _ if self.multi_select && super::rows::is_select_all(key, toggle) => {
                 self.selection.select_all();
                 true
@@ -2038,7 +2062,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         ) * 24.0
             + f64::from(theme.tokens.spacing.s4) * 6.0;
         self.motion = self.feel.over(theme.motion());
-        self.groups.theme(theme);
+        self.groups.theme(theme, self.interaction);
         if let Some(edges) = self.edges.as_mut() {
             edges.theme(theme);
         }
@@ -2437,6 +2461,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 _ => false,
             }
         {
+            // The heading the press landed on takes the keyboard with it, as a row does.
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            ) {
+                *ctx.focus_target = Some(ctx.node_id);
+            }
             *ctx.handled = true;
             return;
         }
@@ -2664,7 +2698,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn accessibility_child_parent(&self, child_index: usize) -> Option<usize> {
-        (child_index < self.mounted.len()).then_some(child_index)
+        // Each mounted row stands under its own node, after the heading above it.
+        (child_index < self.mounted.len())
+            .then(|| child_index.saturating_add(self.headings_before(child_index)))
     }
 
     fn name(&self) -> &'static str {
@@ -2844,56 +2880,6 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let count = self.model.len();
-        let children = self
-            .mounted
-            .iter()
-            .map(|row| {
-                let child = row.widget.accessibility();
-                let name = child
-                    .as_ref()
-                    .and_then(|node| node.name.clone())
-                    .or_else(|| first_descendant_accessible_name(row.widget.as_ref()));
-                let mut item = AccessNode::new(Role::ListItem)
-                    .with_optional_name(name)
-                    .with_position(row.index.saturating_add(1), count)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
-                            .selected(self.selection.is_selected(&row.key))
-                            .disabled(!self.is_enabled()),
-                    );
-                match &row.state {
-                    MountedRowState::Ready => {}
-                    MountedRowState::Pending => item.state.busy = true,
-                    MountedRowState::Failed(message, _) => {
-                        item.state.invalid = true;
-                        item.description = Some(message.clone());
-                    }
-                }
-                if let (Some(top), Some(height)) = (
-                    self.viewport.item_view_top(row.index),
-                    self.viewport.item_height(row.index),
-                ) {
-                    // The row's own box: one bleed in from the list's edges.
-                    let widget = row.widget.get_rect();
-                    item = item.with_bounds(Rect::new(
-                        widget.x0,
-                        self.rect.y0 + top,
-                        widget.x1,
-                        self.rect.y0 + top + height,
-                    ));
-                }
-                if let Some(encode) = &self.semantic_key {
-                    item = item.with_action_target(format!("key:{}", encode(&row.key)));
-                }
-                if let Some(child) = child {
-                    item = item.with_children(vec![child]);
-                }
-                item
-            })
-            .collect();
         Some(
             AccessNode::new(Role::List)
                 .with_optional_name(
@@ -2907,7 +2893,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         .focused(self.is_focused)
                         .disabled(!self.is_enabled()),
                 )
-                .with_children(children),
+                // Each group's heading stands before the rows it holds, a disclosure of its
+                // own ([`groups::heading_node`]).
+                .with_children(self.accessibility_children(self.is_enabled())),
         )
     }
 
@@ -2920,6 +2908,22 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     ) -> bool {
         use crate::a11y::Action;
 
+        // A heading's group, as its node in the accessibility tree names it: read, folded and
+        // unfolded by something that is not the keyboard.
+        if let Some(heading) = target.strip_prefix(groups::HEADING_TARGET) {
+            let heading = heading.to_owned();
+            return match action {
+                Action::Focus => self.focus_heading(&heading),
+                Action::Activate => self.focus_heading(&heading) && self.toggle_heading(&heading),
+                Action::Expand => self.set_heading_open(&heading, true),
+                Action::Collapse => self.set_heading_open(&heading, false),
+                Action::ScrollIntoView => self.heading_start(&heading).is_some_and(|index| {
+                    self.scroll_to_index(index);
+                    true
+                }),
+                _ => false,
+            };
+        }
         let Some(key) = self.key_for_semantic_target(target) else {
             return false;
         };
@@ -2928,7 +2932,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         };
         match action {
             Action::Focus => {
-                self.focused_key = Some(key.clone());
+                self.focus_row(key.clone());
                 self.select_focused(key, false);
                 self.scroll_to_index(index);
                 true
@@ -2937,7 +2941,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 if !matches!(self.model.row_state(index), Arrival::Ready(())) {
                     return false;
                 }
-                self.focused_key = Some(key.clone());
+                self.focus_row(key.clone());
                 self.apply_selection(key.clone(), false, false);
                 self.activate_key(key);
                 true
@@ -2962,14 +2966,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 }
 
-fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
-    widget.children().into_iter().find_map(|child| {
-        child
-            .accessibility()
-            .and_then(|node| node.name)
-            .or_else(|| first_descendant_accessible_name(child))
-    })
-}
+#[path = "virtual_list_a11y.rs"]
+mod a11y;
 
 #[cfg(test)]
 #[path = "virtual_list_tests.rs"]

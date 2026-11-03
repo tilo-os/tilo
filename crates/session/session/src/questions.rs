@@ -767,6 +767,8 @@ fn compose(question: &Question) -> Option<Composed> {
         CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
         crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
+        crate::network::AGENT_QUESTION => agent_question(&question.handle, &who, details)?,
+        crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         _ => return None,
     };
     Some(Composed {
@@ -892,6 +894,58 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
         dialog,
         Plan::Choose(vec![ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS]),
     ))
+}
+
+/// An agent's question on a workspace host: what it wants to do, on what,
+/// and the person's answer for this one invocation.
+fn agent_question(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::network::AgentQuestion = serde_json::from_value(details).ok()?;
+    let title = words(
+        "network-agent-question-title",
+        &[("agent", &asked.agent), ("action", &asked.action)],
+    );
+    let mut detail = words(
+        "network-agent-question-detail",
+        &[
+            ("resource", &asked.resource),
+            ("workspace", &asked.workspace),
+        ],
+    );
+    if !asked.risk.is_empty() {
+        detail.push('\n');
+        detail.push_str(&words(
+            "network-agent-question-risk",
+            &[("risk", &risk(&asked.risk))],
+        ));
+    }
+    let mut dialog = review(handle, title, who.to_owned(), detail);
+    dialog.confirm_label = word("network-agent-question-allow");
+    Some((dialog, Plan::Confirm))
+}
+
+/// What the host says an action risks, in the person's words.
+fn risk(name: &str) -> String {
+    match name {
+        "none" | "low" | "destructive" | "privileged" | "sensitive" => {
+            word(&format!("network-agent-risk-{name}"))
+        }
+        _ => word("network-agent-risk-something"),
+    }
+}
+
+/// Another of the person's devices asks for its disk-unlock half: the code on
+/// its boot screen is shown beside the one the person answers with.
+fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::network::UnlockQuestion = serde_json::from_value(details).ok()?;
+    let mut dialog = review(
+        handle,
+        words("network-device-unlock-title", &[("device", &asked.device)]),
+        asked.device.clone(),
+        words("network-device-unlock-detail", &[("slot", &asked.slot)]),
+    );
+    dialog.code = Some(asked.approval_code);
+    dialog.confirm_label = word("network-device-unlock-allow");
+    Some((dialog, Plan::Confirm))
 }
 
 /// What `capability` is, in the person's words.
@@ -1571,5 +1625,83 @@ fn request(question: &Question, asked: &FileChooserQuestion) -> FileRequest {
         home,
         suggested_name: asked.current_name.clone(),
         recent: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sheet `kind` composes from `details`.
+    fn sheet(kind: &str, details: Value) -> Composed {
+        compose(&Question {
+            handle: "asked".into(),
+            kind: kind.into(),
+            app_id: None,
+            label: "Notes".into(),
+            details,
+        })
+        .expect("the session composes this question")
+    }
+
+    fn agent_question() -> Composed {
+        sheet(
+            crate::network::AGENT_QUESTION,
+            serde_json::to_value(crate::network::AgentQuestion {
+                agent: "notes-agent".into(),
+                action: "delete three notes".into(),
+                resource: "the recipes notebook".into(),
+                risk: "destructive".into(),
+                workspace: "Home".into(),
+            })
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn an_agents_question_shows_its_agent_action_and_risk() {
+        let shown = agent_question();
+        assert!(shown.dialog.title.contains("notes-agent"));
+        assert!(shown.dialog.title.contains("delete three notes"));
+        assert!(shown.dialog.detail.contains("the recipes notebook"));
+        assert!(shown.dialog.detail.contains("Home"));
+        assert!(!shown.dialog.detail.contains("network-agent"));
+        assert!(shown.dialog.code.is_none());
+        assert!(matches!(shown.plan, Plan::Confirm));
+    }
+
+    #[test]
+    fn a_question_whose_risk_the_host_does_not_name_shows_no_risk() {
+        let shown = sheet(
+            crate::network::AGENT_QUESTION,
+            serde_json::to_value(crate::network::AgentQuestion {
+                agent: "notes-agent".into(),
+                action: "read a note".into(),
+                resource: "the recipes notebook".into(),
+                risk: String::new(),
+                workspace: "Home".into(),
+            })
+            .unwrap(),
+        );
+        assert!(!shown.dialog.detail.contains("network-agent"));
+        assert_eq!(shown.dialog.detail.lines().count(), 1);
+    }
+
+    #[test]
+    fn a_boot_screens_code_is_shown_beside_the_one_the_person_compares() {
+        let shown = sheet(
+            crate::network::DEVICE_UNLOCK,
+            serde_json::to_value(crate::network::UnlockQuestion {
+                approval_code: "417 208".into(),
+                device: "The phone".into(),
+                slot: "abcd:0".into(),
+            })
+            .unwrap(),
+        );
+        assert_eq!(shown.dialog.code.as_deref(), Some("417 208"));
+        assert!(shown.dialog.title.contains("The phone"));
+        assert!(shown.dialog.detail.contains("abcd:0"));
+        assert!(!shown.dialog.detail.contains("network-device"));
+        assert!(matches!(shown.plan, Plan::Confirm));
     }
 }

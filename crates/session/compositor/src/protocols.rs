@@ -152,12 +152,11 @@ impl State {
         crate::gpu_health::record_dmabuf(node.as_deref());
     }
 
-    /// Whether a client keeps the session from idling.
+    /// Whether a client keeps the session from idling: only while the
+    /// surface asking is on screen, so a video left in a hidden tab or on a
+    /// workspace nobody is looking at does not hold the machine awake.
     pub(crate) fn idle_inhibited(&self) -> bool {
-        self.protocols
-            .idle_inhibitors
-            .iter()
-            .any(smithay::reexports::wayland_server::Resource::is_alive)
+        !self.visible_idle_inhibitors().is_empty()
     }
 
     fn window_of(&self, surface: &WlSurface) -> Option<Window> {

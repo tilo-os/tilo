@@ -40,9 +40,37 @@ pub(super) struct Bars {
     /// What the person did in the bars, by connection, waiting for the
     /// session to write it to the app.
     events: Vec<(u64, ToolbarEvent)>,
+    /// The name each app gives what its window shows (its bar's location: a
+    /// note's title, a folder's path), by tab, as the bar last read it. A
+    /// window's name is what it shows, so it stands in front of the window's
+    /// own title everywhere the tab is named.
+    names: std::collections::BTreeMap<u64, String>,
+}
+
+impl Bars {
+    /// Take `names` as what the windows' apps call what they show; whether
+    /// that changed anything. The bar reads them from the slots the apps
+    /// declared, so an unchanged pass costs one comparison.
+    fn take_names(&mut self, names: std::collections::BTreeMap<u64, String>) -> bool {
+        if self.names == names {
+            return false;
+        }
+        self.names = names;
+        true
+    }
 }
 
 impl DesktopHandle {
+    /// The name `tab`'s app gives what its window shows (its bar's location:
+    /// a note's title, a folder's path), as the bar last read it. A window's
+    /// name is what it shows, so this stands in front of the window's own
+    /// title ([`tilo_desktop_policy::DesktopPolicy::retitle`],
+    /// [`DesktopHandle::declare_bar`]).
+    #[must_use]
+    pub fn window_name(&self, tab: u64) -> Option<String> {
+        self.shared.borrow().bars.names.get(&tab).cloned()
+    }
+
     /// `connection`'s app declared `toolbar` for `tab`, or none. Shown from
     /// the next pass on. The app is the one the session vouched for, so it
     /// only ever reaches a tab that shows it.
@@ -120,11 +148,69 @@ impl DesktopSurface {
             }
         }
         changed |= sync.changed;
+        changed |= self.publish_window_names();
         changed |= self.ask_bar_changes();
         let events = self.window_slots.take_outbox();
         if !events.is_empty() {
             self.shared.borrow_mut().bars.events.extend(events);
             changed = true;
+        }
+        changed
+    }
+
+    /// Name each window by what it shows: the bar's location label, a note's
+    /// title or a folder's path. A window's name is what it shows, so it is
+    /// written into the tab — the bar, the overview and search all read the
+    /// tab's name — and the window's own title only stands where its app
+    /// names nothing. Returns whether that changed.
+    fn publish_window_names(&self) -> bool {
+        let mut names = std::collections::BTreeMap::new();
+        for group in self.rows.values().flat_map(|row| row.groups.iter()) {
+            for tab in group.tabs() {
+                let name = self
+                    .window_slots
+                    .toolbar(tab.id)
+                    .and_then(|toolbar| toolbar.location.as_ref())
+                    .map(|location| location.label.trim())
+                    .filter(|label| !label.is_empty());
+                if let Some(name) = name {
+                    names.insert(tab.id, name.to_owned());
+                }
+            }
+        }
+        let mut shared = self.shared.borrow_mut();
+        let named_before = shared.bars.names.clone();
+        let mut changed = shared.bars.take_names(names.clone());
+        if changed {
+            shared.changed();
+        }
+        let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
+            workspace
+                .strips
+                .iter_mut()
+                .flat_map(|strip| strip.window_groups.iter_mut())
+                .flat_map(|group| group.tabs.iter_mut())
+        });
+        // A person's own name for a tab, where they gave one, stands in front
+        // of the app's: the tab keeps it and holds the app's for when the
+        // person clears theirs.
+        for tab in tabs {
+            if let Some(name) = names.get(&tab.id) {
+                changed |= tab.set_window_title(name);
+            } else if named_before
+                .get(&tab.id)
+                .is_some_and(|name| tab.title == *name)
+                && let Some(app) = app_of(tab)
+            {
+                // The app names nothing any more — the note it showed is
+                // closed — so the window goes back to its app's name rather
+                // than keeping a place it has left.
+                changed |= tab.set_window_title(&app);
+            }
+        }
+        if changed {
+            // The rows follow the names the tree now holds.
+            shared.replaced = true;
         }
         changed
     }
@@ -189,6 +275,16 @@ fn active_group(
     rows.values_mut()
         .flat_map(|row| row.groups.iter_mut())
         .find(|group| group.active_tab_id() == tab)
+}
+
+/// The name the app showing `tab` goes by: the label the tile carries, or,
+/// for a tile that names only the app, the name the app is listed under.
+fn app_of(tab: &tilo_desktop_model::Tab) -> Option<String> {
+    match &tab.tile {
+        tilo_desktop_model::TileContent::LocalApp { label, .. } => Some(label.clone()),
+        tile => tilo_desktop_model::apps::canonical_app_id(tile)
+            .map(|app| tilo_desktop_search::names::app_name(&app)),
+    }
 }
 
 #[cfg(test)]

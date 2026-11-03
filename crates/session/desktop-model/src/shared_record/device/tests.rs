@@ -23,7 +23,7 @@ struct Device {
 }
 
 impl Device {
-    fn new(key: &'static str, identity: RoomId, actor: u8) -> Self {
+    fn new(key: &'static str, identity: WorkspaceId, actor: u8) -> Self {
         Self {
             key,
             actor: u64::from(actor),
@@ -72,7 +72,7 @@ impl Device {
             carried: &|id| former.contains(&id),
         };
         let published = self.published();
-        let changed = write(&mut self.doc, self.workspace.room(), &published, &writer).unwrap();
+        let changed = write(&mut self.doc, self.workspace.id(), &published, &writer).unwrap();
         self.doc.commit();
         changed
     }
@@ -201,7 +201,7 @@ const LATER_NOTES: u64 = minted(1, 102);
 /// The laptop opens a notes window and a legacy editor on its main strip,
 /// and notes on a second strip; both devices hold that.
 fn two_devices() -> (Device, Device) {
-    let identity = RoomId::new();
+    let identity = WorkspaceId::new();
     let mut laptop = Device::new(LAPTOP, identity, 1);
     let mut desk = Device::new(DESK, identity, 2);
     laptop.change(|w| {
@@ -276,7 +276,7 @@ fn a_move_made_while_the_window_s_device_is_offline_sticks_and_applies_on_reconn
 fn concurrent_moves_of_one_window_settle_in_one_place_on_every_device() {
     for order in [false, true] {
         let (mut laptop, mut desk) = two_devices();
-        let mut phone = Device::new("cc", laptop.workspace.room(), 3);
+        let mut phone = Device::new("cc", laptop.workspace.id(), 3);
         phone.hear(&mut laptop);
 
         // All offline: each moves the notes window somewhere else.
@@ -380,7 +380,7 @@ fn what_each_device_decides_alone_survives_a_fold() {
     assert_eq!(group.active_tab, NOTES);
     // And none of it reached the record.
     assert!(!desk.write());
-    let mut fresh = Workspace::in_workspace(desk.workspace.slot, desk.workspace.room(), "Home");
+    let mut fresh = Workspace::in_workspace(desk.workspace.slot, desk.workspace.id(), "Home");
     fold(&desk.doc, &mut fresh, "dd", &Kept::NOTHING);
     assert_eq!(fresh.strips[0].window_groups[0].width, WindowWidth::Normal);
     assert!(!fresh.strips[0].window_groups[0].maximized);
@@ -452,7 +452,7 @@ fn withdrawing_takes_out_only_what_the_device_made() {
 #[test]
 fn a_workspace_laid_out_before_the_record_brings_its_windows_over() {
     use automerge::transaction::Transactable as _;
-    let identity = RoomId::new();
+    let identity = WorkspaceId::new();
     let mut desk = Device::new(DESK, identity, 2);
     // The laptop's windows, as the old layout kept them.
     let contents = desk.doc.put_object(ROOT, "contents", ObjType::Map).unwrap();

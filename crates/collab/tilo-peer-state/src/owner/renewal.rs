@@ -5,7 +5,7 @@
 //! workspace held, and the workspace's record here follows. The device stays the same
 //! member, with its role and everything it wrote.
 use crate::join::JoinBootstrap;
-use crate::owner::{NativeWorkspaceOwner, RoomId};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
@@ -31,7 +31,7 @@ impl NativeWorkspaceOwner {
     /// published.
     pub fn renew_membership(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         renewed: &DeviceCert,
         bootstrap: &JoinBootstrap,
         now: SystemTime,

@@ -135,7 +135,6 @@ fn collect_choices(ty: &Type, into: &mut Vec<(String, Vec<String>)>) {
 fn default_json(ty: &Type, value: &tilo_ui_graph::component::Value) -> serde_json::Value {
     use tilo_ui_graph::component::Value;
     match value {
-        Value::None => serde_json::Value::Null,
         Value::Choice(case) => {
             let Type::Choice { name, .. } = ty else {
                 return serde_json::Value::Null;

@@ -111,7 +111,7 @@ impl Fixture {
             crate::collab_app_broker::principal_id_for_root(certificate.user_public_key);
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Shortcuts");
         workspace.set_owner(principal.clone());
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let echo: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
             "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},
             "saved_by": principal,

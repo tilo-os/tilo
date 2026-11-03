@@ -268,7 +268,7 @@ impl crate::services::LauncherServices for StoreLauncher {
         _place: &crate::services::LaunchPlace,
     ) -> Result<(), String> {
         assert_eq!(app, STORE);
-        assert_eq!(workspace.room(), workspace_id());
+        assert_eq!(workspace.id(), workspace_id());
         assert!(record.is_none() || record == Some("main"));
         self.0.send(app.into()).map_err(|error| error.to_string())
     }

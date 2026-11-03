@@ -1,6 +1,8 @@
 //! A package's words are read from its catalogue in the reader's language: its nouns by count,
 //! its actions' and views' labels, and what search matches — so "notebooks" finds Notes.
 
+#![allow(clippy::expect_used, reason = "test assertions")]
+
 use std::path::Path;
 use std::sync::Arc;
 

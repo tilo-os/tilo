@@ -1,4 +1,5 @@
 use super::*;
+use crate::component::{Bound, Described, Fired, Intent};
 use crate::headless::{FrameHarness, InspectionNode};
 use crate::widget::{Column, Element};
 use std::cell::Cell;
@@ -1137,6 +1138,126 @@ fn a_press_on_the_leading_box_marks_the_row() {
         Some(true),
         "a press on the box a person sees toggles it"
     );
+}
+
+/// A row of the described kind whose leading checkbox is bound to `state`, as a view binds one:
+/// what the person does with the box is reported to `intents` as the row's `check` event.
+fn bound_row(state: &crate::LocalState<bool>, intents: &crate::Intents<Fired>) -> ListRow {
+    let props = ListRowProps {
+        key: "milk".to_owned(),
+        title: "Buy oat milk".to_owned(),
+        checkbox: Some(Bound {
+            state: state.clone(),
+            edits: Some(Intent::new(intents, "milk", "check")),
+            name: "Done".to_owned(),
+            path: Vec::new(),
+        }),
+        ..ListRowProps::default()
+    };
+    <ListRow as Described>::from_props("milk", props)
+}
+
+#[test]
+fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
+    let state = crate::LocalState::new(false);
+    let intents = crate::Intents::<Fired>::default();
+    let row = bound_row(&state, &intents);
+    let mut harness = FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark());
+    harness.poll_frame().expect("the first frame draws");
+    assert_eq!(
+        harness.root::<ListRow>().check_pose.expect("drawn").level,
+        0.0,
+        "it starts unchecked"
+    );
+
+    // The task is checked off somewhere else: another device, an agent, an undo.
+    state.set(true);
+    harness
+        .recompose()
+        .expect("the frame that takes the new value");
+    harness.poll_frame().expect("the frame that shows it");
+    assert_eq!(
+        harness.root::<ListRow>().check_pose.expect("drawn").level,
+        1.0,
+        "a check made elsewhere shows in the row, landed rather than replayed"
+    );
+    let node = Widget::accessibility(harness.root::<ListRow>()).expect("a list item");
+    assert_eq!(
+        node.state.checked,
+        Some(true),
+        "assistive technology reads the check made elsewhere"
+    );
+
+    // And a check taken away elsewhere goes the same way.
+    state.set(false);
+    harness
+        .recompose()
+        .expect("the frame that takes the new value");
+    harness.poll_frame().expect("the frame that shows it");
+    assert_eq!(
+        harness.root::<ListRow>().check_pose.expect("drawn").level,
+        0.0,
+        "a check taken away elsewhere clears the box"
+    );
+    assert!(
+        intents.take().is_empty(),
+        "a value set elsewhere is not the person's edit to report back"
+    );
+}
+
+#[test]
+fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
+    use crate::time::testing::with_monotonic_time;
+    use crate::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let state = crate::LocalState::new(false);
+    let intents = crate::Intents::<Fired>::default();
+    let row = bound_row(&state, &intents);
+    let mut harness = with_monotonic_time(start, || {
+        FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark())
+    });
+    with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
+    assert_eq!(
+        harness.root::<ListRow>().check_pose.expect("drawn").level,
+        0.0,
+        "it starts unchecked"
+    );
+    let [x, y, _, h] = find(&harness.inspection().root, "ListRow")
+        .expect("the row is laid out")
+        .rect;
+    let pressed = start + Duration::from_millis(100);
+    with_monotonic_time(pressed, || harness.click_at(x + 12.0, y + h / 2.0));
+    assert!(state.get(), "the binding took the person's check");
+    let fired = intents.take();
+    assert_eq!(fired.len(), 1, "the check is reported once");
+    assert_eq!(
+        (fired[0].key.as_str(), fired[0].event.as_str()),
+        ("milk", "check"),
+        "as the row's check event"
+    );
+    assert_eq!(fired[0].value, Some(crate::component::Value::Bool(true)));
+
+    let mut levels = Vec::new();
+    for frame in 1..=24_u64 {
+        let at = pressed + Duration::from_millis(frame * 16);
+        with_monotonic_time(at, || harness.poll_frame()).expect("a frame of the fill");
+        levels.push(harness.root::<ListRow>().check_pose.expect("drawn").level);
+    }
+    assert!(
+        levels
+            .iter()
+            .filter(|level| **level > 0.0 && **level < 1.0)
+            .count()
+            >= 3,
+        "the bound box fills over several frames rather than popping: {levels:?}"
+    );
+    assert!(
+        levels.windows(2).all(|pair| pair[1] >= pair[0] - 1e-6),
+        "it approaches the marked state: {levels:?}"
+    );
+    let settled = harness.root::<ListRow>().check_pose.expect("drawn").level;
+    assert!((settled - 1.0).abs() < 1e-3, "it settles marked: {settled}");
 }
 
 #[test]

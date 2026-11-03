@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use tilo_desktop::desktop_host::{
     JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
 };
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{
     DesktopHandle, DesktopNotifications, HostAction, HostActionSource,
@@ -303,7 +303,7 @@ pub(crate) struct DeviceChoice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ToEnter {
     /// The workspace it names.
-    pub(crate) workspace: RoomId,
+    pub(crate) workspace: WorkspaceId,
     /// What the workspace is called.
     pub(crate) name: String,
     /// The device hosting it.
@@ -319,7 +319,7 @@ pub(crate) struct Adoption {
     pub(crate) enter: Vec<ToEnter>,
     /// Workspaces to take off this desk: gone from the list, deleted on
     /// another device, or no longer shown on this one.
-    pub(crate) release: Vec<RoomId>,
+    pub(crate) release: Vec<WorkspaceId>,
 }
 
 /// The person's list of their own workspaces, as this device holds it and
@@ -333,16 +333,16 @@ pub(crate) struct Personal {
     /// This device, as the list's device registers name it.
     device: [u8; 32],
     /// The workspaces this device had at the last reconciliation.
-    agreed: BTreeMap<RoomId, Listed>,
+    agreed: BTreeMap<WorkspaceId, Listed>,
     /// Their order at the last reconciliation.
-    agreed_order: Vec<RoomId>,
+    agreed_order: Vec<WorkspaceId>,
     /// Listed workspaces handed to the desk to open, until their workspace is
     /// here: none of them is taken for one deleted here meanwhile.
-    entering: BTreeSet<RoomId>,
+    entering: BTreeSet<WorkspaceId>,
     /// Workspaces on this desk that are someone else's, joined through their
     /// door: the person's other devices join them each on their own, so the
     /// list never names them.
-    borrowed: BTreeSet<RoomId>,
+    borrowed: BTreeSet<WorkspaceId>,
     /// Set when the list changed without a pass over this desk writing it —
     /// a device shown or kept off — so the person's other devices are owed
     /// the list even though this desk wrote nothing.
@@ -360,9 +360,9 @@ pub(crate) struct Personal {
 /// The parts of a desk [`Personal::publish_local`] reads.
 #[derive(PartialEq, Eq)]
 struct PublishInputs {
-    listed: BTreeMap<RoomId, Listed>,
+    listed: BTreeMap<WorkspaceId, Listed>,
     /// Every workspace of the desk, in its order.
-    order: Vec<RoomId>,
+    order: Vec<WorkspaceId>,
 }
 
 impl PublishInputs {
@@ -375,23 +375,21 @@ impl PublishInputs {
     fn of(
         handle: &DesktopHandle,
         device: [u8; 32],
-        borrowed: &BTreeSet<RoomId>,
-        agreed: &BTreeMap<RoomId, Listed>,
+        borrowed: &BTreeSet<WorkspaceId>,
+        agreed: &BTreeMap<WorkspaceId, Listed>,
     ) -> Self {
         handle.read(|tree| Self {
             listed: tree
                 .workspaces
                 .iter()
-                .filter(|workspace| {
-                    !workspace.room().is_nil() && !borrowed.contains(&workspace.room())
-                })
+                .filter(|workspace| !workspace.id().is_nil() && !borrowed.contains(&workspace.id()))
                 .map(|workspace| {
                     let host = agreed
-                        .get(&workspace.room())
+                        .get(&workspace.id())
                         .and_then(|listed| listed.host)
                         .unwrap_or(device);
                     (
-                        workspace.room(),
+                        workspace.id(),
                         Listed {
                             name: workspace.name.clone(),
                             host: Some(host),
@@ -399,7 +397,7 @@ impl PublishInputs {
                     )
                 })
                 .collect(),
-            order: tree.workspaces.iter().map(Workspace::room).collect(),
+            order: tree.workspaces.iter().map(Workspace::id).collect(),
         })
     }
 }
@@ -416,17 +414,17 @@ struct Stored {
 }
 
 /// The list's stable id for a workspace: its collaboration topic.
-fn entry_id(workspace: RoomId) -> u64 {
+fn entry_id(workspace: WorkspaceId) -> u64 {
     tilo_network_actor::workspace_topic_id(workspace)
 }
 
 /// The list's entries that carry a valid workspace, in the person's order.
-fn entries_of(directory: &WorkspaceDirectory) -> Vec<(RoomId, WorkspaceMeta)> {
-    let mut out: Vec<(RoomId, WorkspaceMeta)> = directory
+fn entries_of(directory: &WorkspaceDirectory) -> Vec<(WorkspaceId, WorkspaceMeta)> {
+    let mut out: Vec<(WorkspaceId, WorkspaceMeta)> = directory
         .list_workspaces()
         .into_iter()
         .filter_map(|entry| {
-            let workspace = RoomId::parse(entry.room.as_deref()?)?;
+            let workspace = WorkspaceId::parse(entry.room.as_deref()?)?;
             (!workspace.is_nil() && entry_id(workspace) == entry.id).then_some((workspace, entry))
         })
         .collect();
@@ -480,17 +478,17 @@ impl Personal {
             personal.agreed = stored
                 .agreed
                 .into_iter()
-                .filter_map(|(workspace, listed)| Some((RoomId::parse(&workspace)?, listed)))
+                .filter_map(|(workspace, listed)| Some((WorkspaceId::parse(&workspace)?, listed)))
                 .collect();
             personal.agreed_order = stored
                 .agreed_order
                 .iter()
-                .filter_map(|workspace| RoomId::parse(workspace))
+                .filter_map(|workspace| WorkspaceId::parse(workspace))
                 .collect();
             personal.borrowed = stored
                 .borrowed
                 .iter()
-                .filter_map(|workspace| RoomId::parse(workspace))
+                .filter_map(|workspace| WorkspaceId::parse(workspace))
                 .collect();
         }
         personal
@@ -499,7 +497,7 @@ impl Personal {
     /// `workspace` arrived from a door: it is the workspace of whoever let the
     /// person in, not one of their own, so their other devices are never told
     /// to open it themselves — each joins it through its own invitation.
-    pub(crate) fn joined(&mut self, workspace: RoomId) {
+    pub(crate) fn joined(&mut self, workspace: WorkspaceId) {
         if workspace.is_nil() || !self.borrowed.insert(workspace) {
             return;
         }
@@ -510,7 +508,7 @@ impl Personal {
     /// The workspaces on this device's desk that are someone else's, joined through
     /// their door: whose workspace they are is their host's governance's to
     /// say, not this person's.
-    pub(crate) fn borrowed(&self) -> &BTreeSet<RoomId> {
+    pub(crate) fn borrowed(&self) -> &BTreeSet<WorkspaceId> {
         &self.borrowed
     }
 
@@ -582,12 +580,12 @@ impl Personal {
         }
         // A workspace agreed on and gone from this desk was taken off it
         // here.
-        let present: BTreeSet<RoomId> = inputs.order.iter().copied().collect();
+        let present: BTreeSet<WorkspaceId> = inputs.order.iter().copied().collect();
         // A listed workspace being entered has no workspace here yet; it was
         // not deleted here.
         self.entering
             .retain(|workspace| !present.contains(workspace));
-        let deleted: Vec<RoomId> = self
+        let deleted: Vec<WorkspaceId> = self
             .agreed
             .keys()
             .filter(|workspace| !present.contains(workspace) && !self.entering.contains(workspace))
@@ -611,13 +609,13 @@ impl Personal {
     /// their order here, when that order moved since the last agreement. Only
     /// entries out of place get a new position, so a concurrent move of
     /// another workspace on another device still lands.
-    fn publish_order(&mut self, order: &[RoomId]) -> bool {
-        let here: Vec<RoomId> = order
+    fn publish_order(&mut self, order: &[WorkspaceId]) -> bool {
+        let here: Vec<WorkspaceId> = order
             .iter()
             .copied()
             .filter(|workspace| self.agreed.contains_key(workspace))
             .collect();
-        let agreed: Vec<RoomId> = self
+        let agreed: Vec<WorkspaceId> = self
             .agreed_order
             .iter()
             .filter(|workspace| self.agreed.contains_key(workspace))
@@ -627,7 +625,7 @@ impl Personal {
             self.agreed_order = here;
             return false;
         }
-        let positions: BTreeMap<RoomId, f64> = entries_of(&self.directory)
+        let positions: BTreeMap<WorkspaceId, f64> = entries_of(&self.directory)
             .into_iter()
             .filter_map(|(workspace, entry)| Some((workspace, entry.order?)))
             .collect();
@@ -676,10 +674,10 @@ impl Personal {
     pub(crate) fn adopt_into(&mut self, handle: &DesktopHandle) -> Adoption {
         let entries = entries_of(&self.directory);
         let mut adoption = Adoption::default();
-        let present: Vec<RoomId> =
-            handle.read(|tree| tree.workspaces.iter().map(Workspace::room).collect());
+        let present: Vec<WorkspaceId> =
+            handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
         let agreed = self.agreed.clone();
-        let mut shown_here: Vec<RoomId> = Vec::new();
+        let mut shown_here: Vec<WorkspaceId> = Vec::new();
         for (workspace, meta) in &entries {
             if !shows_on(meta, &self.device) {
                 if self.agreed.remove(workspace).is_some() && present.contains(workspace) {
@@ -709,8 +707,9 @@ impl Personal {
             self.entering.insert(*workspace);
             self.agreed.insert(*workspace, entry);
         }
-        let named: BTreeSet<RoomId> = entries.iter().map(|(workspace, _)| *workspace).collect();
-        let gone: Vec<RoomId> = self
+        let named: BTreeSet<WorkspaceId> =
+            entries.iter().map(|(workspace, _)| *workspace).collect();
+        let gone: Vec<WorkspaceId> = self
             .agreed
             .keys()
             .filter(|workspace| !named.contains(workspace))
@@ -735,13 +734,18 @@ impl Personal {
 
     /// Put this desk's workspaces in the person's order: the workspaces the list
     /// names, in its order, then the rest as they were. Whether they moved.
-    fn arrange(&mut self, handle: &DesktopHandle, present: &[RoomId], order: &[RoomId]) -> bool {
-        let mut wanted: Vec<RoomId> = order
+    fn arrange(
+        &mut self,
+        handle: &DesktopHandle,
+        present: &[WorkspaceId],
+        order: &[WorkspaceId],
+    ) -> bool {
+        let mut wanted: Vec<WorkspaceId> = order
             .iter()
             .copied()
             .filter(|workspace| present.contains(workspace))
             .collect();
-        let rest: Vec<RoomId> = present
+        let rest: Vec<WorkspaceId> = present
             .iter()
             .copied()
             .filter(|workspace| !wanted.contains(workspace))
@@ -755,7 +759,7 @@ impl Personal {
         self.agreed_order = tree
             .workspaces
             .iter()
-            .map(Workspace::room)
+            .map(Workspace::id)
             .filter(|workspace| self.agreed.contains_key(workspace))
             .collect();
         handle.replace_tree(tree);
@@ -768,7 +772,7 @@ impl Personal {
     ///
     /// Empty for a workspace the person's list does not name: one joined
     /// through someone else's door is not theirs to show or keep off.
-    pub(crate) fn device_choices(&self, workspace: RoomId) -> Vec<DeviceChoice> {
+    pub(crate) fn device_choices(&self, workspace: WorkspaceId) -> Vec<DeviceChoice> {
         let Some(entry) = entries_of(&self.directory)
             .into_iter()
             .find(|(candidate, _)| *candidate == workspace)
@@ -798,7 +802,7 @@ impl Personal {
     }
 
     /// Whether the workspace shows on `device`.
-    pub(crate) fn shown_on(&self, workspace: RoomId, device: &[u8; 32]) -> Option<bool> {
+    pub(crate) fn shown_on(&self, workspace: WorkspaceId, device: &[u8; 32]) -> Option<bool> {
         let entry = entries_of(&self.directory)
             .into_iter()
             .find(|(candidate, _)| *candidate == workspace)
@@ -809,7 +813,12 @@ impl Personal {
     /// Show the workspace on `device`, or keep it off there. Only
     /// the devices that opted out are named, so a device linked later shows
     /// it. Returns whether the list changed.
-    pub(crate) fn set_shown(&mut self, workspace: RoomId, device: [u8; 32], shown: bool) -> bool {
+    pub(crate) fn set_shown(
+        &mut self,
+        workspace: WorkspaceId,
+        device: [u8; 32],
+        shown: bool,
+    ) -> bool {
         // A workspace the list does not name has no entry to keep anything off.
         if !matches!(self.shown_on(workspace, &device), Some(current) if current != shown) {
             return false;
@@ -884,7 +893,7 @@ impl Personal {
 
 /// Put `tree`'s workspaces in the order `wanted` names: those it names, in
 /// its order, then the rest as they were. Whether they moved.
-fn reorder(tree: &mut DesktopTree, wanted: &[RoomId]) -> bool {
+fn reorder(tree: &mut DesktopTree, wanted: &[WorkspaceId]) -> bool {
     let before: Vec<u64> = tree
         .workspaces
         .iter()
@@ -895,7 +904,7 @@ fn reorder(tree: &mut DesktopTree, wanted: &[RoomId]) -> bool {
     for workspace_id in wanted {
         if let Some(at) = rest
             .iter()
-            .position(|workspace| workspace.room() == *workspace_id)
+            .position(|workspace| workspace.id() == *workspace_id)
         {
             arranged.push(rest.remove(at));
         }
@@ -979,7 +988,7 @@ impl crate::Shared {
             {
                 continue;
             }
-            if let Some(owner) = self.owner_of(workspace.room(), &borrowed) {
+            if let Some(owner) = self.owner_of(workspace.id(), &borrowed) {
                 workspace.set_owner(owner);
                 changed = true;
             }
@@ -994,7 +1003,7 @@ impl crate::Shared {
     /// this device holds it, else the person at this device for a workspace of
     /// their own that no governance here has yet. `None` for one joined through
     /// a door whose host has not said whose it is here.
-    fn owner_of(&self, workspace: RoomId, borrowed: &BTreeSet<RoomId>) -> Option<String> {
+    fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
         if let Some(engine) = &self.engine
             && let Ok(owner) = engine.owner_of(&workspace.to_string())
         {
@@ -1027,7 +1036,7 @@ impl crate::Shared {
         // the person's other devices join it each through their own
         // invitation, so their list never names it.
         if let (Some(personal), Some(workspace)) =
-            (&self.personal, RoomId::parse(&joined.workspace_id))
+            (&self.personal, WorkspaceId::parse(&joined.workspace_id))
         {
             personal.borrow_mut().joined(workspace);
         }
@@ -1041,7 +1050,7 @@ impl crate::Shared {
     /// plane,
     /// shows the workspace with what this computer itself keeps in it.
     fn redeem_invitation(&self, joined: &directory::Joined) {
-        let Some(workspace) = RoomId::parse(&joined.workspace_id) else {
+        let Some(workspace) = WorkspaceId::parse(&joined.workspace_id) else {
             return;
         };
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
@@ -1080,7 +1089,7 @@ impl crate::Shared {
                 .read(|tree| {
                     tree.workspaces
                         .iter()
-                        .find(|workspace| workspace.room() == enrolled.workspace_id)
+                        .find(|workspace| workspace.id() == enrolled.workspace_id)
                         .map(|workspace| workspace.name.clone())
                 })
                 .unwrap_or_else(|| key.clone());
@@ -1177,11 +1186,11 @@ impl crate::Shared {
 
     /// Take a workspace off this desk through the desk's own
     /// action, which refuses to leave the person with none.
-    fn release_workspace(&self, workspace: RoomId) {
+    fn release_workspace(&self, workspace: WorkspaceId) {
         let Some(id) = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .find(|candidate| candidate.room() == workspace)
+                .find(|candidate| candidate.id() == workspace)
                 .map(|workspace| workspace.slot.0.to_string())
         }) else {
             return;
@@ -1248,18 +1257,18 @@ mod tests {
     }
 
     /// The workspaces on `handle`'s desk: their id and name, in order.
-    fn on_desk(handle: &DesktopHandle) -> Vec<(RoomId, String)> {
+    fn on_desk(handle: &DesktopHandle) -> Vec<(WorkspaceId, String)> {
         handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .map(|workspace| (workspace.room(), workspace.name.clone()))
+                .map(|workspace| (workspace.id(), workspace.name.clone()))
                 .collect()
         })
     }
 
     /// Put the workspace `workspace` on `handle`'s desk, as the desk's own action
     /// for making one does.
-    fn open_here(handle: &DesktopHandle, workspace: RoomId, name: &str) {
+    fn open_here(handle: &DesktopHandle, workspace: WorkspaceId, name: &str) {
         let mut tree = handle.read(Clone::clone);
         tree.workspaces.push(Workspace::in_workspace(
             WorkspaceSlot::of_workspace(workspace),
@@ -1270,7 +1279,7 @@ mod tests {
     }
 
     /// The list's entry for the workspace `workspace`, if it names one.
-    fn listed(personal: &Personal, workspace: RoomId) -> Option<Listed> {
+    fn listed(personal: &Personal, workspace: WorkspaceId) -> Option<Listed> {
         entries_of(&personal.directory)
             .into_iter()
             .find(|(named, _)| *named == workspace)
@@ -1392,7 +1401,8 @@ mod tests {
             panic!("a fresh desk holds one workspace");
         };
         let own_id = *own_id;
-        let joined = RoomId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
+        let joined =
+            WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
         open_here(&desk, joined, "Book club");
         let mut personal = open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
         personal.joined(joined);
@@ -1410,15 +1420,15 @@ mod tests {
         let state = tempfile::tempdir().expect("a state directory");
         let desk = desk();
         let identity = identity(0x11, 0x21, "The laptop");
-        let other = RoomId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
+        let other =
+            WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
         open_here(&desk, other, "Book club");
         let mut personal = open(identity.clone(), Some(state.path()));
         personal.publish_local(&desk);
         assert!(listed(&personal, other).is_some(), "both are listed");
 
         let mut tree = desk.read(Clone::clone);
-        tree.workspaces
-            .retain(|workspace| workspace.room() != other);
+        tree.workspaces.retain(|workspace| workspace.id() != other);
         desk.replace_tree(tree);
         assert!(personal.publish_local(&desk), "the list changed here");
         assert_eq!(
@@ -1438,7 +1448,8 @@ mod tests {
         let a = desk();
         let a_identity = identity(0x11, 0x21, "The laptop");
         let mut a_list = open(a_identity.clone(), Some(a_state.path()));
-        let other = RoomId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
+        let other =
+            WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
         open_here(&a, other, "Book club");
         a_list.publish_local(&a);
 
@@ -1463,8 +1474,7 @@ mod tests {
 
         // Taken off the other device's desk, the list no longer names it.
         let mut tree = a.read(Clone::clone);
-        tree.workspaces
-            .retain(|workspace| workspace.room() != other);
+        tree.workspaces.retain(|workspace| workspace.id() != other);
         a.replace_tree(tree);
         a_list.publish_local(&a);
         b_list
@@ -1566,7 +1576,7 @@ mod tests {
             "a workspace kept off this device is taken off its desk"
         );
         let mut tree = b.read(Clone::clone);
-        tree.workspaces.retain(|workspace| workspace.room() != a_id);
+        tree.workspaces.retain(|workspace| workspace.id() != a_id);
         b.replace_tree(tree);
         assert!(
             b_list.adopt_into(&b).enter.is_empty(),

@@ -27,7 +27,7 @@ struct Readers {
 
 impl TileSource for Readers {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let definition = crate::definition();
         let records = self
             .owners

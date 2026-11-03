@@ -4,7 +4,10 @@
 //! asks the one privileged helper (`tilo-unlock-helper`), the user name on
 //! its command line and the password on its standard input (never on the
 //! command line, where `/proc/*/cmdline` would show it), and reads the
-//! verdict from its exit status. With no helper installed nothing unlocks.
+//! verdict from its exit status. Where the helper is not installed, the login
+//! that started this session is checked the way it was admitted: greetd's own
+//! PAM conversation, at the socket it left behind. With neither, nothing
+//! unlocks.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -107,6 +110,39 @@ impl PasswordVerifier for HelperVerifier {
     }
 }
 
+/// The login's own check: greetd's PAM conversation at its socket, the one
+/// the login was admitted through, stopped before any session starts.
+#[derive(Debug, Clone)]
+pub struct GreetdVerifier {
+    socket: String,
+}
+
+impl GreetdVerifier {
+    #[must_use]
+    pub fn new(socket: impl Into<String>) -> Self {
+        Self {
+            socket: socket.into(),
+        }
+    }
+}
+
+impl PasswordVerifier for GreetdVerifier {
+    fn verify(&self, user: &str, password: &str) -> Verdict {
+        use greetd_client::{AuthError, Denial};
+        match greetd_client::verify_password(&self.socket, user, password) {
+            Ok(()) => Verdict::Unlocks,
+            // PAM refused this password: the person may try again.
+            Err(AuthError::Denied {
+                reason: Denial::Credentials,
+                ..
+            }) => Verdict::Wrong,
+            // The socket is gone, the account is locked, or greetd cannot be
+            // talked to: the check could not be made, and the lock stays.
+            Err(_) => Verdict::Unavailable,
+        }
+    }
+}
+
 /// Nothing can check a password here: nothing unlocks.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Unavailable;
@@ -166,17 +202,50 @@ fn user_name(uid: u32) -> Option<String> {
     Some(name.to_string_lossy().into_owned())
 }
 
-/// The verifier of this machine: the helper a development build names, else the installed
-/// one, else none.
+/// What [`installed`] picked to check a password with, named so the choice
+/// can be asserted on without taking a verifier apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Choice {
+    /// The privileged helper at these arguments: its program, then its own.
+    Helper(Vec<String>),
+    /// greetd's PAM conversation at this socket, for the login that started
+    /// the session.
+    Greetd(String),
+    /// Nothing here can check a password.
+    Unavailable,
+}
+
+/// The selection policy, as a pure function of what the machine has: the
+/// helper a build names or the installed helper, which check against the
+/// machine's own accounts; else the login's greetd socket, which checked the
+/// password the login took; else nothing. A socket named empty is none.
+#[must_use]
+pub fn select(helper: Option<Vec<String>>, greetd_socket: Option<String>) -> Choice {
+    if let Some(program) = helper {
+        return Choice::Helper(program);
+    }
+    match greetd_socket {
+        Some(socket) if !socket.trim().is_empty() => Choice::Greetd(socket),
+        _ => Choice::Unavailable,
+    }
+}
+
+/// The verifier of this machine: the helper a development build names or the
+/// installed one, else the greetd conversation of the login that started this
+/// session, else none.
 #[must_use]
 pub fn installed() -> std::sync::Arc<dyn PasswordVerifier> {
-    match helper_program(
-        OVERRIDABLE,
-        std::env::var_os(UNLOCK_HELPER_ENV),
-        Path::new(UNLOCK_HELPER).is_file(),
+    match select(
+        helper_program(
+            OVERRIDABLE,
+            std::env::var_os(UNLOCK_HELPER_ENV),
+            Path::new(UNLOCK_HELPER).is_file(),
+        ),
+        std::env::var("GREETD_SOCK").ok(),
     ) {
-        Some(program) => std::sync::Arc::new(HelperVerifier::new(program)),
-        None => std::sync::Arc::new(Unavailable),
+        Choice::Helper(program) => std::sync::Arc::new(HelperVerifier::new(program)),
+        Choice::Greetd(socket) => std::sync::Arc::new(GreetdVerifier::new(socket)),
+        Choice::Unavailable => std::sync::Arc::new(Unavailable),
     }
 }
 
@@ -268,11 +337,56 @@ mod tests {
         assert!(
             !HelperVerifier::new(vec!["/nonexistent/tilo-unlock-helper".to_owned()]).available()
         );
+        let expected = !matches!(
+            select(
+                helper_program(
+                    OVERRIDABLE,
+                    std::env::var_os(UNLOCK_HELPER_ENV),
+                    Path::new(UNLOCK_HELPER).is_file()
+                ),
+                std::env::var("GREETD_SOCK").ok()
+            ),
+            Choice::Unavailable
+        );
         assert_eq!(
             installed().available(),
-            Path::new(UNLOCK_HELPER).is_file(),
-            "the installed helper is the one place a password is checked"
+            expected,
+            "the helper, or the login's greetd, is what checks a password"
         );
+    }
+
+    /// The helper checks against the machine's accounts; where it is not
+    /// installed, the login's own greetd conversation is the fallback, and
+    /// with neither the lock can never be lifted.
+    #[test]
+    fn the_helper_else_the_logins_greetd_else_nothing() {
+        assert_eq!(
+            select(
+                Some(vec![UNLOCK_HELPER.to_owned()]),
+                Some("/run/greetd.sock".to_owned())
+            ),
+            Choice::Helper(vec![UNLOCK_HELPER.to_owned()]),
+            "the installed helper is what checks a password on this machine"
+        );
+        assert_eq!(
+            select(None, Some("/run/greetd.sock".to_owned())),
+            Choice::Greetd("/run/greetd.sock".to_owned()),
+            "a login's greetd conversation is the fallback"
+        );
+        assert_eq!(select(None, None), Choice::Unavailable);
+        assert_eq!(
+            select(None, Some("  ".to_owned())),
+            Choice::Unavailable,
+            "an empty name is no socket"
+        );
+    }
+
+    /// A greetd socket that is not there checks nothing: the lock stays, and
+    /// says the check could not be made.
+    #[test]
+    fn a_greetd_conversation_that_cannot_be_reached_locks_out() {
+        let verifier = GreetdVerifier::new("/nonexistent/greetd.sock");
+        assert_eq!(verifier.verify("ada", "sesame"), Verdict::Unavailable);
     }
 
     /// A development build may name the helper that checks a password, and a production

@@ -201,7 +201,7 @@ fn ask_supervisor(
     expiry: Expiry,
     patience: Duration,
 ) -> std::io::Result<bool> {
-    let stream = UnixStream::connect(socket)?;
+    let stream = tilo_files::native::socket::connect(socket)?;
     stream.set_read_timeout(Some(patience))?;
     let mut line = serde_json::to_vec(&serde_json::json!({
         "op": "allow-host",

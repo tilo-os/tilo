@@ -3,7 +3,7 @@
 //! receiver ([`crate::workspace::effect_slices_kept`]). A device keeps
 //! its newest receipts' commit receipts hot and archives the rest to a cold
 //! history it anchors in its slice.
-use crate::owner::{NativeWorkspaceOwner, RoomId};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -189,7 +189,7 @@ impl NativeWorkspaceOwner {
     ) -> Result<OwnerCommitReceipt, String> {
         let effect = decode(request)?;
         let binding = request.binding()?;
-        let workspace = RoomId::parse(&request.workspace).ok_or("invalid effect workspace")?;
+        let workspace = WorkspaceId::parse(&request.workspace).ok_or("invalid effect workspace")?;
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         let device = candidate.device().clone();

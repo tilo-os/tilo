@@ -91,7 +91,7 @@ struct Source {
 }
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let workspace = workspace.room().to_string();
+        let workspace = workspace.id().to_string();
         let signal = Signal::default();
         self.signals.borrow_mut().insert(tab.id, signal.clone());
         NEXT.with_borrow_mut(|slot| *slot = Some(signal));

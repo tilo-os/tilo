@@ -183,7 +183,7 @@ const MENTION_SCAN: usize = 64;
 impl Core {
     /// `delivery(r)` of the document `doc`: how its last outside effect stands, as the host
     /// last said; a view that read it runs again when that moves.
-    fn delivery_of(&self, doc: &str) -> HResult<Value> {
+    fn delivery_of(&self, doc: &str) -> Value {
         let key = delivery_key(doc);
         let (value, generation) = {
             let states = self.view_states.borrow();
@@ -195,8 +195,8 @@ impl Core {
                 states.generation(&key),
             )
         };
-        self.note_state_read(key, generation, &value)?;
-        Ok(value)
+        self.note_state_read(key, generation, &value);
+        value
     }
 
     /// `dated(text, at)`: when `text` says something is due, read at the time `at` in the
@@ -234,7 +234,7 @@ impl Core {
             }
             Imp::Delivery => {
                 let target = self.ref_arg(a.h(0)?)?;
-                let value = self.delivery_of(&target.target.doc)?;
+                let value = self.delivery_of(&target.target.doc);
                 self.ret_h(value)
             }
             Imp::Lenses => {
@@ -247,7 +247,7 @@ impl Core {
                         states.generation(&key),
                     )
                 };
-                self.note_state_read(key, generation, &value)?;
+                self.note_state_read(key, generation, &value);
                 self.ret_h(value)
             }
             Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen | Imp::Steps => {
@@ -264,8 +264,8 @@ impl Core {
                 let count = self
                     .mentions_of(&person, &coll.target, &field, &item)
                     .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(&coll.target)?;
-                self.note_seen_read(&person, &coll.target.id_string())?;
+                self.read_versions_of(&coll.target);
+                self.note_seen_read(&person, &coll.target.id_string());
                 crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
             }
             Imp::FirstUnseen => {
@@ -282,8 +282,8 @@ impl Core {
                 // The view read what the answer is made of: `c`'s own versions (which move when
                 // an item is posted) and the person's seen mark and reviewed runs (which move
                 // when they read on).
-                self.read_versions_of(&coll.target)?;
-                self.note_seen_read(&person, &coll.target.id_string())?;
+                self.read_versions_of(&coll.target);
+                self.note_seen_read(&person, &coll.target.id_string());
                 let value = found.map_or_else(Value::none, |id| {
                     let at = coll.target.item(&id, item);
                     Value::some(Value::resource(&at))
@@ -559,7 +559,7 @@ impl Core {
             Imp::VersionEnd => {
                 let last = a.h(1)? != 0;
                 let end = self.store.borrow().version_end(at, last).map_err(trapped)?;
-                self.read_versions_of(at)?;
+                self.read_versions_of(at);
                 match end {
                     Some(v) => Value::some(self.version_value(v, at)?),
                     None => Value::none(),
@@ -577,7 +577,7 @@ impl Core {
             }
             Imp::Steps => {
                 let versions = self.store.borrow().versions(at).map_err(trapped)?;
-                self.read_versions_of(at)?;
+                self.read_versions_of(at);
                 let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
                 for v in versions {
                     match steps.last_mut() {
@@ -619,7 +619,7 @@ impl Core {
             }
             _ => {
                 let versions = self.store.borrow().versions(at).map_err(trapped)?;
-                self.read_versions_of(at)?;
+                self.read_versions_of(at);
                 Value::List(
                     versions
                         .into_iter()
@@ -662,7 +662,7 @@ impl Core {
                 Err(error) => return trap(error.to_string()),
             };
             let at = ResourceRef { ty, ..at };
-            self.read_versions_of(&at)?;
+            self.read_versions_of(&at);
             list.push(self.version_value(v, &at)?);
         }
         Ok(Value::List(list))
@@ -672,7 +672,7 @@ impl Core {
     /// code no one is looking through (a function an agent's query runs).
     pub(crate) fn looking_now(&self) -> Option<String> {
         let frames = self.frames.borrow();
-        let top = frames.top().ok()?;
+        let top = frames.deciding()?;
         match &top.kind {
             FrameKind::View(_) | FrameKind::Action(_) => {
                 drop(frames);
@@ -685,7 +685,10 @@ impl Core {
     /// Who is looking: the person a view shows to, or the invoker of the action running.
     pub(crate) fn looking(&self) -> HResult<String> {
         let frames = self.frames.borrow();
-        Ok(match &frames.top()?.kind {
+        let Some(frame) = frames.deciding() else {
+            return trap("unseen: only a view or an action has someone looking");
+        };
+        Ok(match &frame.kind {
             FrameKind::View(view) => view.viewer.0.clone(),
             FrameKind::Action(state) => state
                 .acting_as
@@ -957,9 +960,9 @@ impl Core {
                     states.generation(&key),
                 )
             };
-            self.note_state_read(key, generation, &value)?;
+            self.note_state_read(key, generation, &value);
         }
-        self.read_versions_of(at)?;
+        self.read_versions_of(at);
         self.unseen_of(person, at)
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))
     }
@@ -1064,18 +1067,17 @@ impl Core {
 
     /// Record, in a view's frame, that it read the versions of `target`: it runs again when any
     /// field of the resource changes, which is a new version.
-    pub(crate) fn read_versions_of(&self, target: &crate::value::ResourceRef) -> HResult<()> {
+    pub(crate) fn read_versions_of(&self, target: &crate::value::ResourceRef) {
         let id = target.id_string();
         let fields: Vec<String> = self
             .type_of_ref(&target.ty)
             .map(|(_, info)| info.fields.iter().map(|f| f.id.clone()).collect())
             .unwrap_or_default();
-        if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
             for field in fields {
                 vs.reads.push((id.clone(), field));
             }
         }
-        Ok(())
     }
 
     /// What an action is called where history names it: its label, or what the host did.
@@ -1092,23 +1094,17 @@ impl Core {
     }
 
     /// Take a view state slot read into the running view's reads, when a view runs.
-    pub(crate) fn note_state_read(
-        &self,
-        key: StateKey,
-        generation: u64,
-        seen: &Value,
-    ) -> HResult<()> {
+    pub(crate) fn note_state_read(&self, key: StateKey, generation: u64, seen: &Value) {
         let mut frames = self.frames.borrow_mut();
-        if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
+        if let Some(vs) = frames.view_mut() {
             vs.state_reads.push((key.clone(), generation));
             vs.state_seen.push((key, seen.clone()));
         }
-        Ok(())
     }
 
     /// Record, in a view's frame, that it read `person`'s seen mark of `resource`: it runs
     /// again when the mark moves.
-    pub(crate) fn note_seen_read(&self, person: &str, resource: &str) -> HResult<()> {
+    pub(crate) fn note_seen_read(&self, person: &str, resource: &str) {
         let key = crate::seen::seen_key(person, resource);
         let (generation, value) = {
             let states = self.view_states.borrow();
@@ -1117,33 +1113,28 @@ impl Core {
                 states.get(&key).cloned().unwrap_or_else(Value::none),
             )
         };
-        self.note_state_read(key, generation, &value)
+        self.note_state_read(key, generation, &value);
     }
 
     /// Take `(resource, field)` reads into the running view's reads, when a view runs.
-    pub(crate) fn note_reads(
-        &self,
-        reads: impl IntoIterator<Item = (String, String)>,
-    ) -> HResult<()> {
+    pub(crate) fn note_reads(&self, reads: impl IntoIterator<Item = (String, String)>) {
         let mut frames = self.frames.borrow_mut();
-        if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
+        if let Some(vs) = frames.view_mut() {
             vs.reads.extend(reads);
         }
-        Ok(())
     }
 
     /// Record, in a view's frame, that what it read of the time reads differently at
     /// `changes_at` (seconds since 1970, UTC): it runs again then. Outside a view nothing
     /// follows the time: an action reads one time throughout.
-    pub(crate) fn note_time(&self, changes_at: Option<i64>) -> HResult<()> {
+    pub(crate) fn note_time(&self, changes_at: Option<i64>) {
         if changes_at.is_none() {
-            return Ok(());
+            return;
         }
         let mut frames = self.frames.borrow_mut();
-        if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
+        if let Some(vs) = frames.view_mut() {
             vs.changes_at = crate::render::earliest(vs.changes_at, changes_at);
         }
-        Ok(())
     }
 
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
@@ -1204,7 +1195,7 @@ impl Core {
         let titled = role("title").map(|field| (field, false));
         if let Some((field, body)) = titled.or_else(|| role("body").map(|field| (field, true))) {
             let (_, info) = self.lookup_field(target, &field.id)?;
-            self.note_reads([(target.id_string(), field.id.clone())])?;
+            self.note_reads([(target.id_string(), field.id.clone())]);
             let value = self.read_value(target, &info, None)?;
             let text = match value {
                 Value::Text(text) if body => text
@@ -1213,7 +1204,7 @@ impl Core {
                     .unwrap_or_default()
                     .to_owned(),
                 Value::Text(text) => text,
-                Value::Rich(rich) => self.read_rich(&rich, true)?,
+                Value::Rich(rich) => self.read_rich(&rich, true),
                 _ => String::new(),
             };
             if !text.trim().is_empty() {
@@ -1234,8 +1225,12 @@ impl Core {
         let target = &subject.target;
         let packages = self.registry.borrow().packages();
         let mut out = Vec::new();
-        // The subject's own.
-        let found = self.registry.borrow().type_info(&target.ty);
+        // The subject's own. Another app's resource names its type as `app#Type`, which
+        // resolves to the id its package declares before the package is looked up.
+        let found = self.registry.borrow().type_id(&target.ty).and_then(|id| {
+            let registry = self.registry.borrow();
+            registry.type_info(&id)
+        });
         if let Some((pkg, info)) = found {
             let mut own: Vec<&ActionMeta> = pkg
                 .meta
@@ -1387,8 +1382,8 @@ impl Core {
     fn present(&self, view: &str, subject: &RefValue) -> HResult<Option<crate::view::UiNode>> {
         let (space, window, viewer, depth) = {
             let frames = self.frames.borrow();
-            match &frames.top()?.kind {
-                FrameKind::View(vs) => (vs.space, vs.window.clone(), vs.viewer.clone(), 1),
+            match frames.deciding().map(|f| &f.kind) {
+                Some(FrameKind::View(vs)) => (vs.space, vs.window.clone(), vs.viewer.clone(), 1),
                 _ => (
                     crate::space::Space::default(),
                     String::new(),
@@ -1407,11 +1402,11 @@ impl Core {
         let rendered = self
             .render_at(&target, &[Value::Ref(subject.clone())], offer, None)
             .map_err(|e| e.to_string())?;
-        self.note_reads(rendered.reads.iter().cloned())?;
-        self.note_time(rendered.changes_at)?;
+        self.note_reads(rendered.reads.iter().cloned());
+        self.note_time(rendered.changes_at);
         {
             let mut frames = self.frames.borrow_mut();
-            if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
+            if let Some(vs) = frames.view_mut() {
                 vs.state_reads.extend(rendered.state_reads.iter().cloned());
                 vs.state_seen.extend(rendered.state_seen.iter().cloned());
                 vs.space_reads.extend(rendered.space_reads.iter().cloned());

@@ -25,7 +25,7 @@ impl Shared {
                 .workspaces
                 .iter()
                 .map(|workspace| {
-                    let workspace_id = workspace.room().to_string();
+                    let workspace_id = workspace.id().to_string();
                     let here_person = |person: &tilo_desktop_model::Collaborator| PersonHere {
                         id: person.id.clone(),
                         name: person.name.clone(),

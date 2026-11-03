@@ -524,7 +524,7 @@ mod tests {
             },
             RoomEvent::PreAdmitRefused {
                 token_sha256: "ab".repeat(32),
-                reason: "the room takes people by invitation only".into(),
+                reason: "the workspace takes people by invitation only".into(),
                 removed: false,
                 invite_only: true,
             },

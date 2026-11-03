@@ -293,7 +293,7 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
         .handle()
         .read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
         })
         .expect("the session is in a workspace");
 

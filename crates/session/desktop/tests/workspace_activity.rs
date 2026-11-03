@@ -9,7 +9,7 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
 fn workspace_activity_review_keeps_live_heads() {
     let workspace = Workspace::new(WorkspaceSlot(1), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
+    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
         .unwrap();
     doc.put(ROOT, "name", "Design").unwrap();
     doc.commit();
@@ -49,7 +49,7 @@ fn workspace_activity_names_workspace_events_and_leaves_bookkeeping_out() {
     let stamp = |doc: &mut AutoCommit, at: i64| {
         doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
     };
-    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
+    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
         .unwrap();
     doc.put(ROOT, "name", "Reading group").unwrap();
     doc.put(ROOT, "owner", "You").unwrap();
@@ -181,7 +181,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
     assert!(
         descriptors
             .iter()
-            .any(|d| d.id == format!("workspace.select.{}", tree.room_of(slot).unwrap()))
+            .any(|d| d.id == format!("workspace.select.{}", tree.id_of(slot).unwrap()))
     );
     assert!(
         workspace_view_descriptors(&tree, false)
@@ -196,7 +196,7 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceSlot(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
+    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
         .unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
@@ -267,7 +267,7 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceSlot(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
+    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
         .unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
@@ -349,7 +349,7 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceSlot(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
+    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
         .unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
@@ -402,13 +402,13 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     let stamp = |doc: &mut AutoCommit, at: i64| {
         doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
     };
-    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.room().to_string())
+    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
         .unwrap();
     stamp(&mut doc, 0);
     doc.put(ROOT, "name", "Planning").unwrap();
     // Then a device lays the workspace out in its layout record, a window at
     // a time.
-    let mut layout = Workspace::in_workspace(workspace.slot, workspace.room(), "Planning");
+    let mut layout = Workspace::in_workspace(workspace.slot, workspace.id(), "Planning");
     let mut strip = Strip::new(StripId::from((1 << 48) | 3), "Planning");
     for (at, group, tab, title) in [
         (1, (1 << 48) | 1, (1 << 48) | 2, "Notes"),
@@ -434,7 +434,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
         layout.strips = vec![strip.clone()];
         device::write(
             &mut doc,
-            workspace.room(),
+            workspace.id(),
             &layout,
             &device::Writer {
                 person: Some("ada"),

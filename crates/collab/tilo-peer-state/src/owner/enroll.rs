@@ -375,7 +375,7 @@ pub async fn renew_membership(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    workspace: crate::owner::RoomId,
+    workspace: crate::owner::WorkspaceId,
 ) -> Result<bool, String> {
     let (topic, hint, held) = owner.with_current(workspace, |view| {
         Ok((

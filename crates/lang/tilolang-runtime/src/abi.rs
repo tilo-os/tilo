@@ -121,6 +121,7 @@ imports! {
     (ActRef, "act_ref", "ii", "i"),
     (Invoke, "invoke", "i", "i"),
     (TryInvoke, "try_invoke", "i", "i"),
+    (CallFn, "call_fn", "ii", "i"),
     (IsError, "is_error", "i", "i"),
     (Outside, "outside", "ii", "i"),
     (OutsideAt, "outside_at", "iii", "i"),

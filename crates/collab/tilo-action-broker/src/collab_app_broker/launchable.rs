@@ -628,7 +628,7 @@ mod tests {
     fn broker_with_fanout(
         workspace: &Workspace,
     ) -> (Arc<AppBrokerState>, String, Arc<FanoutState>) {
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace.clone());
         let tree = tree.shared();
@@ -689,7 +689,7 @@ mod tests {
                     .lock()
                     .expect("subscribers")
                     .insert(peer_id, tx);
-                let mut up = surface(peer_id, &workspace.room().to_string());
+                let mut up = surface(peer_id, &workspace.id().to_string());
                 if let Some(record) = record {
                     up.route.record_id = record.to_owned();
                 }
@@ -896,7 +896,7 @@ mod tests {
     #[test]
     fn an_apps_launch_takes_the_person_there_only_when_their_press_is_behind_it() {
         let workspace = workspace();
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let tree = tree.shared();
@@ -1680,7 +1680,7 @@ mod tests {
                     .lock()
                     .expect("subscribers")
                     .insert(8, tx);
-                let mut up = surface(8, &workspace.room().to_string());
+                let mut up = surface(8, &workspace.id().to_string());
                 up.actions
                     .push(action(open, tilo_actions::ConfirmationPolicy::None));
                 state.surfaces.lock().expect("surfaces").insert(8, up);
@@ -1849,7 +1849,7 @@ mod tests {
     /// app never publishes.
     fn broker_with_installed_files(workspace: &Workspace) -> (Arc<AppBrokerState>, String) {
         use tilo_app_package::manifest::OfferKind;
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace.clone());
         let tree = tree.shared();

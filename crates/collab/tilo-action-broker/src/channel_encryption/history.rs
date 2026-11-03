@@ -1,6 +1,6 @@
 //! Maintaining a sealed record's history: opening any of its writes, and
 //! sealing the checkpoint that replaces the ones it covers.
-use super::{ChannelAccess, ChannelKeyAccess, EncryptionMetadata, RoomId, SignedOp};
+use super::{ChannelAccess, ChannelKeyAccess, EncryptionMetadata, SignedOp, WorkspaceId};
 
 impl ChannelKeyAccess {
     /// Open `envelope`, a write of a sealed record's history (a compaction
@@ -14,7 +14,7 @@ impl ChannelKeyAccess {
     /// This read never creates a channel, requests access or rejoins a group.
     pub fn open_history_write(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         envelope: &SignedOp,
     ) -> Result<Vec<u8>, String> {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
@@ -39,7 +39,7 @@ impl ChannelKeyAccess {
     /// This device holds no current key for the record's channel.
     pub fn seal_checkpoint(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         app: &str,
         record: &str,
         cleartext: &[u8],

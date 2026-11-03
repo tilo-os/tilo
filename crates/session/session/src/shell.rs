@@ -431,6 +431,42 @@ impl Shell {
         self.link.has_asks()
     }
 
+    /// The shell's own record (`root shell: Shell`, `root viewing: Viewing`, `root
+    /// arrangement: Arrangement`), as the shell's parts keep it: the document every part
+    /// commits into and draws from, shared by them. It exists as soon as the shell does, before
+    /// any display's part is made.
+    pub(crate) fn records(&self) -> Rc<RefCell<tilo_resource::Doc>> {
+        Rc::clone(&self.record)
+    }
+
+    /// The shell's package as the session runs it, its compiled module and description: what
+    /// its records are published by, the way an app's are.
+    pub(crate) fn package(&self) -> Option<tilolang_tilo::tilolang::Compiled> {
+        self.packages.last().cloned()
+    }
+
+    /// Publish the shell's own records with the apps' records `services` keeps: the package is
+    /// loaded over the document its parts draw from, so a REPL or an agent reads and changes the
+    /// shell's records by its app, as it does Notes'. The session runs the shell itself, and its
+    /// records are the person's, synced with their devices, as an app's are.
+    pub(crate) fn share_records(
+        &self,
+        services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+    ) {
+        let Some(compiled) = self.package() else {
+            return;
+        };
+        let records = self.records();
+        let taken = services.borrow_mut().share(&tilo_service::Share {
+            app: &compiled.meta.app,
+            wasm: &compiled.wasm,
+            records: &records,
+        });
+        if let Err(error) = taken {
+            tracing::error!(%error, "the shell's records are not published");
+        }
+    }
+
     /// Run what the shell asked through `invoke` (the session's door).
     ///
     /// The shell's calls of the session's actions (`session.close_place(place: 3)`) reach the
@@ -994,7 +1030,7 @@ impl crate::Session {
         let search = &self.shared.search;
         let workspace = self.shared.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
                 .unwrap_or_default()
         });
         let resources = doors.resources();

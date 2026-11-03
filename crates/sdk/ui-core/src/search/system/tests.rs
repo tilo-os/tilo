@@ -170,26 +170,21 @@ fn groups_share_the_budget_and_an_expanded_group_keeps_every_row() {
 #[test]
 fn application_identity_and_metadata_share_native_match_bands() {
     let index = crate::search::ListIndex::default();
-    let score = |query: &str, name, id, category, description| {
-        index.ranks(query, [application_fields(name, id, category, description)])[0]
-            .map(provider_score)
+    let score = |query: &str, name, id, category| {
+        index.ranks(query, [application_fields(name, id, category)])[0].map(provider_score)
     };
     // The id's last segment names exactly one app and ranks as its name.
     assert_eq!(
-        score("hex-editor", "hex editor", "so.tilo.hex-editor", None, None),
+        score("hex-editor", "hex editor", "so.tilo.hex-editor", None),
         Some(100)
     );
-    // A multi-word query may span metadata fields, below a name match.
-    let spanning = score(
-        "office spreadsheet",
-        "sheets",
-        "so.tilo.sheets",
-        Some("office"),
-        Some("spreadsheet editor"),
-    );
-    assert!(spanning.is_some_and(|score| score < 100), "{spanning:?}");
+    // The kind an app is of names it too, below its own name.
     assert_eq!(
-        score("missing", "calculator", "so.tilo.calculator", None, None),
+        score("office", "notes", "so.tilo.notes", Some("office")),
+        Some(34)
+    );
+    assert_eq!(
+        score("missing", "calculator", "so.tilo.calculator", None),
         None
     );
 }
