@@ -21,14 +21,15 @@
 //! Nothing is polled hard: storage is one `statvfs` per filesystem every two
 //! minutes (every twenty seconds while one of them is low), the codecs are a
 //! watch on the helper's status file, the crash records are read once at
-//! start, the update state once the desktop has settled and then hourly, and
-//! the graphics fallback is a read of what the renderers recorded, once per
-//! pass of the session's loop.
+//! start, and the graphics fallback is a read of what the renderers recorded,
+//! once per pass of the session's loop. The one about an update waiting for a
+//! restart is raised by the clock that finishes the update
+//! ([`crate::update_finish`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use settings_store::system_sounds::SystemSoundEvent;
 use tilo_desktop_surface::DesktopNotifications;
@@ -37,7 +38,7 @@ use tilo_desktop_surface::notifications::{
 };
 use tilo_files::native::ChangeWatch;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
-use tilo_notifications_service::{Notification, Notifications, Taken};
+use tilo_notifications_service::{Notification, Notifications};
 use tilo_system_service::update;
 use ui::format::NaiveDate;
 
@@ -47,7 +48,7 @@ use crate::mount::drives::Medium;
 
 /// The action the update notice offers: restart the machine into the staged
 /// update.
-pub const RESTART_ACTION: &str = "restart-to-update";
+pub const RESTART_ACTION: &str = update::RESTART_TO_UPDATE;
 
 /// The action a plugged-in drive's notice offers: open it in Files on its
 /// mount point.
@@ -56,16 +57,6 @@ pub const OPEN_MEDIUM_ACTION: &str = "open-medium";
 /// The action a plugged-in drive's notice offers: eject it, so it can be
 /// pulled out.
 pub const EJECT_MEDIUM_ACTION: &str = "eject-medium";
-
-/// The shortest time between two notices that an update waits for a restart.
-/// They batch instead of interrupting the person every day.
-pub const ASK_INTERVAL: Duration = Duration::from_secs(2 * 24 * 60 * 60);
-
-/// When the session first looks for a staged update: once it has settled.
-const FIRST_LOOK_AFTER: Duration = Duration::from_secs(10 * 60);
-
-/// How often it looks again. Staging happens a few times a day at most.
-const LOOK_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// How often storage is looked at, and how often while one filesystem is low:
 /// it is when it changes fastest.
@@ -584,9 +575,10 @@ pub fn tell_graphics_fallback(notifications: &Notifications) {
     graphics_notice().tell(notifications);
 }
 
-/// The notice that a staged update waits for a restart, offering the action
-/// that takes it.
-fn update_notice() -> Notice {
+/// The notice that an update waits for a restart of the machine, offering
+/// the action that takes it: raised by the update's own clock
+/// ([`crate::update_finish`]), at most every two days.
+pub(crate) fn update_notice() -> Notice {
     Notice {
         app: t("system-update-app-name"),
         urgency: 1,
@@ -601,54 +593,6 @@ fn update_notice() -> Notice {
     }
 }
 
-/// Whether to ask now: a restart is needed and the last request is at least
-/// [`ASK_INTERVAL`] old, or there was none.
-#[must_use]
-pub fn update_due(needed: bool, last_asked: Option<SystemTime>, now: SystemTime) -> bool {
-    needed
-        && last_asked.is_none_or(|asked| {
-            now.duration_since(asked)
-                .is_ok_and(|since| since >= ASK_INTERVAL)
-        })
-}
-
-/// Whether a staged update needs a restart of the machine: what the live
-/// update says, or, where none runs, that an image is staged at all. An
-/// update that applied live and waits only for the desktop says nothing here.
-fn restart_needed() -> bool {
-    update::restart_needed(update::staged(), update::live_state().as_ref())
-}
-
-/// When the person was last asked, as recorded at `path`.
-fn last_asked_at(path: &Path) -> Option<SystemTime> {
-    let seconds = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
-    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
-}
-
-fn record_asked_at(path: &Path, now: SystemTime) {
-    let seconds = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    if let Err(error) =
-        tilo_files::native::atomic::write_creating_parent(path, seconds.to_string().as_bytes())
-    {
-        tracing::warn!(%error, "could not record when a restart was last asked for");
-    }
-}
-
-fn asked_path() -> Option<PathBuf> {
-    tilo_paths::state_dir().map(|root| root.join("tilo/update-restart-asked"))
-}
-
-/// Restart the machine into the staged update, as the notice's action asks.
-fn restart() {
-    if let Err(error) =
-        os_actions::session::perform_session_action(os_actions::SessionAction::Restart)
-    {
-        tracing::warn!(%error, "the machine could not restart into the update");
-    }
-}
-
 /// Tell the person what the crash records in `dir` say happened before this
 /// start: a session that stopped responding, one that panicked, a computer
 /// that stopped. The records decide it, so nothing is said twice.
@@ -658,20 +602,6 @@ pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
     };
     let today = ui::clock::local_now().date_naive();
     news_notice(&news, today).tell(notifications);
-}
-
-/// One look for a staged update that waits for a restart: ask the person at
-/// most every [`ASK_INTERVAL`].
-fn look_for_update(notifications: &Notifications) {
-    let Some(path) = asked_path() else {
-        return;
-    };
-    let now = SystemTime::now();
-    if !update_due(restart_needed(), last_asked_at(&path), now) {
-        return;
-    }
-    record_asked_at(&path, now);
-    update_notice().tell(notifications);
 }
 
 /// The codecs status last seen by the watch.
@@ -756,8 +686,8 @@ impl tilo_compositor::LoopTurns for Turns {
 static TELLING: OnceLock<()> = OnceLock::new();
 
 /// Start telling the person what this desktop knows about its machine: the
-/// crash records of the last start now, then storage, the codecs and a staged
-/// update as they change. Once per process.
+/// crash records of the last start now, then storage and the codecs as they
+/// change. Once per process.
 pub fn start(notifications: &Notifications) {
     if TELLING.set(()).is_err() {
         return;
@@ -782,25 +712,6 @@ pub fn start(notifications: &Notifications) {
     let _ = std::thread::Builder::new()
         .name("storage-watch".into())
         .spawn(move || watch_storage(&storage));
-
-    let updates = notifications.clone();
-    let _ = std::thread::Builder::new()
-        .name("update-watch".into())
-        .spawn(move || {
-            std::thread::sleep(FIRST_LOOK_AFTER);
-            loop {
-                look_for_update(&updates);
-                std::thread::sleep(LOOK_EVERY);
-            }
-        });
-
-    notifications.on_taken(move |_id, taken| {
-        if let Taken::Action { key, .. } = taken
-            && key == RESTART_ACTION
-        {
-            restart();
-        }
-    });
 }
 
 /// Watch the free space of the person's filesystems, announcing each one that
@@ -827,6 +738,7 @@ mod tests {
     use super::*;
     use os_actions::codec_pack::CodecPackStatus;
     use tilo_compositor::LoopTurns as _;
+    use tilo_notifications_service::Taken;
     use tilo_service::Service;
 
     fn room(capacity_gib: u64, available_mib: u64) -> Workspace {
@@ -1225,37 +1137,13 @@ mod tests {
     }
 
     #[test]
-    fn a_staged_update_asks_for_a_restart_at_most_every_two_days() {
-        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let hours = |h: u64| start + Duration::from_secs(h * 60 * 60);
-        assert!(
-            !update_due(false, None, start),
-            "nothing staged, nothing asked"
-        );
-        assert!(
-            update_due(true, None, start),
-            "the first staged update asks"
-        );
-        assert!(!update_due(true, Some(start), hours(47)));
-        assert!(update_due(true, Some(start), hours(48)));
-        assert!(!update_due(false, Some(start), hours(100)));
+    fn the_update_notice_offers_the_restart_of_the_machine() {
         let notice = update_notice();
         assert_eq!(notice.title, "Restart to finish updating");
         assert_eq!(
             notice.actions,
             [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
         );
-    }
-
-    /// The two days between requests survive a restart of the session.
-    #[test]
-    fn the_last_request_survives_a_restart_of_the_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilo/update-restart-asked");
-        assert_eq!(last_asked_at(&path), None);
-        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        record_asked_at(&path, at);
-        assert_eq!(last_asked_at(&path), Some(at));
     }
 
     /// The compositor's hook marks the loop's turns as the watchdog counts

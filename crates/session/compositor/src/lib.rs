@@ -598,6 +598,12 @@ impl Compositor {
         self.data.state.locked()
     }
 
+    /// Whether the display is blanked: powered down, with only input waking
+    /// it.
+    pub fn blanked(&self) -> bool {
+        self.data.state.idle.session.is_blanked()
+    }
+
     /// Whether the session locked itself — idle, a key or a command — rather
     /// than a lock client holding it: its own lock screen is what the person
     /// sees.

@@ -119,19 +119,19 @@ pub(crate) fn follow_directory(
     directory: &directory::Store,
     add_workspace: &dyn Fn(&directory::Joined) -> Result<(), String>,
 ) {
-    let Some(seat) = seat else {
-        return;
-    };
-    if directory.answered() {
-        seat.show(directory::view(directory, handle));
-    }
+    // A session the host set up to join one workspace joins it with nobody
+    // at the directory: what was granted is taken and added whether or not
+    // the sheet is open.
+    let answered = directory.answered();
     for joined in directory.take_joined() {
         match add_workspace(&joined) {
             Ok(()) => {
                 // The person lands in the workspace they joined, as they do
                 // in any other they are given: the directory's work is done,
                 // once what the workspace holds is here.
-                if !directory.settling() {
+                if let Some(seat) = seat
+                    && !directory.settling()
+                {
                     seat.presentation().close();
                 }
             }
@@ -140,6 +140,14 @@ pub(crate) fn follow_directory(
                 directory.set_note(Some(error));
             }
         }
+        if let Some(seat) = seat {
+            seat.show(directory::view(directory, handle));
+        }
+    }
+    let Some(seat) = seat else {
+        return;
+    };
+    if answered {
         seat.show(directory::view(directory, handle));
     }
     for effect in seat.take_asked() {

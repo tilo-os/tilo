@@ -291,7 +291,7 @@ pub fn update_resource(update: &Update) -> ResourceSpec {
     if update.updating {
         unavailable(
             &mut resource,
-            "update-now",
+            crate::update::UPDATE_NOW,
             "updating",
             "The system is updating",
         );
@@ -299,9 +299,17 @@ pub fn update_resource(update: &Update) -> ResourceSpec {
     if !update.restart_needed {
         unavailable(
             &mut resource,
-            "restart-to-update",
+            crate::update::RESTART_TO_UPDATE,
             "no_restart_needed",
             "No update waits for a restart",
+        );
+    }
+    if !(update.desktop_pending && !update.restart_needed) {
+        unavailable(
+            &mut resource,
+            crate::update::RESTART_DESKTOP,
+            "no_desktop_restart",
+            "No part of the update waits for the desktop",
         );
     }
     resource
@@ -403,6 +411,7 @@ impl Service for SystemService {
                 let id = action.id();
                 let change = match action {
                     UpdateAction::UpdateNow => Change::UpdateNow,
+                    UpdateAction::RestartDesktop => Change::RestartDesktop,
                     UpdateAction::RestartToUpdate => Change::Restart,
                 };
                 Ok(self.start(Part::Update, id, change))

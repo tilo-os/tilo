@@ -756,6 +756,14 @@ fn take(text: &str, person: &Person) -> Taken {
     }
 }
 
+/// The workspace an invitation for this person joins, without redeeming it:
+/// what a session the host set up for a workspace knows before the join
+/// settles.
+pub(crate) fn invited_workspace(text: &str) -> Result<String, String> {
+    let person = Person::this_computer()?;
+    verify_invitation(text, &person).map(|granted| granted.workspace)
+}
+
 /// An invitation redeemed for this person: the workspace it grants, and the text
 /// the workspace's host admits this device by.
 fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String> {

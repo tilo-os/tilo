@@ -702,6 +702,9 @@ pub struct Client {
     /// The person this device belongs to, by their root key, as its
     /// certificate names them.
     user: Option<[u8; 32]>,
+    /// What the plane heard that needs a newer system on this device since
+    /// the last call.
+    updates: std::sync::mpsc::Receiver<()>,
     /// The desk this session shows, whose workspaces' policies hold every
     /// member's messages to what the workspace grants them: `None` until the
     /// session hands it over ([`Self::attach_desk`]).
@@ -826,7 +829,8 @@ impl Client {
         let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), continuity);
         // What the actor serves for the session is installed before it starts:
         // every actor built from here on answers those doors.
-        crate::network::install(fabric.as_ref(), questions);
+        let (update_requests, updates) = std::sync::mpsc::channel();
+        crate::network::install(fabric.as_ref(), questions, update_requests);
         // The channels this session runs, if it runs any: their side of the
         // plane is the engine's, opened before the plane starts. The thread
         // takes its own handle, and this one tells them where the plane is.
@@ -909,6 +913,7 @@ impl Client {
             reachability,
             beside: served,
             live,
+            updates,
             thread: Some(thread),
         };
         // The person's other devices are heard from the start, so a list one
@@ -934,6 +939,13 @@ impl Client {
     #[must_use]
     pub fn serves(&self, alpn: &[u8]) -> bool {
         self.beside.iter().any(|served| served == alpn)
+    }
+
+    /// Whether something heard on this plane needs a newer system on this
+    /// device now — a collaborator's device at a newer peer protocol version —
+    /// since the last call.
+    pub fn take_update_request(&self) -> bool {
+        self.updates.try_iter().next().is_some()
     }
 
     /// The desktop's presence, shared with whatever draws who is here.
@@ -2058,6 +2070,10 @@ impl Client {
                 said_at: Cell::new(Instant::now()),
                 wave_seq: Cell::new(0),
                 presence_seq: Cell::new(0),
+                updates: {
+                    let (_wanted, updates) = std::sync::mpsc::channel();
+                    updates
+                },
                 #[cfg(test)]
                 said: RefCell::new(Vec::new()),
                 sent_wave: RefCell::new(None),

@@ -111,6 +111,10 @@ impl Session {
         self.follow_overlays();
         self.follow_setup();
         self.serve_runs_and_services();
+        // The staged system update, finished on its own clock: the desktop
+        // restarts onto it once the person is away, which ends this process
+        // and comes back on the new interface.
+        self.follow_update();
         // What the services published this pass is what every surface of the
         // machine shows.
         self.shared.follow_status();
@@ -221,7 +225,8 @@ impl Session {
     /// again, a frame of a recording, a probe of a device being woken, a
     /// saved window giving up, a schedule's tick, a sample of the
     /// accelerometer, a shared window's next frame, a screen share's next
-    /// frame, a readout no device answered yet, the warmth a schedule changes.
+    /// frame, a readout no device answered yet, the warmth a schedule changes,
+    /// the next look for an update to finish.
     /// `None` when nothing does, and the loop waits for an event alone.
     pub fn next_deadline(&self) -> Option<Instant> {
         let locked = self.compositor.locked();
@@ -266,6 +271,7 @@ impl Session {
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
             crate::keys::next_readout_deadline(&self.shared.waiting.borrow()),
+            self.update_finish.next_deadline(),
         ];
         deadlines.into_iter().flatten().min()
     }

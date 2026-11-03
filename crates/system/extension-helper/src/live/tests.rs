@@ -674,3 +674,73 @@ fn a_composefs_image_is_checked_by_its_own_digest_algorithm() {
         "no digest= option: libcomposefs measures only SHA-256 images"
     );
 }
+
+/// The compositor and the login wrapper share a process name, because the
+/// wrapper that runs the compositor is a script of the same name: what each
+/// process runs is what tells them apart, so the update restarts a desktop
+/// through its wrapper and never signals a compositor as if it were one.
+#[test]
+fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    // The compositor: a binary of the wrapper's name.
+    let binaries = dir.path().join("bin");
+    fs::create_dir(&binaries).unwrap();
+    let binary = binaries.join(COMPOSITOR);
+    fs::copy("/bin/sleep", &binary).unwrap();
+    // The wrapper: a script of that name, running the compositor as a child
+    // of its own as the login's wrapper does.
+    let wrapper = dir.path().join(LOGIN_WRAPPER);
+    fs::write(
+        &wrapper,
+        format!("#!/bin/sh\n\"{}\" 120 &\nwait\n", binary.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut login = std::process::Command::new(&wrapper).spawn().unwrap();
+    let wrapper_pid = login.id();
+    let started = Instant::now();
+    let compositor_pid = loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the fixture's compositor starts"
+        );
+        if let Some(compositor) = compositor_of(wrapper_pid) {
+            break compositor;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    assert_eq!(
+        comm(wrapper_pid).as_deref(),
+        Some(LOGIN_WRAPPER),
+        "the wrapper runs under the compositor's name"
+    );
+    assert!(
+        !is_compositor(wrapper_pid),
+        "a script named so is the wrapper, not the compositor"
+    );
+    assert!(
+        is_compositor(compositor_pid),
+        "the binary is the compositor"
+    );
+    let logins = crate::System.logins();
+    assert!(
+        logins.iter().any(|login| login.wrapper == wrapper_pid),
+        "the login is found, and restarted through its wrapper"
+    );
+    assert!(
+        !logins.iter().any(|login| login.wrapper == compositor_pid),
+        "the compositor is never taken for a login of its own"
+    );
+    assert_eq!(
+        compositor_pid,
+        compositor_of(wrapper_pid).unwrap(),
+        "the running compositor is the wrapper's"
+    );
+
+    let _ = std::process::Command::new("kill")
+        .arg(compositor_pid.to_string())
+        .status();
+    let _ = login.kill();
+    let _ = login.wait();
+}

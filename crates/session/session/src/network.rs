@@ -32,6 +32,7 @@ pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion};
 pub(crate) fn install(
     link: Option<&Arc<crate::fabric::SessionFabric>>,
     questions: Option<Questions>,
+    updates: std::sync::mpsc::Sender<()>,
 ) {
     let Some(link) = link.map(|link| Arc::clone(link) as SharedLink) else {
         return;
@@ -44,7 +45,7 @@ pub(crate) fn install(
     };
     let unlocking = Arc::new(unlock::Unlock::new(link, local, questions.clone()));
     let installed = services::install(Services {
-        peer_version: peer_versions(),
+        peer_version: peer_versions(updates),
         device_unlock: device_unlock(unlocking.clone()),
         approvers: approvers(questions),
     });
@@ -70,8 +71,9 @@ fn approvers(questions: Option<Questions>) -> ApproversOf {
 
 /// Tell the person that a collaborator's device is at another protocol
 /// version, once per device and version: one of the two must update before
-/// they work together again.
-fn peer_versions() -> PeerVersion {
+/// they work together again. A newer one on their side has this session fetch
+/// the newest system ([`crate::update_finish`]).
+fn peer_versions(updates: std::sync::mpsc::Sender<()>) -> PeerVersion {
     let told = Arc::new(Mutex::new(HashSet::new()));
     Arc::new(move |endpoint: String, device_label: String, theirs: u32| {
         let ours = neighbour_wire::PEER_PROTOCOL_VERSION;
@@ -95,10 +97,9 @@ fn peer_versions() -> PeerVersion {
             ours,
             "a collaborator's device speaks another peer protocol version"
         );
-        if theirs > ours
-            && let Err(error) = tilo_system_service::update::update_now()
-        {
-            tracing::debug!(%error, "this device could not start its update");
+        if theirs > ours && updates.send(()).is_err() {
+            // The session that would update this device is gone.
+            tracing::debug!(device, "no session left to update this device");
         }
     })
 }

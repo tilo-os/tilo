@@ -41,6 +41,7 @@ mod asks;
 mod automation;
 mod bars;
 mod bluetooth_handoff;
+mod boot_join;
 mod call_devices;
 mod calls;
 pub mod capture;
@@ -152,6 +153,7 @@ mod task_programs;
 pub mod termination;
 pub mod test_control;
 pub mod unlock;
+mod update_finish;
 mod wallpapers;
 mod wifi_continuity;
 mod window_motion;
@@ -371,6 +373,9 @@ struct Shared {
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     directory_store: directory::Store,
+    /// The workspace the host started this session to join, and whether it
+    /// withholds agents until the host's operator makes it an administrator.
+    boot_join: RefCell<boot_join::BootJoin>,
     /// The lock, as the session publishes it for the lock screen to show.
     lock: lock_service::Lock,
     /// The on-screen keyboard, as the session publishes it for its app to
@@ -729,10 +734,18 @@ impl Shared {
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),
         );
+        // A session the host started for one workspace joins it on its own,
+        // and withholds its agents until the host's operator makes it an
+        // administrator of that workspace.
+        self.boot_join
+            .borrow_mut()
+            .follow_session(&self.handle, &self.person);
         // A program of this login asking to work as an agent is a question
         // of the person's: their answer admits it, and the client is served
         // from the next pass on.
-        if let Some(door) = self.agent_door.borrow_mut().as_mut() {
+        if !self.boot_join.borrow().waiting()
+            && let Some(door) = self.agent_door.borrow_mut().as_mut()
+        {
             door.follow(&self.handle, &self.person);
         }
         self.asker.follow();
@@ -778,6 +791,10 @@ pub struct Session {
     /// The login's lock record: the state this session ends in is published
     /// to it, and a session that ends without doing so comes back locked.
     recovery: Option<recovery::Recovery>,
+    /// The clock on finishing the staged system update: the desktop restarts
+    /// onto it once the person is away, and a restart of the machine is
+    /// asked for at most every two days.
+    update_finish: update_finish::Finish,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
     /// The capture studio the session shows, and answers the asks of.
@@ -1778,6 +1795,8 @@ impl Session {
         );
         let workspace_emoji =
             workspace_settings::EmojiTab::new(cli::data_home(), options.wake.handle());
+        let directory_store = directory::Store::default();
+        let boot_join = boot_join::BootJoin::at_boot(&directory_store, &handle);
         let mut shared = Shared {
             handle,
             desktop,
@@ -1822,7 +1841,8 @@ impl Session {
             fs_authority: fs_authority::Publisher::for_session(),
             workspace_emoji,
             directory,
-            directory_store: directory::Store::default(),
+            directory_store,
+            boot_join: RefCell::new(boot_join),
             portal,
             file_picker,
             lock,
@@ -1991,6 +2011,7 @@ impl Session {
             lock_view: lock_view.map(lock_screen::LockView::new),
             lock_shown: lock_screen::LockShown::App,
             recovery: options.recovery.take(),
+            update_finish: update_finish::Finish::for_session(&options),
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
