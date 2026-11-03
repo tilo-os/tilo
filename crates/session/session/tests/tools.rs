@@ -131,13 +131,13 @@ fn session(
         None,
         Some(launcher.path().to_owned()),
     ));
-    let started = Arc::new(Launches::default());
+    let opened = Arc::new(Launches::default());
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
-            launches: Arc::clone(&started),
+            launches: Arc::clone(&opened),
             // The person's lists as the device reads them, read once: what
             // the tools service serves Files is that same list.
             search: SearchOptions {
@@ -151,7 +151,7 @@ fn session(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    (session, started)
+    (session, opened)
 }
 
 /// Run frames until `done` holds.
@@ -265,7 +265,7 @@ fn an_agent_opens_notes_in_a_workspace() {
     let records = home.home().join("starts");
     packages(&mut home, &[(NOTES, "Notes")]);
     let launcher = launcher(&home, &records);
-    let (mut session, started) = session(&home, &launcher, None);
+    let (mut session, opened) = session(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session);
 
@@ -273,9 +273,9 @@ fn an_agent_opens_notes_in_a_workspace() {
     // front, from a thread that owns no part of the desk: the broker's
     // launcher seam is the one path such an open takes.
     let asked = {
-        let started = Arc::clone(&started);
+        let opened = Arc::clone(&opened);
         let workspace = workspace.clone();
-        std::thread::spawn(move || started.launch(NOTES, &workspace, None, &LaunchPlace::Focus))
+        std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &LaunchPlace::Focus))
     };
     until(&mut session, "the app runs", |_| {
         starts(&records)
@@ -296,7 +296,7 @@ fn an_agent_opens_notes_in_a_workspace() {
         "the app starts in the workspace the agent named"
     );
     assert_eq!(
-        started.workspace_of(pid, NOTES).as_deref(),
+        opened.workspace_of(pid, NOTES).as_deref(),
         Some(workspace.id().to_string().as_str()),
         "the session recorded its launch in that workspace"
     );
@@ -326,10 +326,10 @@ fn files_lists_the_drives_and_the_apps_it_may_open() {
         }]))),
         Notifications::default(),
     ));
-    let (mut session, started) = session(&home, &launcher, Some(drives));
+    let (mut session, opened) = session(&home, &launcher, Some(drives));
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session).id().to_string();
-    launch_as(&started, FILES, &workspace);
+    launch_as(&opened, FILES, &workspace);
 
     let listed = ask(&home, &workspace, ToolIntent::Drives);
     assert!(listed.accepted, "{}", listed.message);
@@ -354,7 +354,7 @@ fn files_lists_the_drives_and_the_apps_it_may_open() {
     assert_eq!(notes.kind, AppKind::Tilo);
 
     // The person's app list is Files' own: no other app is told it.
-    launch_as(&started, NOTES, &workspace);
+    launch_as(&opened, NOTES, &workspace);
     let refused = ask(&home, &workspace, ToolIntent::Applications);
     assert!(
         !refused.accepted,
@@ -370,10 +370,10 @@ fn open_in_terminal_starts_a_terminal_at_the_folder() {
     let records = home.home().join("starts");
     packages(&mut home, &[(TERMINAL, "Terminal")]);
     let launcher = launcher(&home, &records);
-    let (mut session, started) = session(&home, &launcher, None);
+    let (mut session, opened) = session(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session).id().to_string();
-    launch_as(&started, FILES, &workspace);
+    launch_as(&opened, FILES, &workspace);
     let folder = home.home().join("Documents");
     fs::create_dir_all(&folder).unwrap();
     let intent = ToolIntent::Terminal {
