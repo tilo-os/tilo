@@ -1535,7 +1535,7 @@ impl FrameHarness {
             composition_replaced: false,
             remount: false,
             layout_requested: false,
-            drawn_input: 0,
+            drawn_input: crate::input_generation::generation(),
             state: Box::new(state),
             root,
             taffy: TaffyTree::new(),
@@ -6279,6 +6279,9 @@ impl FrameHarness {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let t_event = self.profiler.as_ref().map(|_| crate::time::now());
+        // What the event changed reaches widgets that paint it without a
+        // flag of their own.
+        crate::input_generation::note();
         if let Some(history) = &mut self.history {
             history.route_event(
                 self.root.as_mut(),
