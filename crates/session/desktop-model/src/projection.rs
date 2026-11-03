@@ -17,7 +17,7 @@ use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
-use crate::ids::{RoomId, StripId, WorkspaceSlot, peer_salt_of};
+use crate::ids::{StripId, WorkspaceId, WorkspaceSlot, peer_salt_of};
 use crate::layout::{Tab, TileContent};
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
@@ -615,8 +615,8 @@ pub fn workspace_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
 /// The workspace a candidate document says it describes, when it names a valid
 /// one. A payload naming a different workspace than the one it answers must be
 /// refused before anything else reads it.
-pub fn declared_workspace(candidate: &AutoCommit) -> Option<RoomId> {
-    RoomId::parse(&candidate.str_at(&automerge::ROOT, WORKSPACE_ID_KEY)?)
+pub fn declared_workspace(candidate: &AutoCommit) -> Option<WorkspaceId> {
+    WorkspaceId::parse(&candidate.str_at(&automerge::ROOT, WORKSPACE_ID_KEY)?)
 }
 
 /// Apply one already-admitted workspace document to `tree`: create the workspace's
@@ -631,7 +631,7 @@ pub fn declared_workspace(candidate: &AutoCommit) -> Option<RoomId> {
 /// another workspace already holds the id derived from it.
 pub fn apply_admitted_workspace(
     tree: &mut DesktopTree,
-    identity: RoomId,
+    identity: WorkspaceId,
     doc: &AutoCommit,
 ) -> Result<bool, String> {
     use automerge::ROOT;
@@ -645,7 +645,7 @@ pub fn apply_admitted_workspace(
             .and_then(|(v, _)| v.as_str().map(str::to_owned)))
     };
     let name = text(WORKSPACE_NAME_KEY)?.unwrap_or_default();
-    if !tree.workspaces.iter().any(|w| w.room() == identity) {
+    if !tree.workspaces.iter().any(|w| w.id() == identity) {
         let slot = WorkspaceSlot::of_workspace(identity);
         if tree.workspaces.iter().any(|w| w.slot == slot) {
             return Err("another workspace holds that workspace id".into());
@@ -660,7 +660,7 @@ pub fn apply_admitted_workspace(
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|w| w.room() == identity)
+        .find(|w| w.id() == identity)
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
@@ -785,11 +785,11 @@ pub fn workspace_layout(doc: &AutoCommit) -> WorkspaceLayout {
 /// stays where it is. Reports whether anything changed.
 pub fn drop_windows_of_others(
     desktop: &mut DesktopTree,
-    identity: RoomId,
+    identity: WorkspaceId,
     local_salt: u16,
     foreign: &impl Fn(&Tab) -> bool,
 ) -> bool {
-    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == identity) else {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id() == identity) else {
         return false;
     };
     let mut changed = false;
@@ -1016,7 +1016,7 @@ mod tests {
     /// A desktop with one workspace under local id `workspace`, holding `strips`
     /// in the workspace with `identity`.
     fn workspace_desktop(
-        identity: RoomId,
+        identity: WorkspaceId,
         workspace: u64,
         strips: Vec<Strip>,
     ) -> crate::tree::DesktopTree {
@@ -1063,7 +1063,7 @@ mod tests {
     fn dropping_others_windows_keeps_every_window_of_ones_own() {
         const MINE: u16 = 0x1111;
         const THEIRS: u16 = 0x2222;
-        let identity = RoomId::new();
+        let identity = WorkspaceId::new();
         // My strip, holding my window and one of theirs side by side; their
         // strip, holding only theirs; their strip I moved a window of mine
         // into.

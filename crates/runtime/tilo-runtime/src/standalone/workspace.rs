@@ -11,7 +11,9 @@ use std::{
 use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
-use tilo_desktop_model::{DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{
+    DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId, WorkspaceSlot,
+};
 use tilo_identity_host::broker::WorkspaceMembership;
 
 /// The desktop session's workspace file. Read, never written, here: its
@@ -67,7 +69,7 @@ impl ProfileWorkspace {
             .map(|tree| {
                 tree.workspaces
                     .first()
-                    .map(|workspace| workspace.room().to_string())
+                    .map(|workspace| workspace.id().to_string())
             })
             .ok()
             .flatten()
@@ -154,7 +156,7 @@ impl ProfileWorkspace {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|held| held.room().to_string() == workspace)?
+                .find(|held| held.id().to_string() == workspace)?
                 .slot;
             change(tree, workspace)
         })
@@ -179,7 +181,7 @@ impl AppActionGrants for ProfileGrants {
             && self.workspace.tree.read().is_ok_and(|tree| {
                 tree.workspaces
                     .iter()
-                    .find(|held| held.room().to_string() == workspace)
+                    .find(|held| held.id().to_string() == workspace)
                     .is_some_and(|held| {
                         held.may_govern_at(
                             person,
@@ -233,7 +235,7 @@ impl ProfileGrants {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|held| held.room().to_string() == request.workspace)?
+                .find(|held| held.id().to_string() == request.workspace)?
                 .slot;
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)
@@ -257,7 +259,7 @@ impl ProfileGrants {
         self.workspace.update(|tree| {
             tree.workspaces
                 .iter_mut()
-                .find(|held| held.room().to_string() == workspace)?
+                .find(|held| held.id().to_string() == workspace)?
                 .revoke_grant(&tilo_action_policy::GrantId::new(grant))
                 .then_some(())
         });
@@ -312,12 +314,9 @@ impl WorkspaceAuthority for ProfileWorkspace {
 }
 
 impl WorkspaceMembership for ProfileWorkspace {
-    fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
+    fn with_workspace(&self, workspace: &WorkspaceId, read: &mut dyn FnMut(&Workspace)) {
         if let Ok(tree) = self.tree.read()
-            && let Some(workspace) = tree
-                .workspaces
-                .iter()
-                .find(|held| &held.room() == workspace)
+            && let Some(workspace) = tree.workspaces.iter().find(|held| &held.id() == workspace)
         {
             read(workspace);
         }

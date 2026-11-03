@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt as _;
 #[test]
 fn the_channel_state_key_file_is_created_once_owner_only() {
     let directory = tempfile::tempdir().unwrap();
-    let workspace_id = RoomId::new();
+    let workspace_id = WorkspaceId::new();
     let path = directory.path().join(CHANNEL_STATE_KEY);
     vault_key(directory.path(), workspace_id, IdentityStorage::Files).unwrap();
     let first = std::fs::read(&path).unwrap();
@@ -55,7 +55,7 @@ mod pump {
     /// A pump on endpoint `id` of `workspace`, woken as `channels::open` wires it.
     fn parked(
         workspace: &Arc<Workspace>,
-        room_id: RoomId,
+        workspace_id: WorkspaceId,
         id: usize,
         service: ChannelEncryption,
     ) -> (ChannelKeyAccess, Arc<PumpWake>, Pump) {
@@ -64,7 +64,7 @@ mod pump {
         let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
         let pump = spawn_pump(
             access.clone(),
-            Arc::new(Endpoint::join(workspace, room_id, id)),
+            Arc::new(Endpoint::join(workspace, workspace_id, id)),
             Arc::clone(&wake),
         )
         .unwrap();
@@ -100,16 +100,16 @@ mod pump {
     #[test]
     fn a_first_channel_is_announced_without_waiting_for_a_timer() {
         let workspace = Arc::new(Workspace::default());
-        let room_id = RoomId::new();
+        let workspace_id = WorkspaceId::new();
         let dir = tempfile::tempdir().unwrap();
-        let listener = Endpoint::join(&workspace, room_id, 1);
+        let listener = Endpoint::join(&workspace, workspace_id, 1);
         let ((access, _, _pump), _) =
-            parked_thread(|| parked(&workspace, room_id, 0, service((1, 1), dir.path())));
+            parked_thread(|| parked(&workspace, workspace_id, 0, service((1, 1), dir.path())));
         assert_eq!(queued(&workspace, listener.id), 0);
 
         // Parked without a timer: only the poke the new channel gives can
         // announce it.
-        access.access(room_id, ChannelId::new());
+        access.access(workspace_id, ChannelId::new());
         tilo_test_env::wait_until(
             "the parked pump to announce the new channel's genesis",
             || queued(&workspace, listener.id) > 0,
@@ -119,15 +119,21 @@ mod pump {
     #[test]
     fn arriving_governance_wakes_a_parked_pump() {
         let workspace = Arc::new(Workspace::default());
-        let room_id = RoomId::new();
+        let workspace_id = WorkspaceId::new();
         let governor_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
-        let ((_access, wake, _pump), tid) =
-            parked_thread(|| parked(&workspace, room_id, 0, service((2, 1), member_dir.path())));
+        let ((_access, wake, _pump), tid) = parked_thread(|| {
+            parked(
+                &workspace,
+                workspace_id,
+                0,
+                service((2, 1), member_dir.path()),
+            )
+        });
 
-        let governing = Endpoint::join(&workspace, room_id, 1);
+        let governing = Endpoint::join(&workspace, workspace_id, 1);
         let mut governor = service((1, 1), governor_dir.path());
-        governor.access(room_id, ChannelId::new(), Instant::now());
+        governor.access(workspace_id, ChannelId::new(), Instant::now());
         governor.pump(&governing, Instant::now(), 1_000);
         assert!(queued(&workspace, 0) > 0, "the governor announced nothing");
         assert!(
@@ -147,11 +153,11 @@ mod pump {
     #[test]
     fn an_idle_pump_with_no_channel_is_never_scheduled() {
         let workspace = Arc::new(Workspace::default());
-        let room_id = RoomId::new();
+        let workspace_id = WorkspaceId::new();
         let dir = tempfile::tempdir().unwrap();
         let ((access, _, _pump), tid) =
             tilo_test_env::idle::spawned_thread("tilo-runtime-ch", || {
-                parked(&workspace, room_id, 0, service((1, 1), dir.path()))
+                parked(&workspace, workspace_id, 0, service((1, 1), dir.path()))
             });
         assert!(!access.has_live_channels());
         tilo_test_env::idle::assert_stays_asleep(&tid, "channel pump");
@@ -163,7 +169,7 @@ mod keychain {
     use super::*;
     use tilo_secrets::{Protection, Secret, SecretBackend, SecretError};
 
-    fn stored(workspace_id: RoomId) -> Option<Vec<u8>> {
+    fn stored(workspace_id: WorkspaceId) -> Option<Vec<u8>> {
         tilo_secrets::SecretStore::for_app("so.tilo.runtime")
             .get_blocking(&format!("channel-state-v1.{workspace_id}"))
             .unwrap()
@@ -176,14 +182,14 @@ mod keychain {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(CHANNEL_STATE_KEY);
 
-        let fresh = RoomId::new();
+        let fresh = WorkspaceId::new();
         vault_key(directory.path(), fresh, IdentityStorage::Platform).unwrap();
         assert!(!path.exists(), "a new key was written to a file");
         let first = stored(fresh).unwrap();
         vault_key(directory.path(), fresh, IdentityStorage::Platform).unwrap();
         assert_eq!(stored(fresh).unwrap(), first, "an existing key is kept");
 
-        let migrated = RoomId::new();
+        let migrated = WorkspaceId::new();
         vault_key(directory.path(), migrated, IdentityStorage::Files).unwrap();
         let file_key = std::fs::read(&path).unwrap();
         vault_key(directory.path(), migrated, IdentityStorage::Platform).unwrap();
@@ -212,7 +218,7 @@ mod keychain {
     fn a_conflicting_or_refusing_keychain_fails_closed_and_keeps_the_file() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(CHANNEL_STATE_KEY);
-        let workspace_id = RoomId::new();
+        let workspace_id = WorkspaceId::new();
         {
             let _keychain = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
             vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap();

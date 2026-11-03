@@ -29,7 +29,7 @@ impl WorkspaceSlot {
     /// the shell's tests). A new workspace takes it; one stored before keeps
     /// the slot it has.
     #[must_use]
-    pub fn of_workspace(identity: RoomId) -> Self {
+    pub fn of_workspace(identity: WorkspaceId) -> Self {
         // Encoded on the stack, as the transport derivation does.
         let mut canonical = [0u8; 36];
         let hash = blake3::derive_key(
@@ -55,9 +55,9 @@ impl WorkspaceSlot {
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
 #[serde(transparent)]
-pub struct RoomId(uuid::Uuid);
+pub struct WorkspaceId(uuid::Uuid);
 
-impl RoomId {
+impl WorkspaceId {
     /// Mint a fresh workspace identity, once per workspace at creation.
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
@@ -86,13 +86,13 @@ impl RoomId {
     }
 }
 
-impl std::fmt::Display for RoomId {
+impl std::fmt::Display for WorkspaceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl From<uuid::Uuid> for RoomId {
+impl From<uuid::Uuid> for WorkspaceId {
     fn from(v: uuid::Uuid) -> Self {
         Self(v)
     }
@@ -322,12 +322,12 @@ mod tests {
     fn a_workspaces_id_is_its_transport_shard() {
         // The same literal `tilo_workspace_join::room_workspace_id` is pinned
         // to: every device and the relay derive the same id for a workspace.
-        let identity = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
+        let identity = WorkspaceId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
         assert_eq!(
             WorkspaceSlot::of_workspace(identity).raw(),
             3_029_697_355_180_468_570
         );
-        let other = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();
+        let other = WorkspaceId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();
         assert_ne!(
             WorkspaceSlot::of_workspace(other),
             WorkspaceSlot::of_workspace(identity)

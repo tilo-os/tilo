@@ -22,7 +22,7 @@ use std::time::SystemTime;
 
 use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
 use tilo_action_policy::WorkspacePolicy;
-use tilo_desktop_model::{RoomId, WorkspaceSlot};
+use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::MemberRole;
@@ -59,7 +59,7 @@ pub struct Person {
 /// The workspace id each workspace on the desk is held under, as the engine's
 /// record names them and the desk names its own.
 #[derive(Default)]
-struct Slots(std::sync::Mutex<BTreeMap<WorkspaceSlot, RoomId>>);
+struct Slots(std::sync::Mutex<BTreeMap<WorkspaceSlot, WorkspaceId>>);
 
 impl std::fmt::Debug for Slots {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,13 +68,13 @@ impl std::fmt::Debug for Slots {
 }
 
 impl Slots {
-    fn of(workspaces: impl IntoIterator<Item = (WorkspaceSlot, RoomId)>) -> Self {
+    fn of(workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>) -> Self {
         Self(std::sync::Mutex::new(workspaces.into_iter().collect()))
     }
 }
 
 impl FileHost for Slots {
-    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<RoomId> {
+    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId> {
         self.0.lock_recover().get(&slot).copied()
     }
 
@@ -148,7 +148,7 @@ impl Engine {
     pub fn open(
         identity: HostIdentity,
         state: Option<&Path>,
-        workspaces: impl IntoIterator<Item = (WorkspaceSlot, RoomId)>,
+        workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
         let path = record_path(state);
@@ -173,7 +173,7 @@ impl Engine {
     /// directory to keep its workspaces in.
     pub(crate) fn for_this_device(
         state: Option<&Path>,
-        workspaces: impl IntoIterator<Item = (WorkspaceSlot, RoomId)>,
+        workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>,
     ) -> Result<Self, String> {
         let identity = sync::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
@@ -181,13 +181,13 @@ impl Engine {
     }
 
     /// The workspace ids this device holds.
-    pub fn workspaces(&self) -> Vec<RoomId> {
+    pub fn workspaces(&self) -> Vec<WorkspaceId> {
         self.owner.workspaces()
     }
 
     /// Whether this device holds this workspace.
     #[must_use]
-    pub fn holds(&self, workspace: RoomId) -> bool {
+    pub fn holds(&self, workspace: WorkspaceId) -> bool {
         self.owner.contains_workspace(workspace)
     }
 
@@ -217,7 +217,7 @@ impl Engine {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         if self.asks_for_record(workspace, app, record)? {
             return Ok(None);
         }
@@ -253,7 +253,12 @@ impl Engine {
     /// for access the first time, and its governance answers with the group.
     /// Says whether the keys are here; while they are not, the record reads as
     /// nothing, and the answer arrives as the workspace's other messages do.
-    fn join_channel(&self, workspace: RoomId, app: &str, record: &str) -> Result<bool, String> {
+    fn join_channel(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+    ) -> Result<bool, String> {
         let Some(keys) = self.keys.get() else {
             // Without a channel service there is nothing to take part with,
             // and the read says so itself.
@@ -277,7 +282,12 @@ impl Engine {
     /// on-demand record, or a part of a chain behind its head): its history
     /// then arrives as the workspace's other documents do, and later reads ask
     /// nobody.
-    fn asks_for_record(&self, workspace: RoomId, app: &str, record: &str) -> Result<bool, String> {
+    fn asks_for_record(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+    ) -> Result<bool, String> {
         if neighbour_wire::record_sync(record) == neighbour_wire::RecordSync::Eager {
             return Ok(false);
         }
@@ -299,7 +309,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, or its governance cannot be read.
     pub fn roster(&self, workspace: &str) -> Result<Vec<String>, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         channels::roster_of(self, workspace).map(|roster| {
             roster
                 .into_iter()
@@ -312,7 +322,7 @@ impl Engine {
     /// whoever its governance certified and has not removed may reach a call
     /// in it.
     pub(crate) fn roster_devices(&self, workspace: &str) -> Result<Vec<[u8; 32]>, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         channels::roster_of(self, workspace).map(|roster| {
             roster
                 .into_iter()
@@ -326,7 +336,7 @@ impl Engine {
     /// in it. A joined workspace brings its people with it, so this is how the
     /// desk knows them before any of them is here.
     pub fn people(&self, workspace: &str) -> Result<Vec<Person>, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
             let members = view
                 .peer()
@@ -351,7 +361,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, or its governance cannot be read.
     pub fn policy(&self, workspace: &str) -> Result<WorkspacePolicy, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner
             .with_current(workspace, |view| view.peer().governance().governed_policy())
     }
@@ -367,7 +377,7 @@ impl Engine {
         workspace: &str,
         now: SystemTime,
     ) -> Result<Vec<PendingInvitation>, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.pending_invitations(workspace, now)
     }
 
@@ -385,7 +395,7 @@ impl Engine {
         invitation: &str,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         let invite_id = invitation_id(invitation)?;
         let identity = self.identity();
         self.owner.cancel_invitation(
@@ -408,7 +418,7 @@ impl Engine {
     /// believed about who saved one.
     #[must_use]
     pub fn revocations(&self, workspace: &str) -> Option<RevocationList> {
-        let workspace = RoomId::parse(workspace)?;
+        let workspace = WorkspaceId::parse(workspace)?;
         self.owner
             .with_current(workspace, |view| {
                 let mut list = RevocationList::new();
@@ -432,7 +442,7 @@ impl Engine {
     /// The workspace is not held here yet, or its governance cannot be read
     /// now.
     pub fn owner_of(&self, workspace: &str) -> Result<String, String> {
-        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
             let owner = view.peer().governance().owner_user_public_key();
             if owner == [0; 32] {
@@ -478,7 +488,7 @@ impl Engine {
     /// Name the workspace a join is installing into by the workspace id it
     /// holds: an enrollment only installs into the workspace made for it, and
     /// says so before the host is asked.
-    pub(crate) fn bind(&self, workspace: WorkspaceSlot, workspace_id: RoomId) {
+    pub(crate) fn bind(&self, workspace: WorkspaceSlot, workspace_id: WorkspaceId) {
         self.slots.0.lock_recover().insert(workspace, workspace_id);
     }
 
@@ -495,7 +505,7 @@ impl Engine {
 impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
     /// A held workspace whose host takes part in no channels: its records are
     /// documents the owner commits, never sealed channels.
-    fn commits_documents(&self, workspace_id: RoomId) -> bool {
+    fn commits_documents(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
             && self
                 .owner
@@ -508,7 +518,7 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
                 .unwrap_or(false)
     }
 
-    fn projects_room(&self, workspace_id: RoomId) -> bool {
+    fn projects_room(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
     }
 
@@ -524,7 +534,7 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
     fn check_custody(
         &self,
         owner: &NativeWorkspaceOwner,
-        workspace_id: RoomId,
+        workspace_id: WorkspaceId,
     ) -> Result<(), String> {
         tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
             .material(&self.identity)
@@ -534,7 +544,7 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
     fn signing_key(
         &self,
         owner: &NativeWorkspaceOwner,
-        workspace_id: RoomId,
+        workspace_id: WorkspaceId,
     ) -> Result<ed25519_dalek::SigningKey, String> {
         self.check_custody(owner, workspace_id)?;
         Ok(self.identity.device_signing_key.clone())
@@ -542,7 +552,7 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
 
     /// Send the owner's outgoing custody of `workspace` to its peers soon:
     /// what was just committed leaves this device. Queued, never awaited.
-    fn schedule_publication(&self, workspace_id: RoomId) {
+    fn schedule_publication(&self, workspace_id: WorkspaceId) {
         if let Some(link) = self.link() {
             link.publish_custody(workspace_id);
         }

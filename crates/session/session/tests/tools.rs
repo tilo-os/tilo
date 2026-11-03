@@ -289,12 +289,12 @@ fn an_agent_opens_notes_in_a_workspace() {
     // down as a launch of this session in that workspace.
     let (args, _, pid) = started(&records, NOTES);
     assert!(
-        args.contains(&format!("--workspace-id {}", workspace.room())),
+        args.contains(&format!("--workspace-id {}", workspace.id())),
         "the app starts in the workspace the agent named"
     );
     assert_eq!(
         launches.workspace_of(pid, NOTES).as_deref(),
-        Some(workspace.room().to_string().as_str()),
+        Some(workspace.id().to_string().as_str()),
         "the session recorded its launch in that workspace"
     );
     session

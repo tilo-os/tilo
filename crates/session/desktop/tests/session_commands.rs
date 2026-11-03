@@ -9,8 +9,8 @@ use tilo_desktop_model::commands::{
     BoundCommand, CommandSource, DesktopCommand, TabLocation, TabPlacement,
 };
 use tilo_desktop_model::{
-    AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceSlot,
+    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, WorkspaceSlot,
 };
 
 fn source() -> (DesktopTree, CommandSource) {
@@ -41,7 +41,7 @@ fn source() -> (DesktopTree, CommandSource) {
             .collect(),
     }];
     let source = CommandSource {
-        workspace: workspace.room().to_string(),
+        workspace: workspace.id().to_string(),
         heads: vec![[7; 32]],
     };
     (tree, source)
@@ -115,7 +115,7 @@ fn missing_targets_and_wrong_workspace_never_bind_to_active_fallback() {
         )
         .is_err()
     );
-    source.workspace = RoomId::new().to_string();
+    source.workspace = WorkspaceId::new().to_string();
     assert!(
         bind_intent(
             &tree,
@@ -202,7 +202,7 @@ impl DesktopCommandSink for Recorder {
     fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
         read(&self.tree)
     }
-    fn source(&mut self, workspace: RoomId) -> Result<CommandSource, String> {
+    fn source(&mut self, workspace: WorkspaceId) -> Result<CommandSource, String> {
         Ok(CommandSource {
             workspace: workspace.to_string(),
             heads: self.heads.clone(),

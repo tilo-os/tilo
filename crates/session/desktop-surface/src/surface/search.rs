@@ -688,7 +688,7 @@ fn people(
             },
         )
         .collect();
-    (workspace.room().to_string(), people)
+    (workspace.id().to_string(), people)
 }
 
 /// What search offers to do: the host's actions, then what the focused

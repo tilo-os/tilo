@@ -533,7 +533,7 @@ mod tests {
         let mut tree = tilo_desktop_model::DesktopTree::default();
         let mut workspace = tilo_desktop_model::Workspace::create("Notes");
         workspace.set_owner(person.to_owned());
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         tree.workspaces.push(workspace);
 
         assert_eq!(

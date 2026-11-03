@@ -286,7 +286,7 @@ struct ContentIndex(std::sync::Arc<AppContentIndex>);
 impl SearchIndexServices for ContentIndex {
     fn publish(
         &self,
-        room: tilo_desktop_model::RoomId,
+        room: tilo_desktop_model::WorkspaceId,
         app: &str,
         record: &str,
         delta: &[u8],
@@ -561,15 +561,11 @@ impl DeskAuthority {
 impl tilo_identity_host::broker::WorkspaceMembership for DeskAuthority {
     fn with_workspace(
         &self,
-        workspace: &tilo_desktop_model::RoomId,
+        workspace: &tilo_desktop_model::WorkspaceId,
         read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
     ) {
         let tree = self.tree.lock_recover();
-        if let Some(held) = tree
-            .workspaces
-            .iter()
-            .find(|held| &held.room() == workspace)
-        {
+        if let Some(held) = tree.workspaces.iter().find(|held| &held.id() == workspace) {
             read(held);
         }
     }
@@ -618,7 +614,8 @@ impl WorkspaceMemberships for SessionMemberships {
     /// A workspace this session's engine holds is one whose people change
     /// here.
     fn requires_workspace(&self, workspace: &str) -> bool {
-        tilo_desktop_model::RoomId::parse(workspace).is_some_and(|room| self.engine.holds(room))
+        tilo_desktop_model::WorkspaceId::parse(workspace)
+            .is_some_and(|room| self.engine.holds(room))
     }
 
     /// The engine keeps no checkpoints of a workspace's records: its owner
@@ -1156,7 +1153,7 @@ mod tests {
         let search_index = services
             .search_index
             .expect("a session with an index offers apps its search index");
-        let workspace_id = tilo_desktop_model::RoomId::new();
+        let workspace_id = tilo_desktop_model::WorkspaceId::new();
         let delta = IndexDelta {
             reset: true,
             upsert: vec![IndexEntry {

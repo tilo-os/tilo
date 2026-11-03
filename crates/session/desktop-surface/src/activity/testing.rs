@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
-    AppKind, Collaborator, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, UserId,
-    WindowGroup, WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceSlot,
+    AppKind, Collaborator, DesktopTree, Strip, StripId, Tab, TileContent, UserId, WindowGroup,
+    WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceId, WorkspaceSlot,
 };
 
 /// The local user every [`TestHost`] answers for.
@@ -40,7 +40,7 @@ pub(crate) fn next_id() -> u64 {
 }
 
 fn empty_workspace(slot: WorkspaceSlot, name: &str, strips: Vec<Strip>) -> Workspace {
-    let mut workspace = Workspace::in_workspace(slot, RoomId::new(), name);
+    let mut workspace = Workspace::in_workspace(slot, WorkspaceId::new(), name);
     workspace.strips = strips;
     workspace
 }
@@ -176,7 +176,7 @@ impl TestTree {
         let slot = WorkspaceSlot(next_id());
         let strip_id = StripId(next_id());
         let workspace = empty_workspace(slot, name, vec![Strip::new(strip_id, "Main")]);
-        let identity = workspace.room();
+        let identity = workspace.id();
         self.desktop.active_strip.insert(slot, strip_id);
         self.desktop.workspaces.push(workspace);
         tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, slot, name, identity);

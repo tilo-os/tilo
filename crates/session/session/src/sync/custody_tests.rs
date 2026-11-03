@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::{RoomId, WorkspaceSlot};
+use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -187,8 +187,8 @@ impl Device {
 
     /// Join the host's workspace with an invitation for this person, and
     /// wait until the workspace is held here.
-    fn join(&self, host: &Host, request: u8) -> RoomId {
-        let workspace_id = RoomId::parse(&host.workspace).expect("a workspace id");
+    fn join(&self, host: &Host, request: u8) -> WorkspaceId {
+        let workspace_id = WorkspaceId::parse(&host.workspace).expect("a workspace id");
         let slot = WorkspaceSlot::of_workspace(workspace_id);
         self.engine.bind(slot, workspace_id);
         self.plane
@@ -215,7 +215,11 @@ impl Device {
 
 /// The receipt of an effect this device's app had in `workspace`, as the
 /// broker records it: redacted, its actor this device's person.
-fn receipt(device: &Device, workspace_id: RoomId, invocation: uuid::Uuid) -> OwnerCommitRequest {
+fn receipt(
+    device: &Device,
+    workspace_id: WorkspaceId,
+    invocation: uuid::Uuid,
+) -> OwnerCommitRequest {
     let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         tilo_actions::InvocationId(invocation),
         &hex::encode(device.person()),
@@ -234,7 +238,7 @@ fn receipt(device: &Device, workspace_id: RoomId, invocation: uuid::Uuid) -> Own
 }
 
 /// Whether `device`'s copy of `workspace` holds the receipt of `invocation`.
-fn holds_receipt(device: &Device, workspace_id: RoomId, invocation: uuid::Uuid) -> bool {
+fn holds_receipt(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) -> bool {
     device
         .engine
         .owner()

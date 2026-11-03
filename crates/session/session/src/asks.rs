@@ -81,7 +81,7 @@ impl Shared {
         }
         let workspace = self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| held.room().to_string())
+                .map(|held| held.id().to_string())
                 .unwrap_or_default()
         });
         for choice in choices {

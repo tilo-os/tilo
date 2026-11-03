@@ -1,6 +1,6 @@
 //! Native app-record checkpoints. Content is retained before a signed workspace root
 //! crosses the owner's ordinary publication barrier. No historical grants survive.
-use crate::owner::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner, RoomId, Store};
+use crate::owner::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner, Store, WorkspaceId};
 use crate::owner_commit::{CommitBinding, CommitTarget};
 use automerge::{ROOT, ReadDoc};
 use ed25519_dalek::SigningKey;
@@ -49,7 +49,7 @@ pub struct NativeCheckpoint {
     /// engine's vocabulary named the workspace carry `room`, and a manifest is
     /// re-encoded byte for byte when it is read, so the key stays.
     #[serde(rename = "room")]
-    pub workspace: RoomId,
+    pub workspace: WorkspaceId,
     pub captured_generation: u64,
     pub captured_aggregate: [u8; 32],
     /// Person identity from authenticated admission, not an argument or grant copy.
@@ -288,7 +288,7 @@ fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String>
 }
 fn manifest(
     store: &dyn Store,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     ack: &CheckpointAcknowledgement,
 ) -> Result<NativeCheckpoint, String> {
     let manifest: NativeCheckpoint = read(store, ack.manifest)?;
@@ -414,7 +414,7 @@ pub(crate) fn validate_restore(
     Ok(())
 }
 
-pub(crate) fn binding(workspace: RoomId, address: [u8; 32]) -> CommitBinding {
+pub(crate) fn binding(workspace: WorkspaceId, address: [u8; 32]) -> CommitBinding {
     CommitBinding {
         workspace: workspace.to_string(),
         target: CommitTarget::NativeCheckpointRoot { root: address },
@@ -492,7 +492,8 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<serde_json::Value, String> {
         request.digest()?;
-        let workspace = RoomId::parse(&request.workspace).ok_or("invalid checkpoint workspace")?;
+        let workspace =
+            WorkspaceId::parse(&request.workspace).ok_or("invalid checkpoint workspace")?;
         self.with_current(workspace, |view| {
             view.peer.workspace().check_checkpoint_writer(key, now)
         })?;
@@ -550,7 +551,7 @@ impl NativeWorkspaceOwner {
     /// incomplete data, pending checkpoint, content I/O or metadata publication failure.
     pub fn capture_checkpoint(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         caller: &DeviceCert,
         key: &SigningKey,
         capture: CheckpointCapture<'_>,
@@ -560,7 +561,7 @@ impl NativeWorkspaceOwner {
     }
     fn capture_checkpoint_bound(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         caller: &DeviceCert,
         key: &SigningKey,
         capture: CheckpointCapture<'_>,
@@ -654,7 +655,7 @@ impl NativeWorkspaceOwner {
     }
     fn publish_checkpoint_index(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         mut candidate: NativeCommittedView,
         index: &Index,
         key: &SigningKey,
@@ -694,7 +695,7 @@ impl NativeWorkspaceOwner {
     #[cfg(test)]
     pub fn bind_checkpoint_name(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         caller: &DeviceCert,
         key: &SigningKey,
         name: &str,
@@ -705,7 +706,7 @@ impl NativeWorkspaceOwner {
     }
     fn bind_checkpoint_name_bound(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         caller: &DeviceCert,
         key: &SigningKey,
         name: &str,
@@ -772,7 +773,7 @@ impl NativeWorkspaceOwner {
     /// Unknown name, or a retained index that is not the accepted one.
     pub fn checkpoint_name_history(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         name: &str,
     ) -> Result<Vec<NameBinding>, String> {
         name_valid(name)?;
@@ -795,7 +796,7 @@ impl NativeWorkspaceOwner {
     /// Unknown name, current read refusal or absent/corrupt retained content.
     pub fn resolve_checkpoint_name(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         caller: &DeviceCert,
         name: &str,
         now: SystemTime,
@@ -832,7 +833,7 @@ impl NativeWorkspaceOwner {
     /// Current caller denial or any absent, corrupt or unsupported retained content.
     pub fn read_checkpoint(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         caller: &DeviceCert,
         id: uuid::Uuid,
         now: SystemTime,

@@ -193,7 +193,7 @@ impl TileSource for Source {
         }
         self.resolver
             .resolve(TileRequest {
-                room: workspace.room(),
+                room: workspace.id(),
                 tab,
             })
             .mount(&mut self.failures, std::sync::Arc::clone(&self.wake))

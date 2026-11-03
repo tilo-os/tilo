@@ -21,8 +21,8 @@ use neighbour_wire::NeighbourMsg;
 use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_model::{
-    DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceSlot,
+    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceSlot,
 };
 use tilo_network_actor::{NetEvent, workspace_topic_id};
 use tilo_session::sync::{Client, OwnPresence};
@@ -40,8 +40,8 @@ fn device(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
 
-fn workspace_id() -> RoomId {
-    RoomId::parse(WORKSPACE).expect("a workspace id")
+fn workspace_id() -> WorkspaceId {
+    WorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
 /// A desk showing one workspace it takes part in, with one window called
@@ -164,7 +164,7 @@ fn pointer(from: u8, x: f64, y: f64) -> NetEvent {
             user: String::new(),
             key: serde_json::to_string(&PresenceKey::Pointer {
                 space: PointerSpace::Tile {
-                    room: WORKSPACE.to_owned(),
+                    workspace: WORKSPACE.to_owned(),
                     tab: NOTES,
                 },
             })

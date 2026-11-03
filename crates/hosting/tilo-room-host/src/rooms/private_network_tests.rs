@@ -76,7 +76,7 @@ impl NativeEditor {
         .await
         .unwrap();
         owner.install(&enrollment, SystemTime::now()).unwrap();
-        let joined = tilo_desktop_model::RoomId::parse(room).unwrap();
+        let joined = tilo_desktop_model::WorkspaceId::parse(room).unwrap();
         owner
             .with_current(joined, |view| {
                 assert_eq!(view.workspace_host(), governor);
@@ -105,7 +105,7 @@ impl NativeEditor {
     }
 
     fn assert_no_local_private_messages(&self, room: &str) {
-        let joined = tilo_desktop_model::RoomId::parse(room).unwrap();
+        let joined = tilo_desktop_model::WorkspaceId::parse(room).unwrap();
         self.owner.with_current(joined, |_| Ok(())).unwrap();
         let bytes = std::fs::read(self.directory.path().join("joined.json")).unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

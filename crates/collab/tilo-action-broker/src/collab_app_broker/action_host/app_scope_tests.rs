@@ -204,7 +204,7 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
     workspace.shortcuts.push(
         serde_json::from_value(serde_json::json!({"id":"tidy","name":"Tidy","steps":[]})).unwrap(),
     );
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let governance = Arc::new(Governance::default());
@@ -503,7 +503,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
     let user = [43; 32];
     let mut workspace = Workspace::new(WorkspaceSlot(83), "Live directory");
     workspace.set_owner(hex::encode(user));
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let (state, bridge_rx) = AppBrokerState::new_configured(

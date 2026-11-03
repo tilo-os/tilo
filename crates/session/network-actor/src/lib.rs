@@ -39,7 +39,7 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 
 /// Stable transport/host shard for a durable workspace. Local workspace handles are
 /// deliberately not used: they differ between devices.
-pub fn workspace_topic_id(workspace: tilo_desktop_model::RoomId) -> u64 {
+pub fn workspace_topic_id(workspace: tilo_desktop_model::WorkspaceId) -> u64 {
     if workspace.is_nil() {
         return DEFAULT_WS_TOPIC;
     }

@@ -286,7 +286,7 @@ mod tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Opens");
         workspace.set_owner(owner);
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -420,7 +420,7 @@ mod tests {
         )
         .unwrap();
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Signed opens");
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         let (_, certificate) =
             tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
         let person = hex::encode(certificate.user_public_key);

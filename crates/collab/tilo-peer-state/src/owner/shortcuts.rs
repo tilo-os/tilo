@@ -1,7 +1,7 @@
 //! A shortcut saved or removed by a member's own device, as a signed workspace
 //! write. The workspace document is where shortcuts live; every receiver admits
 //! the write by the rule that proves who saved it.
-use crate::owner::{NativeWorkspaceOwner, RoomId};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ed25519_dalek::SigningKey;
 use web_time::SystemTime;
@@ -25,7 +25,7 @@ impl NativeWorkspaceOwner {
     ) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
         let workspace =
-            RoomId::parse(&request.workspace).ok_or("invalid native shortcut workspace")?;
+            WorkspaceId::parse(&request.workspace).ok_or("invalid native shortcut workspace")?;
         let CommitOperation::ShortcutChange { caller, change, .. } = &request.operation else {
             return Err("unsupported native shortcut owner commit family".into());
         };

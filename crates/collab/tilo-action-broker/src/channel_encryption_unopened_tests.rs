@@ -7,12 +7,12 @@ struct LateGovernor {
 }
 
 impl ChannelDirectory for LateGovernor {
-    fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+    fn governor_of(&self, _: WorkspaceId) -> Option<Ed25519PublicKey> {
         *self.governor.lock().unwrap()
     }
     fn allowed_devices(
         &self,
-        _: RoomId,
+        _: WorkspaceId,
         _: ChannelId,
         _: Option<&ChannelRoute>,
         _: u64,
@@ -45,7 +45,7 @@ fn a_route_hears_when_its_workspaces_governance_is_learned() {
     let dir = tempfile::tempdir().unwrap();
     let directory = LateGovernor::default();
     let mut service = late_governor_service(dir.path(), &directory);
-    let (workspace, channel) = (RoomId::new(), ChannelId::new());
+    let (workspace, channel) = (WorkspaceId::new(), ChannelId::new());
     let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
     let mut now = Instant::now();
     assert!(matches!(
@@ -108,7 +108,7 @@ fn a_failed_open_is_retried_on_the_pumps_backoff() {
     let directory = LateGovernor::default();
     *directory.governor.lock().unwrap() = Some(public(22));
     let mut service = late_governor_service(dir.path(), &directory);
-    let (workspace, channel) = (RoomId::new(), ChannelId::new());
+    let (workspace, channel) = (WorkspaceId::new(), ChannelId::new());
     let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
     // The workspace's state directory cannot be created: a file is in its way.
     let blocker = dir.path().join("channels").join(workspace.to_string());

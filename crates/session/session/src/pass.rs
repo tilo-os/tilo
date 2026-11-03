@@ -52,7 +52,7 @@ impl Session {
         // (shell.md §8.1).
         let front = self.shared.handle.read(|tree| {
             tree.active_workspace()
-                .map(|held| held.room().to_string())
+                .map(|held| held.id().to_string())
                 .unwrap_or_default()
         });
         self.shared

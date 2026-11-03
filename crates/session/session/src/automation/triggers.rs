@@ -238,7 +238,7 @@ pub fn armed(
             continue;
         };
         let person = local_person(workspace);
-        let workspace_id = workspace.room().to_string();
+        let workspace_id = workspace.id().to_string();
         for shortcut in triggered {
             if tilo_peer_state::workspace::proven_saver(
                 &workspace_id,
@@ -562,7 +562,7 @@ impl TriggerSource for WorkspaceJoinedTriggers {
             .filter(|(workspace, _)| !before.contains(*workspace))
             .flat_map(|(workspace, name)| {
                 fire_matching(armed, |_, trigger| match trigger {
-                    TriggerSpec::WorkspaceJoined { room: wanted }
+                    TriggerSpec::WorkspaceJoined { workspace: wanted }
                         if wanted.as_ref().is_none_or(|wanted| wanted == workspace) =>
                     {
                         Some(vec![
@@ -668,7 +668,7 @@ pub fn watched_folders(
     for armed in armed {
         let Some(workspace) = workspaces
             .iter()
-            .find(|workspace| workspace.room().to_string() == armed.workspace)
+            .find(|workspace| workspace.id().to_string() == armed.workspace)
         else {
             continue;
         };
@@ -1138,7 +1138,10 @@ fn record_firings(
 ) -> Vec<Firing> {
     use tilo_automation::dispatch::{self, Armed as DispatchArmed, Event, Firer};
     let mut firings = Vec::new();
-    for armed in armed.iter().filter(|armed| armed.workspace == event.room) {
+    for armed in armed
+        .iter()
+        .filter(|armed| armed.workspace == event.workspace)
+    {
         let saver = armed.saver.as_str();
         let dispatched = dispatch::dispatch(
             &[DispatchArmed {
@@ -1216,7 +1219,7 @@ impl TriggerSource for AppEventTriggers {
                     TriggerSpec::AppEvent { app_id, kind }
                         if *app_id == declared.app_id
                             && *kind == declared.kind
-                            && armed.workspace == declared.room =>
+                            && armed.workspace == declared.workspace =>
                     {
                         Some(vec![(
                             EVENT_INPUT,

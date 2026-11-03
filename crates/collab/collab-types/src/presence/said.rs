@@ -54,7 +54,7 @@ impl Presence {
             app: DESKTOP_APP.to_owned(),
             key: PresenceKey::Pointer {
                 space: crate::presence::PointerSpace::Tile {
-                    room: cluster.clone(),
+                    workspace: cluster.clone(),
                     tab,
                 },
             },
@@ -72,7 +72,7 @@ impl Presence {
             app: DESKTOP_APP.to_owned(),
             key: PresenceKey::Pointer {
                 space: crate::presence::PointerSpace::Tile {
-                    room: cluster.clone(),
+                    workspace: cluster.clone(),
                     tab,
                 },
             },
@@ -140,7 +140,7 @@ mod tests {
             presence.key,
             PresenceKey::Pointer {
                 space: crate::presence::PointerSpace::Tile {
-                    room: "w1".into(),
+                    workspace: "w1".into(),
                     tab: 7,
                 },
             }

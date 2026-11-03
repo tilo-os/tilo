@@ -214,7 +214,7 @@ fn workspace_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
                             .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
                     })
                 })
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
         })
     })
 }

@@ -140,7 +140,7 @@ fn route() -> ApplicationRecord {
 }
 
 fn created_capture(fixture: &Fixture) -> crate::owner::CommittedDocument {
-    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     assert!(
         fixture
             .owner
@@ -157,7 +157,7 @@ fn created_capture(fixture: &Fixture) -> crate::owner::CommittedDocument {
 }
 
 fn current_capture(fixture: &Fixture) -> crate::owner::CommittedDocument {
-    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     fixture
         .owner
         .with_current(workspace, |view| {
@@ -197,7 +197,7 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
     fixture
         .owner
         .with_current(
-            crate::owner::RoomId::parse(testing::WORKSPACE).unwrap(),
+            crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap(),
             |view| {
                 let result = view.read_document(
                     fixture.certificate.device_public_key,
@@ -224,7 +224,7 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
 #[test]
 fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody() {
     let fixture = fixture();
-    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
     assert!(
         fixture
@@ -303,7 +303,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
     let fixture = fixture();
-    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     fixture
         .owner
         .prepare_application_record(
@@ -377,7 +377,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
 #[test]
 fn creation_refuses_wrong_key_wrong_certificate_and_undeclared_kind_without_mutation() {
     let fixture = fixture();
-    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
     assert!(

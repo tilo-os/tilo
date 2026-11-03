@@ -71,7 +71,7 @@ impl LauncherServices for RecordingLauncher {
         self.0
             .lock()
             .unwrap()
-            .push((app.into(), workspace.room().to_string()));
+            .push((app.into(), workspace.id().to_string()));
         Ok(())
     }
     fn attest_process(&self, _pid: u32, _app: &str, _workspace: &str) -> bool {
@@ -84,14 +84,14 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     if crate::standalone::tests::isolated_signing_identity("standalone::joined::admission_tests::admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retired_run").is_none() {
         return;
     }
-    let placed = RoomId::new();
+    let placed = WorkspaceId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
     let certificate = joined.custody.device_cert.clone();
     let actor =
         tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::in_workspace(TestSlot(42), placed, "Runtime doors");
     workspace.set_owner(actor.clone());
-    let workspace_id = workspace.room().to_string();
+    let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
         ..WorkspaceTree::default()
@@ -182,7 +182,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
 /// run ends for good, and the client is told that rather than to retry.
 #[tokio::test]
 async fn custody_the_runtime_no_longer_holds_ends_the_run() {
-    let workspace = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    let workspace = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
     let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,

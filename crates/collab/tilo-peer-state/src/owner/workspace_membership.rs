@@ -1,6 +1,6 @@
 //! Membership changes this device writes itself: its people, their roles,
 //! the workspace's grants and its agents.
-use crate::owner::{NativeWorkspaceOwner, RoomId};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,7 @@ impl NativeWorkspaceOwner {
     ) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
         let workspace =
-            RoomId::parse(&request.workspace).ok_or("invalid native membership workspace")?;
+            WorkspaceId::parse(&request.workspace).ok_or("invalid native membership workspace")?;
         let CommitOperation::WorkspaceMembershipCommand {
             invocation,
             caller,
@@ -157,7 +157,7 @@ mod tests {
     ) -> Vec<tilo_action_policy::Grant> {
         owner
             .with_current(
-                RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
+                WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
                 |view| {
                     let authority = view
                         .peer()
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn durable_membership_reconciles_to_a_reopenable_governor_checkpoint() {
         let mut fixture = fixture();
-        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let add = request(
             &fixture,
             WorkspaceMembershipCommand::AddAgent {
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn a_device_that_does_not_govern_publishes_its_own_changes_until_governance_carries_them() {
         let mut fixture = crate::owner::application_record::tests::member_device_fixture();
-        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
+        let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let outgoing = |owner: &NativeWorkspaceOwner| {
             owner
                 .with_outgoing(workspace, fixture.now, |_, outgoing| {

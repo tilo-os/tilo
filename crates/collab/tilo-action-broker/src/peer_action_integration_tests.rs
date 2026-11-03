@@ -465,13 +465,13 @@ fn a_recording_publisher_cannot_advertise_a_durable_invocation_host() {
             .verifying_key()
             .to_bytes(),
     ));
-    let room_id = uuid::Uuid::parse_str(&room.room().to_string()).unwrap();
+    let workspace_id = uuid::Uuid::parse_str(&room.id().to_string()).unwrap();
     tree.workspaces.push(room);
     tree.persist_path = Some(root.path().join("must-not-be-used/state.json"));
     let journal_root = root.path().join("explicit-journal");
     let config = crate::NativePeerBrokerConfig {
         journal_root: journal_root.clone(),
-        certificate_authority: Arc::new(RecordingAuthority { room: room_id }),
+        certificate_authority: Arc::new(RecordingAuthority { room: workspace_id }),
     };
     let sink = Arc::new(RecordingSink::default());
     let broker = crate::collab_broker::spawn_native_peer(

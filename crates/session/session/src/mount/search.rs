@@ -23,7 +23,7 @@ impl Shared {
         self.search.set_workspaces(self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .map(|held| (held.room().to_string(), held.name.clone()))
+                .map(|held| (held.id().to_string(), held.name.clone()))
                 .collect()
         }));
         let now = self.doors.revision();
@@ -34,7 +34,7 @@ impl Shared {
         let tabs = self.handle.read(|tree| {
             let mut tabs = Vec::new();
             for workspace in &tree.workspaces {
-                let workspace_id = workspace.room().to_string();
+                let workspace_id = workspace.id().to_string();
                 for tab in workspace
                     .strips
                     .iter()

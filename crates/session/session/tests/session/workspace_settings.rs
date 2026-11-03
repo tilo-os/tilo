@@ -543,7 +543,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()
             .expect("a workspace in front")
-            .room()
+            .id()
             .to_string()
     });
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");

@@ -8,7 +8,7 @@
 //! governance does not give it.
 use super::record::StoredJoinReceipt;
 use super::{
-    NativeCommittedView, NativeWorkspaceOwner, RoomId, StoredPendingEnrollment, publication,
+    NativeCommittedView, NativeWorkspaceOwner, StoredPendingEnrollment, WorkspaceId, publication,
 };
 use crate::StatePeer;
 use crate::join::TransportHint;
@@ -36,7 +36,7 @@ fn at(now: u64) -> SystemTime {
 /// The receipt binding of one join admission: the workspace's join ledger after
 /// it, and the governance change it committed.
 fn join_binding(
-    workspace: RoomId,
+    workspace: WorkspaceId,
     device: [u8; 32],
     ledger: &JoinLedger,
     changes: &[Vec<u8>],
@@ -75,7 +75,7 @@ impl GovernanceMessages for WorkspaceGovernance<'_> {
 /// durable, and the ledger staged by the exchange is kept with it.
 struct OwnerWorkspace<'a> {
     owner: &'a NativeWorkspaceOwner,
-    workspace: RoomId,
+    workspace: WorkspaceId,
     /// The workspace's id as the exchange names it.
     named: String,
     workspace_id: u64,
@@ -236,7 +236,7 @@ impl OwnerJoinWorkspaces {
         workspace: &str,
         decide: impl FnOnce(&mut dyn WorkspaceTxn) -> Result<T, JoinError>,
     ) -> Result<T, JoinError> {
-        let workspace = RoomId::parse(workspace)
+        let workspace = WorkspaceId::parse(workspace)
             .ok_or_else(|| JoinError::new("this device holds no such workspace"))?;
         let _turn = self.owner.0.mutation.lock();
         let candidate = self
@@ -293,7 +293,7 @@ impl NativeWorkspaceOwner {
     /// or the workspace cannot be published.
     pub fn issue_invitation(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
         transport: Vec<TransportHint>,
@@ -355,7 +355,7 @@ impl NativeWorkspaceOwner {
     /// or was issued by someone else, or the workspace cannot be published.
     pub fn cancel_invitation(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         request: &CancelInvitationRequest,
         key: &SigningKey,
         now: SystemTime,
@@ -396,7 +396,7 @@ impl NativeWorkspaceOwner {
     /// the workspace's record cannot be read.
     pub fn pending_invitations(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         now: SystemTime,
     ) -> Result<Vec<PendingInvitation>, String> {
         let now = crate::owner::enrollment::ns(now)?;

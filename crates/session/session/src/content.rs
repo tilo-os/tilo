@@ -44,7 +44,7 @@ use tilo_action_broker::record_content::{
 use tilo_action_broker::route::CrdtRoute;
 use tilo_action_broker::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
 use tilo_content::{ContentStore, hash_bytes};
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
 use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, RoomMedia};
@@ -659,7 +659,7 @@ impl ContentPeers for Peers {
 /// The topic a record's content travels on: its workspace's, and none for a
 /// record of no workspace.
 fn topic(route: &CrdtRoute) -> Option<WorkspaceId> {
-    let workspace = RoomId::parse(&route.cluster_id)?;
+    let workspace = ModelWorkspaceId::parse(&route.cluster_id)?;
     (!workspace.is_nil()).then(|| workspace_topic_id(workspace))
 }
 

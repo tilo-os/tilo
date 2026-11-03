@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
@@ -24,11 +24,11 @@ use tilo_peer_state::owner_commit::{
 pub trait OwnerCustody: Send + Sync + 'static {
     /// Whether `workspace`'s app records are documents the owner commits:
     /// a workspace held here whose host takes part in no channels.
-    fn commits_documents(&self, workspace: RoomId) -> bool;
+    fn commits_documents(&self, workspace: WorkspaceId) -> bool;
     /// Whether `workspace`'s replica is projected here, its records committed
     /// documents or sealed channels: a workspace held here, with its
     /// governance.
-    fn projects_room(&self, workspace: RoomId) -> bool;
+    fn projects_room(&self, workspace: WorkspaceId) -> bool;
     /// The owner if it is open, never waiting: `unavailable` when there is
     /// none.
     ///
@@ -45,7 +45,11 @@ pub trait OwnerCustody: Send + Sync + 'static {
     ///
     /// # Errors
     /// Why this device may not commit to `workspace` now.
-    fn check_custody(&self, owner: &NativeWorkspaceOwner, workspace: RoomId) -> Result<(), String>;
+    fn check_custody(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        workspace: WorkspaceId,
+    ) -> Result<(), String>;
     /// The key this device signs its own changes of `workspace` with.
     ///
     /// # Errors
@@ -53,11 +57,11 @@ pub trait OwnerCustody: Send + Sync + 'static {
     fn signing_key(
         &self,
         owner: &NativeWorkspaceOwner,
-        workspace: RoomId,
+        workspace: WorkspaceId,
     ) -> Result<SigningKey, String>;
     /// Send the owner's outgoing custody of `workspace` to its peers soon:
     /// what was just committed leaves this device. Queued, never awaited.
-    fn schedule_publication(&self, workspace: RoomId);
+    fn schedule_publication(&self, workspace: WorkspaceId);
 }
 
 /// The broker's owner commits, through `custody`.
@@ -107,12 +111,12 @@ impl OwnerWrites {
 
 impl OwnerCommitService for NativeOwnerCommits {
     fn requires_workspace(&self, workspace: &str) -> bool {
-        RoomId::parse(workspace).is_some_and(|room| self.custody.commits_documents(room))
+        WorkspaceId::parse(workspace).is_some_and(|room| self.custody.commits_documents(room))
     }
     /// A held workspace's effect receipts are this device's own to record in
     /// it, whichever model its records follow.
     fn records_effects(&self, workspace: &str) -> bool {
-        RoomId::parse(workspace).is_some_and(|room| self.custody.projects_room(room))
+        WorkspaceId::parse(workspace).is_some_and(|room| self.custody.projects_room(room))
     }
     fn health(&self) -> Result<(), String> {
         self.custody
@@ -126,7 +130,7 @@ impl OwnerCommitService for NativeOwnerCommits {
             let owner = custody
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
-            let room = RoomId::parse(&request.workspace).ok_or("invalid native room")?;
+            let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
             let now = std::time::SystemTime::now();
             if !matches!(request.operation, CommitOperation::EffectReceipt { .. }) {
                 custody.check_custody(&owner, room)?;

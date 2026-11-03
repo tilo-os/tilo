@@ -130,7 +130,7 @@ mod tests {
 
     fn workspace_doc(workspace: &Workspace) -> AutoCommit {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
+        doc.put(ROOT, "room", workspace.id().to_string()).unwrap();
         doc.put(ROOT, "name", "Garden").unwrap();
         doc
     }

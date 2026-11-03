@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
-use tilo_desktop_model::RoomId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
@@ -91,7 +91,7 @@ impl Joined {
     /// No host runs, it refused the workspace, or the enrollment failed.
     pub(in crate::standalone) async fn place(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         name: &str,
     ) -> Result<(), String> {
         if self.owner.contains_workspace(workspace) {
@@ -109,7 +109,7 @@ impl Joined {
     }
 
     /// Whether `workspace` is hosted by this device's own host.
-    pub(in crate::standalone) fn hosted_here(&self, workspace: RoomId) -> bool {
+    pub(in crate::standalone) fn hosted_here(&self, workspace: WorkspaceId) -> bool {
         let own = self.own_device();
         self.owner
             .with_current(workspace, |view| {
@@ -159,7 +159,7 @@ impl Joined {
     /// hosts, at the host: answered once the host keeps it.
     pub(super) async fn commit_hosted(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         request: OwnerCommitRequest,
         record_kind: Option<String>,
     ) -> Result<OwnerCommitReceipt, String> {
@@ -267,7 +267,7 @@ impl Joined {
     /// `workspace`'s connected session, waited for until `deadline`.
     async fn live_by(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         deadline: Instant,
     ) -> Result<Arc<RelayCoeditSession>, String> {
         loop {
@@ -310,7 +310,7 @@ impl Joined {
     /// it from a thread that may block.
     pub(in crate::standalone) fn test_kept_document(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         app: &str,
         record: &str,
     ) -> Option<Vec<u8>> {

@@ -602,7 +602,7 @@ impl Control {
     fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|workspace| workspace.id().to_string())
         }));
         self.door.actions.set_locked(desk.locked);
         self.publish(desk);
@@ -2162,7 +2162,7 @@ fn in_scope(row: &Json, scope: &Scope) -> bool {
 fn within(tree: &DesktopTree, scope: &Scope) -> DesktopTree {
     let mut tree = tree.clone();
     tree.workspaces
-        .retain(|workspace| workspace.room().to_string() == scope.workspace);
+        .retain(|workspace| workspace.id().to_string() == scope.workspace);
     tree
 }
 
@@ -2192,11 +2192,11 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
     let held_workspaces: Vec<Json> = tree
         .workspaces
         .iter()
-        .filter(|workspace| held.contains(&workspace.room().to_string()))
+        .filter(|workspace| held.contains(&workspace.id().to_string()))
         .map(|workspace| {
             json!({
                 "workspace": workspace.slot.0,
-                "room": workspace.room().to_string(),
+                "room": workspace.id().to_string(),
             })
         })
         .collect();

@@ -15,7 +15,7 @@ pub use task_execution::{
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 
 use std::sync::Arc;
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 
 /// Current native seat identity, installed only by the authenticated host.
 /// This Rust capability is never exposed through a wire request.
@@ -173,7 +173,7 @@ const UNANSWERED: &str = "workspace authority did not answer";
 pub fn workspace_in<'a>(tree: &'a DesktopTree, workspace_id: &str) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
-        .find(|workspace| workspace.room().to_string() == workspace_id)
+        .find(|workspace| workspace.id().to_string() == workspace_id)
 }
 
 impl dyn WorkspaceAuthority {
@@ -619,7 +619,7 @@ impl ObservedApplicationLaunch {
     pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {
         self.app == app
             && self.package_root.as_deref() == root
-            && self.workspace == workspace.room().to_string()
+            && self.workspace == workspace.id().to_string()
     }
 
     /// Recheck the actual original caller, pending invocation and policy clock.
@@ -1125,7 +1125,7 @@ pub trait ContinuationServices: Send + Sync {
     /// Returns a message when the host cannot retain the metadata.
     fn report(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         app: String,
         instance: u64,
         schema: u16,
@@ -1136,13 +1136,13 @@ pub trait ContinuationServices: Send + Sync {
     /// # Errors
     ///
     /// Returns a message when the host cannot clear the metadata.
-    fn clear(&self, workspace: RoomId, app: &str, instance: u64) -> Result<(), String>;
+    fn clear(&self, workspace: WorkspaceId, app: &str, instance: u64) -> Result<(), String>;
     /// One application instance answering a handoff request, or reporting
     /// that the document it shows arrived retired. `message` is an encoded
     /// `collab_types::handoff::HandoffReport`.
     fn handoff(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         app: String,
         instance: u64,
         message: Vec<u8>,
@@ -1167,7 +1167,7 @@ pub trait SearchIndexServices: Send + Sync {
     /// Returns a message when the delta is malformed or cannot be kept.
     fn publish(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         app: &str,
         record: &str,
         delta: &[u8],
@@ -1250,7 +1250,7 @@ pub trait WorkspaceControlServices: Send + Sync {
     /// Why the session cannot be opened.
     fn open(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         target: [u8; 32],
         revalidate: ControlRevalidate,
     ) -> Result<std::rc::Rc<dyn WorkspaceControlSession>, String>;

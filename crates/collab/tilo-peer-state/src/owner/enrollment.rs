@@ -1,13 +1,13 @@
 use crate::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg,
-    PendingEnrollmentId, PendingEnrollmentStatus, RoomId, StatePeer, SystemTime, TransportOrigin,
-    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceSlot, limits, publication,
-    record,
+    PendingEnrollmentId, PendingEnrollmentStatus, StatePeer, SystemTime, TransportOrigin,
+    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, WorkspaceSlot, limits,
+    publication, record,
 };
 use record::{StoredPendingEnrollment, StoredWorkspace};
 
 pub(crate) fn validate_pending(
-    workspace: RoomId,
+    workspace: WorkspaceId,
     pending: &StoredPendingEnrollment,
 ) -> Result<(), String> {
     let intent = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?;
@@ -21,7 +21,7 @@ pub(crate) fn validate_pending(
     Ok(())
 }
 pub(crate) fn restore(
-    workspace: RoomId,
+    workspace: WorkspaceId,
     record: &StoredWorkspace,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
@@ -71,7 +71,7 @@ pub(crate) fn restore(
     Ok(view)
 }
 fn validate_enrollment(
-    workspace: RoomId,
+    workspace: WorkspaceId,
     record: &StoredWorkspace,
     enrollment: &crate::owner::record::StoredEnrollment,
 ) -> Result<(), String> {
@@ -223,7 +223,7 @@ impl NativeWorkspaceOwner {
     }
     pub fn pending_enrollment(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
     ) -> Result<Option<StoredPendingEnrollment>, String> {
         if !self.0.store.healthy() {
             return Err("native state writer is fenced".into());
@@ -287,7 +287,7 @@ impl NativeWorkspaceOwner {
     /// `id` names another attempt, or the record cannot be published.
     pub fn cancel_enrollment(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         id: &PendingEnrollmentId,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
@@ -322,7 +322,7 @@ impl NativeWorkspaceOwner {
     /// `id` names another attempt, or the record cannot be published.
     pub fn drop_lapsed_enrollment(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         id: &PendingEnrollmentId,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
@@ -345,7 +345,7 @@ impl NativeWorkspaceOwner {
     fn publish_pending(
         &self,
         next: &NativeAuthorityStorage,
-        required: Option<RoomId>,
+        required: Option<WorkspaceId>,
     ) -> Result<(), String> {
         self.0.publish(next, Change::Pending, &mut || {
             *self.0.authority.write() = next.clone();
@@ -365,7 +365,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let workspace = RoomId::parse(&enrollment.bootstrap().room)
+        let workspace = WorkspaceId::parse(&enrollment.bootstrap().room)
             .ok_or("noncanonical native enrollment workspace")?;
         let pending = self
             .0
@@ -475,7 +475,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<crate::owner_commit::OwnerCommitReceipt, String> {
         let workspace =
-            RoomId::parse(&request.workspace).ok_or("invalid native document workspace")?;
+            WorkspaceId::parse(&request.workspace).ok_or("invalid native document workspace")?;
         self.commit_document_with_current(workspace, |_| Ok(request), now)
     }
 
@@ -484,7 +484,7 @@ impl NativeWorkspaceOwner {
     /// document basis current when other publications race the caller.
     pub fn commit_document_with_current(
         &self,
-        workspace: RoomId,
+        workspace: WorkspaceId,
         prepare: impl FnOnce(
             &crate::owner::NativeCommittedView,
         ) -> Result<crate::owner_commit::OwnerCommitRequest, String>,
@@ -494,7 +494,7 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         let request = prepare(&candidate)?;
-        if RoomId::parse(&request.workspace) != Some(workspace) {
+        if WorkspaceId::parse(&request.workspace) != Some(workspace) {
             return Err(
                 "prepared native document workspace differs from selected workspace".into(),
             );

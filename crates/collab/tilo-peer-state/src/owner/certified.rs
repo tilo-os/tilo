@@ -5,7 +5,7 @@ use crate::join::{
     self, JoinBootstrap, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
     VerifiedJoin,
 };
-use crate::owner::{PendingEnrollmentId, RoomId};
+use crate::owner::{PendingEnrollmentId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceHostMode,
@@ -67,8 +67,8 @@ impl VerifiedNativeEnrollmentIntent {
     /// # Panics
     /// Never: `validate` rejects a noncanonical grant workspace.
     #[must_use]
-    pub fn workspace(&self) -> RoomId {
-        RoomId::parse(&self.join.grant().room).expect("checked canonical workspace")
+    pub fn workspace(&self) -> WorkspaceId {
+        WorkspaceId::parse(&self.join.grant().room).expect("checked canonical workspace")
     }
     #[must_use]
     pub fn complete_bytes(&self) -> &[u8] {
@@ -216,7 +216,7 @@ fn validate_historical_iroh(
         || value.room != join.grant().room
         || value.workspace_id != join.grant().workspace_id
         || !tilo_relay_protocol::room_workspace_id_matches(&value.room, value.workspace_id)
-        || RoomId::parse(&value.room).is_none()
+        || WorkspaceId::parse(&value.room).is_none()
         || value.host_device_certificate != hint.host
         || value.host_user_public_key != hint.host.user_public_key
         || *value.endpoint_addr.id.as_bytes() != hint.service_public_key

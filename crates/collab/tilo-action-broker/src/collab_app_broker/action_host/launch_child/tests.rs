@@ -58,7 +58,7 @@ impl LauncherServices for Launcher {
 fn destination(fixture: &Fixture) -> LaunchDestination {
     let workspace = Workspace::in_workspace(
         WorkspaceSlot(9),
-        tilo_desktop_model::RoomId::parse(&fixture.workspace).unwrap(),
+        tilo_desktop_model::WorkspaceId::parse(&fixture.workspace).unwrap(),
         "Launch child",
     );
     LaunchDestination {
