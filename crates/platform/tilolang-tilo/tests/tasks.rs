@@ -843,6 +843,163 @@ fn a_rows_checkbox_checks_the_tasks_under_it() {
     }
 }
 
+/// The assignee a task holds, as its page reads it: who, or nobody.
+#[cfg(feature = "record")]
+fn assignee(r: &Replica, task: &Value) -> Option<String> {
+    match read(r, task, "assignee") {
+        Value::Opt(Some(held)) => match *held {
+            Value::Principal(who) => Some(who.0),
+            other => panic!("an assignee: {other:?}"),
+        },
+        Value::Opt(None) => None,
+        other => panic!("an assignee: {other:?}"),
+    }
+}
+
+/// The key of the node bound to `field`.
+#[cfg(feature = "record")]
+fn bound_key(node: &UiNode, field: &str) -> Option<String> {
+    if node
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .is_some_and(|(_, bound)| bound == field)
+    {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| bound_key(child, field))
+}
+
+/// Every text the tree shows.
+#[cfg(feature = "record")]
+fn texts(node: &UiNode) -> Vec<String> {
+    fn walk(node: &UiNode, out: &mut Vec<String>) {
+        if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
+        {
+            out.push(text.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
+}
+
+/// A task's assignee is one person field: a chip of who holds it that opens a list of "Me",
+/// "No one" and the workspace's people. Picking the person the page shows, another member, and
+/// nobody is one step of the task's history each, so one undo takes back one pick.
+#[cfg(feature = "record")]
+#[test]
+fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
+    use collaboration::history_source::verbs::HistoryEdit;
+
+    let (mut ada, root) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "owner"),
+            tilolang_runtime::members::Member::person("ben", "editor"),
+        ],
+        None,
+    );
+    let task = call(
+        &ada,
+        "new_task",
+        vec![root, Value::text("Write the launch post")],
+    );
+    ada.commit();
+    let mut page = task_page(&ada, &task);
+    let field = {
+        let meta = &ada.host.package(APP).unwrap().meta;
+        crate::fixtures::field_id(meta, "Task", "assignee")
+    };
+    let key = bound_key(page.tree(), &field).expect("the page binds its assignee");
+    let node = node_of(page.tree(), &key).expect("the bound node is drawn");
+    assert_eq!(
+        node.kind, "ui.PersonField",
+        "the assignee is one person field, not two buttons"
+    );
+    assert_eq!(
+        node.props.get("people"),
+        Some(&Value::List(vec![
+            Value::Principal(Principal::new("ada")),
+            Value::Principal(Principal::new("ben")),
+        ])),
+        "the list offers the workspace's members"
+    );
+    assert_eq!(
+        node.props.get("me"),
+        Some(&Value::Principal(Principal::new("ada"))),
+        "the list leads with the person the page is shown to"
+    );
+    assert!(
+        !texts(page.tree())
+            .iter()
+            .any(|text| text.starts_with("Assign to")),
+        "the page no longer spells the assignee out as buttons: {:?}",
+        texts(page.tree())
+    );
+    assert_eq!(assignee(&ada, &task), None, "nobody holds it yet");
+
+    // Me, then another member, then nobody, as the person picks each from the list.
+    page.edit(&key, &Value::text("ada")).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(assignee(&ada, &task), Some("ada".to_owned()));
+    assert_eq!(
+        page.bound_value(&key),
+        Some(Value::some(Value::Principal(Principal::new("ada")))),
+        "the chip shows the person it is bound to"
+    );
+    page.edit(&key, &Value::text("ben")).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(assignee(&ada, &task), Some("ben".to_owned()));
+    page.edit(&key, &Value::Text(String::new())).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(assignee(&ada, &task), None, "No one clears it");
+    assert_eq!(
+        page.bound_value(&key),
+        Some(Value::none()),
+        "the chip shows nobody"
+    );
+    // Each pick reads as a plain entry of the task's history, named for the field it changed.
+    assert!(
+        texts(page.tree()).iter().any(|text| text == "Assignee"),
+        "the history names the field it changed: {:?}",
+        texts(page.tree())
+    );
+
+    // One undo takes back one pick: the clearing, then Ben, then Me.
+    let undo = |r: &mut Replica| {
+        r.history(&HistoryEdit::Undo {
+            steps: None,
+            run: None,
+            by: None,
+            to: None,
+            step: None,
+        });
+    };
+    undo(&mut ada);
+    assert_eq!(
+        assignee(&ada, &task),
+        Some("ben".to_owned()),
+        "clearing it is one step"
+    );
+    undo(&mut ada);
+    assert_eq!(
+        assignee(&ada, &task),
+        Some("ada".to_owned()),
+        "picking Ben is one step"
+    );
+    undo(&mut ada);
+    assert_eq!(assignee(&ada, &task), None, "picking Me is one step");
+}
+
 /// A step added while someone else checks the task off leaves that task done with the step
 /// open under it. A clear takes the finished branch and keeps the step: unfinished work is
 /// never taken with a task that was checked off before it existed.
