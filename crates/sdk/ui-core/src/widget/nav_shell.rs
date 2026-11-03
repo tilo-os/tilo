@@ -98,8 +98,8 @@ use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
-    AppModel, Button, Element, ModelPath, SearchField, StructureChange, TaffyTreeExt, Widget,
-    WidgetLayoutError,
+    AppModel, Button, DescribedList, Element, ModelPath, SearchField, StructureChange,
+    TaffyTreeExt, Widget, WidgetLayoutError,
 };
 
 mod back;
@@ -2509,6 +2509,12 @@ impl NavShell {
         downcast(self.app_body_mut(Column::Overview))
     }
 
+    /// The overview's first list, however the app wraps it inside its view of
+    /// the column: the rows it shows and the person's choice among them.
+    pub fn overview_list_mut(&mut self) -> Option<&mut DescribedList> {
+        first_list(self.app_body_mut(Column::Overview)?)
+    }
+
     /// The content as the widget the app gave it.
     pub fn content_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
         downcast(self.app_body_mut(Column::Content))
@@ -3719,6 +3725,25 @@ fn downcast<'a, T: Widget + 'static>(
 ) -> Option<&'a mut T> {
     slot.and_then(|widget| widget.as_any_mut())
         .and_then(|any| any.downcast_mut::<T>())
+}
+
+/// The first list in `widget`, through the wrappers an app's view puts around
+/// it (a docked page, a column, a scroll area).
+fn first_list<'a>(widget: &'a mut (dyn Widget + 'a)) -> Option<&'a mut DescribedList> {
+    if widget
+        .as_any_mut()
+        .is_some_and(|any| any.is::<DescribedList>())
+    {
+        return widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<DescribedList>());
+    }
+    for child in widget.children_mut() {
+        if let Some(list) = first_list(child) {
+            return Some(list);
+        }
+    }
+    None
 }
 
 /// What one paint pass draws into.

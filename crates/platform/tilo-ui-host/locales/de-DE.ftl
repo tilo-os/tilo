@@ -31,6 +31,8 @@ tilolang-all = Alle { $kind }
 tilolang-empty = Noch nichts hier
 # The title over the items of a list that are done with, folded away after the rest.
 tilolang-done = Erledigt
+# The heading over the items of a list that name no group of their own.
+tilolang-no-date = Kein Datum
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren

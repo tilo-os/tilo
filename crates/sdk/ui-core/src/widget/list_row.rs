@@ -24,6 +24,7 @@
 //!
 //! [`row_bleed`]: crate::chrome::row_bleed
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::a11y::{AccessNode, AccessState, Role};
@@ -1208,12 +1209,10 @@ impl<'a> ListRowFace<'a> {
         let title_style = self.title_style(&m);
         let title_line = RowMetrics::line(ctx.text, &title_style);
         let room = self.title_room(&geo, ctx.text, theme, &m);
-        let lines = ctx.text.clamp_to_lines(
-            self.title,
-            &title_style,
-            room,
-            usize::from(self.title_lines),
-        );
+        let title = self.shown_title();
+        let lines =
+            ctx.text
+                .clamp_to_lines(&title, &title_style, room, usize::from(self.title_lines));
         // The row keeps the height of every title line it allows, so rows
         // do not jump as titles change; the text it draws is centred in it,
         // beside the leading icon, however many lines the title takes.
@@ -1343,8 +1342,9 @@ impl<'a> ListRowFace<'a> {
                 let mark = Rect::new(start, y, start + f64::from(width), y + f64::from(height));
                 crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
             }
-            // A removed item's title is struck through, in the weaker ink.
-            let ink = if self.struck {
+            // A removed item's title is struck through, in the weaker ink, as an item nobody
+            // has named yet shows its placeholder.
+            let ink = if self.struck || self.untitled() {
                 theme.text_dim
             } else {
                 theme.text_primary
@@ -1694,11 +1694,27 @@ impl<'a> ListRowFace<'a> {
         }
     }
 
+    /// Whether the item the row shows has no title yet.
+    fn untitled(&self) -> bool {
+        self.title.trim().is_empty()
+    }
+
+    /// The title as the row shows and speaks it: an item nobody has named yet shows a muted
+    /// placeholder, so its row stays visible and pressable until it has one.
+    fn shown_title(&self) -> Cow<'_, str> {
+        if self.untitled() {
+            Cow::Owned(crate::i18n!("list-row-untitled"))
+        } else {
+            Cow::Borrowed(self.title)
+        }
+    }
+
     /// The name a row is announced by: its badge, then its title.
     fn spoken_name(&self) -> String {
+        let title = self.shown_title();
         match self.leading {
-            Some(RowLeading::Badge(badge)) => format!("{badge} {}", self.title),
-            _ => self.title.to_owned(),
+            Some(RowLeading::Badge(badge)) => format!("{badge} {title}"),
+            _ => title.into_owned(),
         }
     }
 

@@ -1597,6 +1597,54 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     );
 }
 
+/// The accessibility node of the window's first virtual list: the headings it carries and the
+/// rows under them.
+fn list_nodes(widget: &dyn Widget) -> Option<ui::a11y::AccessNode> {
+    if widget.name() == "DescribedList"
+        && let Some(list) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::DescribedList>())
+            .and_then(ui::widget::DescribedList::list)
+    {
+        return Widget::accessibility(list);
+    }
+    widget.children().into_iter().find_map(list_nodes)
+}
+
+/// The task open beside the list is the list's selected row, and a task nobody has named yet
+/// shows its place: an "Untitled" row under the heading for the days it does not have.
+#[test]
+fn a_new_task_shows_an_untitled_row_under_no_day_and_the_open_tasks_row_is_selected() {
+    let mut session = Session::tasks();
+    let mut found = Vec::new();
+    named(session.window.root(), "New task", &mut found);
+    let button = *found.last().expect("the window offers New task");
+    session
+        .window
+        .click_at(button.center().x, button.center().y);
+    session.settle();
+
+    let list = list_nodes(session.window.root()).expect("the window shows its list");
+    let heading = list
+        .children
+        .iter()
+        .position(|node| {
+            node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("No date")
+        })
+        .expect("a task with no day stands under the heading for the ones without");
+    let row = &list.children[heading.saturating_add(1)];
+    assert_eq!(row.role, ui::a11y::Role::ListItem);
+    assert_eq!(
+        row.name.as_deref(),
+        Some("Untitled"),
+        "a row of a task nobody has named yet says so"
+    );
+    assert!(
+        row.state.selected,
+        "the row of the task open beside the list is the selected one"
+    );
+}
+
 /// The actions the tasks app offers the person at this window, as the window's catalogue
 /// lists them.
 fn offered(session: &mut Session) -> Vec<(String, Option<String>)> {
