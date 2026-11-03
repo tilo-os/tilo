@@ -1,18 +1,18 @@
-//! The room host: the governance of the rooms placed on a device and the
+//! The workspace host: the governance of the workspaces placed on a device and the
 //! session stack their members connect through, embeddable in any process
 //! that owns an iroh endpoint.
 //!
 //! A relay runs one as a certified host ([`HostMode::CertifiedHost`]); a
-//! person's device runs the same one for the rooms placed on it
-//! ([`HostMode::Device`]). [`RoomHost::open`] spawns nothing periodic: with
+//! person's device runs the same one for the workspaces placed on it
+//! ([`HostMode::Device`]). [`WorkspaceHost::open`] spawns nothing periodic: with
 //! no peers connected the host wakes only on I/O, and a connected peer's
-//! session is audited when its rooms' membership files change, which the
+//! session is audited when its workspaces' membership files change, which the
 //! host watches. Its embedder registers
-//! [`RoomHost::protocols`] on its own router, or, when the router is built
-//! before any room is placed here, [`deferred_protocols`], which refuse
+//! [`WorkspaceHost::protocols`] on its own router, or, when the router is built
+//! before any workspace is placed here, [`deferred_protocols`], which refuse
 //! connections until [`HostSlot::install`] gives them a host.
 //!
-//! A member in the same process connects through [`RoomHost::connect_local`]:
+//! A member in the same process connects through [`WorkspaceHost::connect_local`]:
 //! the same handshake and session as a remote member, over an in-process
 //! stream.
 
@@ -43,8 +43,8 @@ const LOCAL_SESSION_BUFFER: usize = 1 << 20;
 pub enum HostMode {
     /// An always-on host certified with host capability (a relay).
     CertifiedHost,
-    /// A person's device hosting the rooms placed on it: no host capability
-    /// needed. The governing device itself serves its rooms, and its join
+    /// A person's device hosting the workspaces placed on it: no host capability
+    /// needed. The governing device itself serves its workspaces, and its join
     /// answers name it as such
     /// ([`WorkspaceHostMode::NativeInteractiveWorkspaceOwner`]).
     ///
@@ -72,16 +72,16 @@ impl HostMode {
 /// What a host is opened with.
 #[derive(Clone)]
 pub struct HostConfig {
-    /// Where the host keeps its rooms and their retained state.
+    /// Where the host keeps its workspaces and their retained state.
     pub state_root: PathBuf,
     pub mode: HostMode,
     /// Who the handshake admits besides the person's own devices and the
-    /// rooms' members.
+    /// workspaces' members.
     pub trust_policy: TrustPolicy,
     /// The change and content budgets guests are held to.
     pub member_limits: Option<crate::member_limits::MemberLimitsConfig>,
-    /// Pre-admissions each room keeps, spent ones included.
-    pub max_room_grants: Option<usize>,
+    /// Pre-admissions each workspace keeps, spent ones included.
+    pub max_workspace_grants: Option<usize>,
     /// Answers remote actions addressed to this host beyond its own
     /// governance (`tilo.host`, `tilo.workspace`).
     pub apps: Option<Arc<dyn AppServingPlane>>,
@@ -91,7 +91,7 @@ pub struct HostConfig {
 
 impl HostConfig {
     /// A host keeping its state under `state_root`, admitting the person's
-    /// own devices and its rooms' members, with the desktop's payloads.
+    /// own devices and its workspaces' members, with the desktop's payloads.
     #[must_use]
     pub fn new(state_root: PathBuf, mode: HostMode) -> Self {
         Self {
@@ -99,7 +99,7 @@ impl HostConfig {
             mode,
             trust_policy: TrustPolicy::AllowMatchingUser,
             member_limits: None,
-            max_room_grants: None,
+            max_workspace_grants: None,
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
         }
@@ -121,9 +121,9 @@ pub enum HostError {
     /// Governed workspace admission could not be reconciled safely.
     #[error("governed access: {0}")]
     GovernedAccess(String),
-    /// The rooms could not be opened.
+    /// The workspaces could not be opened.
     #[error("governed rooms: {0}")]
-    Rooms(String),
+    Workspaces(String),
     /// A member's handshake failed.
     #[error("handshake: {0}")]
     Handshake(String),
@@ -132,11 +132,11 @@ pub enum HostError {
 /// ALPN handlers to register on a router, each with its ALPN.
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
-/// The ALPNs a room host answers on.
+/// The ALPNs a workspace host answers on.
 const HOST_ALPNS: [&[u8]; 4] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-    tilo_relay_session::rooms::private::PRIVATE_ALPN,
+    tilo_relay_session::workspaces::private::PRIVATE_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
 ];
 
@@ -156,21 +156,21 @@ pub struct HostSessions {
     pub handler: RelayProtocol,
     /// Ends the in-process sessions when the host shuts down.
     closing: Arc<tokio::sync::watch::Sender<bool>>,
-    /// The watch that lets its rooms' membership be read from memory until
+    /// The watch that lets its workspaces' membership be read from memory until
     /// a file changes, so a live session is audited when something changed
     /// rather than every second.
     membership_watch: Arc<crate::membership_watch::WatchTask>,
 }
 
-/// A host's rooms, when it governs them: the governance and the plane
+/// A host's workspaces, when it governs them: the governance and the plane
 /// answering its actions.
 pub struct Governed {
-    pub rooms: crate::rooms::Rooms,
+    pub workspaces: crate::workspaces::Workspaces,
     pub(crate) actions: Arc<dyn AppServingPlane>,
 }
 
 impl HostSessions {
-    /// Open a host's sessions and, when `governs`, its rooms. `wrap` gives
+    /// Open a host's sessions and, when `governs`, its workspaces. `wrap` gives
     /// the plane every session answers remote actions with, from the
     /// workspaces and the host's own plane (its governance and apps): a
     /// relay answers compute placement around it.
@@ -178,7 +178,7 @@ impl HostSessions {
     /// # Errors
     ///
     /// The identity is invalid or, for a certified host, not host-capable;
-    /// the state root cannot be created; or the rooms cannot be opened.
+    /// the state root cannot be created; or the workspaces cannot be opened.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the handler is a set of shared handles moved into the sessions it becomes part of; dropping it earlier releases no lock"
@@ -188,7 +188,7 @@ impl HostSessions {
         identity: HostIdentity,
         endpoint: Endpoint,
         governs: bool,
-        keys: Option<crate::rooms::DeviceKeys>,
+        keys: Option<crate::workspaces::DeviceKeys>,
         wrap: impl FnOnce(
             &WorkspaceRegistry,
             Option<Arc<dyn AppServingPlane>>,
@@ -216,11 +216,11 @@ impl HostSessions {
         let handshake_trust = HandshakeTrust::new(&cfg.trust_policy, identity.user_public_key);
         let governs = governs && !handshake_trust.allow_any;
         handshake_trust.refresh(&workspaces).await;
-        // The host answers its rooms' governance as actions itself, beside
+        // The host answers its workspaces' governance as actions itself, beside
         // whatever apps its embedder serves.
-        let governance = governs.then(crate::rooms::HostRoomActions::new);
+        let governance = governs.then(crate::workspaces::HostWorkspaceActions::new);
         let own_plane = match &governance {
-            Some(governance) => Some(Arc::new(crate::rooms::GovernedPlane {
+            Some(governance) => Some(Arc::new(crate::workspaces::GovernedPlane {
                 governance: governance.clone(),
                 apps: cfg.apps.clone(),
             }) as Arc<dyn AppServingPlane>),
@@ -266,44 +266,50 @@ impl HostSessions {
         let (Some(governance), Some(actions)) = (governance, own_plane) else {
             return Ok((sessions, None));
         };
-        let rooms = crate::rooms::Rooms::open(
+        let workspaces = crate::workspaces::Workspaces::open(
             sessions.room_services(&cfg, &identity, endpoint, revocations, keys),
             cfg.state_root.join("rooms"),
         )
         .await
-        .map_err(HostError::Rooms)?;
-        governance.attach(rooms.clone());
+        .map_err(HostError::Workspaces)?;
+        governance.attach(workspaces.clone());
         #[cfg(any(feature = "agents", feature = "web"))]
         sessions
             .handler
             .compactor
-            .with_participant_keys(Arc::new(rooms.clone()));
-        Ok((sessions, Some(Governed { rooms, actions })))
+            .with_participant_keys(Arc::new(workspaces.clone()));
+        Ok((
+            sessions,
+            Some(Governed {
+                workspaces,
+                actions,
+            }),
+        ))
     }
 
-    /// What the rooms a host governs take from it: its sessions' registry,
-    /// access, records, identity and live trust, and `cfg`'s room settings.
+    /// What the workspaces a host governs take from it: its sessions' registry,
+    /// access, records, identity and live trust, and `cfg`'s workspace settings.
     fn room_services(
         &self,
         cfg: &HostConfig,
         identity: &HostIdentity,
         endpoint: Endpoint,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
-        keys: Option<crate::rooms::DeviceKeys>,
-    ) -> crate::rooms::RoomServices {
-        crate::rooms::RoomServices {
+        keys: Option<crate::workspaces::DeviceKeys>,
+    ) -> crate::workspaces::WorkspaceServices {
+        crate::workspaces::WorkspaceServices {
             keys,
             workspaces: self.workspaces.clone(),
             access: self.access_writer(),
-            records: self.room_records(),
+            records: self.workspace_records(),
             endpoint,
             cert: identity.device_cert.clone(),
             key: identity.device_signing_key.clone(),
             revocations,
             metrics: self.metrics.clone(),
             max_pre_admissions: cfg
-                .max_room_grants
-                .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
+                .max_workspace_grants
+                .unwrap_or(crate::workspaces::DEFAULT_MAX_PRE_ADMISSIONS),
             trust_policy: self.handler.trust_policy.clone(),
             agents: self.handler.agents.clone(),
             mode: cfg.mode.join_hint_mode(),
@@ -323,8 +329,8 @@ impl HostSessions {
     }
 
     /// In-process access to the records of the workspaces this host holds.
-    pub fn room_records(&self) -> crate::room_records::RoomRecords {
-        crate::room_records::RoomRecords::new(
+    pub fn workspace_records(&self) -> crate::workspace_records::WorkspaceRecords {
+        crate::workspace_records::WorkspaceRecords::new(
             self.workspaces.clone(),
             self.identity.cert.device_public_key,
             self.identity.user_public_key,
@@ -419,9 +425,9 @@ impl HostSessions {
     }
 }
 
-/// Say loudly when a host that `governs` rooms under `cert` takes part in no
-/// channels: its certificate may not own workspaces, so the rooms it governs
-/// keep their records in the clear in the room document instead of sealed
+/// Say loudly when a host that `governs` workspaces under `cert` takes part in no
+/// channels: its certificate may not own workspaces, so the workspaces it governs
+/// keep their records in the clear in the workspace document instead of sealed
 /// channels.
 fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
     if governs && !cert.capabilities.takes_part_in_room_channels() {
@@ -436,7 +442,7 @@ fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
 /// that register them.
 fn host_handlers(
     sessions: &HostSessions,
-    rooms: &crate::rooms::Rooms,
+    workspaces: &crate::workspaces::Workspaces,
 ) -> Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)> {
     vec![
         (
@@ -447,31 +453,31 @@ fn host_handlers(
             tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
             Arc::new(
                 tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(
-                    rooms.join_service(),
+                    workspaces.join_service(),
                 ),
             ),
         ),
         (
-            tilo_relay_session::rooms::private::PRIVATE_ALPN,
-            Arc::new(crate::rooms::PrivateProtocol::new(rooms.clone())),
+            tilo_relay_session::workspaces::private::PRIVATE_ALPN,
+            Arc::new(crate::workspaces::PrivateProtocol::new(workspaces.clone())),
         ),
         // The host's own device answers a workspace's member devices here, as
         // the members answer each other: an offer is answered by the host as
         // one of the workspace's member devices
-        // (`crate::rooms::device_plane`).
+        // (`crate::workspaces::device_plane`).
         (
             tilo_peer_state::actions::ACTIONS_ALPN,
-            Arc::new(rooms.plane()) as Arc<dyn DynProtocolHandler>,
+            Arc::new(workspaces.plane()) as Arc<dyn DynProtocolHandler>,
         ),
     ]
 }
 
-/// The rooms' own ALPNs on a relay's router, beside its session ALPN.
-pub fn rooms_protocols(
+/// The workspaces' own ALPNs on a relay's router, beside its session ALPN.
+pub fn workspaces_protocols(
     sessions: &HostSessions,
-    rooms: &crate::rooms::Rooms,
+    workspaces: &crate::workspaces::Workspaces,
 ) -> Vec<(&'static [u8], Box<dyn DynProtocolHandler>)> {
-    host_handlers(sessions, rooms)
+    host_handlers(sessions, workspaces)
         .into_iter()
         .filter(|(alpn, _)| *alpn != ALPN)
         .map(|(alpn, handler)| {
@@ -497,16 +503,16 @@ impl ProtocolHandler for Shared {
     }
 }
 
-/// The governance of the rooms placed on this device and the sessions of
+/// The governance of the workspaces placed on this device and the sessions of
 /// their members.
-pub struct RoomHost {
+pub struct WorkspaceHost {
     sessions: HostSessions,
-    rooms: crate::rooms::Rooms,
+    workspaces: crate::workspaces::Workspaces,
     actions: Arc<dyn AppServingPlane>,
     handlers: Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)>,
 }
 
-impl std::fmt::Debug for RoomHost {
+impl std::fmt::Debug for WorkspaceHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RoomHost")
             .field(
@@ -517,7 +523,7 @@ impl std::fmt::Debug for RoomHost {
     }
 }
 
-impl RoomHost {
+impl WorkspaceHost {
     /// Open the host on `endpoint`, which the embedder owns and routes.
     /// Spawns nothing periodic: with no peers connected it wakes only on
     /// I/O.
@@ -525,14 +531,14 @@ impl RoomHost {
     /// # Errors
     ///
     /// The identity is invalid or, for [`HostMode::CertifiedHost`], not
-    /// host-capable; `cfg` admits anyone, under which no room is governed;
-    /// the state root cannot be created; or the rooms kept there cannot be
+    /// host-capable; `cfg` admits anyone, under which no workspace is governed;
+    /// the state root cannot be created; or the workspaces kept there cannot be
     /// opened.
     pub async fn open(
         cfg: HostConfig,
         identity: HostIdentity,
         endpoint: Endpoint,
-        keys: Option<crate::rooms::DeviceKeys>,
+        keys: Option<crate::workspaces::DeviceKeys>,
     ) -> Result<Self, HostError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
             return Err(HostError::Identity(
@@ -541,20 +547,24 @@ impl RoomHost {
         }
         let (sessions, governed) =
             HostSessions::open(cfg, identity, endpoint, true, keys, |_, plane| plane).await?;
-        let Some(Governed { rooms, actions }) = governed else {
-            return Err(HostError::Rooms("the host governs no rooms".into()));
+        let Some(Governed {
+            workspaces,
+            actions,
+        }) = governed
+        else {
+            return Err(HostError::Workspaces("the host governs no rooms".into()));
         };
-        let handlers = host_handlers(&sessions, &rooms);
+        let handlers = host_handlers(&sessions, &workspaces);
         Ok(Self {
             sessions,
-            rooms,
+            workspaces,
             actions,
             handlers,
         })
     }
 
     /// The ALPN handlers to register on the embedder's router: the session,
-    /// workspace join, room administration and private protocols.
+    /// workspace join, workspace administration and private protocols.
     #[must_use]
     pub fn protocols(&self) -> Protocols {
         self.handlers
@@ -575,14 +585,14 @@ impl RoomHost {
             .map(|(_, handler)| handler)
     }
 
-    /// The governance of the rooms hosted here.
+    /// The governance of the workspaces hosted here.
     #[must_use]
-    pub const fn rooms(&self) -> &crate::rooms::Rooms {
-        &self.rooms
+    pub const fn workspaces(&self) -> &crate::workspaces::Workspaces {
+        &self.workspaces
     }
 
     /// The plane answering the host's own actions (`tilo.host`:
-    /// creating, listing and entering rooms; `tilo.workspace`: each room's
+    /// creating, listing and entering workspaces; `tilo.workspace`: each workspace's
     /// governance) and its embedder's apps, for in-process callers. A
     /// caller is named by [`local_caller`] and its certificate.
     #[must_use]
@@ -590,12 +600,12 @@ impl RoomHost {
         Arc::clone(&self.actions)
     }
 
-    /// The workspace join service of the rooms hosted here, for a joining
+    /// The workspace join service of the workspaces hosted here, for a joining
     /// device in the same process
     /// ([`WorkspaceJoinClient::local`](tilo_relay_session::workspace_join::WorkspaceJoinClient::local)).
     #[must_use]
     pub fn join_service(&self) -> Arc<dyn tilo_relay_session::workspace_join::LocalJoinService> {
-        Arc::new(self.rooms.join_service())
+        Arc::new(self.workspaces.join_service())
     }
 
     /// An in-process member session of this device's own person: the same
@@ -626,11 +636,11 @@ impl RoomHost {
         &self.sessions.handler.compactor
     }
 
-    /// The durable records of the rooms hosted here, for a service the
+    /// The durable records of the workspaces hosted here, for a service the
     /// embedder runs beside them.
     #[must_use]
-    pub fn room_records(&self) -> crate::room_records::RoomRecords {
-        self.sessions.room_records()
+    pub fn workspace_records(&self) -> crate::workspace_records::WorkspaceRecords {
+        self.sessions.workspace_records()
     }
 
     /// The certificate this host proves itself with.
@@ -664,16 +674,16 @@ impl RoomHost {
     }
 }
 
-/// The caller an in-process device is to the host's [`RoomHost::actions`].
+/// The caller an in-process device is to the host's [`WorkspaceHost::actions`].
 #[must_use]
 pub fn local_caller(cert: &DeviceCert) -> tilo_actions::remote::Caller {
     tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
 }
 
-/// Where an embedder whose router is built before any room is placed on it
+/// Where an embedder whose router is built before any workspace is placed on it
 /// installs the host its [`deferred_protocols`] forward to.
 #[derive(Clone, Default)]
-pub struct HostSlot(Arc<std::sync::RwLock<Option<Arc<RoomHost>>>>);
+pub struct HostSlot(Arc<std::sync::RwLock<Option<Arc<WorkspaceHost>>>>);
 
 impl std::fmt::Debug for HostSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -685,24 +695,24 @@ impl std::fmt::Debug for HostSlot {
 
 impl HostSlot {
     /// Forward this slot's connections to `host` from now on.
-    pub fn install(&self, host: Arc<RoomHost>) {
+    pub fn install(&self, host: Arc<WorkspaceHost>) {
         *self.0.write_recover() = Some(host);
     }
 
     /// Refuse this slot's connections again, handing back the host it
     /// forwarded to.
-    pub fn clear(&self) -> Option<Arc<RoomHost>> {
+    pub fn clear(&self) -> Option<Arc<WorkspaceHost>> {
         self.0.write_recover().take()
     }
 
     /// The host this slot forwards to.
     #[must_use]
-    pub fn host(&self) -> Option<Arc<RoomHost>> {
+    pub fn host(&self) -> Option<Arc<WorkspaceHost>> {
         self.0.read_recover().clone()
     }
 }
 
-/// Handlers for every ALPN a room host answers on, for a router built
+/// Handlers for every ALPN a workspace host answers on, for a router built
 /// before any host opens: each refuses connections until its slot holds a
 /// host ([`HostSlot::install`]), then forwards to that host. Before then
 /// they cost nothing.
@@ -768,7 +778,7 @@ impl GovernedAccessWriter {
         &self.shell_payloads
     }
 
-    /// Replace the standing of each member device of the room.
+    /// Replace the standing of each member device of the workspace.
     pub(crate) async fn replace_standings(
         &self,
         workspace_id: u64,
@@ -781,7 +791,7 @@ impl GovernedAccessWriter {
             &self.shell_payloads,
             workspace_id,
             pinned,
-            crate::room_access::AdmissionMode::Explicit,
+            crate::workspace_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -811,7 +821,7 @@ impl GovernedAccessWriter {
             &self.shell_payloads,
             workspace_id,
             pinned,
-            crate::room_access::AdmissionMode::Explicit,
+            crate::workspace_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -884,7 +894,7 @@ impl HandshakeTrust {
 }
 
 /// Whether `next` trusts less than `previous` did: a user root it no longer
-/// lists. One that only adds roots, as each person a public room admits
+/// lists. One that only adds roots, as each person a public workspace admits
 /// does, ends nobody's session and announces nothing.
 fn narrows(previous: &TrustPolicy, next: &TrustPolicy) -> bool {
     match (previous, next) {
@@ -965,9 +975,9 @@ pub struct RelayProtocol {
     pub metrics: Arc<Metrics>,
     pub autobind: Option<WorkspaceAutobind>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
-    /// Set once when the host starts serving browsers: the rooms whose
+    /// Set once when the host starts serving browsers: the workspaces whose
     /// calls it carries.
-    pub carried_calls: Arc<std::sync::OnceLock<crate::rooms::WeakRooms>>,
+    pub carried_calls: Arc<std::sync::OnceLock<crate::workspaces::WeakWorkspaces>>,
     pub agents: crate::peer::AgentRegistry,
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
@@ -978,8 +988,8 @@ pub struct RelayProtocol {
 
 impl RelayProtocol {
     /// This relay's certificate and agent trust.
-    pub fn trust(&self) -> crate::room_access::RelayTrust<'_> {
-        crate::room_access::RelayTrust {
+    pub fn trust(&self) -> crate::workspace_access::RelayTrust<'_> {
+        crate::workspace_access::RelayTrust {
             revocations: &self.identity.revocations,
             policy: &self.trust_policy,
             own_user: &self.identity.user_public_key,
@@ -1124,8 +1134,8 @@ where
     Ok(())
 }
 
-/// The device's own host, as its native owner joins the rooms placed on it.
-impl tilo_peer_state::owner::session::OwnHost for RoomHost {
+/// The device's own host, as its native owner joins the workspaces placed on it.
+impl tilo_peer_state::owner::session::OwnHost for WorkspaceHost {
     fn join_service(&self) -> Arc<dyn tilo_relay_session::workspace_join::LocalJoinService> {
         Self::join_service(self)
     }

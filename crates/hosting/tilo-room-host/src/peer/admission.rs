@@ -115,7 +115,7 @@ const FRESH_STAGES: usize = 16;
 /// Stage `envelope` before its owner turn when it is a checkpoint that may
 /// start its lineage, or replace the whole of it
 /// ([`crate::store::WorkspaceStore::stage_fresh_checkpoint`]). Every
-/// newcomer of a room retains such a checkpoint first, its identity record,
+/// newcomer of a workspace retains such a checkpoint first, its identity record,
 /// then its access requests and acknowledgements, each replacing its last;
 /// the owner commits one in a single barrier instead of three rounds of
 /// them. `None` when it is not one, or the stage failed: the turn then
@@ -405,7 +405,7 @@ pub(super) async fn enqueue_state_inner(
         replay_pending_work: None,
         pending_work: None,
     };
-    // What this host authors itself (room and channel governance) has a
+    // What this host authors itself (workspace and channel governance) has a
     // lane of its own, so it never waits behind a crowd's member traffic.
     let lane = if source.is_none() {
         crate::persistence::Lane::Host
@@ -477,7 +477,7 @@ fn admitted_delta(envelope: &Envelope) -> Result<([u8; 32], &[u8]), PeerError> {
     Ok((*author, delta))
 }
 
-/// The room's store, read under a membership check that the source may still
+/// The workspace's store, read under a membership check that the source may still
 /// write to it.
 async fn authorize_admission(
     workspace: &SharedWorkspace,
@@ -543,10 +543,10 @@ async fn prepare_admission(
         );
     }
     // Include admitted cross-user live members; explicit device membership is
-    // not the only signed-room authority supported by subscriptions.
+    // not the only signed-workspace authority supported by subscriptions.
     // A device's own change is not sent back to it. What the host commits
-    // itself (the governor's decisions, a room bot's writes) no session
-    // sent, so it reaches the host device's own session too: the room
+    // itself (the governor's decisions, a workspace bot's writes) no session
+    // sent, so it reaches the host device's own session too: the workspace
     // actions the host runs for members read through that session, and
     // would otherwise never see a bot complete what a member started.
     let host_commit = source.is_none();
@@ -929,12 +929,12 @@ fn trace_retention_complete(build: &crate::store::retained::RetainBuild, publica
 }
 
 /// An admitted delta's completion: once its owner turn made it durable,
-/// publish it to the room's live sessions.
+/// publish it to the workspace's live sessions.
 struct StatePublisher {
     workers: Arc<tokio::sync::Semaphore>,
     workspace: SharedWorkspace,
     source: Option<StateSource>,
-    /// The host's own change: the room's or a channel's governance.
+    /// The host's own change: the workspace's or a channel's governance.
     host: bool,
     metrics: Arc<crate::metrics::Metrics>,
     trace: Option<StateAdmissionTrace>,
@@ -1074,7 +1074,7 @@ impl StatePublisher {
             let budget = live_budget(&envelope);
             test_point!(
                 if matches!(envelope, super::LiveEnvelope::Original(_))
-                    => check(room self.workspace, "live-delivery-budget")
+                    => check(workspace self.workspace, "live-delivery-budget")
                     else budget = Err(crate::persistence::error(
                         "injected live delivery budget failure",
                     ))

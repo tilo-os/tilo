@@ -4,7 +4,7 @@
 //! Each endpoint names who it admits with an [`EndpointTrust`] and runs
 //! [`LiveIdentity::authenticate`] over its stream, or, split across two HTTPS
 //! requests, [`LiveIdentity::begin`] and [`PendingServer::finish`]. Anything an
-//! endpoint checks beyond that (room membership, the owner gate on compute
+//! endpoint checks beyond that (workspace membership, the owner gate on compute
 //! control) is authorization and stays with the endpoint.
 
 use std::sync::{Arc, RwLock};
@@ -573,7 +573,7 @@ mod tests {
                 std::io::ErrorKind::WouldBlock,
             );
         }
-        // Cancelling one waiting exchange makes room immediately.
+        // Cancelling one waiting exchange makes workspace immediately.
         drop(pending.pop().unwrap());
         assert_eq!(budget.available_permits(), 1);
         for supplied in [false, true] {

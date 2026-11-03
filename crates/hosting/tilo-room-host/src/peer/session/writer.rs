@@ -23,9 +23,9 @@ enum WriterTurn {
     Idle { live: bool },
 }
 
-/// The queues the session's reader and rooms feed its writer through.
+/// The queues the session's reader and workspaces feed its writer through.
 pub(super) struct WriterQueues<'s> {
-    /// Envelopes every room this peer is subscribed to queues for the wire.
+    /// Envelopes every workspace this peer is subscribed to queues for the wire.
     rx: &'s mut mpsc::Receiver<Envelope>,
     state_rx: &'s mut mpsc::Receiver<StateDelivery>,
     reply_rx: &'s mut mpsc::Receiver<ReplayWrite>,
@@ -243,14 +243,14 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
         Ok(false)
     }
 
-    /// `state` and what else is queued for the same room goes with it, up to
-    /// [`STATE_RUN`]; the first delivery for another room waits its turn.
+    /// `state` and what else is queued for the same workspace goes with it, up to
+    /// [`STATE_RUN`]; the first delivery for another workspace waits its turn.
     fn state_run(&mut self, state: StateDelivery) -> Vec<StateDelivery> {
-        let room = delivery_room(&state);
+        let workspace = delivery_room(&state);
         let mut run = vec![state];
         while run.len() < STATE_RUN {
             match self.state_rx.try_recv() {
-                Ok(next) if room.is_some() && delivery_room(&next) == room => {
+                Ok(next) if workspace.is_some() && delivery_room(&next) == workspace => {
                     run.push(next);
                 }
                 Ok(next) => {

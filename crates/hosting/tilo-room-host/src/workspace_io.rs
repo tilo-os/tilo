@@ -1,5 +1,5 @@
 //! Filesystem authority work is independent of state persistence. Admission is
-//! bounded before spawning work; one authorization lane serializes each room's
+//! bounded before spawning work; one authorization lane serializes each workspace's
 //! reads and writes. No routing or registry guard crosses filesystem work.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -8,9 +8,9 @@ use tokio::sync::{MutexGuard, OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::membership_watch::DiskGeneration;
 use crate::peer::WorkspaceRegistry;
-use crate::room_access::AdmissionMode;
 use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
+use crate::workspace_access::AdmissionMode;
 use tilo_lock::MutexRecover as _;
 
 const AUTHORIZATION_CAPACITY: usize = 64;
@@ -27,7 +27,7 @@ fn authorization_slots() -> &'static Arc<Semaphore> {
 }
 
 /// How long authorization work waits for a slot before its caller fails.
-/// Every guest who joins a public room changes its membership, so a burst
+/// Every guest who joins a public workspace changes its membership, so a burst
 /// of arrivals sends every session's next check to disk at once; they queue
 /// here rather than each ending its session.
 const AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -78,7 +78,7 @@ async fn authority_handles(
     (runtime.store.clone(), runtime.authorization.clone())
 }
 
-/// The handles a membership reload needs, attaching the room to the daemon's
+/// The handles a membership reload needs, attaching the workspace to the daemon's
 /// membership watch when one now covers it (the runtime may have opened
 /// before the watch started, or outlived a stopped one).
 async fn reload_handles(
@@ -110,7 +110,7 @@ fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> 
 
 /// Current membership: in memory, reloaded from the external file only after
 /// the daemon's membership watch saw it change (or on every call while no live
-/// watch covers the room). Callers must recheck certificate, policy, room and
+/// watch covers the workspace). Callers must recheck certificate, policy, workspace and
 /// exact sessions using the returned routing guard. A reload holds the
 /// authorization lane, and releases it while that guard remains held, so a
 /// newer update cannot be overwritten by this read or slip between this read
@@ -268,7 +268,7 @@ pub(crate) async fn replace_membership(
 }
 
 /// Replace the native governor's exact devices and handshake roots as one
-/// durable projection. Removals narrow the live room before filesystem work;
+/// durable projection. Removals narrow the live workspace before filesystem work;
 /// additions appear only after the atomic record commits. A failed write
 /// therefore leaves a fail-closed in-process ceiling until a later successful
 /// replacement.
@@ -327,7 +327,7 @@ pub(crate) async fn replace_governed_access(
         };
         // Sessions of removed devices and roots re-check now, before the
         // write. A replacement that only admits narrows nobody's access: a
-        // public room's every admission woke every session it held.
+        // public workspace's every admission woke every session it held.
         if narrowed {
             crate::authority_epoch::bump();
         }
@@ -385,7 +385,7 @@ async fn open_runtime(
             Membership::default(),
             payloads,
         )?;
-        // A governed record on disk keeps the room governed.
+        // A governed record on disk keeps the workspace governed.
         runtime.admission = runtime.admission.rebind(admission);
         Ok::<_, StoreError>(Arc::new(tokio::sync::Mutex::new(runtime)))
     })
@@ -394,10 +394,10 @@ async fn open_runtime(
     .map_err(|error| error.to_string())
 }
 
-/// Take room `workspace_id` out of `workspaces`: its files stay on disk,
+/// Take workspace `workspace_id` out of `workspaces`: its files stay on disk,
 /// whatever still holds its runtime writes them no more, and once this
 /// returns its persistence owner has finished what was queued. Opening the
-/// room again ([`get_or_initialize`]) starts from those files.
+/// workspace again ([`get_or_initialize`]) starts from those files.
 pub(crate) async fn evict(workspaces: &WorkspaceRegistry, workspace_id: u64) {
     let Some(workspace) = workspaces.lock().await.remove(&workspace_id) else {
         return;
@@ -414,7 +414,7 @@ pub(crate) async fn evict(workspaces: &WorkspaceRegistry, workspace_id: u64) {
 }
 
 /// One reserved initialization per registry/ID; reservations count against the
-/// room cap. The owner retains the registry Arc (and therefore its identity)
+/// workspace cap. The owner retains the registry Arc (and therefore its identity)
 /// until publication, even when every initial waiter disconnects.
 #[expect(
     clippy::significant_drop_tightening,
@@ -489,11 +489,11 @@ pub(crate) async fn get_or_initialize(
 /// be persisted; `Ok(Err(reason))` when the device is refused.
 pub async fn admit_for(
     workspace: &SharedWorkspace,
-    trust: &crate::room_access::RelayTrust<'_>,
+    trust: &crate::workspace_access::RelayTrust<'_>,
     peer: &crate::auth::AuthenticatedPeer,
-    operation: crate::room_access::RoomOperation,
-) -> Result<Result<(), crate::room_access::DenyReason>, StoreError> {
-    use crate::room_access::{Decision, DenyReason, decide};
+    operation: crate::workspace_access::WorkspaceOperation,
+) -> Result<Result<(), crate::workspace_access::DenyReason>, StoreError> {
+    use crate::workspace_access::{Decision, DenyReason, decide};
     let (decision, revision) = {
         let runtime = fresh_membership(workspace).await?;
         (
@@ -688,7 +688,7 @@ mod tests {
         );
     }
 
-    /// Fresh reads until the started membership watch vouches for the room.
+    /// Fresh reads until the started membership watch vouches for the workspace.
     async fn warm(workspace: &SharedWorkspace) {
         tilo_test_env::within("the membership watch to vouch for the room", async {
             while !fresh_membership(workspace)
@@ -824,27 +824,27 @@ mod tests {
         let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
         let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
         let agents = crate::peer::AgentRegistry::default();
-        let trust = crate::room_access::RelayTrust {
+        let trust = crate::workspace_access::RelayTrust {
             revocations: &revocations,
             policy: &policy,
             own_user: &owner,
             agents: &agents,
         };
-        let removed = crate::room_access::tests::unsigned_peer(owner, [1; 32]);
+        let removed = crate::workspace_access::tests::unsigned_peer(owner, [1; 32]);
         for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
-            // Not even a same-owner room enrols past the ceiling.
+            // Not even a same-owner workspace enrols past the ceiling.
             workspace.lock().await.admission = mode;
             let admission = admit_for(
                 &workspace,
                 &trust,
                 &removed,
-                crate::room_access::RoomOperation::Compute,
+                crate::workspace_access::WorkspaceOperation::Compute,
             )
             .await
             .unwrap();
             assert_eq!(
                 admission,
-                Err(crate::room_access::DenyReason::NotAMember),
+                Err(crate::workspace_access::DenyReason::NotAMember),
                 "a removed device attached as a compute peer"
             );
             assert_eq!(workspace.lock().await.membership.devices, vec![[2; 32]]);
@@ -857,27 +857,27 @@ mod tests {
         let workspace = runtime(tmp.path());
         workspace.lock().await.admission = AdmissionMode::SameOwner;
         let owner = [9; 32];
-        // The handshake admits anyone: only the room may keep a stranger out.
+        // The handshake admits anyone: only the workspace may keep a stranger out.
         let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
         let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
         let agents = crate::peer::AgentRegistry::default();
-        let trust = crate::room_access::RelayTrust {
+        let trust = crate::workspace_access::RelayTrust {
             revocations: &revocations,
             policy: &policy,
             own_user: &owner,
             agents: &agents,
         };
-        let stranger = crate::room_access::tests::unsigned_peer([8; 32], [1; 32]);
+        let stranger = crate::workspace_access::tests::unsigned_peer([8; 32], [1; 32]);
         assert_eq!(
             admit_for(
                 &workspace,
                 &trust,
                 &stranger,
-                crate::room_access::RoomOperation::Compute
+                crate::workspace_access::WorkspaceOperation::Compute
             )
             .await
             .unwrap(),
-            Err(crate::room_access::DenyReason::NotAMember)
+            Err(crate::workspace_access::DenyReason::NotAMember)
         );
         assert!(
             fresh_membership(&workspace)
@@ -888,13 +888,13 @@ mod tests {
                 .is_empty(),
             "a cross-user device was enrolled through compute"
         );
-        let own = crate::room_access::tests::unsigned_peer(owner, [2; 32]);
+        let own = crate::workspace_access::tests::unsigned_peer(owner, [2; 32]);
         assert_eq!(
             admit_for(
                 &workspace,
                 &trust,
                 &own,
-                crate::room_access::RoomOperation::Compute
+                crate::workspace_access::WorkspaceOperation::Compute
             )
             .await
             .unwrap(),

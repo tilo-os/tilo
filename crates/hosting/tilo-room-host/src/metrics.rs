@@ -11,8 +11,8 @@
 //!
 //! - in total and for live fan-out ([`MetricsSnapshot::bytes_sent`],
 //!   [`MetricsSnapshot::bytes_sent_live`]);
-//! - per relay room, for the frames that belong to one
-//!   ([`Metrics::room_egress`]): a room's counters are created on its first
+//! - per relay workspace, for the frames that belong to one
+//!   ([`Metrics::room_egress`]): a workspace's counters are created on its first
 //!   frame and read under a shared lock, so writers never wait on each
 //!   other;
 //! - per connected session ([`Metrics::session_egress`]), by the session's
@@ -55,8 +55,8 @@ pub struct Metrics {
     bytes_sent: AtomicU64,
     /// Bytes of live fan-out frames written to peer sessions.
     bytes_sent_live: AtomicU64,
-    /// Egress per relay room.
-    rooms: RwLock<HashMap<u64, RoomCounters>>,
+    /// Egress per relay workspace.
+    workspaces: RwLock<HashMap<u64, WorkspaceCounters>>,
     /// Egress per connected session, keyed by a serial number.
     sessions: Mutex<HashMap<u64, Arc<SessionCounters>>>,
     /// Serial number of the next session.
@@ -64,12 +64,12 @@ pub struct Metrics {
 }
 
 #[derive(Default, Debug)]
-struct RoomCounters {
+struct WorkspaceCounters {
     bytes_sent: AtomicU64,
     bytes_sent_live: AtomicU64,
 }
 
-impl RoomCounters {
+impl WorkspaceCounters {
     fn add(&self, bytes: u64, live: bool) {
         self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
         if live {
@@ -142,37 +142,37 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Charge a frame of `bytes` that a session is about to write to `room`'s
+    /// Charge a frame of `bytes` that a session is about to write to `workspace`'s
     /// egress; `live` marks live fan-out (a delta or presence forwarded as it
     /// arrived), as opposed to replay, replies and positions. The session's
     /// [`EgressWrite`] counts the same bytes into the total.
-    pub fn add_room_egress(&self, room: u64, bytes: u64, live: bool) {
+    pub fn add_room_egress(&self, workspace: u64, bytes: u64, live: bool) {
         if live {
             self.bytes_sent_live.fetch_add(bytes, Ordering::Relaxed);
         }
         {
-            let rooms = self.rooms.read_recover();
-            if let Some(counters) = rooms.get(&room) {
+            let workspaces = self.workspaces.read_recover();
+            if let Some(counters) = workspaces.get(&workspace) {
                 counters.add(bytes, live);
                 return;
             }
         }
-        self.rooms
+        self.workspaces
             .write_recover()
-            .entry(room)
+            .entry(workspace)
             .or_default()
             .add(bytes, live);
     }
 
-    /// Egress per relay room since start, for rooms that were sent anything.
-    pub fn room_egress(&self) -> BTreeMap<u64, RoomEgress> {
-        self.rooms
+    /// Egress per relay workspace since start, for workspaces that were sent anything.
+    pub fn room_egress(&self) -> BTreeMap<u64, WorkspaceEgress> {
+        self.workspaces
             .read_recover()
             .iter()
-            .map(|(room, counters)| {
+            .map(|(workspace, counters)| {
                 (
-                    *room,
-                    RoomEgress {
+                    *workspace,
+                    WorkspaceEgress {
                         bytes_sent: counters.bytes_sent.load(Ordering::Relaxed),
                         bytes_sent_live: counters.bytes_sent_live.load(Ordering::Relaxed),
                     },
@@ -228,7 +228,7 @@ impl Metrics {
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             bytes_sent_live: self.bytes_sent_live.load(Ordering::Relaxed),
             sessions_open: u64::try_from(self.sessions.lock_recover().len()).unwrap_or(u64::MAX),
-            rooms: self.room_egress(),
+            workspaces: self.room_egress(),
         }
     }
 }
@@ -327,7 +327,7 @@ impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for EgressWrite<W> 
 }
 
 /// The persisted counter schema, shared with status readers.
-pub use tilo_relay_protocol::metrics::{MetricsSnapshot, RoomEgress};
+pub use tilo_relay_protocol::metrics::{MetricsSnapshot, WorkspaceEgress};
 
 #[cfg(test)]
 mod tests {
@@ -370,25 +370,25 @@ mod tests {
         let snap = m.snapshot();
         assert_eq!(snap.bytes_sent_live, 105);
         assert_eq!(
-            snap.rooms,
+            snap.workspaces,
             BTreeMap::from([
                 (
                     7,
-                    RoomEgress {
+                    WorkspaceEgress {
                         bytes_sent: 130,
                         bytes_sent_live: 100,
                     }
                 ),
                 (
                     8,
-                    RoomEgress {
+                    WorkspaceEgress {
                         bytes_sent: 5,
                         bytes_sent_live: 5,
                     }
                 ),
             ])
         );
-        // Room frames are charged before the session writes them; the total
+        // Workspace frames are charged before the session writes them; the total
         // is what the sessions' streams actually wrote.
         assert_eq!(snap.bytes_sent, 0);
     }

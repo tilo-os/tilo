@@ -3,10 +3,10 @@
 
 use super::{
     Arc, AuthenticatedPeer, Decision, Envelope, Lag, MAX_AUTOBOUND_WORKSPACES, PeerError,
-    ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, RoomOperation, SessionCtx,
-    SharedWorkspace, StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber,
-    WorkspaceAutobind, WorkspaceRegistry, current_session, lost_session, mpsc, room_access,
-    session_peer_authorized, unix_now_ns,
+    ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, SessionCtx, SharedWorkspace,
+    StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber, WorkspaceAutobind,
+    WorkspaceOperation, WorkspaceRegistry, current_session, lost_session, mpsc,
+    session_peer_authorized, unix_now_ns, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -91,11 +91,11 @@ async fn open_resume(
     Ok(skip)
 }
 
-/// A room that admitted a `Subscribe`, with what its admitting membership
+/// A workspace that admitted a `Subscribe`, with what its admitting membership
 /// read showed.
 struct AdmittedSubscription {
     workspace: SharedWorkspace,
-    /// The subscriber channel the room held for this device when it admitted
+    /// The subscriber channel the workspace held for this device when it admitted
     /// the subscription; the replay completion checks it is still the same.
     expected: Option<mpsc::Sender<Envelope>>,
     /// The device's earlier connections still subscribing when this one was
@@ -151,7 +151,7 @@ pub(super) async fn handle_subscribe(
     let waited = crate::timing::start();
     let mut ticket =
         ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
-    // A host this workspace is attached to keeps all of the room; a device
+    // A host this workspace is attached to keeps all of the workspace; a device
     // opens on-demand records.
     if ws.lock().await.attached(&peer.device_public_key) {
         ticket = ticket.with_every_record();
@@ -212,9 +212,9 @@ pub(super) async fn handle_subscribe(
 }
 
 /// The admission half of [`handle_subscribe`]: the agent's delegation, the
-/// room's binding (autobinding it for the relay owner's own devices), and
-/// the room's decision under a fresh membership read, enrolling the device
-/// when the room says so. A connection whose own authorization changed
+/// workspace's binding (autobinding it for the relay owner's own devices), and
+/// the workspace's decision under a fresh membership read, enrolling the device
+/// when the workspace says so. A connection whose own authorization changed
 /// meanwhile ends.
 async fn admit_subscription(
     peer: &AuthenticatedPeer,
@@ -222,7 +222,7 @@ async fn admit_subscription(
     subscribed: &[u64],
     workspace_id: u64,
 ) -> Result<SubscribeAdmission, PeerError> {
-    // An agent outside its delegation never gets a room bound for it.
+    // An agent outside its delegation never gets a workspace bound for it.
     if let Err(reason) = session
         .trust()
         .agent(&peer.device_public_key, workspace_id, unix_now_ns())
@@ -233,7 +233,7 @@ async fn admit_subscription(
         }));
     }
     // Only the relay owner's own devices can be enrolled into an autobound
-    // room, so only they may cause one to be bound.
+    // workspace, so only they may cause one to be bound.
     let autobind = session
         .autobind
         .filter(|_| peer.user_public_key == *session.own_user_public_key);
@@ -251,24 +251,34 @@ async fn admit_subscription(
         ));
     }
     if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
-        return Err(lost_session(&wr, peer, session, RoomOperation::Subscribe));
+        return Err(lost_session(
+            &wr,
+            peer,
+            session,
+            WorkspaceOperation::Subscribe,
+        ));
     }
     // A host attached to this one holds its session under an active lease,
     // so it doesn't need to appear in the workspace membership list.
-    match session.decide(&wr, peer, RoomOperation::Subscribe) {
+    match session.decide(&wr, peer, WorkspaceOperation::Subscribe) {
         Decision::Admit => {}
         Decision::AdmitAndEnrol => {
             let revision = wr.membership_revision;
             drop(wr);
             crate::workspace_io::admit_member(&ws, peer.device_public_key, revision).await?;
             wr = crate::workspace_io::fresh_membership(&ws).await?;
-            if !session.admits(&wr, peer, RoomOperation::Subscribe) {
+            if !session.admits(&wr, peer, WorkspaceOperation::Subscribe) {
                 return Err(PeerError::Protocol(
                     "subscriber authorization changed".into(),
                 ));
             }
             if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
-                return Err(lost_session(&wr, peer, session, RoomOperation::Subscribe));
+                return Err(lost_session(
+                    &wr,
+                    peer,
+                    session,
+                    WorkspaceOperation::Subscribe,
+                ));
             }
         }
         Decision::Deny(reason) => {
@@ -293,12 +303,12 @@ async fn admit_subscription(
     }))
 }
 
-/// What a subscriber's replay completion registers in the room once its
+/// What a subscriber's replay completion registers in the workspace once its
 /// capture is ready.
 struct SubscriberRegistration {
     workspace: SharedWorkspace,
     source: StateSource,
-    /// The subscriber channel the room held at admission.
+    /// The subscriber channel the workspace held at admission.
     expected: Option<mpsc::Sender<Envelope>>,
     /// The device's connections that were still subscribing at admission.
     earlier: Vec<mpsc::WeakSender<Envelope>>,
@@ -310,9 +320,9 @@ struct SubscriberRegistration {
     lag: Arc<Lag>,
 }
 
-/// The completion half of [`handle_subscribe`], run under the room's lock
+/// The completion half of [`handle_subscribe`], run under the workspace's lock
 /// once the replay capture is ready: re-check the subscriber against the
-/// room, then bind the ticket and register the live subscriber, its
+/// workspace, then bind the ticket and register the live subscriber, its
 /// presence route and its state session.
 async fn register_subscriber(
     registration: SubscriberRegistration,
@@ -354,11 +364,11 @@ async fn register_subscriber(
             (Some(expected), None) => !expected.same_channel(&source.tx),
             (None, Some(_)) => false,
         };
-    // The spectator seat is taken here, under the room's lock:
+    // The spectator seat is taken here, under the workspace's lock:
     // of two spectators let in for the last seat, one ends here.
     if !source.alive()
         || !source.admits(&wr, &source.peer)
-        || !room_access::seated(&wr, &source.peer)
+        || !workspace_access::seated(&wr, &source.peer)
     {
         return Err(crate::persistence::error(
             "replay subscriber authorization changed",
@@ -451,7 +461,7 @@ pub async fn get_or_autobind_workspace(
         &autobind.shell_payloads,
         workspace_id,
         true,
-        crate::room_access::AdmissionMode::SameOwner,
+        crate::workspace_access::AdmissionMode::SameOwner,
         MAX_AUTOBOUND_WORKSPACES,
     )
     .await

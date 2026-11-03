@@ -299,7 +299,7 @@ fn trace_session_end(
     }
 }
 
-/// Remove this session's subscriber from every room it subscribed to.
+/// Remove this session's subscriber from every workspace it subscribed to.
 async fn unregister_subscriber(
     workspaces: &super::WorkspaceRegistry,
     subscribed: &[u64],

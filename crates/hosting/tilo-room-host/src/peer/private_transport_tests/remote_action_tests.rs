@@ -376,7 +376,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         to: host.device_public_key,
     };
 
-    // A room request the plane leaves unanswered is undeliverable at once.
+    // A workspace request the plane leaves unanswered is undeliverable at once.
     let answer = handle_remote_action(&a, &session, &[id], route(), catalogue_request()).await;
     let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = answer else {
         panic!("an unanswered request is refused, got {answer:?}");

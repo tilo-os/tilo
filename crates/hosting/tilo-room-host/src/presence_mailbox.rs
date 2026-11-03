@@ -1,8 +1,8 @@
 //! Presence on its way to one connection: coalesced, paced and batched.
 //!
-//! Every room a connection is subscribed to posts the presence it fans out
+//! Every workspace a connection is subscribed to posts the presence it fans out
 //! into the connection's [`PresenceMailbox`] instead of its frame queue, and
-//! the connection's writer takes what is due as one batch per room.
+//! the connection's writer takes what is due as one batch per workspace.
 //!
 //! - **Latest state wins.** Presence with a slot (a pointer, a caret, a
 //!   selection, the range being typed; `neighbour_wire::PresenceSlot`)
@@ -86,7 +86,7 @@ const MAX_PENDING_EVENTS: usize = 32;
 /// One presence payload the writer is to send now.
 #[derive(Debug)]
 pub struct DuePresence {
-    /// The room it was fanned out in.
+    /// The workspace it was fanned out in.
     pub workspace_id: u64,
     /// The slot it codes against on a batching connection, or `None` for
     /// presence that travels whole.
@@ -197,7 +197,7 @@ impl PresenceMailbox {
         self.state.lock_recover()
     }
 
-    /// Post `payload`, which `author` sent to room `workspace_id` in `slot`
+    /// Post `payload`, which `author` sent to workspace `workspace_id` in `slot`
     /// (or unslotted). `held` marks presence that follows a delta of the
     /// same author: a caret, selection or typing range then waits up to
     /// [`DELTA_HOLD`] to go with that delta. Returns whether it was taken:
