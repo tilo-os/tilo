@@ -76,9 +76,8 @@ impl ResourceApp for CaptureStudioApp {
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
     // The studio shows this device's desktop: it is nobody's workspace
-    // participant and opens before anyone is chosen.
+    // participant.
     const ATTACHES_RUNTIME: bool = false;
-    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn view(cx: &mut ViewCx<Capture>) -> Element {
         let seat = cx.take_lent::<Studio>();

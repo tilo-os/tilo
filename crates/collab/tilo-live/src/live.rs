@@ -52,11 +52,17 @@ impl Namespace {
     #[must_use]
     pub fn path(&self) -> String {
         format!(
-            "{WORKSPACE}/{}/{SCOPE}/{}/{PARTICIPANT}/{}",
-            self.workspace,
-            self.scope,
+            "{}/{PARTICIPANT}/{}",
+            self.scope_path(),
             hex::encode(self.device)
         )
+    }
+
+    /// `workspace/<workspace>/scope/<scope id>`: the subtree every participant
+    /// of this scope publishes in, this device included.
+    #[must_use]
+    pub fn scope_path(&self) -> String {
+        format!("{WORKSPACE}/{}/{SCOPE}/{}", self.workspace, self.scope)
     }
 
     /// The subtree of everything this participant publishes.
@@ -101,6 +107,48 @@ impl Namespace {
             device: bytes,
         })
     }
+}
+
+/// The subtree under which every participant of `scope` publishes.
+#[must_use]
+pub fn participants(scope: &crate::scope::Scope) -> String {
+    format!(
+        "{WORKSPACE}/{}/{SCOPE}/{}/{PARTICIPANT}",
+        scope.workspace_id(),
+        scope.id()
+    )
+}
+
+/// The workspace segment for a workspace record's uuid bytes: the hyphenated
+/// spelling a `RoomId` displays, which is what a namespace and a grant's
+/// bytes must agree on.
+#[must_use]
+pub fn workspace_id(bytes: [u8; 16]) -> String {
+    let hex = hex::encode(bytes);
+    let mut id = String::with_capacity(36);
+    for (index, nibble) in hex.bytes().enumerate() {
+        if matches!(index, 8 | 12 | 16 | 20) {
+            id.push('-');
+        }
+        id.push(char::from(nibble));
+    }
+    id
+}
+
+/// The uuid bytes of a workspace record's id; `None` for any other spelling.
+#[must_use]
+pub fn workspace_bytes(workspace: &str) -> Option<[u8; 16]> {
+    if workspace.len() != 36 {
+        return None;
+    }
+    let mut bytes = [0_u8; 16];
+    let hex: String = workspace.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    hex::decode_to_slice(hex, &mut bytes).ok()?;
+    // Only the one canonical spelling names the same workspace.
+    (workspace_id(bytes) == workspace).then_some(bytes)
 }
 
 /// A track of a live namespace.
@@ -248,6 +296,8 @@ mod tests {
             )
         );
         assert_eq!(Namespace::parse(&namespace.path()), Some(namespace.clone()));
+        assert_eq!(namespace.scope_path(), "workspace/w1/scope/workspace");
+        assert!(namespace.path().starts_with(&namespace.scope_path()));
         assert_eq!(namespace.scope_id(), "workspace");
         assert_eq!(namespace.device(), DEVICE);
     }
@@ -304,6 +354,28 @@ mod tests {
         assert!(priority(Track::Presence) > priority(Track::Screen(Layer::High)));
         assert!(priority(Track::Screen(Layer::High)) > priority(Track::Camera(Layer::High)));
         assert!(priority(Track::Camera(Layer::High)) > priority(Track::Activity));
+    }
+
+    #[test]
+    fn a_workspace_id_round_trips_through_its_grant_bytes() {
+        let workspace = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        let bytes = workspace_bytes(workspace).unwrap();
+        assert_eq!(workspace_id(bytes), workspace);
+        assert_eq!(
+            workspace_bytes("0F8FAD5B-D9CB-469F-A165-70867728950E"),
+            None
+        );
+        assert_eq!(workspace_bytes("0f8fad5bd9cb469fa16570867728950"), None);
+        assert_eq!(workspace_bytes("workspace"), None);
+    }
+
+    #[test]
+    fn participants_names_the_subtree_of_one_scope() {
+        let scope = Scope::workspace("0f8fad5b-d9cb-469f-a165-70867728950e");
+        assert_eq!(
+            participants(&scope),
+            "workspace/0f8fad5b-d9cb-469f-a165-70867728950e/scope/workspace/participant"
+        );
     }
 
     #[test]

@@ -23,6 +23,9 @@ url.workspace = true
 base64 = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+# The poll surface a MoQ session runs a WebTransport carrier on. The desktop
+# backend's types implement it; a page's `WebTransport` is adapted onto it.
+web-transport-trait = { version = "0.4.0", optional = true }
 # Channels between browser callbacks and the tasks that await them; `sync`
 # builds on every target.
 tokio = { workspace = true, features = ["macros", "sync"] }
@@ -98,7 +101,7 @@ blocking = ["http", "reqwest/blocking"]
 # JSON request and response bodies.
 json = ["http", "dep:serde", "dep:serde_json"]
 ws = ["dep:tokio-websockets", "dep:tokio-rustls", "dep:futures-util"]
-webtransport = ["dep:web-transport-quinn"]
+webtransport = ["dep:web-transport-quinn", "dep:web-transport-trait"]
 # Raw TCP and UDP (and TLS over TCP) on the desktop; `Unsupported` on the web.
 sockets = ["dep:tokio-rustls"]
 # The fetch proxy a workspace host serves to its pages (`proxy::host`).

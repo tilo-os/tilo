@@ -410,10 +410,8 @@ impl From<TransportError> for CollabSendError {
 #[cfg(feature = "native")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeLaunchError {
-    /// The workspace the app was launched into has no identity selected, so
-    /// it cannot join it; the launch waits for someone to choose one.
-    IdentityRequired,
-    /// The configured service could not be reached.
+    /// The configured service could not be reached, or this device has no
+    /// identity to join its workspace as.
     Operation(String),
 }
 

@@ -198,6 +198,17 @@ pub struct SearchRow {
     pub facts: Vec<String>,
 }
 
+/// The open search as the desk last showed it: its query and rows, and
+/// whether it is still filling in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ShownSearch {
+    pub query: String,
+    pub rows: Vec<SearchRow>,
+    /// A source has still to answer for the query, or the rows are not cut
+    /// to the card yet, so the rows will change.
+    pub searching: bool,
+}
+
 /// What a caller of the desktop's published search asked of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SearchAsk {
@@ -456,7 +467,18 @@ impl DesktopHandle {
     /// pass; nothing while search is closed.
     pub fn search_rows(&self) -> (String, Vec<SearchRow>) {
         let shared = self.shared.borrow();
-        (shared.search_query.clone(), shared.search_rows.clone())
+        (
+            shared.shown_search.query.clone(),
+            shared.shown_search.rows.clone(),
+        )
+    }
+
+    /// Whether the open search is still filling in, as of the last update
+    /// pass: a source has still to answer for the query, or the rows shown
+    /// are not cut to the card yet, so the rows will change. What the desk
+    /// publishes as a search still searching.
+    pub fn search_searching(&self) -> bool {
+        self.shared.borrow().shown_search.searching
     }
 
     /// Type `query` into the open search, on the next update pass.
@@ -1049,12 +1071,14 @@ impl DesktopSurface {
         } else {
             Err(TypedRefusal::NoField)
         };
+        let shown = ShownSearch {
+            query,
+            rows,
+            searching: open && !search.settled(),
+        };
         let mut shared = self.shared.borrow_mut();
-        let changed = shared.search_rows != rows
-            || shared.search_query != query
-            || shared.typed_field != typed;
-        shared.search_rows = rows;
-        shared.search_query = query;
+        let changed = shared.shown_search != shown || shared.typed_field != typed;
+        shared.shown_search = shown;
         shared.typed_field = typed;
         if changed {
             // What the host above the windows draws of search, and what it

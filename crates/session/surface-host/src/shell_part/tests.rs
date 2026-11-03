@@ -50,8 +50,11 @@ fn click(part: &mut ShellPart, name: &str) {
     }
 }
 
-/// The shell the session ships is every file of the package: a file added to `apps/tl/shell`
-/// and not listed here would compile in `tilolang check` and fail only in the session.
+/// The shell the session ships is every file of the package the session runs: a file added to
+/// `apps/tl/shell` and not listed here would compile in `tilolang check` and fail only in the
+/// session. `scenarios.tl` is the one file it does not ship, and the only one: the harness the
+/// session runs nothing of, its scenarios staging the shell over other apps' records for its
+/// shots and tests (`SHELL_FILES`).
 #[test]
 fn the_shell_ships_every_file_of_its_package() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
@@ -69,7 +72,34 @@ fn the_shell_ships_every_file_of_its_package() {
         .collect();
     assert_eq!(
         shipped, on_disk,
-        "SHELL_FILES lists the package's files in path order"
+        "SHELL_FILES lists the package's files the session runs, in path order"
+    );
+}
+
+/// The package's scenarios (`scenarios.tl`) are the one file `SHELL_FILES` leaves out, and it
+/// holds declarations the package's ids lock names: the session compiles the shell without it,
+/// so a file that declared anything else there would drift from what the session runs.
+#[test]
+fn the_scenarios_are_the_only_file_the_session_leaves_out() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+    let on_disk: Vec<String> = tilolang_tilo::tilolang::source::source_paths(&dir)
+        .expect("the shell's package")
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    let left_out: Vec<&String> = on_disk
+        .iter()
+        .filter(|name| {
+            !SHELL_FILES
+                .iter()
+                .any(|(shipped, _)| shipped == &name.as_str())
+        })
+        .collect();
+    assert_eq!(
+        left_out,
+        vec![&"scenarios.tl".to_owned()],
+        "the session compiles the shell without its scenarios, and without nothing else"
     );
 }
 
@@ -667,8 +697,9 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
         "the well stands on the output, under the bar: {well:?}"
     );
 
-    // The strips show each strip's own controls; the framed canvas shows none of them, and its
-    // entry (what typed text finds is placed on the canvas) instead.
+    // The strips show each strip's own controls (its width, beside the place's); the framed
+    // canvas shows none of them, and its entry (what typed text finds is placed on the canvas)
+    // instead.
     assert!(
         labels.iter().any(|label| label == "Width"),
         "the strips show their controls: {labels:?}"
@@ -821,6 +852,7 @@ fn type_into(part: &mut ShellPart, text: &str) {
                 repeat: false,
                 keysym: u32::from(letter),
                 unmodified_keysym: u32::from(letter),
+                latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_compositor::KeyModifiers::default(),
             };
@@ -890,6 +922,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
                 repeat: false,
                 keysym: u32::from(letter),
                 unmodified_keysym: u32::from(letter),
+                latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_compositor::KeyModifiers::default(),
             };

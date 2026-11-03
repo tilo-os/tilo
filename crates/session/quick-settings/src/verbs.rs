@@ -274,7 +274,7 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
                 .unwrap_or(link)
                 .replace(['_', '-'], " ");
             put(&mut arguments, "query", &query);
-            (DESK, "open-search")
+            (DESK, "search")
         }
         _ => return None,
     };
@@ -372,7 +372,7 @@ mod tests {
                 link: "settings://devices_sync".into(),
             })
             .as_deref(),
-            Some("desktop:desk open-search query=devices sync"),
+            Some("desktop:desk search query=devices sync"),
             "a link is searched for, in the words a person would use"
         );
     }

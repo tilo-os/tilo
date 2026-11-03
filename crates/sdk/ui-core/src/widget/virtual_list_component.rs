@@ -77,6 +77,12 @@ pub struct ListItemProps {
     /// it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).
     #[component(slot)]
     pub change: Option<ChangeMarkProps>,
+    /// The group the row is in, as the platform reads it over the group's first row: a day
+    /// for a date. Rows of one group stand together under its heading, in the order they come.
+    pub group: Option<String>,
+    /// The row is one of the items done with: they stand after every group, under the list's
+    /// tail title, closed until the person opens them.
+    pub tail: bool,
     /// The item was removed and the person has not seen it go: the row stands in for it, its
     /// title struck through, at the row's own height. The UI host places such rows.
     pub removed: bool,
@@ -150,6 +156,10 @@ pub struct VirtualListProps {
     /// A conversation: each row stands in the page column, the list opens at its newest row
     /// and follows it.
     pub transcript: bool,
+    /// The title over the list's tail group: the rows whose item says it is one of those done
+    /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
+    /// person opens them. `None` leaves those rows among the others.
+    pub tail_title: Option<String>,
     /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
     /// the "New messages" divider stands over the row that shows it, and while that is above
     /// the view a pill at the foot offers to take the reader back to it. `None` draws neither.
@@ -357,7 +367,6 @@ impl DescribedRows {
         }
     }
 
-    /// The key of the item showing the resource `id`.
     fn key_presenting(&self, id: &str) -> Option<String> {
         match &self.held {
             Held::Nothing => None,
@@ -404,6 +413,8 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
             },
         },
         change: item.change.as_ref().map(ChangeMarkProps::again),
+        group: item.group.clone(),
+        tail: item.tail,
         removed: item.removed,
         row,
     })
@@ -471,6 +482,23 @@ impl ListModel for DescribedRows {
             _ => false,
         };
         waiting || !self.restyled.borrow().is_empty()
+    }
+
+    /// What the row is grouped by: its item's heading, or the list's tail for an item done
+    /// with.
+    fn group_at(&self, index: usize) -> Option<super::RowGroup> {
+        let key = self.key_at(index)?;
+        self.with_item(&key, |item| {
+            if item.tail {
+                Some(super::RowGroup::Tail)
+            } else {
+                item.group
+                    .as_deref()
+                    .filter(|heading| !heading.is_empty())
+                    .map(|heading| super::RowGroup::Heading(heading.to_owned()))
+            }
+        })
+        .flatten()
     }
 
     fn label(&self, index: usize) -> Option<String> {
@@ -581,6 +609,39 @@ fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
         .flatten()
 }
 
+/// The commands of a row's menus that declare a shortcut (`key: "Ctrl+Enter"`), each with the
+/// keys it answers, so the row runs it where it has the keyboard as choosing it does: the
+/// item's own menu first, then what the view attached to the row. Text that is no chord names
+/// no key, and the first command to name a shortcut holds it.
+fn declared_shortcuts(
+    menu: &[MenuPart],
+    attached: &[MenuPart],
+) -> Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)> {
+    let mut out: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)> = Vec::new();
+    for part in menu.iter().chain(attached) {
+        let MenuPart::Item(item) = part else {
+            continue;
+        };
+        let Some(key) = item.key.as_deref() else {
+            continue;
+        };
+        if tilo_ui_graph::keys::Chord::parse(key).is_err() {
+            continue;
+        }
+        let shortcut = crate::platform::Shortcut::from(key);
+        if out
+            .iter()
+            .any(|(declared, _)| declared.same_press(&shortcut))
+        {
+            continue;
+        }
+        if let Some(run) = item.choose.clone().command() {
+            out.push((shortcut, run));
+        }
+    }
+    out
+}
+
 /// The row of an item: its list row with the item's presence, or its view; under the swipe
 /// and beside the hover toolbar the item has.
 fn row_of(rows: &DescribedRows, key: &str) -> Element {
@@ -604,8 +665,10 @@ fn bare_row(
             row,
             change,
             removed,
+            menu,
             ..
         } = item;
+        let shortcuts = declared_shortcuts(&menu, &attached.menu);
         // What someone else changed and the person has not seen, at the row's own height: on a
         // list row their face on its trailing edge and their colour under it; beside a row's
         // own view their face alone.
@@ -625,6 +688,7 @@ fn bare_row(
                 if let Some(mark) = change.and_then(ChangeMarkProps::row) {
                     row = row.change(mark.identity, mark.name, mark.spoken, mark.show);
                 }
+                row = row.shortcuts(shortcuts);
                 Box::new(row) as Element
             }
             ItemRow::View(view) => with_mark(
@@ -846,6 +910,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            tail_title,
             unread,
             mut rows,
             removed,
@@ -891,6 +956,9 @@ impl Described for DescribedList {
             VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, |rows, _, key, _| {
                 row_of(rows, key)
             });
+        if let Some(title) = tail_title {
+            list = list.with_tail_title(title);
+        }
         // A column's one list takes the column's height and scrolls its rows; a list among a
         // page's other content is as tall as its rows, and the page scrolls them with the rest.
         list = if in_column {
@@ -963,6 +1031,7 @@ impl Described for DescribedList {
             // the rows it left and arrived at build again.
             if let Some(list) = self.list_mut() {
                 list.set_unread(props.unread.as_ref().map(|item| item.0.clone()));
+                list.set_tail_title(props.tail_title.clone());
             }
             return true;
         }
@@ -993,5 +1062,59 @@ impl Decorator for DescribedList {
     /// the list builds anew stay mounted in place and the window keeps its tree.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         self.inner_mut().take_structure_change()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::component::{Event, Fired, Intent};
+    use crate::widget::MenuItemProps;
+
+    /// A menu command that reports its choose to `queue` when run.
+    fn command(label: &str, key: &str, queue: &crate::Intents<Fired>) -> MenuPart {
+        let mut item = MenuItemProps {
+            label: label.to_owned(),
+            key: Some(key.to_owned()),
+            ..MenuItemProps::default()
+        };
+        item.choose = Event::View(Intent::new(queue, "row", "choose"));
+        MenuPart::Item(item)
+    }
+
+    /// The row's menus reach it with the keys they declare, matched as every shortcut is.
+    #[test]
+    fn a_row_reads_the_shortcuts_its_menu_declares() {
+        let queue = crate::Intents::<Fired>::default();
+        let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
+        let attached = vec![
+            command("Double click", "Double click", &queue),
+            MenuPart::Separator,
+        ];
+        let shortcuts = declared_shortcuts(&menu, &attached);
+        assert_eq!(shortcuts.len(), 1, "text that is no chord names no key");
+        assert!(
+            shortcuts[0]
+                .0
+                .same_press(&crate::platform::Shortcut::from("Control+Return"))
+        );
+        (shortcuts[0].1)();
+        assert_eq!(
+            queue.take(),
+            [Fired {
+                key: "row".to_owned(),
+                event: "choose".to_owned(),
+                value: None,
+            }]
+        );
+    }
+
+    /// One key runs one command: the first the menus offer it on holds it.
+    #[test]
+    fn one_key_runs_one_command_of_the_row() {
+        let queue = crate::Intents::<Fired>::default();
+        let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
+        let attached = vec![command("Reopen", "control+enter", &queue)];
+        assert_eq!(declared_shortcuts(&menu, &attached).len(), 1);
     }
 }

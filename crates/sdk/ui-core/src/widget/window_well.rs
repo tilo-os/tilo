@@ -156,6 +156,7 @@ pub struct WindowWellProps {
     /// The place whose window shows here: the tab id the desktop model gives the window when
     /// it maps (shell.md §8).
     #[component(required, positional)]
+    #[component(data)]
     pub place: String,
 }
 

@@ -247,22 +247,6 @@ impl Sources {
             options: self.options.clone(),
         }
     }
-
-    /// Make the source after the active one active and say which it is;
-    /// `None` with a single source: there is nothing else to type in.
-    pub fn next(&mut self) -> Option<String> {
-        if self.ids.len() < 2 {
-            return None;
-        }
-        let current = self
-            .ids
-            .iter()
-            .position(|id| *id == self.active)
-            .unwrap_or(0);
-        let next = current.checked_add(1)?.checked_rem(self.ids.len())?;
-        self.active.clone_from(self.ids.get(next)?);
-        Some(self.active.clone())
-    }
 }
 
 /// The compositor's input preferences from the stored ones.

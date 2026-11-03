@@ -209,10 +209,9 @@ instead). A principal says what it is: `p.name()`,
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
 offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
-members in a view of no resource), without the view declaring anything. A primitive the
-toolkit draws takes that component's events in its block, as `ui.RichInput` written out does:
-`rich_input(bind: draft) { on submit: send(c, draft) }` sends on Enter (Shift+Enter breaks the
-line).
+members in a view of no resource), without the view declaring anything. A component primitive's
+block is its component's, events included: `rich_input(bind: draft) { on submit: send(c, draft) }`
+sends on Enter (Shift+Enter breaks the line).
 
 **Collections.** An item is its id: a reference to it names its document and id
 (`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
@@ -262,9 +261,10 @@ A register written from itself (`item.done = not item.done`, `c.n = c.n + 1`) is
 with a default, as above, or make the field a counter for a delta.
 
 **Views.** A view body is UI statements: primitive and view calls (with child blocks), `for`,
-`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`. Options of UI
-primitives are the primitives' own enums, written as dot literals; lengths keep their units and
-flags stay bare words. An anchor follows the call as `as name`:
+`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`, whose type is written
+where a branch leaves it open (`let heading: Option<Date> = if let g = group { g(x) } else { .none }`).
+Options of UI primitives are the primitives' own enums, written as dot literals; lengths keep
+their units and flags stay bare words. An anchor follows the call as `as name`:
 
 ```
 view notebook(nb: Notebook) {
@@ -289,9 +289,13 @@ view notebook(nb: Notebook) {
 The options and their values: `gap:`/`padding:` `.tight .related .sibling .section .group`;
 `align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`; `collapse:`
 `.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions `.top_leading`
-... `.bottom_trailing`; `axis:` `.vertical .horizontal`; text `role:` `.body .title .caption
-.numeric`. A button takes its look from its action, `primary action` or `destructive action`, and
-its label and icon from the action too unless it names them (`button(n.title, on: open(n))`).
+... `.bottom_trailing`; `axis:` `.vertical .horizontal`; text `role:` `.display .large_title
+.title .heading .subheading .body .label .caption .reading .code`, with `numeric: true` for
+figures. A component primitive (`text`, `input`, `checkbox`, `rich_input`, `image`, ...) takes
+the arguments, slots, events and `bind:` its `ui.*` component's description declares; the rest
+of this section is what the layout primitives take. A button takes its look from its action,
+`primary action` or `destructive action`, and its label and icon from the action too unless it
+names them (`button(n.title, on: open(n))`).
 `space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation` (`.portrait
 .landscape .ultrawide`) compare with the same literals.
 
@@ -409,6 +413,12 @@ print(xs, fields: [.title, .due])
   the subject as an `if` does; over another argument it is read where the action is applied
   with it, `button(move_to(b, card, col))`. `button(pin(n))` reads its `label:`, `icon:` and
   `on:` with the arguments it applies, as the view draws: Pin turns into Unpin, toggled.
+- An action declares its shortcut: `key: "Ctrl+Enter"`, `key: "Ctrl+Shift+M"`, `key: "Delete"` —
+  modifiers in any order, then one key. The command modifier is the platform's own, so
+  `Ctrl+Enter` is Command+Enter on a Mac. Where the action is offered its key runs it: an
+  action on an item while that item has the keyboard, an action on the app's root window-wide.
+  `std`'s menus and buttons show it, and so does the palette. The key is checked when the app
+  compiles, and two actions of one subject cannot answer the same keys.
 - A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
@@ -419,7 +429,7 @@ print(xs, fields: [.title, .due])
   `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
 - `2026-10-24` is a Date and `2026-10-24T09:30Z` a Time (UTC), held as ISO text that compares
   with the ordering operators; `2026-10` is a month, a filter's value. `Date("2026-10-24")` and
-  `Time(...)` read the same from text. `date(bind: t.due)` edits one. In an action, `now` is the
+  `Time(...)` read the same from text. `ui.DateField(bind: t.due)` edits one. In an action, `now` is the
   invocation's Time, recorded with the change.
 - A scenario names people with `let mia = person("Mia")`. Inside
   `as mia at 2026-06-29T07:02Z { post(t, "Hi") }`, the actions called run with `invoker` = mia
@@ -433,8 +443,8 @@ print(xs, fields: [.title, .due])
   `canvas`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.
 - A row view may have `let`s before its `row`. `row(r)` with a resource shows that resource's
-  row. `card(r, count: n)` shows a count.
-- A card is a summary of its resource: a `list` inside a `card` shows its first five rows (the
+  row. `ui.Card(item: r, count: n)` shows a count.
+- A card is a summary of its resource: a `list` a `ui.Card` holds shows its first five rows (the
   list node's `preview` property), the count says how many there are, and the card opens the
   resource for the whole list.
 

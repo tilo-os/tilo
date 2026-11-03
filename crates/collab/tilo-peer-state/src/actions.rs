@@ -226,10 +226,15 @@ impl ActionHost for NoActions {
 /// the choices its person made for it. A plane with no `Offering` says its
 /// app is not installed, so it never claims work it cannot run.
 pub trait Offering: Send + Sync {
-    /// What this device says of running `route` in `workspace`, for `work`:
-    /// its own state and which of the job's inputs it already holds, never
-    /// another device's.
-    fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer;
+    /// What this device says of running `offer`'s route on `offer`'s work,
+    /// asked by the device `from`: its own state and which of the job's
+    /// inputs it already holds, never another device's.
+    ///
+    /// An answer that takes the work remembers the offer under `from` and
+    /// [`Query::request_id`], which is the invocation it would run: the
+    /// invocation that follows names it, so the work run is the work this
+    /// device answered for, for the device that asked.
+    fn report(&self, from: [u8; 32], offer: &Query) -> Answer;
 }
 
 /// A device's action plane: it serves the requests other devices of its
@@ -433,7 +438,9 @@ impl ActionPlane {
     /// Every device is asked at once and given the whole of `within` to
     /// answer; one that does not is ranked as absent. Answers are complete
     /// when the round finishes, so a caller needs no state of its own
-    /// between asking and choosing.
+    /// between asking and choosing. `invocation` names the offer: it is the
+    /// invocation the work would run, and it is what an answering device
+    /// keeps the work under.
     #[must_use]
     pub fn offers(
         &self,
@@ -442,6 +449,7 @@ impl ActionPlane {
         workspace: &str,
         route: &Route,
         work: &Work,
+        invocation: tilo_actions::InvocationId,
         within: Duration,
     ) -> tilo_actions::remote::Pending<crate::placement::Choice> {
         let (complete, answer) = tilo_actions::remote::pending();
@@ -460,7 +468,7 @@ impl ActionPlane {
                     target,
                     self.0
                         .runtime
-                        .spawn(async move { asker.consider(&route, &work).await }),
+                        .spawn(async move { asker.consider(&route, &work, invocation).await }),
                 )
             })
             .collect::<Vec<_>>();
@@ -515,7 +523,7 @@ impl ActionPlane {
                 holds: Vec::new(),
             });
         };
-        let mut answer = offering.report(&query.workspace, &query.route, &query.work);
+        let mut answer = offering.report(remote, query);
         // What the plane knows better than the device's own report.
         answer.state.requester = false;
         answer.state.online = true;
@@ -1096,10 +1104,15 @@ impl Device {
     /// Whether this device would run `route` on `work`: what it answered,
     /// with the round trip this device measured, or — asked but silent —
     /// what a device that is away is taken to have said.
-    async fn consider(&self, route: &Route, work: &Work) -> Answer {
+    async fn consider(
+        &self,
+        route: &Route,
+        work: &Work,
+        invocation: tilo_actions::InvocationId,
+    ) -> Answer {
         let query = Query {
             workspace: self.workspace.clone(),
-            request_id: uuid::Uuid::new_v4(),
+            request_id: invocation.0,
             route: route.clone(),
             work: work.clone(),
         };

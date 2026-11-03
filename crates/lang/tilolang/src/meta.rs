@@ -74,6 +74,9 @@ pub struct PackageMeta {
     /// Declared enums. Types that name one are written `enum Name` in metadata.
     #[serde(default)]
     pub enums: Vec<EnumMeta>,
+    /// The words the package's views show as written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<WordMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
     pub flows: Vec<FlowMeta>,
@@ -143,6 +146,18 @@ pub struct DefaultViewMeta {
     pub ty: String,
     /// The view id.
     pub view: String,
+}
+
+/// Words a view shows as it wrote them (`"{n} new"` given to a label): a message of the
+/// package's catalogue, an attribute of the view's own message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordMeta {
+    /// The view's id.
+    pub view: String,
+    /// The attribute naming it under the view's message: `w-` and a slug of its words.
+    pub key: String,
+    /// The words with each interpolation as its variable: `{n} new`.
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -458,9 +473,10 @@ pub struct ActionMeta {
     /// both would show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggles: Option<String>,
-    /// `key: "e"`: the plain key that runs the action while its window has the keyboard, and (on
-    /// a row's action) while that row is selected. It is the key's own character read through the
-    /// person's keymap, never a key code, so it is layout-correct on any keyboard.
+    /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard,
+    /// and (on an item's action) while that item is selected or its view shows. One spelling —
+    /// the modifiers in one order, then the key's token (`Ctrl+Shift+enter`) — that the toolkit
+    /// matches a press against, with the platform's own command modifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names

@@ -5,15 +5,6 @@ executable stand-alone; the higher-level flow is described below.
 
 ## Measure
 
-- `shm_swizzle_bench` — a Cargo example calling the production SHM pixel
-  conversion on reused storage, with pixel/capacity checks and raw timing
-  samples. Run it in the benchmark environment with `cargo run --locked
-  -p shell --release --example shm_swizzle_bench`.
-
-- `shm_pipeline_bench` — a CPU fixture calling production conversion,
-  frame-store publication and snapshot paths, with byte/capacity/sequence
-  checks.
-
 - `frame-loop-bench.py` — run the real compositor loop with cadence and
   input-to-present instrumentation. Its `--gate` mode is the quick desktop
   acceptance test: use `--refresh-hz 144 --input-hz 30 --launch-app
@@ -22,12 +13,9 @@ executable stand-alone; the higher-level flow is described below.
   already-built binaries and an existing app store, so it does not build an
   RPM or image.
 
-- `latency_bench.py` — the nightly `latency` KPI group: a headless compositor
-  times 600 pointer moves (input to finished frame, from the frame trace) and
-  100 workspace switches (the compositor's `WORKSPACE-SWITCH` lines: chord to
-  first frame, to the resting frame, dropped intervals), and writes records.
-  `device_latency_bench.py` is its weekly hardware counterpart (kernel input to
-  KMS presentation, through `tilo-vm`); see
+- `device_latency_bench.py` — the weekly, report-only latency run on a
+  reference machine (kernel input event to KMS presentation, through
+  `tilo-vm`): pointer and workspace-switch KPIs per refresh rate; see
   [reference hardware](../../docs/benchmarks/reference-hardware.md).
 
 - `drm_hardware_checks.py --device yoga --slot device --commit C
@@ -80,46 +68,31 @@ executable stand-alone; the higher-level flow is described below.
   `wait_ms`), throughput under eight clients and the no-op through the MCP
   server. Each is timed from the client's side of the control socket, after
   100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
-  action. With `--env-json` it writes `tools/perf/record.py` records.
-  The performance run runs it as the `agent` group.
+  action. With `--env-json` it writes `tools/perf/record.py` records. A
+  spawned session starts on a desk, the throwaway identity a development
+  login opens it with minted first. The performance run runs it as the
+  `agent` group.
 
-- `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE] [--mcp CLIENT])` —
+- `agent_task.py (--socket PATH | --spawn SHELL [--mcp CLIENT])` —
   a whole agent task the way an agent in a terminal of a Tilo login runs it:
   a scripted model, streamed like the Messages API from a loopback fake,
   drives `tilo-runtime-mcp --connect`, which relays to the session's agent
-  door. The person admits the agent (the `permission-prompts` decision on
-  the control socket) and grants it Notes; then, one tool call per turn,
+  door. The person admits the client (the session asks on a sheet; the run
+  answers that question's published action, allow once, on the control
+  socket) and it works as them, as a REPL does; then, one tool call per turn,
   the agent finds Notes' new-note, creates a note, finds the note by its
   title, appends its body and reads it back. Records the task's wall time,
   the time in Tilo, in the (fake) model and in the agent loop, the turns,
   the calls asked again because the note was not there yet, and each step.
   `--think-ms` and `--tokens-per-s` model a real provider; both default to
-  0. `--spawn` seeds a signed-in Notes desktop with the `agent_task_desktop`
-  example of `shell` and serves its agent door in the profile; `--socket`
-  takes a device's admin-control.sock (its agent.sock beside it) and works
-  in a workspace of its own. The performance run runs it in the `agent`
-  group.
-
-### Windowed desktop input
-
-`desktop_chrome_bench.py` starts a private windowed compositor inside headless
-Cage, opens search, then measures pointer bursts and visible query edits. It
-checks that each edit was consumed and keeps the existing frame trace alongside
-its JSON report. It never drives or captures the user's desktop.
-
-```bash
-cp --reflink=auto target/debug/shell target/shell-before
-# Make the change and rebuild shell, then compare on the same GPU and dimensions:
-python3 scripts/perf/desktop_chrome_bench.py --shell-bin target/shell-before --label before
-python3 scripts/perf/desktop_chrome_bench.py --shell-bin target/debug/shell --label after
-```
-
-The reported round trips include control-socket and compositor-loop work, not
-physical keyboard-to-panel latency. Use repeated runs; inspect the frame trace
-rather than attributing every tail sample to rendering. `--trace-search` also
-records provider revision/query costs, without query or resource contents, to
-identify work before rendering. Results refuse an already-used label. Cage and
-a debug or `dev-overrides` shell build are required.
+  0. `--spawn` starts a headless session on a scratch profile, mints the
+  throwaway identity a development login opens its desk with, and serves its
+  agent door in the profile; `--socket` takes a device's admin-control.sock
+  (its agent.sock beside it). Either way the task works in a workspace of its
+  own and the client leaves with the session. It needs a session where apps
+  start, with Notes installed: a dev session on a machine, not a builder,
+  whose containers start no app. The scheduled lane therefore times the
+  agent's calls (`agent_rtt.py`) and the agent's own task loop (`agent-native`).
 
 ## Optimise (three-step PGO + optional BOLT)
 
@@ -156,12 +129,12 @@ does not enable GPU timestamp queries.
 
 The capture never touches the person's notebook. Every Notes window in a
 workspace opens that workspace's one notebook, so the capture first creates a
-workspace of its own (`workspace.create`, which mints a new id), opens Notes
-there (`applications so.tilo.notes`) and addresses every Notes action by that
-id and its record (`scratch_notes.py`). A workspace that existed before the run
-is refused, and so is any Notes row outside the scratch workspace. In that
-notebook it
-creates and opens a fresh scratch note. Before every kernel key it checks the
+workspace of its own (`so.tilo.session` `desktop:chrome␟new-workspace`, which
+mints a new id), opens Notes there (`applications so.tilo.notes`) and
+addresses every Notes action by that id and its record (`scratch_notes.py`). A
+workspace that existed before the run is refused, and so is any Notes row
+outside the scratch workspace. In that notebook it creates and opens a fresh
+scratch note. Before every kernel key it checks the
 actual selected/bound page, adopted canonical and rendered hashes, caret,
 editor focus and that the keyboard goes to the scratch workspace's one Notes
 surface. The workspace, named `Notes latency scratch <time>`, and its note

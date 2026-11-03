@@ -169,6 +169,7 @@ impl Live {
             QsEffect::SetDoNotDisturb { on } => {
                 readings.update(|state| state.do_not_disturb = *on);
             }
+            QsEffect::DismissRefusal => readings.update(|state| state.refusal = None),
             QsEffect::ChoosePlayer { player } => {
                 self.media().choose(player)?;
                 self.advance();
@@ -226,17 +227,25 @@ impl PanelHost for Live {
     fn run(&self, effect: QsEffect) -> Result<(), String> {
         // The panel's own part happens here, at once; whatever reaches the
         // device is the worker's to send, so a slow service never holds the
-        // frame.
-        self.local(&effect)?;
-        if self
-            .readings()?
+        // frame. A press puts away why the one before did not land.
+        let readings = self.readings()?;
+        readings.update(|state| state.refusal = None);
+        let local = self.local(&effect)?;
+        if readings
             .read(|state| crate::verbs::of(state, &effect))
             .is_some()
-            && let Some(jobs) = self.jobs.get()
         {
-            let _ = jobs.send(Job::Effect(effect));
+            if let Some(jobs) = self.jobs.get() {
+                let _ = jobs.send(Job::Effect(effect));
+            }
+            return Ok(());
         }
-        Ok(())
+        if local {
+            return Ok(());
+        }
+        // Nothing carries it: the person is told at the control they pressed,
+        // instead of a press that does nothing.
+        Err(crate::i18n::t("qs-refused-nothing-answers"))
     }
 }
 
@@ -316,9 +325,14 @@ fn watch(
                 if let Some((resource, action, arguments)) = crate::verbs::of(&state, &effect) {
                     if let Err(error) = watch.invoke(resource, action, &arguments) {
                         tracing::debug!(%error, %action, "the session did not take the press");
+                        readings.update(|state| state.refusal = Some(error));
+                        wake.wake();
                     }
                 } else {
                     tracing::debug!(?effect, "the panel's effect has no action yet");
+                    let reason = crate::i18n::t("qs-refused-nothing-answers");
+                    readings.update(|state| state.refusal = Some(reason));
+                    wake.wake();
                 }
             }
             Ok(Job::Showing(showing)) => {

@@ -508,6 +508,22 @@ fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
         .expect("the session asks its workspaces' devices")
         .clone();
     let session_workspace = session.workspace().to_owned();
+    // A job never run here has no run to beat, so the broker asks nobody and
+    // runs it here.
+    assert_eq!(
+        run_here(&route, &session_workspace),
+        "nothing is quicker than a run it knows nothing of"
+    );
+    // Having run it here, there is a run to beat: the broker asks the
+    // workspace's other devices, and with none of them answering runs it here.
+    let ran = request(&session_workspace);
+    let tilo_actions::offload::Offloaded::RunHere { .. } = tilo_rt::app()
+        .handle()
+        .block_on(route.offload_invocation(ran.clone(), invocation()))
+    else {
+        panic!("the first run is here");
+    };
+    route.ran_here(&ran, Duration::from_secs(10));
     assert_eq!(
         run_here(&route, &session_workspace),
         "no device offered to run it"
@@ -544,7 +560,7 @@ fn a_running_host_holds_the_persons_own_documents_store() {
         return;
     };
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
-    let identity = tilo_identity_host::registry::selected_identity_profile(session.workspace())
+    let identity = tilo_identity_host::registry::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
     let personal = session.personal();

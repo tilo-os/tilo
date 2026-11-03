@@ -26,7 +26,7 @@ fn an_action_application_is_an_action_block() {
 
 #[test]
 fn view_code_is_a_view_block() {
-    let b = block("column {\n    text(\"Good morning\")\n    button(\"Add\", on: todo.add(@todo.TodoList:01J8ZK4T, \"x\"))\n}").expect("compiles");
+    let b = block("stack {\n    text(\"Good morning\")\n    button(\"Add\", on: todo.add(@todo.TodoList:01J8ZK4T, \"x\"))\n}").expect("compiles");
     validate(&b.wasm);
     assert_eq!(b.kind, BlockKind::View);
 }
@@ -53,7 +53,7 @@ fn data_blocks_have_a_value_type() {
 fn blocks_cannot_mutate_or_use_unknown_names() {
     let err = block("todo.nothing(1)").expect_err("fails");
     assert_eq!(err[0].code, "E014");
-    let err = block("column {").expect_err("fails");
+    let err = block("stack {").expect_err("fails");
     assert_eq!(err[0].code, "E003");
 }
 

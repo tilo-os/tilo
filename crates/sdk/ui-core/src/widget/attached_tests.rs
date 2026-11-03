@@ -231,6 +231,7 @@ fn a_menus_entries_drop_rules_at_either_end_and_doubled() {
         MenuPart::Item(MenuItemProps {
             label: "Delete".into(),
             destructive: true,
+            key: Some("Ctrl+Enter".into()),
             choose: Event::View(Intent::new(&queue, "d", "choose")),
             ..MenuItemProps::default()
         }),
@@ -239,6 +240,11 @@ fn a_menus_entries_drop_rules_at_either_end_and_doubled() {
     let entries = menu_entries(parts);
     let shown: Vec<Option<&str>> = entries.iter().map(|entry| entry.item().label()).collect();
     assert_eq!(shown, [Some("Reply"), None, Some("Delete")]);
+    assert_eq!(
+        entries[2].item().shortcut(),
+        Some(&crate::platform::Shortcut::from("Ctrl+Enter")),
+        "the key the command declares shows at its row's end"
+    );
 }
 
 #[test]

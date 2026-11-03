@@ -35,7 +35,7 @@ pub fn authorize_join(workspace: &str, cert: &DeviceCert) -> Result<(), String> 
 
 /// The identity selected for `workspace` and one verified snapshot of its fleet.
 fn selected_fleet(workspace: &str) -> Result<(IdentityProfile, Arc<DeviceFleet>), String> {
-    let profile = crate::registry::selected_identity_profile(workspace)
+    let profile = crate::registry::identity_for_workspace(workspace)
         .map_err(|e| e.to_string())?
         .ok_or("workspace identity unavailable")?;
     let fleet = DeviceFleetStore::from_env()
@@ -95,7 +95,7 @@ mod tests {
                 crate::provisioning::IdentityStorage::Files,
             )
             .expect("provision");
-            let profile = crate::registry::selected_identity_profile(WORKSPACE)
+            let profile = crate::registry::identity_for_workspace(WORKSPACE)
                 .expect("registry")
                 .expect("selected identity");
             let cert = store()

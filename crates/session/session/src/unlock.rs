@@ -6,7 +6,7 @@
 //! command line, where `/proc/*/cmdline` would show it), and reads the
 //! verdict from its exit status. With no helper installed nothing unlocks.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -14,6 +14,17 @@ use zeroize::Zeroizing;
 
 /// Where the image and the host session package install the helper.
 pub const UNLOCK_HELPER: &str = "/usr/libexec/tilo-unlock-helper";
+
+/// The variable a development build reads another helper's path from, answering as
+/// [`UNLOCK_HELPER`] does: 0 for the person's password, 1 for another, 2 when it cannot
+/// check. The session's end-to-end lock proof uses it, because a container has neither the
+/// installed helper's PAM stack nor a login to check against. A production build never
+/// reads it (`tools/policy/check_dev_overrides_contract.py`).
+pub const UNLOCK_HELPER_ENV: &str = "TILO_UNLOCK_HELPER";
+
+/// Whether this build honours [`UNLOCK_HELPER_ENV`]: development builds and the dev
+/// image's release ones, the builds that open the test-control socket.
+const OVERRIDABLE: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
 /// Upper bound on one check: a slow PAM stack takes seconds, a wedged
 /// helper must not keep the lock screen checking forever.
@@ -155,14 +166,32 @@ fn user_name(uid: u32) -> Option<String> {
     Some(name.to_string_lossy().into_owned())
 }
 
-/// The verifier of this machine: the installed helper, else none.
+/// The verifier of this machine: the helper a development build names, else the installed
+/// one, else none.
 #[must_use]
 pub fn installed() -> std::sync::Arc<dyn PasswordVerifier> {
-    if Path::new(UNLOCK_HELPER).exists() {
-        std::sync::Arc::new(HelperVerifier::new(vec![UNLOCK_HELPER.to_owned()]))
-    } else {
-        std::sync::Arc::new(Unavailable)
+    match helper_program(
+        OVERRIDABLE,
+        std::env::var_os(UNLOCK_HELPER_ENV),
+        Path::new(UNLOCK_HELPER).is_file(),
+    ) {
+        Some(program) => std::sync::Arc::new(HelperVerifier::new(program)),
+        None => std::sync::Arc::new(Unavailable),
     }
+}
+
+/// Which program checks a password, as `program[0]` and its leading arguments: the one a
+/// build that honours [`UNLOCK_HELPER_ENV`] names, else the installed helper when it is
+/// there, else none.
+fn helper_program(
+    overrides: bool,
+    named: Option<std::ffi::OsString>,
+    installed: bool,
+) -> Option<Vec<String>> {
+    if overrides && let Some(named) = named.filter(|path| !path.is_empty()) {
+        return Some(vec![PathBuf::from(named).to_string_lossy().into_owned()]);
+    }
+    installed.then(|| vec![UNLOCK_HELPER.to_owned()])
 }
 
 #[cfg(test)]
@@ -243,6 +272,38 @@ mod tests {
             installed().available(),
             Path::new(UNLOCK_HELPER).is_file(),
             "the installed helper is the one place a password is checked"
+        );
+    }
+
+    /// A development build may name the helper that checks a password, and a production
+    /// build never hears of it: the variable is no way into a shipped desktop.
+    #[test]
+    fn a_development_build_may_name_the_helper_and_a_production_one_never_does() {
+        let named = || Some(std::ffi::OsString::from("/scratch/helper"));
+        assert_eq!(
+            helper_program(true, named(), true),
+            Some(vec!["/scratch/helper".to_owned()]),
+            "a development build checks with the helper it was given"
+        );
+        assert_eq!(
+            helper_program(true, named(), false),
+            Some(vec!["/scratch/helper".to_owned()]),
+            "and needs no installed helper to do it"
+        );
+        assert_eq!(
+            helper_program(false, named(), true),
+            Some(vec![UNLOCK_HELPER.to_owned()]),
+            "a production build checks with the installed helper alone"
+        );
+        assert_eq!(
+            helper_program(false, named(), false),
+            None,
+            "and with none, nothing unlocks"
+        );
+        assert_eq!(
+            helper_program(true, Some(std::ffi::OsString::new()), true),
+            Some(vec![UNLOCK_HELPER.to_owned()]),
+            "an empty name is no name"
         );
     }
 }

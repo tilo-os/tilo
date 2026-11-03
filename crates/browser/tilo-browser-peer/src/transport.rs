@@ -178,7 +178,7 @@ fn app_presence(
 pub struct RelayCollabTransport {
     peer: PeerHandle,
     inbound: crate::session::PeerEvents,
-    live: crate::live::LiveState,
+    live: crate::previews::LiveState,
     primary: Option<RouteSpec>,
     confirm_pending: bool,
     primary_results: VecDeque<Result<RouteSpec, String>>,
@@ -194,7 +194,7 @@ impl RelayCollabTransport {
         Self {
             inbound: peer.events(),
             peer,
-            live: crate::live::LiveState::starting_now(),
+            live: crate::previews::LiveState::starting_now(),
             primary: None,
             confirm_pending: false,
             primary_results: VecDeque::new(),

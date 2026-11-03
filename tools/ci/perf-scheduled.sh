@@ -71,25 +71,27 @@ case $group in
     exit "$status"
     ;;
   agent)
+    # What a person waits for when an agent works in their session: the round
+    # trip of the calls an agent makes — list the actions, read the state,
+    # invoke one, and the same through the MCP server — and how many complete
+    # at once. A whole app task (Notes) cannot be timed here: a builder starts
+    # no app, its sandboxes needing a /proc of their own, so such a step would
+    # measure nothing. `scripts/perf/agent_task.py` times that on a session
+    # where apps start, and the agent's own task pipeline is the
+    # `agent-native` group's. tilo-runtime's dev-overrides carry the throwaway
+    # identity the run's session mints for the desk it opens.
     cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
-      --example agent_task_desktop --features dev-overrides
+      --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"
     bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
       --spawn "$target/release/tilo-session" --samples 1000 --warmup 100 \
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
-    # A whole task as an agent in the login runs it: a scripted, streamed
-    # model at 0 ms think time, through tilo-runtime-mcp and the agent door.
-    bash tools/with-test-environment.sh python3 scripts/perf/agent_task.py \
-      --spawn "$target/release/tilo-session" --repetitions 30 --warmup 3 \
-      --transport "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO" \
-      --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/task-compositor.log" \
-      --client-log "$out/task-client.log"
     ;;
   agent-native)
     # The agent's own task pipeline, without the desktop: a release build of the agent's
-    # tests, which shares nothing with the shell's build above, so it runs as a check of its
+    # tests, which shares nothing with the session's build above, so it runs as a check of its
     # own beside it. Its records are the agent group's.
     env_json release none kvm > "$out/env-pipeline.json"
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
@@ -136,23 +138,31 @@ case $group in
     cat "$out"/image-*.jsonl > "$out/footprint-image.jsonl" 2>/dev/null || true
     exit "$status"
     ;;
-  latency)
-    cargo build --locked -p tilo-session --bin tilo-session
-    env_json dev lavapipe kvm > "$out/env.json"
-    python3 scripts/perf/latency_bench.py --shell-bin "$target/debug/tilo-session" \
-      --out "$out/run" --env-json "$out/env.json" --records "$out/latency.jsonl"
-    ;;
   render)
+    # What a person notices: how long the desk takes to draw its first frame,
+    # what a frame costs while it animates and while a document is typed
+    # into, and what frames offered at rest cost. session_perf measures the
+    # shared desktop surface on the frame path both hosts draw with, per tile
+    # profile: `arriving` is the native session's chrome, `apps` the page's
+    # chrome and app paint. Its budgets are [devices.x86.session.*] in
+    # tools/perf/kpi-budgets.toml, so a phase over budget fails this check.
+    # Around it: the toolkit's own 4K redraw (ui-perf), the framework's
+    # scaling with item counts, and a document's keystroke-to-frame latency.
+    cargo build --locked --release -p tilo-desktop --example session_perf
     cargo build --locked --release -p ui-examples --example ui-perf
-    cargo build --locked --release -p tilo-session --example redraw_bench --example strip_pan_bench
     cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
     cargo build --locked --release -p notes --example notes-latency
     test -r "$VK_DRIVER_FILES"
     examples=$target/release/examples
     env_json release lavapipe kvm > "$out/env.json"
-    python3 scripts/perf/render_bench.py timing "$examples/ui-perf" "$examples/redraw_bench" \
-      --env-json "$out/env.json" --out "$out" --strip-pan-bench "$examples/strip_pan_bench" \
-      --records "$out/render.jsonl" || status=$?
+    status=0
+    for profile in arriving apps; do
+      TILO_PERF_DEVICE=x86 "$examples/session_perf" --profile "$profile" \
+        --json "$out/session-$profile.json" || status=$?
+    done
+    python3 tools/perf/check_kpi.py check "$out"/session-*.json || status=$?
+    python3 scripts/perf/render_bench.py timing "$examples/ui-perf" \
+      --env-json "$out/env.json" --out "$out" --records "$out/render.jsonl" || status=$?
     for plan in "5000,50000 open framework-open" "5000 scroll framework-scroll" "500,1000,2500 focus framework-focus"; do
       read -r sizes action adapter <<< "$plan"
       "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log" || status=$?
@@ -166,41 +176,17 @@ case $group in
     # what a shell reports, so each step keeps its own.
     exit "$status"
     ;;
-  wakeups)
-    cargo build --locked -p tilo-session --example idle-wakeups --features scheduled-idle-benchmark
-    cargo build --locked -p tilo-session --bin tilo-session
-    status=0
-    for run in 1 2 3; do
-      TILO_IDLE_SESSION_BIN="$target/debug/tilo-session" TILO_IDLE_WAKEUP_WINDOW_SECS=60 \
-        bash tools/test-env.sh "$target/debug/examples/idle-wakeups" > "$out/idle-$run.log" 2>&1 || status=$?
-      # The report: every thread's row, the frame loop and what was logged.
-      if grep -q '^IDLE-WAKEUPS ' "$out/idle-$run.log"; then
-        sed -n '/^idle wakeups over/,/^IDLE-WAKEUPS /p' "$out/idle-$run.log"
-      else
-        tail -n 40 "$out/idle-$run.log"
-      fi
-    done
-    env_json dev lavapipe kvm > "$out/env.json"
-    python3 tools/perf/adapters.py idle-wakeups --env-json "$out/env.json" "$out"/idle-*.log > "$out/wakeups.jsonl"
-    exit "$status"
-    ;;
   search)
-    cargo test --locked -p tilo-session --lib --no-run
-    status=0
-    for run in 1 2 3 4 5; do
-      TILO_SEARCH_PERF_GATE=1 TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p tilo-session --lib \
-        shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild \
-        -- --exact --nocapture --test-threads=1 > "$out/files-name-index-$run.log" 2>&1 || status=$?
-      grep 'FILES-NAME-INDEX' "$out/files-name-index-$run.log" || true
-    done
-    TILO_SEARCH_PERF_GATE=1 bash tools/test-env.sh cargo test --locked -p tilo-session --lib \
-      against_the_full_index_only_searches_it -- --nocapture --test-threads=1 > "$out/palette-keystroke.log" 2>&1 \
-      || status=$?
-    grep 'keystrokes: median' "$out/palette-keystroke.log" || tail -n 40 "$out/palette-keystroke.log"
-    env_json dev none kvm > "$out/env.json"
-    python3 tools/perf/adapters.py files-name-index --env-json "$out/env.json" "$out"/files-name-index-*.log \
-      > "$out/search.jsonl"
-    exit "$status"
+    # What a person notices: the palette answers while they type. The
+    # measurement is the palette search's own: every registry app's entry
+    # ranked against a query, best of 25 tries, under its budget (2 ms
+    # optimised, 10 ms in the test profile). A query over budget fails the
+    # test, and so this check; nothing is recorded for comparison.
+    # The test binary runs inside tools/with-test-environment.sh (the cargo
+    # runner), like every other test.
+    cargo test --release --locked -p tilo-desktop-search --lib \
+      providers::tests::a_query_against_every_registry_app_stays_under_two_milliseconds \
+      -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$out/palette-keystroke.log"
     ;;
   hosting)
     cargo build --locked --release -p tilo-relay --example relay_load

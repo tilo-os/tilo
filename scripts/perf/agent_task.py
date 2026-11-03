@@ -9,16 +9,21 @@ key:
 
   agent loop  --HTTP, Anthropic Messages streaming-->  fake model (loopback)
   agent loop  --MCP stdio-->  tilo-runtime-mcp --connect
-              --agent.sock-->  compositor (as the admitted agent) -> Notes
+              --agent.sock-->  compositor (as the admitted client) -> Notes
 
 `tilo-runtime-mcp --connect` is the program `tilo agent connect claude`
-registers. Inside the login it relays to the session's agent door, so the
-agent is admitted by the person (here: the `permission-prompts` decision on
-the control socket, as the owner answers remotely), is an agent member of
-the workspace, is granted Notes like Settings → Agents grants it, and every
-call passes the broker's gate as that agent. Its tools are the door's own
-path-addressed ones (`tilo_find`, `tilo_do`, `tilo_ls`, `tilo_read`), and
-the fake model is offered exactly what the door's `tools/list` answers.
+registers. Inside the login it relays to the session's agent door, and the
+door asks the person, on the sheet it opens, whether the client may work
+there. A headless run has nobody to press that sheet: the client asks to
+work as the person, as a REPL does, and the run answers the question the
+way the sheet's first choice does (allow once) through the question's own
+published action on the control socket. So the calls are the person's own
+authority, not an agent member's; every one still passes the same door, the
+broker's gate and the app, and an agent member's grants are what a person
+grants on Settings → Agents, which no headless run can press. The client's
+tools are the door's own path-addressed ones (`tilo_find`, `tilo_do`,
+`tilo_ls`, `tilo_read`), and the fake model is offered exactly what the
+door's `tools/list` answers.
 
 The fake model is a loopback HTTP server that answers each turn with a
 streamed `tool_use` (server-sent events, as the Messages API streams them).
@@ -57,16 +62,20 @@ Records (tools/perf/record.py), one sample per repetition:
   agent.task.notes.retries       tool calls asked again
   agent.task.notes.step.<step>   one step's tool calls, ms
 
-The desktop is `crates/session/session`: a
-signed-in person with one empty Notes notebook, restored from a seeded
-profile, serving its agent door in the profile's runtime directory. The
-compositor, its profile, its sockets and the client are removed on exit,
-whatever happens. Against a running desktop (`--socket`, a device's
-admin-control.sock, with its `agent.sock` beside it) nothing is seeded, and
-the task never touches the notebook a person already has: the run first
+The desktop is `crates/session/session` (`--spawn`): a release build with the
+test-control socket, started headless on a scratch profile, its desk opened
+with the throwaway identity a development login mints, and its agent door
+served in the profile's runtime directory. The session needs Notes installed
+and starts apps: a dev session on a machine, never a builder, whose containers
+start no app. The session, its profile, its
+sockets and the client are removed on exit, whatever happens. Against a
+running desktop (`--socket`, a device's admin-control.sock, with its
+`agent.sock` beside it) the person's workspace is left as it was found, though
+the run's own workspace stays. Either way the task never touches a notebook a
+person already has: the run first
 creates a workspace of its own and opens Notes there
-(`scratch_notes.py`), so the agent is admitted to that workspace and its
-`notes` is that workspace's notebook; the agent is removed again at the end.
+(`scratch_notes.py`), so `notes` is that workspace's notebook; the client
+leaves with the session.
 """
 
 from __future__ import annotations
@@ -94,16 +103,14 @@ sys.path.insert(0, str(REPO / "tools" / "perf"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import record  # noqa: E402
 from agent_rtt import (  # noqa: E402
-    MCP_PROTOCOL, BenchError, Connection, answer_of, receipt_state, request, spawned)
+    MCP_PROTOCOL, BenchError, Connection, answer_of, desk_session, receipt_state, request)
 from scratch_notes import NOTES_APP, ScratchWorkspaceError, open_scratch_notes  # noqa: E402
 
 # Generous: each answer leaves as soon as its invocation settles.
 WAIT_MS = 5000
 STEPS = ("discover", "create", "locate", "write", "read")
-# The client the person admits; the door names the agent after it.
+# The client the person admits.
 CLIENT_NAME = "Agent task bench"
-AGENT = "agent-task-bench"
-GRANT_ID = "agent-task-bench-notes"
 # The fake model's name, echoed in records.
 MODEL_NAME = "tilo-scripted-notes-task"
 # Rough characters per token, to pace a streamed answer at --tokens-per-s.
@@ -670,43 +677,43 @@ def control(conn: Connection, payload: dict[str, Any], what: str) -> Any:
     return answer_of(line, what)
 
 
-def waiting_prompt(conn: Connection, timeout: float) -> str:
-    """The agent admission the person is asked, as its decision rows name it."""
+def waiting_prompt(conn: Connection, timeout: float) -> tuple[str, str]:
+    """The door's question on the session's sheets, as (provider, its answer action)."""
     deadline = time.monotonic() + timeout
     while True:
-        listed = control(conn, {"op": "actions_enumerate", "query": "permission-prompts",
-                                "limit": 2000}, "list the person's prompts")
+        listed = control(conn, {"op": "actions_enumerate", "query": "agent-door",
+                                "limit": 2000}, "list the person's questions")
         for row in listed.get("actions", []) if isinstance(listed, dict) else []:
             ident = str(row.get("id", ""))
-            if row.get("provider") == "permission-prompts" and ident.startswith("deny@"):
-                return ident.removeprefix("deny@")
+            if (isinstance(row.get("provider"), str)
+                    and ident.startswith("question:agent-door:") and ident.endswith("\u001fanswer")):
+                return row["provider"], ident
         if time.monotonic() >= deadline:
-            raise BenchError(f"the person was never asked to admit the agent within {timeout:.0f} s")
+            raise BenchError(f"the person was never asked to admit the client within {timeout:.0f} s")
         time.sleep(0.1)
 
 
 def admit(conn: Connection, door: Door, timeout: float) -> list[dict[str, Any]]:
-    """Connect as an agent, have the person admit it and grant it Notes; the door's tools."""
+    """Connect as an agent acting for the person, and answer the door's question; the door's tools."""
     door.next_id += 1
     ident = door.next_id
     door.send({"jsonrpc": "2.0", "id": ident, "method": "initialize", "params": {
-        "protocolVersion": MCP_PROTOCOL, "capabilities": {},
+        "protocolVersion": MCP_PROTOCOL,
+        # A REPL's request, [`tilo_runtime::session_door::ACTS_AS`]: the person at this
+        # seat is the client's own program, and no agent member's grants are needed.
+        "capabilities": {"experimental": {"so.tilo": {"actsAs": "person"}}},
         "clientInfo": {"name": CLIENT_NAME, "version": "1"}}})
-    prompt = waiting_prompt(conn, timeout)
-    answer = control(conn, {"op": "actions_invoke", "provider": "permission-prompts",
-                            "id": f"allow-once@{prompt}", "args": {"confirm": True},
-                            "wait_ms": WAIT_MS}, "admit the agent")
+    provider, question = waiting_prompt(conn, timeout)
+    # The sheet's first choice, Allow once (tilo_portal::consent::ALLOW_ONCE).
+    answer = control(conn, {"op": "actions_invoke", "provider": provider, "id": question,
+                            "args": {"choice": 0}, "wait_ms": WAIT_MS}, "admit the client")
     state = receipt_state(answer)
     if state not in (None, "succeeded"):
-        raise BenchError(f"admitting the agent ended {state}: {json.dumps(answer)[:400]}")
+        raise BenchError(f"admitting the client ended {state}: {json.dumps(answer)[:400]}")
     initialized, _ = door.reply(ident, timeout)
     if "error" in initialized or not isinstance(initialized.get("result", {}).get("serverInfo"), dict):
-        raise BenchError(f"the door did not serve the admitted agent: {json.dumps(initialized)[:600]}")
+        raise BenchError(f"the door did not serve the admitted client: {json.dumps(initialized)[:600]}")
     door.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-    # The agent holds no role of its own: the person grants it Notes.
-    control(conn, {"op": "allow", "subject": f"agent:{AGENT}", "node": f"app:{NOTES_APP}",
-                   "kinds": ["read", "undoable"], "answer": "allow", "id": GRANT_ID},
-            "grant the agent Notes")
     listed, _, _ = door.request("tools/list")
     tools = (listed.get("result") or {}).get("tools")
     names = sorted(t.get("name") for t in tools or [])
@@ -778,36 +785,6 @@ def describe_desktop(conn: Connection, path: Path | None) -> str:
     return (f"whole listing: {len(listing)} rows, applications "
             f"{sorted({str(r.get('application')) for r in listing})}\n"
             f"targets ({len(targets)}): {names}" + (f"\nfull probes: {path}" if path else ""))
-
-
-@contextlib.contextmanager
-def seeded_desktop(shell: Path, seeder: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
-    """The seeded Notes desktop through spawn-headless.sh, serving its agent
-    door: (control socket, runtime directory). Its profile is removed on exit."""
-    if not seeder.is_file() or not os.access(seeder, os.X_OK):
-        raise BenchError(f"no desktop seeder at {seeder}")
-    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    cache.mkdir(parents=True, exist_ok=True)
-    profile = Path(tempfile.mkdtemp(prefix="agent-task.", dir=cache))
-    try:
-        for sub in ("config/tilo/identity", "data", "state", "cache", "home", "run"):
-            (profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
-        seeded = subprocess.run([str(seeder), "--profile", str(profile)], capture_output=True,
-                                text=True, check=False)
-        if seeded.returncode != 0:
-            raise BenchError(f"the seeder failed: {seeded.stderr.strip()[-2000:]}")
-        env = json.loads(seeded.stdout.strip().splitlines()[-1])
-        env = {key: str(value) for key, value in env.items()}
-        env["TILO_HEADLESS_PROFILE"] = str(profile)
-        # spawn-headless.sh runs the compositor with XDG_RUNTIME_DIR=<profile>/run;
-        # the door goes where a client in that login looks for it.
-        runtime = profile / "run"
-        env["TILO_AGENT_DOOR"] = str(runtime / "tilo-session" / "agent.sock")
-        env.setdefault("RUST_LOG", os.environ.get("RUST_LOG", "info"))
-        with spawned(shell, log, timeout, env) as socket_path:
-            yield socket_path, runtime
-    finally:
-        shutil.rmtree(profile, ignore_errors=True)
 
 
 def client_env(runtime: Path, scratch: Path | None) -> dict[str, str]:
@@ -932,14 +909,12 @@ def what_the_agent_sees(door: Door, title: str) -> str:
 
 def session(socket_path: str, runtime: Path, args: argparse.Namespace,
             scratch: Path | None) -> list[TaskRun]:
-    """Admit the agent on this desktop, run the task, and take the agent back
-    out when the desktop is a person's."""
+    """Admit the client on this desktop, run the task, and leave the session with it."""
     conn = Connection(socket_path, timeout=60)
     door: Door | None = None
     try:
-        if args.own_notebook:
-            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            open_own_notebook(conn, f"Agent task bench {stamp}", args.startup_timeout)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        open_own_notebook(conn, f"Agent task bench {stamp}", args.startup_timeout)
         wait_for_door(runtime / "tilo-session" / "agent.sock", args.startup_timeout)
         door = Door.start(args.mcp, client_env(runtime, scratch), args.client_log)
         args.tools = admit(conn, door, args.startup_timeout)
@@ -950,12 +925,6 @@ def session(socket_path: str, runtime: Path, args: argparse.Namespace,
     finally:
         if door is not None:
             door.close()
-        if args.own_notebook:
-            # The agent leaves the person's desktop as it found it.
-            with contextlib.suppress(OSError, BenchError):
-                control(conn, {"op": "actions_invoke", "provider": "actions", "id": "agent.remove",
-                               "args": {"name": AGENT, "confirm": True}, "wait_ms": WAIT_MS},
-                        "remove the agent")
         conn.close()
 
 
@@ -967,9 +936,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="a running desktop's admin control socket; its agent.sock is beside "
                         "it, and the run opens Notes in a new workspace of its own")
     target.add_argument("--spawn", type=Path, metavar="SHELL",
-                        help="start this compositor headless on a seeded Notes desktop")
-    parser.add_argument("--seeder", type=Path,
-                        help="the agent_task_desktop example (default beside SHELL)")
+                        help="start this session headless on a throwaway desktop")
     parser.add_argument("--mcp", type=Path,
                         help="tilo-runtime-mcp (default beside SHELL, else on PATH)")
     parser.add_argument("--repetitions", type=int, default=30)
@@ -990,11 +957,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.repetitions < 1 or args.warmup < 0:
         parser.error("--repetitions must be positive and --warmup not negative")
     if args.transport is None:
-        args.transport = ("tilo-runtime-mcp --connect, agent door, headless compositor" if args.spawn
+        args.transport = ("tilo-runtime-mcp --connect, agent door, headless session" if args.spawn
                           else "tilo-runtime-mcp --connect, agent door")
-    # Only the seeded throwaway desktop's notebook is the bench's; on any
-    # running desktop the notebooks belong to a person.
-    args.own_notebook = not args.spawn
     if args.mcp is None:
         beside = args.spawn.resolve().parent / "tilo-runtime-mcp" if args.spawn else None
         found = shutil.which("tilo-runtime-mcp")
@@ -1002,10 +966,9 @@ def main(argv: list[str] | None = None) -> int:
     env = record.load_env(args.env_json) if args.env_json else None
     try:
         if args.spawn:
-            seeder = args.seeder or args.spawn.resolve().parent / "examples" / "agent_task_desktop"
-            log = args.log or Path(tempfile.gettempdir()) / "agent-task-compositor.log"
+            log = args.log or Path(tempfile.gettempdir()) / "agent-task-session.log"
             args.log = log
-            with seeded_desktop(args.spawn, seeder, log, args.startup_timeout) as (socket_path, runtime):
+            with desk_session(args.spawn, log, args.startup_timeout) as (socket_path, runtime):
                 runs = session(socket_path, runtime, args, runtime.parent)
         else:
             runs = session(str(args.socket), args.socket.resolve().parent.parent, args, None)

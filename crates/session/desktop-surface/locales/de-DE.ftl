@@ -508,6 +508,7 @@ desktop-app-identity-unavailable = Anwendungsidentität nicht verfügbar
 desktop-app-integration-unavailable = { $app }: Anwendungsintegration oder benötigter Dienst nicht verfügbar
 desktop-app-no-adapter = Kein semantischer Anwendungsadapter; prozesslokale Pixel lassen sich nicht wiederherstellen
 desktop-search-copied = Kopiert
+desktop-search-searching = Suche läuft…
 desktop-view-switch-workspace = Zu { $workspace } wechseln
 desktop-view-review-activity = Arbeitsbereich-Aktivität ansehen
 desktop-view-explore-activity = Arbeitsbereich-Aktivität erkunden
@@ -789,6 +790,9 @@ workspace-settings-member-extra = { $count ->
 }
 workspace-settings-remove = Entfernen
 workspace-settings-owner-only = Nur der Eigentümer des Arbeitsbereichs kann Berechtigungen ändern.
+workspace-settings-refused = Der Arbeitsbereich hat die Änderung abgelehnt
+workspace-settings-refused-own-role = Niemand ändert die eigene Rolle.
+workspace-settings-refused-own-membership = Niemand entfernt sich selbst aus dem Arbeitsbereich.
 workspace-settings-agents-count = { $count ->
     [one] 1 mitwirkender Agent
    *[other] { $count } mitwirkende Agenten
@@ -1391,6 +1395,7 @@ osd-do-not-disturb-off = Nicht stören aus
 osd-magnifier-on = Lupe an
 osd-magnifier-off = Lupe aus
 osd-keys-captured = Tasten übernommen
+osd-input-source = Eingabequelle
 osd-pointer-released = Zeiger freigegeben
 desktop-action-param-osd-device = Das geänderte Gerät, wie eine Person es kennt
 desktop-action-param-osd-device-glyph = Das Symbol des Geräts: speaker, headphones, display oder keyboard

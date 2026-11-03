@@ -14,6 +14,8 @@ use crate::usage::Usage;
 pub trait DesktopSearchApi {
     fn is_open(&self) -> bool;
     fn waiting(&self) -> bool;
+    fn settled(&self) -> bool;
+    fn filling_in(&self) -> bool;
     fn open(&mut self, data: SearchData);
     fn close(&mut self);
     fn set_query(&mut self, query: &str);
@@ -41,6 +43,12 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn waiting(&self) -> bool {
         Self::waiting(self)
+    }
+    fn settled(&self) -> bool {
+        Self::settled(self)
+    }
+    fn filling_in(&self) -> bool {
+        Self::filling_in(self)
     }
     fn open(&mut self, data: SearchData) {
         Self::open(self, data);
@@ -169,6 +177,22 @@ impl LazyDesktopSearch {
     /// Whether an application's answer to the query is still coming.
     pub fn waiting(&self) -> bool {
         self.search.as_ref().is_some_and(|search| search.waiting())
+    }
+
+    /// Whether the search has a frame's work of its own left: a source
+    /// still to ask, or rows to cut to the card's room. Nothing is open
+    /// while its code is on its way.
+    pub fn filling_in(&self) -> bool {
+        self.search
+            .as_ref()
+            .is_some_and(|search| search.filling_in())
+    }
+
+    /// Whether the search is over: every source has answered for the query
+    /// and its rows are cut to the card. Nothing is open while its code is
+    /// on its way, so there is nothing to wait for.
+    pub fn settled(&self) -> bool {
+        self.search.as_ref().is_none_or(|search| search.settled())
     }
 
     /// Open over `data` with an empty query, or once the code is in.

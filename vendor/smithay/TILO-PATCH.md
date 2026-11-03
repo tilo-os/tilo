@@ -131,3 +131,48 @@ icon's buffer-destruction hook could not be unregistered.
 
 Remove this once a smithay release keeps a toplevel's icon once it is set,
 copied out of the client's pool.
+
+## An input method composes for the compositor's own fields (`input-method-v2`)
+
+A text field is not always a client's: the session draws its own (a toolkit
+surface it hosts, the desk's search box). Its input method has to compose
+there too, and its candidate window has to stand where that field's caret is.
+
+- `src/wayland/input_method/mod.rs`: `InputMethodHandler` gains
+  `commit_to_host(&mut self, text: &str)` and
+  `preedit_to_host(&mut self, text: &str, cursor_begin: i32, cursor_end: i32)`,
+  both defaulting to nothing. `CommitString` and `SetPreeditString` call them
+  when no `text-input-v3` client holds the active field, instead of dropping
+  what the method composed.
+- `src/wayland/input_method/input_method_handle.rs`:
+  `InputMethodHandle::activate_without_text_input(state, rect)` activates the
+  method for a field the compositor serves: the reported rectangle becomes
+  the caret the popup follows, and a popup that stands already is registered
+  again, parentless, at that caret (its parent is a client's surface, which
+  the field is not). `has_instance`, `set_text_input_rectangle`,
+  `activate_input_method` and `deactivate_input_method` are public, so a
+  compositor can ask whether a method is connected, follow a caret the
+  person moves and end a composition when the field goes away.
+  Deactivating dismisses the popup and clears its parent.
+- `src/wayland/input_method/input_method_popup_surface.rs`: a popup that is
+  created tells the method the caret the compositor already knows, so a field
+  whose caret was reported before the popup existed places it correctly.
+
+## The keys an input method gives back reach the compositor's router
+(`virtual-keyboard-v1`)
+
+smithay forwarded a virtual keyboard's keys straight to the focused
+`wl_keyboard`, so a compositor that serves fields itself never saw them: an
+engine could not type into the field it was composing in.
+
+- `src/wayland/virtual_keyboard/mod.rs`:
+  `VirtualKeyboardHandler::virtual_key(&mut self, key, pressed, time) -> bool`
+  defaults to `false`.
+- `src/wayland/virtual_keyboard/virtual_keyboard_handle.rs`: after the keymap
+  is current, `Key` asks the handler first; `true` means the compositor
+  routed the key itself, and only `false` falls back to upstream's forwarding
+  to the focused `wl_keyboard`. The handler gets the key in the protocol's
+  codes, 8 above the evdev ones a client maps from the same keymap.
+
+Remove both once smithay lets a compositor serve its own text fields through
+an input method and route a virtual keyboard's keys through its own input.

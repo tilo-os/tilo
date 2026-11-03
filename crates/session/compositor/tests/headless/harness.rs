@@ -4,6 +4,9 @@
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
+
+/// `wl_keyboard.keymap_format`'s XKB v1: what a virtual keyboard is given.
+const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 use std::time::Duration;
 
 use tilo_compositor::{Compositor, OutputConfig, WindowPolicy};
@@ -67,9 +70,15 @@ use wayland_protocols::xdg::toplevel_icon::v1::client::{
     xdg_toplevel_icon_v1::XdgToplevelIconV1,
 };
 use wayland_protocols_misc::zwp_input_method_v2::client::{
-    zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2,
-    zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2,
+    zwp_input_method_keyboard_grab_v2::{self, ZwpInputMethodKeyboardGrabV2},
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+    zwp_input_method_v2,
     zwp_input_method_v2::ZwpInputMethodV2,
+    zwp_input_popup_surface_v2::{self, ZwpInputPopupSurfaceV2},
+};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
 
 #[derive(Default)]
@@ -101,12 +110,32 @@ pub struct Seen {
     pub ime_done: u32,
     /// Whether the compositor asked the input method to type.
     pub ime_activated: bool,
+    /// The seat's keyboard, held as an input method holds it while it
+    /// composes: every key reaches it, and only what it passes on reaches
+    /// the field.
+    pub grab: Option<ZwpInputMethodKeyboardGrabV2>,
+    /// The keys the grab received, as `(keycode, pressed)`.
+    pub grab_keys: Vec<(u32, bool)>,
+    /// The candidate window's surface, and the rectangles the compositor
+    /// told it the field's text stands at, as `x y width height`.
+    pub popup: Option<ZwpInputPopupSurfaceV2>,
+    pub popup_surface: Option<WlSurface>,
+    pub popup_rects: Vec<(i32, i32, i32, i32)>,
+    /// The keyboard an input method types through the keys it does not
+    /// compose itself.
+    pub virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
+    pub virtual_keyboard: Option<ZwpVirtualKeyboardV1>,
     pub pointer: Option<WlPointer>,
     /// The absolute positions the pointer was put at here, as
     /// `wl_pointer.motion` sent them.
     pub pointer_positions: Vec<(f64, f64)>,
+    /// Where the pointer entered, as `wl_pointer.enter` placed it.
+    pub pointer_entered_at: Option<(f64, f64)>,
     pub keyboard: Option<WlKeyboard>,
     pub touch: Option<WlTouch>,
+    /// Whether this client leaves the seat's touch objects alone, as a
+    /// toolkit that only knows the pointer does.
+    pub no_touch: bool,
     pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
     pub locked_pointer: Option<ZwpLockedPointerV1>,
     pub confined_pointer: Option<ZwpConfinedPointerV1>,
@@ -356,6 +385,98 @@ impl TestClient {
         self.seen.input_method = Some(manager.get_input_method(seat, &qh, ()));
     }
 
+    /// Hold the seat's keyboard, as an input method does while it composes:
+    /// what the person types reaches it first.
+    pub fn grab_keyboard(&mut self) {
+        let qh = self.queue.handle();
+        let method = self.seen.input_method.as_ref().expect("input method");
+        self.seen.grab = Some(method.grab_keyboard(&qh, ()));
+        self.connection.flush().expect("flush");
+    }
+
+    /// Send the composition in progress: `text`, with its cursor or
+    /// selection at `(begin, end)` bytes.
+    pub fn preedit_with_input_method(&self, text: &str, cursor: Option<(i32, i32)>) {
+        let method = self.seen.input_method.as_ref().expect("input method");
+        let (begin, end) = cursor.unwrap_or((-1, -1));
+        method.set_preedit_string(text.to_owned(), begin, end);
+        method.commit(self.seen.ime_done);
+        self.connection.flush().expect("flush");
+    }
+
+    /// Type `key` through the input method's virtual keyboard, as an engine
+    /// does with the keys it does not compose itself. `keymap` is the one the
+    /// person's keyboard was given: the compositor reads keys by it.
+    pub fn virtual_key(&mut self, keymap: &str, key: u32, pressed: bool) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .virtual_keyboard_manager
+            .as_ref()
+            .expect("zwp_virtual_keyboard_manager_v1")
+            .clone();
+        let keyboard = if let Some(keyboard) = self.seen.virtual_keyboard.as_ref() {
+            keyboard.clone()
+        } else {
+            let keyboard =
+                manager.create_virtual_keyboard(self.seen.seat.as_ref().expect("wl_seat"), &qh, ());
+            self.upload_keymap(&keyboard, keymap);
+            self.seen.virtual_keyboard = Some(keyboard.clone());
+            keyboard
+        };
+        // The protocol's key codes sit 8 above the evdev ones.
+        keyboard.key(
+            u32::from(pressed),
+            key.saturating_add(8),
+            u32::from(pressed),
+        );
+        self.connection.flush().expect("flush");
+    }
+
+    /// Give a virtual keyboard the keymap to type in.
+    fn upload_keymap(&self, keyboard: &ZwpVirtualKeyboardV1, keymap: &str) {
+        let fd = rustix::fs::memfd_create(
+            "tilo-virtual-keyboard-test",
+            rustix::fs::MemfdFlags::CLOEXEC,
+        )
+        .expect("memfd");
+        let mut file = std::fs::File::from(fd);
+        file.write_all(keymap.as_bytes()).expect("write keymap");
+        file.write_all(&[0]).expect("terminate keymap");
+        keyboard.keymap(
+            KEYMAP_FORMAT_XKB_V1,
+            file.as_fd(),
+            u32::try_from(keymap.len() + 1).expect("a keymap small enough"),
+        );
+        self.connection.flush().expect("flush");
+    }
+
+    /// Open the candidate window's surface on this input method.
+    pub fn own_popup(&mut self) {
+        let qh = self.queue.handle();
+        let surface = self
+            .seen
+            .compositor
+            .as_ref()
+            .expect("wl_compositor")
+            .create_surface(&qh, ());
+        let method = self.seen.input_method.as_ref().expect("input method");
+        self.seen.popup = Some(method.get_input_popup_surface(&surface, &qh, ()));
+        self.seen.popup_surface = Some(surface);
+        self.connection.flush().expect("flush");
+    }
+
+    /// Draw the candidate window as one square of one colour, where the
+    /// compositor put it.
+    pub fn paint_popup(&self, edge: i32, rgba: [u8; 4]) {
+        let surface = self.seen.popup_surface.as_ref().expect("popup surface");
+        let buffer = self.icon_buffer(edge, rgba);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, edge, edge);
+        surface.commit();
+        self.connection.flush().expect("flush");
+    }
+
     /// Ask for the pointer to stay where it is while this window has it:
     /// a game or a remote desktop view.
     pub fn lock_pointer(&mut self) {
@@ -478,7 +599,37 @@ pub fn mapped_client(
     size: (i32, i32),
     rgba: [u8; 4],
 ) -> TestClient {
+    map(
+        TestClient::connect(compositor),
+        compositor,
+        app_id,
+        size,
+        rgba,
+    )
+}
+
+/// A mapped window whose client never binds `wl_touch`, as a toolkit that
+/// only knows the pointer does.
+pub fn mapped_client_without_touch(
+    compositor: &mut Compositor,
+    app_id: &str,
+    size: (i32, i32),
+    rgba: [u8; 4],
+) -> TestClient {
     let mut client = TestClient::connect(compositor);
+    client.seen.no_touch = true;
+    map(client, compositor, app_id, size, rgba)
+}
+
+/// Put `client`'s window up: a surface of `size` in `rgba`, mapped as
+/// `app_id` once the compositor has it.
+fn map(
+    mut client: TestClient,
+    compositor: &mut Compositor,
+    app_id: &str,
+    size: (i32, i32),
+    rgba: [u8; 4],
+) -> TestClient {
     pump(compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.wm_base.is_some() && clients[0].seen.seat.is_some()
     });
@@ -496,6 +647,7 @@ pub fn mapped_client(
     });
     client
 }
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -534,6 +686,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 }
                 "zwp_input_method_manager_v2" => {
                     seen.input_method_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_virtual_keyboard_manager_v1" => {
+                    seen.virtual_keyboard_manager = Some(registry.bind(name, 1, qh, ()));
                 }
                 "zwp_pointer_constraints_v1" => {
                     seen.pointer_constraints = Some(registry.bind(name, 1, qh, ()));
@@ -635,7 +790,10 @@ impl Dispatch<WlSeat, ()> for Seen {
             if capabilities.contains(wl_seat::Capability::Keyboard) && seen.keyboard.is_none() {
                 seen.keyboard = Some(seat.get_keyboard(qh, ()));
             }
-            if capabilities.contains(wl_seat::Capability::Touch) && seen.touch.is_none() {
+            if capabilities.contains(wl_seat::Capability::Touch)
+                && seen.touch.is_none()
+                && !seen.no_touch
+            {
                 seen.touch = Some(seat.get_touch(qh, ()));
             }
         }
@@ -652,7 +810,14 @@ impl Dispatch<WlPointer, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { .. } => seen.pointer_inside = true,
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                seen.pointer_inside = true;
+                seen.pointer_entered_at = Some((surface_x, surface_y));
+            }
             wl_pointer::Event::Leave { .. } => seen.pointer_inside = false,
             wl_pointer::Event::Motion {
                 surface_x,
@@ -849,6 +1014,48 @@ impl Dispatch<ZwpInputMethodV2, ()> for Seen {
     }
 }
 
+impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpInputMethodKeyboardGrabV2,
+        event: zwp_input_method_keyboard_grab_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_input_method_keyboard_grab_v2::Event::Key { key, state, .. } = event {
+            seen.grab_keys.push((
+                key,
+                matches!(state, WEnum::Value(wl_keyboard::KeyState::Pressed)),
+            ));
+        }
+    }
+}
+
+impl Dispatch<ZwpInputPopupSurfaceV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpInputPopupSurfaceV2,
+        event: zwp_input_popup_surface_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_input_popup_surface_v2::Event::TextInputRectangle {
+            x,
+            y,
+            width,
+            height,
+        } = event
+        {
+            seen.popup_rects.push((x, y, width, height));
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore ZwpVirtualKeyboardV1);
+delegate_noop!(Seen: ignore ZwpVirtualKeyboardManagerV1);
+
 impl Dispatch<ZwpTabletPadGroupV2, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -1022,7 +1229,6 @@ delegate_noop!(Seen: ignore WlCompositor);
 delegate_noop!(Seen: ignore XdgWmDialogV1);
 delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
 delegate_noop!(Seen: ignore ZwpInputMethodManagerV2);
-delegate_noop!(Seen: ignore ZwpInputMethodKeyboardGrabV2);
 delegate_noop!(Seen: ignore XdgDialogV1);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);

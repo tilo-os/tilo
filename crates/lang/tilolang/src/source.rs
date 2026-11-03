@@ -474,12 +474,25 @@ pub fn write_catalogue(built: &BuiltPackage) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Whether the package's committed ids lock is what this build writes: the same entries, in the
+/// order the tool writes them.
+#[must_use]
+pub fn ids_current(built: &BuiltPackage) -> bool {
+    std::fs::read_to_string(built.dir.join(IDS_FILE))
+        .is_ok_and(|old| old == built.compiled.ids.to_text())
+}
+
+/// Writes the package's ids lock; `true` when it changed.
+///
+/// # Errors
+///
+/// The lock cannot be written.
 pub fn write_ids(built: &BuiltPackage) -> Result<bool, String> {
-    let path = built.dir.join(IDS_FILE);
-    let text = built.compiled.ids.to_text();
-    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+    if ids_current(built) {
         return Ok(false);
     }
-    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let path = built.dir.join(IDS_FILE);
+    std::fs::write(&path, built.compiled.ids.to_text())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(true)
 }

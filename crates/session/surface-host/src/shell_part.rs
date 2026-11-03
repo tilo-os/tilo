@@ -23,7 +23,9 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{
+    CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, SurfaceHost,
+};
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
@@ -2265,6 +2267,27 @@ impl ShellPart {
                     rect.height(),
                 )
             })
+    }
+
+    /// Where every control assistive technology names `name` stands: a menu item repeats the
+    /// name of the row it moves a place to, which a chip of that row elsewhere says too.
+    pub fn control_bounds_all(&mut self, name: &str) -> Vec<(f64, f64, f64, f64)> {
+        let (ox, oy) = self.widgets.placement().origin;
+        self.widgets
+            .host_mut()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.label() == Some(name))
+            .filter_map(|(_, node)| node.bounds())
+            .map(|rect| {
+                (
+                    f64::from(ox) + rect.x0,
+                    f64::from(oy) + rect.y0,
+                    rect.width(),
+                    rect.height(),
+                )
+            })
+            .collect()
     }
 
     /// Whether anything the shell lays out for assistive technology says `text`: a node's

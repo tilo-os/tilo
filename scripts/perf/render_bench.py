@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
-"""Render benchmarks at native 4K for the two performance lanes.
+"""The toolkit's render benchmark at native 4K for the performance lanes.
 
-The KPI is "Frame time p99 at 4K/144 Hz": at most 6.9 ms for a damage-limited frame and 16.7 ms for a full
-repaint. Two release harnesses measure it, and this script runs both the same
-way in every lane:
-
-- `ui-perf dashboard_perf_bench` (`crates/dev/ui-examples`): a ~250-widget
-  toolkit window driven through hover, click and animation events, each
-  redraw drawn into an offscreen target;
-- `redraw_bench` (`crates/session/session`): 1,000 clicks through the
-  shell's `FrameBuilder`, each painted, rendered by the DRM bridge, read back
-  and swizzled into an XRGB buffer. No page flip or scanout.
-- `strip_pan_bench` (`crates/session/session`, optional): a continuous
-  strip pan and strip-to-strip moves through `FrameBuilder` and the DRM direct
-  path's GPU target, with the presenter compositing pans from retained strip
-  layers: frame time and the pixels each frame rasterises.
+The KPI is "Frame time p99 at 4K/144 Hz": at most 6.9 ms for a damage-limited
+frame and 16.7 ms for a full repaint. `ui-perf dashboard_perf_bench`
+(`crates/dev/ui-examples`) measures it: a ~250-widget toolkit window driven
+through hover, click and animation events, each redraw drawn into an offscreen
+target. The session's own desktop surface is measured by `session_perf`
+(`crates/session/desktop`), on the frame path both hosts draw with.
 
 Subcommands:
 
@@ -22,22 +14,15 @@ Subcommands:
   allocator calls and bytes per redraw, native pixels rasterised per redraw,
   and allocations per 1,000 events that need no redraw, against the budgets
   `docs/ui-performance-benchmark.md` documents. No clock is compared.
-- `timing UI_PERF REDRAW_BENCH [--strip-pan-bench STRIP_PAN_BENCH]`: the
-  scheduled lane. Frame-time samples from both harnesses become
-  `render.ui.frame_us.4k` and `render.shell.redraw_us.4k` records
-  (`tools/perf/record.py`); the pan harness adds `render.shell.pan_us.*`,
-  `render.shell.pan_pixels.*` and `render.shell.pan_scene_us.*` (the CPU
-  building a pan frame's scene; 4K at 100 %, 150 % and 200 %, and on two
-  strips at 100 % and 200 %), and `render.shell.strip_move_us.*` and
-  `render.shell.strip_move_pixels.*` (4K at 100 %, 150 % and 200 %).
+- `timing UI_PERF`: the scheduled lane. Frame-time samples become the
+  `render.ui.frame_us.4k` record (`tools/perf/record.py`).
 
 Both start with the damage-verification preflight: every retained frame must
 match a full render of the same scene, or no number of the run counts.
 
     scripts/perf/render_bench.py counters target/release/examples/ui-perf --out target/render
     scripts/perf/render_bench.py timing target/release/examples/ui-perf \\
-        target/release/examples/redraw_bench --env-json env.json --out target/render \\
-        --records target/render/render.jsonl
+        --env-json env.json --out target/render --records target/render/render.jsonl
 
 A software renderer (lavapipe) times the CPU's rasterisation, not a GPU's: its
 records carry `renderer=lavapipe` and are compared only with each other.
@@ -76,47 +61,13 @@ IDLE_COUNTERS = {"TILO_UI_DASH_ITERS": "100000", "TILO_UI_DASH_STATIC": "1", "TI
                  "TILO_UI_DASH_ALLOC_BUDGET_PER_1000": "1"}
 UI_TIMING = {**NATIVE_4K, "TILO_UI_DASH_ITERS": "1000"}
 UI_SAMPLES_ENV = "TILO_UI_DASH_SAMPLES"
-REDRAW_SAMPLES_ENV = "TILO_REDRAW_BENCH_SAMPLES"
-REDRAW_SAMPLE_COUNT = 1000
-# The strip pan harness's 4K, six-window cases through the layered presenter,
-# as (KPI, unit, samples file stem in its --out directory, case): at 100 % on
-# one strip, at 150 % and 200 % on one strip, and on two strips (the docked
-# wheel riding the top strip over the second) at 100 % and 200 %.
-PAN_CASES = (("4k", "pan.4k.w6", "4k, 6 windows, layered presenter"),
-             ("4k_s150", "pan.4k.s150.w6", "4k at 150 %, 6 windows, layered presenter"),
-             ("4k_s200", "pan.4k.s200.w6", "4k at 200 %, 6 windows, layered presenter"),
-             ("4k_strips2", "pan.4k.strips2.w6", "4k, two strips, 6 windows, layered presenter"),
-             ("4k_s200_strips2", "pan.4k.s200.strips2.w6",
-              "4k at 200 %, two strips, 6 windows, layered presenter"))
-# Strip-to-strip moves (focus to the other strip, every frame until the
-# desktop settles) on the same panel at 100 %, 150 % and 200 %.
-STRIP_MOVE_CASES = (("4k", "strip-move.4k.w6", "4k, 6 windows, layered presenter"),
-                    ("4k_s150", "strip-move.4k.s150.w6", "4k at 150 %, 6 windows, layered presenter"),
-                    ("4k_s200", "strip-move.4k.s200.w6", "4k at 200 %, 6 windows, layered presenter"))
-# A pan's first frame from rest (the first pan's and a second pan's, once the
-# presenter warmed its layers at rest) is recorded apart from the pan frames.
-PAN_RECORDS = tuple(record for suffix, stem, case in PAN_CASES
-                    for record in ((f"render.shell.pan_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
-                                   (f"render.shell.pan_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case),
-                                   (f"render.shell.pan_scene_us.{suffix}", "us", f"{stem}.layered.scene-us",
-                                    case),
-                                   (f"render.shell.pan_start_us.{suffix}", "us", f"{stem}.layered.start-us",
-                                    case),
-                                   (f"render.shell.pan_start_pixels.{suffix}", "pixels",
-                                    f"{stem}.layered.start-pixels", case))) + tuple(
-    record for suffix, stem, case in STRIP_MOVE_CASES
-    for record in ((f"render.shell.strip_move_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
-                   (f"render.shell.strip_move_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case)))
-PAN_ADAPTER = re.compile(r"^adapter: name=\"([^\"]*)\"", re.M)
 
 # A run measures the harness's defaults: no inherited benchmark switch or
 # renderer optimisation override may reach it.
-SCRUBBED_PREFIXES = ("TILO_UI_DASH_", "TILO_REDRAW_BENCH_", "TILO_DRM_XRGB_", "VELLO_")
+SCRUBBED_PREFIXES = ("TILO_UI_DASH_", "TILO_DRM_XRGB_", "VELLO_")
 
 UI_REDRAWS = re.compile(r"^redrawn events:\s+(\d+)\b", re.M)
 UI_ADAPTER = re.compile(r"^UI renderer adapter: name=\"([^\"]*)\"", re.M)
-REDRAW_ADAPTER = re.compile(r"^DRM bridge adapter: name=\"([^\"]*)\"", re.M)
-REDRAW_GATE = re.compile(r"^gates: (mean<=\d+us p99<=\d+us) \((Pass|Fail)\)$", re.M)
 # Counter lines the harness prints when a budget is set; each must appear, so a
 # run that silently stopped checking one fails.
 COUNTER_LINES = {
@@ -193,29 +144,6 @@ def ui_frame_record(output: str, samples_file: Path, env: dict[str, Any]) -> rec
     return record.from_samples("render.ui.frame_us.4k", "us", samples, meta=meta, **base)
 
 
-def redraw_record(output: str, samples_file: Path, env: dict[str, Any]) -> tuple[record.Record, bool]:
-    """The shell redraw record, and whether the harness's own gate passed."""
-    gate = REDRAW_GATE.search(output)
-    if gate is None:
-        raise ValueError("redraw_bench printed no `gates:` line")
-    samples = read_samples(samples_file, REDRAW_SAMPLE_COUNT, "redraw_bench")
-    adapter = REDRAW_ADAPTER.search(output)
-    meta = {**env.get("meta", {}), "gate": f"{gate.group(1)} {gate.group(2)}",
-            "adapter": adapter.group(1) if adapter else "unknown"}
-    base = {name: value for name, value in env.items() if name != "meta"}
-    return record.from_samples("render.shell.redraw_us.4k", "us", samples, meta=meta, **base), gate.group(2) == "Pass"
-
-
-def pan_records(output: str, samples_dir: Path, env: dict[str, Any]) -> list[record.Record]:
-    """The strip pan records, from the samples the harness wrote to `samples_dir`."""
-    adapter = PAN_ADAPTER.search(output)
-    meta = {**env.get("meta", {}), "adapter": adapter.group(1) if adapter else "unknown"}
-    base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(kpi, unit, read_samples(samples_dir / f"{stem}.txt", None, "strip_pan_bench"),
-                                meta={**meta, "case": case}, **base)
-            for kpi, unit, stem, case in PAN_RECORDS]
-
-
 def timing(args: argparse.Namespace) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     env = record.load_env(args.env_json)
@@ -223,9 +151,7 @@ def timing(args: argparse.Namespace) -> int:
         print("::error::render timing: retained frames differ from full renders; nothing is recorded")
         return 1
     ui_samples = args.out / "ui-frame-us.txt"
-    redraw_samples = args.out / "shell-redraw-us.txt"
-    for stale in (ui_samples, redraw_samples):
-        stale.unlink(missing_ok=True)
+    ui_samples.unlink(missing_ok=True)
     status = 0
     records: list[record.Record] = []
     try:
@@ -234,24 +160,6 @@ def timing(args: argparse.Namespace) -> int:
         if ui_status != 0:
             raise ValueError(f"ui-perf exited {ui_status}")
         records.append(ui_frame_record(ui_output, ui_samples, env))
-        redraw_status, redraw_output = run("shell-redraw", [args.redraw_bench],
-                                           {REDRAW_SAMPLES_ENV: str(redraw_samples)}, args.out)
-        redraw, gate_passed = redraw_record(redraw_output, redraw_samples, env)
-        records.append(redraw)
-        if redraw_status != 0 and gate_passed:
-            raise ValueError(f"redraw_bench exited {redraw_status} with its gate passed")
-        if not gate_passed:
-            # The harness gate is a hardware threshold; the record carries the
-            # outcome and the lane's comparison judges the trend.
-            print(f"::warning::redraw_bench's own gate failed on this renderer ({redraw.meta['gate']}); "
-                  "the record is kept")
-        strip_pan_bench = getattr(args, "strip_pan_bench", None)
-        if strip_pan_bench is not None:
-            pan_dir = args.out / "pan"
-            pan_status, pan_output = run("strip-pan", [strip_pan_bench, "--out", str(pan_dir)], {}, args.out)
-            if pan_status != 0:
-                raise ValueError(f"strip_pan_bench exited {pan_status}")
-            records.extend(pan_records(pan_output, pan_dir, env))
     except ValueError as error:
         print(f"::error::render timing: {error}")
         status = 1
@@ -271,8 +179,6 @@ def main(argv: list[str] | None = None) -> int:
     gate.add_argument("--out", type=Path, default=REPO / "target/render-bench")
     lane = commands.add_parser("timing", help="frame-time records for the scheduled lane")
     lane.add_argument("ui_perf")
-    lane.add_argument("redraw_bench")
-    lane.add_argument("--strip-pan-bench", help="also time strip pans with this strip_pan_bench binary")
     lane.add_argument("--env-json", type=Path, required=True, help="tools/perf/record.py env output")
     lane.add_argument("--out", type=Path, default=REPO / "target/render-bench")
     lane.add_argument("--records", type=Path, help="append the records to this JSON-lines file")

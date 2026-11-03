@@ -3063,7 +3063,7 @@ pub use flap::{FlapState, SplitLayout};
 mod bottom_sheet;
 pub use bottom_sheet::{BottomSheet, SheetDetent, SheetFrame, SheetGeometry, SheetInput};
 mod page_slide;
-pub use page_slide::PageSlide;
+pub use page_slide::{PageSlide, PageSlideProps};
 mod sidebar;
 pub use sidebar::{
     DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
@@ -3397,6 +3397,8 @@ pub mod icon;
 pub use icon::{IconProps, IconSize, IconWidget};
 pub mod signal_meter;
 pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace, SignalMeterProps};
+pub mod drawing;
+pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
@@ -3484,7 +3486,7 @@ mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    RowSelection, VecListModel, VirtualList, VirtualListProps,
+    RowGroup, RowSelection, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
 pub(crate) mod control_verb;

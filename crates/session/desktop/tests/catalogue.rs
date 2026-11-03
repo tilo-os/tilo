@@ -8,7 +8,9 @@ use std::fmt::Write as _;
 
 use tilo_actions::ResourceSpec;
 use tilo_desktop::desk_verbs::launchpad_resource;
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, chrome_resource, desk_resource};
+use tilo_desktop::desk_verbs::{
+    CHROME_RESOURCE, DESK_RESOURCE, OpenSearch, chrome_resource, desk_resource,
+};
 use tilo_desktop_surface::SearchRow;
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use tilo_resource::Effect;
@@ -26,7 +28,15 @@ fn published() -> Vec<ResourceSpec> {
     }];
     vec![
         chrome_resource(),
-        desk_resource(&tabs, &[1], Some(("scr", &rows))),
+        desk_resource(
+            &tabs,
+            &[1],
+            Some(OpenSearch {
+                query: "scr",
+                rows: &rows,
+                searching: false,
+            }),
+        ),
         launchpad_resource(),
     ]
 }

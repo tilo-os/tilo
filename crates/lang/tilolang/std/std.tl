@@ -79,12 +79,19 @@ view list<R, T, S>(
     }
 }
 
-/// The items of a list as the rows of a column, or what it says while it has none.
+/// The items of a list as the rows of a column, or what it says while it has none. Give
+/// `group` and the list stands under a heading for each run of items it names, the heading held
+/// at the top while the person scrolls it (each item's day, written the platform's way); give
+/// `closed` and the items it is true of stand last, under `closed_title`, folded away until the
+/// person opens them.
 view rows<T>(
     items: List<T>,
     empty: Text,
     primary: Option<host.Action>,
     icon: Option<Text>,
+    group: Option<(T) -> Option<Date>> = .none,
+    closed: Option<(T) -> Bool> = .none,
+    closed_title: Text = phrase("tilolang-done"),
     row: (T) -> View
 ) {
     if items.is_empty() {
@@ -96,15 +103,20 @@ view rows<T>(
             ui.EmptyState(empty, icon: icon)
         }
     } else {
-        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+        // The items done with stand last, under the one heading their group folds: a sort is
+        // stable, so the order the caller gave holds among them and among the rest.
+        let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
+        ui.VirtualList(selection_follows_focus: true, in_column: true, tail_title: .some(closed_title)) {
             on select(x: T): open(x, front: false)
             on activate(x: T): open(x)
-            for x in items {
+            for x in shown {
                 let offered = actions(x)
-                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
+                let heading: Option<Date> = if let g = group { g(x) } else { .none }
+                let tail = if let c = closed { c(x) } else { false }
+                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who, group: heading, tail: tail) {
                     menu: {
                         for a in offered {
-                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
                                 on choose: a.run
                             }
                         }
@@ -163,7 +175,7 @@ view header<S>(
     }
     for a in offered {
         if a.primary {
-            ui.Button(a.label, icon: a.icon, role: .primary) {
+            ui.Button(a.label, icon: a.icon, role: .primary, key: a.key) {
                 on press: a.run
             }
         }
@@ -260,7 +272,7 @@ view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
                             menu: {
                                 for a in offered {
-                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
                                         on choose: a.run
                                     }
                                 }

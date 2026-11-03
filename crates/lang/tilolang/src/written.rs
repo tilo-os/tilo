@@ -9,8 +9,8 @@
 //! `agent.written.<hash>`, whose one view is the written one; the runtime draws it with its author
 //! as its code author.
 //!
-//! A bare view body (`card(tasks.tasks) { ... }`), which answers were before they were
-//! declarations, reads as the body of a view that takes nothing.
+//! A bare view body (`list(tasks.tasks) { t -> row(t.title) }`), which answers were before
+//! they were declarations, reads as the body of a view that takes nothing.
 
 use crate::diag::{Diagnostic, Span};
 use crate::hash::sha256_hex;

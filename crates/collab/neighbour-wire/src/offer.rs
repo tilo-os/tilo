@@ -10,6 +10,10 @@
 //! it authenticated. So nothing here is signed, and an answer that names
 //! another device is never sent.
 //!
+//! An offer is one invocation's ([`Query::request_id`]): the device asked
+//! keeps it under the device that asked and that id, and the invocation that
+//! follows names it, so work is run for the device whose work it is.
+//!
 //! [`State::verdict`] is the one place a decline is decided, in the order a
 //! person would state the rules; the requester weighs and ranks the willing
 //! answers (`tilo_peer_state::placement`), and the work travels in the
@@ -52,6 +56,9 @@ pub enum Decline {
     DataSaving,
     /// Its battery is critically low.
     CriticalBattery,
+    /// It is running as many jobs as it takes on at once: an offer it cannot
+    /// admit now is answered not here, rather than won and refused later.
+    AtCapacity,
 }
 
 impl Decline {
@@ -66,6 +73,7 @@ impl Decline {
             Self::AppNotInstalled => "app_not_installed",
             Self::DataSaving => "data_saving",
             Self::CriticalBattery => "critical_battery",
+            Self::AtCapacity => "at_capacity",
         }
     }
 }
@@ -103,6 +111,10 @@ pub struct State {
     pub power: Power,
     /// Work already in hand per thousand slots; lower wins.
     pub load_permille: u32,
+    /// How many more jobs it can start right now, when it keeps count: zero
+    /// says it is at its limit and takes nothing more, never that it is
+    /// slow. `None` for a device that runs what it is handed.
+    pub free_slots: Option<u32>,
     /// Measured round trip to the requester; lower wins.
     pub latency_ms: u32,
 }
@@ -123,6 +135,7 @@ impl State {
             priority: 0,
             power: Power::Unknown,
             load_permille: 0,
+            free_slots: None,
             latency_ms: 0,
         }
     }
@@ -143,6 +156,8 @@ impl State {
             Decline::WorkspaceNotHeld
         } else if !self.app_installed {
             Decline::AppNotInstalled
+        } else if self.free_slots == Some(0) {
+            Decline::AtCapacity
         } else if self.data_saving {
             Decline::DataSaving
         } else if self.critical_battery {
@@ -206,7 +221,10 @@ pub struct Query {
     /// The workspace the route would run in: a device that does not hold it
     /// says so.
     pub workspace: String,
-    /// Names the round, so a stale answer is known for what it is.
+    /// Names the offer: the invocation the work would run. A device that
+    /// answers keeps the offer under this id and the device that asked, and
+    /// runs the invocation that names it — so two devices offering one route,
+    /// or one device offering it twice, never stand for each other's work.
     pub request_id: Uuid,
     /// What would run.
     pub route: Route,
@@ -281,6 +299,7 @@ mod tests {
             priority: 0,
             power: Power::External,
             load_permille: 0,
+            free_slots: Some(1),
             latency_ms: 20,
         }
     }
@@ -291,13 +310,14 @@ mod tests {
     #[test]
     fn each_rule_passes_a_device_over_with_its_reason() {
         type Change = fn(&mut State);
-        let cases: [(Change, Decline); 6] = [
+        let cases: [(Change, Decline); 7] = [
             (|w| w.requester = true, Decline::Requester),
             (|w| w.online = false, Decline::Offline),
             (|w| w.store_role = true, Decline::StoreOnly),
             (|w| w.holds_workspace = false, Decline::WorkspaceNotHeld),
             (|w| w.app_installed = false, Decline::AppNotInstalled),
             (|w| w.data_saving = true, Decline::DataSaving),
+            (|w| w.free_slots = Some(0), Decline::AtCapacity),
         ];
         for (change, reason) in cases {
             let mut state = worker();

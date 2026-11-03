@@ -49,6 +49,7 @@ pub fn check_program(
         synth_base: 0,
         states: Vec::new(),
         at_event: Vec::new(),
+        words: Vec::new(),
     };
     c.begin(Ctx::Flow, params, Ty::Unit, export);
     c.st.written = Written::Program;
@@ -93,6 +94,7 @@ pub fn check_program(
             views: Vec::new(),
             states: Vec::new(),
             at_event: Vec::new(),
+            words: Vec::new(),
         },
         lets,
     }

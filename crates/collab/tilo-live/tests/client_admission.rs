@@ -23,7 +23,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_live::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
-use tilo_live::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{
+    Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
+};
 
 fn name(byte: char) -> String {
     format!("{}/{}", call(), byte.to_string().repeat(64))
@@ -53,7 +55,7 @@ struct Relayed {
     admit: bool,
 }
 impl RelayAuthority for Relayed {
-    fn admit(&self, _proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, _proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         if !self.admit {
             return Err(Denied);
         }
@@ -123,7 +125,7 @@ async fn admitted_session_reports_live() {
 /// Grants by proof: `pub-b` publishes `b`, `sub` listens to `b`.
 struct Roles;
 impl RelayAuthority for Roles {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let (publish, subscribe) = match proof {
             b"pub-b" => (name('b'), vec![]),
             b"sub" => (name('c'), vec![name('b')]),

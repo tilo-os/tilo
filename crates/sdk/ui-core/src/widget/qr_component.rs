@@ -13,6 +13,7 @@ use super::QrWidget;
 pub struct QrProps {
     /// What the code carries, as the scanner reads it.
     #[component(required, positional)]
+    #[component(data)]
     pub payload: String,
     /// What scanning it means, as assistive technology announces it; "QR code" unless said.
     pub alt: Option<String>,

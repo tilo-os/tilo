@@ -14,14 +14,18 @@
 
 #[path = "headless/harness.rs"]
 mod harness;
+#[path = "headless/ime.rs"]
+mod ime;
 #[path = "headless/session_follow.rs"]
 mod session_follow;
+#[path = "headless/touch.rs"]
+mod touch;
 #[path = "headless/typing.rs"]
 mod typing;
 #[path = "headless/window_icons.rs"]
 mod window_icons;
 
-use harness::{Seen, TestClient, headless, mapped_client, pump};
+use harness::{Seen, TestClient, headless, mapped_client, mapped_client_without_touch, pump};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -32,10 +36,10 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
-    HostKey, HostLayer, IconArtwork, InputEvent, KeyClaim, KeyboardLayout, OutputConfig, PadAction,
-    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField,
-    TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
-    WindowPicture, WindowPolicy,
+    HostIme, HostKey, HostLayer, HostTextInput, IconArtwork, InputEvent, KeyClaim, KeyboardLayout,
+    OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent,
+    TabletPhase, TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon,
+    WindowInfo, WindowPicture, WindowPolicy,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -460,6 +464,11 @@ struct HostLog {
     /// Each Super+X the surface was offered, and whether it was told a client
     /// holds the desktop's shortcuts.
     taken: Vec<(u32, bool)>,
+    /// The text field the surface draws, when it draws one: what it declares
+    /// and where its caret stands on the desk.
+    field: Option<HostTextInput>,
+    /// What the input method did with the field, in order.
+    ime: Vec<HostIme>,
 }
 
 /// A hosted surface: one square of one colour.
@@ -539,6 +548,14 @@ impl SurfaceHost for Square {
 
     fn key(&mut self, key: &HostKey) {
         self.log.borrow_mut().keys.push(key.clone());
+    }
+
+    fn text_input(&self) -> Option<HostTextInput> {
+        self.log.borrow().field
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        self.log.borrow_mut().ime.push(event);
     }
 }
 
@@ -673,78 +690,6 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
         clients[0].seen.pointer_inside
     });
     assert_eq!(log.borrow().left, 1);
-}
-
-#[test]
-fn touches_reach_the_window_under_them_and_hosted_surfaces_as_presses() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(Square::new(
-        (10, 10, 40, 40),
-        [0, 255, 0, 255],
-        Rc::clone(&log),
-    )));
-    // Centred: the window spans (220, 190) to (420, 290).
-    let mut client = mapped_client(&mut compositor, "touched", (200, 100), [255, 0, 0, 255]);
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.touch.is_some()
-    });
-
-    for event in [
-        InputEvent::TouchDown {
-            slot: 0,
-            x: 300.0,
-            y: 240.0,
-        },
-        InputEvent::TouchFrame,
-        // Dragged off the window, the finger stays the window's.
-        InputEvent::TouchMotion {
-            slot: 0,
-            x: 500.0,
-            y: 240.0,
-        },
-        InputEvent::TouchFrame,
-        InputEvent::TouchUp { slot: 0 },
-        InputEvent::TouchFrame,
-    ] {
-        compositor.input(event).unwrap();
-    }
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.touches.len() >= 6
-    });
-    assert_eq!(
-        client.seen.touches,
-        [
-            "down 0 80 50",
-            "frame",
-            "motion 0 280 50",
-            "frame",
-            "up 0",
-            "frame"
-        ]
-    );
-    assert!(client.seen.keyboard_focused, "a touch focuses like a click");
-
-    compositor
-        .input(InputEvent::TouchDown {
-            slot: 1,
-            x: 20.0,
-            y: 20.0,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::TouchMotion {
-            slot: 1,
-            x: 25.0,
-            y: 20.0,
-        })
-        .unwrap();
-    compositor.input(InputEvent::TouchUp { slot: 1 }).unwrap();
-    pump(&mut compositor, &mut [&mut client], |_, _| true);
-    assert_eq!(log.borrow().motions, [(20.0, 20.0), (25.0, 20.0)]);
-    assert_eq!(log.borrow().buttons, [(BTN_LEFT, true), (BTN_LEFT, false)]);
-    assert_eq!(log.borrow().left, 1);
-    assert_eq!(client.seen.touches.len(), 6, "the window saw none of it");
 }
 
 #[test]

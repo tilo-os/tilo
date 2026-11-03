@@ -17,7 +17,7 @@ d-xttl6aec = Stage
 d-44yujnht = Reactions
 
 d-5cf5i2l7 = Basics
-    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts and an empty state.
+    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an empty state and a page of a stack.
     .noun = { $count ->
         [one] basics
        *[other] basicses
@@ -316,26 +316,224 @@ d-gv3ymzbk = Mark moved
     .doc = Note the item moved, in the window's last answer.
 
 d-wjo4okew = Gallery
+    .w-groups = Groups
 
 d-7chkyi44 = Basics
+    .w-basics = Basics
+    .w-gallery = Gallery
+    .w-parts = Parts
+    .w-collections = Collections
+    .w-list = List
+    .w-board = Board
+    .w-more = More
+    .w-rename = Rename
+    .w-delete = Delete
+    .w-text-and-buttons = Text and buttons
+    .w-release-planning = Release planning
+    .w-body-text-says-what-a-thing = Body text says what a thing is, at the reading measure.
+    .w-save = Save
+    .w-upload = Upload
+    .w-design = Design
+    .w-due-friday = Due Friday
+    .w-ada-lovelace = Ada Lovelace
+    .w-a-note-for-the-team = A note for the team
+    .w-this-week = This week
+    .w-owner = Owner
+    .w-due = Due
+    .w-friday = Friday
+    .w-stage = Stage
+    .w-review = Review
+    .w-no-archived-items = No archived items
+    .w-archived-items-show-here = Archived items show here.
+    .w-a-page-of-a-stack = A page of a stack
+    .w-a-section-opened-in-its-own = A section opened in its own page of the panel, one level deep.
 
 d-vvxmf5ve = Backlog list
+    .w-backlog = Backlog
+    .w-message-the-team = Message the team
+    .w-send = Send
 
 d-7ptc3r7a = Item row
+    .w-can-we-ship-the-screenshots-with = Can we ship the screenshots with the notes?
+    .w-replying-to = Replying to
+    .w-copy-link = Copy link
+    .w-delete = Delete
+    .w-reply = Reply
 
 d-qczmqkvq = Release board
+    .w-release = Release
 
 d-z5ai6zk5 = Controls
+    .w-boxes-and-switches = Boxes and switches
+    .w-send-by-email = Send by email
+    .w-repeat-weekly = Repeat weekly
+    .w-archived = Archived
+    .w-archived-items-stay-for-30-days = Archived items stay for 30 days.
+    .w-numbers = Numbers
+    .w-share = Share
+    .w-time = Time
+    .w-choices = Choices
+    .w-studio = Studio
+    .w-gallery = Gallery
+    .w-annex = Annex
+    .w-choose-a-room = Choose a room
+    .w-steps = Steps
+    .w-grid = Grid
+    .w-list = List
+    .w-board = Board
+    .w-views = Views
+    .w-summary = Summary
+    .w-details = Details
+    .w-history = History
+    .w-draft = Draft
+    .w-review = Review
+    .w-send = Send
+    .w-days-and-times = Days and times
+    .w-starts = Starts
+    .w-ends = Ends
+    .w-at = At
+    .w-colours = Colours
+    .w-text = Text
+    .w-open-with = Open with
+    .w-who-it-goes-to = Who it goes to
+    .w-bo = Bo
+    .w-the-site = The site
+    .w-pictures = Pictures
+    .w-small = Small
+    .w-regular = Regular
+    .w-large = Large
 
 d-wxq3apea = Data
+    .w-table = Table
+    .w-files = Files
+    .w-name = Name
+    .w-state = State
+    .w-size = Size
+    .w-tree = Tree
+    .w-project = Project
+    .w-conversation = Conversation
+    .w-conversation-with-ada = Conversation with Ada
+    .w-cards = Cards
+    .w-collections = Collections
+    .w-history = History
 
 d-5cczuoub = Feedback
+    .w-bold = Bold
+    .w-flag = Flag
+    .w-pin = Pin
+    .w-share = Share
+    .w-projects = Projects
+    .w-release = Release
+    .w-release-4-2 = Release 4.2
+    .w-ships-friday = Ships Friday
+    .w-sync-paused = Sync paused
+    .w-files-sync-again-when-you-are = Files sync again when you are online.
+    .w-retry = Retry
+    .w-status = Status
+    .w-beta = Beta
+    .w-done = Done
+    .w-syncing = Syncing
+    .w-syncing-3-files = Syncing 3 files
+    .w-quarterly-report = Quarterly report
+    .w-shared-with-the-team = Shared with the team
+    .w-edited-an-hour-ago = Edited an hour ago
+    .w-12-pages = 12 pages
+    .w-due-friday = Due Friday
+    .w-3-comments = 3 comments
+    .w-progress = Progress
+    .w-uploading = Uploading
+    .w-preparing = Preparing
+    .w-disk = Disk
+    .w-81-of-100-gb = 81 of 100 GB
+    .w-numbers = Numbers
+    .w-open = Open
+    .w-closed = Closed
+    .w-this-month = this month
+    .w-late = Late
+    .w-requests-per-second = Requests per second
+    .w-errors-per-minute = Errors per minute
+    .w-drawing = Drawing
+    .w-visitors-this-week-above-the-target = Visitors this week, above the target since Thursday
+    .w-details = Details
+    .w-build-log = Build log
+    .w-finished-in-4-minutes = Finished in 4 minutes
+    .w-compiled-312-crates = Compiled 312 crates.
+    .w-all-tests-passed = All tests passed.
+    .w-older-activity-is-kept-for-30 = Older activity is kept for 30 days.
+    .w-keys-and-loading = Keys and loading
+    .w-ctrl = Ctrl
+    .w-k = K
+    .w-enter = Enter
+    .w-esc = Esc
+    .w-close = Close
 
 d-irl4ws35 = Places
+    .w-notes = Notes
+    .w-a-place-on-the-canvas = A place on the canvas.
+    .w-tasks = Tasks
+    .w-another-beside-it = Another, beside it.
+    .w-window = Window
+    .w-a-window = A window
+    .w-close = Close
+    .w-a-window-on-the-desk-its = A window on the desk: its bar, its controls, what it shows.
 
 d-tsxcwdoy = Media
+    .w-pictures = Pictures
+    .w-a-blue-tile = A blue tile
+    .w-a-blue-tile-cropped = A blue tile, cropped
+    .w-the-same-tile-to-zoom = The same tile, to zoom
+    .w-cards = Cards
+    .w-blue = Blue
+    .w-folder = Folder
+    .w-notes = Notes
+    .w-today = Today
+    .w-3-files = 3 files
+    .w-hills = Hills
+    .w-portrait = Portrait
+    .w-playing = Playing
+    .w-a-quiet-song = A quiet song
+    .w-someone = Someone
+    .w-a-film = A film
+    .w-codes-and-drops = Codes and drops
+    .w-pairing-code = Pairing code
+    .w-drop-files-to-import = Drop files to import
+    .w-any-file-up-to-50-mb = Any file up to 50 MB
+    .w-drop-a-picture = Drop a picture
+    .w-choose = Choose
+    .w-pages = Pages
+    .w-report-pdf = Report.pdf
+    .w-scan-pdf = Scan.pdf
+    .w-import = Import…
+    .w-text = Text
+    .w-write-a-view = Write a view
+    .w-a-line-of-text = A line of text
+    .w-surfaces = Surfaces
+    .w-ask = Ask
+    .w-options = Options
+    .w-first-choice = First choice
+    .w-second-choice = Second choice
+    .w-show-the-page = Show the page
+    .w-a-floating-panel-holds-a-canvas = A floating panel holds a canvas's own inspector.
+    .w-a-popover-beside-nothing-in-particular = A popover beside nothing in particular
+    .w-delete-3-notes = Delete 3 notes?
+    .w-cancel = Cancel
+    .w-delete = Delete
+    .w-they-are-kept-in-history-for = They are kept in History for 30 days.
+    .w-the-web = The web
+    .w-a-page = A page
 
 d-rygoropv = Shell parts
+    .w-chrome = Chrome
+    .w-a-bar = A bar
+    .w-a-bar-s-body = A bar's body
+    .w-open = Open
+    .w-a-dock = A dock
+    .w-a-dock-s-body-inset-and = A dock's body, inset and rounded
+    .w-a-run-of-items = A run of items
+    .w-pinned = Pinned
+    .w-pinned-standing = Pinned, standing
+    .w-unread = Unread
+    .w-the-line-above-marks-where-a = The line above marks where a reader's unread messages start.
 
 d-wjo4okew~row0 = Gallery for x
 
@@ -374,36 +572,53 @@ d-wjo4okew~row16 = Gallery for x
 d-wjo4okew~row17 = Gallery for x
 
 d-vvxmf5ve~row0 = Backlog list for x
+    .w-open = Open
+    .w-delete = Delete
+    .w-archive = Archive
 
 d-qczmqkvq~row0 = Release board for x
+    .w-ada-lovelace = Ada Lovelace
 
 d-qczmqkvq~row1~row0 = Release board for x
 
 d-qczmqkvq~row1 = Release board for stage
+    .w-new-item = New item
 
 d-qczmqkvq~row2 = Release board for x
+    .w-ada-lovelace = Ada Lovelace
 
 d-qczmqkvq~row3~row0 = Release board for x
 
 d-qczmqkvq~row3 = Release board for stage
+    .w-new-item = New item
 
 d-wxq3apea~row0 = Data for x
+    .w-name = Name
+    .w-state = State
+    .w-size = Size
 
 d-wxq3apea~row1 = Data for f
+    .w-b = { $size } B
 
 d-wxq3apea~row2 = Data for m
 
 d-wxq3apea~row3 = Data for c
+    .w-open-it-to-see-what-it = Open it to see what it holds.
 
 d-wxq3apea~row4 = Data for c
 
 d-wxq3apea~row5 = Data for x
+    .w-name = Name
+    .w-state = State
+    .w-size = Size
 
 d-wxq3apea~row6 = Data for f
+    .w-b = { $size } B
 
 d-wxq3apea~row7 = Data for m
 
 d-wxq3apea~row8 = Data for c
+    .w-open-it-to-see-what-it = Open it to see what it holds.
 
 d-wxq3apea~row9 = Data for c
 

@@ -225,7 +225,8 @@ pub struct ActionTypes {
 
 /// The action types of the resources of one tilolang type.
 struct TypeActions {
-    /// The two direct edits ([`edit_types`]), which a record offers.
+    /// The two direct edits ([`edit_types`]), which every record of the type offers, root and
+    /// item alike.
     edits: [Arc<ActionType>; 2],
     /// The actions whose subject is the type.
     actions: Vec<Arc<ActionType>>,
@@ -297,9 +298,11 @@ impl ActionTypes {
             && Arc::ptr_eq(&self.planner, planner)
     }
 
-    /// The resource `id` of the type `type_name`, labelled `label`, carrying its `open`, the
-    /// direct edits when it is a record (`edits`), and the actions on its type.
-    fn resource(&self, type_name: &str, id: &str, label: String, edits: bool) -> ResourceSpec {
+    /// The record `id` of the type `type_name`, labelled `label`, carrying its `open`, the
+    /// direct edits of its type ([`edit_types`]) and the actions on its type. A root and an
+    /// item are published alike: an item's edits are the same typed field edits, spliced into
+    /// the record by the item's id there ([`edit_action`]).
+    fn resource(&self, type_name: &str, id: &str, label: String) -> ResourceSpec {
         let mut resource = ResourceSpec::new(
             resource_id(&self.meta.app, id),
             self.meta.kind_of(type_name),
@@ -317,8 +320,7 @@ impl ActionTypes {
             resource = resource.with_view(view.clone());
         }
         let subject = Target::new(id.to_owned());
-        let edits = if edits { &of_type.edits[..] } else { &[] };
-        for ty in edits.iter().chain(&of_type.actions) {
+        for ty in of_type.edits.iter().chain(&of_type.actions) {
             resource = resource.with_action(ty.bind(subject.clone()));
         }
         resource
@@ -410,10 +412,11 @@ fn open_with_spec(ty: &Arc<ActionType>, anchor: &str, view: &str) -> ActionSpec 
         .with_bound(arguments.into_iter().collect())
 }
 
-/// The resource `id` of the type `type_name`, published with the actions of that type.
+/// The resource `id` of the type `type_name`, published with the actions and direct edits of
+/// that type.
 #[must_use]
 pub fn publish_record(types: &ActionTypes, type_name: &str, id: &str, label: &str) -> ResourceSpec {
-    types.resource(type_name, id, label.to_owned(), true)
+    types.resource(type_name, id, label.to_owned())
 }
 
 /// The `open` view action of the published resource `anchor`: what a search hit invokes.
@@ -465,11 +468,12 @@ fn item_resources(
     out
 }
 
-/// The item `item` at `path`, published with its type's actions and its own items.
+/// The item `item` at `path`, published with its type's direct edits and actions, and its own
+/// items.
 fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &str) -> ResourceSpec {
     let type_name = &item.schema().name;
     let label = item_label(item).unwrap_or_else(|| type_name.clone());
-    let mut resource = types.resource(type_name, path, label, false);
+    let mut resource = types.resource(type_name, path, label);
     for child in item_resources(types, item, path) {
         resource = resource.with_child(child);
     }
@@ -585,9 +589,10 @@ fn indexed_items(
     out
 }
 
-/// The item at `path`, as the index holds it, published with its type's actions and its own
-/// items; `item_type` is its collection's item type, for an item the index holds no type of. Its
-/// label is its first text as the store's reader reads it (`reader`, [`crate::reading`]).
+/// The item at `path`, as the index holds it, published with its type's direct edits and
+/// actions, and its own items; `item_type` is its collection's item type, for an item the index
+/// holds no type of. Its label is its first text as the store's reader reads it (`reader`,
+/// [`crate::reading`]).
 fn indexed_item(
     types: &ActionTypes,
     view: &crate::index::view::View<'_>,
@@ -606,7 +611,7 @@ fn indexed_item(
         .flatten()
         .and_then(|(text, _)| reader.said(path, text))
         .unwrap_or_else(|| schema.name.clone());
-    let mut resource = types.resource(&schema.name, path, label, false);
+    let mut resource = types.resource(&schema.name, path, label);
     for child in indexed_items(types, view, reader, path, schema) {
         resource = resource.with_child(child);
     }

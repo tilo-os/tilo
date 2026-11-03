@@ -18,6 +18,7 @@ pub struct VideoPlayerProps {
     /// The video's title, for assistive technology.
     pub title: Option<String>,
     /// A still shown before the first frame: a picture by its address.
+    #[component(data)]
     pub poster: Option<String>,
     /// Whether it plays.
     pub playing: bool,
@@ -26,6 +27,7 @@ pub struct VideoPlayerProps {
     /// How long it is, in seconds.
     pub duration: Option<f64>,
     /// Where it is stored, as a `file://` address or a URL the engine fetches.
+    #[component(data)]
     pub source: Option<String>,
     /// The volume, `0..=1`.
     pub volume: Option<f64>,

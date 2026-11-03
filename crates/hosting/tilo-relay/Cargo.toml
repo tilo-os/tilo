@@ -21,7 +21,7 @@ test-support = ["tilo-room-host/test-support"]
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
-web = ["tilo-room-host/web", "dep:tilo-call-lane", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:bytes"]
+web = ["tilo-room-host/web", "dep:tilo-call-lane", "dep:tilo-live", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -156,6 +156,12 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+# The pages' live plane: the WebTransport listener beside the HTTPS one, and
+# the relay that copies its sealed bytes (admission preface, moq-lite, and the
+# same relay the native carrier reaches over iroh).
+tilo-live = { path = "../../collab/tilo-live", features = ["relay"], optional = true }
+# SHA-256 of the live listener's certificate, which a page pins.
+sha2 = { workspace = true, optional = true }
 # The calls pages take part in: the host carries a page's sealed media onto
 # the call's lane as itself, and opens none of it.
 tilo-call-lane = { path = "../../collab/tilo-call-lane", optional = true }

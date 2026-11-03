@@ -35,7 +35,7 @@ use crate::voice;
 pub const MAX_ADMITTING: usize = 16;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
 /// Exact WebTransport path of the voice relay.
-pub const VOICE_PATH: &str = "/moq/voice";
+pub const VOICE_PATH: &str = crate::preface::PATH;
 /// The one track a voice broadcast carries.
 pub const VOICE_TRACK: &str = "audio";
 /// Longest an offered namespace whose publisher authority lapsed may stay
@@ -166,10 +166,20 @@ pub trait SessionAuthorization: Send + Sync {
     }
 }
 
+/// Who is asking to be admitted, as the transport proved it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Peer {
+    /// An iroh connection: the endpoint id the QUIC/TLS handshake proved.
+    Native([u8; 32]),
+    /// A WebTransport session on the relay: nothing but the proof identifies
+    /// it, and only the listener knows its route.
+    Web,
+}
+
 /// Admission runs before any origin is attached. The opaque proof is passed
 /// only here and is never included in errors, URLs, tracing or counters.
 pub trait RelayAuthority: Send + Sync {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
+    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -319,6 +329,15 @@ impl Relay {
         }
     }
 
+    /// The origin every admitted session publishes into and hears from: what
+    /// a plane on this device's own session reads and writes, so the device
+    /// that relays a workspace takes part in it without connecting to
+    /// itself.
+    #[must_use]
+    pub fn shared(&self) -> moq_net::origin::Producer {
+        self.origin.clone()
+    }
+
     pub fn counters(&self) -> CounterSnapshot {
         let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
         let c = &self.counters;
@@ -356,7 +375,11 @@ impl Relay {
     pub async fn serve(self, endpoint: quinn::Endpoint) {
         carrier::serve_endpoint(endpoint, &[VOICE_PATH], move |_, session| {
             let relay = self.clone();
-            async move { relay.serve_session(VoiceRoute(()), session).await }
+            async move {
+                relay
+                    .serve_session(VoiceRoute(()), session, Peer::Web)
+                    .await;
+            }
         })
         .await;
     }
@@ -367,14 +390,21 @@ impl Relay {
     /// This runs the admission preface, attaches only host-owned scopes, and
     /// keeps the `MoQ` driver in this future: it is cancelled on any
     /// authorization failure or caller cancellation and never detached.
-    pub async fn serve_session<S: carrier::Carrier>(&self, _route: VoiceRoute, transport: S) {
+    /// `peer` is who the transport proved is asking; the authority sees it
+    /// beside the preface's own proof.
+    pub async fn serve_session<S: carrier::Carrier>(
+        &self,
+        _route: VoiceRoute,
+        transport: S,
+        peer: Peer,
+    ) {
         let Ok(admitting) = self.admitting.clone().try_acquire_owned() else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             carrier::close(&transport, carrier::CLOSE_DENIED, "relay busy");
             return;
         };
         let accepted = carrier::accept(transport, |proof| async move {
-            let mut scopes = self.scopes(&proof)?;
+            let mut scopes = self.scopes(peer, &proof)?;
             let mut server = moq_net::Server::new();
             if let Some(ingress) = &scopes.ingress {
                 let name = scopes.authorization.publication()?;
@@ -402,11 +432,11 @@ impl Relay {
         self.run_session(accepted, scopes).await;
     }
 
-    fn scopes(&self, proof: &[u8]) -> Option<RelayScopes> {
+    fn scopes(&self, peer: Peer, proof: &[u8]) -> Option<RelayScopes> {
         if proof.is_empty() || proof.len() > MAX_AUTHORIZATION_BYTES {
             return None;
         }
-        let authorization = self.authority.admit(proof).ok()?;
+        let authorization = self.authority.admit(peer, proof).ok()?;
         if !scopes_well_formed(authorization.as_ref()) {
             return None;
         }
@@ -1098,16 +1128,18 @@ fn scopes_well_formed(authorization: &dyn SessionAuthorization) -> bool {
     let publication = authorization.publication();
     let subscriptions = authorization.subscriptions();
     if let Some(prefix) = authorization.subscription_prefix() {
-        // One opaque call component; any publication lies directly beneath it.
+        // A whole path whose every segment is checked, so the scope is exact
+        // rather than a partial segment; the publication lies beneath it,
+        // where the scheme's own naming puts it (a call's `call/device`, the
+        // live plane's `scope/participant/device`).
         return subscriptions.is_empty()
             && valid_namespace(prefix)
-            && !prefix.contains('/')
             && publication.is_none_or(|name| {
                 valid_namespace(name)
                     && name
                         .strip_prefix(prefix)
                         .and_then(|rest| rest.strip_prefix('/'))
-                        .is_some_and(|rest| !rest.contains('/'))
+                        .is_some_and(|rest| !rest.is_empty())
             });
     }
     // An exact subscription set is bounded by the grant's size

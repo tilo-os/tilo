@@ -28,15 +28,15 @@ pub use widget::WidgetHost;
 use std::cell::Cell;
 
 use tilo_compositor::{
-    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostKey, HostLayer, KeyModifiers,
-    SurfaceHost,
+    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostIme, HostKey, HostLayer,
+    HostTextInput, KeyModifiers, SurfaceHost,
 };
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
 use ui::device_local_door::SharedDoor;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
-    DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
+    DeviceId, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
     TouchPhase, WindowEvent,
 };
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
@@ -405,6 +405,29 @@ impl SurfaceHost for AppHost {
         self.input(key_event(key));
     }
 
+    /// The field the app keeps the focus in, if it takes typing: an input
+    /// method composes into it as into a client's field, its candidate window
+    /// under the caret.
+    fn text_input(&self) -> Option<HostTextInput> {
+        let field = self.app.ime_window_state()?;
+        let (hint, purpose) = field.content.wayland();
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        let edge = |v: u32, at: i32| f64::from(at) + f64::from(v) / scale;
+        Some(HostTextInput {
+            hint,
+            purpose,
+            x: edge(field.x, ox),
+            y: edge(field.y, oy),
+            width: f64::from(field.width) / scale,
+            height: f64::from(field.height) / scale,
+        })
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        self.input(WindowEvent::Ime(ime_event(event)));
+    }
+
     fn cursor(&self) -> CursorIcon {
         self.surface.cursor.get()
     }
@@ -578,7 +601,7 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
         .then_some(key.text.as_deref())
         .flatten()
         .map(SmolStr::new);
-    let (logical_key, location) = key_for(key.keysym, key.text.as_deref());
+    let (logical_key, location) = chord_for(key);
     let (key_without_modifiers, _) = key_for(key.unmodified_keysym, None);
     let state = if key.pressed {
         ElementState::Pressed
@@ -604,12 +627,44 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
     }
 }
 
+/// The toolkit's IME event for what the input method serving a hosted field
+/// sent.
+pub(crate) fn ime_event(event: HostIme) -> Ime {
+    match event {
+        HostIme::Commit(text) => Ime::Commit(text),
+        HostIme::Preedit(text, cursor) => Ime::Preedit(text, cursor),
+        HostIme::Enabled => Ime::Enabled,
+        HostIme::Disabled => Ime::Disabled,
+    }
+}
+
 /// The key a hosted surface got, as the toolkit names it, with the
 /// modifiers held: what a shortcut table matches against.
 #[must_use]
 pub fn toolkit_key(key: &HostKey) -> (Key, Modifiers) {
-    let (logical, _) = key_for(key.keysym, key.text.as_deref());
-    (logical, Modifiers::from(modifiers_state(key.modifiers)))
+    (
+        chord_for(key).0,
+        Modifiers::from(modifiers_state(key.modifiers)),
+    )
+}
+
+/// The key `key` is to what matches shortcuts against it: under Ctrl, Alt or
+/// Super a letter outside the Latin script is named by the Latin character
+/// the same key types on a layout that has one, so Ctrl+C copies and Super+L
+/// locks whichever layout is typing. A Latin letter with a diacritic stays as
+/// typed: it is a shortcut of its own on the layouts that have it.
+fn chord_for(key: &HostKey) -> (Key, KeyLocation) {
+    let (logical, location) = key_for(key.keysym, key.text.as_deref());
+    if !(key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo) {
+        return (logical, location);
+    }
+    let Key::Character(typed) = &logical else {
+        return (logical, location);
+    };
+    if !typed.chars().any(ui::latin_chord::is_non_latin_letter) {
+        return (logical, location);
+    }
+    (key_for(key.latin_keysym, None).0, location)
 }
 
 /// The key `keysym` is: a named key when winit names it, else the text it
@@ -630,7 +685,39 @@ fn key_for(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
 
 #[cfg(test)]
 mod tests {
-    use super::dropped_paths;
+    use super::{Key, KeyModifiers, chord_for, dropped_paths};
+    use tilo_compositor::HostKey;
+
+    fn held(keysym: char, latin: char, ctrl: bool) -> HostKey {
+        HostKey {
+            keycode: 46,
+            pressed: true,
+            repeat: false,
+            keysym: u32::from(keysym),
+            unmodified_keysym: u32::from(keysym),
+            latin_keysym: u32::from(latin),
+            text: None,
+            modifiers: KeyModifiers {
+                ctrl,
+                ..KeyModifiers::default()
+            },
+        }
+    }
+
+    #[test]
+    fn a_chord_types_named_by_the_latin_key_on_a_cyrillic_layout() {
+        let (logical, _) = chord_for(&held('с', 'c', true));
+        assert_eq!(logical, Key::Character("c".into()));
+        // The letter itself, with no chord modifier, stays Cyrillic.
+        let (typed, _) = chord_for(&held('с', 'c', false));
+        assert_eq!(typed, Key::Character("с".into()));
+    }
+
+    #[test]
+    fn a_diacritic_on_a_latin_layout_stays_as_typed_in_a_chord() {
+        let (logical, _) = chord_for(&held('ü', 'u', true));
+        assert_eq!(logical, Key::Character("ü".into()));
+    }
 
     #[test]
     fn a_uri_list_drops_its_files_decoded_and_skips_the_rest() {

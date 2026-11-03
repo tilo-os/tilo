@@ -26,6 +26,8 @@ tilolang-invocation-denied = Nicht erlaubt
 tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
 tilolang-all = Alle { $kind }
 tilolang-empty = Noch nichts hier
+# The title over the items of a list that are done with, folded away after the rest.
+tilolang-done = Erledigt
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren

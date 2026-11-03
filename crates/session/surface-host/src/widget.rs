@@ -3,7 +3,7 @@
 //! window bars). The toolkit's portable host runs it (input in, frames out)
 //! and the frame is drawn as an app's is.
 
-use tilo_compositor::{HostLayer, SurfaceHost, WindowPicture};
+use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost, WindowPicture};
 use ui::headless::FrameHarness;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
@@ -18,7 +18,7 @@ use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
 use crate::frames::Frames;
-use crate::{Placement, key_event, modifiers_state, mouse_input};
+use crate::{Placement, ime_event, key_event, modifiers_state, mouse_input};
 
 /// The colour a widget tree draws on: nothing, so the desktop shows through
 /// wherever it painted nothing.
@@ -549,6 +549,32 @@ impl SurfaceHost for WidgetHost {
             self.input(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
         }
         self.input(&key_event(key));
+    }
+
+    /// The field the toolkit keeps the focus in, if it takes typing: an input
+    /// method composes into it as into a client's field, its candidate window
+    /// under the caret.
+    fn text_input(&self) -> Option<HostTextInput> {
+        let field = self.host.ime_window()?;
+        let (hint, purpose) = field.content.wayland();
+        let (x, y, width, height) = self.logical(vello::kurbo::Rect::new(
+            f64::from(field.x),
+            f64::from(field.y),
+            f64::from(field.x.saturating_add(field.width)),
+            f64::from(field.y.saturating_add(field.height)),
+        ));
+        Some(HostTextInput {
+            hint,
+            purpose,
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        self.input(&WindowEvent::Ime(ime_event(event)));
     }
 
     /// A frame is due now while the tree moves, and a change it owes the

@@ -54,6 +54,7 @@ impl Default for AutocompleteProps {
 pub struct SuggestionProps {
     /// What taking it puts in the field.
     #[component(required, positional)]
+    #[component(data)]
     pub value: String,
     /// What its row says; the value unless said.
     pub label: Option<String>,

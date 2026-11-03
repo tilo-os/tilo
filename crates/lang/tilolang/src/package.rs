@@ -252,6 +252,7 @@ fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
     let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states);
     meta.views.extend(row_views(&a.ir, &a.env.app, &fx));
+    meta.words.clone_from(&a.ir.words);
     meta.at_event = at_event_fns(&a.ir, &a.env.app);
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);

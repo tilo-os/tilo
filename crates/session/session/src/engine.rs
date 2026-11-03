@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
+use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
@@ -341,6 +342,18 @@ impl Engine {
                 })
                 .collect())
         })
+    }
+
+    /// The people of `workspace` and the grants it makes, as its governance
+    /// here records them: the one source of who shares it, in what part, and
+    /// what each of them may do.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or its governance cannot be read.
+    pub fn policy(&self, workspace: &str) -> Result<WorkspacePolicy, String> {
+        let workspace = RoomId::parse(workspace).ok_or("that is not a workspace")?;
+        self.owner
+            .with_current(workspace, |view| view.peer().governance().governed_policy())
     }
 
     /// The invitations into `workspace` this device's person issued that are

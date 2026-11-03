@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 
 use collab_types::caps::Expiry;
 use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{Answer, Role};
+use tilo_action_policy::{Answer, Refusal, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
@@ -119,7 +119,7 @@ fn show(
     tab: sheet::Tab,
     review: Option<&str>,
 ) {
-    let shown = settings(
+    let mut shown = settings(
         &fed.handle.read(Clone::clone),
         fed.person,
         &fed.lists,
@@ -128,6 +128,7 @@ fn show(
         fed.personal,
         fed.emoji,
     );
+    shown.notice = seat.notice();
     seat.show(shown);
     fed.fed.set(Some(fed.handle.revision()));
 }
@@ -231,6 +232,13 @@ pub(crate) fn follow(
         if follow_emoji(&effect, fed) || follow_agent(seat, &effect, fed) {
             continue;
         }
+        if effect == sheet::WorkspaceSettingsEffect::DismissNotice {
+            seat.dismiss_notice();
+            let shown = seat.settings();
+            let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
+            show(seat, fed, shown.tab, review.as_deref());
+            continue;
+        }
         match effect {
             sheet::WorkspaceSettingsEffect::ShowTab { tab } => {
                 show_picked_tab(seat, fed, &tab);
@@ -250,12 +258,12 @@ pub(crate) fn follow(
                     tracing::debug!(%role, "no such role: nothing changed");
                     continue;
                 };
-                govern(handle, person, fed, |ws, actor| {
+                govern(seat, fed, |ws, actor| {
                     domain::set_member_role(ws, actor, &member, role)
                 });
             }
             sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
-                govern(handle, person, fed, |ws, actor| {
+                govern(seat, fed, |ws, actor| {
                     domain::remove_member(ws, actor, &member)
                 });
             }
@@ -263,17 +271,15 @@ pub(crate) fn follow(
                 subject,
                 permission,
                 expiry,
-            } => govern(handle, person, fed, |ws, actor| {
-                domain::draft_for(ws, &subject, &permission, &expiry).map_or_else(
-                    || {
-                        tracing::debug!(%subject, %permission, "no such grant: nothing changed");
-                        domain::PolicyEdit::default()
-                    },
-                    |draft| domain::apply_grant_draft(ws, actor, &draft),
-                )
+            } => govern(seat, fed, |ws, actor| {
+                let Some(draft) = domain::draft_for(ws, &subject, &permission, &expiry) else {
+                    tracing::debug!(%subject, %permission, "no such grant: nothing changed");
+                    return Ok(domain::PolicyEdit::default());
+                };
+                domain::apply_grant_draft(ws, actor, &draft)
             }),
             sheet::WorkspaceSettingsEffect::Revoke { grant } => {
-                govern(handle, person, fed, |ws, actor| {
+                govern(seat, fed, |ws, actor| {
                     domain::apply_revoke(ws, actor, &grant)
                 });
             }
@@ -336,35 +342,61 @@ fn edit(
     });
 }
 
-/// [`edit`] a change to the workspace's people, and write it into the
-/// workspace's own governance too: what the person changes here is a change
-/// every member admits, made at this device and signed with its key.
+/// A change to the workspace's people, made where the workspace keeps them.
+///
+/// The workspace's governance is the only source of who shares it, so the
+/// change goes there first, signed with this device's key: every member
+/// admits what it answers as it admits every change its people make. The desk
+/// keeps the change only once the workspace took it; one it refuses leaves the
+/// desk as it was, and the sheet says why in the workspace's own words.
+///
+/// A workspace whose governance this device does not hold has only the desk:
+/// the change is the desk's, as it was before workspaces had governance here.
 fn govern(
-    handle: &DesktopHandle,
-    person: &UserId,
+    seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
-    edit: impl FnOnce(&mut Workspace, &UserId) -> domain::PolicyEdit,
+    edit: impl FnOnce(&mut Workspace, &UserId) -> Result<domain::PolicyEdit, Refusal>,
 ) {
+    let handle = fed.handle;
+    let person = fed.person;
     let mut tree = handle.read(Clone::clone);
     let Some(workspace) = tree.active_workspace_mut() else {
         return;
     };
-    let changed = edit(workspace, person);
+    let changed = match edit(workspace, person) {
+        Ok(changed) => changed,
+        Err(refusal) => return refuse(seat, fed, &refusal.to_string()),
+    };
     if changed.is_empty() {
         return;
     }
     let workspace_id = workspace.room();
-    let membership = fed
+    let governance = fed
         .engine
+        .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
         .map(|engine| crate::membership::Membership::of(engine, workspace_id));
-    let writes = membership
-        .as_ref()
-        .map(|writes| writes.changes(workspace, &changed))
-        .unwrap_or_default();
-    handle.replace_tree(tree);
-    if let Some(membership) = membership {
-        membership.write(&writes);
+    if let Some(governance) = &governance {
+        let writes = governance.changes(workspace, &changed);
+        if let Err(reason) = governance.write(&writes) {
+            return refuse(seat, fed, &reason);
+        }
     }
+    // The change the person made is the one that stands, so a refusal they
+    // have since corrected has nothing left to say.
+    seat.dismiss_notice();
+    handle.replace_tree(tree);
+}
+
+/// Say why the workspace refused a change, over the tab the person asked on,
+/// and leave the workspace as it was.
+fn refuse(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, reason: &str) {
+    seat.refuse(sheet::Notice {
+        title: t("workspace-settings-refused"),
+        detail: Some(reason.to_owned()),
+    });
+    let shown = seat.settings();
+    let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
+    show(seat, fed, shown.tab, review.as_deref());
 }
 
 /// Apply `change` to the workspace in front as `person`, and keep the tree
@@ -599,6 +631,7 @@ fn settings(
         } else {
             sheet::EmojiPane::default()
         },
+        notice: None,
     }
 }
 

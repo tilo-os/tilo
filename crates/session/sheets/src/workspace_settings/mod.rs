@@ -228,6 +228,9 @@ pub enum WorkspaceSettingsEffect {
     /// Put away the note about the last emoji not added or removed
     #[effect(own_device, kind = "read")]
     DismissEmojiNotice,
+    /// Put away the note about the last change the workspace refused
+    #[effect(own_device, kind = "read")]
+    DismissNotice,
 }
 
 /// A tab of the sheet.
@@ -299,6 +302,9 @@ pub struct Settings {
     pub permissions: Permissions,
     pub apps: Apps,
     pub emoji: EmojiPane,
+    /// Why the workspace refused the last change the person asked for, in its
+    /// own words, until the person puts it away.
+    pub notice: Option<Notice>,
 }
 
 /// A change the sheet asks about before asking the shell for it.
@@ -332,6 +338,8 @@ pub struct WorkspaceSettingsSeat {
     /// The name as typed, while the person renames the workspace.
     name: Rc<RefCell<Option<LocalState<String>>>>,
     asked: Rc<RefCell<Vec<WorkspaceSettingsEffect>>>,
+    /// Why the workspace refused the last change, until the person puts it away.
+    notice: Rc<RefCell<Option<Notice>>>,
 }
 
 impl std::fmt::Debug for WorkspaceSettingsSeat {
@@ -387,6 +395,26 @@ impl WorkspaceSettingsSeat {
         if let Some(name) = self.name.borrow().as_ref() {
             name.set(self.settings.borrow().name.clone());
         }
+    }
+
+    /// Why the workspace refused the last change the person asked for, if it
+    /// has not been put away.
+    pub fn notice(&self) -> Option<Notice> {
+        self.notice.borrow().clone()
+    }
+
+    /// Say why the workspace refused a change: the note the sheet shows over
+    /// the tab the person asked on, until they put it away.
+    pub fn refuse(&self, notice: Notice) {
+        if *self.notice.borrow() == Some(notice.clone()) {
+            return;
+        }
+        *self.notice.borrow_mut() = Some(notice);
+    }
+
+    /// Put the note away: what is refused after it says so again.
+    pub fn dismiss_notice(&self) {
+        self.notice.borrow_mut().take();
     }
 
     /// The requests made since the shell last asked, oldest first.
@@ -474,6 +502,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             "people",
             "people-member",
             "people-removing",
+            "people-refused",
             "agents",
             "agents-empty",
             "agent-review",
@@ -527,6 +556,14 @@ pub fn scenario(name: Option<&str>) -> Settings {
         },
         Some("people" | "people-removing") => Settings {
             tab: Tab::People,
+            ..sample()
+        },
+        Some("people-refused") => Settings {
+            tab: Tab::People,
+            notice: Some(Notice {
+                title: "The workspace refused that change".to_owned(),
+                detail: Some("a Viewer cannot hand out the Editor role".to_owned()),
+            }),
             ..sample()
         },
         Some("agents") => Settings {
@@ -617,6 +654,7 @@ fn sample() -> Settings {
         permissions: permissions::sample(),
         apps: apps::sample(),
         emoji: emoji::sample(),
+        notice: None,
     }
 }
 
@@ -758,12 +796,23 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
         Tab::Apps => apps::pane(settings, parts),
         Tab::Emoji => emoji::pane(settings, parts),
     };
-    let body = Column::new()
+    let mut body = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(ui::tokens::Spacing::BASE.s4)
-        .push(Box::new(strip))
-        .push(pane);
+        .push(Box::new(strip));
+    if let Some(notice) = &settings.notice {
+        let dismiss = parts.clone();
+        let mut banner = ui::widget::Banner::error(notice.title.clone())
+            .with_id("ws-settings-notice")
+            .dismissible()
+            .on_dismiss(move || dismiss.ask(WorkspaceSettingsEffect::DismissNotice));
+        if let Some(detail) = &notice.detail {
+            banner = banner.with_message(detail.clone());
+        }
+        body = body.push(Box::new(banner));
+    }
+    let body = body.push(pane);
     let close = parts.clone();
     Box::new(
         ModalDialog::new(settings.name.clone(), body)

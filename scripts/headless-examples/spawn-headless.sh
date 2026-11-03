@@ -14,7 +14,7 @@
 #   TILO_HEADLESS_PROFILE  directory to keep a scratch profile in across
 #                          runs. Unset, each run gets a fresh one that is
 #                          removed when the compositor exits.
-#   TILO_HEADLESS_BINARY   the compositor to run (default target/debug/shell).
+#   TILO_HEADLESS_BINARY   the compositor to run (default target/debug/tilo-session).
 #                          A release build serves the control socket only
 #                          when built with `--features dev-overrides`.
 #
@@ -31,7 +31,7 @@
 #     compositor still answers on — that is someone's session.
 #   - Sets TILO_TEST_CONTROL to the socket path.
 #   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
-#   - Runs ./target/debug/shell (or $TILO_HEADLESS_BINARY) --backend headless.
+#   - Runs ./target/debug/tilo-session (or $TILO_HEADLESS_BINARY) --backend headless.
 #   - Prints "PROFILE <dir>" to stderr and "READY <socket>" to stdout once
 #     usable; exits non-zero on timeout (the compositor's logs go to
 #     stderr so callers can grep them).
@@ -62,7 +62,7 @@ if size > 107:
     )
     sys.exit(1)
 EOF
-BINARY="${TILO_HEADLESS_BINARY:-$(dirname "$0")/../../target/debug/shell}"
+BINARY="${TILO_HEADLESS_BINARY:-$(dirname "$0")/../../target/debug/tilo-session}"
 TIMEOUT="${TILO_HEADLESS_TIMEOUT:-60}"
 
 if ! [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then

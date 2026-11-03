@@ -44,6 +44,14 @@ channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
 # A call's frames: the page seals and opens them itself, and the lanes' own
 # connections stay with the device that bridges it.
 tilo-call-lane = { version = "0.1.0", path = "../../collab/tilo-call-lane", default-features = false }
+# The live plane's names, tracks and voice objects, and the carrier client the
+# page runs over its WebTransport session.
+tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane"] }
+# `moq-lite` itself: the page's live session is a publisher and a subscriber.
+moq-net = { workspace = true }
+# The page's WebTransport session, pinned to the relay's certificate.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["webtransport"] }
+bytes.workspace = true
 # Each joined workspace's replica: the workspace's governance as native devices
 # admit it, held in the engine's owner native devices hold theirs in
 # (`replica`), its record kept as JSON in the page's store.
@@ -69,6 +77,8 @@ test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "test-support"] }
 # A call's native side: the lanes a page's bridge opens, and their pictures.
 tilo-call-lane = { path = "../../collab/tilo-call-lane", features = ["lanes"] }
+# A relay listener on loopback, as the live plane's acceptance test drives it.
+tilo-live = { path = "../../collab/tilo-live", features = ["plane", "relay"] }
 # The call's native side sends and hears a real tone, as a call does.
 opus = "0.4"
 automerge.workspace = true
@@ -84,9 +94,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio-rustls.workspace = true
 rustls.workspace = true
-tilo-net = { path = "../../platform/tilo-net" }
 sha2.workspace = true
-bytes.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
 tilo-paths.workspace = true

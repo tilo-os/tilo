@@ -82,7 +82,7 @@ fn the_counter_validates_and_has_the_module_shape() {
         "res_add_i",
         "res_get_i",
         "ui_node",
-        "ui_prop_i",
+        "int_to_str",
         "ui_on",
         "ui_anchor",
         "ui_child",
@@ -161,7 +161,7 @@ fn enums_matches_and_block_values_validate() {
         fn size(m: Mark) -> Float {\n    match m {\n        d: Dot => if d.on { 1.0 } else { 0.0 },\n        c: Disc => {\n            if c.label == \"\" {\n                return c.r\n            }\n            c.r * 2.0\n        }\n    }\n}\n\
         fn same(a: Shape, b: Shape) -> Bool {\n    a == b\n}\n\
         action swap(p: P) {\n    p.o = .some(p.s)\n    p.s = .disc\n    let m = p.marks.insert(Disc(r: 1.5, label: \"x\"))\n    p.pick = m\n    match p.o {\n        .some(_) => {\n            p.s = .dot\n        }\n        .none => {}\n    }\n}\n\
-        view v(p: P) {\n    window shown: Shape = .dot\n    lens n: Int\n    match p.s {\n        .dot => text(\"dot\"),\n        .line => text(\"{n}\"),\n        .disc => stack(gap: .tight) {\n            text(\"disc\")\n        }\n    }\n    for m in p.marks {\n        match m {\n            d: Dot => text(\"dot\"),\n            c: Disc => text(c.label),\n        }\n    }\n    button(\"Line\", on: set(shown, .line))\n    input(bind: n)\n}";
+        view v(p: P) {\n    window shown: Shape = .dot\n    lens n: Text\n    match p.s {\n        .dot => text(\"dot\"),\n        .line => text(n),\n        .disc => stack(gap: .tight) {\n            text(\"disc\")\n        }\n    }\n    for m in p.marks {\n        match m {\n            d: Dot => text(\"dot\"),\n            c: Disc => text(c.label),\n        }\n    }\n    button(\"Line\", on: set(shown, .line))\n    input(bind: n)\n}";
     let c = crate::common::compile_body(src);
     assert_shape(&c);
     let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
@@ -196,7 +196,7 @@ fn a_ui_loop_is_one_node_whose_rows_are_views_of_their_own() {
     // The host keys the rows (by the item's id, or a plain value's place): the module builds
     // no keys and walks no list for the loop.
     let plain = compile(
-        "app t.y \"Y\"\nview v(l: List<Int>) {\n    for x in l {\n        text(x)\n    }\n}\n",
+        "app t.y \"Y\"\nview v(l: List<Int>) {\n    for x in l {\n        text(\"{x}\")\n    }\n}\n",
     );
     assert_shape(&plain);
     let names: Vec<String> = shape(&plain.wasm)
@@ -204,19 +204,19 @@ fn a_ui_loop_is_one_node_whose_rows_are_views_of_their_own() {
         .into_iter()
         .map(|(_, n)| n)
         .collect();
-    for unused in ["int_to_str", "list_get_i", "ref_id"] {
+    for unused in ["list_get_i", "ref_id"] {
         assert!(!names.contains(&unused.to_owned()), "{unused} in {names:?}");
     }
     // A body that is one view call on the item calls that view per row: no view is made.
     let direct = compile(
-        "app t.d \"D\"\nview one(n: Int) {\n    text(n)\n}\nview v(l: List<Int>) {\n    column {\n        for x in l {\n            one(x)\n        }\n    }\n}\n",
+        "app t.d \"D\"\nview one(n: Int) {\n    text(\"{n}\")\n}\nview v(l: List<Int>) {\n    stack {\n        for x in l {\n            one(x)\n        }\n    }\n}\n",
     );
     assert_eq!(direct.meta.views.len(), 2, "{:?}", direct.meta.views);
 }
 
 #[test]
 fn views_call_views_and_apply_foreign_views() {
-    let src = "app t.z \"Z\"\nview inner(n: Int) {\n    text(n)\n}\nview outer() {\n    column {\n        for i in [1, 2] {\n            inner(i)\n        }\n    }\n}\n";
+    let src = "app t.z \"Z\"\nview inner(n: Int) {\n    text(\"{n}\")\n}\nview outer() {\n    stack {\n        for i in [1, 2] {\n            inner(i)\n        }\n    }\n}\n";
     let c = compile(src);
     assert_shape(&c);
 }

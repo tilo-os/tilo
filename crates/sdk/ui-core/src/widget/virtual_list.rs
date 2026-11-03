@@ -35,6 +35,13 @@ use crate::widget::rows::RowStep;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
 
+#[path = "virtual_list_groups.rs"]
+mod groups;
+
+#[path = "virtual_list_vec_model.rs"]
+mod vec_model;
+use groups::Groups;
+pub use vec_model::VecListModel;
 #[path = "virtual_list_remount.rs"]
 mod remount;
 use remount::row_kept;
@@ -150,6 +157,25 @@ pub trait ListModel {
     fn key_presenting(&self, _id: &str) -> Option<Self::Key> {
         None
     }
+
+    /// What the row `index` is grouped by, when the model groups its rows: the list draws the
+    /// heading over the first row of each group ([`RowGroup`]). `None` for a row in no group,
+    /// or a model that groups nothing.
+    fn group_at(&self, _index: usize) -> Option<RowGroup> {
+        None
+    }
+}
+
+/// A row's place in a group of the list ([`ListModel::group_at`]): the heading the run of
+/// rows stands under, and the tail of items done with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowGroup {
+    /// Rows whose group reads this heading stand together under it, in the order they come.
+    Heading(String),
+    /// The items done with: the model stands them last, after every heading group, and the
+    /// list draws them under its tail title ([`VirtualList::with_tail_title`]), closed until
+    /// the person opens them.
+    Tail,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,107 +188,6 @@ impl fmt::Display for DuplicateListKey {
 }
 
 impl std::error::Error for DuplicateListKey {}
-
-/// Convenient fully-resident model. Database and paged sources generally
-/// implement [`ListModel`] directly instead.
-pub struct VecListModel<T, K> {
-    items: Vec<T>,
-    keys: Vec<K>,
-    index: HashMap<K, usize>,
-}
-
-impl<T, K> VecListModel<T, K>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Build the key index once.
-    pub fn new(items: Vec<T>, mut key: impl FnMut(&T) -> K) -> Result<Self, DuplicateListKey> {
-        let keys = items.iter().map(&mut key).collect::<Vec<_>>();
-        let index = keys
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(index, key)| (key, index))
-            .collect::<HashMap<_, _>>();
-        if index.len() != keys.len() {
-            return Err(DuplicateListKey);
-        }
-        Ok(Self { items, keys, index })
-    }
-
-    #[must_use]
-    pub fn item(&self, index: usize) -> Option<&T> {
-        self.items.get(index)
-    }
-
-    #[must_use]
-    pub fn items(&self) -> &[T] {
-        &self.items
-    }
-
-    pub fn push(&mut self, key: K, item: T) -> Result<(), DuplicateListKey> {
-        if self.index.contains_key(&key) {
-            return Err(DuplicateListKey);
-        }
-        let index = self.items.len();
-        self.items.push(item);
-        self.keys.push(key.clone());
-        self.index.insert(key, index);
-        Ok(())
-    }
-
-    pub fn remove(&mut self, index: usize) -> Option<T> {
-        if index >= self.items.len() {
-            return None;
-        }
-        self.keys.remove(index);
-        let item = self.items.remove(index);
-        self.rebuild_index();
-        Some(item)
-    }
-
-    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
-        if from >= self.items.len() || to >= self.items.len() || from == to {
-            return false;
-        }
-        let item = self.items.remove(from);
-        let key = self.keys.remove(from);
-        self.items.insert(to, item);
-        self.keys.insert(to, key);
-        self.rebuild_index();
-        true
-    }
-
-    fn rebuild_index(&mut self) {
-        self.index.clear();
-        self.index.extend(
-            self.keys
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, key)| (key, index)),
-        );
-    }
-}
-
-impl<T, K> ListModel for VecListModel<T, K>
-where
-    K: Clone + Eq + Hash + 'static,
-{
-    type Key = K;
-
-    fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    fn key_at(&self, index: usize) -> Option<Self::Key> {
-        self.keys.get(index).cloned()
-    }
-
-    fn index_of(&self, key: &Self::Key) -> Option<usize> {
-        self.index.get(key).copied()
-    }
-}
 
 type RowBuilder<M> = Box<dyn FnMut(&M, usize, &<M as ListModel>::Key, RowSelection) -> Element>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
@@ -506,6 +431,14 @@ pub struct VirtualList<M: ListModel> {
     pill_width: f64,
     /// How an item becomes the key of the row showing it, for a model that names none.
     names_item: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<M::Key>>>>,
+    /// The groups of the rows the model names: which are open, and the bands the last layout
+    /// placed for their headings.
+    groups: Groups,
+    /// The title over the list's tail group ([`RowGroup::Tail`]).
+    tail_title: Option<String>,
+    /// What each row is grouped by, by key: the model is asked once for a row while its props
+    /// stand as they were.
+    row_groups: HashMap<M::Key, Option<(String, bool)>>,
 }
 
 impl<M: ListModel> VirtualList<M> {
@@ -621,6 +554,9 @@ impl<M: ListModel> VirtualList<M> {
             pill_height: 0.0,
             pill_width: 0.0,
             names_item: std::cell::RefCell::new(None),
+            groups: Groups::default(),
+            tail_title: None,
+            row_groups: HashMap::new(),
         };
         list.refresh_anchor();
         list
@@ -880,6 +816,8 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     fn reconcile_model(&mut self, anchor: Option<&SparseAnchor<M::Key>>) {
+        // What the rows were grouped by may have moved with them.
+        self.regrouped();
         self.viewport
             .reconcile(self.model.len(), |key| self.model.index_of(key), anchor);
         self.selection
@@ -1195,6 +1133,7 @@ impl<M: ListModel> VirtualList<M> {
 
     pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = M::Key>) {
         let keys = keys.into_iter().collect::<HashSet<_>>();
+        self.regroup_keys(keys.iter());
         let before = self.invalidated.len();
         self.invalidated.extend(
             self.mounted
@@ -1446,6 +1385,7 @@ impl<M: ListModel> VirtualList<M> {
             .into_iter()
             .map(|row| (row.key.clone(), row))
             .collect::<HashMap<_, _>>();
+        self.groups.clear_folded();
         let mut seen = HashSet::new();
         let mut mounted = Vec::with_capacity(range.len());
         let mut replaced = false;
@@ -1454,6 +1394,21 @@ impl<M: ListModel> VirtualList<M> {
             let Some(key) = self.model.key_at(index) else {
                 continue;
             };
+            if !self.row_open(index) {
+                // A closed group: its rows take no room and are never built, and its
+                // heading's band stands where its first row would (placed with the bands).
+                if self.row_starts(index) {
+                    // The heading still takes its band's room: it is what the person presses
+                    // to open the group again.
+                    self.groups.fold(index);
+                    let band = self.groups.height;
+                    // ratchet-allow(legacy_size_api): the row's height, not a text's, is measured.
+                    self.viewport.measure(index, key, band);
+                } else {
+                    self.viewport.collapse(index, key);
+                }
+                continue;
+            }
             if !seen.insert(key.clone()) {
                 continue;
             }
@@ -2064,6 +2019,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         ) * 24.0
             + f64::from(theme.tokens.spacing.s4) * 6.0;
         self.motion = theme.motion();
+        self.groups.theme(theme);
         if let Some(edges) = self.edges.as_mut() {
             edges.theme(theme);
         }
@@ -2178,6 +2134,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         let mut remeasured = self.update_edges();
         let mut first_measured = false;
         for (index, key, height) in measurements {
+            let height = self.grouped_height(index, height);
             let geometry = |viewport: &SparseVirtualViewport<M::Key>| {
                 (
                     viewport.item_height(index).map(f64::to_bits),
@@ -2383,6 +2340,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 scene.pop_layer();
             }
         }
+        // The headings over the groups, over the rows they hold.
+        self.draw_bands(scene, transform, text_renderer, theme);
         if let Some(preview) = self.reorder.preview() {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -2439,6 +2398,26 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.refresh_anchor();
         }
         if self.handle_scrollbar_event(event, ctx.scale_factor) {
+            *ctx.handled = true;
+            return;
+        }
+        // A press on a group's heading is the heading's, before the row under it acts: it
+        // opens or closes the group when it is let go there.
+        if let Some(cursor) = self.last_cursor
+            && match event {
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => self.hold_band(cursor),
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } => self.release_band(cursor),
+                _ => false,
+            }
+        {
             *ctx.handled = true;
             return;
         }
@@ -2976,6 +2955,10 @@ fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
 #[cfg(test)]
 #[path = "virtual_list_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "virtual_list_group_tests.rs"]
+mod group_tests;
 
 #[cfg(test)]
 #[path = "virtual_list_copy_tests.rs"]

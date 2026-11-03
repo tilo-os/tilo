@@ -960,7 +960,7 @@ fn a_view_block_a_value_block_and_a_bad_block_answer_an_agent() {
     let run = |workspace: &mut Workspace, source: &str| {
         workspace.agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
     };
-    let view = run(&mut workspace, "column { text(\"Hello from an agent\") }")
+    let view = run(&mut workspace, "stack { text(\"Hello from an agent\") }")
         .unwrap()
         .value
         .unwrap();

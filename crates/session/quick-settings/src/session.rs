@@ -51,8 +51,9 @@ pub(crate) const NIGHT_LIGHT: &str = "session:night-light";
 /// The desk: opening an app, its search.
 pub(crate) const DESK: &str = "desktop:desk";
 
-/// Every resource the panel shows, watched for its whole life.
-pub(crate) const WATCHED: [&str; 12] = [
+/// Every resource the panel shows or acts on, watched for its whole life.
+/// The desk is here for its search alone: Settings opens through it.
+pub(crate) const WATCHED: [&str; 13] = [
     NETWORK,
     BLUETOOTH,
     VPN,
@@ -65,6 +66,7 @@ pub(crate) const WATCHED: [&str; 12] = [
     NOTIFICATIONS,
     CLIPBOARD,
     DEVICES,
+    DESK,
 ];
 
 /// The session's resources as the panel reads and changes them.

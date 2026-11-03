@@ -6,10 +6,11 @@
 //! the page it opens). On the [`Drill`](crate::motion::Drill) motion the
 //! page arrives from the side the depth says, while the page it replaced
 //! leaves toward the other one; Back runs it the other way. The wrapper's
-//! identity is the place it stands in, so a rebuild that changes the page
-//! hands the page it showed to the one put in its place, which draws it
-//! leaving and goes on from the depth the motion had reached. Nothing is
-//! left when the wrapper drops with nothing put in its place.
+//! identity is the key its view gives it ([`PageSlideProps`]), so a rebuild
+//! that changes the page hands the page it showed to the one put in its
+//! place, which draws it leaving and goes on from the depth the motion had
+//! reached. Nothing is left when the wrapper drops with nothing put in its
+//! place.
 
 use std::collections::HashMap;
 
@@ -18,6 +19,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
+use crate::component::{Component, Described, SlotViews};
 use crate::motion::{Drill, DrillDepth, Pose};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -26,11 +28,39 @@ use crate::tokens::MotionSource;
 use crate::widget::decorator::concrete::Decorator;
 use crate::widget::{Element, Placement, layout_rect};
 
-/// The wrapper's identity across rebuilds: one page slot in a window.
+/// The identity a slide built by [`PageSlide::new`] leaves its motion under: one page slot in
+/// a window.
 const KEY: &str = "page slide";
+
+/// The slot the page stands in.
+const PAGE_SLOT: &str = "page";
+
+/// One page of a stack, in the place a view shows it, with the page it replaced leaving while
+/// the view swaps the two: a panel that opens a deeper page of its own, and Back that slides it
+/// away again.
+///
+/// A page that goes deeper arrives from the side its level names, and the page it replaced
+/// leaves toward the other; a page that goes shallower runs the motion the other way. A view
+/// that puts a different page at the same level (a list's item opened in the page the list
+/// showed) changes it where it stands, and nothing moves.
+#[derive(Component, Default)]
+#[component(name = "PageSlide", role = "Group")]
+pub struct PageSlideProps {
+    /// Its stable key.
+    #[component(key)]
+    pub key: String,
+    /// How deep the page stands: 0 the first page, 1 the page it opens.
+    pub level: i64,
+    /// The page it shows.
+    #[component(slot(default))]
+    pub page: Option<Element>,
+}
 
 /// One page of a stack, drawn in place, with the page it replaced leaving.
 pub struct PageSlide {
+    /// The identity it leaves its motion under, so the slide a rebuild puts in its place takes
+    /// it up.
+    kept_as: String,
     page: Element,
     /// How deep the page stands: 0 the first page, 1 the one it opens.
     level: usize,
@@ -63,6 +93,7 @@ impl PageSlide {
     /// `page`, standing `level` deep in its stack.
     pub fn new(level: usize, page: Element) -> Self {
         Self {
+            kept_as: KEY.to_owned(),
             page,
             level,
             depth: DrillDepth::default(),
@@ -78,6 +109,18 @@ impl PageSlide {
     #[must_use]
     pub fn page(&self) -> &dyn crate::widget::Widget {
         self.page.as_ref()
+    }
+
+    /// The page an empty slot stands on.
+    fn no_page() -> Element {
+        Box::new(crate::widget::Spacer::new())
+    }
+
+    /// Stand a page where this one stands.
+    fn put(&mut self, page: Element) {
+        self.page = page;
+        self.dirty = true;
+        self.layout_dirty = true;
     }
 
     /// Whether it is drawing a page it replaced on its way out.
@@ -116,6 +159,63 @@ fn level_of(level: usize) -> f64 {
     f64::from(u32::try_from(level).unwrap_or(u32::MAX))
 }
 
+/// The depth a page's level names; a negative level is the first page.
+fn depth_of(level: i64) -> usize {
+    usize::try_from(level).unwrap_or(0)
+}
+
+impl Described for PageSlide {
+    type Props = PageSlideProps;
+
+    fn from_props(key: &str, props: PageSlideProps) -> Self {
+        let PageSlideProps {
+            key: _,
+            level,
+            page,
+        } = props;
+        let mut slide = Self::new(depth_of(level), page.unwrap_or_else(Self::no_page));
+        key.clone_into(&mut slide.kept_as);
+        slide
+    }
+
+    /// A page at the level it stood at takes its changed props where it stands: the page its
+    /// slot swapped for another came through [`Self::slot_views`]. One that goes deeper or
+    /// shallower is built again, so the slide the rebuild puts in its place takes up the page
+    /// this one showed and runs the drill motion with it.
+    fn set_props(&mut self, props: PageSlideProps) -> bool {
+        depth_of(props.level) == self.level
+    }
+
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
+        (slot == PAGE_SLOT).then_some(self as &mut dyn SlotViews)
+    }
+}
+
+/// The page, the slot's one view, which changes where it stands.
+impl SlotViews for PageSlide {
+    fn len(&self) -> usize {
+        1
+    }
+
+    fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        (index == 0).then_some(&mut self.page)
+    }
+
+    fn insert(&mut self, _index: usize, view: Element) {
+        self.put(view);
+    }
+
+    fn remove(&mut self, _index: usize) {
+        self.put(Self::no_page());
+    }
+
+    fn move_view(&mut self, _from: usize, _to: usize) {}
+
+    fn replace(&mut self, _index: usize, view: Element) {
+        self.put(view);
+    }
+}
+
 impl Decorator for PageSlide {
     type Inner = dyn crate::widget::Widget;
 
@@ -136,7 +236,7 @@ impl Decorator for PageSlide {
         // Built again where a page stood: go on from the page it dropped
         // and the depth its motion had reached, and draw that page leaving.
         if self.aimed.is_none()
-            && let Some(left) = crate::motion::take_kept::<Left>(KEY)
+            && let Some(left) = crate::motion::take_kept::<Left>(&self.kept_as)
         {
             self.depth = left.depth;
             self.leaving = Some(Leaving {
@@ -258,7 +358,7 @@ impl Drop for PageSlide {
         }
         let page = std::mem::replace(&mut self.page, Box::new(crate::widget::Spacer::new()));
         crate::motion::keep(
-            KEY,
+            std::mem::take(&mut self.kept_as),
             Some(self.rect),
             Left {
                 depth: self.depth,

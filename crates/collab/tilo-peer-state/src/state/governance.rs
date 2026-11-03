@@ -200,6 +200,20 @@ impl PeerGovernance<'_> {
         let unrouted = access.member_devices.iter().copied().collect();
         Ok(RecordReaders { withheld, unrouted })
     }
+
+    /// The workspace's people and grants as its governance records them: its
+    /// owner, its members with the part each takes, when each was admitted,
+    /// and the grants on its nodes. This is the one source every list of its
+    /// people shows.
+    pub fn governed_policy(self) -> Result<tilo_action_policy::WorkspacePolicy, String> {
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?;
+        Ok(doc.policy().workspace_policy(&self.peer.core.workspace))
+    }
     /// Authority-authored collaborator projection. The structural owner is
     /// exposed separately by [`PeerGovernance::owner_user_public_key`].
     pub fn governed_members(self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {

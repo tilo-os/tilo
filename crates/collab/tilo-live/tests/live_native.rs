@@ -22,7 +22,7 @@ use moq_net::Timestamp;
 use tilo_live::carrier::{self, AdmissionError, Dial as _};
 use tilo_live::native;
 use tilo_live::relay::{
-    Denied, Direction, Relay, RelayAuthority, SessionAuthorization, VoiceRoute,
+    Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization, VoiceRoute,
 };
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_seal::discord_voice::{TransportCipher, XCHACHA};
@@ -31,7 +31,7 @@ use tilo_seal::discord_voice::{TransportCipher, XCHACHA};
 struct Authority;
 
 impl RelayAuthority for Authority {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let (publish, subscribe) = match proof {
             b"scope-a" => ("call/a", "call/b"),
             b"scope-b" => ("call/b", "call/a"),
@@ -157,7 +157,12 @@ async fn native_carrier_admits_scopes_and_relays_their_sealed_tracks() {
         let relay = relay.clone();
         move |session| {
             let relay = relay.clone();
-            async move { relay.serve_session(VoiceRoute::negotiated(), session).await }
+            async move {
+                let peer = Peer::Native(session.remote());
+                relay
+                    .serve_session(VoiceRoute::negotiated(), session, peer)
+                    .await;
+            }
         }
     })
     .unwrap();

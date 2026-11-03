@@ -266,8 +266,8 @@ impl RecordService {
 
     /// The direct edit (a bound control's) of the field `arguments` name in the record or item
     /// `resource`: what a view composed over its reading elsewhere sends when the person types
-    /// into it. A record publishes these edits; an item is edited in its record by its id there
-    /// ([`edit_action`]), as its own published resource carries only its type's actions.
+    /// into it. Both publish these edits, and the same ones: an item is edited in its record by
+    /// its id there ([`edit_action`]).
     /// `None` for a resource that is not one of these records'.
     /// A flag (`flag`) may come as its text, as a door that knows no parameter type for it
     /// hands it on.

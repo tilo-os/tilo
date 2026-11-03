@@ -75,9 +75,8 @@ impl ResourceApp for TopBarApp {
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
     // The bar shows this device's desktop: it is nobody's workspace
-    // participant and opens before anyone is chosen.
+    // participant.
     const ATTACHES_RUNTIME: bool = false;
-    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn view(cx: &mut ViewCx<TopBar>) -> Element {
         let lent = cx.take_lent::<BarService>();

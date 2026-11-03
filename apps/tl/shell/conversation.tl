@@ -31,6 +31,21 @@ view conversation(r: Run) {
                 }
             }
         }
+        footer: {
+            conversation_entry(r)
+        }
+    }
+}
+
+/// The conversation's one input (shell.md §8.1, "One input, two ways in"): a line that parses
+/// as a tilolang program runs as the person in the run's own program host, so it takes the
+/// `let`s the agent's programs bound and shows as a step of theirs; anything else is a sentence
+/// to the agent, which it takes in as it goes. `session.converse` is the same action the canvas
+/// entry presses, so a person who types here types what the agent would.
+view conversation_entry(r: Run) {
+    lens line: Text = ""
+    ui.TextInput(value: line, placeholder: "Type a program, or say what to do") {
+        on submit: session.conversation(line: line, run: r.key)
     }
 }
 

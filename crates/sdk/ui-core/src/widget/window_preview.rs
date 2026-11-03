@@ -155,6 +155,7 @@ fn forget(window: &str) {
 pub struct WindowPreviewProps {
     /// The window whose picture shows here: its key in the desk's reading (`Win.key`).
     #[component(required, positional)]
+    #[component(data)]
     pub window: String,
 }
 

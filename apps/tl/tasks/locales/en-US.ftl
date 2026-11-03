@@ -202,18 +202,33 @@ d-wrth4lq3 = Clear done~present
 d-swaiyhcf = Show board~present
 
 d-i2mhsb3h = Home
+    .w-tasks = Tasks
+    .w-new-task-for-today = New task for today
+    .w-new-task = New task
+    .w-no-task-selected = No task selected
 
 d-asnonvwl = Project page
+    .w-new-task-in = New task in { $name }
+    .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board
+    .w-no-section = No section
+    .w-new-task = New task
 
 d-hc5ndp4x = Task card
+    .w-move-to-no-section = Move to No section
+    .w-move-to = Move to { $name }
 
 d-w63ba6ad = Task row
 
 d-dne3p7nf = Step row
 
 d-mtmufg3w = Task page
+    .w-title = Title
+    .w-inbox = Inbox
+    .w-steps = Steps
+    .w-add-a-step = Add a step
+    .w-add-notes = Add notes
 
 d-i2mhsb3h~row0 = Home for p
 
@@ -224,8 +239,10 @@ d-i2mhsb3h~row2 = Home for x
 d-asnonvwl~row0 = Project page for x
 
 d-gu3twlv2~row0 = Project board for s
+    .w-new-task = New task
 
 d-gu3twlv2~row1 = Project board for s
+    .w-new-task = New task
 
 d-mtmufg3w~row0 = Task page for p
 

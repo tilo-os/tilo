@@ -109,7 +109,7 @@ class TiloClient:
                        `$XDG_RUNTIME_DIR/tilo-session/tilo-py.sock`; keep
                        any override out of shared directories like /tmp.
           binary: Override the binary path. Defaults to
-                  `$TILO_SHELL_BINARY`, else `target/debug/shell`
+                  `$TILO_SHELL_BINARY`, else `target/debug/tilo-session`
                   relative to this script's great-grandparent (the
                   repo root).
           wait_seconds: Bounded wait for the socket to appear.

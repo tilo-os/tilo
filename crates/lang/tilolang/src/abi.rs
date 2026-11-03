@@ -204,6 +204,7 @@ imports! {
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
+    Word = "word" ([H, H, H] -> [H]);
     Dated = "dated" ([H, H] -> [H]);
     EventPart = "event_part" ([I32] -> [H]);
     CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);

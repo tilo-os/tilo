@@ -32,10 +32,8 @@ impl ResourceApp for WindowMenuApp {
     };
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
-    // The menu shows this device's desk: it is nobody's workspace participant
-    // and opens before anyone is chosen.
+    // The menu shows this device's desk: it is nobody's workspace participant.
     const ATTACHES_RUNTIME: bool = false;
-    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn view(cx: &mut ViewCx<WindowMenu>) -> Element {
         cx.surface(WindowMenuSurface::new())

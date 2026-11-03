@@ -7,7 +7,7 @@
 )]
 use super::*;
 use crate::relay::{
-    Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization, VOICE_PATH,
+    Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization, VOICE_PATH,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,7 +31,7 @@ impl SessionAuthorization for Permit {
 #[derive(Default)]
 struct Counting(AtomicUsize);
 impl RelayAuthority for Counting {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         self.0.fetch_add(1, Ordering::SeqCst);
         if proof == b"good" {
             Ok(Arc::new(Permit))

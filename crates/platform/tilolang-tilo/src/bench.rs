@@ -552,30 +552,48 @@ fn register_fields(meta: &Meta, ty: &str) -> Result<Vec<(String, Ty)>, String> {
         .collect()
 }
 
-/// The collection inside the root's collection `outer` that people use: one of the root's
-/// records (the workspace's mail accounts) holds conversations, which open in a window of
-/// their own and hold messages. `None` when one of them does not.
+/// The collection inside the root's collection `outer` that people use: the one whose items
+/// hold a collection of their own (a mail account's conversations, each holding its messages),
+/// whose items' windows edit them and which grows with the workspace; failing that, the holder's
+/// first collection a window opens. `None` when it has none.
 fn inside(meta: &Meta, outer: &List) -> Option<List> {
     let holder_schema = lookup(&outer.item_ty)?;
+    let mut fallback = None;
     for field in &holder_schema.fields {
         if field.kind != MergeKind::Collection {
             continue;
         }
-        let item_ty = field.record.clone()?;
+        let Some(item_ty) = field.record.clone() else {
+            continue;
+        };
         if meta.default_view(&item_ty).is_none() {
             continue;
         }
-        return list_in(
+        let list = list_in(
             &field.id,
-            item_ty,
+            item_ty.clone(),
             vec![Holder {
                 field: outer.field.clone(),
                 ty: outer.item_ty.clone(),
                 texts: texts_of(holder_schema),
             }],
         );
+        // What people work in is the collection whose items hold their own (a conversation's
+        // messages, a channel's): it grows with the workspace, and its window edits the item.
+        // The holder's other collections (a mail account's mailboxes) open windows too, but
+        // they are where a person starts from, a few per holder, not what the workspace fills.
+        if lookup(&item_ty).is_some_and(|schema| {
+            schema
+                .fields
+                .iter()
+                .any(|field| field.kind == MergeKind::Collection)
+        }) && list.is_some()
+        {
+            return list;
+        }
+        fallback = fallback.or(list);
     }
-    None
+    fallback
 }
 
 /// The id the seeded item number `i` has.

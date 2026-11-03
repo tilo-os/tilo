@@ -18,5 +18,6 @@ d-6vyvuejf = Decrement
     .doc = Take one away from the counter.
 
 d-njld6xdx = Counter
+    .w-count = Count
 
 d-6ehvhxp4 = Controls

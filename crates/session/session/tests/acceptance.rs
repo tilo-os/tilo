@@ -231,7 +231,6 @@ fn step_4_my_mails_places_the_inbox_with_its_threads() {
 
 /// Step 5: an inline edit of a placed record commits, through the session's owner of the record.
 #[test]
-#[ignore = "step 5: an item (`<record>/<item>`, a note) publishes no `edit-text`/`edit-flag` on the door — `publish.rs`'s `item_resource` passes `edits: false`, so the catalogue offers the direct edits on the record root alone and the shell's edit of the placed note is refused with \"no action addressed by (…/i…, edit-text)\"; `RecordService::direct_edit` itself already takes the item's path"]
 fn step_5_an_inline_edit_of_a_placed_record_commits() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();

@@ -32,17 +32,6 @@ impl ShellLink {
         match self.0 {}
     }
 
-    /// Hear when the workspace's identity is selected (unreachable: no link
-    /// exists here).
-    pub fn await_identity(&self, _selected: impl FnOnce(Result<(), String>) + Send + 'static) {
-        match self.0 {}
-    }
-
-    /// Show the shell's identity chooser (unreachable: no link exists here).
-    pub fn choose_identity(&self, _answered: impl FnOnce(Result<(), String>) + Send + 'static) {
-        match self.0 {}
-    }
-
     /// Show the shell's app chooser (unreachable: no link exists here).
     pub fn choose_app(
         &self,

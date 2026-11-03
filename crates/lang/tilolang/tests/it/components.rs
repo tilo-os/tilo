@@ -215,6 +215,27 @@ fn a_binding_binds_a_field_of_its_type() {
     assert_eq!(code, "E062");
 }
 
+/// `bind:` names whatever the component's description declares its binding to be, so it is one
+/// path for every component: `TextInput`'s `value`, `ListRow`'s `checkbox`; a component with
+/// none says so, and a shorthand is held to its component.
+#[test]
+fn a_binding_binds_the_binding_the_description_declares() {
+    let c = compile_body(&with_note(
+        "view v(n: Note) {\n    checkbox(bind: n.done)\n    ui.TextInput(bind: n.title)\n    ui.ListRow(title: n.title, bind: n.done)\n}",
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    for want in ["ui.Checkbox", "ui.TextInput", "bind", "value"] {
+        assert!(strings.contains(want), "{want} reaches the host");
+    }
+    let (code, message) = one_error("view v() {\n    ui.Section(\"About\", bind: \"x\")\n}");
+    assert_eq!(code, "E063");
+    assert!(message.contains("binds nothing"), "{message}");
+    let (code, message) = one_error("view v() {\n    checkbox(3)\n}");
+    assert_eq!(code, "E020");
+    assert!(message.contains("Text"), "{message}");
+}
+
 #[test]
 fn a_row_view_may_be_the_toolkits_row_itself() {
     let c = compile_body(&with_note(
@@ -384,4 +405,45 @@ fn an_events_value_reaches_every_step_of_a_then_chain_that_uses_it() {
     assert!(errors(body).is_empty(), "{:#?}", errors(body));
     let reads_other = "type Note {\n    title: Text (title)\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction keep(nb: Notebook, title: Text) {\n    nb.notes.insert(Note(title: title))\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n).then(keep(nb, n.title))\n    }\n}";
     assert_eq!(one_error(reads_other).0, "E063");
+}
+
+/// components.md §4.1: a drawing's shapes are cases of the toolkit's `ui.Shape`, written like
+/// any enum's, their inks the design system's roles; a field a shape does not have is refused.
+#[test]
+fn a_drawing_is_shapes_in_the_design_systems_roles() {
+    let c = compile_body(&with_note(
+        r"view usage(n: Note) {
+    let used = if n.done { 1.0 } else { 0.6 }
+    ui.Drawing([
+        .arc(cx: 0.5, cy: 0.5, radius: 0.4, from: 0.0, to: 1.0, stroke: .track),
+        .arc(cx: 0.5, cy: 0.5, radius: 0.4, from: 0.0, to: used, stroke: .accent, weight: .strong),
+    ], meaning: .progress, value: used)
+}",
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    assert!(
+        strings.contains("ui.Drawing"),
+        "the node is the toolkit's Drawing"
+    );
+
+    let got = errors(&with_note(
+        r"view usage(n: Note) {
+    ui.Drawing([.arc(cx: 0.5, cy: 0.5, radius: 0.4, from: 0.0, to: 1.0, stroke: .crimson)], meaning: .progress)
+}",
+    ));
+    assert!(
+        got.iter()
+            .any(|(_, m)| m.contains("`.crimson`") && m.contains(".accent")),
+        "a colour that is no role is refused, naming the roles: {got:#?}"
+    );
+    let got = errors(&with_note(
+        r"view usage(n: Note) {
+    ui.Drawing([.arc(cx: 0.5, cy: 0.5, radius: 0.4, from: 0.0, to: 1.0, stroke: .accent, blur: 3.0)], meaning: .progress)
+}",
+    ));
+    assert!(
+        got.iter().any(|(_, m)| m.contains("radius")),
+        "a field the shape does not have is refused, naming its fields: {got:#?}"
+    );
 }

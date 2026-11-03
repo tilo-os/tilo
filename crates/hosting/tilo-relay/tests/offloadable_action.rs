@@ -415,9 +415,10 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     invited(&hosted, &workspace, &owner, &laptop, &laptop_endpoint).await;
     let plane = asking_plane(&laptop, &desk, &workspace);
     let host_addr = hosted.host.node_addr();
+    let elsewhere = host_addr.clone();
     let peers = PlanePeers::new(
-        plane,
-        laptop_endpoint,
+        plane.clone(),
+        laptop_endpoint.clone(),
         move |_device| host_addr.clone(),
         Arc::clone(&content) as Arc<dyn OutputContent>,
         tokio::runtime::Handle::current(),
@@ -442,7 +443,10 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     let Offloaded::RunHere { reason } = first else {
         panic!("nothing is quicker than a run it knows nothing of: {first:?}");
     };
-    assert!(reason.contains("no faster than the run here"), "{reason}");
+    assert!(
+        reason.contains("nothing is quicker than a run it knows nothing of"),
+        "{reason}"
+    );
 
     // Photos' handler runs it here, and the door reports how long it took.
     let app_content = tilo_content::ContentStore::memory();
@@ -495,6 +499,100 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
         panic!("a host that holds nothing is no quicker: {third:?}");
     };
     assert!(reason.contains("no faster than the run here"), "{reason}");
+
+    // A device that is not connected here now is not asked: the round has
+    // nobody to ask, so the action stays here rather than waiting for an
+    // answer that cannot come.
+    let unconnected = offer_offload(
+        Arc::clone(&content) as Arc<dyn RoomMedia>,
+        Arc::new(
+            PlanePeers::new(
+                plane,
+                laptop_endpoint,
+                move |_device| elsewhere.clone(),
+                Arc::clone(&content) as Arc<dyn OutputContent>,
+                tokio::runtime::Handle::current(),
+            )
+            .reachable(|_, _| false),
+        ),
+    )
+    .expect("offload is not turned off");
+    // What a run here takes is what the round weighs: this door learns it
+    // the way any door does, from the invocation it ran here.
+    let warm = unconnected
+        .offload_invocation(request.clone(), invocation(&workspace, &named))
+        .await;
+    assert!(
+        matches!(warm, Offloaded::RunHere { .. }),
+        "nothing is quicker on a door that knows nothing yet: {warm:?}"
+    );
+    unconnected.ran_here(&request, took);
+    let fourth = tilo_test_env::within(
+        "the round with nobody connected",
+        unconnected.offload_invocation(request.clone(), invocation(&workspace, &named)),
+    )
+    .await;
+    let Offloaded::RunHere { reason } = fourth else {
+        panic!("nobody was asked: {fourth:?}");
+    };
+    assert!(reason.contains("no device offered to run it"), "{reason}");
+}
+
+/// A host takes on as many jobs as it says it does: with one slot, the second
+/// job is refused where it is sent, and the offer a full host answers says so.
+#[tokio::test]
+async fn a_host_at_its_capacity_takes_no_second_job() {
+    use tilo_room_host::rooms::HostJobs as _;
+    let desk = TestUser::fresh("capacity host").enrol("desk", DeviceCapabilities::primary());
+    let root = tempfile::tempdir().unwrap();
+    let content = Arc::new(Media::default());
+    let (package, _) = installed_package(&root.path().join("host"), PACKAGE, ENTRYPOINT);
+    let jobs = ComputeJobs::new(
+        Arc::clone(&content) as Arc<dyn ComputeContentStore>,
+        Arc::new(FixtureCatalogue(package)),
+        Arc::new(ThumbnailSandbox),
+        desk.device_pubkey(),
+        root.path().join("data"),
+        root.path().join("state"),
+    )
+    .with_capacity(1);
+
+    let workspace = "33333333-3333-4333-8333-333333333333";
+    let photograph = photograph(1);
+    let saved = content.store(&photograph);
+    let bytes = u64::try_from(photograph.len()).unwrap();
+    let named = vec![hex::encode(saved)];
+    let declared = make_thumbnails_request(workspace, &named);
+    let work = neighbour_wire::offer::Work {
+        inputs: vec![(saved, bytes)],
+        input_bytes: bytes,
+        local_wall_ms: Some(1_000),
+        offload: Some(declared.offload),
+    };
+    assert!(jobs.runs(workspace, &work), "the host takes the work");
+    assert_eq!(jobs.free_slots(), Some(1), "it has a slot for it");
+
+    // It takes the first job, and with it the one slot it has: an offer
+    // arriving now is answered as taken by nobody, so the device that asks
+    // does not send the job to a host that would refuse it.
+    let requester = [0x11; 32];
+    let first = jobs.run(workspace, &work, requester, invocation(workspace, &named));
+    assert_eq!(jobs.free_slots(), Some(0), "the slot the first job took");
+
+    // A second job arriving now is refused at the door, never queued behind
+    // the first or run over its slot.
+    let second = jobs
+        .run(workspace, &work, requester, invocation(workspace, &named))
+        .await
+        .expect("the host answers the job it was sent");
+    let Err(tilo_actions::remote::ActionHostError::Unavailable { reason }) = second else {
+        panic!("a host at its capacity takes no more: {second:?}");
+    };
+    assert!(reason.contains("as many jobs as it takes on"), "{reason}");
+
+    let ran = first.await.expect("the host answers the job it took");
+    assert!(ran.is_ok(), "the job it took ran: {ran:?}");
+    assert_eq!(jobs.free_slots(), Some(1), "the slot is free again");
 }
 
 /// A host that takes work in still refuses the job when the inputs it was

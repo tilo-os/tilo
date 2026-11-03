@@ -2381,21 +2381,12 @@ fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_porta
     Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
-/// What a native launch that could not connect reports: that the workspace
-/// needs an identity chosen, which the launch waits for, or why the service
+/// What a native launch that could not connect reports: why the service
 /// failed.
 #[cfg(feature = "native")]
 fn native_launch_refusal(error: &runtime_portal::NotAvailable) -> crate::NativeLaunchError {
-    if runtime_identity::is_no_identity_selected(error) {
-        crate::NativeLaunchError::IdentityRequired
-    } else {
-        crate::NativeLaunchError::Operation(error.to_string())
-    }
+    crate::NativeLaunchError::Operation(error.to_string())
 }
-
-#[cfg(all(test, feature = "native"))]
-#[path = "native_launch_refusal_tests.rs"]
-mod native_launch_refusal_tests;
 
 #[cfg(all(test, unix))]
 #[path = "background_join_tests.rs"]
@@ -2753,10 +2744,8 @@ impl CollaborationManager {
     ///
     /// # Errors
     ///
-    /// [`crate::NativeLaunchError::IdentityRequired`] while the workspace
-    /// has no identity selected (someone can choose one, and the launch waits
-    /// for it); [`crate::NativeLaunchError::Operation`] where a configured
-    /// service is unavailable or the join identity cannot be loaded.
+    /// [`crate::NativeLaunchError::Operation`] where a configured service is
+    /// unavailable or this device's identity cannot be loaded.
     #[cfg(feature = "native")]
     pub fn join_native(
         kind: &crate::record::RecordKind,
@@ -2792,9 +2781,9 @@ impl CollaborationManager {
         if matches!(source, SdkConnectSource::Env) {
             super::channel_settings::install(&app);
         }
-        // The window joins as the person this launch is. Loading who that
-        // is answers at once, and says whether someone has to choose first,
-        // which the launch waits for before it opens anything.
+        // The window joins as the person this device is, which the session's
+        // identity service answers with for the workspace it launched the
+        // app into.
         tilo_startup_metrics::startup_mark("collab-connect");
         let identity =
             sdk_join_identity(workspace).map_err(|error| native_launch_refusal(&error))?;

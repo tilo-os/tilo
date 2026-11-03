@@ -531,6 +531,28 @@ impl Shell {
         self.packages.last().cloned()
     }
 
+    /// Publish the shell's own records with the apps' records `services` keeps: the package is
+    /// loaded over the document its parts draw from, so a REPL or an agent reads and changes the
+    /// shell's records by its app, as it does Notes'. The session runs the shell itself, and its
+    /// records are the person's, synced with their devices, as an app's are.
+    pub(crate) fn share_records(
+        &self,
+        services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+    ) {
+        let Some(compiled) = self.package() else {
+            return;
+        };
+        let records = self.records();
+        let taken = services.borrow_mut().share(&tilo_service::Share {
+            app: &compiled.meta.app,
+            wasm: &compiled.wasm,
+            records: &records,
+        });
+        if let Err(error) = taken {
+            tracing::error!(%error, "the shell's records are not published");
+        }
+    }
+
     /// Move every part to the bands the shell's chrome stands in: a bar at the top or bottom, a
     /// dock at the bottom or top. A change of the person's settings moves them on the next
     /// frame.
@@ -628,6 +650,16 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().control_bounds(name))
     }
 
+    /// Where every shown part lays out the control `name`: a strip's row is a chip on the bar
+    /// and an item of a place's move menu, and both are pressed.
+    pub(crate) fn controls(&self, name: &str) -> Vec<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .flat_map(|(_, part)| part.borrow_mut().control_bounds_all(name))
+            .collect()
+    }
+
     /// Whether a shown part lays out `text` for assistive technology.
     pub(crate) fn says(&self, text: &str) -> bool {
         self.parts
@@ -712,8 +744,9 @@ fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u
 
 /// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type
 /// the action declares for that argument. Text stays text however it reads: a workspace's
-/// key is `"281474976710657"`, not a number. An undeclared argument keeps the text it came as,
-/// and the door refuses it by name.
+/// key is `"281474976710657"`, not a number. A flag is written as the integer a tilolang flag
+/// travels as (`1`, `0`), and reads as true and false. An undeclared argument keeps the text
+/// it came as, and the door refuses it by name.
 fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     use tilo_actions::params::ParamType;
     match ty {
@@ -728,8 +761,8 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
             .and_then(serde_json::Number::from_f64)
             .map_or_else(|| Value::String(value.to_owned()), Value::Number),
         Some(ParamType::Boolean) => match value.trim() {
-            "true" | "yes" | "on" => Value::Bool(true),
-            "false" | "no" | "off" => Value::Bool(false),
+            "true" | "yes" | "on" | "1" => Value::Bool(true),
+            "false" | "no" | "off" | "0" => Value::Bool(false),
             _ => Value::String(value.to_owned()),
         },
         Some(ParamType::Object) => serde_json::from_str::<Map<String, Value>>(value)
@@ -1059,6 +1092,16 @@ impl crate::Session {
         self.shell.as_ref()?.control(name)
     }
 
+    /// Where every control the shell shows by `name` stands, logical `(x, y, w, h)`: a menu
+    /// item and a chip elsewhere may both be named for the row they name.
+    #[must_use]
+    pub fn shell_controls(&self, name: &str) -> Vec<(f64, f64, f64, f64)> {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.controls(name))
+            .unwrap_or_default()
+    }
+
     /// Whether the shell lays out `text` for assistive technology anywhere on screen: a
     /// label, a description or a value holding it. What a test reads a composed view by.
     #[must_use]
@@ -1120,25 +1163,67 @@ impl crate::Session {
 
 #[cfg(test)]
 mod tests {
+    /// What the shell runs — its views and the session's and the platform's descriptions, with
+    /// no scenarios, which are fixtures for its shots and tests — compiles, and every id it
+    /// declares is in the lock. What it shows.
     #[test]
-    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
-        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
-        let compiled = packages.last().expect("the shell package compiles last");
-        // The session compiles the package without its scenarios, so the lock it compiles to
-        // retires theirs; every declaration it does compile keeps the id the package's lock holds.
-        let committed =
-            tilolang_tilo::tilolang::IdsLock::parse(tilo_surface_host::shell_part::shell_ids())
-                .expect("apps/tl/shell/app.ids reads");
-        let unheld: Vec<String> = compiled
-            .ids
-            .entries()
-            .filter(|(name, id)| committed.get(name) != Some(*id))
-            .map(|(name, id)| format!("{name} = {id}"))
-            .collect();
-        assert!(
-            unheld.is_empty(),
-            "apps/tl/shell/app.ids does not hold these declarations; run `tilolang check --write-ids apps/tl/shell`: {unheld:?}"
+    fn the_shell_the_session_runs_compiles() {
+        super::compile().unwrap_or_else(|why| panic!("{why}"));
+    }
+
+    /// `apps/tl/shell/app.ids` is the lock of the *whole* shell package, scenarios included:
+    /// `tilolang check` (which layout-check and the shots compile the package with) holds, and a
+    /// declaration the session's compile leaves out — a scenario's, its helpers' — keeps its id
+    /// in the lock, because a lock names every declaration the package has ever had.
+    #[test]
+    fn the_shells_ids_lock_holds_every_declaration_the_whole_package_has() {
+        use tilolang_tilo::tilolang::ids::IdsLock;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+        // The packages the shell's scenarios reach (`use so.tilo.lang.notes as notes`), each
+        // compiled before the shell as `tilolang check` compiles it.
+        let published = tilolang_tilo::catalogue::published_packages(&[dir
+            .parent()
+            .expect("apps/tl")
+            .to_path_buf()])
+        .unwrap_or_else(|why| panic!("{why}"));
+        let built = tilolang_tilo::tilolang::source::compile_package(
+            &dir,
+            &[],
+            &published,
+            &mut tilolang_tilo::tilolang::ids::SeededEntropy(0),
+        )
+        .unwrap_or_else(|why| panic!("{why}"));
+        let compiled = built.last().expect("the shell package compiles last");
+        let lock = compiled.compiled.ids.to_text();
+        let on_disk = std::fs::read_to_string(dir.join("app.ids")).expect("app.ids reads");
+        assert_eq!(
+            on_disk, lock,
+            "apps/tl/shell/app.ids is not the lock the whole package (scenarios included) \
+             compiles to; write:\n{lock}"
         );
+        // Every scenario the package declares keeps the id the lock gives it, in the lock's
+        // live entries and never among the retired: a scenario's id is as real as a type's.
+        let parsed = IdsLock::parse(&on_disk).expect("the lock parses");
+        let retired: std::collections::BTreeMap<(&str, &str), ()> = parsed
+            .retired()
+            .map(|(name, id)| ((name, id), ()))
+            .collect();
+        let scenarios = &compiled.compiled.meta.scenarios;
+        assert!(
+            scenarios.len() > 20,
+            "the whole package's scenarios are compiled, as `tilolang check` compiles them: {}",
+            scenarios.len()
+        );
+        for scenario in scenarios {
+            let name = tilolang_tilo::tilolang::ids::scenario_key(&scenario.name);
+            let held = parsed
+                .get(&name)
+                .unwrap_or_else(|| panic!("scenario {name:?} has no id in app.ids"));
+            assert!(
+                !retired.contains_key(&(name.as_str(), held)),
+                "{name} is retired"
+            );
+        }
     }
 
     /// The device's surface the shell compiles against is the one the session publishes.

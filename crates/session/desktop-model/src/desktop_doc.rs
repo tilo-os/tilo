@@ -42,8 +42,7 @@ use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
 use crate::projection::{
-    WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY, WORKSPACE_MEMBERS_JOINED_KEY,
-    WORKSPACE_SCHEDULE_CLAIMS_KEY,
+    WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY, WORKSPACE_SCHEDULE_CLAIMS_KEY,
 };
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
@@ -57,7 +56,6 @@ pub(crate) const ACTIVE_KEY: &str = "active";
 const VIEW_KEY: &str = "view_v1";
 const LOCAL_KEY: &str = "local_v1";
 const AUTHORS_KEY: &str = "authors_v1";
-const MEMBERS_KEY: &str = "members";
 const GRANTS_KEY: &str = "grants";
 const SANDBOX_KEY: &str = "sandbox";
 const PRESETS_KEY: &str = "presets_v1";
@@ -340,24 +338,6 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
         }
         None => delete_if_present(doc, entry, "owner"),
     }
-    sync_blob_map(
-        doc,
-        entry,
-        MEMBERS_KEY,
-        ws.policy
-            .members
-            .iter()
-            .map(|(person, role)| (person.clone(), role)),
-    );
-    sync_blob_map(
-        doc,
-        entry,
-        WORKSPACE_MEMBERS_JOINED_KEY,
-        ws.policy
-            .joined
-            .iter()
-            .map(|(person, at)| (person.clone(), at)),
-    );
     sync_blob_map(
         doc,
         entry,
@@ -666,16 +646,19 @@ fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
     )
 }
 
-/// A workspace's owner, members and grants as the document records them.
-/// An absent grants map leaves a freshly created workspace's default grants intact;
-/// an existing empty map records a deliberate removal of every grant.
-type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Option<Vec<Grant>>);
+/// A workspace's owner and grants as the document records them. An absent
+/// grants map leaves a freshly created workspace's default grants intact; an
+/// existing empty map records a deliberate removal of every grant.
+///
+/// A workspace's people are its governance's, not the document's: old documents
+/// keep the `members` and `members_joined_v1` maps they were written with, and
+/// nothing reads them.
+type StoredPolicy = (Option<UserId>, Option<Vec<Grant>>);
 
 /// Read policy fields independently: a new workspace has an owner before its
 /// grants map exists, while an explicit empty grants map revokes all grants.
 fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let owner = doc.str_at(entry, "owner");
-    let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
     let grants = read_blob_map(doc, entry, GRANTS_KEY).map(|mut grants: Vec<Grant>| {
         // Map keys are lexical, but the default role grants have a deliberate
         // order in `workspace_role_grants`: by role as `Role::ALL` lists them, then
@@ -718,7 +701,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
         });
         grants
     });
-    (owner, members, grants)
+    (owner, grants)
 }
 
 fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
@@ -806,15 +789,10 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
                 None => Workspace::new(ws_id, name),
             },
         };
-        let (owner, members, grants) = read_policy(doc, entry);
+        let (owner, grants) = read_policy(doc, entry);
         if let Some(owner) = owner {
             ws.policy.owner = Some(owner);
         }
-        ws.policy.members = members.into_iter().collect();
-        ws.policy.joined = read_keyed_blob_map(doc, entry, WORKSPACE_MEMBERS_JOINED_KEY)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
         if let Some(grants) = grants {
             ws.policy.grants = tilo_action_policy::roles::current_role_grants(grants);
         } else {
@@ -1091,6 +1069,16 @@ pub fn set_owner(doc: &mut AutoCommit, workspace_id: WorkspaceId, owner: &str) -
     workspace_entry(doc, workspace_id).is_some_and(|entry| doc.put(&entry, "owner", owner).is_ok())
 }
 
+/// How many workspaces `doc` holds: none on a device that has not used its
+/// desk yet, or on a document of another shape.
+#[must_use]
+pub fn workspaces(doc: &impl ReadDoc) -> usize {
+    match doc.get(&ROOT, WORKSPACES_KEY) {
+        Ok(Some((Value::Object(ObjType::List), list))) => doc.length(&list),
+        _ => 0,
+    }
+}
+
 /// Whether `doc` holds the desk this module writes: a root holding the
 /// workspace list. A document of another shape — a workspace document, or a
 /// shared desktop record written entry by entry before the desk was one
@@ -1235,33 +1223,6 @@ pub fn insert_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, grant: &Gra
 /// Delete a grant, so a revocation is not only local.
 pub fn revoke_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, id: &GrantId) -> bool {
     delete_blob(doc, workspace_id, GRANTS_KEY, id.as_str())
-}
-
-/// Record a member's role.
-pub fn set_member(
-    doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
-    person: &str,
-    role: Role,
-) -> bool {
-    upsert_blob(doc, workspace_id, MEMBERS_KEY, person, &role)
-}
-
-pub fn remove_member(doc: &mut AutoCommit, workspace_id: WorkspaceId, person: &str) -> bool {
-    delete_blob(doc, workspace_id, MEMBERS_KEY, person)
-}
-
-/// Record when a member was admitted, Unix milliseconds; `None` forgets it.
-pub fn set_member_joined(
-    doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
-    person: &str,
-    joined: Option<u64>,
-) -> bool {
-    match joined {
-        Some(at) => upsert_blob(doc, workspace_id, WORKSPACE_MEMBERS_JOINED_KEY, person, &at),
-        None => delete_blob(doc, workspace_id, WORKSPACE_MEMBERS_JOINED_KEY, person),
-    }
 }
 
 /// Record a sandbox capability.

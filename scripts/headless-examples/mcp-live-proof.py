@@ -14,8 +14,9 @@ What it checks, in order:
      nested beneath them. The full catalogue never lands in the model's
      initial context, and the tree follows the ownership apps already publish.
   4. `tilo_enumerate_actions` can still search the live surface explicitly.
-  5. `tilo_invoke_action` moves state — read back with an
-     independent `state_dump`, not from the tool's own reply.
+  5. `tilo_invoke_action` changes what a person sees: the model takes Setup's
+     way forward and the screen the desk shows moves on to its second step,
+     read back from the desk's own targets rather than the tool's reply.
   6. A refusal reaches the model as `isError: true` carrying the
      compositor's own code, rather than being smoothed into a success.
 
@@ -38,10 +39,11 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 CONTROL = pathlib.Path(os.environ.get("TILO_CONTROL_BINARY", REPO / "target" / "debug" / "tilo-control"))
 SHIM = REPO / "scripts" / "tilo-mcp-server.py"
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from _control import runtime_socket_path  # noqa: E402
-
-SOCKET = runtime_socket_path("mcp-live-proof.sock")
+# The proof makes its own runtime directory, so its socket path never depends
+# on the caller's environment: a build container has no session to inherit one
+# from.
+RUNTIME = pathlib.Path(tempfile.mkdtemp(prefix="tilo-mcp-proof-rt-"))
+SOCKET = RUNTIME / "control.sock"
 PROTOCOL = "2025-06-18"
 
 failures: list[str] = []
@@ -93,21 +95,36 @@ def resource_text(reply) -> dict:
         return {}
 
 
-def overlays() -> dict:
-    """Read chrome overlays straight off the socket.
+def desk_targets() -> list:
+    """The names of the controls the desk shows, off its own socket.
 
-    Deliberately not through the shim: an effect confirmed by the same
-    layer that claimed to cause it is not confirmed at all.
+    Read back here for the same reason the state is: what the tool said it
+    did is not evidence that the desk a person looks at changed.
     """
     out = subprocess.run(
-        [str(CONTROL), "--socket", SOCKET, "state-dump"],
+        [str(CONTROL), "--socket", str(SOCKET), "list-targets"],
         capture_output=True,
         text=True,
         timeout=30,
     )
     if out.returncode != 0:
-        return {}
-    return json.loads(out.stdout)["chrome"]["overlays"]
+        return []
+    return [line.rsplit("  (", 1)[0] for line in out.stdout.splitlines() if line.strip()]
+
+
+def on_step(number: str) -> bool:
+    """Whether the desk shows Setup standing on `number`."""
+    return any(f"step {number} of" in name.lower() for name in desk_targets())
+
+
+def until(check, timeout: float = 20.0):
+    """True once `check()` answers so, within `timeout`; else False."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if check():
+            return True
+        time.sleep(0.2)
+    return False
 
 
 def main() -> int:
@@ -122,13 +139,15 @@ def main() -> int:
         pass
 
     # Isolate the whole home, not just the workspace tree: record
-    # documents live under `XDG_DATA_HOME`, so `TILO_STATE_PATH` alone
-    # leaves runs sharing documents with each other and with whatever is
-    # already on this machine.
+    # documents live under `XDG_DATA_HOME`, `TILO_STATE_PATH` alone leaves
+    # runs sharing documents with each other and with whatever is already on
+    # this machine, and a home of its own is a desk's first boot, where Setup
+    # is the screen a model has something to do on.
     state_dir = tempfile.mkdtemp(prefix="tilo-mcp-proof-")
     env = {
         **os.environ,
-        "TILO_TEST_CONTROL": SOCKET,
+        "HOME": os.path.join(state_dir, "home"),
+        "TILO_TEST_CONTROL": str(SOCKET),
         "TILO_STATE_PATH": os.path.join(state_dir, "state.json"),
         "XDG_DATA_HOME": os.path.join(state_dir, "data"),
         "XDG_CACHE_HOME": os.path.join(state_dir, "cache"),
@@ -136,7 +155,7 @@ def main() -> int:
         "XDG_CONFIG_HOME": os.path.join(state_dir, "config"),
         # Its own runtime directory: the desktop this runs beside keeps its
         # sockets and session files.
-        "XDG_RUNTIME_DIR": tempfile.mkdtemp(prefix="tilo-rt-"),
+        "XDG_RUNTIME_DIR": str(RUNTIME),
     }
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
@@ -225,31 +244,40 @@ def main() -> int:
         reply = read_reply(shim, 5)
         try:
             payload = json.loads(tool_text(reply))
-            count = payload.get("count", 0)
         except json.JSONDecodeError:
-            count = 0
-        check("a live surface reaches the model", count > 0, f"{count} actions")
+            payload = {}
+        actions = payload.get("actions") or []
+        check("a live surface reaches the model", payload.get("count", 0) > 0,
+              f"{payload.get('count', 0)} actions")
 
-        print("\n[5] invoke, and read the effect back independently")
-        before = overlays().get("collaborators")
+        print("\n[5] the model takes the way forward, and the person sees Setup move")
+        choose = next(
+            (row for row in actions
+             if row.get("resource") == "onboarding.setup" and row.get("operation") == "choose"),
+            None,
+        )
+        check("the live surface offers Setup's way forward", choose is not None)
+        provider = str((choose or {}).get("provider", ""))
+        check("Setup stands on its first step", until(lambda: on_step("1")),
+              f"{len(desk_targets())} control(s) shown")
         rpc(shim, {
             "jsonrpc": "2.0", "id": 6, "method": "tools/call",
             "params": {"name": "tilo_invoke_action",
-                       "arguments": {"provider": "actions", "id": "collaborators.open"}},
+                       "arguments": {"provider": provider, "id": "onboarding.setup\u001fchoose",
+                                     "args": {"option": "create"}}},
         })
         reply = read_reply(shim, 6)
         check("the invocation is not an error",
               reply is not None and not reply["result"].get("isError"),
-              tool_text(reply)[:60].replace("\n", " "))
-        time.sleep(0.6)
-        after = overlays().get("collaborators")
-        check("live state actually moved", before != after, f"{before} -> {after}")
+              tool_text(reply)[:80].replace("\n", " "))
+        check("the desk shows Setup's second step", until(lambda: on_step("2")),
+              ", ".join(name for name in desk_targets() if "step" in name.lower()))
 
         print("\n[6] a refusal reaches the model intact")
         rpc(shim, {
             "jsonrpc": "2.0", "id": 7, "method": "tools/call",
             "params": {"name": "tilo_invoke_action",
-                       "arguments": {"provider": "actions", "id": "not.a.real.action"}},
+                       "arguments": {"provider": provider, "id": "onboarding.setup\u001fnot-an-action"}},
         })
         reply = read_reply(shim, 7)
         text = tool_text(reply)
@@ -281,6 +309,7 @@ def main() -> int:
         except FileNotFoundError:
             pass
         shutil.rmtree(state_dir, ignore_errors=True)
+        shutil.rmtree(RUNTIME, ignore_errors=True)
 
 
 if __name__ == "__main__":

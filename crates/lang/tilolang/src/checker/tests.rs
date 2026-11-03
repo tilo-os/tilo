@@ -541,7 +541,7 @@ fn a_body_held_as_rich_text_is_told_it_binds_the_documents_body() {
 #[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
-        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            card(p) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
+        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "person"));
     for want in [
@@ -554,7 +554,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
         "node ui.PropertyList",
         "node form",
         "node field",
-        "node toggle",
+        "node ui.Toggle",
         "node ui.Card",
         "node ui.Avatar",
         "prop field_role",

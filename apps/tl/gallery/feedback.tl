@@ -79,6 +79,9 @@ view feedback(f: Feedback) {
                 ui.Sparkline([9.0, 6.0, 8.0, 4.0, 5.0, 3.0], label: .some("Errors per minute"), smooth: true, filled: false)
             }
         }
+        ui.Section("Drawing") {
+            ui.Drawing([.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, round: 0.1, fill: .track), .path(points: [0.05, 0.8, 0.25, 0.55, 0.45, 0.65, 0.65, 0.3, 0.95, 0.2], smooth: true, fill: .accent, wash: true), .path(points: [0.05, 0.8, 0.25, 0.55, 0.45, 0.65, 0.65, 0.3, 0.95, 0.2], smooth: true, stroke: .accent), .line(x1: 0.05, y1: 0.5, x2: 0.95, y2: 0.5, stroke: .muted, weight: .hairline), .ellipse(cx: 0.65, cy: 0.3, rx: 0.03, ry: 0.06, fill: .accent)], meaning: .chart, label: .some("Visitors this week, above the target since Thursday"), width: .some(240.0), height: .some(120.0))
+        }
         ui.Section("Details") {
             ui.DisclosureRow("Build log", secondary: .some("Finished in 4 minutes"), icon: .list) {
                 ui.Text("Compiled 312 crates.")

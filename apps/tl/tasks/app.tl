@@ -118,7 +118,7 @@ action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: B
 }
 
 /// Starts a task in the inbox.
-primary action new_task(tasks: Tasks) -> Task (icon: .plus, label: "New task") {
+primary action new_task(tasks: Tasks) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.items.insert(Task(title: ""))
 }
 
@@ -128,7 +128,7 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
 }
 
 /// Checks a task off, or opens it again.
-action check(t: Task, done: Bool = not t.done) (label: if done { "Complete" } else { "Reopen" }, icon: .check, on: t.done) {
+action check(t: Task, done: Bool = not t.done) (label: if done { "Complete" } else { "Reopen" }, icon: .check, on: t.done, key: "Ctrl+Enter") {
     t.done = done
 }
 
@@ -156,7 +156,7 @@ action release(t: Task) (label: "Unassign", icon: .user) {
 }
 
 /// Files a task under a project.
-action file(t: Task, p: Project) (label: "Move to {p.name}", icon: .folder) {
+action file(t: Task, p: Project) (label: "Move to {p.name}", icon: .folder, key: "Ctrl+Shift+M") {
     t.project = p
 }
 
@@ -167,7 +167,7 @@ action unfile(t: Task) (label: "Move to inbox", icon: .inbox) {
 }
 
 /// Sets the day a task is due by, or clears it.
-action schedule(t: Task, due: Option<Date>) (label: "Set due date", icon: .calendar) {
+action schedule(t: Task, due: Option<Date>) (label: "Set due date", icon: .calendar, key: "Ctrl+D") {
     t.due = due
 }
 
@@ -194,7 +194,7 @@ destructive action remove_step(tasks: Tasks, s: Step) (icon: .trash) {
 }
 
 /// Deletes a task.
-destructive action remove(tasks: Tasks, t: Task) (icon: .trash) {
+destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
     tasks.items.remove(t)
 }
 
@@ -289,7 +289,7 @@ view home(t: Tasks) {
     lens draft: Text
     // The named filters are the places; a priority is picked in search.
     let places = filters(Task).filter(f -> f.toggle and f.key != "priority")
-    let shown = t.items.matching(place)
+    let shown = t.items.matching(place).sort_by(.due)
     let title = places.find(p -> p.query == place)?.label ?? "Tasks"
     ui.NavShell(content_kind: .document, sidebar_title: "Tasks", overview_title: title, overview_count: shown.len()) {
         sidebar: {
@@ -325,7 +325,7 @@ view home(t: Tasks) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks here", .none, .some("list-checks")) { x ->
+                std.rows(shown, "No tasks here", .none, .some("list-checks"), group: .due, closed: .done) { x ->
                     task_row(x)
                 }
             }
@@ -454,7 +454,7 @@ view task_page(t: Task) {
             input(bind: t.title, placeholder: "Title", fill)
         }
         field("Due") {
-            date(bind: t.due)
+            ui.DateField(bind: t.due, optional: true)
         }
         field("Project") {
             ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {

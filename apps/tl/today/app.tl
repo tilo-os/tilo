@@ -41,17 +41,17 @@ view today(t: Today) {
             button(morning_cleanup(todos, notes.notes)) as morning
         }
         grid(min: 22rem) {
-            card(todos, count: todos.items.count(item -> not item.done)) {
+            ui.Card(item: todos, title: meta(todos).title, count: todos.items.count(item -> not item.done)) {
                 list(todos.items.filter(item -> not item.done)) { item ->
                     row(item)
                 }
             }
-            card(notes.notes, count: pinned.len()) {
+            ui.Card(item: notes.notes, title: meta(notes.notes).title, count: pinned.len()) {
                 list(pinned) { n ->
                     row(n)
                 }
             }
-            card(talks, count: talks.len()) {
+            ui.Card(item: talks, title: meta(talks).title, count: talks.len()) {
                 stack(gap: .related) {
                     for x in talks {
                         match x {

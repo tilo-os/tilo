@@ -147,7 +147,7 @@ impl Standalone {
         stage("loading the workspace");
         let workspace = ProfileWorkspace::open(root)?;
         let workspace_id = workspace.workspace();
-        let identity = tilo_identity_host::registry::selected_identity_profile(&workspace_id)?
+        let identity = tilo_identity_host::registry::identity_for_workspace(&workspace_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = identity.principal_id();
         stage("saving the workspace");

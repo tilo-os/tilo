@@ -283,12 +283,14 @@ impl crate::Session {
                     Some((layout, variant)) => (layout.to_owned(), variant.to_owned()),
                     None => (source, String::new()),
                 };
-                self.compositor
-                    .set_keyboard_layout(&tilo_compositor::KeyboardLayout {
+                crate::apply_keyboard(
+                    &mut self.compositor,
+                    &tilo_compositor::KeyboardLayout {
                         layout,
                         variant,
                         ..tilo_compositor::KeyboardLayout::default()
-                    });
+                    },
+                );
             }
             LockEffect::PlayPause | LockEffect::NextTrack | LockEffect::PreviousTrack => {
                 lock_service::transport(asked, &self.shared.readings, &self.shared.services);

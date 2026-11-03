@@ -5,7 +5,7 @@ desktop's own agent socket: the person is asked in trusted chrome, an admitted c
 agent member of the workspace, and `tilo_ls` lists the desktop's running apps, not the
 empty catalogue of a second, standalone runtime. The door serves the path-addressed agent
 tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), which answer in text. The headless proofs
-(`scripts/headless-examples/mcp-live-proof.py`, `agent-seats-proof.py`) cover the protocol
+(`scripts/headless-examples/mcp-live-proof.py`) covers the protocol
 against a compositor with no session around it; only a session has the door.
 
 The client is `guest/mcp_client.py`, run in the guest through `tilo-vm slot exec` (the

@@ -33,6 +33,7 @@ pub struct ReactionsProps {
     /// The emoji reacted with, in the order they were first used: the older form, with `by`,
     /// read while `reactions` is not given.
     #[component(positional)]
+    #[component(data)]
     pub emoji: Vec<String>,
     /// Who reacted with each of `emoji`, in the same order.
     pub by: Vec<Vec<Person>>,

@@ -24,6 +24,7 @@ pub struct MenuItemProps {
     /// The plain key that runs it while the window it belongs to has the keyboard, as the app's
     /// action declared it (`key: "e"`), shown at the row's trailing edge as the keyboard in use
     /// spells it.
+    #[component(data)]
     pub key: Option<String>,
     /// It was chosen.
     #[component(event)]
@@ -74,8 +75,14 @@ impl MenuItemProps {
         } else {
             MenuEntry::new(props.label, move || run())
         };
-        match props.icon {
+        let entry = match props.icon {
             Some(icon) => entry.with_icon(icon),
+            None => entry,
+        };
+        // The app's declared key shows at the row's trailing edge, as the keyboard in use
+        // spells it.
+        match props.key {
+            Some(key) => entry.with_shortcut(key),
             None => entry,
         }
     }

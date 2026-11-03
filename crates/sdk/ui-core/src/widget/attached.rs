@@ -26,6 +26,7 @@ pub struct MenuSeparatorProps {}
 pub struct EmojiBarProps {
     /// The emoji offered, in order: the person's most used first.
     #[component(required, positional)]
+    #[component(data)]
     pub emoji: Vec<String>,
     /// A last button opens the emoji picker, for an emoji not offered.
     pub more: bool,

@@ -44,7 +44,7 @@ use tilo_reference::{ProgramStep, ResourceAt};
 use tilo_service::Wake;
 
 pub use effects::{RunAction, RunsAction};
-pub use service::Served;
+pub use service::{CONVERSATION_VIEW, SHELL_APP, Served};
 pub use tilo_actions::remote::agent_runs as wire;
 
 /// The kind of [`wire::RESOURCE`].
@@ -634,6 +634,29 @@ impl AgentRuns {
     /// # Errors
     /// No such run here, or it ended.
     pub fn record_step(&self, id: &str, step: ProgramStep) -> Result<(), DoorError> {
+        let held = self.held.lock_recover();
+        let agent = held
+            .runs
+            .iter()
+            .find(|run| run.id == id)
+            .ok_or_else(no_run)?
+            .agent_author();
+        drop(held);
+        self.record_step_typed(id, step, &agent)
+    }
+
+    /// Record a program run `id` ran, as `author` wrote it: the agent's, or the person's own
+    /// line in the run's conversation (shell.md §8.1: "One input, two ways in"). A person's
+    /// step is theirs, so the conversation shows it under "You" and never under the agent.
+    ///
+    /// # Errors
+    /// No such run here, or it ended.
+    pub fn record_step_typed(
+        &self,
+        id: &str,
+        step: ProgramStep,
+        author: &str,
+    ) -> Result<(), DoorError> {
         if step.program.trim().is_empty() {
             return Err(DoorError::InvalidArguments(
                 "a step names the program it ran".into(),
@@ -645,8 +668,7 @@ impl AgentRuns {
             if !run.phase.active() {
                 return Err(ended(run));
             }
-            let agent = run.agent_author();
-            run.note(agent, Said::Step(step.bounded()));
+            run.note(author.to_owned(), Said::Step(step.bounded()));
             held.land();
         }
         self.wake();

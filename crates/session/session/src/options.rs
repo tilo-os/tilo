@@ -124,6 +124,11 @@ pub struct Options {
     /// left, and the pictures on it. Without one, the session starts on a
     /// fresh desk and keeps nothing (tests and screenshots).
     pub state: Option<std::path::PathBuf>,
+    /// The desk the shell this session replaced kept on this device
+    /// ([`crate::shell_state_path`]), which the first start that has no desk
+    /// of its own brings over. `None`: there is none to look for (tests and
+    /// screenshots).
+    pub old_desk: Option<std::path::PathBuf>,
     /// Whether the session takes part in the collaboration plane: who is
     /// here in each workspace, over Iroh. Off, this desktop has no
     /// collaborators but its own person.
@@ -348,6 +353,7 @@ impl Default for Options {
             machine: Machine::default(),
             power: None,
             state: None,
+            old_desk: None,
             collab: true,
             fabric: None,
             wake_seams: mount::wake::Seams::default(),

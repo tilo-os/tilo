@@ -150,6 +150,8 @@ pub struct Module {
     /// The arguments of actions views apply that compute from view state, after the row views
     /// in `funcs`: the runtime runs each when the control's event fires.
     pub at_event: Vec<AtEventFn>,
+    /// The words the views show as they wrote them: each a message of the package's catalogue.
+    pub words: Vec<crate::meta::WordMeta>,
 }
 
 /// An argument of an action a view applies that computes from view state (`set(open, not

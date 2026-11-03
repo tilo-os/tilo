@@ -12,7 +12,7 @@ default view samples for Sample
 
 /// The window: the sample's name, its note, and a line about it.
 view samples(s: Sample) {
-    column {
+    stack {
         ui.Text(s.name, role: .heading)
         row(fill) {
             note_line(s)

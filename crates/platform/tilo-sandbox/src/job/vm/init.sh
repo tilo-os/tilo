@@ -52,11 +52,14 @@ die() {
 
 # `t_layer NAME` (in t_layers): the share's layer NAME, below those before it. Each layer is an
 # announced submount, which the kernel mounts on first access: overlayfs refuses an automount
-# point as a lower, so each is looked at first.
+# point as a lower, so each is looked at first. Walking through it (`$d/.`) mounts it, where a
+# stat of `$d` alone would not; listing it would also look up every name in the layer's root,
+# and the host keys the step by what its guest read, so any change to that root (a lockfile)
+# would move the key of every step that has the layer.
 lowers=
 t_layer() {
 	d=/run/t-share/$1
-	ls "$d" >/dev/null 2>&1 || die "the share has no layer $1"
+	[ -d "$d/." ] || die "the share has no layer $1"
 	lowers=${lowers:+$lowers:}$d
 }
 
@@ -131,7 +134,7 @@ t_input() {
 	in_lowers=
 	for name in "$@"; do
 		d=$T/share/$name
-		ls "$d" >/dev/null 2>&1 || die "the share has no layer $name"
+		[ -d "$d/." ] || die "the share has no layer $name"
 		in_lowers=${in_lowers:+$in_lowers:}$d
 	done
 	layer=$S/cow/$(echo "$dst" | tr / _)

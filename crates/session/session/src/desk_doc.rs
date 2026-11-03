@@ -34,6 +34,7 @@ use automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc as _, ScalarValue, Value};
 use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION, desktop_doc};
 
 use crate::desk_migration::Adopted;
+use crate::desk_migration::shell;
 use crate::i18n::{t, t_args};
 
 /// The document beside the rest of this device's state.
@@ -78,6 +79,16 @@ pub(crate) enum StateNotice {
     },
     /// The file exists and could not be read at all.
     Unreadable { path: PathBuf, error: String },
+    /// The desk the shell this session replaced kept was written by a newer
+    /// Tilo than this build understands.
+    OldDeskNewer {
+        path: PathBuf,
+        found: u32,
+        understood: u32,
+    },
+    /// The desk the shell this session replaced kept is there and could not
+    /// be read.
+    OldDeskUnreadable { path: PathBuf, error: String },
 }
 
 impl StateNotice {
@@ -86,6 +97,8 @@ impl StateNotice {
         match self {
             Self::NewerSchema { .. } => t("desk-not-opened-newer-title"),
             Self::Unreadable { .. } => t("desk-not-opened-unreadable-title"),
+            Self::OldDeskNewer { .. } => t("desk-not-opened-old-newer-title"),
+            Self::OldDeskUnreadable { .. } => t("desk-not-opened-old-unreadable-title"),
         }
     }
 
@@ -115,6 +128,25 @@ impl StateNotice {
                     ("error", error.clone().into()),
                 ],
             ),
+            Self::OldDeskNewer {
+                path,
+                found,
+                understood,
+            } => t_args(
+                "desk-not-opened-old-newer-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("found", found.to_string().into()),
+                    ("understood", understood.to_string().into()),
+                ],
+            ),
+            Self::OldDeskUnreadable { path, error } => t_args(
+                "desk-not-opened-old-unreadable-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.clone().into()),
+                ],
+            ),
         }
     }
 
@@ -128,7 +160,10 @@ impl StateNotice {
 /// the screen when it happened: repair mode, support, the next login.
 pub(crate) fn refuse(notice: &StateNotice) {
     let path = match notice {
-        StateNotice::NewerSchema { path, .. } | StateNotice::Unreadable { path, .. } => path,
+        StateNotice::NewerSchema { path, .. }
+        | StateNotice::Unreadable { path, .. }
+        | StateNotice::OldDeskNewer { path, .. }
+        | StateNotice::OldDeskUnreadable { path, .. } => path,
     };
     tracing::error!(path = %path.display(), "{}", notice.explains());
     let beside = PathBuf::from(format!("{}.not-opened", path.display()));
@@ -156,42 +191,69 @@ pub(crate) struct DeskDoc {
     path: Option<PathBuf>,
     /// The desk on disk this build did not open, if any.
     refused: Option<StateNotice>,
+    /// The desk an older Tilo kept on this device, which this one did not
+    /// bring over, if any. The person is told where it still is; this device
+    /// starts on an empty desk and keeps it.
+    notice: Option<StateNotice>,
     /// When how the desk looks was last written, so a drag or a burst of
     /// switches stays one change.
     looks_at: Cell<Option<Instant>>,
 }
 
 impl DeskDoc {
-    /// The document kept under `state`, read into from what older sessions
-    /// kept there ([`crate::desk_migration`]) when there is none yet, and
-    /// empty on a device that has no desk yet. Its changes are written by
-    /// `person`, so the activity names them as this person's own.
-    pub(crate) fn load(state: Option<&Path>, person: &str) -> Self {
+    /// The document kept under `state`, read into from what older Tilos kept
+    /// there ([`crate::desk_migration`]) when it holds no desk yet, and empty
+    /// on a device that has no desk yet. `old_desk` is the desk file the
+    /// shell this session replaced kept, for a device that upgraded and has
+    /// no desk of its own here. Its changes are written by `person`, so the
+    /// activity names them as this person's own.
+    pub(crate) fn load(state: Option<&Path>, old_desk: Option<&Path>, person: &str) -> Self {
         let actor = actor_of_person(person);
         let Some(state) = state else {
-            return Self::keeping(AutoCommit::new(), None, actor);
+            return Self::keeping(AutoCommit::new(), None, actor, None);
         };
         let at = path(state);
-        match read(&at) {
-            Read::Document(doc) => Self::keeping(*doc, Some(at), actor),
-            Read::Refused(notice) => Self::refusing(notice, actor),
+        let mut doc = match read(&at) {
+            Read::Document(doc) => *doc,
+            Read::Refused(notice) => return Self::refusing(notice, actor),
             // No document yet: the desk older sessions kept here moves into
             // one before the files it came from go.
             Read::Nothing => match crate::desk_migration::adopt(state, &at, actor.clone()) {
-                Adopted::Document(doc) => Self::keeping(*doc, Some(at), actor),
-                Adopted::Nothing => Self::keeping(AutoCommit::new(), Some(at), actor),
-                Adopted::Refused(notice) => Self::refusing(notice, actor),
+                Adopted::Document(doc) => *doc,
+                Adopted::Nothing => AutoCommit::new(),
+                Adopted::Refused(notice) => return Self::refusing(notice, actor),
             },
-        }
+        };
+        // A device that ran the shell kept its desk nowhere this session
+        // reads: the first start with no desk of its own brings it over.
+        let notice = match old_desk {
+            Some(old) => {
+                match crate::desk_migration::shell::bring_over(old, &at, &mut doc, actor.clone()) {
+                    shell::Imported::Nothing | shell::Imported::Desk => None,
+                    shell::Imported::Refused(notice) => {
+                        refuse(&notice);
+                        Some(notice)
+                    }
+                }
+            }
+            None => None,
+        };
+        Self::keeping(doc, Some(at), actor, notice)
     }
 
     /// A document this session writes, kept at `path` when it has one.
-    fn keeping(mut doc: AutoCommit, path: Option<PathBuf>, actor: automerge::ActorId) -> Self {
+    fn keeping(
+        mut doc: AutoCommit,
+        path: Option<PathBuf>,
+        actor: automerge::ActorId,
+        notice: Option<StateNotice>,
+    ) -> Self {
         doc.set_actor(actor);
         Self {
             doc: Rc::new(RefCell::new(doc)),
             path,
             refused: None,
+            notice,
             looks_at: Cell::default(),
         }
     }
@@ -206,14 +268,16 @@ impl DeskDoc {
             doc: Rc::new(RefCell::new(doc)),
             path: None,
             refused: Some(notice),
+            notice: None,
             looks_at: Cell::default(),
         }
     }
 
     /// What became of the desk this device kept, with the refusal it did not
-    /// open, if any.
+    /// open, if any: the desk on disk, or why the desk the person left is not
+    /// the one they are looking at.
     pub(crate) fn opened(&self) -> Kept {
-        if let Some(notice) = &self.refused {
+        if let Some(notice) = self.refused.as_ref().or(self.notice.as_ref()) {
             return Kept::Refused(notice.clone());
         }
         match self.tree() {

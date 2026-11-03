@@ -4,6 +4,7 @@
 
 pub use collab_types::scope;
 
+pub mod preface;
 pub mod video;
 pub mod voice;
 
@@ -13,12 +14,21 @@ pub mod tls;
 #[cfg(feature = "relay")]
 pub mod carrier;
 
+/// What a native device presents to be admitted to a scope.
+#[cfg(feature = "relay")]
+pub mod grant;
+
 /// The carrier over a direct iroh connection, beside the browser's
 /// WebTransport one.
 #[cfg(feature = "native")]
 pub mod native;
 
-#[cfg(feature = "relay")]
+/// The client half of the carrier (present a grant, run `moq-lite`), which
+/// a page runs too: it needs no runtime of its own.
+#[cfg(feature = "plane")]
+pub mod admit;
+
+#[cfg(feature = "plane")]
 pub mod live;
 
 #[cfg(feature = "relay")]
@@ -32,6 +42,11 @@ mod authority;
 
 #[cfg(feature = "relay")]
 pub mod client;
+
+/// One participant's sealed session in one scope, sealed under the scope's
+/// channel keys.
+#[cfg(feature = "relay")]
+pub mod plane;
 
 /// `at + age`, or `at` when the clock cannot represent the sum: an
 /// immediately expired deadline fails closed instead of panicking.

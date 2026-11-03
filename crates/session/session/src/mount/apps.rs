@@ -129,6 +129,13 @@ impl Apps {
         state.environment.session_bus = session_bus;
     }
 
+    /// The render node of the GPU the compositor draws on: an app the
+    /// person granted `gpu` is pinned to it, as it is pinned to the same
+    /// driver, instead of choosing whichever GPU wgpu offers it.
+    pub fn set_render_node(&self, node: Option<PathBuf>) {
+        self.state.borrow_mut().render_node = node;
+    }
+
     /// The session's launch records: each app started from here on is
     /// written into them, so its connection to the session's services is
     /// admitted for the launch that made it.

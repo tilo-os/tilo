@@ -728,7 +728,7 @@ mod tests {
         );
         assert_eq!(
             area.menu().items().first().and_then(MenuItem::shortcut),
-            Some(&crate::platform::Shortcut::command("T"))
+            Some(&crate::platform::Shortcut::from("Ctrl+T"))
         );
         area.choose(0);
         assert_eq!(chosen.get(), 7);

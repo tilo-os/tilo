@@ -304,26 +304,54 @@ d-i3cueozg = Undo send~present
 d-4hds3dwy = Answer~present
 
 d-5wix2354 = Compose
+    .w-to = To { $to }
 
 d-7rcrynvm = Mail
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings
 
 d-4fjgzcq6 = Unified
+    .w-all-accounts = All accounts
+    .w-all-inboxes = All inboxes
+    .w-all-mail = All mail
+    .w-labels = Labels
+    .w-nothing-here = Nothing here
+    .w-no-conversation-selected = No conversation selected
 
 d-gka45our = Mailboxes
+    .w-all-mail = All mail
+    .w-labels = Labels
+    .w-no-conversation-selected = No conversation selected
 
 d-zp2cy2sc = Inbox
+    .w-nothing-here = Nothing here
 
 d-jgdzx3la = Thread list
+    .w-nothing-here = Nothing here
 
 d-u43u7z6w = Thread row
 
 d-77noqogh = Draft row
 
 d-bbuecgsi = Conversation
+    .w-reply-to = Reply to { $subject }
+    .w-reply = Reply
 
 d-n2xgxnbw = Message
+    .w-reply = Reply
+    .w-reply-all = Reply all
+    .w-forward = Forward
+    .w-to = to { $to }
+    .w-hide-quoted-text = Hide quoted text
+    .w-show-quoted-text = Show quoted text
+    .w-attached = Attached
 
 d-oqpazwvc = Editor
+    .w-sending = Sending
+    .w-it-goes-in-a-moment-take = It goes in a moment. Take it back if you need to.
+    .w-undo-send = Undo send
+    .w-name-example-org = name@example.org
+    .w-subject = Subject
+    .w-write-your-message = Write your message
 
 d-4fjgzcq6~row0 = Unified for l
 
