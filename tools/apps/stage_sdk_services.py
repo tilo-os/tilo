@@ -12,10 +12,11 @@ import tomllib
 
 
 # The identity service is part of the runtime interface and speaks its one
-# version, the one os/usr/share/tilo/system-interfaces.toml serves
-# (docs/architecture/compatibility.md; tools/tests/test_stage_sdk_services.py
-# holds the two equal).
-IDENTITY_REQUIREMENT = "optional@14"
+# version, read from os/usr/share/tilo/system-interfaces.toml so a bump of the
+# runtime interface can never leave fresh apps asking for the old one
+# (docs/architecture/compatibility.md).
+SYSTEM_INTERFACES = Path(__file__).resolve().parents[2] / "os/usr/share/tilo/system-interfaces.toml"
+IDENTITY_REQUIREMENT = f"optional@{tomllib.loads(SYSTEM_INTERFACES.read_text())['interfaces']['runtime']}"
 
 
 def stage(manifest: Path) -> None:

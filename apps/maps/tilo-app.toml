@@ -67,7 +67,7 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@16"
 tilo-fs = "optional@16"
-shell-ui = "optional@20"
+shell-ui = "optional@21"
 
 [entrypoint]
 bin             = "bin/maps"
