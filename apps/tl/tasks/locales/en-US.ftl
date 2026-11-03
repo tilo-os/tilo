@@ -126,7 +126,7 @@ d-u7a3fue4 = Quick add
     .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`.
 
 d-rs3ubifz = New task
-    .doc = Starts a task in the inbox: one to type into, or one under the title a program or an agent gives it. The entry is how a person says what the task is.
+    .doc = Starts a task in the inbox: one to type into, or one under the title a program or an agent gives it.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
