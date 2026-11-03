@@ -15,6 +15,15 @@
 //! * [`Repeat`] is the small preset set a picker cycles through ("Every
 //!   week", …) and the canonical rule text for each.
 //!
+//! Expansion itself is the [`rrule`] crate's: this crate owns the stored text
+//! and asks that engine for the dates, so a series agrees with every other
+//! RFC 5545 implementation instead of with a second engine of our own. The one
+//! thing the engine cannot do is start a query in the middle of a series — it
+//! always expands from `DTSTART` — so [`Rule`] moves a rule without day
+//! filters forward by whole periods and hands the engine what is left of its
+//! `COUNT`: a monthly view of a series seeded in 1996 costs its window, not
+//! the thirty years before it.
+//!
 //! Occurrences keep their authored wall time: [`zone`] resolves a wall time to
 //! an instant with one cross-device policy — a fold takes the earlier instant,
 //! a gap advances to the first valid minute — so a 09:00 series stays at
@@ -28,22 +37,29 @@
 pub mod zone;
 
 use std::fmt::Write as _;
+use std::ops::ControlFlow;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc, Weekday};
+use rrule::{Frequency, NWeekday, RRule, RRuleSet, Tz};
 
 pub use zone::{Resolution, canonical_zone, normalize_wall, wall_to_utc};
 
 /// A rule this crate accepts produces a date within any 400-year span (the
 /// Gregorian leap cycle), so a search that walks further has run past the end
-/// of the series. It only bounds unbounded searches; window expansion is
-/// bounded by the window the caller asked for.
+/// of the series. It only bounds a search for the next date; window expansion
+/// is bounded by the window the caller asked for.
 const SEARCH_DAYS: i64 = 146_100;
+
+/// How many counted periods a skip-ahead may pass over looking for a month or
+/// a year that holds the seed's day: 29 February skips three years, the 31st
+/// at most one month.
+const SKIPPED_PERIODS: usize = 32;
 
 #[cfg(test)]
 thread_local! {
-    /// The days [`Rule::occurrences`] has stepped through on this thread, so
-    /// its cost can be pinned to the window it was asked for.
-    static DAYS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The dates [`Rule`] has taken from the engine on this thread, so window
+    /// expansion's cost can be pinned to the window it was asked for.
+    static DATES_TAKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// One `FREQ` value this crate expands. RFC 5545's sub-daily frequencies are
@@ -312,44 +328,6 @@ impl Rule {
         self
     }
 
-    /// Whether `date` is one of the original dates this rule produces from
-    /// `seed`, ignoring `UNTIL`, `COUNT` and exclusions. `date` must not be
-    /// before `seed`.
-    #[must_use]
-    pub fn matches(&self, seed: NaiveDate, date: NaiveDate) -> bool {
-        let interval = i64::from(self.interval());
-        match self.freq {
-            Freq::Daily => {
-                date.signed_duration_since(seed)
-                    .num_days()
-                    .rem_euclid(interval)
-                    == 0
-                    && self.day_selected(seed, date)
-            }
-            Freq::Weekly => {
-                self.week_selected(seed, date)
-                    && if self.by_day.is_empty() {
-                        date.weekday() == seed.weekday()
-                    } else {
-                        self.by_day.contains(&date.weekday())
-                    }
-                    && self.day_selected(seed, date)
-            }
-            Freq::Monthly => {
-                months_between(seed, date).rem_euclid(interval) == 0
-                    && self.day_selected(seed, date)
-            }
-            Freq::Yearly => {
-                i64::from(date.year())
-                    .saturating_sub(i64::from(seed.year()))
-                    .rem_euclid(interval)
-                    == 0
-                    && date.month() == seed.month()
-                    && self.day_selected(seed, date)
-            }
-        }
-    }
-
     /// The rule's dates within `[from, to]`, ascending, without duplicates.
     ///
     /// `UNTIL` and `COUNT` bound the series, exclusions remove dates from it.
@@ -357,36 +335,23 @@ impl Rule {
     #[must_use]
     pub fn occurrences(&self, seed: NaiveDate, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
         let last = self.until.map_or(to, |until| until.min(to));
-        if last < from {
-            return Vec::new();
-        }
-        // The walk covers the window, not the series: a counted rule needs the
-        // ordinal of the window's first date, which `count_before` works out
-        // without stepping through the years before it.
-        let mut date = from.max(seed);
-        let mut ordinal = if self.count.is_some() {
-            u32::try_from(self.count_before(seed, date)).unwrap_or(u32::MAX)
-        } else {
-            0
-        };
         let mut out = Vec::new();
-        while date <= last {
-            #[cfg(test)]
-            DAYS_WALKED.with(|walked| walked.set(walked.get().saturating_add(1)));
-            if self.matches(seed, date) {
-                ordinal = ordinal.saturating_add(1);
-                if self.count.is_some_and(|count| ordinal > count) {
-                    break;
-                }
-                if date >= from && !self.exdates.contains(&date) {
-                    out.push(date);
-                }
-            }
-            let Some(next) = date.checked_add_signed(Duration::days(1)) else {
-                break;
-            };
-            date = next;
+        if last < from {
+            return out;
         }
+        let Some((start, count)) = self.skip_to(seed, from) else {
+            return out;
+        };
+        walk(self.engine(start, count, true), from, |date| {
+            if date > last {
+                return ControlFlow::Break(());
+            }
+            out.push(date);
+            if date == last {
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        });
         out
     }
 
@@ -394,28 +359,20 @@ impl Rule {
     /// series has ended. Excluded dates are stepped over.
     #[must_use]
     pub fn next_on_or_after(&self, seed: NaiveDate, date: NaiveDate) -> Option<NaiveDate> {
-        let mut current = date.max(seed);
-        let mut ordinal = if self.count.is_some() {
-            u32::try_from(self.count_before(seed, current)).unwrap_or(u32::MAX)
-        } else {
-            0
-        };
-        for _ in 0..SEARCH_DAYS {
-            if self.until.is_some_and(|until| current > until) {
-                return None;
-            }
-            if self.matches(seed, current) {
-                ordinal = ordinal.saturating_add(1);
-                if self.count.is_some_and(|count| ordinal > count) {
-                    return None;
-                }
-                if current >= date && !self.exdates.contains(&current) {
-                    return Some(current);
-                }
-            }
-            current = current.checked_add_signed(Duration::days(1))?;
+        let horizon = date.checked_add_signed(Duration::days(SEARCH_DAYS))?;
+        let last = self.until.map_or(horizon, |until| until.min(horizon));
+        if last < date {
+            return None;
         }
-        None
+        let (start, count) = self.skip_to(seed, date)?;
+        let mut found = None;
+        walk(self.engine(start, count, true), date, |day| {
+            if day <= last {
+                found = Some(day);
+            }
+            ControlFlow::Break(())
+        });
+        found
     }
 
     /// The first date of the series after `after`.
@@ -457,19 +414,28 @@ impl Rule {
     ///
     /// Arithmetic for the presets a picker writes, so a counted series stays
     /// as cheap to show as an unbounded one however old it is; a rule with
-    /// `BYDAY` or `BYMONTHDAY` filters of its own steps through the dates.
+    /// `BYDAY` or `BYMONTHDAY` filters of its own is counted by the engine,
+    /// whose filters do not divide into the frequency's steps.
     #[must_use]
     pub fn count_before(&self, seed: NaiveDate, date: NaiveDate) -> u64 {
         if date <= seed {
             return 0;
         }
+        if !self.by_day.is_empty() || !self.by_month_day.is_empty() {
+            let mut count = 0_u64;
+            walk(self.engine(seed, None, false), seed, |day| {
+                if day >= date {
+                    return ControlFlow::Break(());
+                }
+                count = count.saturating_add(1);
+                ControlFlow::Continue(())
+            });
+            return count;
+        }
         let interval = i64::from(self.interval());
         // The dates before `date` are the seed plus every `interval`th step
         // below it, so their count is the distance rounded up.
         let steps_before = |steps: i64| u64::try_from(ceil_div(steps, interval)).unwrap_or(0);
-        if !self.by_day.is_empty() || !self.by_month_day.is_empty() {
-            return self.count_before_by_walking(seed, date);
-        }
         match self.freq {
             Freq::Daily => steps_before(date.signed_duration_since(seed).num_days()),
             Freq::Weekly => u64::try_from(ceil_div(
@@ -482,61 +448,123 @@ impl Rule {
         }
     }
 
-    /// The dates of a filtered rule, stepped day by day. Only rules the
-    /// presets never write reach this: their filters do not divide into the
-    /// frequency's steps.
-    fn count_before_by_walking(&self, seed: NaiveDate, date: NaiveDate) -> u64 {
-        let mut count = 0_u64;
-        let mut day = seed;
-        while day < date {
-            if self.matches(seed, day) {
-                count = count.saturating_add(1);
-            }
-            let Some(next) = day.checked_add_signed(Duration::days(1)) else {
-                break;
-            };
-            day = next;
+    /// Where, and with how much `COUNT` left, this rule starts when only the
+    /// dates on or after `from` are asked for; `None` once the series has run
+    /// out before `from`.
+    ///
+    /// A rule without day filters steps forward by whole periods, so a counted
+    /// series costs its window rather than the years since its seed. A
+    /// filtered rule ("every weekday") keeps its seed, whose dates the engine
+    /// has to walk to apply the filter.
+    fn skip_to(&self, seed: NaiveDate, from: NaiveDate) -> Option<(NaiveDate, Option<u32>)> {
+        if from <= seed || !self.by_day.is_empty() || !self.by_month_day.is_empty() {
+            return Some((seed, self.count));
         }
-        count
-    }
-
-    /// Whether the rule's day filters accept `date`: an explicit list wins,
-    /// and without one only a monthly or yearly rule is pinned to the seed's
-    /// day of the month — a daily or weekly one fires on every selected day.
-    fn day_selected(&self, seed: NaiveDate, date: NaiveDate) -> bool {
-        if !self.by_day.is_empty() && !self.by_day.contains(&date.weekday()) {
-            return false;
-        }
-        if self.by_month_day.is_empty() {
-            return !matches!(self.freq, Freq::Monthly | Freq::Yearly) || date.day() == seed.day();
-        }
-        let day_of_month = i64::from(date.day());
-        let span = i64::from(days_in_month(date));
-        self.by_month_day.iter().any(|entry| {
-            let wanted = i64::from(*entry);
-            if wanted > 0 {
-                day_of_month == wanted
-            } else {
-                day_of_month == span.saturating_add(wanted).saturating_add(1)
-            }
-        })
-    }
-
-    /// Whether `date` falls in a counted week of a `WEEKLY` rule. Weeks start
-    /// on Monday (RFC 5545's default `WKST`), and the seed's own week is the
-    /// first: a rule the seed itself starts mid-week keeps counting from that
-    /// week, so every later week is whole.
-    fn week_selected(&self, seed: NaiveDate, date: NaiveDate) -> bool {
-        let lead = i64::from(seed.weekday().num_days_from_monday());
-        let Some(week_start) = seed.checked_sub_signed(Duration::days(lead)) else {
-            return false;
+        let Some(start) = self.period_at_or_after(seed, from) else {
+            return Some((seed, self.count));
         };
-        date.signed_duration_since(week_start)
-            .num_days()
-            .div_euclid(7)
-            .rem_euclid(i64::from(self.interval()))
-            == 0
+        let Some(count) = self.count else {
+            return Some((start, None));
+        };
+        // Every date of the series before the window has spent its place in
+        // the count, exclusions aside, which is exactly how `COUNT` counts.
+        let spent = u32::try_from(self.count_before(seed, start)).unwrap_or(u32::MAX);
+        Some((
+            start,
+            Some(count.checked_sub(spent).filter(|left| *left > 0)?),
+        ))
     }
+
+    /// The first date of this rule on or after `from`, reached by whole
+    /// `INTERVAL` steps from `seed`. Only a rule without day filters is moved
+    /// this way: its dates are exactly the period steps.
+    fn period_at_or_after(&self, seed: NaiveDate, from: NaiveDate) -> Option<NaiveDate> {
+        let interval = i64::from(self.interval());
+        let days = from.signed_duration_since(seed).num_days();
+        match self.freq {
+            Freq::Daily => {
+                let steps = ceil_div(days, interval).checked_mul(interval)?;
+                seed.checked_add_signed(Duration::days(steps))
+            }
+            Freq::Weekly => {
+                let weeks = ceil_div(days, interval.checked_mul(7)?).checked_mul(interval)?;
+                seed.checked_add_signed(Duration::days(weeks.checked_mul(7)?))
+            }
+            Freq::Monthly => month_at_or_after(seed, from, interval),
+            Freq::Yearly => year_at_or_after(seed, from, interval),
+        }
+    }
+
+    /// The set this rule expands to from `seed`, as RFC 5545's engine sees it.
+    ///
+    /// `count` stands in for [`Rule::count`], so a skip-ahead hands over what
+    /// is left of it. Without `limits` the engine drops `UNTIL` and the
+    /// exclusions, which is how counting the authored dates sees them.
+    fn engine(&self, seed: NaiveDate, count: Option<u32>, limits: bool) -> Option<RRuleSet> {
+        let start = midnight(seed)?;
+        let mut rule = RRule::new(match self.freq {
+            Freq::Daily => Frequency::Daily,
+            Freq::Weekly => Frequency::Weekly,
+            Freq::Monthly => Frequency::Monthly,
+            Freq::Yearly => Frequency::Yearly,
+        })
+        .interval(u16::try_from(self.interval()).unwrap_or(u16::MAX))
+        // RFC 5545's default `WKST`, which is the week every counted series
+        // here is counted from.
+        .week_start(Weekday::Mon)
+        .by_weekday(
+            self.by_day
+                .iter()
+                .map(|day| NWeekday::Every(*day))
+                .collect(),
+        )
+        .by_month_day(self.by_month_day.clone());
+        if let Some(count) = count {
+            rule = rule.count(count);
+        }
+        if limits && let Some(until) = self.until {
+            rule = rule.until(midnight(until)?);
+        }
+        let mut set = rule.build(start).ok()?;
+        if limits {
+            set = set.set_exdates(
+                self.exdates
+                    .iter()
+                    .filter_map(|date| midnight(*date))
+                    .collect(),
+            );
+        }
+        // A rule that matches nothing would otherwise expand for ever; the
+        // engine's own limit ends it instead.
+        Some(set.limit())
+    }
+}
+
+/// Applies `visit` to the dates `set` yields from `from` on, in order, until it
+/// asks to stop.
+fn walk(
+    set: Option<RRuleSet>,
+    from: NaiveDate,
+    mut visit: impl FnMut(NaiveDate) -> ControlFlow<()>,
+) {
+    let Some(set) = set else {
+        return;
+    };
+    for at in &set {
+        #[cfg(test)]
+        DATES_TAKEN.with(|taken| taken.set(taken.get().saturating_add(1)));
+        let date = at.date_naive();
+        if date >= from && visit(date).is_break() {
+            return;
+        }
+    }
+}
+
+/// Midnight UTC on `date`: the instant a date-only series expands at, so every
+/// peer derives the same dates whatever its host zone says.
+fn midnight(date: NaiveDate) -> Option<DateTime<Tz>> {
+    date.and_hms_opt(0, 0, 0)
+        .map(|at| at.and_utc().with_timezone(&Tz::UTC))
 }
 
 /// [`Rule::count_before`] for yearly rules, which skip the years that have no
@@ -562,6 +590,48 @@ fn years_before(seed: NaiveDate, date: NaiveDate, interval: i64) -> u64 {
         offset = offset.saturating_add(interval);
     }
     count
+}
+
+/// The first counted year at or after `from` that holds the seed's month and
+/// day, which skips the years that have no 29 February.
+fn year_at_or_after(seed: NaiveDate, from: NaiveDate, interval: i64) -> Option<NaiveDate> {
+    let mut step = ceil_div(
+        i64::from(from.year()).saturating_sub(i64::from(seed.year())),
+        interval,
+    );
+    for _ in 0..SKIPPED_PERIODS {
+        let year = seed
+            .year()
+            .checked_add(i32::try_from(step.checked_mul(interval)?).ok()?)?;
+        if let Some(date) =
+            NaiveDate::from_ymd_opt(year, seed.month(), seed.day()).filter(|date| *date >= from)
+        {
+            return Some(date);
+        }
+        step = step.checked_add(1)?;
+    }
+    None
+}
+
+/// The first counted month at or after `from` that holds the seed's day: a
+/// month without it (the 31st, 29 February) carries no occurrence, so the step
+/// moves on to the next counted month.
+fn month_at_or_after(seed: NaiveDate, from: NaiveDate, interval: i64) -> Option<NaiveDate> {
+    let mut step = ceil_div(months_between(seed, from), interval);
+    for _ in 0..SKIPPED_PERIODS {
+        let total = i64::from(seed.month0()).checked_add(step.checked_mul(interval)?)?;
+        let year = seed
+            .year()
+            .checked_add(i32::try_from(total.div_euclid(12)).ok()?)?;
+        let month = u32::try_from(total.rem_euclid(12)).ok()?.checked_add(1)?;
+        if let Some(date) =
+            NaiveDate::from_ymd_opt(year, month, seed.day()).filter(|date| *date >= from)
+        {
+            return Some(date);
+        }
+        step = step.checked_add(1)?;
+    }
+    None
 }
 
 /// [`Rule::count_before`] for monthly rules, which skip the months that have
@@ -805,25 +875,6 @@ fn months_between(seed: NaiveDate, date: NaiveDate) -> i64 {
         .saturating_add(i64::from(date.month()).saturating_sub(i64::from(seed.month())))
 }
 
-/// Days in `date`'s month.
-fn days_in_month(date: NaiveDate) -> u32 {
-    const DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let base = DAYS
-        .get(usize::try_from(date.month0()).unwrap_or(0))
-        .copied()
-        .unwrap_or(31);
-    if date.month() == 2 && is_leap_year(date.year()) {
-        29
-    } else {
-        base
-    }
-}
-
-fn is_leap_year(year: i32) -> bool {
-    let year = i64::from(year);
-    year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1040,12 +1091,25 @@ mod tests {
             ]
         );
         assert_eq!(until.next_after(date(2026, 6, 1), date(2026, 6, 5)), None);
+
+        // A series that ran out long before the window shows nothing, and
+        // asking it for its next date walks off the end rather than on.
+        let spent = Repeat::Daily.rule(1, None, Some(10), &[]).unwrap();
+        assert_eq!(
+            spent.occurrences(date(1996, 6, 1), date(2026, 9, 1), date(2026, 9, 30)),
+            [] as [NaiveDate; 0]
+        );
+        assert_eq!(
+            spent.next_on_or_after(date(1996, 6, 1), date(2026, 9, 1)),
+            None
+        );
     }
 
     #[test]
     fn count_before_matches_the_dates_the_rule_walks() {
         // A counted series must know how many dates came before the window
-        // without walking them; this checks the arithmetic against the walk.
+        // without walking them, so the skip-ahead can spend them; this checks
+        // that arithmetic against the dates the engine produces.
         let cases = [
             ("FREQ=DAILY", date(2026, 6, 1)),
             ("FREQ=DAILY;INTERVAL=3", date(2026, 6, 1)),
@@ -1081,26 +1145,59 @@ mod tests {
     }
 
     /// A month view asks each shown day for its occurrences; a counted series
-    /// begun decades ago must cost the window it shows, not its age.
+    /// begun decades ago must cost the window it shows, not its age — and
+    /// show the same dates as the series expanded from its seed.
     #[test]
     fn a_counted_series_costs_its_window_not_its_age() {
         let weekly = Repeat::Weekly.rule(1, None, Some(10_000), &[]).unwrap();
         let grid = |offset: i64| date(2026, 9, 28) + Duration::days(offset);
-        let shown_and_walked = |seed: NaiveDate| {
-            DAYS_WALKED.with(|walked| walked.set(0));
+        let shown_and_taken = |seed: NaiveDate| {
+            DATES_TAKEN.with(|taken| taken.set(0));
             let shown: Vec<NaiveDate> = (0..42)
                 .map(grid)
                 .filter(|day| weekly.occurrences(seed, *day, *day).contains(day))
                 .collect();
-            (shown, DAYS_WALKED.with(std::cell::Cell::get))
+            (shown, DATES_TAKEN.with(std::cell::Cell::get))
         };
         // Mondays both: 1 June 2026 and 3 June 1996.
-        let (young, young_cost) = shown_and_walked(date(2026, 6, 1));
-        let (old, old_cost) = shown_and_walked(date(1996, 6, 3));
+        let (young, young_cost) = shown_and_taken(date(2026, 6, 1));
+        let (old, old_cost) = shown_and_taken(date(1996, 6, 3));
         assert_eq!(young.len(), 6);
         assert_eq!(old, young);
-        assert_eq!(old_cost, young_cost);
-        assert_eq!(young_cost, 42, "one day stepped per day asked");
+        assert_eq!(old_cost, young_cost, "the window, not the age");
+        assert_eq!(young_cost, 42, "one date taken per day asked");
+
+        // The skip-ahead only moves where expansion starts: the dates in the
+        // window are the ones the series itself produces there.
+        let (from, to) = (date(2026, 9, 1), date(2026, 12, 31));
+        let mut compared = 0;
+        for (text, seed) in [
+            ("FREQ=DAILY;INTERVAL=3;COUNT=4000", date(1996, 3, 4)),
+            ("FREQ=WEEKLY;COUNT=1600;EXDATE=20261005", date(1996, 6, 3)),
+            ("FREQ=MONTHLY;COUNT=400", date(1996, 1, 31)),
+            ("FREQ=YEARLY;COUNT=40", date(1996, 2, 29)),
+            ("FREQ=WEEKLY;INTERVAL=3;UNTIL=20261231", date(1996, 6, 5)),
+            ("FREQ=MONTHLY;INTERVAL=2;UNTIL=20270101", date(1996, 1, 31)),
+        ] {
+            let rule = parse(text);
+            let mut made_from_the_seed = Vec::new();
+            walk(rule.engine(seed, rule.count(), true), seed, |day| {
+                if day > to {
+                    return ControlFlow::Break(());
+                }
+                if day >= from {
+                    made_from_the_seed.push(day);
+                }
+                ControlFlow::Continue(())
+            });
+            assert_eq!(
+                rule.occurrences(seed, from, to),
+                made_from_the_seed,
+                "{text} from {seed}"
+            );
+            compared += made_from_the_seed.len();
+        }
+        assert!(compared > 50, "the windows compare real dates");
     }
 
     #[test]

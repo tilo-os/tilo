@@ -20594,6 +20594,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
+ "rrule",
  "tilo-resource",
  "workspace-hack",
 ]

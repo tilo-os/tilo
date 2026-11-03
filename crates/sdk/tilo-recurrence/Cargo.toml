@@ -15,6 +15,10 @@ chrono = { workspace = true, features = ["std"] }
 chrono-tz = "0.10.4"
 # A repeat is a value in a resource: its variants are the stored names.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# The RFC 5545 expansion. This crate owns the stored rule text and asks this
+# engine for the dates, so a series agrees with every other iCalendar
+# implementation instead of with a second expansion of our own.
+rrule = "0.14"
 
 [lints]
 workspace = true
