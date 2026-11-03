@@ -159,6 +159,9 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
             .map(|named| named.id.clone())
     };
     match &field.role {
+        Some(FieldRole::Parent) => {
+            schema.role = crate::schema::FieldRole::Parent;
+        }
         Some(FieldRole::Repeats { date }) => {
             if let Some(date) = id_of(date) {
                 schema = schema.repeating(date);
@@ -177,7 +180,45 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
         }
         _ => {}
     }
+    // A derived key's expression names the type's fields; the index reads and writes them by id.
+    if let Some(derived) = &field.derived {
+        schema.derived = Some(derived_ids(derived, &id_of));
+    }
     schema
+}
+
+/// A derived key's expression with its field names as the ids the record holds them under.
+fn derived_ids(
+    expr: &tilolang::derived::Derived<String>,
+    id_of: &dyn Fn(&str) -> Option<String>,
+) -> tilolang::derived::Derived<String> {
+    use tilolang::derived::Derived;
+    match expr {
+        Derived::Bool(b) => Derived::Bool(*b),
+        Derived::Int(i) => Derived::Int(*i),
+        Derived::Field(name) => Derived::Field(id_of(name).unwrap_or_else(|| name.clone())),
+        Derived::Not(inner) => Derived::Not(Box::new(derived_ids(inner, id_of))),
+        Derived::And(parts) => Derived::And(parts.iter().map(|p| derived_ids(p, id_of)).collect()),
+        Derived::Or(parts) => Derived::Or(parts.iter().map(|p| derived_ids(p, id_of)).collect()),
+        Derived::Compare { op, left, right } => Derived::Compare {
+            op: *op,
+            left: Box::new(derived_ids(left, id_of)),
+            right: Box::new(derived_ids(right, id_of)),
+        },
+        Derived::Children => Derived::Children,
+        Derived::Count { holds } => Derived::Count {
+            holds: Box::new(derived_ids(holds, id_of)),
+        },
+        Derived::All { holds } => Derived::All {
+            holds: Box::new(derived_ids(holds, id_of)),
+        },
+        Derived::Any { holds } => Derived::Any {
+            holds: Box::new(derived_ids(holds, id_of)),
+        },
+        Derived::Above { holds } => Derived::Above {
+            holds: Box::new(derived_ids(holds, id_of)),
+        },
+    }
 }
 
 /// The kind of a column holding a value of `ty`, and the cases it can hold when they are

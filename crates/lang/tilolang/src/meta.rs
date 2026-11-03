@@ -375,6 +375,10 @@ pub struct FieldMeta {
     /// Option<std.Repeat> (repeats: due)`), naming the type's own fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<crate::types::FieldRole>,
+    /// What the store derives it from, for a `derive` key ([`crate::derived`]): a value no
+    /// record holds, worked out from the collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<crate::derived::Derived<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

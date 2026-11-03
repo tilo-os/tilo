@@ -539,3 +539,73 @@ fn nothing_writes_what_a_type_held_previously() {
         ["E115"]
     );
 }
+
+const NESTED: &str = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    /// Whether it and the items under it are done.\n    derive folded: Bool = done and children.all(folded)\n    derive subtasks: Int = children.count\n    derive subtasks_done: Int = children.count(done)\n}\n";
+
+#[test]
+fn nothing_writes_a_derived_key() {
+    // A derived key is the collection's, worked out by the store's index: an action writes the
+    // facts it is worked out from, never the value.
+    let assigned = "action check(i: Item) {\n    i.folded = true\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{NESTED}{assigned}")),
+        ["E119"]
+    );
+    let made = "action add(o: Shelf, title: Text) {\n    o.items.insert(Item(title: title, done: false, folded: true))\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{NESTED}type Shelf {{\n    items: Collection<Item>\n}}\n{made}"
+        )),
+        ["E119"]
+    );
+}
+
+#[test]
+fn a_derived_key_reads_the_keys_declared_before_it() {
+    // Folding is worked out from finishing: a key reads itself and the keys over it, so what it
+    // reads is worked out whatever order the collection's index walks the items in.
+    let forward = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive folded: Bool = finished and parent.all(folded)\n    derive finished: Bool = done\n}\n";
+    assert_eq!(crate::common::codes(forward), ["E119"]);
+    let over = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive finished: Bool = done\n    derive folded: Bool = finished and parent.all(folded)\n}\n";
+    assert_eq!(crate::common::codes(over), Vec::<String>::new());
+}
+
+#[test]
+fn a_derived_key_reads_the_items_under_an_item_or_above_it_not_both() {
+    // Each direction is walked its own way; one key cannot be worked out from both.
+    let both = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive busy: Bool = children.all(done) and parent.all(done)\n}\n";
+    let errors = crate::common::compile_with(&format!("app t.x \"X\"\n{both}\n"), &[])
+        .err()
+        .unwrap_or_else(|| panic!("a key reading both ways is refused"));
+    let said = errors
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(said.contains("a key reads one way"), "{said}");
+}
+
+#[test]
+fn a_comparison_is_of_two_counts() {
+    let flags = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive has_steps: Bool = children.count > done\n}\n";
+    assert_eq!(crate::common::codes(flags), ["E119"]);
+    let counts = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive has_steps: Bool = children.count > 0\n    derive all_done: Bool = children.count(done) == children.count\n}\n";
+    assert_eq!(crate::common::codes(counts), Vec::<String>::new());
+}
+
+#[test]
+fn a_derived_key_that_reads_the_items_under_it_says_which_field_they_stand_under() {
+    let no_parent = "type Note {\n    title: Text\n    done: Bool\n    derive folded: Bool = done and children.all(done)\n}\n";
+    let errors = crate::common::compile_with(&format!("app t.x \"X\"\n{no_parent}\n"), &[])
+        .err()
+        .unwrap_or_else(|| panic!("a type without a parent field cannot read the items under it"));
+    let said = errors
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        said.contains("(parent)"),
+        "the error says which field the items stand under: {said}"
+    );
+}

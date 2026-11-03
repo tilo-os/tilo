@@ -97,8 +97,9 @@ impl Inner {
         self.changed_within(&reached);
     }
 
-    /// Derive one write into the overlay.
-    pub(super) fn derive_write(&mut self, write: &LocalWrite) {
+    /// Derive one write into the overlay, naming what it derived to whoever reads: a value the
+    /// index works out may move on an item the write did not name.
+    pub(super) fn derive_write(&mut self, write: &mut LocalWrite) {
         let Some(mirror) = self.mirror.clone() else {
             return;
         };
@@ -114,6 +115,13 @@ impl Inner {
         let mut derive = crate::index::derive::Derive::new(&mirror, &self.index, &self.nested);
         if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
             tracing::warn!(app = write.app, %error, "a change was not indexed");
+        }
+        for keys in derive.derived_keys.into_values() {
+            for key in keys {
+                if !write.touched.contains(&key) {
+                    write.touched.push(key);
+                }
+            }
         }
     }
 

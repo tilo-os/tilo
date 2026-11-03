@@ -14,6 +14,7 @@ use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, doc_of};
 use super::columns::{
     self, reversed, scope_entry, scope_list, scope_prefix, type_entry, type_list,
 };
+use super::derived;
 use super::lists::Entry;
 use super::reflect::{self, CREATED, Stamp, UPDATED};
 use super::{CYCLES, IN, IndexError, KEY, TYPE, Writer};
@@ -379,6 +380,13 @@ pub struct Derive<'d> {
     /// The records it derived anew whole while deriving changes, where a change could not be
     /// taken in item by item: everything read of them may have changed.
     pub wholes: BTreeSet<DocId>,
+    /// The derived keys a change moved, per document: a value a view reads as a field of an
+    /// item whose own field the change did not name, so whoever reads is told of it
+    /// ([`crate::index::derived`]).
+    pub derived_keys: BTreeMap<DocId, Vec<FieldKey>>,
+    /// The items of the record being derived whole, with their types: what the derived keys
+    /// are worked out over once it is.
+    whole_items: Option<Vec<(String, &'static TypeSchema)>>,
 }
 
 /// The collection an item is in, and its order key: where its columns' entries go.
@@ -408,7 +416,7 @@ struct Whole<'a> {
 
 /// The value of `field` of the resource at `path` as the sink holds it, its default when it
 /// holds none; a collection as the [`FieldValue::Counter`] of its items.
-fn field_value(
+pub(super) fn field_value(
     sink: &mut impl Sink,
     path: &str,
     field: &FieldSchema,
@@ -437,6 +445,8 @@ impl<'d> Derive<'d> {
             bulk: None,
             moved: BTreeMap::new(),
             wholes: BTreeSet::new(),
+            derived_keys: BTreeMap::new(),
+            whole_items: None,
         }
     }
 
@@ -577,8 +587,11 @@ impl<'d> Derive<'d> {
                     items: &items,
                     resolved: &resolved,
                 };
+                self.whole_items = Some(Vec::new());
                 self.tree(sink, doc, Some(&obj), schema, (&whole, None))?;
                 sink.prune(doc)?;
+                let visited = self.whole_items.take().unwrap_or_default();
+                self.derive_whole(sink, &visited)?;
             }
             _ => sink.doc(doc, None)?,
         }
@@ -598,6 +611,9 @@ impl<'d> Derive<'d> {
         (whole, holder): (&Whole<'_>, Option<&str>),
     ) -> Result<Vec<(String, Vec<String>)>, IndexError> {
         let schema = self.own_fields(sink, path, obj, schema)?;
+        if let Some(items) = self.whole_items.as_mut() {
+            items.push((path.to_owned(), schema));
+        }
         for field in schema
             .fields
             .iter()
@@ -625,6 +641,10 @@ impl<'d> Derive<'d> {
         let schema = lookup(&ty).unwrap_or(schema);
         for field in &schema.fields {
             if matches!(field.kind, MergeKind::Collection | MergeKind::Record) {
+                continue;
+            }
+            // A derived key is worked out from the collection, not read from the record.
+            if field.derived.is_some() {
                 continue;
             }
             let value = self.value(obj, field);
@@ -1048,6 +1068,8 @@ impl<'d> Derive<'d> {
                             sink.replace(&member_list(&path, &field.id), Vec::new())?;
                         }
                         self.arrive(sink, (&path, own), &place)?;
+                        self.derive_one(sink, &path, own, Pass::All)?;
+                        self.place_under(sink, &path, own)?;
                         self.done.insert(path);
                     }
                     (Some(before), Some(place)) => {
@@ -1211,9 +1233,31 @@ impl<'d> Derive<'d> {
                 }
             }
         }
+        // The items under an item that goes count it no more; one whose parent goes with it
+        // needs nothing, as its parent's list goes with it.
+        let mut above: BTreeSet<String> = BTreeSet::new();
+        for resource in &found {
+            let Some(schema) = sink.text(resource, TYPE)?.and_then(|ty| lookup(&ty)) else {
+                continue;
+            };
+            let Some(parent) = schema.parent() else {
+                continue;
+            };
+            let Some(stands) = derived::parent_of(sink, resource, parent)? else {
+                continue;
+            };
+            if found.contains(&stands) {
+                continue;
+            }
+            derived::standing(sink, resource, parent, Some(&stands), false)?;
+            above.insert(stands);
+        }
         for resource in found.into_iter().rev() {
             sink.remove(&resource)?;
             self.done.insert(resource);
+        }
+        for stands in above {
+            self.derive_item_and_up(sink, &stands)?;
         }
         Ok(())
     }
@@ -1236,11 +1280,51 @@ impl<'d> Derive<'d> {
         let Some((obj, schema)) = self.locate(path) else {
             return Ok(());
         };
+        let parent = schema.parent();
+        let was = match parent {
+            Some(parent) => sink.field(path, parent)?,
+            None => None,
+        };
         let own = self.own_fields(sink, path, obj.as_ref(), schema)?;
         let (holder, field, key) = &placed;
         self.index_columns(sink, path, own, Some((holder, field, key)), None)?;
+        if let Some(parent) = parent {
+            let before = was.as_ref().and_then(derived::parent_in);
+            let now = sink
+                .field(path, parent)?
+                .as_ref()
+                .and_then(derived::parent_in);
+            derived::reparent(sink, path, parent, before.as_deref(), now.as_deref())?;
+            for above in [before.as_deref(), now.as_deref()].into_iter().flatten() {
+                self.derive_item_and_up(sink, above)?;
+            }
+        }
+        self.derive_item_and_up(sink, path)?;
         self.done.insert(path.to_owned());
         Ok(())
+    }
+
+    /// The item at `path`, new to the index, stands under the item its parent field names: that
+    /// item counts it from now, as do the items above it.
+    fn place_under(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        schema: &'static TypeSchema,
+    ) -> Result<(), IndexError> {
+        let Some(parent) = schema.parent() else {
+            return Ok(());
+        };
+        let Some(above) = derived::parent_of(sink, path, parent)? else {
+            return Ok(());
+        };
+        // The list is the parent's, and holds the item whether or not the parent is indexed
+        // yet: one that arrives after its items reads them when it does.
+        derived::standing(sink, path, parent, Some(&above), true)?;
+        if sink.text(&above, TYPE)?.is_none() {
+            return Ok(());
+        }
+        self.derive_item_and_up(sink, &above)
     }
 
     /// The field `field` of the resource at `path` changed.
@@ -1259,6 +1343,10 @@ impl<'d> Derive<'d> {
             // A collection is its items' placements, which are derived as they are written.
             return Ok(());
         }
+        if spec.derived.is_some() {
+            // Worked out from the collection, never from the record.
+            return Ok(());
+        }
         let now = self.value(obj.as_ref(), spec);
         let before = sink.field(path, field)?;
         if before.as_ref() == Some(&now) {
@@ -1274,8 +1362,160 @@ impl<'d> Derive<'d> {
                 .map(|(holder, coll, key)| (holder.as_str(), coll.as_str(), key.as_str()));
             self.index_columns(sink, path, schema, scope, Some(field))?;
         }
+        // The values derived from the field: on the item, and up the items it stands under.
+        if schema.parent() == Some(field) {
+            let before = before.as_ref().and_then(derived::parent_in);
+            let now = derived::parent_in(&now);
+            derived::reparent(sink, path, field, before.as_deref(), now.as_deref())?;
+            for above in [before.as_deref(), now.as_deref()].into_iter().flatten() {
+                self.derive_item_and_up(sink, above)?;
+            }
+        } else if derived::reads(schema, field) {
+            self.derive_item_and_up(sink, path)?;
+        }
         Ok(())
     }
+
+    /// Work out again the values the type `schema` derives for the item at `path`, those of the
+    /// `pass` it asks for, and answer whether one of them reads the items above the item.
+    fn derive_one(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        schema: &'static TypeSchema,
+        pass: Pass,
+    ) -> Result<bool, IndexError> {
+        let mut above = false;
+        for field in &schema.fields {
+            let Some(expr) = &field.derived else {
+                continue;
+            };
+            let reach = derived::reach(schema, field);
+            let worked = match pass {
+                Pass::All => true,
+                Pass::Under => reach == derived::Reach::Under,
+                Pass::Above => reach == derived::Reach::Above,
+            };
+            if !worked {
+                continue;
+            }
+            let now = derived::eval(sink, path, schema, expr)?;
+            let before = field_value(sink, path, field)?;
+            if now.is(&before) {
+                continue;
+            }
+            sink.put_field(path, &field.id, &now.value())?;
+            self.derived_keys
+                .entry(tilolang_runtime::store::doc_of(path).to_owned())
+                .or_default()
+                .push(FieldKey {
+                    resource: path.to_owned(),
+                    field: field.id.clone(),
+                });
+            above |= reach == derived::Reach::Above;
+            // A column reading the value, in the collection the item is in and across the
+            // workspace.
+            if sink.keeps_columns() && schema.columns.iter().any(|c| columns::reads(c, &field.id)) {
+                let held = placed_in(sink, path)?;
+                let scope = held
+                    .as_ref()
+                    .map(|(holder, coll, key)| (holder.as_str(), coll.as_str(), key.as_str()));
+                self.index_columns(sink, path, schema, scope, Some(&field.id))?;
+            }
+        }
+        Ok(above)
+    }
+
+    /// Work out again the values the item at `path` derives, and those of the items it stands
+    /// under, which read what it holds; a key reading the items above the item moves every item
+    /// under it with it, from the one that stands highest.
+    fn derive_item_and_up(&mut self, sink: &mut impl Sink, path: &str) -> Result<(), IndexError> {
+        let mut moved: Option<String> = None;
+        for at in derived::chain(sink, path)? {
+            let Some(schema) = derived::type_of(sink, &at)? else {
+                continue;
+            };
+            // The chain comes deepest first, so the last one an item above it reads stands
+            // highest, and its items under it are read from it.
+            if self.derive_one(sink, &at, schema, Pass::All)? {
+                moved = Some(at);
+            }
+        }
+        match moved {
+            Some(at) => self.derive_below(sink, &at),
+            None => Ok(()),
+        }
+    }
+
+    /// Work out again the values the items under `path` derive from `path` and the items above
+    /// it: one that did not move leaves the items under it as they were, as a key reading the
+    /// items above an item that is not finished is answered by the next one that is.
+    fn derive_below(&mut self, sink: &mut impl Sink, path: &str) -> Result<(), IndexError> {
+        let Some(schema) = derived::type_of(sink, path)? else {
+            return Ok(());
+        };
+        for child in derived::children(sink, path, schema)? {
+            let Some(child_schema) = derived::type_of(sink, &child)? else {
+                continue;
+            };
+            if self.derive_one(sink, &child, child_schema, Pass::Above)? {
+                self.derive_below(sink, &child)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Work out the values a record derived whole holds, over every item it visited: the items
+    /// under each item are read from the parent field each item names, the values that read
+    /// them worked out from the deepest item up, and then the values that read the items above
+    /// an item, from the top item down.
+    fn derive_whole(
+        &mut self,
+        sink: &mut impl Sink,
+        visited: &[(String, &'static TypeSchema)],
+    ) -> Result<(), IndexError> {
+        for (path, schema) in visited {
+            let Some(parent) = schema.parent() else {
+                continue;
+            };
+            let Some(above) = derived::parent_of(sink, path, parent)? else {
+                continue;
+            };
+            if sink.text(&above, TYPE)?.is_none() {
+                continue;
+            }
+            if let Some(id) = id_of(path) {
+                self.add(
+                    sink,
+                    derived::children_list(&above, parent),
+                    derived::child_entry(id),
+                )?;
+            }
+        }
+        let mut order: Vec<(usize, &String, &'static TypeSchema)> =
+            Vec::with_capacity(visited.len());
+        for (path, schema) in visited {
+            order.push((derived::depth(sink, path)?, path, schema));
+        }
+        order.sort_by_key(|(depth, ..)| std::cmp::Reverse(*depth));
+        for (_, path, schema) in &order {
+            self.derive_one(sink, path, schema, Pass::Under)?;
+        }
+        order.sort_by_key(|(depth, ..)| *depth);
+        for (_, path, schema) in order {
+            self.derive_one(sink, path, schema, Pass::Above)?;
+        }
+        Ok(())
+    }
+}
+
+/// Which of a type's derived keys a pass works out: those that read the items under an item,
+/// those that read the items above it, or every one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pass {
+    Under,
+    Above,
+    All,
 }
 
 /// Whether an item may be placed in another's collection.

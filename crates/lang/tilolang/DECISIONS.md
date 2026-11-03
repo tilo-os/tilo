@@ -168,6 +168,48 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   replaced) are the description's, with no per-widget code, and a view's state binds like a
   field.
 
+## Derived keys
+
+- **Resources store facts; the index derives.** A value that follows from other records (a
+  branch finished, a parent's done and total children) is not a field anyone writes: it is a
+  `derive` key on the type, and the store's index works it out from the collection, keeps it
+  where a view reads fields from, and moves it with every change of what it reads. A stored
+  copy diverges under concurrent edits — two people checking the last two steps of a branch
+  would each write their own answer, and neither would see the branch finished — and needs a
+  migration for every record written before it, one that can only guess.
+- **What a key may read.** `derive name: Type = expr` declares one, a line in a type body, its
+  `Type` a `Bool` or an `Int`: the type's own fields of those types, another key the same type
+  derives, and `not`, `and`, `or`, comparisons of two counts (`>`, `>=`, `<`, `<=`, `==`,
+  `!=`), `children.count`, `children.count(x)`, `children.all(x)`, `children.any(x)` and
+  `parent.all(x)`. `children` are the items naming the item in its parent field, `parent` the
+  item it names there, so a type whose keys read either marks that field:
+  `parent: Option<Item> (parent) = .none` (E119 says so). Nothing else is derived from other
+  records: text, a day, a record or arithmetic on counts cannot be a key.
+- **A key reads one way.** It reads the items under an item or the items above it, never both
+  (E119): the two are worked out by walks in opposite directions, and one value cannot be
+  settled by both. Reading one direction takes two keys — `finished` downward, `folded`
+  upward — which is what makes a branch fold when its last steps are checked and unfold when
+  one is opened.
+- **A key reads itself and the keys declared before it.** The item's own keys are worked out in
+  the order the type declares them, so `folded: Bool = finished and parent.all(folded)` reads
+  `finished` declared over it. A key that reads one declared below it is E119: it would read a
+  value not worked out yet.
+- **Nothing writes a key.** It is a field of its type: a view reads it as any other, and search
+  filters, sorts and groups by it. An action that assigns it, or a record made with one, is
+  E119 — the change is derived again wherever it is applied, so a written value would be a
+  second answer to the same question.
+- **A key is worked out where its items change.** The index keeps each item's children and the
+  chain it stands in. A change derives the item, walks the items above it deepest first, and
+  then — from the highest whose value moved — the items under it, stopping where a value no
+  longer moves; a key that reads neither is not recomputed for it, so a title keystroke costs
+  nothing. A write of the parent field moves the item between two lists and derives the old
+  and the new chain; a whole-record write derives every item it visits, the items under each
+  before the items above.
+- **Readers are told.** A derived value is named to the views that read it and, in a change
+  another replica sent, as that item's own change (`Derive::derived_keys`): a branch that folds
+  because someone checked its last step elsewhere is redrawn there, though the change named
+  only the step.
+
 ## Packages of several files
 
 - **A package is a directory.** Every `.tl` file directly in it is part of the one module

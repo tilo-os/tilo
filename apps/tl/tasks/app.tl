@@ -32,11 +32,6 @@ enum RowPlace {
 type Task {
     title: Text (title)
     done: Bool = false
-    /// Whether it folds away in a list: done, and so is every task it is under, so a task done
-    /// with under one still open stays where it stands, checked and muted under its task. Kept
-    /// where being done or being under another task changes, so a list puts the tasks done with
-    /// last without reading the tasks each row is under.
-    folded: Bool = false
     /// The day it is due by, if any.
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
@@ -52,7 +47,18 @@ type Task {
     section: Option<Section> = .none
     priority: Priority = .none
     /// The task it is a subtask of; none for a task of its own. Tasks nest to any depth.
-    parent: Option<Task> = .none
+    parent: Option<Task> (parent) = .none
+    /// Whether it is finished: done itself, and so is every task under it. A task with steps is
+    /// finished when its steps are, so the branch two people finish at once is finished once
+    /// both changes are in, though neither change named it.
+    derive finished: Bool = children.all(finished) and (done or children.count > 0)
+    /// Whether it stands in a list's Done tail: finished, and so is every task it is under, so
+    /// a step done with under a task still open stays where it stands, checked and muted.
+    derive folded: Bool = finished and parent.all(folded)
+    /// How many tasks are under it, and how many of those are done ("1/3"): the two counts a
+    /// row and the page's outline show.
+    derive subtasks: Int = children.count
+    derive subtasks_done: Int = children.count(done)
 
     search {
         filter "Inbox" = project == .none (icon: .inbox)
@@ -66,6 +72,8 @@ type Task {
         hide at
         hide section
         hide folded
+        hide subtasks
+        hide subtasks_done
     }
 }
 
@@ -140,19 +148,6 @@ migration action adopt_steps(tasks: Tasks) {
             tasks.items.insert(Task(title: s.title, done: s.done))
         }
     }
-    // What the record held before folding was kept: each branch read from its top down.
-    for t in tasks.items.filter(x -> x.parent == .none) {
-        fold_over(t)
-    }
-}
-
-/// Reads a record a version without folding wrote, each branch from its top down: the tasks
-/// done with every task above them done again stand in the Done tail, where that version read
-/// the tasks each row is under.
-migration action derive_fold(tasks: Tasks) {
-    for t in tasks.items.filter(x -> x.parent == .none) {
-        fold_over(t)
-    }
 }
 
 /// Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
@@ -189,16 +184,6 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
     tasks.projects.insert(Project(name: "New project"))
 }
 
-/// Sets whether a task and the tasks under it fold away, each reading the task it is under,
-/// which is read already: a task folds when it is done, with every task it is under done too,
-/// and none under a task still open folds.
-internal action fold_over(t: Task) {
-    t.folded = t.done and (t.parent?.folded ?? true)
-    for x in tasks.items.filter(k -> k.parent == .some(t)) {
-        fold_over(x)
-    }
-}
-
 /// Checks a task off with every task under it, or opens it again with the tasks it is under.
 action check(t: Task, done: Bool = not t.done) (
     label: if done { "Complete" } else { "Reopen" },
@@ -211,15 +196,11 @@ action check(t: Task, done: Bool = not t.done) (
         for x in tasks.items.descendants(t, .parent) {
             x.done = true
         }
-        fold_over(t)
     } else {
-        let above = tasks.items.ancestors(t, .parent)
-        for a in above {
+        // Everything above the one opened is open again.
+        for a in tasks.items.ancestors(t, .parent) {
             a.done = false
         }
-        // Everything under the one opened that stood highest loses its fold: the task under it
-        // is open now.
-        fold_over(above.last() ?? t)
     }
 }
 
@@ -284,7 +265,6 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
     if not moved.done and tasks.items.ancestors(moved, .parent).any(a -> a.done) {
         check(moved, false)
     }
-    fold_over(moved)
 }
 
 /// Moves a task under the task just over it, as Tab does in an outline: one change, undone as
@@ -305,7 +285,6 @@ action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Shift+Tab") 
         t.parent = p.parent
         tasks.items.move(t, after: p)
     }
-    fold_over(t)
 }
 
 /// Deletes a task and its subtasks.
@@ -321,11 +300,9 @@ destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
 /// with it, and a task done with a step still open under it stays.
 destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
     require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
-    // Offered while something is done: whether a branch is finished is read once it runs, where
-    // the tasks under each done one are walked.
-    let gone = tasks.items.filter(
-        x -> x.done and tasks.items.descendants(x, .parent).all(d -> d.done),
-    )
+    // A branch is finished when it and everything under it is done, which the list's index
+    // works out for each task: nothing here walks what is under one.
+    let gone = tasks.items.filter(x -> x.finished)
     for x in gone {
         tasks.items.remove(x)
     }
@@ -408,14 +385,9 @@ fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
 }
 
 /// How many of a task's subtasks are done, of all of them ("1/3"): its row in a list and its
-/// node in the page's outline read the one count of the one set of subtasks.
+/// node in the page's outline read the two counts the list's index keeps.
 fn subtask_count(t: Task) -> Option<Text> {
-    let kids = tasks.items.filter(k -> k.parent == .some(t))
-    if kids.is_empty() {
-        .none
-    } else {
-        .some("{kids.count(k -> k.done)}/{kids.len()}")
-    }
+    if t.subtasks == 0 { .none } else { .some("{t.subtasks_done}/{t.subtasks}") }
 }
 
 /// The tasks of a project, in order.
@@ -799,10 +771,6 @@ scenario "a busy week" -> Task {
         Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08),
     )
     tasks.items.insert(Task(title: "Set up the redirects", project: launch, done: true))
-    // What a list of them reads: which tasks stand done with, every task above them done too.
-    for t in tasks.items.filter(x -> x.parent == .none) {
-        fold_over(t)
-    }
     call
 }
 
@@ -841,10 +809,6 @@ scenario "a task's subtasks" -> Task {
         ),
     )
     tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
-    // What a list of them reads: which tasks stand done with, every task above them done too.
-    for t in tasks.items.filter(x -> x.parent == .none) {
-        fold_over(t)
-    }
     copy
 }
 
@@ -853,10 +817,6 @@ scenario "all done" {
     tasks.items.insert(Task(title: "Passports", done: true))
     tasks.items.insert(Task(title: "Chargers", done: true))
     tasks.items.insert(Task(title: "Sun cream", done: true))
-    // What a list of them reads: which tasks stand done with, every task above them done too.
-    for t in tasks.items.filter(x -> x.parent == .none) {
-        fold_over(t)
-    }
 }
 
 /// A move a week away, on its project's board: a lane per stage, the tasks in each.

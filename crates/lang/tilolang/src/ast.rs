@@ -112,8 +112,25 @@ pub struct TypeDecl {
     /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
     pub origin: Option<Ident>,
     pub fields: Vec<FieldDecl>,
+    /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives
+    /// from the collection, which no record keeps ([`crate::derived`]).
+    pub derives: Vec<DerivedDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
+    pub span: Span,
+}
+
+/// `derive folded: Bool = finished and parent.all(folded)` in a type: a key the store derives
+/// from the collection rather than the record keeping it. Code reads it as a field; nothing writes
+/// it, as the store keeps it in step with every change ([`crate::derived`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DerivedDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    /// The type of the value: `Bool` or `Int`.
+    pub ty: TypeExpr,
+    pub expr: Expr,
     pub span: Span,
 }
 

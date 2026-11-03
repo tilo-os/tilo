@@ -51,6 +51,10 @@ pub enum FieldRole {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         who: Option<String>,
     },
+    /// `(parent)`: the field holding the item this one stands under (`Option<Task>`), the one
+    /// a type's items nest by and its derived keys read the items above and under it through
+    /// ([`crate::derived`]).
+    Parent,
 }
 
 impl FieldRole {
@@ -63,6 +67,7 @@ impl FieldRole {
             Self::Previously => "previously",
             Self::Repeats { .. } => "repeats",
             Self::Reminds { .. } => "reminds",
+            Self::Parent => "parent",
         }
     }
 
@@ -71,7 +76,7 @@ impl FieldRole {
     #[must_use]
     pub fn text(&self) -> String {
         match self {
-            Self::Title | Self::Body | Self::Previously => self.word().to_owned(),
+            Self::Title | Self::Body | Self::Previously | Self::Parent => self.word().to_owned(),
             Self::Repeats { date } => format!("repeats: {date}"),
             Self::Reminds { date, time, who } => {
                 let mut text = format!("reminds: {date}");
@@ -104,6 +109,12 @@ impl FieldRole {
     #[must_use]
     pub const fn is_previously(&self) -> bool {
         matches!(self, Self::Previously)
+    }
+
+    /// Whether the field holds the item this one stands under (`(parent)`).
+    #[must_use]
+    pub const fn is_parent(&self) -> bool {
+        matches!(self, Self::Parent)
     }
 }
 

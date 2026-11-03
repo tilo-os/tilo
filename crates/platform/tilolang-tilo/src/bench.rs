@@ -2621,6 +2621,7 @@ mod tests {
                 default: Json::Null,
                 composite: true,
                 role: FieldRole::Plain,
+                derived: None,
             }],
             columns: Vec::new(),
             origin: None,

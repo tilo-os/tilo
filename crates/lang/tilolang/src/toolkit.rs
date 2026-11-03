@@ -61,6 +61,7 @@ pub fn enums() -> Vec<crate::resolve::EnumInfo> {
                             .as_ref()
                             .map(|value| default_json(&field.ty, value)),
                         role: None,
+                        derived: None,
                     }
                 })
                 .collect::<Vec<_>>()

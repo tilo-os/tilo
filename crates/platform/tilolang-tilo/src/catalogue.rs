@@ -543,6 +543,7 @@ impl Reader<'_> {
             doc: field.title.clone(),
             default: None,
             role: None,
+            derived: None,
         })
     }
 

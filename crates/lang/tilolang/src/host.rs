@@ -424,6 +424,7 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
         doc: doc.to_string(),
         default: None,
         role: None,
+        derived: None,
     }
 }
 
@@ -483,6 +484,7 @@ pub fn host_meta() -> PackageMeta {
                         doc: (*doc).to_string(),
                         default: None,
                         role: None,
+                        derived: None,
                     })
                     .collect(),
                 search: crate::meta::SearchMeta::default(),

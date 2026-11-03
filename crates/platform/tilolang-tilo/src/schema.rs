@@ -98,6 +98,11 @@ pub struct FieldSchema {
     /// [`FieldRole`]. The language's `title` and `body` roles name the record and are the
     /// field search reads it by; a type declares at most one of each.
     pub role: FieldRole,
+    /// What the store works the field out from, for a `derive` key
+    /// (`derive folded: Bool = done and children.all(folded)`): a value no record holds, read
+    /// as any other field and written by nothing ([`tilolang::derived`]). Its expression names
+    /// the type's fields by id.
+    pub derived: Option<tilolang::derived::Derived<String>>,
 }
 
 /// What a field is to the platform, as the package declares it (`(title)`, `(body)`,
@@ -126,6 +131,9 @@ pub enum FieldRole {
         time: Option<String>,
         who: Option<String>,
     },
+    /// The field holds the item this one stands under (`parent: Option<Task> (parent)`): the
+    /// item a type's items nest by, which its derived keys read the items under it through.
+    Parent,
 }
 
 /// What a type publishes for its repeat (`(repeats: due)`): the field holding the rule and the
@@ -162,6 +170,7 @@ impl FieldSchema {
             default: serde_json::Value::Null,
             composite: false,
             role: FieldRole::Plain,
+            derived: None,
         }
     }
 
@@ -327,6 +336,16 @@ impl TypeSchema {
     #[must_use]
     pub fn field(&self, id: &str) -> Option<&FieldSchema> {
         self.fields.iter().find(|field| field.id == id)
+    }
+
+    /// The field holding the item this type's items stand under (`(parent)`), by id: the one
+    /// their derived keys read the items under each item through.
+    #[must_use]
+    pub fn parent(&self) -> Option<&str> {
+        self.fields.iter().find_map(|field| match field.role {
+            FieldRole::Parent => Some(field.id.as_str()),
+            _ => None,
+        })
     }
 
     /// The column of the field `id`.

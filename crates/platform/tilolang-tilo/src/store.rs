@@ -868,7 +868,7 @@ impl TiloStore {
                 placed: changed.placed.clone(),
             }
         };
-        let (moved, wholes) = inner.derive_all(&reached, Some((&from, &ends)));
+        let (moved, wholes, derived) = inner.derive_all(&reached, Some((&from, &ends)));
         // The overlay was the old transaction's, and what an origin derives was written onto
         // the mirror again: derive it over the indexes as the record's changes left them, so a
         // later write into one of its collections sees the items it holds, at their places.
@@ -890,6 +890,11 @@ impl TiloStore {
         }
         for doc in wholes {
             docs.insert(doc, Vec::new());
+        }
+        // A value the index derives may have moved on an item the change did not name: a
+        // branch that folds because its last task was checked elsewhere.
+        for (doc, keys) in derived {
+            docs.entry(doc).or_default().extend(keys);
         }
         for fields in docs.values_mut() {
             fields.sort();
@@ -1594,11 +1599,12 @@ impl Inner {
         &mut self,
         reached: &Reached,
         since: Since<'_>,
-    ) -> (ItemTouches, BTreeSet<DocId>) {
+    ) -> (ItemTouches, BTreeSet<DocId>, BTreeMap<DocId, Vec<FieldKey>>) {
         let mut moved = ItemTouches::new();
         let mut wholes = BTreeSet::new();
+        let mut derived: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
         let Some(mirror) = self.mirror.clone() else {
-            return (moved, wholes);
+            return (moved, wholes, derived);
         };
         let apps: Vec<AppId> = self
             .apps
@@ -1634,14 +1640,22 @@ impl Inner {
                 derive.changes(writer, &app, reached)?;
                 derive.versions(writer, &app, ends)?;
                 writer.set_heads(&seen)?;
-                Ok((derive.reads, derive.moved, derive.wholes))
+                Ok((
+                    derive.reads,
+                    derive.moved,
+                    derive.wholes,
+                    derive.derived_keys,
+                ))
             });
             match written {
-                Ok((reads, app_moved, app_wholes)) => {
+                Ok((reads, app_moved, app_wholes, app_derived)) => {
                     for (key, ids) in app_moved {
                         moved.entry(key).or_default().extend(ids);
                     }
                     wholes.extend(app_wholes);
+                    for (doc, keys) in app_derived {
+                        derived.entry(doc).or_default().extend(keys);
+                    }
                     self.count(reads);
                     if let Some(held) = self.apps.get_mut(&app) {
                         held.heads = seen;
@@ -1656,7 +1670,7 @@ impl Inner {
                 Err(_) => self.rebuild(&app),
             }
         }
-        (moved, wholes)
+        (moved, wholes, derived)
     }
 
     /// The steps each listed collection took from the indexes `before` (with the overlay
@@ -1795,7 +1809,7 @@ impl Inner {
                 .ok_or_else(|| StoreError::Backend("the workspace record is not loaded".into()))?;
             apply_edits(mirror, app, std::slice::from_ref(&edit), &seed)
         };
-        let write = LocalWrite {
+        let mut write = LocalWrite {
             app: app.to_owned(),
             edit,
             seed,
@@ -1807,7 +1821,7 @@ impl Inner {
         };
         let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
         // Derived either way: a failed edit may have written part of itself.
-        self.derive_write(&write);
+        self.derive_write(&mut write);
         self.touch(&write);
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {

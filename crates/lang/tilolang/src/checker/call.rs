@@ -704,6 +704,18 @@ impl Checker<'_> {
                 let _ = self.expr(&a.value, None);
                 continue;
             }
+            if f.derived.is_some() {
+                self.err(
+                    "E119",
+                    a.value.span,
+                    format!(
+                        "`{}.{}` is a derived key: the store works it out from the collection, and nothing writes it. Leave it out of what a `{}` is made with",
+                        key.name, f.name, key.name
+                    ),
+                );
+                let _ = self.expr(&a.value, None);
+                continue;
+            }
             if f.ty.is_container() {
                 self.err(
                     "E033",

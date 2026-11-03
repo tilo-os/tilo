@@ -1,9 +1,9 @@
 //! The canonical printer: syntax tree to the one fixed text projection.
 
 use crate::ast::{
-    ActionOpt, AppHeader, Arg, BinOp, Block, Expr, ExprKind, FieldDecl, Ident, Item, Module, Param,
-    Pattern, SearchBlock, SearchEntryKind, Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind, UiCall,
-    UiKind, UiStmt, UnOp,
+    ActionOpt, AppHeader, Arg, BinOp, Block, DerivedDecl, Expr, ExprKind, FieldDecl, Ident, Item,
+    Module, Param, Pattern, SearchBlock, SearchEntryKind, Stmt, StmtKind, StrPart, TypeExpr,
+    TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
 };
 use crate::diag::Span;
 use crate::lexer::Comment;
@@ -989,8 +989,11 @@ impl Printer<'_> {
                 for f in &t.fields {
                     self.field(f);
                 }
+                for d in &t.derives {
+                    self.derived(d);
+                }
                 if let Some(search) = &t.search {
-                    if !t.fields.is_empty() {
+                    if !t.fields.is_empty() || !t.derives.is_empty() {
                         self.out.push('\n');
                     }
                     self.search(search);
@@ -1132,6 +1135,17 @@ impl Printer<'_> {
             let value = self.ex_at(d, col);
             text.push_str(&format!(" = {value}"));
         }
+        self.line(&text);
+    }
+
+    /// `derive folded: Bool = done and ancestors.all(done)`.
+    fn derived(&mut self, d: &DerivedDecl) {
+        self.docs(&d.doc);
+        self.comments_before(d.span.start);
+        let mut text = format!("derive {}: {}", d.name.name, print_type(&d.ty));
+        let col = self.level * 4 + text.len() + 3;
+        let value = self.ex_at(&d.expr, col);
+        text.push_str(&format!(" = {value}"));
         self.line(&text);
     }
 

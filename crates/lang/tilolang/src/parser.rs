@@ -5,11 +5,11 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
-    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FlowDecl, FnDecl, Ident,
-    Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal,
-    RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt,
-    StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
-    UseDecl, VariantDecl, ViewDecl,
+    DefaultViewDecl, DerivedDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FlowDecl,
+    FnDecl, Ident, Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern,
+    Place, Proposal, RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl,
+    StateLayer, Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind,
+    UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -261,6 +261,16 @@ impl<'a> Parser<'a> {
 
     fn peek_at(&self, n: usize) -> &Tok {
         self.toks.get(self.pos + n).map_or(&Tok::Eof, |t| &t.tok)
+    }
+
+    /// How many doc comments stand before the next token: a declaration is documented by them,
+    /// and reads them itself.
+    fn docs_ahead(&self) -> usize {
+        let mut at = 0;
+        while matches!(self.peek_at(at), Tok::Doc(_) | Tok::Newline) {
+            at += 1;
+        }
+        at
     }
 
     fn span(&self) -> Span {
@@ -953,6 +963,7 @@ impl<'a> Parser<'a> {
         };
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
+        let mut derives = Vec::new();
         let mut search: Option<SearchBlock> = None;
         loop {
             self.skip_nl();
@@ -962,8 +973,11 @@ impl<'a> Parser<'a> {
             if matches!(self.peek(), Tok::Eof) {
                 return self.unexpected("`}` to close the type");
             }
-            if matches!(self.peek(), Tok::Ident(w) if w == "search")
-                && matches!(self.peek_at(1), Tok::LBrace)
+            // What is declared is behind the comment it is documented with, which the
+            // declaration reads.
+            let at = self.docs_ahead();
+            if matches!(self.peek_at(at), Tok::Ident(w) if w == "search")
+                && matches!(self.peek_at(at + 1), Tok::LBrace)
             {
                 match self.search_block() {
                     Ok(block) => {
@@ -974,6 +988,22 @@ impl<'a> Parser<'a> {
                             );
                         } else {
                             search = Some(block);
+                        }
+                    }
+                    Err(Abort) => self.recover_stmt(),
+                }
+                continue;
+            }
+            if matches!(self.peek_at(at), Tok::Ident(w) if w == "derive") {
+                match self.derived() {
+                    Ok(d) => {
+                        derives.push(d);
+                        if !self.eat(&Tok::Comma)
+                            && !matches!(self.peek(), Tok::Newline | Tok::RBrace)
+                        {
+                            let _: PResult<()> =
+                                self.unexpected("a new line, `,` or `}` after the derived key");
+                            self.recover_stmt();
                         }
                     }
                     Err(Abort) => self.recover_stmt(),
@@ -999,7 +1029,32 @@ impl<'a> Parser<'a> {
             name,
             origin,
             fields,
+            derives,
             search,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives from
+    /// the collection, never the record.
+    fn derived(&mut self) -> PResult<DerivedDecl> {
+        let doc = self.docs();
+        let start = self.span();
+        if !matches!(self.bump().tok, Tok::Ident(w) if w == "derive") {
+            return self.unexpected("`derive`");
+        }
+        let node = self.node();
+        let name = self.ident("a name for the derived key")?;
+        self.expect(&Tok::Colon)?;
+        let ty = self.type_expr()?;
+        self.expect(&Tok::Assign)?;
+        let expr = self.expr()?;
+        Ok(DerivedDecl {
+            node,
+            doc,
+            name,
+            ty,
+            expr,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }

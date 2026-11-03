@@ -389,7 +389,39 @@ type Message {
 ```
 
 A named filter reads only the type's own fields and literals (`not done`, `due != .none`,
-`effort > 2`, `tags.len() > 0`), so the index keeps it as fields change. A `std.Identifier`
+`effort > 2`, `tags.len() > 0`), so the index keeps it as fields change.
+
+**Derived keys** (DECISIONS.md, "Derived keys"). A value that follows from the other records of
+a collection is declared on the type, not written: a branch is finished when it and everything
+under it are, a task's row says how many of its subtasks are done. The store's index works it
+out, keeps it where a view reads fields from, and reads, sorts, filters and groups by it as by
+any field; no action writes it.
+
+```
+type Task {
+    title: Text (title)
+    done: Bool = false
+    parent: Option<Task> (parent) = .none     // what the items under it nest by
+    // Finished: done itself, and so is every task under it.
+    derive finished: Bool = children.all(finished) and (done or children.count > 0)
+    // Folded away: finished, and so is every task it is under.
+    derive folded: Bool = finished and parent.all(folded)
+    derive subtasks: Int = children.count
+    derive subtasks_done: Int = children.count(done)
+}
+```
+
+A key is a `Bool` or an `Int`, read from the type's own fields of those types and from
+`children` — the items naming it in its parent field — with `count`, `count(x)`, `all(x)` and
+`any(x)`, from the items above it with `parent.all(x)`, and from two counts compared
+(`children.count > 0`), combined with `not`, `and` and `or`. A key reads one way, the items
+under an item or the items above it, never both: `finished` reads down the steps, `folded`
+reads up the chain. It reads itself and the keys declared before it in the type body. A write
+of one (an assignment, or a record made with one) is refused: two people checking the last two
+steps of a branch at once each derive it from what they hold, and both agree once the changes
+meet.
+
+A `std.Identifier`
 is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com")`, a bare
 `jane@x.com` or `+4930…` taken as `mailto:` or `tel:`; `.scheme` and `.value` read its parts.
 

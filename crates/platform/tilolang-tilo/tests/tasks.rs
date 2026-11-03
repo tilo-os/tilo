@@ -598,11 +598,7 @@ fn a_checklist_written_before_subtasks_opens_as_subtasks() {
     // The same workspace, opened by the version that keeps subtasks.
     let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
     later.host.sync_from(&later.doc);
-    assert_eq!(
-        later.host.migrate(),
-        2,
-        "the checklist migration and the fold of what it made run"
-    );
+    assert_eq!(later.host.migrate(), 1, "the checklist migration runs");
     for done in later.host.take_committed() {
         later.apply(&done.action);
     }
@@ -635,9 +631,14 @@ fn a_checklist_written_before_subtasks_opens_as_subtasks() {
         "a step keeps what it had"
     );
     assert_eq!(
+        read(&later, &tasks[0], "subtasks"),
+        Value::Int(3),
+        "the list counts the steps the migration made tasks under it"
+    );
+    assert_eq!(
         read(&later, &tasks[0], "folded"),
-        Value::Bool(true),
-        "a task done before folding was kept folds as a list of it reads"
+        Value::Bool(false),
+        "and it is not a finished branch: its steps are open"
     );
     assert_eq!(later.host.migrate(), 0, "the migration runs once");
 }
@@ -664,11 +665,7 @@ fn a_step_whose_task_was_removed_becomes_a_task_of_its_own() {
 
     let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
     later.host.sync_from(&later.doc);
-    assert_eq!(
-        later.host.migrate(),
-        2,
-        "the steps migration and the fold of what it made run"
-    );
+    assert_eq!(later.host.migrate(), 1, "the steps migration runs");
     for done in later.host.take_committed() {
         later.apply(&done.action);
     }
@@ -1352,6 +1349,134 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
     );
 }
 
+/// Two people check the last two open steps of a branch at once: the branch folds once both
+/// changes are in, though neither change names the task they are under, and opening one of them
+/// unfolds it again.
+#[test]
+fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
+    let (mut ada, root) = workspace();
+    let post = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Write the launch post")],
+    );
+    ada.commit();
+    for title in ["Outline", "Screenshots"] {
+        call(
+            &ada,
+            "add_subtask",
+            vec![root.clone(), post.clone(), Value::text(title)],
+        );
+        ada.commit();
+    }
+    let outline = task(&ada, "Outline");
+    let screenshots = task(&ada, "Screenshots");
+    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    ben.host.sync_from(&ben.doc);
+    // Each checks one step, neither seeing the other: one step under the task is still open
+    // when each writes, so the branch is not finished in either of them.
+    call(&ada, "check", vec![outline.clone()]);
+    ada.commit();
+    call(&ben, "check", vec![screenshots]);
+    ben.commit();
+    assert_eq!(
+        read(&ada, &post, "folded"),
+        Value::Bool(false),
+        "Ada's copy still has a step open under the task"
+    );
+
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        read(&ada, &post, "folded"),
+        Value::Bool(true),
+        "the branch is finished once both steps are, though neither change named the task"
+    );
+    assert_eq!(
+        read(&ben, &post, "folded"),
+        Value::Bool(true),
+        "and the other copy works it out too, from the changes it took"
+    );
+    // The list the person sees says the same: the finished task stands in the Done tail.
+    let mut view = ada.view(APP);
+    let rows = home_rows(&mut view);
+    let of = |item: &Value| target(item).expect("a task");
+    let at = |rows: &[(String, Option<String>, Option<String>, bool)], item: &Value| {
+        let of = of(item);
+        rows.iter()
+            .position(|(row, _, _, _)| *row == of)
+            .unwrap_or_else(|| panic!("the row of {of}"))
+    };
+    assert!(
+        rows[at(&rows, &post)].3,
+        "the finished branch folds away into the Done group"
+    );
+
+    // Opening one step unfinishes the branch, and the row leaves the tail.
+    call(&ada, "check", vec![outline, Value::Bool(false)]);
+    ada.commit();
+    assert_eq!(
+        read(&ada, &post, "folded"),
+        Value::Bool(false),
+        "a branch with an open step under it does not fold"
+    );
+    let rows = home_rows(&mut view);
+    assert!(
+        !rows[at(&rows, &post)].3,
+        "and its row stands where it was, out of the Done group"
+    );
+}
+
+/// A scenario's branch reads its counts and its fold as soon as the record has it: the index
+/// works the keys out from what the scenario wrote, so no migration runs after a record.
+#[test]
+fn a_scenario_reads_the_keys_of_the_branch_it_stages() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
+    let scenario = loaded[0]
+        .meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "a task's subtasks")
+        .expect("Tasks stages a task's subtasks")
+        .action
+        .clone();
+    // The packages' record holds no tasks yet: the app's root makes them.
+    ada.host.root_of(APP).unwrap();
+    ada.commit();
+    ada.host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .unwrap();
+    ada.commit();
+    let post = task(&ada, "Write the launch post");
+    assert_eq!(
+        read(&ada, &post, "subtasks"),
+        Value::Int(3),
+        "three steps under it"
+    );
+    assert_eq!(
+        read(&ada, &post, "subtasks_done"),
+        Value::Int(1),
+        "one of them done"
+    );
+    assert_eq!(
+        read(&ada, &post, "folded"),
+        Value::Bool(false),
+        "it is not done, so the branch is unfinished"
+    );
+    let outline = task(&ada, "Outline");
+    assert_eq!(
+        read(&ada, &outline, "folded"),
+        Value::Bool(false),
+        "a done task with an open step under it does not fold"
+    );
+    let quotes = task(&ada, "Collect the quotes from the beta testers");
+    assert_eq!(
+        read(&ada, &quotes, "subtasks"),
+        Value::Int(0),
+        "a leaf counts nothing"
+    );
+}
+
 /// Every node of this kind in the drawn view.
 fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
     fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
@@ -1392,11 +1517,17 @@ fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<Str
             Some(Value::Text(count)) => Some(count.clone()),
             _ => None,
         };
+        // A flag prop is the node's 0 or 1.
+        let tail = match item.props.get("tail") {
+            Some(Value::Bool(tail)) => *tail,
+            Some(Value::Int(tail)) => *tail != 0,
+            _ => false,
+        };
         out.push((
             at.target.id_string(),
             item.props.get("parent").and_then(target),
             count,
-            item.props.get("tail") == Some(&Value::Bool(true)),
+            tail,
         ));
     }
     out

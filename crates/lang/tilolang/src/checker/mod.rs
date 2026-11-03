@@ -1029,6 +1029,11 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         }
+        if f.derived.is_some() {
+            self.err("E119", field.span, format!("`{}` is a derived key: the store works it out from the collection, and nothing writes it. Leave it out of what changes", f.name));
+            let _ = self.expr(value, None);
+            return;
+        }
         if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
             && let Some(of) = kind.field(&field.name)
             && !of.people

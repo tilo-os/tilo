@@ -126,6 +126,12 @@ fn fixtures_are_canonical() {
 }
 
 #[test]
+fn a_derived_key_prints_the_way_it_is_written() {
+    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive finished: Bool = children.all(finished) and (done or children.count > 0)\n    derive folded: Bool = finished and parent.all(folded)\n    derive subtasks: Int = children.count\n}\n\nroot Item\n";
+    assert_eq!(print_of(src), src);
+}
+
+#[test]
 fn precedence_and_parentheses_survive() {
     let src = "app t.x \"X\"\n\nfn f(a: Int, b: Int) -> Int {\n    return (a + b) * (a - b) / -(a % b)\n}\n";
     assert_eq!(print_of(src), src);

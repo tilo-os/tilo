@@ -9,6 +9,8 @@ use crate::prims;
 use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
 use std::collections::{HashMap, HashSet};
 
+mod derived;
+
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
     pub name: String,
@@ -19,6 +21,9 @@ pub struct FieldInfo {
     pub default: Option<serde_json::Value>,
     /// What the field is to the platform, from its marker (`(title)`, `(repeats: due)`).
     pub role: Option<crate::types::FieldRole>,
+    /// What the store derives it from, for a `derive` key ([`crate::derived`]): a value no
+    /// record holds.
+    pub derived: Option<crate::derived::Derived<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -518,6 +523,7 @@ impl Env {
             doc: f.doc.clone(),
             default: f.default.clone(),
             role: f.role.clone(),
+            derived: f.derived.clone(),
         };
         for e in &meta.enums {
             self.enums.push(EnumInfo {
@@ -925,6 +931,7 @@ impl Resolver<'_> {
                     doc: String::new(),
                     default: None,
                     role: None,
+                    derived: None,
                 }],
                 search: crate::meta::SearchMeta::default(),
                 holder: true,
@@ -960,6 +967,7 @@ impl Resolver<'_> {
                 fields.push(info);
             }
             self.roles(&t.name.name, t, &mut fields);
+            self.derived_keys(&t.name.name, t, &mut fields, lock);
             self.env.types.push(TypeInfo {
                 key: TypeKey {
                     app: self.env.app.clone(),
@@ -1147,6 +1155,7 @@ impl Resolver<'_> {
                     doc: String::new(),
                     default: None,
                     role: None,
+                    derived: None,
                 });
             }
             let doc = v.doc.join("\n");
@@ -1217,6 +1226,7 @@ impl Resolver<'_> {
             doc: f.doc.join("\n"),
             default,
             role: None,
+            derived: None,
         }
     }
 
@@ -1307,6 +1317,41 @@ impl Resolver<'_> {
                 return None;
             }
             return Some(FieldRole::Previously);
+        }
+        // The item this one stands under: the field its type's items nest by, which its derived
+        // keys read the items above and under it through.
+        if word == "parent" {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!("`(parent)` names no field: it is the `Option<{owner}>` field holding the item this one stands under"),
+                );
+                return None;
+            }
+            if !holds_a(
+                &marked.ty,
+                &Ty::Record(TypeKey {
+                    app: self.env.app.clone(),
+                    name: owner.to_owned(),
+                }),
+            ) {
+                let t = marked.ty.display(&self.env.app);
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!("only an `Option<{owner}>` field is what an `{owner}` stands under; `{}` is {t}. Write `{}: Option<{owner}> (parent) = .none`", marked.name, marked.name),
+                );
+                return None;
+            }
+            if let Some(other) = fields
+                .iter()
+                .find(|x| x.role.as_ref().is_some_and(FieldRole::is_parent))
+            {
+                self.err("E092", marker.span, format!("`{owner}` already has a parent field, `{}`; a type nests by one. Remove `(parent)` from one of them", other.name));
+                return None;
+            }
+            return Some(FieldRole::Parent);
         }
         if matches!(word, "title" | "body") {
             if !marker.args.is_empty() {
