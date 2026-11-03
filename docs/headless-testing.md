@@ -184,17 +184,22 @@ provider/ID with its declared arguments, adding `--wait` so the answer is the
 result and not the admission. To follow a pending receipt, use
 `actions status INVOCATION_ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
-not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
-presented app identity, surface, frame count, and rendering errors for foreign
-Wayland clients. It does not observe apps mounted inside the compositor:
+not prove the app has rendered. A packaged app is up when a process of it runs
+from the session's store — `/var/tilo-apps/<application id>/`, the only place
+its binary sits inside the sandbox — and the desk holds its window
+(`windows`); what it draws is proved by a control it offers (`list_targets`)
+pressed, and what that changes. `real_apps.Session.answering` waits for the
+first two and leaves the last to the check.
+
+Apps mounted inside the compositor are not processes of their own:
 `actions:window.new.terminal` mounts Terminal in-process, with `AppPlaceholder`
-as its persisted tile kind. Neither that kind nor an empty `foreign_frames`
-reply proves the hosted app failed to render. Verify its exported
-`inspect-session` operation to completion, its laid-out `terminal` target and
-a private headless snapshot. Process startup additionally requires an open
-session with input available; rendering a missing-runtime explanation is not
-a working PTY. The separately discovered `applications:so.tilo.terminal`
-launches the packaged app and should be checked with foreign-frame counters.
+as its persisted tile kind. That kind alone proves the hosted app failed to
+render no more than a window does. Verify its exported `inspect-session`
+operation to completion, its laid-out `terminal` target and a private headless
+snapshot. Process startup additionally requires an open session with input
+available; rendering a missing-runtime explanation is not a working PTY. The
+separately discovered `applications:so.tilo.terminal` launches the packaged
+app, which `answering` covers.
 
 `scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
 invocation against an isolated compositor.
@@ -517,6 +522,11 @@ python3 scripts/headless-examples/real_apps.py --start --open notes --shot /tmp/
 python3 scripts/headless-examples/real_apps.py --start --open file-explorer --open chat --keep
 ```
 
+The build takes the app list from `TILO_NESTED_APPS`. Through a remote-exec
+prefix, pass it in the program's own environment — `<prefix> env
+TILO_NESTED_APPS="notes …" dist/dev/nested-session-build.sh`, which is what the
+harness does — because a builder runs with its environment, not this machine's.
+
 `--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone
 (`--software`: it never opens this machine's GPU and never touches a live
 desktop) on a private runtime directory and a throwaway identity. The apps it
@@ -524,8 +534,9 @@ installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed
 with the session's own key and installed through `tilo-install` into the
 session's store — the same path the image's `/usr/share/tilo-apps` is built
 through. `--open APP` launches it through the desktop's own launcher
-(`applications so.tilo.<app>`) and waits until its window presents a frame;
-`--shot` writes a PNG of the whole desktop. `--keep` leaves the session running
+(`applications so.tilo.<app>`) and waits until a process of it runs from the
+session's store with its window on the desk; `--shot` writes a PNG of the whole
+desktop. `--keep` leaves the session running
 and prints its ready JSON — the control socket, the runtime directory and the
 state directory — so `tilo-control` drives it from anywhere:
 
@@ -546,7 +557,7 @@ prepare(state, apps="notes", built=False)          # idempotent
 with Session(state) as session:                    # fresh desktop, headless
     session.start()
     session.launch("notes")                        # through the launcher
-    session.presented("notes")                     # its window paints
+    session.answering("notes")                     # its process runs, its window is on the desk
     session.snapshot(out / "notes.png")
 ```
 

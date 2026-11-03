@@ -93,10 +93,36 @@ def control_binary() -> Path:
     return BUILD / "bin/tilo-control"
 
 
+def host_runtime() -> Path:
+    """The directory the session makes its private runtime under, which it
+    needs set before it does anything.
+
+    Its sockets sit at paths a unix socket can hold (under 108 bytes), which a
+    state directory of any depth does not: the session appends its own
+    subdirectory and a service path. A container's exec leaves
+    `XDG_RUNTIME_DIR` unset even though the user's `/run/user/<uid>` is there,
+    so that comes next, and a short directory under the home last."""
+    given = os.environ.get("XDG_RUNTIME_DIR")
+    if given and Path(given).is_dir():
+        return Path(given)
+    seat = Path(f"/run/user/{os.getuid()}")
+    if seat.is_dir() and os.access(seat, os.W_OK):
+        return seat
+    fallback = Path.home() / ".run" / "tilo-headless"
+    fallback.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return fallback
+
+
 def build(*, apps: str = APPS, remote: str | None = None) -> None:
-    """Build the session, its programs and `apps` into BUILD."""
+    """Build the session, its programs and `apps` into BUILD.
+
+    Through `remote`, the app list goes in the program's own environment: a
+    remote exec forwards the builder's environment, not this one's."""
     command = [str(REPO / "dist/dev/nested-session-build.sh")]
-    argv = [*shlex.split(remote), *command] if remote else command
+    if remote:
+        argv = [*shlex.split(remote), "env", f"TILO_NESTED_APPS={apps}", *command]
+    else:
+        argv = command
     env = {**os.environ, "TILO_NESTED_APPS": apps}
     print(f"==> building the session and its apps into {BUILD}", file=sys.stderr)
     result = subprocess.run(argv, cwd=REPO, env=env)
@@ -114,8 +140,9 @@ def prepare(state: Path, *, apps: str = APPS, built: bool = False, remote=None) 
             "dist/dev/nested-session-build.sh (through a remote exec when this "
             "machine has no toolchain)"
         )
-    run([str(SESSION), "--no-build", "--prepare-only", "--apps", apps, "--state", str(state)],
-        cwd=REPO)
+    run([str(SESSION), "--no-build", "--prepare-only", "--headless", "--apps", apps,
+         "--state", str(state)], cwd=REPO,
+        env={**os.environ, "XDG_RUNTIME_DIR": str(host_runtime())})
 
 
 class Session:
@@ -152,13 +179,11 @@ class Session:
         log = open(out / f"session-{tag}.log", "w")
         # The session script makes its own private runtime directory inside
         # `XDG_RUNTIME_DIR`, which a container leaves unset: give it one of
-        # the state's own, so nothing here needs a logged-in seat.
-        host_runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or self.state / "host-runtime")
-        if not host_runtime.is_dir():
-            host_runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # the user's own, so nothing here needs a logged-in seat.
+        runtime = host_runtime()
         self.proc = subprocess.Popen(
             argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-            env={**os.environ, "XDG_RUNTIME_DIR": str(host_runtime),
+            env={**os.environ, "XDG_RUNTIME_DIR": str(runtime),
                  "RUST_LOG": os.environ.get(
                      "RUST_LOG", "warn,tilo::launch_latency=info"), **(env or {})},
         )
@@ -243,7 +268,7 @@ class Session:
 
     def control(self, payload: dict | str, timeout: float = 30.0) -> dict:
         """One request on the test control socket and its reply, whose one key
-        names its shape (`ok`, `state`, `answer`, `foreign_frames`, ...); an
+        names its shape (`ok`, `state`, `answer`, ...); an
         `err` reply raises. `payload` is a dict or its JSON text. See
         crates/session/session/src/test_control.rs for the ops."""
         if isinstance(payload, str):
@@ -301,9 +326,6 @@ class Session:
     def state_dump(self) -> dict:
         return self.control({"op": "state_dump"})["state"]
 
-    def foreign_frames(self) -> list:
-        return self.control({"op": "foreign_frames"})["foreign_frames"]["frames"]
-
     def launch(self, app: str, deadline: float = 120.0) -> dict:
         """Open `app` (its directory under apps/, or its application id) through
         the desktop's own launcher, and answer its window once it is up."""
@@ -317,12 +339,48 @@ class Session:
             (w for w in self.windows() if w.get("app_id") == ident), None), deadline)
         return {**found, "title": found.get("title") or action.get("title")}
 
-    def presented(self, app: str, deadline: float = 60.0) -> bool:
-        """Whether `app` has presented a frame of its own: its window paints."""
+    def processes(self, app: str) -> list:
+        """The command lines of the running processes of `app`.
+
+        The session's launcher starts an app from the store it installed it
+        into, `/var/tilo-apps/<application id>/`: inside the sandbox that is the
+        only place the app's own binary sits, so its processes say which app is
+        up, not which one was asked for."""
         ident = app if "." in app else app_id(app)
-        return until(f"a presented frame of {ident}", lambda: any(
-            f.get("app_id") == ident and f.get("presented") and f.get("pixels_ready")
-            for f in self.foreign_frames()), deadline, 0.25)
+        needle = f"/var/tilo-apps/{ident}/"
+        found = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                command = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            line = command.replace(b"\0", b" ").decode(errors="replace")
+            if needle in line:
+                found.append(line.strip())
+        return found
+
+    def answering(self, app: str, deadline: float = 60.0) -> bool:
+        """Whether `app` is up: a process of it runs from the session's own
+        store, and the desk holds its window.
+
+        Both are the desk's, not a guess: the launcher's sandbox runs the app
+        under `/var/tilo-apps/<id>/`, and the window is the one the desk placed
+        for it. What it draws is proved by what comes next: a control of its own
+        pressed, and what that changes."""
+        ident = app if "." in app else app_id(app)
+
+        def up() -> bool:
+            return bool(self.processes(ident)) and any(
+                w.get("app_id") == ident for w in self.windows())
+
+        return until(f"{ident} to run with its window on the desk", up, deadline)
+
+    def wait_target(self, name: str, deadline: float = 60.0) -> dict:
+        """The control `name` once the surface showing it offers it."""
+        return until(f"the control {name!r}", lambda: next(
+            (t for t in self.targets() if t["name"] == name), None), deadline)
 
     def click_at(self, x: float, y: float) -> dict:
         return self.control({"op": "click_at", "x": x, "y": y})
@@ -419,7 +477,7 @@ def main() -> int:
         session.start(apps=options.apps, fresh=options.fresh, out=out)
         for app in options.open:
             window = session.launch(app)
-            session.presented(app)
+            session.answering(app)
             print(json.dumps({"opened": app, "window": window.get("title")}), file=sys.stderr)
         if options.shot:
             session.snapshot(options.shot)
