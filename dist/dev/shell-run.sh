@@ -147,7 +147,14 @@ stop_session
 
 say "starting the session headless at $size (log: $log)"
 start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
-grep -q "^TILO_AGENT_DOOR=$door\$" "$log" || die "the session serves no agent door (see $log)"
+# The door is announced once the session's own doors are up, which can be after its control
+# socket: wait for it as for the socket, while the session lives.
+tries=600
+until grep -q "^TILO_AGENT_DOOR=$door\$" "$log"; do
+    kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its agent door"; }
+    ((tries--)) || { tail -40 "$log" >&2; die "the session serves no agent door"; }
+    sleep 0.1
+done
 
 cat <<EOF
 TILO_AGENT_DOOR=$door

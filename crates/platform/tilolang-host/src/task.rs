@@ -138,13 +138,10 @@ impl TaskDoor for Door {
         // What the program reads of the app next holds what its change made: the origin says
         // what it wrote, which goes into the record this program read.
         if let Some(app) = call.get("app").and_then(Json::as_str) {
-            let wrote = reply
-                .get("change")
-                .and_then(Json::as_str)
-                .map(|change| base64::engine::general_purpose::STANDARD.decode(change));
+            let wrote = reply.get("change").and_then(Line::change_bytes);
             let taken = match wrote {
                 Some(Ok(change)) => self.reads.take_in(app, &change),
-                Some(Err(error)) => Err(format!("the origin's change is not base64: {error}")),
+                Some(Err(error)) => Err(format!("the origin's change does not read: {error}")),
                 None => Err("no change said".to_owned()),
             };
             if let Err(why) = taken {
@@ -157,6 +154,29 @@ impl TaskDoor for Door {
 }
 
 impl Line {
+    /// The bytes a door's `change` field holds: the record's whole document, as base64 text or,
+    /// for the record a package the session runs itself keeps, as its bytes in JSON.
+    fn change_bytes(change: &Json) -> Option<Result<Vec<u8>, String>> {
+        match change {
+            Json::String(text) => Some(
+                base64::engine::general_purpose::STANDARD
+                    .decode(text)
+                    .map_err(|error| error.to_string()),
+            ),
+            Json::Array(bytes) => Some(
+                bytes
+                    .iter()
+                    .map(|byte| {
+                        byte.as_u64()
+                            .and_then(|byte| u8::try_from(byte).ok())
+                            .ok_or_else(|| "a change is bytes".to_owned())
+                    })
+                    .collect::<Result<Vec<u8>, String>>(),
+            ),
+            _ => None,
+        }
+    }
+
     /// How the door's `reply` to an invocation says it ended.
     fn answered(reply: &Json) -> Answered {
         let why = |key: &str| {

@@ -645,7 +645,8 @@ impl Shared {
 
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
-        self.session_doors.answer(&self.doors, &self.person);
+        self.session_doors
+            .answer(&self.doors, &self.services, &self.person);
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
@@ -1609,6 +1610,10 @@ impl Session {
                 Rc::clone(&commands),
                 Rc::clone(&controls_reading),
             )));
+        // The shell's own records reach the door as any app's do the moment its package runs.
+        if let Some(shell) = &shell {
+            shell.share_records(&services);
+        }
         services
             .borrow_mut()
             .add(Box::new(tilo_agent_runs::Served::new(

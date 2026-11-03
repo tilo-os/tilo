@@ -58,6 +58,11 @@ impl Session {
         self.shared
             .lend_conversations(self.action_plane.as_ref(), &front);
         let mut services = self.shared.services.borrow_mut();
+        // What the packages the session runs itself (the shell) wrote into the records their
+        // parts share, published with every app's before the door answers this pass.
+        if let Err(error) = services.follow_shared() {
+            tracing::error!(%error, "a package's records are not followed");
+        }
         services.poll();
         if let Some(plane) = &self.action_plane {
             plane.link.serve(&mut services);

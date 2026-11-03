@@ -1090,6 +1090,7 @@ d-r34xb7ak = Preset switch
     .w-strips = Strips
     .w-frames = Frames
     .w-spaces = Spaces
+    .w-desktop = Desktop
 
 d-qrahog47 = Strips view
 

@@ -92,11 +92,7 @@ fn every_display_has_a_shell_on_its_own_rectangle() {
     until(&mut session, |session| session.shell_parts().len() == 2);
     let parts = session.shell_parts();
     let names: Vec<&str> = parts.iter().map(|part| part.output.as_str()).collect();
-    assert_eq!(
-        names,
-        ["HEADLESS-1", "HEADLESS-2"],
-        "one part per display"
-    );
+    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"], "one part per display");
     for part in &parts {
         assert!(
             !part.aside,

@@ -209,9 +209,12 @@ default view shell_settings for Shell
 /// the presets under it and the preset they picked under that. The bar reads `desk`, this package's
 /// other root, as any view reads a root of the package it uses. A change of the arrangement runs
 /// the preset body; a change of the desk reading runs the bar.
+///
+/// The traditional desktop is the one preset that is the chrome's too: picking its layout
+/// (`apply` of `windows_desktop`) lays the desk out that way, as picking it in the switch does.
 view desk_view(a: Arrangement) {
     let v = viewing
-    if v.showing == .desktop and not space.compact {
+    if (v.showing == .desktop or bar_is_traditional(shell)) and not space.compact {
         layers(fill) {
             traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
             desk(root Desk, fill)
