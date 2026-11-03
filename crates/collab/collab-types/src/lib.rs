@@ -110,7 +110,7 @@ pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,
     verify_op,
 };
-pub use direct::{direct_pair, direct_pair_id, direct_record};
+pub use direct::{canonical_pair, direct_pair, direct_pair_id, direct_record};
 pub use document_transfer::{
     DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,

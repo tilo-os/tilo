@@ -35,6 +35,13 @@ impl Paired {
 /// `seeded`, with two more people in it, a pair announced by the first between
 /// the two, and the pair's record id.
 fn paired_workspace() -> Paired {
+    pair_workspace(true)
+}
+
+/// The same workspace, with the pair's announcement left out where `announce`
+/// is false: the two people and the grants are there, the proof that the
+/// record is theirs is not.
+fn pair_workspace(announce: bool) -> Paired {
     let (mut peer, authority, _, owner_device, now) = seeded();
     let first = add_member_with(&mut peer, &authority, now, 5, 6);
     let second_root = SigningKey::from_bytes(&[7; 32]);
@@ -45,11 +52,13 @@ fn paired_workspace() -> Paired {
         &hex::encode(second.2),
     )
     .expect("two distinct people name a pair");
-    assert!(
-        peer.governance_mut()
-            .author_direct_pair(&first.1, &second.2, &first.0, now)
-            .unwrap()
-    );
+    if announce {
+        assert!(
+            peer.governance_mut()
+                .author_direct_pair(&first.1, &second.2, &first.0, now)
+                .unwrap()
+        );
+    }
     let record = direct_record(&pair);
     // The workspace lets its people author records of this app, so creating a
     // record is decided by the pair rule, not by app authorship.
@@ -279,6 +288,61 @@ fn the_workspace_keeps_syncing_and_reading_every_other_record() {
     let mut expected = [hex::encode(paired.person(0)), hex::encode(paired.person(1))];
     expected.sort_unstable();
     assert_eq!(people, expected);
+}
+
+#[test]
+fn a_pair_record_without_its_proof_is_nobodys() {
+    let mut paired = pair_workspace(false);
+    let (now, record) = (paired.now, paired.record.clone());
+    assert!(collab_types::direct_pair(&record).is_some());
+    assert!(
+        paired.peer.direct_pair(&record, now).is_none(),
+        "the workspace holds no proof of the pair"
+    );
+    for device in [
+        paired.first.1.device_public_key,
+        paired.second.1.device_public_key,
+        paired.owner_device.device_public_key,
+        paired.authority.verifying_key().to_bytes(),
+    ] {
+        assert!(
+            paired
+                .peer
+                .check_document_read(device, APP, &record, now)
+                .is_err(),
+            "nobody reads a pair record whose two people the workspace cannot prove"
+        );
+    }
+    // The workspace does let members author records of this app; the id alone
+    // keeps it out of everyone's hands until the pair is proved.
+    let empty = AutoCommit::new().save();
+    assert!(
+        paired
+            .peer
+            .publication_mut()
+            .publish_document(APP, &record, empty.clone(), &paired.first.0, now)
+            .is_err(),
+        "a pair's person creates no record the workspace holds no proof of"
+    );
+    assert!(
+        paired
+            .peer
+            .publication_mut()
+            .publish_document(APP, &record, empty, &paired.authority, now)
+            .is_err(),
+        "the workspace's owner creates none either"
+    );
+    let route = paired.route();
+    let readers = paired
+        .peer
+        .governance()
+        .channel_readers(now, route.channel(paired.peer.workspace_id()), Some(&route))
+        .unwrap()
+        .unwrap_or_default();
+    assert!(
+        readers.is_empty(),
+        "no device holds the channel of a record nobody may read"
+    );
 }
 
 #[test]

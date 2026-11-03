@@ -44,10 +44,31 @@ pub fn direct_record(pair: &str) -> String {
     format!("{RECORD_PREFIX}{pair}")
 }
 
+/// Whether `pair` is spelt as [`direct_pair_id`] spells one: `direct_` and
+/// the hash, lowercase hex.
+#[must_use]
+pub fn canonical_pair(pair: &str) -> bool {
+    pair.strip_prefix("direct_").is_some_and(canonical)
+}
+
 /// The pair whose record `record` is, `None` for any other record.
+///
+/// A conversation of more than one record — parts of a chain
+/// (`derived:part.<n>@`), a record a workspace's hosts send only once asked
+/// (`derived:on-demand@`) — is the same pair's, so the wrappers a record id
+/// carries are peeled first.
 #[must_use]
 pub fn direct_pair(record: &str) -> Option<&str> {
-    record.strip_prefix(RECORD_PREFIX)
+    let mut record = record;
+    while let Some((_, base)) = record
+        .strip_prefix("derived:")
+        .and_then(|derived| derived.split_once('@'))
+    {
+        record = base;
+    }
+    record
+        .strip_prefix(RECORD_PREFIX)
+        .filter(|pair| canonical_pair(pair))
 }
 
 #[cfg(test)]
@@ -69,6 +90,21 @@ mod tests {
         assert_eq!(direct_pair_id(WORKSPACE, &bob, &ada), Some(pair.clone()));
         assert_eq!(direct_pair(&direct_record(&pair)), Some(pair.as_str()));
         assert_eq!(direct_pair("tab:1"), None);
+        assert_eq!(direct_pair("direct/not-a-pair"), None);
+    }
+
+    #[test]
+    fn a_pairs_parts_and_asked_for_records_are_the_pairs() {
+        let pair = direct_pair_id(WORKSPACE, &person(0x11), &person(0x22)).unwrap();
+        let record = direct_record(&pair);
+        for wrapped in [
+            record.clone(),
+            format!("derived:on-demand@{record}"),
+            format!("derived:part.3@{record}"),
+            format!("derived:part.0@derived:on-demand@{record}"),
+        ] {
+            assert_eq!(direct_pair(&wrapped), Some(pair.as_str()), "{wrapped}");
+        }
     }
 
     #[test]
