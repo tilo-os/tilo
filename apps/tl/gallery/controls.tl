@@ -1,7 +1,7 @@
 /// The controls a form is made of: boxes and switches, a number, a choice from a short list, a
-/// strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture
-/// choice, a row of controls, and a link. Each is bound to a real field of the document, so a
-/// change made in the window is the document's.
+/// person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a
+/// picture choice, a row of controls, and a link. Each is bound to a real field of the document,
+/// so a change made in the window is the document's.
 type Controls {
     title: Text (title)
     /// Whether the report goes by email.
@@ -14,6 +14,10 @@ type Controls {
     share: Float = 0.6
     /// The room it is in.
     room: Text = "Studio"
+    /// Who looks after the report.
+    owner: Option<Principal> = .none
+    /// Who reviews it, nobody picked yet.
+    reviewer: Option<Principal> = .none
     /// Which view shows.
     showing: Int = 1
     /// Which step the run is on.
@@ -83,6 +87,20 @@ view controls(c: Controls) {
                 ui.Segment("History")
             }
         }
+        ui.Section("People") {
+            ui.Text("Who looks after it", role: .caption, secondary: true)
+            ui.PersonField(
+                value: c.owner,
+                people: .some(workspace.members),
+                me: .some(workspace.me),
+            )
+            ui.Text("Who reviews it, still to be picked", role: .caption, secondary: true)
+            ui.PersonField(
+                value: c.reviewer,
+                people: .some(workspace.members),
+                me: .some(workspace.me),
+            )
+        }
         ui.Section("Steps") {
             ui.Stepper(steps: ["Draft", "Review", "Send"], current: .some(c.step)) {
                 on station: set(last, "Step")
@@ -132,5 +150,12 @@ view controls(c: Controls) {
 /// The controls group, with a report a week from starting.
 scenario "controls" {
     let g = root Gallery
-    g.controls.insert(Controls(title: "Controls", starts: 2026-11-03, clock: 2026-11-03T09:30Z))
+    g.controls.insert(
+        Controls(
+            title: "Controls",
+            starts: 2026-11-03,
+            clock: 2026-11-03T09:30Z,
+            owner: .some(invoker),
+        ),
+    )
 }
