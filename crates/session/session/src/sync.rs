@@ -604,6 +604,10 @@ pub(crate) struct ReceivedSurface {
 pub(crate) enum Outgoing {
     /// Take part in the topic of a workspace.
     Join(WorkspaceId),
+    /// Take part in a workspace through this device's own custody session
+    /// with its host: the session that carries the workspace's app records
+    /// here and this person's writes there.
+    TakePart(native_ingress::Connect),
     /// Stop taking part in the topic of a workspace.
     Leave(WorkspaceId),
     /// Publish `msg` on the topic of a workspace.
@@ -1146,6 +1150,16 @@ impl Client {
             let _ = self.outgoing.send(Outgoing::Join(ws));
             if let Some(desk) = DeskWorkspaceId::parse(&id) {
                 self.say(desk, &id);
+                // This device takes part in the workspace through its own
+                // custody session too, the one that carries the workspace's
+                // app records: a device that was away comes back with every
+                // record it missed, and a device that restarted into a
+                // workspace it already held reaches its records again.
+                if let Some(connect) = self.engine.as_ref().and_then(|engine| {
+                    native_ingress::Connect::new(engine.owner().clone(), desk).ok()
+                }) {
+                    let _ = self.outgoing.send(Outgoing::TakePart(connect));
+                }
             }
             changed = true;
         }
@@ -2373,19 +2387,13 @@ impl PeerDocuments {
     }
 
     /// Hand one admitted input's app document to this device's apps on its
-    /// route. Answers whether it waits on the workspace's host: a write sealed
-    /// before its writer caught up with the channel's latest membership change
-    /// is taken from the host's replay.
-    fn deliver(
-        &self,
-        input: &native_ingress::Input,
-        report: &tilo_peer_state::AdmissionReport,
-    ) -> bool {
+    /// route.
+    fn deliver(&self, input: &native_ingress::Input, report: &tilo_peer_state::AdmissionReport) {
         let Some(write) = input.app_write(report) else {
-            return false;
+            return;
         };
         let author = input.author();
-        let delivered = tilo_action_broker::collab_inbound::deliver(
+        tilo_action_broker::collab_inbound::deliver(
             &self.channels,
             &self.fanout,
             tilo_action_broker::collab_inbound::RemoteDocument {
@@ -2398,7 +2406,6 @@ impl PeerDocuments {
             },
             |_| format!("peer@{}", hex::encode(author)),
         );
-        delivered == tilo_action_broker::collab_inbound::Delivery::SealedBehind
     }
 }
 
@@ -2514,7 +2521,7 @@ async fn admit(
             Ok(report) => {
                 replay_wanted |= report.replay_wanted;
                 if let Some(documents) = documents {
-                    replay_wanted |= documents.deliver(&input, &report);
+                    documents.deliver(&input, &report);
                 }
             }
             Err(error) => {
@@ -2552,6 +2559,10 @@ async fn carry_out(
                 ws,
                 on_event: events.clone(),
             })
+            .await
+            .is_ok(),
+        Outgoing::TakePart(connect) => plane
+            .send(NetCmd::NativeConnect(connect, None))
             .await
             .is_ok(),
         Outgoing::Leave(ws) => plane.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
