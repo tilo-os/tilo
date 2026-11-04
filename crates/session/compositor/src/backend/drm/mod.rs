@@ -1079,21 +1079,7 @@ fn vblank(
     lit.queued = false;
     let shown = vblank_instant(metadata);
     lit.next_frame = lit.pacing.shown(shown, lit.interval, lit.vrr == Vrr::On);
-    if let Some(summary) = lit.pacing.take_summary(shown, lit.interval) {
-        tracing::debug!(
-            output = lit.output.name(),
-            shown = summary.shown,
-            missed = summary.missed,
-            interval_us = lit.interval.as_micros(),
-            lead_us = summary.lead_us,
-            cost_p50_us = summary.cost.0,
-            cost_p99_us = summary.cost.1,
-            build_to_vblank_p50_us = summary.build_to_vblank.0,
-            build_to_vblank_p99_us = summary.build_to_vblank.1,
-            gap_max_us = summary.gap_max_us,
-            "frame pacing"
-        );
-    }
+    lit.pacing.log(&lit.output.name(), shown, lit.interval);
     match lit.wake.as_mut() {
         // The link is up; what the kernel holds says the rest.
         Some(wake) if !wake.judged => {

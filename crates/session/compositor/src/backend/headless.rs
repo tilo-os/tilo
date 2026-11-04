@@ -7,10 +7,12 @@
 //! only what changed since the last.
 //!
 //! The simulated display shows a frame once per refresh, as a real one does:
-//! a change that arrives between two vertical blanks waits for the blank that
-//! shows it, and the blank after a frame is one refresh on, so a session on
-//! this backend draws at its mode's rate and no faster (a test that wants a
-//! frame after one it just drew waits the same way the session's loop does,
+//! a session on this backend draws at its mode's rate and no faster, and a
+//! frame is built one lead before the blank that shows it, as on a display
+//! ([`Pacing`]), so it carries what arrived up to that blank and the client
+//! hears the frame is on the display at the blank instead of a refresh later
+//! (a test that wants a frame after one it just drew waits the same way the
+//! session's loop does,
 //! [`Compositor::draw_frame`](crate::Compositor::draw_frame)).
 
 use std::collections::HashMap;
@@ -32,6 +34,7 @@ use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrLayerRecording};
 use super::{Backend, BackendError, Screenshot, failed};
 use crate::capture::{CaptureError, render_to_memory};
 use crate::output::{OutputChange, OutputConfig, apply_placement, refresh_interval};
+use crate::pacing::Pacing;
 use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
 
@@ -46,8 +49,15 @@ struct HeadlessOutput {
     /// buffer age is then 1, else 0).
     drawn: bool,
     /// The vertical blank the simulated display next shows a frame at: the
-    /// grid its mode's refresh sets. What changed before it waits for it.
+    /// grid its mode's refresh sets.
     next_blank: Instant,
+    /// When that frame is built: one lead before its blank, the lead being
+    /// the worst recent cost of building a frame plus a margin. Building at
+    /// the blank instead misses every commit and input event of the refresh
+    /// the frame is for, and shows it a whole refresh late.
+    due: Instant,
+    /// What the frames have cost, for the lead.
+    pacing: Pacing,
     /// Switched off: nothing is drawn, the image goes black.
     dark: bool,
     /// The gamma ramp the simulated display engine applies to what it
@@ -72,12 +82,50 @@ fn blank_after(blank: Instant, interval: Duration, drawn: Instant) -> Instant {
     next
 }
 
+/// The blank the frame after `built` is shown at, and the point one `lead`
+/// before it where it is built.
+fn next_frame(
+    blank: Instant,
+    interval: Duration,
+    lead: Duration,
+    built: Instant,
+) -> (Instant, Instant) {
+    let next_blank = blank_after(blank, interval, built);
+    // A lead longer than the refresh, or a build that overran its blank,
+    // puts the point in the past: the frame is built at once.
+    let due = next_blank.checked_sub(lead).unwrap_or(next_blank);
+    (next_blank, due)
+}
+
 impl HeadlessOutput {
-    /// This display showed the frame just drawn: the next blank is one
-    /// refresh on, on the grid its mode keeps.
-    fn showed(&mut self) {
-        let interval = refresh_interval(self.output.current_mode().map_or(0, |mode| mode.refresh));
-        self.next_blank = blank_after(self.next_blank, interval, Instant::now());
+    /// This display's refresh interval.
+    fn interval(&self) -> Duration {
+        refresh_interval(self.output.current_mode().map_or(0, |mode| mode.refresh))
+    }
+
+    /// This display showed the frame whose build began at `started`: the
+    /// next blank is one refresh on, on the grid its mode keeps, and the
+    /// next frame is built one lead before it, the lead being how long
+    /// building one takes.
+    fn showed(&mut self, started: Instant) {
+        let interval = self.interval();
+        let built = Instant::now();
+        self.pacing.queued(started, built, interval);
+        // This display has no blank to report: the image holds the frame as
+        // soon as it is built, and `next_blank` is the grid that keeps
+        // frames to one per refresh.
+        self.pacing.shown(built, interval, false);
+        self.pacing.log(&self.output.name(), built, interval);
+        (self.next_blank, self.due) =
+            next_frame(self.next_blank, interval, self.pacing.lead(interval), built);
+    }
+
+    /// What changed shows at once: the next blank is now, and the frame for
+    /// it is built now.
+    fn restart_grid(&mut self) {
+        self.next_blank = Instant::now();
+        self.due = self.next_blank;
+        self.pacing = Pacing::default();
     }
 }
 
@@ -295,6 +343,8 @@ impl Backend for HeadlessBackend {
             target,
             drawn: false,
             next_blank: Instant::now(),
+            due: Instant::now(),
+            pacing: Pacing::default(),
             dark: false,
             gamma: None,
             colour: config.colour,
@@ -350,7 +400,7 @@ impl Backend for HeadlessBackend {
                 output.output.add_mode(mode);
                 output.drawn = false;
                 // A new mode is a new blank grid: what changed shows at once.
-                output.next_blank = Instant::now();
+                output.restart_grid();
             }
             apply_placement(state, &output.output, change);
             if change.position.is_some() {
@@ -372,9 +422,11 @@ impl Backend for HeadlessBackend {
             if output.dark {
                 continue;
             }
-            // The display shows one frame per refresh: what changed waits for
-            // the blank that shows it, so the frame it owes is still owed.
-            if Instant::now() < output.next_blank {
+            // The display shows one frame per refresh: what changed is built
+            // one lead before the blank that shows it, so a frame it is not
+            // yet time to build leaves what it owes still owed.
+            let started = Instant::now();
+            if started < output.due {
                 continue;
             }
             // Nothing new to show: an idle output draws nothing.
@@ -419,7 +471,7 @@ impl Backend for HeadlessBackend {
                     .map_err(|error| failed("render output", error))?;
                 output.drawn = true;
                 state.frame_shown(&output.output);
-                output.showed();
+                output.showed(started);
                 continue;
             }
             let mut framebuffer = self
@@ -439,7 +491,7 @@ impl Backend for HeadlessBackend {
                 .map_err(|error| failed("render output", error))?;
             output.drawn = true;
             state.frame_shown(&output.output);
-            output.showed();
+            output.showed(started);
         }
         Ok(())
     }
@@ -448,7 +500,7 @@ impl Backend for HeadlessBackend {
         self.outputs
             .iter()
             .filter(|output| !output.dark && state.redraw_owed(&output.output))
-            .map(|output| output.next_blank)
+            .map(|output| output.due)
             .min()
     }
 
@@ -488,7 +540,7 @@ impl Backend for HeadlessBackend {
         // The image no longer holds the last frame.
         output.drawn = false;
         // A switched-on panel shows what changed at once.
-        output.next_blank = Instant::now();
+        output.restart_grid();
         output.damage = OutputDamageTracker::from_output(&output.output);
         Ok(())
     }
@@ -586,5 +638,47 @@ impl Backend for HeadlessBackend {
             height: u32::try_from(height).map_err(|error| failed("height", error))?,
             rgba,
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::unchecked_time_subtraction,
+    reason = "test timelines a few milliseconds from now"
+)]
+mod tests {
+    use super::*;
+
+    const INTERVAL: Duration = Duration::from_micros(16_667);
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn the_frame_for_a_blank_is_built_one_lead_before_it() {
+        let t0 = Instant::now();
+        let (blank, due) = next_frame(t0, INTERVAL, ms(3), t0 + ms(1));
+        assert_eq!(blank, t0 + INTERVAL, "the next blank on the grid");
+        assert_eq!(due, t0 + INTERVAL - ms(3), "built one lead before it");
+    }
+
+    #[test]
+    fn a_frame_that_overran_its_blank_lands_on_the_grid_after_it() {
+        let t0 = Instant::now();
+        // Built for the second blank but finished two refreshes on.
+        let late = t0 + INTERVAL * 2 + ms(1);
+        let (blank, due) = next_frame(t0, INTERVAL, ms(3), late);
+        assert_eq!(blank, t0 + INTERVAL * 3, "no bursting to catch up");
+        assert_eq!(due, t0 + INTERVAL * 3 - ms(3));
+    }
+
+    #[test]
+    fn a_lead_longer_than_a_refresh_builds_at_once() {
+        let t0 = Instant::now();
+        let (blank, due) = next_frame(t0, INTERVAL, INTERVAL, t0);
+        assert_eq!(blank, t0 + INTERVAL);
+        assert_eq!(due, t0, "the blank before it is already past");
     }
 }

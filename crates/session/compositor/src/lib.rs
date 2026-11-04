@@ -505,17 +505,17 @@ impl Compositor {
         Ok(self.owes_frame())
     }
 
-    /// When the displays next show a frame they owe: the blank the backend
-    /// holds it for. `None` when no output owes one, so the loop waits for an
+    /// When a display builds the frame it owes: one lead before the blank
+    /// that shows it. `None` when no output owes one, so the loop waits for an
     /// event.
     #[must_use]
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.data.backend.next_deadline(&self.data.state)
     }
 
-    /// Answer the clients until the blank a frame that is owed waits for
-    /// comes: what arrives while it is held joins that frame instead of each
-    /// arrival taking a turn of its own.
+    /// Answer the clients until it is time to build the frame a display owes:
+    /// what arrives while it waits joins that frame instead of each arrival
+    /// taking a turn of its own.
     ///
     /// # Errors
     /// The compositor's clients failed.
@@ -530,8 +530,8 @@ impl Compositor {
         Ok(())
     }
 
-    /// One turn of a display's loop: wait out the blank a frame that is owed
-    /// is held for, then draw it.
+    /// One turn of a display's loop: wait until the frame it owes is due,
+    /// then build it.
     ///
     /// # Errors
     /// The compositor's clients or its backend failed.

@@ -184,9 +184,30 @@ impl Pacing {
             .unwrap_or(later)
     }
 
-    /// The log line's fields once [`WINDOW`] has passed since its first
-    /// shown frame; starts a new window.
-    pub(crate) fn take_summary(&mut self, now: Instant, interval: Duration) -> Option<Summary> {
+    /// Logs the frames shown since the last line as `frame pacing` once
+    /// [`WINDOW`] has passed, and starts a new window.
+    pub(crate) fn log(&mut self, output: &str, now: Instant, interval: Duration) {
+        let Some(summary) = self.take_summary(now, interval) else {
+            return;
+        };
+        tracing::debug!(
+            output,
+            shown = summary.shown,
+            missed = summary.missed,
+            interval_us = interval.as_micros(),
+            lead_us = summary.lead_us,
+            cost_p50_us = summary.cost.0,
+            cost_p99_us = summary.cost.1,
+            build_to_vblank_p50_us = summary.build_to_vblank.0,
+            build_to_vblank_p99_us = summary.build_to_vblank.1,
+            gap_max_us = summary.gap_max_us,
+            "frame pacing"
+        );
+    }
+
+    /// The measurements since the last line once [`WINDOW`] has passed since
+    /// its first shown frame; starts a new window.
+    fn take_summary(&mut self, now: Instant, interval: Duration) -> Option<Summary> {
         let started = self.window.started?;
         if now.saturating_duration_since(started) < WINDOW {
             return None;
