@@ -157,19 +157,6 @@ impl Tool {
     }
 }
 
-/// Draw the frame the display owes: waits for the blank that shows it, as the
-/// session's own loop waits, then draws it.
-fn draw(compositor: &mut Compositor) {
-    while let Some(due) = compositor.frame_deadline() {
-        let wait = due.saturating_duration_since(std::time::Instant::now());
-        if wait.is_zero() {
-            break;
-        }
-        compositor.dispatch(wait).expect("the blank");
-    }
-    compositor.render().expect("a frame");
-}
-
 /// The B, G, R of the pixel at `x`, `y` of an XRGB8888 image `width` wide.
 fn pixel(fd: &OwnedFd, width: usize, x: usize, y: usize) -> [u8; 3] {
     let mut bytes = [0_u8; 3];
@@ -197,7 +184,7 @@ fn pump_until(
         compositor
             .dispatch(Duration::from_millis(2))
             .expect("dispatch");
-        draw(compositor);
+        compositor.draw_frame().expect("a frame");
         tool.exchange();
         if done(&tool.seen) {
             return true;
@@ -613,7 +600,7 @@ fn a_private_window_is_a_flat_placeholder_in_copies_and_whole_on_its_display() {
             .any(|(_, app_id)| app_id == "org.example.shared")
     });
     // The window is centred on the 64 x 48 output: 22, 19 to 42, 29.
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(display.pixel(32, 24), Some([0, 255, 0, 255]));
 
@@ -637,7 +624,7 @@ fn a_private_window_is_a_flat_placeholder_in_copies_and_whole_on_its_display() {
     assert!(near(pixel(&memory, width, 8, 8), RED), "the square below");
     assert!(near(pixel(&memory, width, 60, 44), BACKGROUND));
     // The person's own display still shows it.
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(display.pixel(32, 24), Some([0, 255, 0, 255]));
 

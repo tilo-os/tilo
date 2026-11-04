@@ -610,19 +610,6 @@ pub fn headless(policy: Box<dyn WindowPolicy>) -> Compositor {
     compositor
 }
 
-/// Draw the frame the display owes: waits for the blank that shows it, as
-/// the session's own loop waits, then draws it.
-pub fn draw(compositor: &mut Compositor) {
-    while let Some(due) = compositor.frame_deadline() {
-        let wait = due.saturating_duration_since(std::time::Instant::now());
-        if wait.is_zero() {
-            break;
-        }
-        compositor.dispatch(wait).expect("the blank");
-    }
-    compositor.render().expect("a frame");
-}
-
 /// Open a toplevel of `size` and colour, and wait until it is mapped.
 pub fn mapped_client(
     compositor: &mut Compositor,

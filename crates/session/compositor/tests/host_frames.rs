@@ -61,19 +61,6 @@ impl SurfaceHost for Rows {
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 }
 
-/// Draw the frame the display owes: waits for the blank that shows it, as the
-/// session's own loop waits, then draws it.
-fn draw(compositor: &mut Compositor) {
-    while let Some(due) = compositor.frame_deadline() {
-        let wait = due.saturating_duration_since(std::time::Instant::now());
-        if wait.is_zero() {
-            break;
-        }
-        compositor.dispatch(wait).expect("the blank");
-    }
-    compositor.render().expect("a frame");
-}
-
 #[test]
 fn a_hosted_frame_its_host_fills_row_by_row_draws_the_same_way_up() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
@@ -81,7 +68,7 @@ fn a_hosted_frame_its_host_fills_row_by_row_draws_the_same_way_up() {
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
     compositor.add_host(Box::new(Rows::new((640, 480))));
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let above = frame.pixel(320, 120).unwrap();
     let below = frame.pixel(320, 360).unwrap();
@@ -125,7 +112,7 @@ fn a_host_that_needs_a_frame_now_shortens_the_loops_wait() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     assert_eq!(
         compositor.next_wait(),
         None,

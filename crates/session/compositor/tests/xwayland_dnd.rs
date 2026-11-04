@@ -370,7 +370,7 @@ impl Session {
                 self.answer(&event);
                 self.events.push(event);
             }
-            draw(&mut self.compositor);
+            self.compositor.draw_frame().expect("a frame");
             if done(self) {
                 return;
             }
@@ -410,18 +410,6 @@ impl Session {
 /// after it has roundtripped with the compositor, so the client waits in a
 /// thread while the compositor dispatches here.
 
-/// Draw the frame the display owes: waits for the blank that shows it, as the
-/// session's own loop waits, then draws it.
-fn draw(compositor: &mut Compositor) {
-    while let Some(due) = compositor.frame_deadline() {
-        let wait = due.saturating_duration_since(std::time::Instant::now());
-        if wait.is_zero() {
-            break;
-        }
-        compositor.dispatch(wait).expect("the blank");
-    }
-    compositor.render().expect("a frame");
-}
 fn x11_client(compositor: &mut Compositor, display: u32) -> (RustConnection, Window) {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

@@ -160,18 +160,6 @@ impl TestClient {
     }
 }
 
-/// Draw the frame the display owes: waits for the blank that shows it, as the
-/// session's own loop waits, then draws it.
-fn draw(compositor: &mut Compositor) {
-    while let Some(due) = compositor.frame_deadline() {
-        let wait = due.saturating_duration_since(std::time::Instant::now());
-        if wait.is_zero() {
-            break;
-        }
-        compositor.dispatch(wait).expect("the blank");
-    }
-    compositor.render().expect("a frame");
-}
 fn pump(
     compositor: &mut Compositor,
     client: &mut TestClient,
@@ -525,7 +513,7 @@ fn a_drag_shows_its_icon_under_the_pointer_until_it_drops() {
         InputEvent::PointerMotion { x: 100.0, y: 400.0 },
     );
     settle(&mut compositor, &mut client);
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let blue = |x, y| frame.pixel(x, y) == Some([0, 0, 255, 255]);
     assert!(
@@ -542,7 +530,7 @@ fn a_drag_shows_its_icon_under_the_pointer_until_it_drops() {
         },
     );
     settle(&mut compositor, &mut client);
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_ne!(
         frame.pixel(100, 400),

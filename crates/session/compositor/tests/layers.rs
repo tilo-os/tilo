@@ -185,18 +185,6 @@ impl Client {
 
 /// Let compositor and clients talk until `done` holds.
 
-/// Draw the frame the display owes: waits for the blank that shows it, as the
-/// session's own loop waits, then draws it.
-fn draw(compositor: &mut Compositor) {
-    while let Some(due) = compositor.frame_deadline() {
-        let wait = due.saturating_duration_since(std::time::Instant::now());
-        if wait.is_zero() {
-            break;
-        }
-        compositor.dispatch(wait).expect("the blank");
-    }
-    compositor.render().expect("a frame");
-}
 fn pump(
     compositor: &mut Compositor,
     clients: &mut [&mut Client],
@@ -308,7 +296,7 @@ fn a_bar_on_the_top_layer_is_drawn_above_the_windows_and_keeps_its_height() {
     assert_eq!(bar.seen.configured, Some((640, 32)), "the whole width");
 
     pump(&mut compositor, &mut [&mut bar], |_, _| true);
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar");
     assert_eq!(frame.pixel(320, 200), Some(BACKGROUND), "the desk below it");
@@ -333,7 +321,7 @@ fn a_bar_on_the_top_layer_is_drawn_above_the_windows_and_keeps_its_height() {
         &mut [&mut bar, &mut window],
         |compositor, _| !compositor.windows().is_empty(),
     );
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar wins");
 }
@@ -354,7 +342,7 @@ fn a_desk_on_the_background_layer_is_drawn_below_the_windows() {
     );
     assert_eq!(desk.seen.configured, Some((640, 480)));
     pump(&mut compositor, &mut [&mut desk], |_, _| true);
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(320, 240), Some([0, 255, 0, 255]));
 
@@ -372,7 +360,7 @@ fn a_desk_on_the_background_layer_is_drawn_below_the_windows() {
         &mut [&mut desk, &mut window],
         |compositor, _| !compositor.windows().is_empty(),
     );
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let (_, (x, y, w, h)) = compositor.windows()[0].clone();
     let (x, y) = (u32::try_from(x).unwrap(), u32::try_from(y).unwrap());
@@ -706,7 +694,7 @@ fn an_idle_session_draws_nothing() {
         &mut [&mut bar, &mut window],
         |compositor, _| !compositor.windows().is_empty(),
     );
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     pump(&mut compositor, &mut [&mut bar, &mut window], |_, _| true);
     let (bar_frames, window_frames) = (bar.seen.frames, window.seen.frames);
     assert!(bar_frames > 0, "the bar was drawn");
@@ -719,7 +707,7 @@ fn an_idle_session_draws_nothing() {
     let started = std::time::Instant::now();
     while started.elapsed() < idle {
         compositor.dispatch(refresh).unwrap();
-        draw(&mut compositor);
+        compositor.draw_frame().expect("a frame");
         bar.exchange();
         window.exchange();
     }

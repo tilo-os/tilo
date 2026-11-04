@@ -87,19 +87,6 @@ impl Client {
     }
 }
 
-/// Draw the frame the display owes: waits for the blank that shows it, as the
-/// session's own loop waits, then draws it.
-fn draw(compositor: &mut Compositor) {
-    while let Some(due) = compositor.frame_deadline() {
-        let wait = due.saturating_duration_since(std::time::Instant::now());
-        if wait.is_zero() {
-            break;
-        }
-        compositor.dispatch(wait).expect("the blank");
-    }
-    compositor.render().expect("a frame");
-}
-
 fn pump(compositor: &mut Compositor, client: &mut Client, mut done: impl FnMut(&Tool) -> bool) {
     for _ in 0..500 {
         client.exchange();
@@ -115,7 +102,7 @@ fn pump(compositor: &mut Compositor, client: &mut Client, mut done: impl FnMut(&
 }
 
 fn shown(compositor: &mut Compositor) -> [u8; 4] {
-    draw(compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
     frame.pixel(10, 10).expect("pixel")
 }

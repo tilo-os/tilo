@@ -513,6 +513,22 @@ impl Compositor {
         self.data.backend.next_deadline(&self.data.state)
     }
 
+    /// One turn of a display's loop: answer the clients until the blank a
+    /// frame that is owed waits for comes, then draw it.
+    ///
+    /// # Errors
+    /// The compositor's clients or its backend failed.
+    pub fn draw_frame(&mut self) -> Result<(), Error> {
+        while let Some(due) = self.frame_deadline() {
+            let wait = due.saturating_duration_since(std::time::Instant::now());
+            if wait.is_zero() {
+                break;
+            }
+            self.dispatch(wait)?;
+        }
+        self.render()
+    }
+
     /// How long a loop may wait for clients, devices and its own work before
     /// the next frame is due; `None` when nothing is due, and it waits for an
     /// event.

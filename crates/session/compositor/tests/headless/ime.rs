@@ -214,7 +214,7 @@ fn the_candidate_window_stands_under_the_caret() {
     // caret, not the top of the display.
     engine.paint_popup(40, [255, 0, 255, 255]);
     pump(&mut compositor, &mut [&mut engine], |_, _| true);
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(130, 80), Some([255, 0, 255, 255]));
     assert!(

@@ -73,13 +73,13 @@ fn an_idle_inhibitor_holds_only_while_its_window_is_on_screen() {
     // The same window parked off every output, as a hidden tab is: nobody
     // is watching, so nothing holds.
     parked.set(true);
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     assert!(!compositor.idle_inhibited());
     assert!(compositor.visible_idle_inhibitors().is_empty());
 
     // Brought back, it holds again until the client gives the inhibitor up.
     parked.set(false);
-    draw(&mut compositor);
+    compositor.draw_frame().expect("a frame");
     assert!(compositor.idle_inhibited());
     video
         .seen

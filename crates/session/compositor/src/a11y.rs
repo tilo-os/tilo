@@ -381,17 +381,6 @@ mod tests {
     }
 
     /// Draw the frame the display owes: waits for the blank that shows it, as
-    /// the session's own loop waits, then draws it.
-    fn draw(compositor: &mut crate::Compositor) {
-        while let Some(due) = compositor.frame_deadline() {
-            let wait = due.saturating_duration_since(Instant::now());
-            if wait.is_zero() {
-                break;
-            }
-            compositor.dispatch(wait).expect("the blank");
-        }
-        compositor.render().expect("a frame");
-    }
 
     #[test]
     fn everything_is_off_until_the_person_turns_it_on() {
@@ -553,7 +542,7 @@ mod tests {
         compositor
             .add_output(&crate::OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("an output");
-        draw(&mut compositor);
+        compositor.draw_frame().expect("a frame");
         // Asked for well before the frame that draws it: the frame the machine
         // was busy with ran the alert's whole length.
         let asked_at = Instant::now()
@@ -561,7 +550,7 @@ mod tests {
             .expect("two seconds before now");
         flash_all(&compositor.data.state, asked_at);
         compositor.data.state.mark_redraw_all();
-        draw(&mut compositor);
+        compositor.draw_frame().expect("a frame");
         let shot = compositor.screenshot("HEADLESS-1").expect("the frame");
         let edge = shot.pixel(320, 1).expect("a pixel on the display's edge");
         assert!(edge[2] > 120, "the alert is on screen: {edge:?}");
