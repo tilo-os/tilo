@@ -389,9 +389,9 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-sup
 # A change another device's app wrote, read back into a record: a receiver's
 # way of taking changes, which the session's own code uses too.
 tilo-automerge = { path = "../../doc/tilo-automerge" }
-# The app side of `scripts/perf/headless_key_latency.py`: a `wl_shm` client
-# that commits once per key, so the session's own KEY-LATENCY lines have a
-# client whose answer the harness knows the cause of.
+# A `wl_shm` client that commits once per key and times each key on its own
+# clock: the app side of the key-latency measurement, which a compositor
+# without a GPU import can still show.
 smithay-client-toolkit = "0.20.0"
 gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 

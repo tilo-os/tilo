@@ -14,6 +14,13 @@
 //! buffer can match the display pixel for pixel. It prints
 //! `READY <width>x<height>` once its first frame is committed and exits when
 //! the window is closed.
+//!
+//! Two lines per key say how long it took on this client's own clock:
+//! `CLIENT-KEY n=<key> key_to_commit_us=<us>`, from the key's dispatch to the
+//! commit that answers it, and `CLIENT-FRAME n=<key> key_to_frame_us=<us>`,
+//! from the dispatch to the frame callback the compositor sends once that
+//! commit is on screen. It is the same measurement against any session,
+//! because nothing in it depends on the session's own instrumentation.
 
 #![allow(
     clippy::unwrap_used,
@@ -56,7 +63,9 @@ use smithay_client_toolkit::{
     delegate_dmabuf,
     dmabuf::{DmabufFeedback, DmabufHandler, DmabufState},
 };
+use std::collections::VecDeque;
 use std::io::Write as _;
+use std::time::Instant;
 use wayland_client::protocol::wl_buffer;
 use wayland_client::{
     Connection, QueueHandle,
@@ -83,6 +92,13 @@ struct Client {
     dmabuf: Option<Dmabufs>,
     /// Buffer pixels per surface pixel.
     scale: u32,
+    /// The key being drawn: its number and when its press was dispatched.
+    pressing: Option<(u32, Instant)>,
+    /// Frame callbacks asked for, in the order the compositor answers them:
+    /// the key each commit was answering, when it was answering one.
+    showing: VecDeque<Option<(u32, Instant)>>,
+    /// Keys typed so far, the number on its line.
+    keys: u32,
 }
 
 /// LINEAR dma-bufs the client draws into with the CPU through GBM.
@@ -114,6 +130,8 @@ const CELL_W: u32 = 10;
 const CELL_H: u32 = 20;
 const BACKGROUND: [u8; 4] = [0x20, 0x20, 0x20, 0xFF];
 const INK: [u8; 4] = [0xE0, 0xE0, 0xE0, 0xFF];
+/// Bounds the frame callbacks waited on if a session never answers one.
+const MAX_SHOWING: usize = 64;
 
 fn main() {
     let mut app_id = "so.tilo.latency-client".to_owned();
@@ -186,6 +204,9 @@ fn main() {
         damage,
         dmabuf,
         scale,
+        pressing: None,
+        showing: VecDeque::new(),
+        keys: 0,
     };
     while !client.exit {
         queue.blocking_dispatch(&mut client).expect("dispatch");
@@ -315,6 +336,20 @@ impl Client {
             surface.damage_buffer(0, 0, w, h);
         }
         surface.frame(qh, surface.clone());
+        let commit_at = Instant::now();
+        // Every commit asks for one frame callback, so every callback answers
+        // the commit before it: a key's, or a redraw's the key did not cause.
+        let answer = self.pressing.take().map(|(number, press_at)| {
+            eprintln!(
+                "CLIENT-KEY n={number} key_to_commit_us={}",
+                commit_at.duration_since(press_at).as_micros(),
+            );
+            (number, press_at)
+        });
+        if self.showing.len() == MAX_SHOWING {
+            self.showing.pop_front();
+        }
+        self.showing.push_back(answer);
         self.window.commit();
     }
 }
@@ -445,7 +480,20 @@ impl CompositorHandler for Client {
         _: wl_output::Transform,
     ) {
     }
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    /// The compositor showed the frame the key's commit carries: the last
+    /// leg of the key's journey, on this client's own clock.
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
+        let Some(answer) = self.showing.pop_front() else {
+            return;
+        };
+        let Some((number, press_at)) = answer else {
+            return;
+        };
+        eprintln!(
+            "CLIENT-FRAME n={number} key_to_frame_us={}",
+            Instant::now().duration_since(press_at).as_micros(),
+        );
+    }
     fn surface_enter(
         &mut self,
         _: &Connection,
@@ -516,6 +564,7 @@ impl SeatHandler for Client {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        eprintln!("CLIENT-SEAT capability={capability:?}");
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             self.keyboard = Some(
                 self.seat_state
@@ -551,6 +600,7 @@ impl KeyboardHandler for Client {
         _: &[u32],
         _: &[Keysym],
     ) {
+        eprintln!("CLIENT-FOCUS key=enter");
     }
     fn leave(
         &mut self,
@@ -560,6 +610,7 @@ impl KeyboardHandler for Client {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
+        eprintln!("CLIENT-FOCUS key=leave");
     }
     fn press_key(
         &mut self,
@@ -569,6 +620,8 @@ impl KeyboardHandler for Client {
         _: u32,
         _: KeyEvent,
     ) {
+        self.keys = self.keys.wrapping_add(1);
+        self.pressing = Some((self.keys, Instant::now()));
         self.draw(qh, true);
     }
     fn repeat_key(
