@@ -165,7 +165,7 @@ pub fn renew_due_device_certificates() -> std::io::Result<()> {
     let due =
         tilo_identity_host::provisioning::next_device_certificate_renewal(&identity_dir, &paths);
     let now = tilo_clock::unix_now_ns();
-    if !due.is_some_and(|due| due <= now) {
+    if due.is_none_or(|due| due > now) {
         return Ok(());
     }
     tracing::info!(

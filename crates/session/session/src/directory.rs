@@ -668,112 +668,109 @@ impl Store {
         };
         while let Ok(answer) = read.try_recv() {
             answered = true;
-            match answer {
-                Answer::Read(Snapshot { listings, failures }) => {
-                    if listings.is_empty() && !failures.is_empty() {
-                        *self.status.borrow_mut() = Status::Failed(failures.join("; "));
-                        continue;
-                    }
-                    *self.listed.borrow_mut() = listings;
-                    *self.status.borrow_mut() = Status::Listed;
-                    // A site that could not be read is missing from the
-                    // list: say so, so a short list is never taken for
-                    // everything there is.
-                    if !self.settling() {
-                        *self.note.borrow_mut() = (!failures.is_empty()).then(|| {
-                            tilo_sheets::words(
-                                "directory-sites-unread",
-                                &[("error", &failures.join("; "))],
-                            )
-                        });
+            self.took(answer);
+        }
+        answered
+    }
+
+    /// Take in one answer from the worker: a directory read, or where a join
+    /// stands.
+    fn took(&self, answer: Answer) {
+        match answer {
+            Answer::Read(Snapshot { listings, failures }) => {
+                if listings.is_empty() && !failures.is_empty() {
+                    *self.status.borrow_mut() = Status::Failed(failures.join("; "));
+                    return;
+                }
+                *self.listed.borrow_mut() = listings;
+                *self.status.borrow_mut() = Status::Listed;
+                // A site that could not be read is missing from the list:
+                // say so, so a short list is never taken for everything
+                // there is.
+                if !self.settling() {
+                    *self.note.borrow_mut() = (!failures.is_empty()).then(|| {
+                        tilo_sheets::words(
+                            "directory-sites-unread",
+                            &[("error", &failures.join("; "))],
+                        )
+                    });
+                }
+            }
+            Answer::Joined { key, name, granted } => {
+                *self.joining.borrow_mut() = None;
+                match granted {
+                    Ok(granted) => self.granted(&key, &name, granted),
+                    Err(reason) => {
+                        tracing::info!(
+                            target: JOIN_FLOW_TARGET,
+                            key = %key,
+                            name = %name,
+                            %reason,
+                            outcome = "failed",
+                            "join: the workspace was not joined; the person stays where they were"
+                        );
+                        // The sheet says why, and the row says it was not
+                        // joined, to try again.
+                        *self.note.borrow_mut() = Some(tilo_sheets::words(
+                            "directory-join-failed",
+                            &[("name", &name), ("error", &reason)],
+                        ));
+                        self.failures.borrow_mut().insert(key, reason);
                     }
                 }
-                Answer::Joined { key, name, granted } => {
-                    *self.joining.borrow_mut() = None;
-                    match granted {
-                        Ok(granted) => {
-                            self.failures.borrow_mut().remove(&key);
-                            self.names
-                                .borrow_mut()
-                                .insert(granted.workspace.clone(), name.clone());
-                            tracing::info!(
-                                target: JOIN_FLOW_TARGET,
-                                workspace = %granted.workspace,
-                                key = %key,
-                                name = %name,
-                                outcome = "granted",
-                                "join: the workspace is joined and its slot is next"
-                            );
-                            self.joined.borrow_mut().push(Joined {
-                                workspace_id: granted.workspace,
-                                name,
-                                invitation: granted.invitation,
-                            });
-                        }
-                        Err(reason) => {
-                            tracing::info!(
-                                target: JOIN_FLOW_TARGET,
-                                key = %key,
-                                name = %name,
-                                %reason,
-                                outcome = "failed",
-                                "join: the workspace was not joined; the person stays where they were"
-                            );
-                            // The sheet says why, and the row says it was
-                            // not joined, to try again.
-                            *self.note.borrow_mut() = Some(tilo_sheets::words(
-                                "directory-join-failed",
-                                &[("name", &name), ("error", &reason)],
-                            ));
-                            self.failures.borrow_mut().insert(key, reason);
-                        }
+            }
+            Answer::Taken { key, name, granted } => {
+                *self.joining.borrow_mut() = None;
+                match granted {
+                    Ok(granted) => {
+                        let listed = if name.is_empty() {
+                            tilo_sheets::word("directory-joined-name")
+                        } else {
+                            name
+                        };
+                        self.granted(&key, &listed, granted);
                     }
-                }
-                Answer::Taken { key, name, granted } => {
-                    *self.joining.borrow_mut() = None;
-                    match granted {
-                        Ok(granted) => {
-                            self.names
-                                .borrow_mut()
-                                .insert(granted.workspace.clone(), name.clone());
-                            tracing::info!(
-                                target: JOIN_FLOW_TARGET,
-                                workspace = %granted.workspace,
-                                key = %key,
-                                name = %name,
-                                outcome = "granted",
-                                "join: the pasted link or code is joined and its slot is next"
-                            );
-                            self.joined.borrow_mut().push(Joined {
-                                workspace_id: granted.workspace,
-                                name: if name.is_empty() {
-                                    tilo_sheets::word("directory-joined-name")
-                                } else {
-                                    name
-                                },
-                                invitation: granted.invitation,
-                            });
-                        }
-                        Err(reason) => {
-                            tracing::info!(
-                                target: JOIN_FLOW_TARGET,
-                                key = %key,
-                                name = %name,
-                                %reason,
-                                outcome = "failed",
-                                "join: the pasted link or code joined no workspace"
-                            );
-                            *self.note.borrow_mut() = Some(tilo_sheets::words(
-                                "directory-code-failed",
-                                &[("error", &reason)],
-                            ));
-                            self.failures.borrow_mut().insert(key, reason);
-                        }
+                    Err(reason) => {
+                        tracing::info!(
+                            target: JOIN_FLOW_TARGET,
+                            key = %key,
+                            name = %name,
+                            %reason,
+                            outcome = "failed",
+                            "join: the pasted link or code joined no workspace"
+                        );
+                        *self.note.borrow_mut() = Some(tilo_sheets::words(
+                            "directory-code-failed",
+                            &[("error", &reason)],
+                        ));
+                        self.failures.borrow_mut().insert(key, reason);
                     }
                 }
             }
         }
-        answered
+    }
+
+    /// A join the worker answered with an invitation: keep the name it is
+    /// listed by for the slot made once the host admits this device, and hand
+    /// it to the desk.
+    fn granted(&self, key: &str, name: &str, granted: Granted) {
+        self.failures.borrow_mut().remove(key);
+        self.names
+            .borrow_mut()
+            .insert(granted.workspace.clone(), name.to_owned());
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            workspace = %granted.workspace,
+            key = %key,
+            name = %name,
+            outcome = "granted",
+            "join: the workspace is joined and its slot is next"
+        );
+        self.joined.borrow_mut().push(Joined {
+            workspace_id: granted.workspace,
+            name: name.to_owned(),
+            invitation: granted.invitation,
+        });
     }
 
     /// The name the site listed `workspace` under, once a join was granted:
@@ -1041,156 +1038,194 @@ fn join(door: &url::Url, person: &Person) -> Result<Granted, String> {
     let url = door
         .join("join")
         .map_err(|_| "that is not a web address".to_owned())?;
-    tracing::info!(
-        target: JOIN_FLOW_TARGET,
-        door = %url,
-        person = %hex::encode(person.user),
-        device = %hex::encode(person.device),
-        name = %person.name,
-        "join: presenting this device's certificate to the door"
-    );
-    let response = client
-        .post(url.as_str())
-        .timeout(ANSWER_TIMEOUT)
-        .json(&serde_json::json!({
-            "userPublicKey": hex::encode(person.user),
-            "displayName": person.name,
-        }))
-        .send()
-        .map_err(|error| {
-            let reason = said(
-                "a door could not be reached",
-                error,
-                "directory-error-unreachable",
-            );
-            tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                door = %url,
-                person = %hex::encode(person.user),
-                device = %hex::encode(person.device),
-                %reason,
-                outcome = "door unreachable",
-                "join: the door could not be reached"
-            );
-            reason
-        })?;
-    let status = response.status();
-    let bytes = response.bytes().map_err(|error| {
-        said(
-            "a door could not be read",
-            error,
-            "directory-error-unreachable",
-        )
-    })?;
-    if bytes.len() > MAX_ANSWER_BYTES {
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            door = %url,
-            status = status.as_u16(),
-            bytes = bytes.len(),
-            outcome = "refused",
-            "join: the door answered more than a door says"
-        );
-        return Err(said(
-            "a door answered more than a door says",
-            bytes.len(),
-            "directory-error-unreadable",
-        ));
-    }
+    let asking = Asking::of(&url, person);
+    let (status, bytes) = asking.ask(&client)?;
     if !status.is_success() {
-        let refusal = serde_json::from_slice::<DoorRefusal>(&bytes)
-            .inspect_err(|error| {
-                tracing::warn!(
-                    %error,
-                    status = status.as_u16(),
-                    "a door's refusal does not read back"
-                );
-            })
-            .ok()
-            .and_then(|refusal| refusal.error)
-            .unwrap_or_else(|| tilo_sheets::word("directory-error-status"));
-        // The host's own words, verbatim, so a refusal the person is shown is
-        // the one the device's log keeps.
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            door = %url,
-            person = %hex::encode(person.user),
-            device = %hex::encode(person.device),
-            status = status.as_u16(),
-            reason = %refusal,
-            outcome = "refused",
-            "join: the door refused"
-        );
-        // A 5xx is a host that is full or failing: worth trying again.
-        return Err(if status.is_server_error() {
-            said(
-                "a door's site could not be reached",
-                &refusal,
-                "directory-error-unreachable",
-            )
-        } else {
-            // The door said why in its own words: those are the ones a person
-            // reads.
-            refusal
-        });
+        let reason = door_refusal(status, &bytes);
+        asking.refused(status, &reason);
+        return Err(reason);
     }
     let answer: DoorAnswer = serde_json::from_slice(&bytes).map_err(|error| {
         let reason = format!("the workspace did not let you in: {error}");
+        asking.refused(status, &reason);
+        reason
+    })?;
+    asking.granted(&answer)
+}
+
+/// One join as the log keeps it: the door asked and the person it asks as.
+struct Asking<'a> {
+    url: &'a url::Url,
+    person: &'a Person,
+    person_hex: String,
+    device_hex: String,
+}
+
+impl<'a> Asking<'a> {
+    fn of(url: &'a url::Url, person: &'a Person) -> Self {
+        let asking = Self {
+            url,
+            person,
+            person_hex: hex::encode(person.user),
+            device_hex: hex::encode(person.device),
+        };
         tracing::info!(
             target: JOIN_FLOW_TARGET,
-            door = %url,
-            person = %hex::encode(person.user),
-            device = %hex::encode(person.device),
+            door = %asking.url,
+            person = %asking.person_hex,
+            device = %asking.device_hex,
+            name = %person.name,
+            "join: presenting this device's certificate to the door"
+        );
+        asking
+    }
+
+    /// Ask the door, and read what it answered.
+    fn ask(
+        &self,
+        client: &reqwest::blocking::Client,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
+        let response = client
+            .post(self.url.as_str())
+            .timeout(ANSWER_TIMEOUT)
+            .json(&serde_json::json!({
+                "userPublicKey": hex::encode(self.person.user),
+                "displayName": self.person.name,
+            }))
+            .send()
+            .map_err(|error| {
+                let reason = said(
+                    "a door could not be reached",
+                    error,
+                    "directory-error-unreachable",
+                );
+                tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    door = %self.url,
+                    person = %self.person_hex,
+                    device = %self.device_hex,
+                    %reason,
+                    outcome = "door unreachable",
+                    "join: the door could not be reached"
+                );
+                reason
+            })?;
+        let status = response.status();
+        let bytes = response.bytes().map_err(|error| {
+            said(
+                "a door could not be read",
+                error,
+                "directory-error-unreachable",
+            )
+        })?;
+        if bytes.len() > MAX_ANSWER_BYTES {
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                door = %self.url,
+                status = status.as_u16(),
+                bytes = bytes.len(),
+                outcome = "refused",
+                "join: the door answered more than a door says"
+            );
+            return Err(said(
+                "a door answered more than a door says",
+                bytes.len(),
+                "directory-error-unreadable",
+            ));
+        }
+        Ok((status, bytes.to_vec()))
+    }
+
+    /// The door refused: keep its reason, in its own words, in the log.
+    fn refused(&self, status: reqwest::StatusCode, reason: &str) {
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            door = %self.url,
+            person = %self.person_hex,
+            device = %self.device_hex,
             status = status.as_u16(),
             %reason,
             outcome = "refused",
-            "join: the door's answer does not read back"
+            "join: the door refused"
         );
-        reason
-    })?;
-    let verified = tilo_workspace_join::decode_and_verify_invitation_text(
-        &answer.invitation,
-        Some(person.user),
-        &tilo_user_identity::RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .map_err(|error| {
-        let reason = format!("the workspace did not let you in: {error}");
+    }
+
+    /// The door let this person in: verify its invitation for them, and
+    /// answer the workspace it grants.
+    fn granted(&self, answer: &DoorAnswer) -> Result<Granted, String> {
+        let verified = tilo_workspace_join::decode_and_verify_invitation_text(
+            &answer.invitation,
+            Some(self.person.user),
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| {
+            let reason = format!("the workspace did not let you in: {error}");
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                door = %self.url,
+                person = %self.person_hex,
+                device = %self.device_hex,
+                %reason,
+                outcome = "invitation refused",
+                "join: the invitation the door answered with is not for this person"
+            );
+            reason
+        })?;
+        let workspace = verified.grant().room.clone();
+        tilo_desktop_model::WorkspaceId::parse(&workspace).ok_or_else(|| {
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                door = %self.url,
+                workspace = %workspace,
+                outcome = "invitation refused",
+                "join: the door named an invalid workspace"
+            );
+            "the door named an invalid workspace".to_owned()
+        })?;
         tracing::info!(
             target: JOIN_FLOW_TARGET,
-            door = %url,
-            person = %hex::encode(person.user),
-            device = %hex::encode(person.device),
-            %reason,
-            outcome = "invitation refused",
-            "join: the invitation the door answered with is not for this person"
-        );
-        reason
-    })?;
-    let workspace = verified.grant().room.clone();
-    tilo_desktop_model::WorkspaceId::parse(&workspace).ok_or_else(|| {
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            door = %url,
+            door = %self.url,
             workspace = %workspace,
-            outcome = "invitation refused",
-            "join: the door named an invalid workspace"
+            person = %self.person_hex,
+            device = %self.device_hex,
+            outcome = "granted",
+            "join: the door granted this person an invitation to its workspace"
         );
-        "the door named an invalid workspace".to_owned()
-    })?;
-    tracing::info!(
-        target: JOIN_FLOW_TARGET,
-        door = %url,
-        workspace = %workspace,
-        person = %hex::encode(person.user),
-        device = %hex::encode(person.device),
-        outcome = "granted",
-        "join: the door granted this person an invitation to its workspace"
-    );
-    Ok(Granted {
-        workspace,
-        invitation: answer.invitation,
-    })
+        Ok(Granted {
+            workspace,
+            invitation: answer.invitation.clone(),
+        })
+    }
+}
+
+/// What a door that refused said, in the person's words: its own reason when
+/// it gave one, a sentence of the sheet's when it did not, and the site
+/// being unreachable when the host failed rather than refused.
+fn door_refusal(status: reqwest::StatusCode, bytes: &[u8]) -> String {
+    let refusal = serde_json::from_slice::<DoorRefusal>(bytes)
+        .inspect_err(|error| {
+            tracing::warn!(
+                %error,
+                status = status.as_u16(),
+                "a door's refusal does not read back"
+            );
+        })
+        .ok()
+        .and_then(|refusal| refusal.error)
+        .unwrap_or_else(|| tilo_sheets::word("directory-error-status"));
+    // A 5xx is a host that is full or failing: worth trying again.
+    if status.is_server_error() {
+        said(
+            "a door's site could not be reached",
+            &refusal,
+            "directory-error-unreachable",
+        )
+    } else {
+        // The door said why in its own words: those are the ones a person
+        // reads.
+        refusal
+    }
 }
 
 /// What the community site and `typed` list, in the order the sheet shows
