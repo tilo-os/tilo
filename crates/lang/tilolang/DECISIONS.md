@@ -152,8 +152,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   `image` are `ui.Text`, `ui.BlockEditor`, ... : `prims.rs` names the component (`Prim::component`)
   and `checker::component::component_prim` checks and lowers the call as the component's own, so
   its props, slots, events and bindings are the description's and nothing is added. `button` (a
-  declared action's button) and `facts` build `ui.Button` and `ui.PropertyList` (`Prim::builds`)
-  because their arguments are the statement form's own. Removed with replacements named in
+  declared action's button) builds `ui.Button` (`Prim::builds`) because its arguments are the
+  statement form's own. `opening(of)` and `facts(of)` read the fields the type declares and build
+  from them: the page's start, and one wrapping row of chips, each the field it shows (a day's
+  `ui.DateField`, a person's chip). Removed with replacements named in
   E096: `card` (`ui.Card(item: x, title: meta(x).title)`), `column` (`stack`), `date`
   (`ui.DateField`, or `ui.DatePicker` for a calendar), and the arguments a component's own props
   carry (`text(x, style:)`, `button(act, size:)`, `image(src, width:)`). Layout stays the

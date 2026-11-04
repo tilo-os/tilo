@@ -800,7 +800,8 @@ pub enum UiKind {
     },
     /// `window name: T = default` or `lens name: T = default`.
     State(StateDecl),
-    /// `"Due": d.due`: one fact of a `facts { }` block.
+    /// `"Due": d.due`: a labelled fact, which E098 rejects — a fact is a chip derived from
+    /// the field it shows (`facts(of)`), never a label and a value.
     Fact {
         node: NodeId,
         label: Expr,

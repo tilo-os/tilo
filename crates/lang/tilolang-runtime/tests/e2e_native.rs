@@ -16,6 +16,7 @@ mod cases {
 type Note {
     title: Text (title)
     pinned: Bool = false
+    due: Option<Date> = .none
 }
 
 type Notebook {
@@ -43,6 +44,10 @@ primary action add(nb: Notebook, title: Text, pinned: Bool) -> Note (icon: .plus
     return nb.notes.insert(Note(title: title, pinned: pinned))
 }
 
+action plan(n: Note) {
+    n.due = .some(Date("2026-11-02"))
+}
+
 view note_row(n: Note) {
     row(n.title, mark: if n.pinned { .pin })
 }
@@ -62,10 +67,7 @@ view detail(n: Note) {
     lens shown: NoteFilter = .pinned
     std.document(n) {
         choice(bind: shown)
-        facts {
-            "Title": n.title
-            "Pinned": n.pinned
-        }
+        facts(n)
     }
 }
 "#;
@@ -271,18 +273,24 @@ view detail(n: Note) {
             text_prop(of_kind(view.tree(), "choice")[0], "selected"),
             "all"
         );
-        let facts = of_kind(view.tree(), "ui.Property");
-        // The view's own facts, and nothing of the document's history.
-        let pairs: Vec<(String, Value)> = facts
-            .iter()
-            .map(|f| (text_prop(f, "label"), f.props["value"].clone()))
-            .collect();
+        // The page's facts are the chips its type's fields make, bound to those fields: the
+        // day it is due, which is a day a note need not hold.
+        let chip = |view: &tilolang_runtime::ViewInstance| -> Value {
+            let tree = view.tree();
+            let chips = of_kind(tree, "ui.DateField");
+            assert_eq!(chips.len(), 1, "one day fact: {}", dump(tree));
+            assert_eq!(chips[0].props.get("optional"), Some(&Value::Int(1)));
+            view.bound_value(&chips[0].key).expect("the chip is bound")
+        };
+        assert_eq!(chip(&view), Value::none(), "a note holds no day yet");
+        let plan = app.action("plan");
+        rt.invoke_action(&me(), (plan.as_str(), vec![Value::resource(&note.target)]))
+            .unwrap();
+        view.poll_patches().unwrap();
         assert_eq!(
-            pairs,
-            vec![
-                ("Title".to_string(), Value::text("Q3 plan")),
-                ("Pinned".to_string(), Value::Int(1)),
-            ]
+            chip(&view),
+            Value::some(Value::text("2026-11-02")),
+            "the chip shows the day the action set"
         );
     }
 }

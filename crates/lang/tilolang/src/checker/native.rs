@@ -1503,9 +1503,11 @@ impl Checker<'_> {
     ) -> Option<Ex> {
         let env = self.env;
         let d = env.toolkit.and_then(|toolkit| toolkit.get("DateField"))?;
+        // One chip per field: a type with two days puts two chips in the row, each keyed by
+        // the field it shows.
         let n = self.new_node(
             &crate::toolkit::kind(&d.name),
-            concat(key.clone(), Ex::str("#date")),
+            concat(key.clone(), Ex::str(&format!("#date-{}", field.name))),
         );
         let view = Ex::local(n, Ty::View);
         self.bind_part(&view, d, b, field, span);
@@ -1533,7 +1535,7 @@ impl Checker<'_> {
         let d = env.toolkit.and_then(|toolkit| toolkit.get("PersonField"))?;
         let n = self.new_node(
             &crate::toolkit::kind(&d.name),
-            concat(key.clone(), Ex::str("#person")),
+            concat(key.clone(), Ex::str(&format!("#person-{}", field.name))),
         );
         let view = Ex::local(n, Ty::View);
         self.bind_part(&view, d, b, field, span);
