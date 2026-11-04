@@ -514,14 +514,14 @@ impl Records {
         let mut rest = imported;
         while !rest.is_empty() {
             let conversation = Self::conversation(&open);
-            let (room, text_room) = match conversation.parts().last() {
+            let (capacity, text_capacity) = match conversation.parts().last() {
                 Some((head, part)) if conversation.post_part() == *head => (
                     PART_MESSAGES.saturating_sub(part.messages.len()).max(1),
                     PART_TEXT_BYTES.saturating_sub(part.text_bytes()).max(1),
                 ),
                 _ => (PART_MESSAGES, PART_TEXT_BYTES),
             };
-            let tail = imported_room(&mut rest, room, text_room);
+            let tail = imported_room(&mut rest, capacity, text_capacity);
             let chunk = std::mem::take(&mut rest);
             rest = tail;
             let taken = open

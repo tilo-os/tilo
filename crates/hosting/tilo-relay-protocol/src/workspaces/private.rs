@@ -36,7 +36,9 @@ pub enum PrivateOperation {
         /// Exact other participant identifier.
         peer: String,
     },
-    /// Read a bounded private message page.
+    /// Read a bounded private message page: what a pair's devices import the
+    /// old store's conversation with, and the read-only part of this
+    /// vocabulary. It goes with the store, the release after the import.
     Read {
         /// Exact other participant identifier.
         peer: String,
