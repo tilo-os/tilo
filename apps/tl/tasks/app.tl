@@ -150,22 +150,24 @@ migration action adopt_steps(tasks: Tasks) {
     }
 }
 
-/// Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`.
-/// When it says when ("Call the landlord tomorrow 9am"), that is its due day and moment and the
-/// rest its title; without, a task added on Today is due today. An entry with nothing in it
-/// adds nothing. It is the entry's, not a command: the entry is how a task is added.
+/// Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in
+/// the lane `s` of its board. When it says when ("Call the landlord tomorrow 9am"), that is its
+/// due day and moment and the rest its title; without, a task added on Today is due today. An
+/// entry with nothing in it adds nothing. It is the entry's, not a command: the entry is how a
+/// task is added there, and the task joins the list in place rather than opening.
 internal action quick_add(
     tasks: Tasks,
     entry: Text,
     p: Option<Project> = .none,
     today: Bool = false,
+    s: Option<Section> = .none,
 ) {
     let said = dated(entry, now)
     let due: Option<Date> = if let day = said.day {
         .some(day)
     } else if today { dated("today", now).day } else { .none }
     if said.text != "" {
-        tasks.items.insert(Task(title: said.text, due: due, at: said.at, project: p))
+        tasks.items.insert(Task(title: said.text, due: due, at: said.at, project: p, section: s))
     }
 }
 
@@ -429,8 +431,8 @@ destructive action remove_section(s: Section) (icon: .trash, label: "Delete sect
 }
 
 /// Adds a task to a project, at the end of the lane `s` of its board (none for the first), under
-/// the title the entry that adds there carries: a project's primary action, so that entry is
-/// where its key and its menu row bring the person.
+/// a title a program or an agent gives it. It is a project's primary action, so its key and its
+/// menu row bring the person to the entry that adds in that lane, where they type the title.
 primary action add_to(p: Project, title: Text, s: Option<Section> = .none) -> Task (
     icon: .plus,
     label: "New task",
@@ -535,6 +537,9 @@ view home(t: Tasks) {
     let title = chosen?.label ?? "Tasks"
     // A project's place adds to that project, in the place's own list.
     let project = if chosen?.group != .none { t.projects.find(p -> p.name == title) } else { .none }
+    // The window's primary action is the one whose key puts the keyboard in the entry at the
+    // list's end, so it is handed to the rows the entry stands under.
+    let primary = actions(t).find(a -> a.primary and a.available)
     ui.NavShell(
         content_kind: .document,
         sidebar_title: "Tasks",
@@ -553,7 +558,7 @@ view home(t: Tasks) {
             std.rows(
                 shown,
                 "No tasks here",
-                .none,
+                primary,
                 .some("list-checks"),
                 group: .due,
                 closed: .folded,
@@ -586,6 +591,7 @@ view project_page(p: Project) {
 /// A project's tasks as a list, with the entry that adds to it at their foot.
 view project_list(p: Project) {
     let shown = tasks_of(p)
+    let primary = actions(p).find(a -> a.primary and a.available)
     ui.NavShell(content_kind: .document, overview_title: p.name, overview_count: shown.len()) {
         overview_actions: {
             std.header(actions(p), entry: true)
@@ -594,7 +600,7 @@ view project_list(p: Project) {
             std.rows(
                 shown,
                 "No tasks yet",
-                .none,
+                primary,
                 .some("folder"),
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
@@ -625,7 +631,7 @@ view project_board(p: Project) {
                 ui.BoardLane(title: "No section", count: loose.count()) {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
-                        std.add_entry(primary, "New task", text -> add_to(p, text, .none))
+                        std.add_entry(primary, "New task", text -> quick_add(tasks, text, .some(p)))
                     }
                     for t in loose {
                         task_card(t, sections)
@@ -636,7 +642,11 @@ view project_board(p: Project) {
                     ui.BoardLane(s, title: s.name, count: cards.count()) {
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
                         foot: {
-                            std.add_entry(primary, "New task", text -> add_to(p, text, .some(s)))
+                            std.add_entry(
+                                primary,
+                                "New task",
+                                text -> quick_add(tasks, text, .some(p), false, .some(s)),
+                            )
                         }
                         for t in cards {
                             task_card(t, sections)

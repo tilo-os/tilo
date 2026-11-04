@@ -208,10 +208,7 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
     app.harness().type_text("Buy tape");
     app.harness().key("Enter");
     settle(&mut app);
-    // The task it made opens in its own window: the project's board, with the new card in the
-    // lane typed in, is a click away.
-    click_item(&mut app, "Move flat");
-    settle(&mut app);
+    // The card joins the lane in place: the board stays where it is.
     let added = cards(&mut app)
         .into_iter()
         .find(|(name, _)| name.contains("Buy tape"))
