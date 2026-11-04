@@ -43,6 +43,9 @@ use crate::direct_parts::{
 pub const OWNER: &str = "so.tilo.chat";
 /// The longest message text, in bytes: the door's own bound.
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
+/// What a conversation answers while its pair is being announced: the device
+/// that signs the pair may answer a sync later.
+pub(crate) const ANNOUNCING: &str = "the pair is being announced";
 /// How many people one window imports from the old store per sync: the
 /// import is a migration, not a reason to stall a frame.
 const IMPORTS_PER_SYNC: usize = 4;
@@ -186,6 +189,10 @@ pub(crate) struct Records {
     pairs_generation: Cell<Option<u64>>,
     /// The pairs this window announced, so a send asks the workspace once.
     announced: RefCell<BTreeSet<String>>,
+    /// The pairs this window is announcing: the device that signs one may
+    /// answer a sync later (a page signs where its key is kept), and the
+    /// request is held here until it does.
+    announcing: RefCell<BTreeMap<String, ui::person_chat::Pending<()>>>,
 }
 
 impl Records {
@@ -207,6 +214,7 @@ impl Records {
             pairs: RefCell::new(None),
             pairs_generation: Cell::default(),
             announced: RefCell::default(),
+            announcing: RefCell::default(),
         })
     }
 
@@ -390,7 +398,8 @@ impl Records {
 
     /// Announce the pair with `peer` to the workspace, so that its record is
     /// the two people's: the door holds the device key that proves it, and
-    /// names the other person by their root public key.
+    /// names the other person by their root public key. Answers
+    /// [`ANNOUNCING`] while the device that signs it has not answered yet.
     fn announce(&self, peer: &str) -> Result<(), String> {
         let person = self
             .person(peer)
@@ -399,13 +408,39 @@ impl Records {
         if self.announced.borrow().contains(&pair) {
             return Ok(());
         }
-        match ui::person_chat::announce(&person.root).take() {
-            Some(Ok(())) => {
-                self.announced.borrow_mut().insert(pair);
-                Ok(())
-            }
-            Some(Err(error)) => Err(error),
-            None => Err("the pair is being announced".into()),
+        if self.announcing.borrow().contains_key(&pair) {
+            let answered = self
+                .announcing
+                .borrow()
+                .get(&pair)
+                .and_then(ui::person_chat::Pending::take);
+            return match answered {
+                None => Err(ANNOUNCING.into()),
+                Some(Ok(())) => {
+                    self.announcing.borrow_mut().remove(&pair);
+                    self.announced.borrow_mut().insert(pair);
+                    Ok(())
+                }
+                // The workspace refused it, or the door could not ask: the
+                // pair is not being announced any more, and the window says so.
+                Some(Err(error)) => {
+                    self.announcing.borrow_mut().remove(&pair);
+                    Err(error)
+                }
+            };
+        }
+        self.announcing
+            .borrow_mut()
+            .insert(pair, ui::person_chat::announce(&person.root));
+        Err(ANNOUNCING.into())
+    }
+
+    /// Whether the pair of the conversation with `peer` is being announced:
+    /// the conversation opens once the device that signs it answers.
+    pub(crate) fn announcing(&self, peer: &str) -> bool {
+        match self.announce(peer) {
+            Ok(()) => false,
+            Err(error) => error == ANNOUNCING,
         }
     }
 
@@ -439,11 +474,16 @@ impl Records {
     /// by page, into the parts of its record. Answers whether it had nothing
     /// more to take in.
     fn import(&self, peer: &str) -> bool {
+        // The door names people as the workspace does; what the record keeps
+        // is under the key its conversations use.
+        let Some(root) = self.person(peer).map(|person| person.root) else {
+            return true;
+        };
         let mut after = 0;
         let mut imported = Vec::new();
         loop {
             // The old store has nothing more here: done, whatever came.
-            let Some(Ok(page)) = ui::person_chat::import_archive(peer, after).take() else {
+            let Some(Ok(page)) = ui::person_chat::import_archive(&root, after).take() else {
                 break;
             };
             after = page.next_sequence;

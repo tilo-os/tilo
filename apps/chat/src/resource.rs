@@ -218,10 +218,9 @@ impl ResourceApp for ChatShell {
         };
         app.attach_framework(cx.dispatcher());
         // A live window on this device keeps its direct conversations in the
-        // pair's own record, in the workspace it shares with its people. A
-        // capture and a past version keep none, and a page reaches its
-        // conversations through its host, which keeps no workspace records of
-        // its own to attach.
+        // pair's own record, in the workspace it shares with its people: the
+        // workspace's records are the window's on every target, a page's
+        // included. A capture and a past version keep none.
         if live && let (Some(handle), Some(workspace)) = (cx.workspace_handle(), cx.workspace()) {
             app.attach_direct(handle, workspace);
         }
@@ -662,43 +661,25 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
                 chat.borrow_mut().answer_effect(effect)
             });
         }
-        // The records here answer these at once; a page's host later. Either
-        // way the effect answers when it has.
+        // A message goes into the pair's record, which answers at once; only
+        // the pair's announcement waits for a page's own device to sign it.
         ChatEffect::SendDirectMessage { public_key, text } => {
             let invocation = cx.invocation();
-            let reply = ui::person_chat::with_invocation(invocation, || {
+            let conversation = ui::person_chat::with_invocation(invocation, || {
                 chat.borrow_mut()
                     .send_person_message(public_key, text, invocation)
             })?;
-            if let Some(answer) = reply.take() {
-                return chat.borrow_mut().sent_person_answer(public_key, answer);
-            }
-            let Some(later) = reply.later() else {
-                return Err(crate::i18n::t("chat-person-chat-unavailable"));
-            };
-            let public_key = public_key.clone();
-            let chat = Rc::clone(chat);
-            return Ok(cx.spawn(
-                |_| later,
-                move |(), answer, _| chat.borrow_mut().sent_person_answer(&public_key, answer),
-            ));
+            return chat
+                .borrow_mut()
+                .sent_person_answer(public_key, Ok(conversation));
         }
         ChatEffect::ReadDirectConversation { public_key } => {
-            let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+            let conversation = ui::person_chat::with_invocation(cx.invocation(), || {
                 chat.borrow_mut().read_person_conversation(public_key)
             })?;
-            if let Some(answer) = reply.take() {
-                return chat.borrow_mut().read_person_answer(public_key, answer);
-            }
-            let Some(later) = reply.later() else {
-                return Err(crate::i18n::t("chat-person-chat-unavailable"));
-            };
-            let public_key = public_key.clone();
-            let chat = Rc::clone(chat);
-            return Ok(cx.spawn(
-                |_| later,
-                move |(), answer, _| chat.borrow_mut().read_person_answer(&public_key, answer),
-            ));
+            return chat
+                .borrow_mut()
+                .read_person_answer(public_key, Ok(conversation));
         }
         _ => {}
     }

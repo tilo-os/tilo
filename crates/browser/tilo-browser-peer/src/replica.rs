@@ -255,6 +255,25 @@ impl Replicas {
         .ok()
     }
 
+    /// How `workspace_id`'s workspace names itself, as a pair's record id is
+    /// named with.
+    pub(crate) fn workspace(&self, workspace_id: u64) -> Option<String> {
+        self.with_workspace(workspace_id, |view| {
+            Ok(view.peer().workspace_id().to_owned())
+        })?
+        .ok()
+    }
+
+    /// The pairs `workspace_id`'s governance holds a proof of that lasts now,
+    /// by pair id, each with its two people: which conversation records this
+    /// page may open.
+    pub(crate) fn direct_pairs(&self, workspace_id: u64) -> Option<BTreeMap<String, [String; 2]>> {
+        self.with_workspace(workspace_id, |view| {
+            Ok(view.peer().governance().direct_pairs(SystemTime::now()))
+        })?
+        .ok()
+    }
+
     /// One line per workspace for diagnostics: the host it was joined through.
     pub(crate) fn describe(&self) -> String {
         self.workspaces

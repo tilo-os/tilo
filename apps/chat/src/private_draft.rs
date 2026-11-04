@@ -20,7 +20,8 @@ impl ChatApp {
         }
         let ui::private_draft::Target::Person { public_key } = &draft.target;
         self.open_person_conversation(public_key)?;
-        // The native host opens at once; a draft never waits for a page's workspace.
+        // A native host opens at once; a page's first conversation with
+        // someone opens once the workspace records the pair its device signed.
         if self.direct_person.as_deref() != Some(public_key.as_str()) {
             return Err("private conversation is not open yet".into());
         }

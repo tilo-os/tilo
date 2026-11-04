@@ -583,7 +583,7 @@ fn import_calls(socket: &PathBuf, keys: &Keys) -> ImportProof {
         .enable_all()
         .build()
         .expect("a runtime for the app");
-    let peer = keys.peer_key();
+    let peer = root_hex(keys.peer_cert.user_public_key);
     runtime.block_on(async {
         let client = connect(socket);
         let mine = client
@@ -677,7 +677,10 @@ fn chat_imports_the_conversation_the_old_store_holds() {
         serde_json::json!({}),
         "the pair the history moves into is proved first"
     );
-    assert_eq!(proof.first["peer"], fixture.keys.peer_key());
+    assert_eq!(
+        proof.first["peer"],
+        root_hex(fixture.keys.peer_cert.user_public_key)
+    );
     let messages = proof.first["messages"]
         .as_array()
         .expect("the old conversation's messages");

@@ -47,8 +47,9 @@ pub struct ImportPage {
     #[serde(default)]
     pub next_sequence: u64,
 }
-/// A message as the old private store kept it: its id, its author, its text,
-/// and when the owner took it in.
+/// A message as the old private store kept it: its id, its author (under the
+/// key a conversation keeps that person), its text, and when the owner took it
+/// in.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StoredMessage {
     pub id: String,
@@ -92,7 +93,9 @@ pub enum Request {
     /// open here.
     Pairs,
     /// One page of the conversation with `public_key` as the old private
-    /// store keeps it, read for the import into the pair's record.
+    /// store keeps it, read for the import into the pair's record. People are
+    /// named as the workspace names them here, on every target, whichever
+    /// store holds the old conversation.
     Import {
         public_key: String,
         after_sequence: u64,
@@ -375,8 +378,9 @@ pub fn pairs_generation() -> u64 {
 }
 
 /// The workspace's word that the pairs may have changed: every window
-/// reading them is woken, and asks for them again.
-pub(crate) fn pairs_changed() {
+/// reading them is woken, and asks for them again. A native host says it when
+/// its governance changes; a page says it when its replica admits a pair.
+pub fn pairs_changed() {
     PAIRS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     wake_all();
 }

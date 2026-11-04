@@ -141,10 +141,13 @@ impl PersonChatServices for PersonChat {
                     after_sequence,
                     limit: PAGE,
                 };
+                // The door names people as the workspace does; the old store
+                // that kept their conversations spells them by their hash.
+                let stored = tilo_peer_state::owner::person_store_key(peer_key(&public_key)?);
                 let read =
-                    owner.read_direct_conversation(workspace, &public_key, &authority, page, now);
+                    owner.read_direct_conversation(workspace, &stored, &authority, page, now);
                 match read {
-                    Ok(value) => import_page(value),
+                    Ok(value) => import_page(&public_key, value),
                     Err(error) if error == PRIVATE_CONVERSATION_NOT_OPENED => {
                         serde_json::json!({
                             "peer": public_key,
@@ -198,7 +201,7 @@ const IMPORT_TEXT_BYTES: usize = 128 * 1024;
 
 /// One import page as Chat reads it: the stored messages it carries, and
 /// where the next page starts.
-fn import_page(value: DirectConversation) -> serde_json::Value {
+fn import_page(peer: &str, value: DirectConversation) -> serde_json::Value {
     let mut carried = 0usize;
     let mut next_sequence = value.next_sequence;
     let mut has_more = value.has_more;
@@ -220,7 +223,7 @@ fn import_page(value: DirectConversation) -> serde_json::Value {
         }));
     }
     serde_json::json!({
-        "peer": value.peer,
+        "peer": peer,
         "messages": messages,
         "has_more": has_more,
         "next_sequence": next_sequence,

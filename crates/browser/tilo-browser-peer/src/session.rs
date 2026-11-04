@@ -434,6 +434,13 @@ pub enum PeerEvent {
         /// Each member's layout is their own.
         personal: bool,
     },
+    /// The pairs `workspace_id`'s governance holds a proof of changed: a pair
+    /// was admitted, so the record two people share is one this page reads
+    /// now.
+    Pairs {
+        /// The workspace id.
+        workspace_id: u64,
+    },
 }
 
 /// What the host addressed to this device that it only passes on: an
@@ -529,6 +536,11 @@ enum Command {
         PrivateCompletion,
     ),
     Node(NodeCompletion),
+    /// The pairs the page's workspace holds a proof of.
+    Pairs(u64, PairsCompletion),
+    /// Announce the pair this page's person shares with `other`, signed here
+    /// and recorded by the host.
+    AnnouncePair(u64, [u8; 32], Completion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
     /// The network is back: a session waiting out its backoff tries again
@@ -578,6 +590,10 @@ pub type LaneCompletion = Box<dyn FnOnce(Result<LaneAnswer, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
+/// Called once with the pairs a page's workspace holds a proof of, by pair id,
+/// each with its two people; see [`PeerHandle::pairs_then`].
+pub type PairsCompletion =
+    Box<dyn FnOnce(Result<std::collections::BTreeMap<String, [String; 2]>, String>) + Send>;
 
 type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
 
@@ -721,6 +737,7 @@ impl PeerHandle {
         crate::replica::decide_with_page_surfaces();
         let task = Task {
             replicas: crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store)),
+            pairs_seen: BTreeMap::new(),
             commands: commands.downgrade(),
             config,
             signer,
@@ -1005,6 +1022,27 @@ impl PeerHandle {
         self.send(Command::Administer(request, done))
     }
 
+    /// The pairs `workspace_id`'s governance holds a proof of that lasts now,
+    /// as this page's replica of the workspace decides them; `done` receives
+    /// them, or why the replica names none.
+    pub fn pairs_then(&self, workspace_id: u64, done: PairsCompletion) -> Result<(), String> {
+        self.send(Command::Pairs(workspace_id, done))
+    }
+
+    /// Announce the pair this page's person shares with `other` in
+    /// `workspace_id`: signed by the device key this page's custody holds, and
+    /// recorded by the workspace's host in its governance, so both people's
+    /// devices read and change the pair's record. `done` says when the host
+    /// holds it.
+    pub fn announce_pair_then(
+        &self,
+        workspace_id: u64,
+        other: [u8; 32],
+        done: Completion,
+    ) -> Result<(), String> {
+        self.send(Command::AnnouncePair(workspace_id, other, done))
+    }
+
     /// Ask the host which device runs the person's apps beside it (a
     /// node's session), over the current HTTPS session; `done` receives it,
     /// or `None` from a host that runs none.
@@ -1259,6 +1297,9 @@ struct Task {
     received: BTreeSet<[u8; 32]>,
     /// Each joined workspace as its governance admits it.
     replicas: crate::replica::Replicas,
+    /// The pairs each joined workspace's governance held when this session
+    /// last said which they are: a pair admitted since is told once.
+    pairs_seen: BTreeMap<u64, BTreeSet<String>>,
     /// Open compaction requests: workspace, route and the entries delivered when
     /// the request arrived.
     compactions: BTreeMap<[u8; 16], Compaction>,
@@ -1995,6 +2036,18 @@ impl Task {
                 Self::request_node(done, client);
                 true
             }
+            Command::Pairs(workspace_id, done) => {
+                done(
+                    self.replicas
+                        .direct_pairs(workspace_id)
+                        .ok_or_else(|| "the workspace's governance is not here".to_owned()),
+                );
+                true
+            }
+            Command::AnnouncePair(workspace_id, other, done) => {
+                self.announce_pair(workspace_id, other, done, client);
+                true
+            }
             // Handled by the caller's loop, and a watching page's writes by
             // `unless_watching`.
             Command::Reconnect | Command::Retry | Command::Refresh | Command::Close => true,
@@ -2238,6 +2291,68 @@ impl Task {
             Some(Link::Iroh { .. }) => done(Err("workspaces are administered over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
+    }
+
+    /// Announce the pair this page's person shares with `other` in
+    /// `workspace_id`: the announcement is this device's, signed where the key
+    /// is kept, and the host records it in the workspace's governance.
+    fn announce_pair(
+        &self,
+        workspace_id: u64,
+        other: [u8; 32],
+        done: Completion,
+        client: Option<&Link>,
+    ) {
+        let Some(workspace) = self.replicas.workspace(workspace_id) else {
+            done(Err("the workspace's governance is not here".into()));
+            return;
+        };
+        let device = &self.config.cert;
+        let (pair, announcement, digest) = match tilo_peer_state::workspace::DirectPair::unsigned(
+            &workspace,
+            [hex::encode(device.user_public_key), hex::encode(other)],
+            device,
+        ) {
+            Ok(unsigned) => unsigned,
+            Err(error) => {
+                done(Err(error));
+                return;
+            }
+        };
+        let Some(Link::Https(link)) = client else {
+            done(Err("a pair is announced over the host's door".into()));
+            return;
+        };
+        let http = link.client().clone();
+        let session = link.session().to_owned();
+        let signer = Arc::clone(&self.signer);
+        n0_future::task::spawn(async move {
+            let Ok(signature) = signer.sign(digest.to_vec()).await else {
+                done(Err("the page's device did not sign the pair".into()));
+                return;
+            };
+            let announcement = announcement.with_signature(&signature);
+            let Ok(announcement) = serde_json::to_vec(&announcement) else {
+                done(Err("the pair does not encode".into()));
+                return;
+            };
+            let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Pair {
+                workspace,
+                pair,
+                announcement,
+            };
+            done(
+                match tilo_relay_client::https::workspaces(http.as_ref(), &session, &request).await
+                {
+                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Paired) => Ok(()),
+                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Refused(reason)) => {
+                        Err(reason)
+                    }
+                    Ok(_) => Err("unexpected pair reply".into()),
+                    Err(error) => Err(error.to_string()),
+                },
+            );
+        });
     }
 
     fn request_node(done: NodeCompletion, client: Option<&Link>) {
@@ -2726,6 +2841,22 @@ impl Task {
             tilo_clock::unix_now_ms(),
         );
         self.absorb(changes);
+        // A pair admitted since this page last said which it holds is a record
+        // its person's apps read now: told once, so none of them asks again.
+        if let Some(pairs) = self.replicas.direct_pairs(workspace_id) {
+            let pairs: BTreeSet<String> = pairs.into_keys().collect();
+            if self.pairs_seen.get(&workspace_id) != Some(&pairs) {
+                self.pairs_seen.insert(workspace_id, pairs);
+                self.emit(&PeerEvent::Pairs { workspace_id });
+            }
+        }
+        // A record opened before the governance admitted it (a pair announced
+        // just now) waits with its channel unopened: opening it here asks the
+        // participants for the keys the writes it holds wait on.
+        let unopened: Vec<DocumentRoute> = self.held_outbound.keys().cloned().collect();
+        for route in unopened {
+            self.open_channel(&route);
+        }
         // Writes held for a certificate or governance the workspace now has; the
         // workspace's `Ready` decides those of its replay.
         if lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true) {

@@ -68,20 +68,46 @@ impl DirectPair {
         if key.verifying_key().to_bytes() != device.device_public_key {
             return Err("the signing key is not the certified device's".into());
         }
+        let (pair, mut announcement, digest) = Self::unsigned(workspace, people, device)?;
+        let signature = key.sign(&digest);
+        announcement.proof.signature = hex::encode(signature.to_bytes());
+        Ok((pair, announcement))
+    }
+
+    /// [`Self::signed`] up to its signature, for a device whose key signs
+    /// where it is kept: the pair id, the announcement still unsigned, and
+    /// what [`Self::with_signature`] takes.
+    ///
+    /// # Errors
+    ///
+    /// The two people are not two distinct roots, or the announcement does not
+    /// encode.
+    pub fn unsigned(
+        workspace: &str,
+        people: [String; 2],
+        device: &DeviceCert,
+    ) -> Result<(String, Self, [u8; 32]), String> {
         let mut people = people;
         people.sort_unstable();
         let pair = collab_types::direct_pair_id(workspace, &people[0], &people[1])
             .ok_or("a pair is two distinct people of this workspace")?;
-        let mut announcement = Self {
+        let announcement = Self {
             people,
             proof: DirectPairProof {
                 device_cert: serde_json::to_value(device).map_err(|error| error.to_string())?,
                 signature: String::new(),
             },
         };
-        let signature = key.sign(&Self::signing_digest(workspace, &pair));
-        announcement.proof.signature = hex::encode(signature.to_bytes());
-        Ok((pair, announcement))
+        let digest = Self::signing_digest(workspace, &pair);
+        Ok((pair, announcement, digest))
+    }
+
+    /// This announcement signed: `signature` is the device's Ed25519 signature
+    /// over what [`Self::unsigned`] answered with.
+    #[must_use]
+    pub fn with_signature(mut self, signature: &[u8; 64]) -> Self {
+        self.proof.signature = hex::encode(signature);
+        self
     }
 
     /// What the signing device signs: the workspace and the pair id, so a

@@ -1,8 +1,9 @@
 //! Chat's direct conversations as its views show them: the state, drafts and
 //! effects of the person-only conversation, answered by the pair records this
-//! window holds ([`Records`]). A page keeps no workspace records of its own
-//! and reaches its conversations through its host on the person door until
-//! the record is there; both answer this module's [`Answer`].
+//! window holds ([`Records`]). The pair a conversation needs is announced
+//! where its person's device is: at once from a native session's door, and on
+//! a page as the workspace answers the signature its page made, which the
+//! window waits for on its next sync.
 
 use std::rc::Rc;
 
@@ -18,74 +19,41 @@ impl Drop for ChatApp {
     }
 }
 
-/// What answered a conversation call: the records here at once, or the host
-/// of a page later.
-pub(crate) enum Answer<T> {
-    Now(Result<T, String>),
-    Later(ui::person_chat::Pending<T>),
-}
-
-impl<T: Clone> Answer<T> {
-    /// The answer, once it is here; taken, it is gone.
-    pub(crate) fn take(&self) -> Option<Result<T, String>> {
-        match self {
-            Self::Now(answer) => Some(answer.clone()),
-            Self::Later(pending) => pending.take(),
-        }
-    }
-
-    /// The answer still on its way, for a window that waits for it.
-    pub(crate) fn later(self) -> Option<ui::person_chat::Pending<T>> {
-        match self {
-            Self::Now(_) => None,
-            Self::Later(pending) => Some(pending),
-        }
-    }
-}
-
-/// A conversation being opened, by its peer, until it answers.
-pub(crate) type Opening = (String, Answer<ui::person_chat::Conversation>);
-
-/// A message on its way, kept until the conversation accepts or refuses it.
+/// A message on its way, kept until the conversation accepts or refuses it:
+/// a page's pair is announced first, so it may wait a sync or two.
 pub(crate) struct Sending {
     peer: String,
     key: ConversationKey,
     revision: Option<u64>,
-    reply: Answer<ui::person_chat::Conversation>,
+    text: String,
+    invocation: uuid::Uuid,
 }
 
 impl ChatApp {
-    /// The records this window keeps its conversations in, where it keeps
-    /// them here at all: a page has none, and asks its host.
-    fn direct_records(&self) -> Option<&Rc<Records>> {
-        self.direct.as_ref()
+    /// The records this window keeps its conversations in.
+    fn direct_records(&self) -> Result<Rc<Records>, String> {
+        self.direct
+            .clone()
+            .ok_or_else(|| crate::i18n::t("chat-person-chat-unavailable"))
     }
 
     /// The people this window may talk to, each with whether a conversation
     /// of theirs holds messages.
     pub(crate) fn direct_contacts(&self) -> Vec<ui::person_chat::Contact> {
-        if let Some(records) = self.direct_records() {
-            return records.contacts();
-        }
-        // Publication can run before widget sync after a snapshot wake. Read
-        // the same bounded host snapshot rather than a stale painted list.
-        let _ = ui::person_chat::contacts();
-        ui::person_chat::contacts_snapshot()
+        self.direct
+            .as_ref()
+            .map_or_else(Vec::new, |records| records.contacts())
     }
 
-    /// Whether this view holds the conversation with `peer` still open, so a
-    /// floating view of it keeps its lane: the records hold theirs until the
-    /// window closes; a page's lane is retained one owner more.
+    /// Whether this view holds the conversation with `peer` still open: the
+    /// records hold theirs until the window closes.
     pub(crate) fn retains_person(&self, peer: &str) -> bool {
-        self.direct_records().is_some() || ui::person_chat::retain(peer)
+        self.direct.is_some() && self.direct_person.as_deref() == Some(peer)
     }
 
     pub(crate) fn close_person_conversation(&mut self) {
-        if let Some(peer) = self.direct_person.take()
-            && self.direct_records().is_none()
-        {
-            ui::person_chat::close(&peer);
-        }
+        self.direct_person = None;
+        self.person_opening = None;
         self.person_sending = None;
         self.person_messages.clear();
         self.person_body_views.clear();
@@ -151,34 +119,30 @@ impl ChatApp {
             .set_placeholder(&crate::i18n::t("chat-person-chat-placeholder"));
     }
 
-    /// Open the conversation with `public_key`. The view moves to it once
-    /// it is open: at once from the records this window holds, a moment later
-    /// in a page, which never waits for its host on the UI thread.
+    /// Open the conversation with `public_key`: the view moves to it once it
+    /// is open. A pair the workspace has not recorded yet opens a sync later,
+    /// once the device that announced it is answered.
     pub(crate) fn open_person_conversation(&mut self, public_key: &str) -> Result<(), String> {
         self.person_contacts = self.direct_contacts();
         self.require_person_contact(public_key)?;
-        let opening = match self.direct_records() {
-            Some(records) => Answer::Now(records.open(public_key)),
-            None => Answer::Later(ui::person_chat::open(public_key)),
-        };
-        if let Some(answer) = opening.take() {
-            return self.opened_person_conversation(public_key, answer);
+        let records = self.direct_records()?;
+        match records.open(public_key) {
+            Ok(conversation) => self.opened_person_conversation(public_key, conversation),
+            // The pair is being announced: the conversation opens when the
+            // workspace answers, on the next sync.
+            Err(_) if records.announcing(public_key) => {
+                self.person_opening = Some(public_key.to_owned());
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
-        if let Some(replaced) = self
-            .person_opening
-            .replace((public_key.to_owned(), opening))
-        {
-            self.person_abandoned.push(replaced);
-        }
-        Ok(())
     }
 
     fn opened_person_conversation(
         &mut self,
         public_key: &str,
-        answer: Result<ui::person_chat::Conversation, String>,
+        conversation: ui::person_chat::Conversation,
     ) -> Result<(), String> {
-        let conversation = answer?;
         if conversation.peer != public_key {
             return Err(crate::i18n::t("chat-person-chat-unavailable"));
         }
@@ -198,37 +162,45 @@ impl ChatApp {
         Ok(())
     }
 
-    /// Take up what an open or a send answered since the last sync.
+    /// Take up what an open and a message waited for since the last sync: a
+    /// conversation whose pair was being announced opens now, and a message
+    /// queued behind it goes.
     fn settle_person_replies(&mut self) {
-        let page = self.direct_records().is_none();
-        self.person_abandoned
-            .retain(|(peer, opening)| match opening.take() {
-                Some(Ok(_)) => {
-                    if page {
-                        ui::person_chat::close(peer);
-                    }
-                    false
-                }
-                Some(Err(_)) => false,
-                None => true,
-            });
-        if let Some((peer, opening)) = self.person_opening.take() {
-            match opening.take() {
-                Some(answer) => {
-                    if let Err(error) = self.opened_person_conversation(&peer, answer) {
-                        self.person_error = Some(error);
-                        self.request_relayout();
-                    }
-                }
-                None => self.person_opening = Some((peer, opening)),
+        let Ok(records) = self.direct_records() else {
+            return;
+        };
+        if let Some(peer) = self.person_opening.clone()
+            && !records.announcing(&peer)
+        {
+            self.person_opening = None;
+            if let Err(error) = records
+                .open(&peer)
+                .and_then(|conversation| self.opened_person_conversation(&peer, conversation))
+            {
+                self.person_error = Some(error);
+                self.request_relayout();
             }
         }
-        if let Some(sending) = self.person_sending.take() {
-            match sending.reply.take() {
-                Some(answer) => self.sent_person_message(&sending, answer),
-                None => self.person_sending = Some(sending),
-            }
+        if self.person_sending.is_some() {
+            self.flush_person_sending();
         }
+    }
+
+    /// Send the message waiting for its pair, once the pair is there.
+    fn flush_person_sending(&mut self) {
+        let Ok(records) = self.direct_records() else {
+            self.person_sending = None;
+            return;
+        };
+        let Some(sending) = self.person_sending.take() else {
+            return;
+        };
+        if records.announcing(&sending.peer) {
+            self.person_sending = Some(sending);
+            return;
+        }
+        let answer = records.send(&sending.peer, &sending.text, sending.invocation);
+        self.sent_person_message(&sending, answer);
     }
 
     /// How many messages of `peer`'s conversation this person has not read.
@@ -261,9 +233,9 @@ impl ChatApp {
         let Some(public_key) = self.direct_person.clone() else {
             return;
         };
-        let shown = match self.direct_records() {
+        let shown = match self.direct.clone() {
             Some(records) => records.read(&public_key),
-            None => ui::person_chat::snapshot(&public_key),
+            None => return,
         };
         match shown {
             Ok(conversation) if conversation.peer == public_key => {
@@ -290,18 +262,14 @@ impl ChatApp {
         }
     }
 
-    /// An explicit read of the conversation with `public_key`, answered at
-    /// once from the records here or later by a page's host.
+    /// An explicit read of the conversation with `public_key`.
     pub(crate) fn read_person_conversation(
         &mut self,
         public_key: &str,
-    ) -> Result<Answer<ui::person_chat::Conversation>, String> {
+    ) -> Result<ui::person_chat::Conversation, String> {
         self.person_contacts = self.direct_contacts();
         self.require_person_contact(public_key)?;
-        Ok(match self.direct_records() {
-            Some(records) => Answer::Now(records.read(public_key)),
-            None => Answer::Later(ui::person_chat::read(public_key)),
-        })
+        self.direct_records()?.read(public_key)
     }
 
     /// What a read answered, as the effect's value.
@@ -333,22 +301,17 @@ impl ChatApp {
         public_key: &str,
         text: &str,
         invocation: Option<tilo_actions::InvocationId>,
-    ) -> Result<Answer<ui::person_chat::Conversation>, String> {
+    ) -> Result<ui::person_chat::Conversation, String> {
         self.person_contacts = self.direct_contacts();
         self.require_person_contact(public_key)?;
         if text.trim().is_empty() {
             return Err(crate::i18n::t("chat-person-chat-empty"));
         }
-        Ok(match self.direct_records() {
-            Some(records) => Answer::Now(records.send(
-                public_key,
-                text,
-                invocation.map_or_else(uuid::Uuid::new_v4, |id| id.0),
-            )),
-            None => Answer::Later(ui::person_chat::with_invocation(invocation, || {
-                ui::person_chat::send(public_key, text)
-            })),
-        })
+        self.direct_records()?.send(
+            public_key,
+            text,
+            invocation.map_or_else(uuid::Uuid::new_v4, |id| id.0),
+        )
     }
 
     /// What an answer to a message to `public_key` says, as the effect's value.
@@ -387,23 +350,14 @@ impl ChatApp {
         }
         let key = Self::person_conversation_key(&public_key);
         let revision = self.composer_main.conversation_revision(&key);
-        let reply = match self.send_person_message(&public_key, &text, None) {
-            Ok(reply) => reply,
-            Err(error) => {
-                self.person_error = Some(error);
-                return false;
-            }
-        };
-        let sending = Sending {
+        self.person_sending = Some(Sending {
             peer: public_key,
             key,
             revision,
-            reply,
-        };
-        match sending.reply.take() {
-            Some(answer) => self.sent_person_message(&sending, answer),
-            None => self.person_sending = Some(sending),
-        }
+            text,
+            invocation: uuid::Uuid::new_v4(),
+        });
+        self.flush_person_sending();
         true
     }
 

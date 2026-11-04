@@ -825,10 +825,19 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        let device = key.verifying_key().to_bytes();
-        self.certificate(&device, now)
+        self.require_member_device(&key.verifying_key().to_bytes(), now)
+    }
+
+    /// [`Self::require_member_writer`] of a device whose signature was made
+    /// elsewhere: a page signs with the key its custody holds.
+    pub(crate) fn require_member_device(
+        &self,
+        device: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<(), String> {
+        self.certificate(device, now)
             .map_err(|error| error.to_string())?;
-        self.role(&device, now).map(drop)
+        self.role(device, now).map(drop)
     }
 
     /// `device`'s certificate when it is one of the owner's devices, current

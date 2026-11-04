@@ -96,10 +96,55 @@ impl PeerGovernanceMut<'_> {
             return Err("pair caller is not exact current admitted evidence".into());
         }
         self.peer.require_member_writer(key, now)?;
-        let mut people = [hex::encode(caller.user_public_key), hex::encode(other)];
-        people.sort_unstable();
-        let (pair, announcement) =
-            DirectPair::signed(&self.peer.core.workspace, people, caller, key)?;
+        let people = [hex::encode(caller.user_public_key), hex::encode(other)];
+        let (_, announcement) = DirectPair::signed(&self.peer.core.workspace, people, caller, key)?;
+        self.admit_direct_pair(&announcement, now)
+    }
+
+    /// Record `announcement`, a pair of this workspace's people one of their
+    /// devices signed, as this workspace holds it: for a device whose key
+    /// signs where it is kept (a page, whose custody holds it), and for a host
+    /// the device asked to record what it signed. The proof is asked first, so
+    /// a workspace records a pair only from a device of one of the two people.
+    ///
+    /// Answers whether the workspace changed: a pair it already holds stays as
+    /// it is.
+    ///
+    /// # Errors
+    ///
+    /// A proof that does not hold, a signing device that is not exact current
+    /// admitted evidence or may not write here, or a full workspace.
+    pub fn admit_direct_pair(
+        self,
+        announcement: &DirectPair,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let device: DeviceCert = serde_json::from_value(announcement.proof.device_cert.clone())
+            .map_err(|_| "a pair is proven by a device of one of its people".to_owned())?;
+        let pair = collab_types::direct_pair_id(
+            &self.peer.core.workspace,
+            &announcement.people[0],
+            &announcement.people[1],
+        )
+        .ok_or("a pair is two distinct people of this workspace")?;
+        crate::workspace::direct_pair::proven_pair(
+            &self.peer.core.workspace,
+            &pair,
+            announcement,
+            &self.peer.core.revocations,
+            now_ns(now),
+        )
+        .ok_or("a pair is proven by a device of one of its people")?;
+        if self
+            .peer
+            .certificate(&device.device_public_key, now)
+            .map_err(|error| error.to_string())?
+            != &device
+        {
+            return Err("pair caller is not exact current admitted evidence".into());
+        }
+        self.peer
+            .require_member_device(&device.device_public_key, now)?;
         let mut doc = self
             .peer
             .core
@@ -107,7 +152,7 @@ impl PeerGovernanceMut<'_> {
             .clone()
             .ok_or("missing workspace")?;
         let before = doc.get_heads();
-        doc.set_actor(self.peer.workspace_actor_of(key));
+        doc.set_actor(self.peer.workspace_actor_for(&device.device_public_key));
         let map = match doc.get(ROOT, DIRECT_PAIRS_KEY).map_err(err)? {
             Some((automerge::Value::Object(automerge::ObjType::Map), map)) => map,
             Some(_) => return Err("the workspace's pairs are malformed".into()),
@@ -124,7 +169,7 @@ impl PeerGovernanceMut<'_> {
         doc.put(
             &map,
             pair.as_str(),
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&announcement).map_err(err)?),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(announcement).map_err(err)?),
         )
         .map_err(err)?;
         doc.commit();
@@ -135,7 +180,7 @@ impl PeerGovernanceMut<'_> {
             .collect();
         let workspace = self.peer.core.workspace.clone();
         self.peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            TransportOrigin::RelayDelta(device.device_public_key),
             NeighbourMsg::SyncResp {
                 room: workspace,
                 changes,

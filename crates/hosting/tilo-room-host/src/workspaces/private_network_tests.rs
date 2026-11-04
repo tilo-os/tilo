@@ -1113,3 +1113,218 @@ async fn a_page_is_only_the_device_its_session_proved() {
     drop((workspaces, door));
     relay.shutdown().await;
 }
+
+/// A page announces the pair its person shares and the workspace records it
+/// there, once for both of them: either person's devices may read the pair's
+/// record, a third person's page announces none that is not theirs, and the
+/// old private store receives no message of the conversation.
+#[tokio::test]
+async fn a_page_announces_its_pair_and_the_host_store_takes_no_message() {
+    use tilo_peer_state::workspace::DirectPair;
+    use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+    let directory = tempfile::tempdir().unwrap();
+    let (governor_key, governor_cert) = tests::governor();
+    let relay = tests::test_host(directory.path(), &governor_key, &governor_cert).await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Pairs from pages").await.unwrap();
+    let (alice_key, alice) = identity(84, None);
+    let (bob_key, bob) = identity(94, None);
+    let (watcher_key, watcher) = identity(114, None);
+    let now = SystemTime::now();
+    for (key, cert) in [
+        (&alice_key, &alice),
+        (&bob_key, &bob),
+        (&watcher_key, &watcher),
+    ] {
+        admit(
+            &workspaces,
+            &created.workspace,
+            &governor_key,
+            key,
+            cert,
+            now,
+        )
+        .await;
+    }
+    relay
+        .admit_spectators(
+            created.workspace_id,
+            crate::workspace_access::Spectators {
+                root: watcher.user_public_key,
+                seats: 4,
+                public: true,
+            },
+        )
+        .await
+        .unwrap();
+    let pair_of = |a: &DeviceCert, b: &DeviceCert| {
+        DirectPair::signed(
+            &created.workspace,
+            [
+                hex::encode(a.user_public_key),
+                hex::encode(b.user_public_key),
+            ],
+            a,
+            if a == &alice { &alice_key } else { &bob_key },
+        )
+        .unwrap()
+    };
+    let announce = |cert: &DeviceCert, (pair, announcement): (String, DirectPair)| {
+        let (workspaces, cert, workspace) =
+            (workspaces.clone(), cert.clone(), created.workspace.clone());
+        async move {
+            workspaces
+                .page_rooms(
+                    &cert,
+                    WorkspacesRequest::Pair {
+                        workspace,
+                        pair,
+                        announcement: serde_json::to_vec(&announcement).unwrap(),
+                    },
+                )
+                .await
+        }
+    };
+    let (pair, announcement) = pair_of(&alice, &bob);
+    assert_eq!(
+        announce(&alice, (pair.clone(), announcement.clone())).await,
+        WorkspacesReply::Paired,
+        "the workspace records the pair the page announced"
+    );
+    let recorded = workspaces.summary(&created.workspace).await.unwrap();
+    assert_eq!(
+        announce(&alice, (pair.clone(), announcement)).await,
+        WorkspacesReply::Paired,
+        "a pair the workspace holds is answered, not written again"
+    );
+    assert_eq!(
+        workspaces
+            .summary(&created.workspace)
+            .await
+            .unwrap()
+            .generation,
+        recorded.generation,
+        "the second announcement writes nothing"
+    );
+    let state = workspaces.workspace(&created.workspace).await.unwrap();
+    {
+        let governed = state.lock().await;
+        let peer = governed.peer();
+        let at = SystemTime::now();
+        let record = collab_types::direct_record(&pair);
+        let mut people = [
+            hex::encode(alice.user_public_key),
+            hex::encode(bob.user_public_key),
+        ];
+        people.sort_unstable();
+        assert_eq!(
+            peer.direct_pair(&record, at),
+            Some(people),
+            "the workspace proves who the pair's record is theirs"
+        );
+        for cert in [&alice, &bob] {
+            assert!(
+                peer.check_document_read(cert.device_public_key, "chat", &record, at)
+                    .is_ok(),
+                "a person of the pair reads its record"
+            );
+        }
+        assert!(
+            peer.check_document_read(watcher.device_public_key, "chat", &record, at)
+                .is_err(),
+            "a third person's device reads nothing of the conversation"
+        );
+    }
+    // A page that only watches announces no pair.
+    assert!(
+        matches!(
+            announce(&watcher, pair_of(&watcher, &bob)).await,
+            WorkspacesReply::Refused(_)
+        ),
+        "a watching page is nobody's pair"
+    );
+    // A pair is proven by a device of one of the two people it names.
+    let (_, framed) = DirectPair::signed(
+        &created.workspace,
+        [
+            hex::encode(bob.user_public_key),
+            hex::encode(watcher.user_public_key),
+        ],
+        &alice,
+        &alice_key,
+    )
+    .unwrap();
+    let framed_pair = collab_types::direct_pair_id(
+        &created.workspace,
+        &hex::encode(bob.user_public_key),
+        &hex::encode(watcher.user_public_key),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            announce(&alice, (framed_pair, framed)).await,
+            WorkspacesReply::Refused(_)
+        ),
+        "a pair between two other people is not one a device announces"
+    );
+    // A conversation is with a person of the workspace.
+    let (_, stranger_pair) = DirectPair::signed(
+        &created.workspace,
+        [hex::encode(alice.user_public_key), hex::encode([0x77; 32])],
+        &alice,
+        &alice_key,
+    )
+    .unwrap();
+    let stranger_id = collab_types::direct_pair_id(
+        &created.workspace,
+        &hex::encode(alice.user_public_key),
+        &hex::encode([0x77; 32]),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            announce(&alice, (stranger_id, stranger_pair)).await,
+            WorkspacesReply::Refused(_)
+        ),
+        "no conversation is opened with a person this workspace never certified"
+    );
+    // Nothing of the conversation went to the old private store: the page
+    // sends its messages through the pair's record alone.
+    let door = PrivateProtocol::new(workspaces.clone());
+    let read = |cert: &DeviceCert, peer: [u8; 32]| {
+        let (door, cert, workspace) = (door.clone(), cert.clone(), created.workspace.clone());
+        async move {
+            door.serve(
+                &cert,
+                &cert.device_public_key,
+                &workspace,
+                PrivateOperation::Read {
+                    peer: hex::encode(peer),
+                    after_sequence: 0,
+                    limit: 100,
+                },
+                std::future::ready(Ok(())),
+            )
+            .await
+        }
+    };
+    for cert in [&alice, &bob] {
+        assert!(
+            matches!(
+                read(
+                    cert,
+                    if cert == &alice {
+                        bob.user_public_key
+                    } else {
+                        alice.user_public_key
+                    }
+                )
+                .await,
+                PrivateReply::Refused
+            ),
+            "the store never held the conversation"
+        );
+    }
+    drop((workspaces, door));
+    relay.shutdown().await;
+}

@@ -2,9 +2,11 @@
 //! nobody else's do — the workspace's owner and its other members included.
 use super::*;
 use crate::admission_tests::{add_member_with, seeded};
+use crate::workspace::direct_pair::DirectPair;
 use automerge::{AutoCommit, ROOT as DOC_ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use collab_types::{ChannelRoute, direct_pair_id, direct_record};
+use ed25519_dalek::Signer as _;
 
 const APP: &str = "test.app";
 
@@ -370,4 +372,56 @@ fn a_pair_is_announced_once_by_a_device_in_it() {
     let mut expected = [hex::encode(paired.person(0)), hex::encode(paired.person(1))];
     expected.sort_unstable();
     assert_eq!(paired.peer.governance().direct_pairs(now)[&pair], expected);
+}
+
+#[test]
+fn a_pair_signed_where_its_devices_key_is_kept_is_recorded_as_the_same_pair() {
+    let (mut peer, authority, _, _, now) = seeded();
+    let first = add_member_with(&mut peer, &authority, now, 5, 6);
+    let second_root = SigningKey::from_bytes(&[7; 32]);
+    let second = add_member_with(&mut peer, &authority, now, 7, 8);
+    let people = [hex::encode(first.2), hex::encode(second.2)];
+    let (pair, unsigned, digest) =
+        DirectPair::unsigned(peer.workspace_id(), people.clone(), &first.1).unwrap();
+    assert_eq!(
+        Some(pair.clone()),
+        direct_pair_id(peer.workspace_id(), &people[0], &people[1])
+    );
+    // Unsigned, it is nobody's proof.
+    assert!(
+        peer.governance_mut()
+            .admit_direct_pair(&unsigned, now)
+            .is_err()
+    );
+    // A device that is not the announced one proves nothing.
+    let forged = unsigned
+        .clone()
+        .with_signature(&second.0.sign(&digest).to_bytes());
+    assert!(
+        peer.governance_mut()
+            .admit_direct_pair(&forged, now)
+            .is_err()
+    );
+    // A signature over the pair its device was handed, made where the key is
+    // kept, is the announcement a host records for it.
+    let announcement = unsigned.with_signature(&first.0.sign(&digest).to_bytes());
+    assert!(
+        peer.governance_mut()
+            .admit_direct_pair(&announcement, now)
+            .unwrap()
+    );
+    // From then on the two people read their record, and the workspace holds
+    // the pair once.
+    let record = direct_record(&pair);
+    for member in [&first.1, &second.1] {
+        peer.check_document_read(member.device_public_key, APP, &record, now)
+            .expect("a pair's person reads its record");
+    }
+    assert!(
+        !peer
+            .governance_mut()
+            .admit_direct_pair(&announcement, now)
+            .unwrap(),
+        "the pair the workspace holds stays as it is"
+    );
 }

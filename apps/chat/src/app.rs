@@ -368,10 +368,9 @@ pub struct ChatApp {
     pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
     pub(crate) person_messages: Vec<ui::person_chat::Message>,
     pub(crate) person_error: Option<String>,
-    /// The conversation being opened, until it answers.
-    pub(crate) person_opening: Option<crate::direct::window::Opening>,
-    /// Opens another one replaced: each lane they open is released.
-    pub(crate) person_abandoned: Vec<crate::direct::window::Opening>,
+    /// The conversation being opened: its pair is being announced, and it
+    /// opens on the sync the answer comes in.
+    pub(crate) person_opening: Option<String>,
     /// The message the composer is sending, until it is accepted.
     pub(crate) person_sending: Option<crate::direct::window::Sending>,
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
@@ -775,7 +774,6 @@ impl ChatApp {
             person_messages: Vec::new(),
             person_error: None,
             person_opening: None,
-            person_abandoned: Vec::new(),
             person_sending: None,
             person_body_views: HashMap::new(),
             motion_reduced: false,

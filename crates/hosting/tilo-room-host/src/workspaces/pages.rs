@@ -226,6 +226,14 @@ impl Workspaces {
             WorkspacesRequest::Name { workspace, name } => {
                 self.name_self(&workspace, device, &name, now).await?
             }
+            WorkspacesRequest::Pair {
+                workspace,
+                pair,
+                announcement,
+            } => {
+                self.page_pair(&workspace, device, &pair, &announcement, now)
+                    .await?
+            }
         })
     }
 
@@ -417,6 +425,98 @@ impl Workspaces {
             .map_err(CollaborationError::new)?;
         self.settle(&mut workspace).await?;
         Ok(WorkspacesReply::Named)
+    }
+
+    /// Record `announcement` as `workspace`'s pair `pair`, which `device`'s
+    /// person shares with another member: from then on the pair's own record
+    /// is read and changed by the two people's devices and by no one else's.
+    /// The page signs with the key its custody holds; the workspace keeps the
+    /// proof and merges it like any governance change. A pair the workspace
+    /// holds, or a proof that does not hold, writes nothing.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked from the check until the pair is committed"
+    )]
+    pub(crate) async fn page_pair(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        pair: &str,
+        announcement: &[u8],
+        now: u64,
+    ) -> Result<WorkspacesReply, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let mut workspace = state.lock().await;
+        if self.watches_only(workspace.workspace_id(), device).await {
+            return Err(CollaborationError::new(
+                "a page that only watches announces no pair",
+            ));
+        }
+        let at = system_time(now);
+        let member = workspace.peer().permissions(device.device_public_key, at)?;
+        if member.foreign
+            || member.delegate.is_some()
+            || member.person != hex::encode(device.user_public_key)
+        {
+            return Err(CollaborationError::new(
+                "only a person announces their own pair",
+            ));
+        }
+        let announcement: tilo_peer_state::workspace::DirectPair =
+            serde_json::from_slice(announcement)
+                .map_err(|_| CollaborationError::new("a pair announcement does not read"))?;
+        if announcement.proof.device_cert
+            != serde_json::to_value(device)
+                .map_err(|_| CollaborationError::new("a device certificate does not encode"))?
+        {
+            return Err(CollaborationError::new(
+                "a pair is announced by the device that signed it",
+            ));
+        }
+        // A conversation is with a person of this workspace, the person whose
+        // own pair it is never counted: the same people a direct message
+        // lists.
+        let me = hex::encode(device.user_public_key);
+        let other = announcement
+            .people
+            .iter()
+            .find(|person| **person != me)
+            .ok_or_else(|| CollaborationError::new("a pair is between two people"))?;
+        let mut bytes = [0; 32];
+        hex::decode_to_slice(other, &mut bytes)
+            .map_err(|_| CollaborationError::new("a pair names a person's key"))?;
+        if !workspace
+            .peer()
+            .governance()
+            .governed_members(at)
+            .map_err(CollaborationError::new)?
+            .iter()
+            .any(|member| !member.removed && member.user_public_key == bytes)
+        {
+            return Err(CollaborationError::new(
+                "a conversation is opened with a person of this workspace",
+            ));
+        }
+        let key = self.inner.host.key.clone();
+        let mut candidate = workspace.peer().clone();
+        let changed = candidate
+            .governance_mut()
+            .admit_direct_pair(&announcement, at)
+            .map_err(CollaborationError::new)?;
+        if !changed {
+            return Ok(WorkspacesReply::Paired);
+        }
+        if candidate.direct_pair(pair, at).is_none() {
+            return Err(CollaborationError::new(
+                "a pair names the two people of its record",
+            ));
+        }
+        let ledger = workspace.collaboration().clone();
+        workspace
+            .commit(candidate, &key, at, |_, _| Ok(ledger))
+            .map_err(CollaborationError::new)?;
+        self.settle(&mut workspace).await?;
+        Ok(WorkspacesReply::Paired)
     }
 
     /// Whether `device`'s person may make an undoable change at `node` of

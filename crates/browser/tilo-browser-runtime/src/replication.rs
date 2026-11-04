@@ -443,6 +443,39 @@ pub(crate) fn host_then(
     joined.peer.rooms_then(request(&joined.uuid), done)
 }
 
+/// The pairs peer `id`'s workspace holds a proof of that lasts now, decided by
+/// the page's replica; `done` receives them, by pair id, each with its two
+/// people.
+///
+/// # Errors
+/// The peer replicates no workspace.
+pub(crate) fn direct_pairs(
+    id: u32,
+    done: tilo_browser_peer::PairsCompletion,
+) -> Result<(), String> {
+    let joined = replica_of(id).ok_or("this page joined no workspace")?;
+    let joined = joined.borrow();
+    joined.peer.pairs_then(joined.workspace, done)
+}
+
+/// Announce the pair peer `id`'s person shares with `other` in its workspace:
+/// signed by the page's device and recorded by the host; `done` says when it
+/// is.
+///
+/// # Errors
+/// The peer replicates no workspace, or its session is gone.
+pub(crate) fn announce_pair(
+    id: u32,
+    other: [u8; 32],
+    done: tilo_browser_peer::Completion,
+) -> Result<(), String> {
+    let joined = replica_of(id).ok_or("this page joined no workspace")?;
+    let joined = joined.borrow();
+    joined
+        .peer
+        .announce_pair_then(joined.workspace, other, done)
+}
+
 /// The workspace told peer `id`'s person whether they may change things at
 /// `node` (its text form): their windows let them where the workspace will keep
 /// it, and stop where it no longer would.
@@ -846,6 +879,10 @@ impl Joined {
                     self.follow_layout(&mut woken);
                 }
                 PeerEvent::WorkspaceLayout { .. } => self.follow_layout(&mut woken),
+                // A pair the workspace now proves is a conversation its
+                // person's apps open: told once, so a window asks which pairs
+                // they are in again and never on a clock.
+                PeerEvent::Pairs { .. } => ui::person_chat::pairs_changed(),
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {
