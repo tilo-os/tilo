@@ -306,7 +306,7 @@ impl Site {
         ) else {
             return "the site keeps no desk record".to_owned();
         };
-        let Ok(document) = automerge::AutoCommit::load(&bytes) else {
+        let Ok(mut document) = automerge::AutoCommit::load(&bytes) else {
             return format!("{} bytes that do not load", bytes.len());
         };
         let changes = document.get_changes(&[]).len();
