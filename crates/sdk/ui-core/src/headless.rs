@@ -4544,10 +4544,26 @@ impl FrameHarness {
             let (allowed, _) = self
                 .tree()
                 .layout_map_focus_order(self.child_node, &restrictions);
-            let restored = self.focus_before_trap.take().and_then(|saved| unsafe {
-                saved.restore(&self.node_map, &self.bindings, Some(&allowed))
+            let saved = self.focus_before_trap.take();
+            let target = saved.as_ref().and_then(|saved| unsafe {
+                saved.resolve(&self.node_map, &self.bindings, Some(&allowed))
             });
-            if let Some(target) = restored
+            // Focus the trap itself moved, still standing, outlives it: a menu's
+            // "Rename" opens the field the person types into next. That field
+            // keeps the keyboard and the saved control takes none of it back.
+            let kept = self
+                .focused
+                .filter(|id| order.contains(id) && Some(*id) != target);
+            let restored = match (&saved, kept) {
+                (Some(saved), Some(keep)) => unsafe {
+                    saved.restore_keeping(&self.node_map, &self.bindings, Some(&allowed), keep)
+                },
+                (Some(saved), None) => unsafe {
+                    saved.restore(&self.node_map, &self.bindings, Some(&allowed))
+                },
+                (None, _) => None,
+            };
+            if let Some(target) = kept.or(restored)
                 && !order.contains(&target)
             {
                 order.push(target);

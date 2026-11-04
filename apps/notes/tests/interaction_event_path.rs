@@ -464,7 +464,9 @@ fn dispatch(app: &mut TestApp<NotesShell>, modifiers: Modifiers, event: &WindowE
 }
 
 /// Click the centre of sidebar row `idx` to select it AND give the
-/// sidebar keyboard focus (the gate the tree's key commands require).
+/// sidebar keyboard focus (the gate the tree's key commands require). A
+/// click is a press and its release: a row is pressed once the pointer is
+/// let go over it, so a press alone can still turn into a drag.
 fn click_row(app: &mut TestApp<NotesShell>, idx: usize) -> Result<(), String> {
     let no_mods = Modifiers::default();
     let c = n(app)
@@ -472,6 +474,7 @@ fn click_row(app: &mut TestApp<NotesShell>, idx: usize) -> Result<(), String> {
         .ok_or_else(|| "row laid out".to_string())?;
     dispatch(app, no_mods, &cursor_moved(c.x, c.y));
     dispatch(app, no_mods, &mouse_press());
+    dispatch(app, no_mods, &mouse_release());
     Ok(())
 }
 
@@ -899,6 +902,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(glyph_x, row0.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         // Re-settle so the re-flattened rows lay out.
         app.harness().relayout_at((1200, 800)).unwrap();
         assert!(
@@ -911,6 +915,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let glyph_x = n(&mut app).sidebar_disclosure_x_for_test(0).unwrap();
         dispatch(&mut app, no_mods, &cursor_moved(glyph_x, row0.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         app.harness().relayout_at((1200, 800)).unwrap();
         assert!(
             n(&mut app).sidebar_row_center_for_test(1).is_some(),
@@ -927,15 +932,17 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
             .sidebar_row_center_for_test(0)
             .expect("row 0 laid out");
         let no_mods = Modifiers::default();
-        // Two presses at the same spot in quick succession → double-click.
+        // Two clicks at the same spot in quick succession → double-click.
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         assert!(
             !n(&mut app).sidebar_is_renaming_for_test(),
             "single click must not rename"
         );
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         assert!(
             n(&mut app).sidebar_is_renaming_for_test(),
             "double-click on a row must open the inline rename editor"
@@ -962,8 +969,10 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         assert!(
             n(&mut app).sidebar_is_renaming_for_test(),
             "double-click opens the rename field"

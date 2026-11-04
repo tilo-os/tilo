@@ -107,24 +107,17 @@ impl Groups {
         self.height
     }
 
-    /// Whether the heading's group is open: a group first seen takes the state its rows ask
-    /// for, and the person's press keeps it.
-    fn is_open(&mut self, group: &Group) -> bool {
-        if let Some(open) = self.open.get(&group.heading) {
-            return *open;
-        }
-        let open = !group.tail;
-        self.open.insert(group.heading.clone(), open);
-        open
+    /// Whether the heading's group is open: a group the person has not folded takes the state
+    /// its rows ask for, a tail group closed, and the person's press keeps it.
+    fn is_open(&self, group: &Group) -> bool {
+        self.open
+            .get(&group.heading)
+            .copied()
+            .unwrap_or(!group.tail)
     }
 
     /// Whether the heading's group is open, asking the model for the row's group.
-    pub(super) fn shows<M: ListModel>(
-        &mut self,
-        model: &M,
-        index: usize,
-        tail: Option<&str>,
-    ) -> bool {
+    pub(super) fn shows<M: ListModel>(&self, model: &M, index: usize, tail: Option<&str>) -> bool {
         match group_of(model, index, tail) {
             None => true,
             Some(group) => self.is_open(&group),
@@ -292,7 +285,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Whether the row `index` takes room: its group is open.
-    pub(super) fn row_open(&mut self, index: usize) -> bool {
+    pub(super) fn row_open(&self, index: usize) -> bool {
         self.groups
             .shows(&self.model, index, self.tail_title.as_deref())
     }

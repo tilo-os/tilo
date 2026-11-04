@@ -6,11 +6,83 @@
 //! so a reader hears what folding it away would hide. An action on such a node comes back to
 //! the list by its [`super::groups::HEADING_TARGET`].
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use super::groups::{Band, Group, HEADING_TARGET};
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::widget::Widget;
 use vello::kurbo::Rect;
+
+/// The row nodes of the last accessibility walk, kept: while everything a row's
+/// node is built from stands, the walk hands the tree the very node it handed it
+/// last time, which the tree takes without comparing it. A notebook's page list
+/// is walked on every keystroke the note beside it takes, and nothing about its
+/// rows changed.
+pub(super) struct KeptAccessRows<K> {
+    rows: HashMap<K, KeptRow>,
+    /// Counts the walks, to tell the rows the last one reached.
+    walk: u64,
+}
+
+impl<K> Default for KeptAccessRows<K> {
+    fn default() -> Self {
+        Self {
+            rows: HashMap::new(),
+            walk: 0,
+        }
+    }
+}
+
+struct KeptRow {
+    inputs: RowAccessInputs,
+    node: Arc<AccessNode>,
+    /// The last walk that reached the row.
+    walk: u64,
+}
+
+/// Everything a row's node is built from: its own state and place, and
+/// [`MountedRow::stamp`], which changes when the row's widget is built anew
+/// (its content or its selection changed). While these stand, so does the node.
+#[derive(PartialEq)]
+struct RowAccessInputs {
+    stamp: u64,
+    index: usize,
+    count: usize,
+    bounds: Option<Rect>,
+    focused: bool,
+    selected: bool,
+    /// Whether the row's menu can be asked for.
+    menu: bool,
+    disabled: bool,
+    /// How deep the row stands, where it stands as a tree, and whether its
+    /// subtasks show.
+    level: Option<usize>,
+    expanded: Option<bool>,
+    /// The name the host gave the row.
+    semantic: Option<String>,
+    /// What the row is showing instead of the delegate's own row, if anything.
+    state: RowStateStamp,
+}
+
+/// The part of [`MountedRowState`] a row's node says.
+#[derive(PartialEq)]
+enum RowStateStamp {
+    Ready,
+    Pending,
+    Failed(String),
+}
+
+impl From<&MountedRowState> for RowStateStamp {
+    fn from(state: &MountedRowState) -> Self {
+        match state {
+            MountedRowState::Ready => Self::Ready,
+            MountedRowState::Pending => Self::Pending,
+            MountedRowState::Failed(message, _) => Self::Failed(message.clone()),
+        }
+    }
+}
 
 impl<M: ListModel> VirtualList<M> {
     /// The node of one mounted row: a list item holding the row's own semantics.
@@ -37,6 +109,9 @@ impl<M: ListModel> VirtualList<M> {
                 .focusable(true)
                 .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
                 .selected(self.selection.is_selected(&row.key))
+                // A row whose menu the host offers can be asked for it, as a
+                // secondary click does.
+                .context_menu(self.menu.is_some())
                 .disabled(!enabled),
         );
         // A tree row says how deep it stands and, where it has subtasks, whether they show.
@@ -61,7 +136,12 @@ impl<M: ListModel> VirtualList<M> {
             item = item.with_bounds(Rect::new(widget.x0, row_box.y0, widget.x1, row_box.y1));
         }
         if let Some(encode) = &self.semantic_key {
-            item = item.with_action_target(format!("key:{}", encode(&row.key)));
+            // The row keeps the name its host gave it across rebuilds, so a
+            // reader, an agent and a control find it however the rows moved.
+            let key = encode(&row.key);
+            item = item
+                .with_action_target(format!("key:{key}"))
+                .with_semantic_key(key);
         }
         // A row renamed in place carries the field over its label, as a tree's row does, so a
         // reader reaches the title it edits.
@@ -86,8 +166,15 @@ impl<M: ListModel> VirtualList<M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+
+        // The rows' menu, whose items are named into the list's own targets.
+        if let Some(performed) = self.perform_menu_action(target, action, state, path) {
+            return performed;
+        }
 
         // A heading's group, as its node in the accessibility tree names it: read, folded and
         // unfolded by something that is not the keyboard.
@@ -137,34 +224,124 @@ impl<M: ListModel> VirtualList<M> {
             Action::Expand | Action::Collapse if self.tree.is_some() => {
                 self.fold_row(&key, matches!(action, Action::Collapse))
             }
-            Action::ShowContextMenu if self.on_context.is_some() => {
+            Action::ShowContextMenu if self.menu.is_some() => {
                 let point = self
                     .row_box(index)
                     .map_or(self.rect.center(), |row| row.center());
-                self.open_context(index, key, point);
-                true
+                self.open_row_menu(key, point)
             }
             _ => false,
         }
     }
 
     /// The accessibility children the list carries, in reading order: each group's heading
-    /// before the rows it holds, those still on screen.
-    pub(super) fn accessibility_children(&self, enabled: bool) -> Vec<AccessNode> {
+    /// before the rows it holds, those still on screen. A row nothing changed about is the
+    /// very node the last walk handed over, so a walk beside it costs nothing per row.
+    pub(super) fn accessibility_children(&self, enabled: bool) -> Vec<Arc<AccessNode>> {
+        let count = self.model.len();
+        let mut kept = self.access_rows.borrow_mut();
+        let walk = kept.walk.wrapping_add(1);
+        kept.walk = walk;
         let mut children = Vec::new();
+        let mut reached = 0_usize;
         let mut bands = self.tree_bands().into_iter().peekable();
         for row in &self.mounted {
             while bands.peek().is_some_and(|band| band.index <= row.index) {
                 if let Some(band) = bands.next() {
-                    children.push(self.heading_node(band, enabled));
+                    children.push(Arc::new(self.heading_node(band, enabled)));
                 }
             }
-            children.push(self.row_node(row, enabled));
+            let inputs = self.row_access_inputs(row, enabled, count);
+            reached = reached.saturating_add(1);
+            if let Some(kept_row) = kept
+                .rows
+                .get_mut(&row.key)
+                .filter(|kept_row| kept_row.inputs == inputs)
+            {
+                kept_row.walk = walk;
+                children.push(Arc::clone(&kept_row.node));
+                continue;
+            }
+            // The row was built anew, or something it shows moved: the node it
+            // makes now stands in for the last one only where they agree.
+            let node = self.row_node(row, enabled);
+            if let Some(kept_row) = kept.rows.get_mut(&row.key)
+                && *kept_row.node == node
+            {
+                kept_row.inputs = inputs;
+                kept_row.walk = walk;
+                children.push(Arc::clone(&kept_row.node));
+                continue;
+            }
+            let node = Arc::new(node);
+            children.push(Arc::clone(&node));
+            kept.rows
+                .insert(row.key.clone(), KeptRow { inputs, node, walk });
         }
         for band in bands {
-            children.push(self.heading_node(band, enabled));
+            children.push(Arc::new(self.heading_node(band, enabled)));
+        }
+        // The rows' menu stands over them while it is up.
+        children.extend(self.menu_node().map(Arc::new));
+        if kept.rows.len() != reached {
+            kept.rows.retain(|_, row| row.walk == walk);
         }
         children
+    }
+
+    /// Everything the node of `row` is built from, short of building it
+    /// ([`RowAccessInputs`]).
+    fn row_access_inputs(
+        &self,
+        row: &MountedRow<M::Key>,
+        enabled: bool,
+        count: usize,
+    ) -> RowAccessInputs {
+        let (level, expanded) = match &self.tree {
+            Some(marks) => (
+                Some(marks.depth(&row.key).saturating_add(1) as usize),
+                marks
+                    .is_branch(&row.key)
+                    .then(|| !marks.is_folded(&row.key)),
+            ),
+            None => (None, None),
+        };
+        RowAccessInputs {
+            stamp: row.stamp,
+            index: row.index,
+            count,
+            bounds: self.row_box(row.index),
+            focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
+            selected: self.selection.is_selected(&row.key),
+            menu: self.menu.is_some(),
+            disabled: !enabled,
+            level,
+            expanded,
+            semantic: self.semantic_key.as_ref().map(|encode| encode(&row.key)),
+            state: RowStateStamp::from(&row.state),
+        }
+    }
+
+    /// The list's own node, without its children: what focus capture and the
+    /// focus order read of it.
+    pub(super) fn access_root(&self, enabled: bool) -> AccessNode {
+        let role = if self.tree.is_some() {
+            Role::Tree
+        } else {
+            Role::List
+        };
+        AccessNode::new(role)
+            .with_optional_name(
+                self.accessible_name
+                    .as_deref()
+                    .map(crate::i18n::I18nManager::lookup_plain),
+            )
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.is_focused)
+                    .disabled(!enabled),
+            )
     }
 
     /// How many headings the tree stands before the mounted row `child_index`: the index of

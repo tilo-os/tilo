@@ -167,6 +167,10 @@ where
     }
 
     fn accepts_children(&self, index: usize) -> bool {
+        self.has_subtasks(index)
+    }
+
+    fn has_subtasks(&self, index: usize) -> bool {
         let Some(branches) = &self.branches else {
             return false;
         };
@@ -178,7 +182,11 @@ where
     fn tree_at(&self, index: usize) -> Option<TreeRow<Self::Key>> {
         let parents = self.parents.as_ref()?;
         Some(TreeRow {
-            parent: self.keys.get(index).and_then(|key| parents.get(key)).cloned(),
+            parent: self
+                .keys
+                .get(index)
+                .and_then(|key| parents.get(key))
+                .cloned(),
         })
     }
 }

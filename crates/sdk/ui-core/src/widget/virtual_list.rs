@@ -53,8 +53,13 @@ use shown::ListShown;
 #[path = "virtual_list_tree.rs"]
 mod tree;
 pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow};
+#[path = "virtual_list_menu.rs"]
+mod menu;
+use menu::ListMenu;
 #[path = "virtual_list_edit.rs"]
 mod edit;
+#[path = "virtual_list_jump.rs"]
+mod jump;
 #[path = "virtual_list_reorder.rs"]
 mod reordering;
 use edit::{RenameCallback, RenameField};
@@ -193,6 +198,13 @@ pub trait ListModel {
         false
     }
 
+    /// Whether the row `index` has subtasks to disclose, whether or not any of them stands in
+    /// the list: a folder read when it opens shows the disclosure that reads it. `false` for
+    /// a leaf, or a model that holds no tree.
+    fn has_subtasks(&self, _index: usize) -> bool {
+        false
+    }
+
     /// Whether the list heads or nests its rows, keeping a disclosure gutter left of its column.
     fn discloses(&self) -> bool {
         false
@@ -212,9 +224,12 @@ impl std::error::Error for DuplicateListKey {}
 
 type RowBuilder<M> = Box<dyn FnMut(&M, usize, &<M as ListModel>::Key, RowSelection) -> Element>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
-type ContextCallback<K> = Box<dyn FnMut(K, Point, Rect)>;
 type FoldCallback<K> = Box<dyn FnMut(&K, bool)>;
 type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
+/// Where a row stands for the people in it, or reads as standing: the location a
+/// collaborator's presence is painted at.
+type RowPresence<M> =
+    Box<dyn Fn(&M, usize, &<M as ListModel>::Key) -> Option<crate::presence::PresenceKey>>;
 type SelectCallback<K> = Box<dyn FnMut(K, bool)>;
 type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
@@ -225,6 +240,10 @@ pub use super::row_selection::{RowSelection, RowSelectionSink};
 struct MountedRow<K> {
     key: K,
     index: usize,
+    /// Which build of the row's widget this is: a row whose widget was built
+    /// anew (its content or its selection changed) carries a new stamp, and the
+    /// accessibility walk builds its node again.
+    stamp: u64,
     state: MountedRowState,
     selection: RowSelection,
     widget: Element,
@@ -319,6 +338,11 @@ pub struct VirtualList<M: ListModel> {
     /// The delegate reads [`RowSelection`]: a mounted row is rebuilt when
     /// its own or a neighbour's selection changes.
     selection_aware: bool,
+    /// Where each row stands for the people in it: its collaborators' presence is painted
+    /// there, so a list shows where everyone is.
+    row_presence: Option<RowPresence<M>>,
+    /// The rows keep their tooltips away: something the host paints covers the list.
+    tooltips_suppressed: bool,
     /// The delegate paints the selection; the list paints only focus.
     delegate_selection: bool,
     viewport: SparseVirtualViewport<M::Key>,
@@ -344,7 +368,8 @@ pub struct VirtualList<M: ListModel> {
     on_activate: Option<KeyCallback<M::Key>>,
     /// Told a row's subtasks folded or opened ([`VirtualList::on_fold`]).
     on_fold: Option<FoldCallback<M::Key>>,
-    on_context: Option<ContextCallback<M::Key>>,
+    /// The menu the rows and the list's own space open ([`VirtualList::with_context_menu`]).
+    menu: Option<ListMenu<M>>,
     /// The last row a click landed on and when, for a double click.
     clicks: super::rows::Clicks<M::Key>,
     semantic_key: Option<SemanticKey<M::Key>>,
@@ -357,6 +382,9 @@ pub struct VirtualList<M: ListModel> {
     reorder_validator: Option<ReorderValidator<M>>,
     reorder_commit: Option<ReorderCommit<M>>,
     scroll: super::rows::RowScroll,
+    /// Whether a hairline runs up each depth's gutter through nested rows
+    /// ([`VirtualList::with_indent_guides`]).
+    indent_guides: bool,
     /// The motion the theme allows, sampled by the latest draw.
     motion: crate::tokens::EffectiveMotion,
     /// The pace the list's own motion plays at, when it says something other than the theme's.
@@ -412,6 +440,12 @@ pub struct VirtualList<M: ListModel> {
     /// Mounted rows whose content changed ([`Self::invalidate_rows`]): the
     /// next reconcile builds them anew, where they stand.
     invalidated: HashSet<M::Key>,
+    /// Counts the row widgets built: a row's stamp, so the accessibility walk
+    /// tells a row built anew from one nothing changed about.
+    row_builds: u64,
+    /// The row nodes the last accessibility walk kept, handed over again while
+    /// nothing about the row changed ([`super::virtual_list_a11y::KeptAccessRows`]).
+    access_rows: std::cell::RefCell<a11y::KeptAccessRows<M::Key>>,
     /// The list's node in the layout it last built, where its host lays out
     /// the rows a scroll brings near in place ([`Widget::remount_children`]).
     layout_node: Option<NodeId>,
@@ -523,6 +557,8 @@ impl<M: ListModel> VirtualList<M> {
             model,
             row_builder,
             selection_aware,
+            row_presence: None,
+            tooltips_suppressed: false,
             delegate_selection: false,
             viewport,
             mounted: Vec::new(),
@@ -537,7 +573,10 @@ impl<M: ListModel> VirtualList<M> {
             opens: None,
             on_activate: None,
             on_fold: None,
-            on_context: None,
+            menu: None,
+            row_builds: 0,
+            access_rows: std::cell::RefCell::default(),
+            indent_guides: false,
             clicks: super::rows::Clicks::default(),
             semantic_key: None,
             accessible_name: None,
@@ -607,15 +646,6 @@ impl<M: ListModel> VirtualList<M> {
         };
         list.refresh_anchor();
         list
-    }
-
-    /// Run `f` with the row's key, the pointer and the row's rect when a row
-    /// is right-clicked (or asked for its menu by assistive technology). The
-    /// row is selected first, unless it already is.
-    #[must_use]
-    pub fn on_context(mut self, f: impl FnMut(M::Key, Point, Rect) + 'static) -> Self {
-        self.on_context = Some(Box::new(f));
-        self
     }
 
     /// Scroll the row of `key` into view and make it the focused row. A
@@ -793,7 +823,18 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Where each row stands for the people in it: the list paints the collaborators
+    /// present at `presence`'s location over the row, in their colours, so a list shows
+    /// where everyone is (`crate::presence`).
     #[must_use]
+    pub fn with_row_presence(
+        mut self,
+        presence: impl Fn(&M, usize, &M::Key) -> Option<crate::presence::PresenceKey> + 'static,
+    ) -> Self {
+        self.row_presence = Some(Box::new(presence));
+        self
+    }
+
     pub fn on_select(mut self, callback: impl FnMut(M::Key, bool) + 'static) -> Self {
         self.on_select = Some(Box::new(callback));
         self
@@ -848,7 +889,29 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    #[must_use]
+    /// Hide the mounted rows' tooltips while something the host paints covers the list, as the
+    /// tree does; the rows the list builds after this follow it.
+    pub fn suppress_tooltips(&mut self, suppressed: bool) {
+        if self.tooltips_suppressed == suppressed {
+            return;
+        }
+        self.tooltips_suppressed = suppressed;
+        self.apply_row_tooltips();
+    }
+
+    /// Hand every mounted row the tooltip state the list keeps.
+    fn apply_row_tooltips(&mut self) {
+        let suppressed = self.tooltips_suppressed;
+        for row in &mut self.mounted {
+            if let Some(list_row) = row
+                .widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
+            {
+                list_row.suppress_tooltips(suppressed);
+            }
+        }
+    }
     pub fn reorder_target(&self) -> Option<&DropTarget<M::Key>> {
         self.reorder.target()
     }
@@ -911,7 +974,9 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The row `key` takes the keyboard: a heading that had it lets go.
-    fn focus_row(&mut self, key: M::Key) {
+    /// Give the row of `key` the keyboard, as a click or a reveal does; the selection
+    /// stays where it was unless the list follows the focus.
+    pub fn focus_row(&mut self, key: M::Key) {
         self.focused_group = None;
         self.focused_key = Some(key);
     }
@@ -922,175 +987,6 @@ impl<M: ListModel> VirtualList<M> {
             .iter()
             .find(|row| Some(&row.key) == self.focused_key.as_ref() && row.widget.is_focusable())
             .and_then(|row| row.node)
-    }
-
-    /// Follow the list's end, as a transcript does: it opens at its last row, and while it
-    /// shows its end it stays there as rows arrive and settle their heights. A scroll away
-    /// lets go; a scroll back to the end takes it up again.
-    #[must_use]
-    pub fn following_end(mut self) -> Self {
-        self.follow_end = true;
-        self.at_end = true;
-        self.keep_end();
-        self
-    }
-
-    /// Where a transcript's first unread row is: the "New messages" divider stands over it, and
-    /// while it is out of view a pill at the foot offers to take the reader there
-    /// ([`crate::widget::conversation::Jump`]). `None` draws neither. A list that is not a
-    /// transcript does not mark one.
-    #[must_use]
-    pub fn unread_from(mut self, item: Option<String>) -> Self {
-        self.unread = item.filter(|_| self.follow_end);
-        self
-    }
-
-    /// The item the transcript's reader has not seen, as the list was told.
-    #[must_use]
-    pub fn unread_item(&self) -> Option<&str> {
-        self.unread.as_deref()
-    }
-
-    /// The row showing the item the reader has not seen, as the list holds its rows now: the
-    /// model's own answer, or, for a model of plain values (nothing a conversation holds), the
-    /// keys the host gave.
-    fn unread_row(&self) -> Option<M::Key> {
-        let item = self.unread.as_deref()?;
-        self.model
-            .key_presenting(item)
-            .or_else(|| self.names_item.borrow().as_ref().and_then(|f| f(item)))
-    }
-
-    /// How the list turns the item its reader has not seen into the key of its row, for a model
-    /// of plain values that names no resources: the host that renders rows knows them.
-    pub fn set_key_presenting(&mut self, f: impl Fn(&str) -> Option<M::Key> + 'static) {
-        *self.names_item.borrow_mut() = Some(Box::new(f));
-    }
-
-    /// Move the divider to the row `key`: the rows the old and the new one are on build again,
-    /// so each shows the divider over it (or not) at once, without the list's items changing.
-    pub fn set_unread(&mut self, item: Option<String>) {
-        let item = item.filter(|_| self.follow_end);
-        if self.unread == item {
-            return;
-        }
-        let before = self.unread_row();
-        self.unread = item;
-        let after = self.unread_row();
-        // Only the rows mounted now are built again; one the divider moves to is built with
-        // the divider when it scrolls in anyway.
-        for row in before.into_iter().chain(after) {
-            if self.mounted.iter().any(|mounted| mounted.key == row) {
-                self.invalidated.insert(row);
-            }
-        }
-        if !self.invalidated.is_empty() {
-            self.remount = true;
-            self.layout_dirty = true;
-        }
-    }
-
-    /// Which way back the pill offers, when it offers one: to the first unread row while it is
-    /// above the view, else to the newest row while the reader is away from its end. A
-    /// transcript with nothing unread offers only the way to what is now.
-    #[must_use]
-    fn jump(&self) -> Option<crate::widget::conversation::Jump> {
-        use crate::widget::conversation::Jump;
-        if !self.follow_end || self.model.is_empty() {
-            return None;
-        }
-        if let Some(key) = self.unread_row() {
-            let in_view = self.model.index_of(&key).is_some_and(|index| {
-                // Its row's foot is below the top of the view: the reader has it, or has read
-                // past it. `item_view_top` is where the row stands in the view already.
-                self.viewport
-                    .item_view_top(index)
-                    .is_some_and(|top| top + self.viewport.item_height(index).unwrap_or(0.0) > 1.0)
-            });
-            return (!in_view).then_some(Jump::Unread);
-        }
-        (!self.at_end).then_some(Jump::Present)
-    }
-
-    /// Take the reader to the first unread row, if there is one: it comes into view, and the
-    /// rows arriving after it no longer move the reader.
-    fn jump_to_unread(&mut self) {
-        let Some(key) = self.unread_row() else {
-            return;
-        };
-        self.at_end = false;
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-        self.reveal(&key);
-        // The pill is a jump, not a scroll the hand made: the reader lands there now, and
-        // reads from it, rather than watching the rows glide for a while.
-        let landed = self
-            .scroll
-            .to
-            .take_over(crate::motion::frame_now())
-            .map_or_else(|| self.scroll_offset(), |to| to.y);
-        self.set_scroll_offset(landed);
-    }
-
-    /// Take the reader back to the newest row, following what arrives from then on.
-    fn jump_to_present(&mut self) {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-        self.at_end = true;
-        let _ = self.scroll.to.take_over(crate::motion::frame_now());
-        self.set_scroll_offset(self.viewport.max_offset());
-    }
-
-    /// Take the way back the pill offers.
-    fn follow_pill(&mut self) {
-        match self.jump() {
-            Some(crate::widget::conversation::Jump::Unread) => self.jump_to_unread(),
-            Some(crate::widget::conversation::Jump::Present) => self.jump_to_present(),
-            None => {}
-        }
-    }
-
-    /// The pill's rectangle in `area`, when it shows one: against the trailing edge of the
-    /// column the rows stand in, a gutter in and a control's height above the foot, as wide as
-    /// its word at the caption size.
-    fn pill_rect_for(&self, area: Rect) -> Option<(crate::widget::conversation::Jump, Rect)> {
-        let jump = self.jump()?;
-        let gutter = self.gutter.max(self.bleed);
-        let width = (area.width() * 0.5).min(self.pill_width);
-        let height = self.pill_height;
-        let rect = Rect::new(
-            (area.x1 - gutter - width).max(area.x0),
-            (area.y1 - gutter / 2.0 - height).max(area.y0),
-            (area.x1 - gutter).max(area.x0),
-            (area.y1 - gutter / 2.0).max(area.y0),
-        );
-        Some((jump, rect))
-    }
-
-    /// The pill's rectangle as the last layout placed it, for the pointer and a press.
-    fn pill_rect(&self) -> Option<Rect> {
-        self.pill_rect_for(self.rect).map(|(_, rect)| rect)
-    }
-
-    /// The pill as it draws: what it offers, where, and whether it is hovered.
-    fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
-        let (jump, rect) = self.pill_rect_for(self.rect)?;
-        Some(crate::widget::conversation::JumpFace::new(jump, rect).hovered(self.jump_hovered))
-    }
-
-    /// How far a list that follows its end stands its rows down while they are shorter than its
-    /// box: a transcript's few messages sit at its foot, by the composer, where the next one
-    /// arrives, and none of them moves when the list grows past its box.
-    fn end_slack(&self) -> f64 {
-        if self.follow_end {
-            (self.viewport.viewport() - self.viewport.content_extent()).max(0.0)
-        } else {
-            0.0
-        }
-    }
-
-    /// Whether the list shows its end, for one that follows it.
-    #[must_use]
-    pub fn is_at_end(&self) -> bool {
-        self.follow_end && self.at_end
     }
 
     /// After a scroll: whether it left a list that follows its end at the end.
@@ -1541,10 +1437,12 @@ impl<M: ListModel> VirtualList<M> {
                         }
                         state => self.arriving_row(index, state),
                     };
+                    self.row_builds = self.row_builds.wrapping_add(1);
                     MountedRow {
                         widget,
                         key: key.clone(),
                         index,
+                        stamp: self.row_builds,
                         state: mounted_state,
                         selection,
                         node: None,
@@ -1574,6 +1472,7 @@ impl<M: ListModel> VirtualList<M> {
         self.arrivals.retain(now, |key| seen.contains(key));
         self.invalidated.clear();
         self.mounted = mounted;
+        self.apply_row_tooltips();
         self.mounted_range = window;
     }
 
@@ -2297,6 +2196,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // The tree's chevrons are the list's own, over the rows of any view: one place folds.
         let tree = self.tree.clone();
         let chevrons = self.chevrons();
+        let guide_color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
         for (((row, row_rect), selection), (dy, alpha)) in self
@@ -2355,6 +2255,17 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     theme,
                 );
             }
+            if let Some(place) = self
+                .row_presence
+                .as_ref()
+                .and_then(|place| place(&self.model, row.index, &row.key))
+            {
+                // Mist is painted in device space.
+                let device = transform.transform_rect_bbox(row_rect);
+                for user in presence.peers_on(&place) {
+                    presence.draw_peer_mist(scene, theme, user, device);
+                }
+            }
             let slot = row.widget.get_rect() + vello::kurbo::Vec2::new(0.0, dy);
             self.arrivals.paint(
                 &row.key,
@@ -2368,6 +2279,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 },
             );
             if let Some(marks) = tree.as_ref() {
+                if self.indent_guides {
+                    chevrons.paint_guides(
+                        marks,
+                        scene,
+                        transform,
+                        &row.key,
+                        row_rect,
+                        crate::ColorCompat::with_alpha_factor(guide_color, alpha),
+                    );
+                }
                 chevrons.paint(marks, scene, transform, theme, &row.key, row_rect);
             }
             if faded {
@@ -2420,6 +2341,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.scroll.momentum.set_device_scale(ctx.scale_factor);
         self.scroll.device_scale = ctx.scale_factor;
+        // The rows' menu takes the input while it is up, before the rows behind it do.
+        if self.route_menu(event, ctx) {
+            return;
+        }
         // The hand takes over a reveal in progress from where it is drawn.
         if matches!(
             event,
@@ -2477,7 +2402,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             *ctx.handled = true;
             return;
         }
-        if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
+        let taking_press = self.takes_row_press(event);
+        if !taking_press && !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
             let reached = self.rows_reached(event);
             if let Some(rows) = self.mounted.get_mut(reached) {
                 crate::widget::route_to_mounted(
@@ -2581,10 +2507,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.on_context.is_some() => {
-                if let (Some((index, key)), Some(point)) = (self.row_at_cursor(), self.last_cursor)
+            } if self.menu.is_some() => {
+                if let (Some((_, key)), Some(point)) = (self.row_at_cursor(), self.last_cursor) {
+                    self.open_row_menu(key, point);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
+                } else if let Some(point) =
+                    self.last_cursor.filter(|point| self.rect.contains(*point))
+                    && self.open_context_menu(None, point)
                 {
-                    self.open_context(index, key, point);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 }
@@ -2718,6 +2649,28 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // Each mounted row stands under its own node, after the heading above it.
         (child_index < self.mounted.len())
             .then(|| child_index.saturating_add(self.headings_before(child_index)))
+    }
+
+    /// Focus the row an assistive technology moves to, and select it, as the keyboard does.
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [child] = path else {
+            return false;
+        };
+        // The mounted row whose node that child stands under, headings counted.
+        let Some(index) = (0..self.mounted.len())
+            .find(|index| index.saturating_add(self.headings_before(*index)) == *child)
+        else {
+            return false;
+        };
+        let Some(key) = self.mounted.get(index).map(|row| row.key.clone()) else {
+            return false;
+        };
+        self.focus_row(key.clone());
+        self.select_focused(key.clone(), false);
+        if let Some(at) = self.model.index_of(&key) {
+            self.scroll_to_index(at);
+        }
+        true
     }
 
     fn name(&self) -> &'static str {
@@ -2886,7 +2839,35 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .give_needs_frame(crate::motion::frame_now())
             || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self.rename_needs_redraw()
+            || self.menu_needs_redraw()
             || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        super::defaults::draw_overlay(
+            self.children_mut(),
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        self.paint_menu(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.menu_capture()
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.context_menu_is_open()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -2899,6 +2880,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.shown.present();
         if self.rename.is_some() {
             self.mark_rename_drawn();
+        }
+        if let Some(menu) = &mut self.menu {
+            menu.menu_drawn();
         }
         for row in &mut self.mounted {
             row.widget.mark_drawn();
@@ -2920,40 +2904,34 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        // A list whose rows stand as a tree reads as one, each row at its own depth.
-        let role = if self.tree.is_some() {
-            Role::Tree
-        } else {
-            Role::List
-        };
+        let enabled = self.is_enabled();
         Some(
-            AccessNode::new(role)
-                .with_optional_name(
-                    self.accessible_name
-                        .as_deref()
-                        .map(crate::i18n::I18nManager::lookup_plain),
-                )
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.is_focused)
-                        .disabled(!self.is_enabled()),
-                )
-                // Each group's heading stands before the rows it holds, a disclosure of its
-                // own ([`groups::heading_node`]).
-                .with_children(self.accessibility_children(self.is_enabled())),
+            crate::a11y::SharedAccessNode {
+                node: self.access_root(enabled),
+                children: self.accessibility_children(enabled),
+            }
+            .into_owned(),
         )
+    }
+
+    /// The list and its rows, the rows kept between walks: a walk beside an
+    /// unchanged list builds and compares no row ([`Self::accessibility_children`]).
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        let enabled = self.is_enabled();
+        Some(crate::a11y::SharedAccessNode {
+            node: self.access_root(enabled),
+            children: self.accessibility_children(enabled),
+        })
     }
 
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
-        self.perform_a11y_action(target, action)
+        self.perform_a11y_action(target, action, state, path)
     }
 }
 

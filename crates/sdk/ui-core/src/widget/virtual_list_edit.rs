@@ -59,6 +59,7 @@ impl<M: ListModel> VirtualList<M> {
         // A field draws over the label the row's own widget paints, so its chrome takes the
         // title's place rather than doubly printing it.
         let mut input = crate::widget::TextInput::local()
+            .with_plain_chrome()
             .with_text_role(crate::tokens::TextRole::Body)
             .with_initial_value(&label);
         input.set_focus(true);

@@ -36,6 +36,15 @@ fn row(app: &mut TestApp<NotesShell>, index: usize) -> vello::kurbo::Point {
     surface(app, |notes| notes.sidebar_row_center_for_test(index)).unwrap()
 }
 
+/// A point inside row `index`, `fraction` of the way down it: near its foot
+/// (`0.9`) the pointer offers a drop past the row rather than into it.
+fn row_at(app: &mut TestApp<NotesShell>, index: usize, fraction: f64) -> vello::kurbo::Point {
+    surface(app, |notes| {
+        notes.sidebar_row_point_for_test(index, fraction)
+    })
+    .unwrap()
+}
+
 fn drag_active(app: &mut TestApp<NotesShell>) -> bool {
     surface(app, |notes| notes.sidebar_drag_active_for_test())
 }
@@ -57,7 +66,8 @@ fn sidebar_drags_preview_cancel_and_reparent() {
         // Press on row 0 (Welcome), then drag down below the last row.
         dispatch(&mut app, &cursor_moved(r0.x, r0.y));
         dispatch(&mut app, &mouse(ElementState::Pressed, MouseButton::Left));
-        dispatch(&mut app, &cursor_moved(r0.x, r2.y + 8.0));
+        let foot = row_at(&mut app, 2, 0.9);
+        dispatch(&mut app, &cursor_moved(foot.x, foot.y));
 
         // Mid-drag: the tree shows where the page would land (an insertion line
         // below the last row) but the model is NOT mutated yet — commit only
@@ -93,7 +103,8 @@ fn sidebar_drags_preview_cancel_and_reparent() {
         let r2 = row(&mut app, 2);
         dispatch(&mut app, &cursor_moved(r0.x, r0.y));
         dispatch(&mut app, &mouse(ElementState::Pressed, MouseButton::Left));
-        dispatch(&mut app, &cursor_moved(r0.x, r2.y + 8.0));
+        let foot = row_at(&mut app, 2, 0.9);
+        dispatch(&mut app, &cursor_moved(foot.x, foot.y));
         assert!(drag_active(&mut app));
 
         // Escape aborts — the order snaps back and no move commits.

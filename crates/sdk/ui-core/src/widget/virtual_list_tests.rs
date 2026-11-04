@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::testing::Dispatch;
+use crate::widget::context_menu::MenuItem;
 use taffy::AvailableSpace;
 
 pub(super) struct HugeList {
@@ -1217,7 +1218,13 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
     let (a, m) = (Rc::clone(&activated), Rc::clone(&menus));
     let mut list = plain_rows(10)
         .on_activate(move |key| a.borrow_mut().push(key))
-        .on_context(move |key, _, rect| m.borrow_mut().push((key, rect)));
+        .with_context_menu(
+            move |_: &VecListModel<u32, u32>, key| {
+                m.borrow_mut().push(key.copied());
+                vec![MenuItem::action("Open", || {})]
+            },
+            |_, _| {},
+        );
     let (taffy, node) = lay_out(&mut list, 300.0);
     let middle = |list: &VirtualList<VecListModel<u32, u32>>, index: usize| {
         list.rect.y0
@@ -1244,20 +1251,30 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
         node,
     ));
     let menus = menus.borrow();
-    assert_eq!(menus.len(), 1);
-    assert_eq!(menus[0].0, 3);
+    assert_eq!(menus.as_slice(), [Some(3)]);
     assert!(
         list.selection().is_selected(&3),
         "the row is selected first"
     );
-    assert!(menus[0].1.contains(Point::new(20.0, row_three)));
+    assert!(list.context_menu_is_open());
+    assert!(
+        list.modal_capture()
+            .is_some_and(|menu| menu.contains(Point::new(20.0, row_three))),
+        "the menu stands where the press was"
+    );
 }
 
 #[test]
 fn the_menu_key_and_shift_f10_open_the_focused_rows_menu() {
     let menus = Rc::new(RefCell::new(Vec::new()));
     let m = Rc::clone(&menus);
-    let mut list = plain_rows(10).on_context(move |key, _, rect| m.borrow_mut().push((key, rect)));
+    let mut list = plain_rows(10).with_context_menu(
+        move |_: &VecListModel<u32, u32>, key| {
+            m.borrow_mut().push(key.copied());
+            vec![MenuItem::action("Open", || {})]
+        },
+        |_, _| {},
+    );
     let (taffy, node) = lay_out(&mut list, 300.0);
     list.set_focus(true);
     assert!(list.reveal(&2));
@@ -1277,7 +1294,8 @@ fn the_menu_key_and_shift_f10_open_the_focused_rows_menu() {
         winit::keyboard::ModifiersState::empty()
     ));
     assert_eq!(menus.borrow().len(), 1);
-    assert_eq!(menus.borrow()[0].0, 2, "the row the keyboard is on");
+    assert_eq!(menus.borrow()[0], Some(2), "the row the keyboard is on");
+    list.close_context_menu();
     let f10 = crate::synthetic_input::named_key(NamedKey::F10);
     assert!(send(
         &mut list,
@@ -1285,7 +1303,8 @@ fn the_menu_key_and_shift_f10_open_the_focused_rows_menu() {
         winit::keyboard::ModifiersState::SHIFT
     ));
     assert_eq!(menus.borrow().len(), 2, "Shift+F10, as a tree's rows");
-    assert_eq!(menus.borrow()[1].0, 2);
+    assert_eq!(menus.borrow()[1], Some(2));
+    list.close_context_menu();
     assert!(
         !send(&mut list, &f10, winit::keyboard::ModifiersState::empty()),
         "F10 alone is no menu"

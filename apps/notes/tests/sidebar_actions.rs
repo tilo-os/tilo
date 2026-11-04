@@ -92,8 +92,11 @@ fn row(app: &mut App, index: usize) -> Point {
         .unwrap_or_else(|| panic!("row {index} is laid out"))
 }
 
-/// The centre of affordance `action` on visible row `index`.
+/// The centre of affordance `action` on visible row `index`, shown as the
+/// pointer resting on the row shows it.
 fn row_action(app: &mut App, index: usize, action: usize) -> Point {
+    let center = row(app, index);
+    send(app, &cursor_moved(center.x, center.y));
     surface(app, |notes| {
         notes.sidebar_row_action_center_for_test(index, action)
     })
@@ -377,15 +380,17 @@ fn sidebar_drag_moves_the_note_with_the_notebooks_move() {
     let (mut twin, twin_welcome, _twin_one, _twin_two) = seeded();
     assert_eq!(root_order(&app), vec![welcome, one, two]);
 
-    // Drag Welcome below the last row and drop it there.
+    // Drag Welcome onto the last row's foot, where a drop lands beside it
+    // rather than inside it, and drop it there.
     let from = row(&mut app, 0);
-    let last = row(&mut app, 2);
+    let foot = surface(&mut app, |notes| notes.sidebar_row_point_for_test(2, 0.88))
+        .expect("the last row is laid out");
     send(&mut app, &cursor_moved(from.x, from.y));
     send(
         &mut app,
         &ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
     );
-    send(&mut app, &cursor_moved(from.x, last.y + 8.0));
+    send(&mut app, &cursor_moved(from.x, foot.y));
     send(
         &mut app,
         &ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),

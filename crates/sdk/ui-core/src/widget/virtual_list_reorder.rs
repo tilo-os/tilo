@@ -9,6 +9,46 @@ use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::time::Instant;
 
 impl<M: ListModel> VirtualList<M> {
+    /// Whether the list takes this press itself: a left press over the body of a mounted row
+    /// starts a drag of that row, and let go without one presses the row. A press on one of
+    /// the row's own controls, on the pill, or on a list that does not reorder stays the
+    /// rows'.
+    pub(super) fn takes_row_press(&self, event: &winit::event::WindowEvent) -> bool {
+        if self.reorder_validator.is_none() || self.reorder_commit.is_none() {
+            return false;
+        }
+        if !matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) {
+            return false;
+        }
+        let Some(cursor) = self.last_cursor.filter(|point| self.rect.contains(*point)) else {
+            return false;
+        };
+        if self.pill_rect().is_some_and(|rect| rect.contains(cursor)) {
+            return false;
+        }
+        let Some((index, _)) = self.row_at_cursor() else {
+            return false;
+        };
+        let Some(row) = self
+            .mounted
+            .iter()
+            .find(|row| row.index == index && row.state == super::MountedRowState::Ready)
+        else {
+            return false;
+        };
+        row.widget
+            .as_any()
+            .and_then(|widget| widget.downcast_ref::<crate::widget::ListRow>())
+            .is_some_and(|row| !row.claims_pointer(cursor))
+    }
+
     pub(super) fn update_reorder_pointer(&mut self, cursor: Point, now: Instant) {
         let candidate = self.reorder_candidate(cursor);
         let model = &self.model;

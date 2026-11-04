@@ -1184,6 +1184,8 @@ pub struct ListRow {
     actions: Vec<OwnedAction>,
     hovered_action: Option<usize>,
     armed_action: Option<usize>,
+    /// The list this row stands in has something painted over it: its tooltip stays away.
+    tooltips_suppressed: bool,
     /// A press on one of the row's own controls (a hover action, the
     /// leading checkbox); a press on the row itself is the activation's.
     pressed_part: crate::pointer_replay::HeldPress<RowPart>,
@@ -1281,6 +1283,7 @@ impl ListRow {
             actions: Vec::new(),
             hovered_action: None,
             armed_action: None,
+            tooltips_suppressed: false,
             pressed_part: crate::pointer_replay::HeldPress::default(),
             shortcuts: Vec::new(),
             swipe: None,
@@ -1735,6 +1738,12 @@ impl ListRow {
             show,
         });
         self
+    }
+
+    /// Hide this row's tooltip while something the host paints covers the list it stands in:
+    /// the list keeps the flag over every row it mounts ([`crate::widget::VirtualList`]).
+    pub(crate) fn suppress_tooltips(&mut self, suppressed: bool) {
+        self.tooltips_suppressed = suppressed;
     }
 
     /// The presence dot of the person `identity`.
@@ -2342,7 +2351,9 @@ impl ListRow {
             .collect()
     }
 
-    fn action_rects(&self) -> Vec<Rect> {
+    /// Where the row's hover actions sit, in the order it shows them: what a host presses to
+    /// reach them from a script or a test.
+    pub(crate) fn action_rects(&self) -> Vec<Rect> {
         let (Some(metrics), Some(theme)) = (&self.metrics, &self.theme) else {
             return Vec::new();
         };
@@ -2350,6 +2361,23 @@ impl ListRow {
         crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             self.with_face(|face| face.action_rects_with(band, metrics, text, theme))
         })
+    }
+
+    /// Whether a press at `point` is one of the row's own controls': a hover action, its check,
+    /// a trailing control or a change. Those keep the press; on any other part of it the list
+    /// takes the press, to drag the row and, let go without a drag, to press it.
+    pub(crate) fn claims_pointer(&self, point: Point) -> bool {
+        if self.activation.state.disabled {
+            return false;
+        }
+        self.action_rects().iter().any(|rect| rect.contains(point))
+            || matches!(self.leading, Some(Leading::Checkbox { .. }))
+                && self.leading_hit().is_some_and(|rect| rect.contains(point))
+            || self
+                .trailing
+                .as_ref()
+                .is_some_and(|trailing| trailing.element.get_rect().contains(point))
+            || self.change_hit().is_some_and(|rect| rect.contains(point))
     }
 
     /// Where the face of an unseen change sits, when the row shows one that does something.
@@ -2922,6 +2950,9 @@ impl Widget for ListRow {
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if self.tooltips_suppressed {
+            return None;
+        }
         if let Some(tooltip) = &self.leading_tooltip
             && let Some(r) = self.leading_hit()
             && r.contains(point)
@@ -3108,9 +3139,17 @@ impl Widget for ListRow {
             node.description = Some(tooltip.clone());
         }
         // The face numbers the actions it shows; address each by its place
-        // among all the row's actions, as its binding is.
-        for (child, index) in node.children.iter_mut().zip(self.shown_actions()) {
+        // among all the row's actions, as its binding is, and say where it
+        // shows so a pointer or an agent can reach it.
+        let rects = self.action_rects();
+        for ((child, index), rect) in node
+            .children
+            .iter_mut()
+            .zip(self.shown_actions())
+            .zip(rects)
+        {
             child.action_target = Some(format!("{id}/action/{index}"));
+            child.bounds = Some(rect.into());
         }
         Some(node)
     }

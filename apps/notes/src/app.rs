@@ -1917,6 +1917,7 @@ impl NotesApp {
             self.gone = Some((gone, notice));
         }
         self.sidebar.open_menu_rename();
+        self.sidebar.open_requested_menu();
     }
 
     /// Open the notes chosen in the tree that the projection shows now.
@@ -2166,6 +2167,17 @@ impl NotesApp {
         }
     }
 
+    /// Take what the page tree's input asked for, and let the field it opened
+    /// keep the keyboard: the person types into the rename next, and a focus
+    /// trap closing around that field must not take the keyboard back.
+    fn follow_page_tree_input(&mut self, ctx: &mut ui::widget::EventCtx<'_>, node: NodeId) {
+        self.follow_page_tree();
+        if self.sidebar.is_renaming() {
+            *ctx.focus_target = Some(node);
+        }
+        self.claim_sidebar_focus(*ctx.focus_target);
+    }
+
     /// A press the page tree claimed focus for gives it keyboard focus at
     /// once, so a key that follows in the same frame reaches its commands.
     fn claim_sidebar_focus(&mut self, focus_target: Option<NodeId>) {
@@ -2280,6 +2292,12 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_row_center_for_test(&self, idx: usize) -> Option<Point> {
         self.sidebar.row_center_for_test(idx)
+    }
+
+    /// Test hook: a point over sidebar row `idx`, `fraction` of the way down it.
+    #[doc(hidden)]
+    pub fn sidebar_row_point_for_test(&self, idx: usize, fraction: f64) -> Option<Point> {
+        self.sidebar.row_point_for_test(idx, fraction)
     }
 
     /// Test hook: centre of the affordance `action` on sidebar row `idx`.
@@ -3471,8 +3489,7 @@ impl NotesApp {
         let selected = self.workspace.selected();
         self.sidebar
             .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        self.claim_sidebar_focus(*ctx.focus_target);
-        self.follow_page_tree();
+        self.follow_page_tree_input(ctx, node);
         if self.shell.geometry().sidebar == SidebarPlacement::Drawer
             && self.workspace.selected() != selected
             && !self.sidebar.menu_is_open()
@@ -3721,10 +3738,8 @@ impl NotesApp {
             if let Some(n) = self.sidebar_node {
                 self.sidebar
                     .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-                self.claim_sidebar_focus(*ctx.focus_target);
+                self.follow_page_tree_input(ctx, n);
             }
-            // Take what the page tree's input asked for.
-            self.follow_page_tree();
         }
         // The editor never sees keystrokes the sidebar is capturing — its
         // right-click menu OR an in-progress inline rename — so a rename

@@ -1,10 +1,10 @@
-//! The page tree: the toolkit's [`TreeView`] over a snapshot of the
-//! [`Workspace`], configured as an outliner sidebar.
+//! The page tree: the toolkit list's tree rows over a snapshot of the
+//! [`Workspace`], read as an outliner sidebar.
 //!
-//! The tree owns rows, disclosure, selection, keyboard navigation, inline
-//! rename, drag-and-drop, the context menu, hover row actions, scrolling and
-//! semantics. This module owns only what is specific to Notes: the indexed
-//! model the view reads (every page may hold children), the page menu, and
+//! The list owns rows, disclosure, selection, keyboard navigation, inline
+//! rename, drag-and-drop, the row menu, hover row actions, scrolling,
+//! indentation and semantics. This module owns only what is specific to Notes:
+//! the model the list reads (every page may hold children), the page menu, and
 //! what its controls mean as the notebook's own
 //! [actions](crate::notebook::Notebook): every one of them is submitted
 //! through the notebook's dispatcher, the one door the palette, agents,
@@ -22,9 +22,10 @@
 //! `NotesApp`, so they work whichever pane has focus.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+use ui::prelude::*;
 #[cfg(test)]
 use ui::widget::Edits;
 
@@ -33,9 +34,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceKey;
 use ui::reorder::{DropPlacement, ReorderDrop};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::tree_view::{
-    NodeId, TreeModel, TreeModelChange, TreeRowAction, TreeRowDecoration, TreeView,
-};
+use ui::widget::{ListModel, ListRow, TreeMarks, TreeRow, VirtualList};
 
 use crate::model::{PageId, Workspace};
 use crate::notebook::{self, Notebook};
@@ -60,7 +59,9 @@ pub(crate) struct Wanted {
     /// What a deletion this tree submitted says, said once it lands.
     gone: Option<Gone>,
     /// A menu's "Rename": the field opens once the menu has closed.
-    rename: Option<NodeId>,
+    rename: Option<PageId>,
+    /// The row whose "more" control asked for the page menu.
+    menu: Option<PageId>,
 }
 
 /// A note a submission will make: the landing revision it was submitted
@@ -219,10 +220,7 @@ fn ask(door: &SharedDoor, effect: &crate::effect::NotesEffect) {
     }
 }
 
-pub type PageTreeView = TreeView<(), PageTree>;
-
-/// The hidden root every top-level page hangs from.
-const ROOT: NodeId = 0;
+pub type PageTreeView = VirtualList<PageList>;
 
 /// Row indices of [`note_menu_items`], shared by the sidebar's page menu and
 /// the note menu `NotesApp` opens over the editor.
@@ -271,188 +269,149 @@ fn empty_area_items() -> Vec<MenuItem> {
     ]
 }
 
-/// Stable tree keys for page ids. Keys survive every rebuild of the model,
-/// so selection, focus, expansion and the scroll anchor stay attached to the
-/// same pages while the workspace changes underneath.
-#[derive(Default)]
-struct PageKeys {
-    by_page: HashMap<PageId, NodeId>,
-    by_key: HashMap<NodeId, PageId>,
-    next: NodeId,
-}
-
-impl PageKeys {
-    fn key(&mut self, page: PageId) -> NodeId {
-        if let Some(key) = self.by_page.get(&page) {
-            return *key;
-        }
-        self.next = self.next.saturating_add(1);
-        self.by_page.insert(page, self.next);
-        self.by_key.insert(self.next, page);
-        self.next
-    }
-
-    fn page(&self, key: NodeId) -> Option<PageId> {
-        self.by_key.get(&key).copied()
-    }
-
-    fn existing(&self, page: PageId) -> Option<NodeId> {
-        self.by_page.get(&page).copied()
-    }
-}
-
-type SharedKeys = Rc<RefCell<PageKeys>>;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Entry {
-    title: String,
-    parent: NodeId,
-    children: Vec<NodeId>,
-}
-
-/// An indexed, read-only snapshot of the page hierarchy in workspace order.
+/// An indexed snapshot of the page hierarchy in notebook order: every note
+/// once, each before the notes inside it, so the list can read it as its rows.
 /// Rebuilt whenever the workspace changes; every query the view makes is a
 /// hash lookup.
-pub struct PageTree {
-    keys: SharedKeys,
-    roots: Vec<NodeId>,
-    entries: HashMap<NodeId, Entry>,
+#[derive(Clone, Debug, Default)]
+pub struct PageList {
+    rows: Vec<PageRow>,
+    /// Where each note stands in `rows`.
+    by_page: HashMap<PageId, usize>,
+    /// Every note's children in notebook order; top-level notes under `None`.
+    children: HashMap<Option<PageId>, Vec<PageId>>,
 }
 
-impl PageTree {
-    fn build(workspace: &Workspace, keys: &SharedKeys) -> Self {
-        let mut tree = Self {
-            keys: Rc::clone(keys),
-            roots: Vec::new(),
-            entries: HashMap::new(),
-        };
+/// One note of [`PageList`]: what its row reads and the note it stands under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PageRow {
+    page: PageId,
+    title: String,
+    parent: Option<PageId>,
+}
+
+impl PageList {
+    fn build(workspace: &Workspace) -> Self {
         // Every note's children in notebook order, gathered in one pass:
         // asking the workspace per note scanned every note for each one.
-        let mut children_of: HashMap<Option<PageId>, Vec<&crate::model::PageMeta>> = HashMap::new();
+        let mut children: HashMap<Option<PageId>, Vec<PageId>> = HashMap::new();
+        let mut titles: HashMap<PageId, (String, Option<PageId>)> = HashMap::new();
         for page in workspace.pages() {
-            children_of.entry(page.parent).or_default().push(page);
+            children.entry(page.parent).or_default().push(page.id);
+            titles.insert(page.id, (page.title.clone(), page.parent));
         }
-        let mut registry = keys.borrow_mut();
-        let mut stack: Vec<(Option<PageId>, NodeId)> = vec![(None, ROOT)];
-        while let Some((page, key)) = stack.pop() {
-            let siblings = children_of.get(&page).map_or(&[][..], Vec::as_slice);
-            let children: Vec<NodeId> = siblings
-                .iter()
-                .map(|child| registry.key(child.id))
-                .collect();
-            for child in siblings {
-                let child_key = registry.key(child.id);
-                tree.entries.insert(
-                    child_key,
-                    Entry {
-                        title: child.title.clone(),
-                        parent: key,
-                        children: Vec::new(),
-                    },
-                );
-                stack.push((Some(child.id), child_key));
+        let mut list = Self {
+            rows: Vec::with_capacity(titles.len()),
+            by_page: HashMap::with_capacity(titles.len()),
+            children,
+        };
+        let mut pending: Vec<(PageId, Option<PageId>)> = list
+            .children
+            .get(&None)
+            .map(|roots| roots.iter().rev().map(|page| (*page, None)).collect())
+            .unwrap_or_default();
+        while let Some((page, parent)) = pending.pop() {
+            let Some((title, _)) = titles.get(&page) else {
+                continue;
+            };
+            list.by_page.insert(page, list.rows.len());
+            list.rows.push(PageRow {
+                page,
+                title: title.clone(),
+                parent,
+            });
+            if let Some(nested) = list.children.get(&Some(page)) {
+                pending.extend(nested.iter().rev().map(|child| (*child, Some(page))));
             }
-            match tree.entries.get_mut(&key) {
-                Some(entry) => entry.children = children,
-                None => tree.roots = children,
-            }
         }
-        drop(registry);
-        tree
+        list
     }
 
-    fn children(&self, key: NodeId) -> &[NodeId] {
-        if key == ROOT {
-            return &self.roots;
-        }
-        self.entries
-            .get(&key)
-            .map_or(&[], |entry| entry.children.as_slice())
+    fn row(&self, index: usize) -> Option<&PageRow> {
+        self.rows.get(index)
     }
 
-    fn page(&self, key: NodeId) -> Option<PageId> {
-        self.keys.borrow().page(key)
+    /// The note standing at `index`.
+    fn page(&self, index: usize) -> Option<PageId> {
+        Some(self.row(index)?.page)
     }
 
-    /// The page a key's parent stands for; `None` for a top-level page.
-    fn parent_page(&self, key: NodeId) -> Option<PageId> {
-        let parent = self.entries.get(&key)?.parent;
-        if parent == ROOT {
-            None
-        } else {
-            self.page(parent)
-        }
+    /// Whether the hierarchy is `other`'s: the rows, their titles and their
+    /// places.
+    fn same_shape(&self, other: &Self) -> bool {
+        self.rows == other.rows
+    }
+
+    /// The note `page` stands under; `None` for a top-level note.
+    fn parent_of(&self, page: PageId) -> Option<PageId> {
+        self.by_page
+            .get(&page)
+            .and_then(|at| self.rows.get(*at))
+            .and_then(|row| row.parent)
+    }
+
+    /// The notes in `parent` (top-level notes when none), in notebook order.
+    fn siblings(&self, parent: Option<PageId>) -> &[PageId] {
+        self.children.get(&parent).map_or(&[], Vec::as_slice)
     }
 
     /// The canonical `(new_parent, before)` a validated drop resolves to.
-    fn placement(&self, dropped: &ReorderDrop<NodeId>) -> (Option<PageId>, Option<PageId>) {
+    fn placement(&self, dropped: &ReorderDrop<PageId>) -> (Option<PageId>, Option<PageId>) {
         let target = dropped.target.key;
+        let parent = self.parent_of(target);
         match dropped.target.placement {
-            DropPlacement::Inside => (self.page(target), None),
-            DropPlacement::Before => (self.parent_page(target), self.page(target)),
+            DropPlacement::Inside => (Some(target), None),
+            DropPlacement::Before => (parent, Some(target)),
             DropPlacement::After => {
-                let parent = self.entries.get(&target).map_or(ROOT, |entry| entry.parent);
                 let before = self
-                    .children(parent)
+                    .siblings(parent)
                     .iter()
-                    .skip_while(|key| **key != target)
+                    .skip_while(|page| **page != target)
                     .skip(1)
-                    .find(|key| **key != dropped.source)
-                    .and_then(|key| self.page(*key));
-                (self.parent_page(target), before)
+                    .find(|page| **page != dropped.source)
+                    .copied();
+                (parent, before)
             }
         }
     }
-
-    fn same_shape(&self, other: &Self) -> bool {
-        self.roots == other.roots && self.entries == other.entries
-    }
 }
 
-impl TreeModel for PageTree {
-    fn root_id(&self) -> NodeId {
-        ROOT
+impl ListModel for PageList {
+    type Key = PageId;
+
+    fn len(&self) -> usize {
+        self.rows.len()
     }
 
-    fn contains(&self, id: NodeId) -> bool {
-        id == ROOT || self.entries.contains_key(&id)
+    fn key_at(&self, index: usize) -> Option<PageId> {
+        self.page(index)
     }
 
-    fn label(&self, id: NodeId) -> Option<&str> {
-        if id == ROOT {
-            return Some("");
-        }
-        self.entries.get(&id).map(|entry| entry.title.as_str())
+    fn index_of(&self, key: &PageId) -> Option<usize> {
+        self.by_page.get(key).copied()
     }
 
-    fn is_branch(&self, id: NodeId) -> bool {
-        id == ROOT || !self.children(id).is_empty()
+    fn label(&self, index: usize) -> Option<String> {
+        Some(self.row(index)?.title.clone())
     }
 
-    /// Rows are addressed by page, which outlives this session's keys.
-    fn semantic_key(&self, id: NodeId) -> Option<String> {
-        self.page(id).map(|page| format!("notes:page:{page}"))
+    /// Each note stands where the notebook puts it: under the note it is
+    /// inside.
+    fn tree_at(&self, index: usize) -> Option<TreeRow<PageId>> {
+        Some(TreeRow {
+            parent: self.row(index)?.parent,
+        })
     }
 
-    /// Any page can hold children: dropping onto a leaf nests into it.
-    fn accepts_children(&self, id: NodeId) -> bool {
-        self.contains(id)
+    /// Any note holds others: dropping onto one nests into it.
+    fn accepts_children(&self, index: usize) -> bool {
+        self.row(index).is_some()
     }
 
-    fn parent_id(&self, id: NodeId) -> Option<NodeId> {
-        self.entries.get(&id).map(|entry| entry.parent)
-    }
-
-    fn child_index(&self, parent: NodeId, child: NodeId) -> Option<usize> {
-        self.children(parent).iter().position(|key| *key == child)
-    }
-
-    fn child_count(&self, parent: NodeId) -> usize {
-        self.children(parent).len()
-    }
-
-    fn child_id(&self, parent: NodeId, index: usize) -> Option<NodeId> {
-        self.children(parent).get(index).copied()
+    /// A note with notes inside it shows the disclosure that folds them away.
+    fn has_subtasks(&self, index: usize) -> bool {
+        self.row(index)
+            .is_some_and(|row| !self.siblings(Some(row.page)).is_empty())
     }
 }
 
@@ -461,14 +420,13 @@ impl TreeModel for PageTree {
 /// hosts.
 pub struct PageSidebar {
     tree: PageTreeView,
-    keys: SharedKeys,
+    /// Which notes have their notes folded away, kept by the list as it mounts
+    /// rows so a fold survives every rebuild of the snapshot.
+    marks: Rc<TreeMarks<PageId>>,
     door: SharedDoor,
     wanted: SharedWanted,
-    /// False until the first sync expands every branch, so the tree opens
-    /// showing its structure; after that expansion is the user's.
-    did_initial_expand: bool,
     /// The selection seen by the previous sync. When it changes, its
-    /// ancestors expand so the selected row is on screen (a `[[link]]`
+    /// ancestors unfold so the selected row is on screen (a `[[link]]`
     /// jump into a nested page).
     last_selection: Option<PageId>,
 }
@@ -500,97 +458,75 @@ impl PageSidebar {
     )]
     pub fn new() -> Self {
         crate::metadata::register_messages();
-        let keys = SharedKeys::default();
         let door = SharedDoor::default();
         let wanted = SharedWanted::default();
-        let model = PageTree::build(&Workspace::default(), &keys);
-        let on_select = (Rc::clone(&wanted), Rc::clone(&keys));
-        let on_rename = (Rc::clone(&door), Rc::clone(&keys));
-        let on_delete = (Rc::clone(&door), Rc::clone(&wanted), Rc::clone(&keys));
-        let on_reorder = (Rc::clone(&door), Rc::clone(&keys));
-        let on_row_action = (Rc::clone(&door), Rc::clone(&wanted), Rc::clone(&keys));
-        let on_menu = (Rc::clone(&door), Rc::clone(&wanted), Rc::clone(&keys));
-        let tree = TreeView::from_model(model)
-            .with_accessible_name(ui::i18n!("notes-title"))
-            .hide_root()
-            .fill()
-            .with_indent_guides()
-            .selection_follows_focus(true)
-            .rename_on_double_click()
-            .tab_indents(true)
-            .with_row_actions(vec![
-                TreeRowAction::new(Icon::Plus, ui::i18n!("notes-affordance-new-child"))
-                    .accessible_name(ui::i18n!("notes-a11y-new-child-under")),
-                TreeRowAction::new(
-                    Icon::MoreHorizontal,
-                    ui::i18n!("notes-affordance-note-actions"),
-                )
-                .accessible_name(ui::i18n!("notes-a11y-more-actions-for"))
-                .opens_context_menu(),
-            ])
-            .with_row_decoration(|model: &PageTree, row, _| {
-                let decoration = TreeRowDecoration::new();
-                match model.page(row.id) {
-                    // Remote peers viewing a page glow its row.
-                    Some(page) => decoration.presence(PresenceKey::Tab {
-                        id: page.to_string(),
-                    }),
-                    None => decoration,
-                }
+        let marks = Rc::new(TreeMarks::default());
+        let on_reorder = Rc::clone(&door);
+        let on_rename = Rc::clone(&door);
+        let on_delete = (Rc::clone(&door), Rc::clone(&wanted));
+        let on_open = Rc::clone(&wanted);
+        let on_menu = (Rc::clone(&door), Rc::clone(&wanted));
+        let rows = (Rc::clone(&door), Rc::clone(&wanted));
+        let depths = Rc::clone(&marks);
+        let tree = VirtualList::new(
+            PageList::build(&Workspace::default()),
+            ui::tokens::Metrics::BASE.row_single,
+            move |model, index, page| {
+                let Some(row) = model.row(index) else {
+                    return Box::new(ListRow::new(format!("note-{page}"), "")) as Element;
+                };
+                let title = row.title.as_str();
+                let page = *page;
+                let (plus_door, plus_wanted) = (Rc::clone(&rows.0), Rc::clone(&rows.1));
+                let more_wanted = Rc::clone(&rows.1);
+                let row = ListRow::new(format!("note-{page}"), title)
+                    .depth(depths.depth(&page))
+                    .action(
+                        Icon::Plus,
+                        format!("{} {title}", ui::i18n!("notes-a11y-new-child-under")),
+                        move || make_note(&plus_door, &plus_wanted, Some(page), false),
+                    )
+                    .action(
+                        Icon::MoreHorizontal,
+                        format!("{} {title}", ui::i18n!("notes-a11y-more-actions-for")),
+                        // The list opens the page menu on the row once it has
+                        // the request: a row's control cannot reach it.
+                        move || more_wanted.borrow_mut().menu = Some(page),
+                    );
+                Box::new(row)
+            },
+        )
+        .with_accessible_name(ui::i18n!("notes-title"))
+        .with_tree(Rc::clone(&marks))
+        .with_indent_guides()
+        .filling()
+        .selection_follows_focus()
+        .rename_on_double_click()
+        .tab_indents(true)
+        .with_row_presence(|_, _, page| {
+            // Remote peers viewing a note glow its row.
+            Some(PresenceKey::Tab {
+                id: page.to_string(),
             })
-            .with_context_menu(|_, target| match target {
+        })
+        .with_semantic_key(|page| format!("notes:page:{page}"))
+        .with_context_menu(
+            |_, target| match target {
                 Some(_) => note_menu_items(),
                 None => empty_area_items(),
-            })
-            .with_reorder(
-                |_, _, _| true,
-                move |model: &mut PageTree, dropped| {
-                    let Some(id) = model.page(dropped.source) else {
-                        return false;
-                    };
-                    let (parent, before) = model.placement(&dropped);
-                    move_page(&on_reorder.0, id, parent, before);
-                    true
-                },
-            )
-            .on_view("page_tree", move |key| {
-                let (wanted, keys) = &on_select;
-                if let Some(page) = keys.borrow().page(key) {
-                    wanted.borrow_mut().open.push(page);
-                }
-            })
-            .on_rename(move |key, new_title| {
-                let (door, keys) = &on_rename;
-                if let Some(page) = keys.borrow().page(key) {
-                    rename_page(door, page, new_title);
-                }
-            })
-            .on_delete(move |key| {
-                let (door, wanted, keys) = &on_delete;
-                if let Some(page) = keys.borrow().page(key) {
-                    delete_page(door, wanted, page);
-                }
-            })
-            .on_row_action(move |key, _| {
-                // Only the "new child" action reports; "more" opens the menu.
-                let (door, wanted, keys) = &on_row_action;
-                if let Some(page) = keys.borrow().page(key) {
-                    make_note(door, wanted, Some(page), false);
-                }
-            })
-            .on_context_menu_item(move |target, index| {
-                let (door, wanted, keys) = &on_menu;
-                let page = target.and_then(|key| keys.borrow().page(key));
-                match (target, page) {
-                    (None, _) => match index {
+            },
+            move |target, index| {
+                let (door, wanted) = &on_menu;
+                match target {
+                    None => match index {
                         0 => make_note(door, wanted, None, false),
                         1 => ask(door, &crate::effect::NotesEffect::ImportMarkdownFile),
                         2 => ask(door, &crate::effect::NotesEffect::ImportNotionExport),
                         _ => {}
                     },
-                    (Some(key), Some(page)) => match index {
+                    Some(page) => match index {
                         menu_row::NEW_CHILD => make_note(door, wanted, Some(page), false),
-                        menu_row::RENAME => wanted.borrow_mut().rename = Some(key),
+                        menu_row::RENAME => wanted.borrow_mut().rename = Some(page),
                         menu_row::DUPLICATE => duplicate_page(door, wanted, page),
                         menu_row::COPY_LINK => {
                             ask(door, &crate::effect::NotesEffect::CopyLink { page });
@@ -604,15 +540,32 @@ impl PageSidebar {
                         menu_row::DELETE => delete_page(door, wanted, page),
                         _ => {}
                     },
-                    (Some(_), None) => {}
                 }
-            });
+            },
+        )
+        .with_reorder(
+            |_, _, _| true,
+            move |model: &mut PageList, dropped: ReorderDrop<PageId>| {
+                let (parent, before) = model.placement(&dropped);
+                move_page(&on_reorder, dropped.source, parent, before);
+                true
+            },
+        )
+        .on_view("page_tree", move |page| {
+            on_open.borrow_mut().open.push(page)
+        })
+        .on_rename(move |page, new_title| {
+            rename_page(&on_rename, page, new_title);
+        })
+        .on_delete(move |page| {
+            let (door, wanted) = &on_delete;
+            delete_page(door, wanted, page);
+        });
         Self {
             tree,
-            keys,
+            marks,
             door,
             wanted,
-            did_initial_expand: false,
             last_selection: None,
         }
     }
@@ -668,11 +621,31 @@ impl PageSidebar {
 
     /// Open the inline rename field a menu's "Rename" asked for, once the
     /// menu has closed.
-    pub(crate) fn open_menu_rename(&mut self) {
-        let key = self.wanted.borrow_mut().rename.take();
-        if let Some(key) = key {
-            self.tree.begin_rename(key);
+    pub fn open_menu_rename(&mut self) {
+        if self.tree.context_menu_is_open() {
+            return;
         }
+        let Some(page) = self.wanted.borrow_mut().rename else {
+            return;
+        };
+        let mut wanted = self.wanted.borrow_mut();
+        wanted.rename = None;
+        drop(wanted);
+        self.tree.begin_rename(&page);
+    }
+
+    /// Open the page menu on the row whose "more" control asked for it, where
+    /// its control stands.
+    pub fn open_requested_menu(&mut self) {
+        let Some(page) = self.wanted.borrow_mut().menu.take() else {
+            return;
+        };
+        let at = self
+            .tree
+            .row_action_rect(&page, MORE_ACTION)
+            .or_else(|| self.tree.row_rect(&page))
+            .map_or(self.tree.get_rect().center(), |rect| rect.center());
+        self.tree.open_row_menu(page, at);
     }
 
     /// The hosted tree, as a widget.
@@ -684,73 +657,74 @@ impl PageSidebar {
         &mut self.tree
     }
 
-    fn key(&self, page: PageId) -> Option<NodeId> {
-        self.keys.borrow().existing(page)
+    /// Fold `page`'s notes away, or show them again.
+    pub fn set_expanded(&mut self, page: PageId, expanded: bool) {
+        self.tree.fold_row(&page, !expanded);
+    }
+
+    /// Whether `page`'s notes show.
+    pub fn is_expanded(&self, page: PageId) -> bool {
+        !self.tree.row_folded(&page)
+    }
+
+    /// The note the tree has selected.
+    pub fn selected(&self) -> Option<PageId> {
+        self.tree.focused_key().copied()
     }
 
     /// Mirror the workspace into the tree. Cheap when nothing changed; a
-    /// changed hierarchy rebuilds the snapshot and the tree reconciles it
-    /// against stable keys.
+    /// changed hierarchy rebuilds the snapshot and the list reconciles it
+    /// against the notes' stable keys.
     pub fn sync_from_workspace(&mut self, workspace: &Workspace) {
-        let next = PageTree::build(workspace, &self.keys);
+        let next = PageList::build(workspace);
         if !next.same_shape(self.tree.model()) {
-            self.tree
-                .update_source(&[TreeModelChange::Reset], |model| *model = next);
+            self.tree.update_model(|model| *model = next);
         }
-        let mut expanded: Vec<NodeId> = self.tree.expanded_ids().collect();
         let mut reveal = None;
-        if !self.did_initial_expand {
-            expanded.extend(
-                workspace
-                    .pages()
-                    .iter()
-                    .filter(|page| !workspace.children_of(Some(page.id)).is_empty())
-                    .filter_map(|page| self.key(page.id)),
-            );
-            self.did_initial_expand = true;
-        }
         let selected = workspace.selected();
         if selected != self.last_selection {
             let mut ancestor = selected
                 .and_then(|id| workspace.get(id))
                 .and_then(|p| p.parent);
             while let Some(page) = ancestor {
-                expanded.extend(self.key(page));
+                self.marks.fold(&page, false);
                 ancestor = workspace.get(page).and_then(|p| p.parent);
             }
-            reveal = selected.and_then(|page| self.key(page));
-            self.tree.set_focused(reveal);
+            reveal = selected;
             self.last_selection = selected;
         }
-        self.tree.restore_expanded(expanded);
-        match selected.and_then(|page| self.key(page)) {
-            Some(key) => self.tree.selection_mut().select_only(key),
+        match selected {
+            Some(page) => self.tree.selection_mut().select_only(page),
             None => self.tree.selection_mut().clear(),
         }
-        if let Some(key) = reveal {
-            self.tree.reveal(key);
+        if let Some(page) = reveal {
+            self.tree.focus_row(page);
+            self.tree.reveal(&page);
         }
     }
 
-    /// Expanded pages, for the application's persisted local view.
+    /// Expanded notes, for the application's persisted local view.
     pub fn expanded_pages(&self) -> Vec<PageId> {
-        let keys = self.keys.borrow();
-        let mut pages: Vec<PageId> = self
-            .tree
-            .expanded_ids()
-            .filter_map(|key| keys.page(key))
+        let model = self.tree.model();
+        let mut pages: Vec<PageId> = (0..model.len())
+            .filter(|index| model.has_subtasks(*index))
+            .filter_map(|index| model.page(index))
+            .filter(|page| !self.tree.row_folded(page))
             .collect();
         pages.sort_unstable();
         pages
     }
 
     pub fn restore_expanded_pages(&mut self, pages: &[PageId], workspace: &Workspace) {
-        let next = PageTree::build(workspace, &self.keys);
-        self.tree
-            .update_source(&[TreeModelChange::Reset], |model| *model = next);
-        let keys: Vec<NodeId> = pages.iter().filter_map(|page| self.key(*page)).collect();
-        self.tree.restore_expanded(keys);
-        self.did_initial_expand = true;
+        let next = PageList::build(workspace);
+        let shown: HashSet<PageId> = pages.iter().copied().collect();
+        let folded: HashSet<PageId> = (0..next.len())
+            .filter(|index| next.has_subtasks(*index))
+            .filter_map(|index| next.page(index))
+            .filter(|page| !shown.contains(page))
+            .collect();
+        self.marks.restore_folded(folded);
+        self.tree.update_model(|model| *model = next);
         // Re-run the ancestor revelation even for an unchanged selection.
         self.last_selection = None;
         self.sync_from_workspace(workspace);
@@ -758,8 +732,7 @@ impl PageSidebar {
 
     /// Open the inline rename field on `page`.
     pub fn begin_rename(&mut self, page: PageId) -> bool {
-        self.key(page)
-            .is_some_and(|key| self.tree.begin_rename(key))
+        self.tree.begin_rename(&page)
     }
 
     /// True while an inline rename field is open.
@@ -774,9 +747,12 @@ impl PageSidebar {
         self.tree.context_menu_is_open()
     }
 
-    /// Visible row `index` as `(key, title, depth)`.
-    fn row(&self, index: usize) -> Option<(NodeId, &str, usize)> {
-        self.tree.visible_row(index)
+    /// Visible row `index` as `(page, title, depth)`.
+    fn row(&self, index: usize) -> Option<(PageId, &str, usize)> {
+        let page = self.tree.visible_key(index)?;
+        let model = self.tree.model();
+        let title = model.row(model.index_of(&page)?)?.title.as_str();
+        Some((page, title, self.tree.row_depth(&page).try_into().ok()?))
     }
 
     #[cfg(test)]
@@ -788,8 +764,20 @@ impl PageSidebar {
     /// through the real event path.
     #[doc(hidden)]
     pub fn row_center_for_test(&self, index: usize) -> Option<vello::kurbo::Point> {
-        let (key, _, _) = self.row(index)?;
-        self.tree.row_rect(key).map(|rect| rect.center())
+        let (page, _, _) = self.row(index)?;
+        self.tree.row_rect(&page).map(|rect| rect.center())
+    }
+
+    /// Test hook: the point `from` the top of visible row `index`, over its
+    /// height `fraction` of the way down, for targeting a drop there.
+    #[doc(hidden)]
+    pub fn row_point_for_test(&self, index: usize, fraction: f64) -> Option<vello::kurbo::Point> {
+        let (page, _, _) = self.row(index)?;
+        let rect = self.tree.row_rect(&page)?;
+        Some(vello::kurbo::Point::new(
+            rect.center().x,
+            rect.y0 + rect.height() * fraction,
+        ))
     }
 
     /// Test hook: the centre of row `index`'s affordance `action`, for click
@@ -800,17 +788,17 @@ impl PageSidebar {
         index: usize,
         action: usize,
     ) -> Option<vello::kurbo::Point> {
-        let (key, _, _) = self.row(index)?;
+        let (page, _, _) = self.row(index)?;
         self.tree
-            .row_action_rect(key, action)
+            .row_action_rect(&page, action)
             .map(|rect| rect.center())
     }
 
     /// Test hook: the x of the disclosure column's centre on row `index`.
     #[doc(hidden)]
     pub fn row_disclosure_x_for_test(&self, index: usize) -> Option<f64> {
-        let (key, _, _) = self.row(index)?;
-        self.tree.disclosure_rect(key).map(|rect| rect.center().x)
+        let (page, _, _) = self.row(index)?;
+        self.tree.disclosure_rect(&page).map(|rect| rect.center().x)
     }
 
     /// Test hook: the depth of visible row `index` (0 = top level).
@@ -828,8 +816,8 @@ impl PageSidebar {
     /// Test hook: whether visible row `index` has children (a disclosure).
     #[doc(hidden)]
     pub fn row_has_children_for_test(&self, index: usize) -> Option<bool> {
-        let (key, _, _) = self.row(index)?;
-        Some(self.tree.model().is_branch(key))
+        let (page, _, _) = self.row(index)?;
+        Some(self.tree.row_is_branch(&page))
     }
 
     /// Test hook: whether the open rename field is plain chrome (styled as
@@ -870,12 +858,15 @@ impl PageSidebar {
     }
 }
 
+/// The index of the "more" row action, in the order every row shows its
+/// controls.
+pub const MORE_ACTION: usize = 1;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::{AutoCommit, ObjId};
     use taffy::TaffyTree;
-    use taffy::prelude::TaffyMaxContent;
     use ui::Widget;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -883,22 +874,48 @@ mod tests {
     use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::NamedKey;
 
-    /// Lay the sidebar out at `rect` the way the drawer host does.
+    /// Lay the sidebar out at `rect` the way the drawer host does, over the frames a
+    /// host takes to settle it: a row measures itself only once it has the theme.
     fn place(sidebar: &mut PageSidebar, rect: Rect, text_scale: f32) {
         let theme = Theme::dark().with_text_scale(text_scale);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map = HashMap::new();
-        let node = sidebar.build_layout(&mut taffy, &theme, &mut node_map);
-        let _ = taffy.compute_layout(node, taffy::Size::MAX_CONTENT);
-        sidebar.place_at(rect);
-        let mut scene = vello::Scene::new();
-        sidebar.draw(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &ui::presence::PresenceCtx::empty(),
-        );
+        sidebar.set_viewport_height(ui::num::f32_of_f64(rect.height()));
+        let mut text = TextRenderer::new();
+        for _ in 0..2 {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map = HashMap::new();
+            let node = sidebar.build_layout(&mut taffy, &theme, &mut node_map);
+            let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: `node_map` points at the widgets the live `sidebar` holds, under
+            // the layout just built.
+            unsafe {
+                bindings.rebuild(&**sidebar, &taffy, node, &node_map);
+                ui::widget::compute_widget_layout(
+                    &mut taffy,
+                    node,
+                    taffy::Size {
+                        width: ui::taffy::AvailableSpace::Definite(ui::num::f32_of_f64(
+                            rect.width(),
+                        )),
+                        height: ui::taffy::AvailableSpace::Definite(ui::num::f32_of_f64(
+                            rect.height(),
+                        )),
+                    },
+                    &node_map,
+                    &bindings,
+                    &mut text,
+                )
+            }
+            .expect("the sidebar lays out");
+            sidebar.apply_layout(&taffy, node, rect.origin());
+            let mut scene = vello::Scene::new();
+            sidebar.draw(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ui::presence::PresenceCtx::empty(),
+            );
+        }
     }
 
     fn event(sidebar: &mut PageSidebar, event: &WindowEvent) -> bool {
@@ -997,13 +1014,15 @@ mod tests {
             let _grand = ws.create_page(Some(child));
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
+            place(&mut tree, Rect::new(0.0, 0.0, 240.0, 400.0), 1.0);
             // Branches with children auto-expand on first render, so the full
             // nesting is on screen (root -> child -> grandchild).
             assert_eq!(tree.visible_row_count(), 3);
             // Collapsing the root hides all its descendants (only the root remains).
-            let key = tree.key(root).unwrap();
+            let key = root;
             tree.set_expanded(key, false);
             tree.sync_from_workspace(&ws);
+            place(&mut tree, Rect::new(0.0, 0.0, 240.0, 400.0), 1.0);
             assert_eq!(tree.visible_row_count(), 1);
             assert_eq!(tree.expanded_pages(), {
                 let mut open = vec![child];
@@ -1019,34 +1038,32 @@ mod tests {
             let b = ws.create_page(None);
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
-            let key_b = tree.key(b).unwrap();
             // `b` moves before `a`.
             let moved = ws.data.pages.remove(1);
             ws.data.pages.insert(0, moved);
             tree.sync_from_workspace(&ws);
-            assert_eq!(tree.key(b), Some(key_b));
-            assert_eq!(tree.row(0).map(|(key, _, _)| key), Some(key_b));
+            assert_eq!(tree.row(0).map(|(key, _, _)| key), Some(b));
         }
 
         eprintln!("phase high_text_rows_and_labels_keep_distinct_scaled_geometry");
         {
             let mut ws = Workspace::new();
-            ws.create_page(None);
-            ws.create_page(None);
+            let parent = ws.create_page(None);
+            ws.create_page(Some(parent));
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             place(&mut tree, Rect::new(0.0, 0.0, 528.0, 600.0), 2.0);
             let first = tree
                 .row(0)
-                .and_then(|(key, _, _)| tree.row_rect(key))
+                .and_then(|(key, _, _)| tree.row_rect(&key))
                 .unwrap();
             let second = tree
                 .row(1)
-                .and_then(|(key, _, _)| tree.row_rect(key))
+                .and_then(|(key, _, _)| tree.row_rect(&key))
                 .unwrap();
             let disclosure = tree
                 .row(0)
-                .and_then(|(key, _, _)| tree.disclosure_rect(key))
+                .and_then(|(key, _, _)| tree.disclosure_rect(&key))
                 .unwrap();
 
             assert!(first.y1 <= second.y0, "adjacent rows must not overlap");
@@ -1071,10 +1088,17 @@ mod tests {
             );
             assert_eq!(node.children.len(), 1, "the tree exposes its rows only");
             assert_eq!(node.children[0].name.as_deref(), Some("Project plan"));
-            let key = tree.key(root).unwrap();
+            let key = root;
+            let rect = tree.row_rect(&key).expect("the row is laid out");
+            let bounds = node.children[0].bounds.expect("the row says where it is");
             assert_eq!(
-                Widget::synthetic_accessibility_rect(tree.tree(), &[0]),
-                tree.row_rect(key)
+                bounds.y1 - bounds.y0,
+                rect.height(),
+                "the exposed row is as tall as it is drawn"
+            );
+            assert!(
+                rect.x0 <= bounds.x0 && bounds.x1 <= rect.x1,
+                "and stands inside the row's column: {bounds:?} in {rect:?}"
             );
             tree.selection_mut().clear();
             assert!(Widget::focus_synthetic_accessibility(tree.tree_mut(), &[0]));
@@ -1102,7 +1126,7 @@ mod tests {
             let _dragged = ws.create_page(None);
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
-            let target_key = tree.key(target).unwrap();
+            let target_key = target;
             tree.set_expanded(target_key, false);
             tree.sync_from_workspace(&ws);
             place(&mut tree, Rect::new(0.0, 0.0, 220.0, 300.0), 1.0);
@@ -1223,8 +1247,8 @@ mod tests {
             let page = workspace.create_page(None);
             let (mut tree, _door) = with_door();
             tree.sync_from_workspace(&workspace);
-            let key = tree.key(page).unwrap();
-            tree.open_context_menu(Some(key), Point::ZERO);
+            let key = page;
+            tree.open_context_menu(Some(&key), Point::ZERO);
             let target = format!("menu:context-menu:item:{}", menu_row::RENAME);
             assert!(Widget::perform_semantic_action(
                 tree.tree_mut(),
@@ -1259,9 +1283,12 @@ mod tests {
             let (mut tree, door) = with_door();
             tree.sync_from_workspace(&workspace);
             place(&mut tree, Rect::new(0.0, 0.0, 240.0, 200.0), 1.0);
-            let key = tree.key(page).unwrap();
-            let child = tree.row_action_rect(key, 0).unwrap();
-            let more = tree.row_action_rect(key, 1).unwrap();
+            let key = page;
+            // The row's controls show under the pointer, as they do for a person.
+            let row = tree.row_rect(&key).unwrap();
+            event(&mut tree, &moved(row.center()));
+            let child = tree.row_action_rect(&key, 0).unwrap();
+            let more = tree.row_action_rect(&key, 1).unwrap();
 
             event(&mut tree, &moved(child.center()));
             assert!(event(&mut tree, &button(ElementState::Pressed)));
@@ -1279,6 +1306,8 @@ mod tests {
 
             event(&mut tree, &moved(more.center()));
             assert!(event(&mut tree, &button(ElementState::Pressed)));
+            assert!(event(&mut tree, &button(ElementState::Released)));
+            tree.open_requested_menu();
             assert!(tree.context_menu_open_for_test());
             assert_eq!(
                 tree.take_open().as_slice(),
@@ -1293,8 +1322,8 @@ mod tests {
             let page = workspace.create_page(None);
             let (mut tree, door) = with_door();
             tree.sync_from_workspace(&workspace);
-            let key = tree.key(page).unwrap();
-            tree.open_context_menu(Some(key), Point::ZERO);
+            let key = page;
+            tree.open_context_menu(Some(&key), Point::ZERO);
             let node = Widget::accessibility(tree.tree()).unwrap();
             let menu = node
                 .children

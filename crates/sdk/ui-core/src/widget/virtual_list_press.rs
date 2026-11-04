@@ -44,21 +44,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Open the row's context menu: select it unless it already is, then
-    /// hand the host the key, the point and the row's rect.
-    pub(super) fn open_context(&mut self, index: usize, key: M::Key, point: Point) {
-        if !self.selection.is_selected(&key) {
-            self.apply_selection(key.clone(), false, false);
-        }
-        self.focus_row(key.clone());
-        // The row's own box, below the band of a heading it starts a group under, or the
-        // list's when the row is not placed.
-        let rect = self.row_box(index).unwrap_or(self.rect);
-        if let Some(callback) = &mut self.on_context {
-            callback(key, point, rect);
-        }
-    }
-
     /// Whether `key`, pressed with `modifiers`, opens the focused row's menu: the
     /// Menu key, or Shift+F10 on it, as it does on a tree's rows.
     pub(super) fn take_menu_key(
@@ -71,14 +56,16 @@ impl<M: ListModel> VirtualList<M> {
         menu && self.open_menu_from_keyboard()
     }
 
-    /// Open the focused row's context menu: the one the keyboard is on, at the
-    /// middle of its row.
+    /// Open the focused row's context menu: the one the keyboard is on, at the middle of its
+    /// row; or, with no row focused, the list's own menu, where its rows start.
     pub(super) fn open_menu_from_keyboard(&mut self) -> bool {
-        if self.on_context.is_none() {
+        if self.menu.is_none() {
             return false;
         }
         let Some(key) = self.focused_row_key() else {
-            return false;
+            let inset = f64::from(crate::tokens::Spacing::BASE.s6);
+            return self
+                .open_context_menu(None, Point::new(self.rect.x0 + inset, self.rect.y0 + inset));
         };
         let Some(index) = self.model.index_of(&key) else {
             return false;
@@ -86,7 +73,6 @@ impl<M: ListModel> VirtualList<M> {
         let point = self
             .row_box(index)
             .map_or(self.rect.center(), |row| row.center());
-        self.open_context(index, key, point);
-        true
+        self.open_row_menu(key, point)
     }
 }

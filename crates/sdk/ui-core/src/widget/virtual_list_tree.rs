@@ -79,6 +79,30 @@ impl Chevrons {
         ))
     }
 
+    /// Paint the hairline up each depth's gutter the row `key` stands past, through its own box
+    /// `row`, so a deep tree keeps its structure legible.
+    pub(super) fn paint_guides<K: Clone + Eq + Hash>(
+        &self,
+        marks: &TreeMarks<K>,
+        scene: &mut Scene,
+        transform: Affine,
+        key: &K,
+        row: Rect,
+        color: vello::peniko::Color,
+    ) {
+        let depth = marks.depth(key);
+        for level in 0..depth {
+            let x = self.x0 + self.lead + f64::from(level) * self.step + self.step / 2.0;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                color,
+                None,
+                &Rect::new(x - 0.5, row.y0, x + 0.5, row.y1),
+            );
+        }
+    }
+
     /// Paint the row `key`'s chevron into the row's own box `row`, at its own depth's gutter.
     pub(super) fn paint<K: Clone + Eq + Hash>(
         &self,
@@ -155,6 +179,17 @@ impl<K: Clone + Eq + Hash> TreeMarks<K> {
         self.nested.borrow().contains(key)
     }
 
+    /// The rows whose subtasks the person folded away, as a view saved them.
+    #[must_use]
+    pub fn folded_keys(&self) -> Vec<K> {
+        self.folded.borrow().iter().cloned().collect()
+    }
+
+    /// Fold exactly `keys`' subtasks away, showing every other row's: a saved view restored.
+    pub fn restore_folded(&self, keys: impl IntoIterator<Item = K>) {
+        *self.folded.borrow_mut() = keys.into_iter().collect();
+    }
+
     /// Fold the row's subtasks away, or show them again.
     pub fn fold(&self, key: &K, folded: bool) {
         let mut folded_set = self.folded.borrow_mut();
@@ -223,13 +258,116 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Draw a hairline up each depth's gutter through nested rows, so a deep tree keeps its
+    /// structure legible.
+    #[must_use]
+    pub fn with_indent_guides(mut self) -> Self {
+        self.indent_guides = true;
+        self
+    }
+
+    /// Where the row of `key` stands on screen, its own box below the band of a heading it
+    /// starts a group under. `None` while the row is not placed (folded away, or far from the
+    /// box).
+    #[must_use]
+    pub fn row_rect(&self, key: &M::Key) -> Option<Rect> {
+        self.row_box(self.model.index_of(key)?)
+    }
+
+    /// The box the row `key`'s disclosure takes: the chevron in its own depth's gutter, centred
+    /// on the row. `None` for a row with no subtasks, or one not placed.
+    #[must_use]
+    pub fn disclosure_rect(&self, key: &M::Key) -> Option<Rect> {
+        let marks = self.tree.as_ref()?;
+        let row = self.row_rect(key)?;
+        let (gutter, _) = self.chevrons().gutter(marks, key)?;
+        let side = self.disclosure;
+        let cy = row.center().y;
+        Some(Rect::new(
+            gutter,
+            cy - side / 2.0,
+            gutter + side,
+            cy + side / 2.0,
+        ))
+    }
+
+    /// How many rows under its top row `key` stands, as the list's tree shows it.
+    #[must_use]
+    pub fn row_depth(&self, key: &M::Key) -> u32 {
+        self.tree.as_ref().map_or(0, |marks| marks.depth(key))
+    }
+
+    /// Whether the row `key` has subtasks, a disclosure to show.
+    #[must_use]
+    pub fn row_is_branch(&self, key: &M::Key) -> bool {
+        self.tree.as_ref().is_some_and(|marks| marks.is_branch(key))
+    }
+
+    /// The key of the `nth` row the list shows, counting the rows on screen in reading order: a
+    /// folded row's subtasks are not among them, nor a closed group's rows.
+    #[must_use]
+    pub fn visible_key(&self, nth: usize) -> Option<M::Key> {
+        let mut seen = 0;
+        for index in 0..self.model.len() {
+            let Some(key) = self.model.key_at(index) else {
+                continue;
+            };
+            if !self.row_open(index) || self.tree_hidden.contains(&key) {
+                continue;
+            }
+            if seen == nth {
+                return Some(key);
+            }
+            seen = seen.saturating_add(1);
+        }
+        None
+    }
+
+    /// How many rows the list shows, counting the rows not folded away.
+    #[must_use]
+    pub fn visible_len(&self) -> usize {
+        (0..self.model.len())
+            .filter(|index| {
+                self.row_open(*index)
+                    && self
+                        .model
+                        .key_at(*index)
+                        .is_some_and(|key| !self.tree_hidden.contains(&key))
+            })
+            .count()
+    }
+
+    /// Whether a drag past the threshold is in flight over the rows.
+    #[must_use]
+    pub fn is_dragging(&self) -> bool {
+        self.reorder.is_active()
+    }
+
+    /// Where the hover action `action` of the row `key` sits, reordering what the row shows:
+    /// the centre a person presses.
+    #[must_use]
+    pub fn row_action_rect(&self, key: &M::Key, action: usize) -> Option<Rect> {
+        let index = self.model.index_of(key)?;
+        let row = self
+            .mounted
+            .iter()
+            .find(|row| row.index == index && row.state == super::MountedRowState::Ready)?;
+        row.widget
+            .as_any()?
+            .downcast_ref::<crate::widget::ListRow>()?
+            .action_rects()
+            .get(action)
+            .copied()
+    }
+
     /// Fold the row's subtasks away, or show them again, as its disclosure, its menu or the
-    /// keyboard does. Whether the row is a tree row with subtasks.
+    /// keyboard does, and remember what a person folded even for a row whose subtasks the
+    /// model has not yet said it holds.
     pub fn fold_row(&mut self, key: &M::Key, folded: bool) -> bool {
         let Some(marks) = self.tree.clone() else {
             return false;
         };
-        if !marks.is_branch(key) || marks.is_folded(key) == folded {
+        if marks.is_folded(key) == folded {
             return false;
         }
         marks.fold(key, folded);
@@ -298,6 +436,15 @@ impl<M: ListModel> VirtualList<M> {
                 hidden.insert(key.clone());
             }
             over.push((key.clone(), found, away));
+        }
+        // What the model says has subtasks discloses them whether or not any stands in the
+        // list yet: a folder read when it opens.
+        for index in range.clone() {
+            if self.model.has_subtasks(index)
+                && let Some(key) = self.model.key_at(index)
+            {
+                branches.push(key);
+            }
         }
         if let Some(marks) = &self.tree {
             marks.depth.borrow_mut().extend(depth);
