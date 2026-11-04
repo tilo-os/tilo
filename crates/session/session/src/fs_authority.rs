@@ -714,10 +714,10 @@ mod tests {
         tilo_test_env::wait_until("the daemon refusing the first attempt", || {
             seen.join("refused").is_file()
         });
-        assert!(
-            publisher.unpublished(),
-            "a list nothing took is not in force"
-        );
+        // Its refusal reaches the publisher a moment after the daemon said it.
+        tilo_test_env::wait_until("the publisher saying the list is not in force", || {
+            publisher.unpublished()
+        });
         std::fs::write(&gate, b"").unwrap();
         publisher
             .wait_until_idle(tilo_test_env::hang_bound())

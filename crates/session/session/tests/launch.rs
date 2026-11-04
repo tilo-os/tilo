@@ -1154,8 +1154,10 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     asking
         .set_read_timeout(Some(Duration::from_millis(20)))
         .unwrap();
+    // The answer reaches the app on a turn of the session's; a counted number of
+    // turns is not the answer arriving, so the wait is for the answer itself.
     let mut seen = Vec::new();
-    for _ in 0..400 {
+    let heard = common::wait_maybe(&mut session, |session| {
         session.step(Duration::from_millis(1)).unwrap();
         let mut chunk = [0u8; 512];
         match std::io::Read::read(&mut asking, &mut chunk) {
@@ -1163,12 +1165,12 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => panic!("the connection broke: {error}"),
         }
-        if String::from_utf8_lossy(&seen).contains("HostShellAllowed") {
-            break;
-        }
-    }
+        String::from_utf8_lossy(&seen)
+            .contains("\"allowed\":true")
+            .then_some(())
+    });
     assert!(
-        String::from_utf8_lossy(&seen).contains("\"allowed\":true"),
+        heard.is_some(),
         "the app hears the target is open: {:?}",
         String::from_utf8_lossy(&seen)
     );
