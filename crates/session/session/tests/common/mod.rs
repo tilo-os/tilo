@@ -328,21 +328,37 @@ pub fn preset_menu(session: &Session) -> Option<String> {
 
 /// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") from the desk's own bar: open the
 /// preset menu the bar carries and press the preset it offers.
+///
+/// A press that arrives before the menu stands where the desk lays it out dismisses the menu
+/// instead of choosing from it, as it does for a person who presses again to get the row they
+/// aimed at. So the wait presses again — asking the bar for the menu when a press closed it —
+/// until the desk shows the preset, and a desk that never does is reported with what the bar
+/// said instead.
 pub fn show_preset(session: &mut Session, preset: &str) {
-    until(session, "the desk's preset menu", |session| {
-        preset_menu(session).is_some()
-    });
-    let menu = preset_menu(session).expect("the preset menu just reached");
-    press(session, &menu);
-    until(session, "the presets the bar offers", |session| {
-        on_screen(session, preset).is_some()
-    });
-    press(session, preset);
     let shown = format!("Showing {preset}");
-    until(
+    // Turns since the last press: the menu opens on the turn after its own button's press, and
+    // closes on the turn after a row's, so the wait reads the desk's answer before it presses
+    // again.
+    let mut since = usize::MAX;
+    wait_for(
         session,
-        &format!("the desk to show the {preset} preset"),
-        |session| preset_menu(session).as_deref() == Some(shown.as_str()),
+        format!("the desk to show the {preset} preset"),
+        |session| {
+            if preset_menu(session).as_deref() == Some(shown.as_str()) {
+                return Some(());
+            }
+            if since < 4 {
+                since = since.saturating_add(1);
+                return None;
+            }
+            if on_screen(session, preset).is_some() {
+                press(session, preset);
+            } else if let Some(menu) = preset_menu(session) {
+                press(session, &menu);
+            }
+            since = 0;
+            None
+        },
     );
 }
 

@@ -890,16 +890,21 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
         rate: 100,
     });
     key(&mut session, keys::VOLUME_UP, true);
-    let held = std::time::Instant::now();
-    while held.elapsed() < Duration::from_millis(200) {
-        session.step(Duration::from_millis(5)).unwrap();
-    }
+    let repeats = |asked: &Rc<RefCell<Vec<String>>>| {
+        asked
+            .borrow()
+            .iter()
+            .filter(|call| *call == "volume-up")
+            .count()
+    };
+    // The repeat is one per turn the compositor dispatches, however long a turnaround takes
+    // on a busy machine: the test holds the key until the sound has been raised more than
+    // once, rather than for a span of the host's clock.
+    common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
+        (repeats(&asked) > 3).then_some(())
+    });
     key(&mut session, keys::VOLUME_UP, false);
-    let louder = asked
-        .borrow()
-        .iter()
-        .filter(|call| *call == "volume-up")
-        .count();
+    let louder = repeats(&asked);
     assert!(louder > 3, "holding volume up ramps it: {louder}");
     assert!(
         session
