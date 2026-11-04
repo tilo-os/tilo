@@ -21,7 +21,7 @@ pub(super) fn readout_saying(session: &mut Session, words: &str) -> String {
                 .accessible_labels()
                 .iter()
                 .any(|label| label.contains(words))
-        })
+        });
     });
     session
         .accessible_labels()
