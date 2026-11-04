@@ -34,6 +34,48 @@ fn published(resources: &[ResourceSpec], id: &str) -> bool {
         .any(|spec| spec.id.as_str() == id || published(&spec.children, id))
 }
 
+/// The portal frontend, as xdg-desktop-portal forwards an app's call: it asks
+/// for a note on the session's own bus and gives the app the reply.
+fn ask_for_a_note(
+    runtime: &tokio::runtime::Runtime,
+    bus: &PrivateBus,
+) -> tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)> {
+    let frontend = runtime.block_on(async {
+        let frontend = zbus::connection::Builder::address(bus.address())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        frontend
+            .request_name("org.freedesktop.portal.Desktop")
+            .await
+            .unwrap();
+        frontend
+    });
+    runtime.spawn(async move {
+        let reply = frontend
+            .call_method(
+                Some(tilo_portal::BUS_NAME),
+                tilo_portal::OBJECT_PATH,
+                Some("org.freedesktop.impl.portal.FileChooser"),
+                "OpenFile",
+                &(
+                    ObjectPath::try_from(REQUEST).unwrap(),
+                    "org.example.Editor",
+                    "",
+                    "Open a note",
+                    HashMap::<String, OwnedValue>::new(),
+                ),
+            )
+            .await
+            .unwrap();
+        reply
+            .body()
+            .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+            .unwrap()
+    })
+}
+
 #[test]
 fn a_portal_file_chooser_request_is_the_sessions_question() {
     let bus = PrivateBus::start();
@@ -69,44 +111,8 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     )
     .expect("session");
 
-    // The portal frontend, as xdg-desktop-portal forwards an app's call.
     let runtime = desktop.runtime();
-    let frontend = runtime.block_on(async {
-        let frontend = zbus::connection::Builder::address(bus.address())
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        frontend
-            .request_name("org.freedesktop.portal.Desktop")
-            .await
-            .unwrap();
-        frontend
-    });
-    let call = runtime.spawn({
-        async move {
-            let reply = frontend
-                .call_method(
-                    Some(tilo_portal::BUS_NAME),
-                    tilo_portal::OBJECT_PATH,
-                    Some("org.freedesktop.impl.portal.FileChooser"),
-                    "OpenFile",
-                    &(
-                        ObjectPath::try_from(REQUEST).unwrap(),
-                        "org.example.Editor",
-                        "",
-                        "Open a note",
-                        HashMap::<String, OwnedValue>::new(),
-                    ),
-                )
-                .await
-                .unwrap();
-            reply
-                .body()
-                .deserialize::<(u32, HashMap<String, OwnedValue>)>()
-                .unwrap()
-        }
-    });
+    let call = ask_for_a_note(runtime, &bus);
 
     let resource = format!("question:portal:{REQUEST}");
     // The question wakes the loop: a turn that would wait a minute ends

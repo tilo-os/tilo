@@ -24,6 +24,7 @@
 mod common;
 
 use std::path::Path;
+use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
