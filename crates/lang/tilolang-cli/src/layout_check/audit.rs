@@ -27,10 +27,27 @@ pub enum Kind {
     /// A page whose content is one row stretched over the column: a row is a line, and the page
     /// around it holds it.
     BareRow,
+    /// The rows of one box stand on different columns: their titles start at different x, or
+    /// their content ends at different edges, or a nesting step does not indent by one gutter.
+    RaggedColumns,
+    /// Two selection shapes at once: a selected box inside another selected box, the same choice
+    /// filled twice.
+    DoubleSelection,
+    /// A screen made for a narrow window holds its content nearer than a gutter to the edge.
+    CrampedGutter,
+    /// One screen offers the same way to add something several times: two add affordances in one
+    /// list, or the same add label on two controls.
+    SeveralAdds,
+    /// A name a screen reader announces reads as a code identifier rather than as words.
+    CodedName,
+    /// A destructive control says so with a verb of its own, where every screen must use one.
+    UnsharedVerb,
+    /// A surface drawn inside another surface of the same kind: a card in a card.
+    NestedCard,
 }
 
 impl Kind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 15] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -39,6 +56,13 @@ impl Kind {
         Self::LostContent,
         Self::OffPixel,
         Self::BareRow,
+        Self::RaggedColumns,
+        Self::DoubleSelection,
+        Self::CrampedGutter,
+        Self::SeveralAdds,
+        Self::CodedName,
+        Self::UnsharedVerb,
+        Self::NestedCard,
     ];
 
     pub fn name(self) -> &'static str {
@@ -51,6 +75,13 @@ impl Kind {
             Self::LostContent => "lost-content",
             Self::OffPixel => "off-pixel",
             Self::BareRow => "bare-row",
+            Self::RaggedColumns => "ragged-columns",
+            Self::DoubleSelection => "double-selection",
+            Self::CrampedGutter => "cramped-gutter",
+            Self::SeveralAdds => "several-adds",
+            Self::CodedName => "coded-name",
+            Self::UnsharedVerb => "unshared-verb",
+            Self::NestedCard => "nested-card",
         }
     }
 }

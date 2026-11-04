@@ -76,6 +76,12 @@ display scales 1, 1.5 and 2 and text scales 1 and 1.5. It reports overflow, clip
 hit targets that are too small, pages that scroll sideways and edges between device pixels, each at
 a view path. Agents run it like the type checker.
 
+It also reads what a screen says and how its rows line up: every row at one depth starts its title
+at one x, nesting indents by one gutter, a box's rows end at one right edge, one choice is drawn
+selected once, a list offers one add entry, a name a screen reader announces is words rather than a
+code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
+and a narrow window keeps a 16 px gutter.
+
 `--key Tab`, `--key Down`, `--key Space` press keys into a window before it is read, in the order
 given and at the `--dump` size, so a check and a shot show the layout a person reaches by keyboard
 rather than only its first frame.

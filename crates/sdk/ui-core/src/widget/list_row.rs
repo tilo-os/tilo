@@ -2108,6 +2108,53 @@ impl ListRow {
         (!trailing.wrapped).then(|| trailing.element.get_rect().width())
     }
 
+    /// The grid the row laid itself out on, for an audit comparing rows with each other. Read
+    /// from the geometry the row paints from, so the two never disagree.
+    fn grid(&self) -> Option<crate::widget::RowLayout> {
+        let metrics = self.metrics.as_ref()?;
+        let theme = self.theme.as_ref()?;
+        let band = self.text_band();
+        Some(crate::text_render::with_layout_renderer(
+            theme.text_scale,
+            |text| {
+                self.with_face(|face| {
+                    let geo = face.geometry(band, metrics, text, theme);
+                    let content_right = band.x1 - metrics.bleed;
+                    // What stands in the facts column, from the edge inwards: any of them, the
+                    // leftmost is where the column's content begins.
+                    let mut facts_left = content_right;
+                    if let Some(right) = geo.marks_right {
+                        facts_left = facts_left.min(right - face.marks_width(metrics));
+                    }
+                    if let Some(count_right) = geo.count_right {
+                        facts_left = facts_left.min(count_right);
+                    }
+                    if let Some(avatar) = geo.avatar {
+                        facts_left = facts_left.min(avatar.x0);
+                    }
+                    if self.value.is_some() {
+                        facts_left = facts_left.min(geo.value_right);
+                    }
+                    if let Some(trailing) = geo.trailing {
+                        facts_left = facts_left.min(trailing.x0);
+                    }
+                    facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
+                    crate::widget::RowLayout {
+                        depth: self.depth,
+                        content_left: crate::num::f32_of_f64(geo.leading.x0),
+                        text_x: crate::num::f32_of_f64(geo.text_x),
+                        text_right: crate::num::f32_of_f64(geo.text_right),
+                        facts_left: crate::num::f32_of_f64(facts_left),
+                        content_right: crate::num::f32_of_f64(content_right),
+                        marks_left: geo
+                            .marks_right
+                            .map(|right| crate::num::f32_of_f64(right - face.marks_width(metrics))),
+                    }
+                })
+            },
+        ))
+    }
+
     fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
         let actions: Vec<RowAction<'_>> = self
             .actions
@@ -2652,6 +2699,10 @@ impl Widget for ListRow {
             width,
             height: crate::num::f32_of_f64(height),
         }
+    }
+
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        Some(crate::widget::LayoutInfo::Row(self.grid()?))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

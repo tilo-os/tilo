@@ -10,6 +10,7 @@
 mod audit;
 mod source;
 mod stage;
+mod ux;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -1190,6 +1191,7 @@ impl AppCheck<'_> {
             self.text,
             viewport,
         ));
+        problems.extend(ux::inspect(&inspection.root, viewport));
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
