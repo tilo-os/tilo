@@ -703,6 +703,7 @@ impl Shared {
             self.directory.as_ref(),
             &self.handle,
             &self.directory_store,
+            &self.notices,
             &|joined| self.add_joined_workspace(joined),
         );
         workspace_settings::follow(
