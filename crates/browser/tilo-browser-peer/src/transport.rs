@@ -332,6 +332,7 @@ impl RelayCollabTransport {
                 | PeerEvent::RecordOpened { .. }
                 | PeerEvent::ContentWanted { .. }
                 | PeerEvent::Voice(_)
+                | PeerEvent::Pairs { .. }
                 | PeerEvent::WorkspaceLayout { .. } => {}
             }
         }
