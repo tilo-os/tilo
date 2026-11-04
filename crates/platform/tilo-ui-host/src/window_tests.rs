@@ -773,160 +773,194 @@ fn told(app: &mut tilo_render_protocol::patch::local::End) -> Vec<ToApp> {
         .collect()
 }
 
+/// Run `test` with the clock at the day a capture shows (30 June 2026), so a day's fact reads
+/// the same on every run rather than as "Overdue" once the day has gone by.
+fn at_capture_day<T>(test: impl FnOnce() -> T) -> T {
+    let at = ui::clock::capture_wall().expect("the capture day exists in the local zone");
+    ui::time::testing::with_wall(at, test)
+}
+
 /// The accessibility node of the control named `name`.
 fn node_named(harness: &ui::headless::FrameHarness, name: &str) -> ui::accesskit::NodeId {
-    harness
-        .a11y_node_named(name)
-        .unwrap_or_else(|| panic!("{name:?} is drawn"))
+    harness.a11y_node_named(name).unwrap_or_else(|| {
+        panic!(
+            "{name:?} is drawn; the tree names {:?}",
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect::<Vec<_>>()
+        )
+    })
 }
 
 /// A value set elsewhere reaches the control showing it, whatever the control is.
 #[test]
 fn a_bound_control_shows_the_value_the_app_bound() {
-    let rich = |text: &str| {
-        Value::Rich(wire::rich::RichText {
-            blocks: vec![wire::rich::Block {
-                kind: "paragraph".to_owned(),
-                text: text.to_owned(),
-                ..wire::rich::Block::default()
-            }],
-            ..wire::rich::RichText::default()
-        })
-    };
-    let labelled = [
-        ("label", Value::text("Due")),
-        ("optional", Value::Bool(true)),
-    ];
-    let shown = |kind: &str, props: &[(&str, Value)], value: Value, name: &str| {
-        let (_app, harness) = drawn(&bound_page(kind, props, value));
-        let target = node_named(&harness, name);
-        harness
-            .a11y_nodes()
-            .into_iter()
-            .find(|(id, _)| *id == target)
-            .map(|(_, node)| node)
-            .expect("the node is in the tree")
-    };
-    let day = shown(
-        "ui.DateField",
-        &labelled,
-        Value::some(Value::text("2026-06-30")),
-        &ui::widget::DateField::label(chrono::NaiveDate::from_ymd_opt(2026, 6, 30)),
-    );
-    assert_eq!(
-        day.label(),
-        Some("Jun 30, 2026"),
-        "the day the app bound is the day the field shows"
-    );
-    let boxed = shown(
-        "ui.Checkbox",
-        &[("label", Value::text("Done"))],
-        Value::Bool(true),
-        "Done",
-    );
-    assert_eq!(
-        boxed.toggled(),
-        Some(ui::accesskit::Toggled::True),
-        "the mark the app sent is shown"
-    );
-    let toggle = shown(
-        "ui.Toggle",
-        &[("label", Value::text("Sync"))],
-        Value::Bool(true),
-        "Sync",
-    );
-    assert_eq!(
-        toggle.toggled(),
-        Some(ui::accesskit::Toggled::True),
-        "the side the app sent is shown"
-    );
-    let input = shown(
-        "ui.TextInput",
-        &[("placeholder", Value::text("Title"))],
-        Value::text("Q3 plan"),
-        "Field",
-    );
-    assert_eq!(
-        input.value(),
-        Some("Q3 plan"),
-        "the text the app sent is shown"
-    );
-    let written = shown("ui.RichInput", &[], rich("Q3 plan"), "Field");
-    assert_eq!(
-        written.value(),
-        Some("Q3 plan"),
-        "the rich text the app sent is shown"
-    );
+    at_capture_day(|| {
+        let rich = |text: &str| {
+            Value::Rich(wire::rich::RichText {
+                blocks: vec![wire::rich::Block {
+                    kind: "paragraph".to_owned(),
+                    text: text.to_owned(),
+                    ..wire::rich::Block::default()
+                }],
+                ..wire::rich::RichText::default()
+            })
+        };
+        let labelled = [
+            ("label", Value::text("Due")),
+            ("optional", Value::Bool(true)),
+        ];
+        let shown = |kind: &str, props: &[(&str, Value)], value: Value, name: &str| {
+            let (_app, harness) = drawn(&bound_page(kind, props, value));
+            let target = node_named(&harness, name);
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(id, _)| *id == target)
+                .map(|(_, node)| node)
+                .expect("the node is in the tree")
+        };
+        // What the field is for, and the day the app bound as the day's own fact ("Due,
+        // Today") — never as the "Add date" a field that holds no day offers.
+        let today = ui::clock::today();
+        let bound = ui::widget::DateField::spoken(Some("Due"), Some(today), None);
+        assert_ne!(
+            bound,
+            ui::widget::DateField::spoken(Some("Due"), None, None),
+            "a day the app bound reads as a day"
+        );
+        let day = shown(
+            "ui.DateField",
+            &labelled,
+            Value::some(Value::text(today.format("%Y-%m-%d").to_string())),
+            &bound,
+        );
+        assert_eq!(
+            day.label(),
+            Some(bound.as_str()),
+            "the day the app bound is the day the field says"
+        );
+        let boxed = shown(
+            "ui.Checkbox",
+            &[("label", Value::text("Done"))],
+            Value::Bool(true),
+            "Done",
+        );
+        assert_eq!(
+            boxed.toggled(),
+            Some(ui::accesskit::Toggled::True),
+            "the mark the app sent is shown"
+        );
+        let toggle = shown(
+            "ui.Toggle",
+            &[("label", Value::text("Sync"))],
+            Value::Bool(true),
+            "Sync",
+        );
+        assert_eq!(
+            toggle.toggled(),
+            Some(ui::accesskit::Toggled::True),
+            "the side the app sent is shown"
+        );
+        let input = shown(
+            "ui.TextInput",
+            &[("placeholder", Value::text("Title"))],
+            Value::text("Q3 plan"),
+            "Field",
+        );
+        assert_eq!(
+            input.value(),
+            Some("Q3 plan"),
+            "the text the app sent is shown"
+        );
+        let written = shown("ui.RichInput", &[], rich("Q3 plan"), "Field");
+        assert_eq!(
+            written.value(),
+            Some("Q3 plan"),
+            "the rich text the app sent is shown"
+        );
+    });
 }
 
 /// A day picked in the calendar reaches the app as the value the field now holds, not as a
 /// splice of the text it reads as.
 #[test]
 fn a_picked_day_is_sent_as_the_day_the_field_now_holds() {
-    let (mut app, mut harness) = drawn(&bound_page(
-        "ui.DateField",
-        &[
-            ("label", Value::text("Due")),
-            ("optional", Value::Bool(true)),
-        ],
-        Value::some(Value::text("2026-06-30")),
-    ));
-    let field = node_named(&harness, "Jun 30, 2026");
-    harness
-        .perform_a11y_action(field, &ui::a11y::Action::Activate)
-        .expect("the field opens its calendar");
-    harness.relayout();
-    let calendar = node_named(&harness, "Calendar");
-    harness
-        .perform_a11y_action(
-            calendar,
-            &ui::a11y::Action::SetValue("2026-07-01".to_owned()),
-        )
-        .expect("a day is picked");
-    harness.relayout();
-    drawn_window(&mut harness).flush();
-    assert_eq!(
-        told(&mut app),
-        [ToApp::Edit {
-            lane: Lane::Root,
-            target: doc(),
-            key: "field".to_owned(),
-            text: "2026-07-01".to_owned(),
-        }],
-        "a picked day is the value the field now holds"
-    );
-    let shown = harness
-        .a11y_nodes()
-        .into_iter()
-        .find_map(|(_, node)| node.label().map(str::to_owned))
-        .filter(|label| label == "Jul 1, 2026");
-    assert_eq!(
-        shown,
-        Some("Jul 1, 2026".to_owned()),
-        "the picked day is the day the field shows"
-    );
-    // A day the app sets after the field is drawn shows in place.
-    send(
-        &mut app,
-        &[ToUi::Bound {
-            lane: Lane::Root,
-            key: "field".to_owned(),
-            value: Value::some(Value::text("2026-07-05")),
-            acked: 1,
-        }],
-    );
-    drawn_window(&mut harness).receive();
-    harness.relayout();
-    let shown = harness
-        .a11y_nodes()
-        .into_iter()
-        .find_map(|(_, node)| node.label().map(str::to_owned))
-        .filter(|label| label == "Jul 5, 2026");
-    assert_eq!(
-        shown,
-        Some("Jul 5, 2026".to_owned()),
-        "a day the app set later shows in place"
-    );
+    at_capture_day(|| {
+        let day = |day: &str| {
+            ui::widget::DateField::spoken(
+                Some("Due"),
+                chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok(),
+                None,
+            )
+        };
+        let (mut app, mut harness) = drawn(&bound_page(
+            "ui.DateField",
+            &[
+                ("label", Value::text("Due")),
+                ("optional", Value::Bool(true)),
+            ],
+            Value::some(Value::text("2026-06-30")),
+        ));
+        let field = node_named(&harness, &day("2026-06-30"));
+        harness
+            .perform_a11y_action(field, &ui::a11y::Action::Activate)
+            .expect("the field opens its calendar");
+        harness.relayout();
+        let calendar = node_named(&harness, "Calendar");
+        harness
+            .perform_a11y_action(
+                calendar,
+                &ui::a11y::Action::SetValue("2026-07-01".to_owned()),
+            )
+            .expect("a day is picked");
+        harness.relayout();
+        drawn_window(&mut harness).flush();
+        assert_eq!(
+            told(&mut app),
+            [ToApp::Edit {
+                lane: Lane::Root,
+                target: doc(),
+                key: "field".to_owned(),
+                text: "2026-07-01".to_owned(),
+            }],
+            "a picked day is the value the field now holds"
+        );
+        let shown = harness
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| node.label().map(str::to_owned))
+            .filter(|label| *label == day("2026-07-01"));
+        assert_eq!(
+            shown,
+            Some(day("2026-07-01")),
+            "the picked day is the day the field shows"
+        );
+        // A day the app sets after the field is drawn shows in place.
+        send(
+            &mut app,
+            &[ToUi::Bound {
+                lane: Lane::Root,
+                key: "field".to_owned(),
+                value: Value::some(Value::text("2026-07-05")),
+                acked: 1,
+            }],
+        );
+        drawn_window(&mut harness).receive();
+        harness.relayout();
+        let shown = harness
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| node.label().map(str::to_owned))
+            .filter(|label| *label == day("2026-07-05"));
+        assert_eq!(
+            shown,
+            Some(day("2026-07-05")),
+            "a day the app set later shows in place"
+        );
+    });
 }
 
 /// A mark or a turn reaches the app as the state the control now holds.

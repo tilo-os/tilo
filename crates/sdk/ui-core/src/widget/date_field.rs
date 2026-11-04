@@ -54,6 +54,9 @@ pub struct DateField {
     /// The time of day the day is due at, when its type pairs one with it: what the chip says
     /// after the day, and nothing the field itself picks.
     at: Option<NaiveTime>,
+    /// What the day is for ("Due"), as the person's app named it: what a screen reader hears
+    /// before the day itself. The calendar inside the popover keeps its own name.
+    label: Option<String>,
     optional: bool,
     picked: Picked,
     /// The day the calendar shows and highlights: the day the person picked, and the one the
@@ -87,6 +90,7 @@ impl DateField {
             inner: field(id, value, at, optional, &picked, &shown, time, label),
             value,
             at,
+            label: label.map(str::to_owned),
             optional,
             picked,
             shown,
@@ -165,12 +169,14 @@ impl DateField {
         self.show_label();
     }
 
-    /// Say what the chip stands for now, on the chip it already is.
+    /// Say what the chip stands for now, on the chip it already is: what it shows, and what a
+    /// screen reader hears of it.
     fn show_label(&mut self) {
         let label = Self::label(self.value, self.at);
-        self.inner
-            .button_mut()
-            .set_label(label, self.value.is_none());
+        let spoken = Self::spoken(self.label.as_deref(), self.value, self.at);
+        let chip = self.inner.button_mut();
+        chip.set_label(label, self.value.is_none());
+        chip.set_accessible_name(&spoken);
     }
 
     /// Take what the person picked: close the popover, show the date and report it.
@@ -215,6 +221,19 @@ impl DateField {
             |day| crate::format::day_fact_today(day, at).text,
         )
     }
+
+    /// What a screen reader hears of the chip: what the day is for and the day it holds
+    /// ("Due, Today 9:00 AM"), or the day alone when nothing names it.
+    #[must_use]
+    pub fn spoken(label: Option<&str>, value: Option<NaiveDate>, at: Option<NaiveTime>) -> String {
+        let day = Self::label(value, at);
+        label.map_or(day.clone(), |label| {
+            crate::i18n::widget_format(
+                "date-field-named",
+                &[("label", label.into()), ("day", day.into())],
+            )
+        })
+    }
 }
 
 /// The time of day `text` names: the time of day a field holds (`09:00`), or the time of day an
@@ -244,13 +263,12 @@ fn field(
 ) -> PopoverButton<Stack> {
     let today = crate::clock::local_now().date_naive();
     let on_day = Rc::clone(picked);
-    let calendar = label.map_or_else(
-        || crate::i18n::widget_format("date-field-calendar", &[]),
-        str::to_owned,
-    );
+    // The calendar is its own name inside the field: the chip carries what the day is for,
+    // so a screen reader hears "Due, Today" on the field and "Calendar" on what opens over it,
+    // never the same name on both.
     let picker = DatePicker::from_state(shown)
         .with_today(today)
-        .with_accessible_name(&calendar)
+        .with_accessible_name(crate::i18n::widget_format("date-field-calendar", &[]))
         .on_view(format!("{id}-calendar"), move |day| {
             on_day.set(Some(Some(day)))
         });
@@ -279,12 +297,8 @@ fn field(
     } else {
         chip.with_placeholder()
     };
-    let chip = if let Some(label) = label {
-        chip.with_accessible_name(label)
-    } else {
-        chip
-    };
-    chip.with_popover(content)
+    chip.with_accessible_name(&DateField::spoken(label, value, at))
+        .with_popover(content)
 }
 
 impl Decorator for DateField {

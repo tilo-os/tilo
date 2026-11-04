@@ -900,6 +900,7 @@ history-preview-now = Zurück zu jetzt
 date-field-add = Datum hinzufügen
 date-field-calendar = Kalender
 date-field-clear = Datum entfernen
+date-field-named = { $label }: { $day }
 time-field-name = Tageszeit
 time-field-add = Zeit hinzufügen
 time-field-remove = Zeit entfernen
