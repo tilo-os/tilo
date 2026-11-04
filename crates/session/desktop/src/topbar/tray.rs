@@ -84,7 +84,7 @@ impl TopBarChrome {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
-    ) -> TrayLayout {
+    ) -> f64 {
         use ui::widget::{StatusCluster, StatusClusterFace};
         let tokens = &theme.tokens;
         let pad_x = f64::from(tokens.spacing.s3);
@@ -117,25 +117,7 @@ impl TopBarChrome {
             tokens.colors.surfaces.base,
         );
         self.bell_badge_rect = layout.badge;
-        TrayLayout { tray_w }
-    }
-
-    /// Draws the tray's glyphs through the status cluster: the bell with its
-    /// unread count, the volume, the link and the battery, each on its own
-    /// square. Kept as its own step so the bar's draw stays under the line
-    /// budget.
-    pub(super) fn draw_tray_icons(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        layout: &TrayLayout,
-    ) {
-        // The cluster painted the pill body and its slots in one pass; this
-        // step is what a caller that only wants the icons asks for, and it
-        // is the same painter, so the two never disagree.
-        let _ = (scene, transform, theme, text_renderer, layout);
+        tray_w
     }
 
     /// Active microphone/camera use, drawn leftward from `rx`: a bar chip
@@ -486,11 +468,4 @@ impl TopBarChrome {
     pub(super) fn tray_target_key(target: &str) -> Option<&str> {
         target.strip_prefix(Self::APP_TRAY_TARGET)
     }
-}
-
-/// Per-frame sizing + palette snapshot for the tray pill, computed once
-/// in [`TopBarChrome::draw_tray_pill_body`] and reused by the icon
-/// helpers so [`Widget::draw`] stays under the line budget.
-pub(super) struct TrayLayout {
-    pub(super) tray_w: f64,
 }

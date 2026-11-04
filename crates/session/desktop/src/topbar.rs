@@ -876,14 +876,14 @@ impl TopBarChrome {
         center_y: f64,
     ) {
         let transform = Affine::IDENTITY;
-        let layout = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        self.draw_tray_icons(scene, transform, theme, text_renderer, &layout);
+        // The status cluster paints the pill and its glyphs in one pass.
+        let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
         // s3/s4 match the pad_x/gap used when this pill was sized and
         // placed in `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar
         // radius).
         let stack_right_x = self.rect.x1
             - f64::from(theme.tokens.spacing.s3)
-            - layout.tray_w
+            - tray_w
             - f64::from(theme.tokens.spacing.s4);
         let stack_right_x = self.draw_own_avatar(
             scene,
