@@ -372,15 +372,15 @@ pub struct ChatApp {
     /// opens on the sync the answer comes in.
     pub(crate) person_opening: Option<String>,
     /// The message the composer is sending, until it is accepted.
-    pub(crate) person_sending: Option<crate::direct::window::Sending>,
+    pub(crate) person_sending: Option<crate::direct::Sending>,
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
     /// The direct conversations as the pair's own records, in a live window
     /// of a workspace that keeps them: what answers [`ui::person_chat`]
     /// here, and what the import of the old private store writes into.
-    pub(crate) direct: Option<std::rc::Rc<crate::direct::Records>>,
+    pub(crate) direct: Option<std::rc::Rc<ui::direct::Records>>,
     /// The workspace's people as the record last read them, in the shape a
     /// direct conversation keeps them (the people a chat can be had with).
-    pub(crate) direct_people: Vec<crate::direct::Person>,
+    pub(crate) direct_people: Vec<ui::direct::Person>,
     /// Retained direct conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
     /// The person's reduced-motion setting, applied to every floating
@@ -1089,7 +1089,7 @@ impl ChatApp {
         handle: ui::framework::WorkspaceHandle,
         workspace: String,
     ) {
-        self.direct = Some(crate::direct::Records::new(handle, workspace, &self.me.id));
+        self.direct = Some(ui::direct::Records::new(handle, workspace, &self.me.id));
     }
 
     /// Keep the composers' drafts in the person's own `record`: theirs

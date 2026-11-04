@@ -17315,6 +17315,7 @@ name = "tilo-app"
 version = "0.1.0"
 dependencies = [
  "durable-store",
+ "neighbour-wire",
  "registry-types",
  "serde",
  "serde_json",

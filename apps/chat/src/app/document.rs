@@ -24,7 +24,7 @@ fn read_record(doc: &AutoCommit) -> Option<crate::record::Chat> {
 fn direct_people<'a>(
     people: impl Iterator<Item = &'a crate::record::Person>,
     me: &str,
-) -> Vec<crate::direct::Person> {
+) -> Vec<ui::direct::Person> {
     people
         .filter(|person| {
             !person.agent
@@ -32,7 +32,7 @@ fn direct_people<'a>(
                 && person.id.0.bytes().all(|byte| byte.is_ascii_hexdigit())
                 && person.id.0 != me
         })
-        .map(|person| crate::direct::Person {
+        .map(|person| ui::direct::Person {
             root: person.id.0.clone(),
             key: ui::person_chat::person_key(&person.id.0),
             name: person.name.clone(),

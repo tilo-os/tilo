@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
-use ui::record::RecordId;
-use ui::tilo_resource::Replica;
+use tilo_resource::Replica;
+use ui_core::record::RecordId;
 
 use super::*;
 
@@ -73,8 +73,8 @@ fn a_message_goes_to_the_next_part_once_the_head_is_full() {
 fn a_part_started_later_carries_the_counts_before_it() {
     let first = part_of(&[(ADA, "one"), (BOB, "two"), (ADA, "three")], 1_000);
     let (ada, bob) = (
-        ui::person_chat::person_key(ADA),
-        ui::person_chat::person_key(BOB),
+        crate::person_chat::person_key(ADA),
+        crate::person_chat::person_key(BOB),
     );
     let carried = first.carried_after(0);
     assert_eq!(carried["0"][&ada], 2);
@@ -95,7 +95,7 @@ fn a_send_is_the_same_message_once() {
     assert_eq!(part.messages.len(), 1);
     let (id, message) = part.messages.iter().next().unwrap();
     assert_eq!(id.as_str(), "dm_1");
-    assert_eq!(message.author, ui::person_chat::person_key(ADA));
+    assert_eq!(message.author, crate::person_chat::person_key(ADA));
     assert_eq!(message.text, "hi");
     assert_eq!(message.at, 1_000);
 }
@@ -114,7 +114,7 @@ fn an_import_takes_each_stored_message_once() {
     let mut ada = device(ADA, 1_000);
     let stored = StoredMessage {
         id: "dm_old".into(),
-        author: ui::person_chat::person_key(BOB),
+        author: crate::person_chat::person_key(BOB),
         text: "before".into(),
         at: 1,
     };
@@ -155,16 +155,16 @@ fn a_stored_message_no_person_wrote_is_not_imported() {
 
 #[test]
 fn the_message_id_is_the_invocation() {
-    let invocation = uuid::Uuid::nil();
-    assert_eq!(message_id(invocation), format!("dm_{invocation}"));
+    let invocation = tilo_actions::InvocationId(tilo_resource::fresh_uuid());
+    assert_eq!(message_id(invocation), format!("dm_{}", invocation.0));
     assert!(valid_message_id(&message_id(invocation)));
 }
 
 #[test]
 fn reading_to_the_end_marks_the_newest_part_with_the_other_persons_messages() {
     let (_ada, bob) = (
-        ui::person_chat::person_key(ADA),
-        ui::person_chat::person_key(BOB),
+        crate::person_chat::person_key(ADA),
+        crate::person_chat::person_key(BOB),
     );
     let conversation = Conversation::new(vec![
         (0, part_of(&[(BOB, "one"), (ADA, "two")], 1_000)),
@@ -195,16 +195,14 @@ fn reading_to_the_end_marks_the_newest_part_with_the_other_persons_messages() {
 #[test]
 fn unread_reaches_back_through_the_parts_a_device_does_not_hold() {
     let (ada, bob) = (
-        ui::person_chat::person_key(ADA),
-        ui::person_chat::person_key(BOB),
+        crate::person_chat::person_key(ADA),
+        crate::person_chat::person_key(BOB),
     );
     // This device holds the head only: parts 0 and 1 are known through the
     // counts the head carries.
     let mut head = (*part_of(&[(BOB, "four"), (BOB, "five"), (BOB, "six")], 3_000)).clone();
-    head.earlier.insert(
-        "0".to_owned(),
-        BTreeMap::from([(ada.clone(), 1), (bob.clone(), 2)]),
-    );
+    head.earlier
+        .insert("0".to_owned(), BTreeMap::from([(ada, 1), (bob.clone(), 2)]));
     head.earlier
         .insert("1".to_owned(), BTreeMap::from([(bob.clone(), 1)]));
     let conversation = Conversation::new(vec![(2, Rc::new(head))]);

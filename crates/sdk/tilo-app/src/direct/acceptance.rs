@@ -14,10 +14,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ui::tilo_resource::Replica;
+use tilo_resource::Replica;
 
+use super::parts::{DirectPart, PART_MESSAGES, StoredMessage, direct_part, post_part};
 use super::*;
-use crate::direct_parts::{direct_part, post_part};
 
 /// Ada's root public key, as the workspace and the conversation name her.
 const ADA: &str = "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad";
@@ -123,7 +123,7 @@ impl Device {
     /// first, as it synced before the person wrote.
     fn send(&mut self, store: &Store, id: &str, text: &str) {
         self.download(store);
-        self.clock += 1;
+        self.clock = self.clock.saturating_add(1);
         let head = self.parts.last_key_value().map(|(index, part)| {
             let state = part.state().expect("a part reads");
             (
@@ -158,7 +158,7 @@ impl Device {
 
     /// Take in messages the old private store kept, as the import does: into
     /// a part the device holds, after taking in what the store has of it.
-    fn import(&mut self, store: &Store, messages: Vec<crate::direct_parts::StoredMessage>) {
+    fn import(&mut self, store: &Store, messages: Vec<StoredMessage>) {
         self.download(store);
         let index = self.parts.keys().next_back().copied().unwrap_or(0);
         let mut part = self.parts.remove(&index).unwrap_or_default();
@@ -172,7 +172,7 @@ impl Device {
     /// does, on the record the device holds.
     fn mark_read(&mut self, store: &mut Store, part: i64, seen: i64) {
         self.download(store);
-        self.clock += 1;
+        self.clock = self.clock.saturating_add(1);
         let clock = self.clock;
         let record = self.marks(store);
         record.set_now_ms(clock);
@@ -182,7 +182,7 @@ impl Device {
     }
 
     /// The conversation as this device holds it.
-    fn conversation(&self) -> direct_parts::Conversation {
+    fn conversation(&self) -> parts::Conversation {
         let parts: Vec<(u64, std::rc::Rc<DirectPart>)> = self
             .parts
             .iter()
@@ -193,7 +193,7 @@ impl Device {
                 )
             })
             .collect();
-        direct_parts::Conversation::new(parts)
+        parts::Conversation::new(parts)
     }
 
     /// What this device shows of the conversation: each message's id and
@@ -211,8 +211,8 @@ impl Device {
         let state = self.marks(store).state().expect("a record reads");
         state.unread(
             &self.conversation(),
-            &ui::person_chat::person_key(self.person),
-            &ui::person_chat::person_key(peer),
+            &crate::person_chat::person_key(self.person),
+            &crate::person_chat::person_key(peer),
         )
     }
 
@@ -452,9 +452,9 @@ fn a_conversation_kept_in_the_old_store_imports_readable_once() {
     let mut store = Store::default();
     // What the old private store holds for Bob: Ada's two messages and one
     // of his, written before the conversation moved to the pair's record.
-    let old = |id: &str, author: &str, text: &str, at: i64| crate::direct_parts::StoredMessage {
+    let old = |id: &str, author: &str, text: &str, at: i64| StoredMessage {
         id: id.to_owned(),
-        author: ui::person_chat::person_key(author),
+        author: crate::person_chat::person_key(author),
         text: text.to_owned(),
         at,
     };
@@ -537,9 +537,9 @@ fn after_the_migration_a_message_still_reaches_an_open_conversation() {
     let mut store = Store::default();
     // Bob imports what the old store held, and the migration empties it once
     // nothing more can be read: what the app does as its imports drain.
-    let old = |id: &str, text: &str| crate::direct_parts::StoredMessage {
+    let old = |id: &str, text: &str| StoredMessage {
         id: id.to_owned(),
-        author: ui::person_chat::person_key(ADA),
+        author: crate::person_chat::person_key(ADA),
         text: text.to_owned(),
         at: 10,
     };
@@ -619,11 +619,11 @@ fn a_conversation_that_fills_a_part_keeps_going_in_the_next_one() {
 fn another_pair_is_another_record() {
     let workspace = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     let carol = "c0".repeat(32);
-    let ours = ui::person_chat::direct_pair_id(workspace, ADA, BOB).expect("a pair");
-    let theirs = ui::person_chat::direct_pair_id(workspace, ADA, &carol).expect("a pair");
+    let ours = crate::person_chat::direct_pair_id(workspace, ADA, BOB).expect("a pair");
+    let theirs = crate::person_chat::direct_pair_id(workspace, ADA, &carol).expect("a pair");
     assert_ne!(ours, theirs);
     assert_ne!(
-        ui::record::workspace::direct_record_id(&ours),
-        ui::record::workspace::direct_record_id(&theirs)
+        ui_core::record::workspace::direct_record_id(&ours),
+        ui_core::record::workspace::direct_record_id(&theirs)
     );
 }

@@ -2,11 +2,11 @@
 //!
 //! One record cannot hold a conversation that runs for months: a record's
 //! snapshot has a size limit, and a newcomer would be sent all of it. So the
-//! pair's record ([`crate::direct::DirectConversation`]) keeps who said
+//! pair's record ([`super::DirectConversation`]) keeps who said
 //! what to whom and how far each of them read, and its messages live in
 //! numbered part records ([`DirectPart`]) of that same record
-//! ([`RecordId::part`]), exactly as the workspace's chat keeps its channels'
-//! messages ([`crate::parts`]).
+//! ([`RecordId::part`]), exactly as Chat keeps its channels' messages in
+//! parts of the workspace's chat record.
 //!
 //! - **Which part is current.** The part with the highest number a device
 //!   holds is the chain's head. A workspace's host replays a joining device the
@@ -30,11 +30,13 @@
 
 use std::collections::BTreeMap;
 
-use ui::record::RecordId;
-use ui::tilo_resource::{self, ActionCx, Collection, Id, JsonSchema, Model, Refusal};
+use tilo_resource::{self, ActionCx, Collection, Id, JsonSchema, Model, Refusal};
+use ui_core::record::RecordId;
 
-use crate::direct::{DirectConversation, MAX_TEXT_BYTES};
+use super::{DirectConversation, person};
 
+/// The longest message text, in bytes: the door's own bound.
+pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 /// Messages a part holds before the next one starts.
 pub const PART_MESSAGES: usize = 2000;
 /// Message text, in bytes, a part holds before the next one starts: well
@@ -164,25 +166,18 @@ pub struct DirectReadMark {
 /// The message id an invocation sends: the same invocation is the same
 /// message, so a retry stores nothing twice.
 #[must_use]
-pub fn message_id(invocation: uuid::Uuid) -> String {
-    format!("dm_{invocation}")
+pub fn message_id(invocation: tilo_actions::InvocationId) -> String {
+    format!("dm_{}", invocation.0)
 }
 
-pub(crate) fn person(cx: &ActionCx) -> Result<String, Refusal> {
-    cx.author()
-        .filter(|author| !author.is_empty() && author.len() <= 4096)
-        .map(ui::person_chat::person_key)
-        .ok_or_else(|| Refusal::new("a message is always someone's"))
-}
-
-pub(crate) fn stored_key(value: &str) -> bool {
+fn stored_key(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-pub(crate) fn valid_message_id(id: &str) -> bool {
+fn valid_message_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id
@@ -190,11 +185,11 @@ pub(crate) fn valid_message_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
-pub(crate) fn valid_text(text: &str) -> bool {
+fn valid_text(text: &str) -> bool {
     !text.trim().is_empty() && text.len() <= MAX_TEXT_BYTES
 }
 
-#[ui::tilo_resource::resource(
+#[tilo_resource::resource(
     kind = "chat.direct-messages",
     label = "Direct conversation messages",
     params = direct_part,
@@ -280,13 +275,12 @@ impl DirectPart {
             String,
             BTreeMap<String, i64>,
         >,
-    ) -> Result<(), Refusal> {
+    ) {
         self.earlier = earlier;
-        Ok(())
     }
 }
 
-impl ui::framework::Chained for DirectPart {
+impl crate::framework::Chained for DirectPart {
     type Base = DirectConversation;
 
     /// Unused: every direct conversation has a chain of its own, beside the
@@ -307,10 +301,13 @@ impl ui::framework::Chained for DirectPart {
             }))
         };
         match &action.operation {
-            DirectPartAction::Send(_) | DirectPartAction::Import(_) => new(),
-            // Carried as the part starts, by the framework, on the part it
-            // starts; never asked for on its own.
-            DirectPartAction::CarryCounts(_) => new(),
+            // A new message, an import and the counts a part starts with
+            // all go to the head, or the part after it once it is full. The
+            // counts are carried by the framework on the part it starts,
+            // never asked for on its own.
+            DirectPartAction::Send(_)
+            | DirectPartAction::Import(_)
+            | DirectPartAction::CarryCounts(_) => new(),
             // A field edit of the part (a message inserted whole, as a
             // scenario stages one) goes to the head.
             DirectPartAction::FieldEdit(_) => Ok(parts.last().map_or(0, |(head, _)| *head)),
