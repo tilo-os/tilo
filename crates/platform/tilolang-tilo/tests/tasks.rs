@@ -1821,6 +1821,16 @@ fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
         .collect()
 }
 
+/// The command a task's row runs when it is swiped, as its label reads.
+fn row_swipe(view: &mut ViewInstance, want: &Value) -> Option<String> {
+    let row = home_row(view, want);
+    let swipe = all(row, "slot")
+        .into_iter()
+        .find(|slot| slot.props.get("name") == Some(&Value::text("swipe")))?;
+    let action = all(swipe, "ui.SwipeAction").into_iter().next()?;
+    text_of(action, "label")
+}
+
 /// The key of the command `label` of a task's row menu: the node running it names.
 fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String {
     all(row_menu(view, want), "ui.MenuItem")
@@ -1982,6 +1992,11 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     assert!(
         !offered(&mut view, &van).contains(&"Outdent".to_owned()),
         "and a task at the top level has none to move out of"
+    );
+    assert_ne!(
+        row_swipe(&mut view, &van).as_deref(),
+        Some("Indent"),
+        "and the swipe over the row runs no move it has no place for either"
     );
 
     // Running it nests it under the task over it, which is the one of its own day.

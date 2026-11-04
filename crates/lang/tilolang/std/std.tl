@@ -6,9 +6,10 @@
 ///
 /// A window that lists resources: the header holds its owner's actions, the primary one as
 /// the Primary button; each item is a row whose actions are on its context menu and its swipe,
-/// a destructive one undone rather than confirmed; a command the app marked `frequent` a row of
-/// its own, as it is in the header, never folded into a run; with no items it says `empty` and
-/// offers the primary action. The places in the sidebar are the item type's filters that are on or
+/// a destructive one undone rather than confirmed, and both offer the commands that have a place
+/// on that row; a command the app marked `frequent` a row of its own, as it is in the header,
+/// never folded into a run; with no items it says `empty` and offers the primary action. The
+/// places in the sidebar are the item type's filters that are on or
 /// off (`filters(T)`), after all of the items, each with how many it holds; the one chosen is
 /// the window's query, as people type it in search (`is:done`), so everyone looking sees the
 /// same list; a window starts on `place` (all of the items when empty). The place of all of the
@@ -308,11 +309,11 @@ view rows_list<T>(
                     }
                 }
                 swipe: {
-                    if let a = offered.find(a -> a.available and a.destructive) {
+                    if let a = offered.find(a -> a.applies and a.available and a.destructive) {
                         ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
                             on swipe: a.run
                         }
-                    } else if let a = offered.find(a -> a.available) {
+                    } else if let a = offered.find(a -> a.applies and a.available) {
                         ui.SwipeAction(a.label, icon: a.icon) {
                             on swipe: a.run
                         }
