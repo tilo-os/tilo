@@ -765,8 +765,8 @@ fn role_order(terms: &[Term], ty: &TypeMeta) -> Option<Order> {
             absent_last: true,
             then: None,
         },
-        // A logbook reads newest first: the last change to an item is the one that finished
-        // it (the store's log, never a field the type would hold).
+        // A logbook reads newest first: an item's latest change is the one that finished it,
+        // while nothing changes it after (the store's log, never a field the type would hold).
         FilterRole::Logbook => Order {
             field: crate::store::Reflected::UPDATED.to_owned(),
             kind: crate::meta::FieldKind::Register,

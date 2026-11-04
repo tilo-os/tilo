@@ -408,8 +408,8 @@ search.md, "What a type declares" and "Types, references and paths".
   `logbook`) reads the fields it names and derives the members as a predicate of the same
   vocabulary, so `matching("is:today")` and a place's count answer it as any filter's do. It
   adds what the predicate cannot say: the order the place's list comes in (the agenda's and
-  what is due later's by day, soonest first; the logbook's by the change that finished an item,
-  newest first) and whether its count is one to show (the inbox's and the agenda's).
+  what is due later's by day, soonest first; the logbook's by the item's latest change, which is
+  the one that finished it while nothing changes it after, newest first) and whether its count is one to show (the inbox's and the agenda's).
   `std.rows(role:, place:)` groups by the day each item stands at in the place, which
   `placed_day(x, p.key)` reads. A field named like a role word is a field, as before.
 - **`std.Identifier` is a built-in value type**, held as its URI text like `Date` and `Time`

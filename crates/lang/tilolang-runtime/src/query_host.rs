@@ -329,6 +329,8 @@ impl Core {
             FilterRole::Logbook => {
                 // What is done was finished by a change, and that change's time is the day it
                 // was finished on: the store's log says it, so the type holds no field for it.
+                // Its latest change stands for it, which is the finishing one while nothing
+                // changes the item after.
                 if crate::foreign::is_foreign(&item.target) {
                     return Ok(Value::none());
                 }
