@@ -1,0 +1,103 @@
+//! Reordering a list's rows: the drop a pointer offers, the moves the keyboard asks for, and
+//! the one commit both go through.
+
+use vello::kurbo::Point;
+use winit::keyboard::{Key, NamedKey};
+
+use super::{ListModel, VirtualList};
+use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
+use crate::time::Instant;
+
+impl<M: ListModel> VirtualList<M> {
+    pub(super) fn update_reorder_pointer(&mut self, cursor: Point, now: Instant) {
+        let candidate = self.reorder_candidate(cursor);
+        let model = &self.model;
+        let validator = &mut self.reorder_validator;
+        self.reorder
+            .update(cursor, candidate, now, |source, target| {
+                validator
+                    .as_mut()
+                    .is_some_and(|validate| validate(model, source, target))
+            });
+    }
+
+    /// The direction a reorder chord moves the focused row, up being
+    /// `true`, when this list reorders and `key` with `modifiers` is one.
+    pub(super) fn reorder_chord(
+        &self,
+        key: &Key,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> Option<bool> {
+        if self.reorder_validator.is_none() || self.reorder_commit.is_none() {
+            return None;
+        }
+        let chord = modifiers.control_key() != modifiers.alt_key()
+            && !modifiers.shift_key()
+            && !modifiers.super_key();
+        match key {
+            Key::Named(NamedKey::ArrowUp) if chord => Some(true),
+            Key::Named(NamedKey::ArrowDown) if chord => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Move the focused row past its neighbour above or below, as a drop
+    /// there would, keeping it focused. Whether it moved: a move the list
+    /// refuses, or one past either end, moves nothing.
+    pub(super) fn move_focused(&mut self, up: bool) -> bool {
+        let Some(source) = self.focused_row_key() else {
+            return false;
+        };
+        let Some(index) = self.model.index_of(&source) else {
+            return false;
+        };
+        let neighbour = if up {
+            index.checked_sub(1)
+        } else {
+            index.checked_add(1)
+        };
+        let Some(neighbour) = neighbour.and_then(|at| self.model.key_at(at)) else {
+            return false;
+        };
+        let target = DropTarget::new(
+            neighbour,
+            if up {
+                DropPlacement::Before
+            } else {
+                DropPlacement::After
+            },
+        );
+        let model = &self.model;
+        let accepted = self
+            .reorder_validator
+            .as_mut()
+            .is_some_and(|validate| validate(model, &source, &target));
+        if !accepted
+            || !self.commit_reorder(ReorderDrop {
+                source: source.clone(),
+                target,
+            })
+        {
+            return false;
+        }
+        if let Some(at) = self.model.index_of(&source) {
+            self.scroll_to_index(at);
+        }
+        self.focus_row(source);
+        true
+    }
+
+    pub(super) fn commit_reorder(&mut self, dropped: ReorderDrop<M::Key>) -> bool {
+        let anchor = self.capture_anchor();
+        let changed = self
+            .reorder_commit
+            .as_mut()
+            .is_some_and(|commit| commit(&mut self.model, dropped));
+        if changed {
+            // A move changes what stands under what: the tree is read again.
+            self.forget_tree();
+            self.reconcile_model(anchor.as_ref());
+        }
+        changed
+    }
+}

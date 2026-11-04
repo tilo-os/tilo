@@ -8,7 +8,8 @@ use winit::keyboard::{Key, NamedKey};
 
 impl<M: ListModel> VirtualList<M> {
     /// A completed click on the row of `key`: select it by the modifiers, and
-    /// activate it when it is the second click on the same row in time.
+    /// activate it when it is the second click on the same row in time (or
+    /// rename it, where the list renames on a double click).
     pub(super) fn click_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
         let state = modifiers.state();
         let toggle = state.control_key() || state.super_key();
@@ -18,6 +19,9 @@ impl<M: ListModel> VirtualList<M> {
         if toggle || extend {
             self.clicks.record(key);
         } else if self.clicks.register(key.clone()) {
+            if self.rename_on_double_click && self.begin_rename(&key) {
+                return;
+            }
             self.activate_key(key);
         }
     }

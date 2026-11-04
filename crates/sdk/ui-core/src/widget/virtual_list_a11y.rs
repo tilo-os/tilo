@@ -63,8 +63,21 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(encode) = &self.semantic_key {
             item = item.with_action_target(format!("key:{}", encode(&row.key)));
         }
-        if let Some(child) = child {
-            item = item.with_children(vec![child]);
+        // A row renamed in place carries the field over its label, as a tree's row does, so a
+        // reader reaches the title it edits.
+        let field = self
+            .rename
+            .as_ref()
+            .filter(|field| field.key == row.key)
+            .and_then(|field| {
+                Widget::accessibility(&field.input).map(|mut input| {
+                    input.name = Some(crate::i18n!("tree-rename-field"));
+                    input.bounds = Some(field.input.get_rect().into());
+                    input
+                })
+            });
+        if field.is_some() || child.is_some() {
+            item = item.with_children(field.into_iter().chain(child).collect());
         }
         item
     }

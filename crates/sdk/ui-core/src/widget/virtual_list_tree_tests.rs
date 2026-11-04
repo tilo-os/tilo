@@ -1,10 +1,13 @@
 //! How a list's rows stand as a tree, and how folding a row hides what is under it.
 
 use super::*;
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use automerge::AutoCommit;
+
+use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::testing::Dispatch;
 use crate::theme::Theme;
 
@@ -220,6 +223,586 @@ fn the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it() {
     );
     assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
     assert!(!list.row_folded(&1), "right shows what it folded away");
+}
+
+/// A tree whose rows a host moves: a drop lands what it moved where it names, so a move the
+/// list places is the move its person sees.
+struct Movable {
+    keys: Vec<u64>,
+    parents: HashMap<u64, u64>,
+    labels: HashMap<u64, String>,
+    takes_children: HashSet<u64>,
+}
+
+impl ListModel for Movable {
+    type Key = u64;
+
+    fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<u64> {
+        self.keys.get(index).copied()
+    }
+
+    fn index_of(&self, key: &u64) -> Option<usize> {
+        self.keys.iter().position(|candidate| candidate == key)
+    }
+
+    fn label(&self, index: usize) -> Option<String> {
+        self.labels.get(&self.key_at(index)?).cloned()
+    }
+
+    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+        let key = self.key_at(index)?;
+        let parent = self
+            .parents
+            .get(&key)
+            .copied()
+            .filter(|parent| self.keys.contains(parent));
+        Some(TreeRow { parent })
+    }
+
+    fn accepts_children(&self, index: usize) -> bool {
+        self.key_at(index)
+            .is_some_and(|key| self.takes_children.contains(&key))
+    }
+}
+
+/// Where `key` stands: under `ancestor`, following the parents it names.
+fn stands_under(parents: &HashMap<u64, u64>, key: u64, ancestor: u64) -> bool {
+    let mut cursor = key;
+    for _ in 0..64 {
+        let Some(parent) = parents.get(&cursor).copied() else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        cursor = parent;
+    }
+    false
+}
+
+/// Where a host lands a drop: the row moves beside the row it names, into it as its last
+/// subtask, and takes the depth of where it landed.
+fn land(model: &mut Movable, dropped: ReorderDrop<u64>) -> bool {
+    if dropped.source == dropped.target.key {
+        return false;
+    }
+    let Some(from) = model.index_of(&dropped.source) else {
+        return false;
+    };
+    if model.index_of(&dropped.target.key).is_none() {
+        return false;
+    }
+    let parent = match dropped.target.placement {
+        DropPlacement::Inside => Some(dropped.target.key),
+        DropPlacement::Before | DropPlacement::After => {
+            model.parents.get(&dropped.target.key).copied()
+        }
+    };
+    model.keys.remove(from);
+    let at = model.index_of(&dropped.target.key).unwrap_or_default();
+    let into = match dropped.target.placement {
+        DropPlacement::Before => at,
+        DropPlacement::Inside => {
+            let mut into = at.saturating_add(1);
+            while into < model.keys.len()
+                && stands_under(&model.parents, model.keys[into], dropped.target.key)
+            {
+                into = into.saturating_add(1);
+            }
+            into
+        }
+        DropPlacement::After => at.saturating_add(1),
+    };
+    model
+        .keys
+        .insert(into.min(model.keys.len()), dropped.source);
+    match parent {
+        Some(parent) => {
+            model.parents.insert(dropped.source, parent);
+        }
+        None => {
+            model.parents.remove(&dropped.source);
+        }
+    }
+    true
+}
+
+fn movable(keys: Vec<u64>, parents: &[(u64, u64)]) -> VirtualList<Movable> {
+    let model = Movable {
+        labels: keys
+            .iter()
+            .map(|key| (*key, format!("row {key}")))
+            .collect(),
+        keys: keys.clone(),
+        parents: parents.iter().copied().collect(),
+        takes_children: keys.into_iter().collect(),
+    };
+    VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0)
+}
+
+/// Send `event` to the list as the window would.
+fn send<M: ListModel + 'static>(
+    list: &mut VirtualList<M>,
+    event: &WindowEvent,
+    laid_out: (&TaffyTree<()>, NodeId),
+) -> bool {
+    Dispatch::new()
+        .layout(laid_out.0, laid_out.1)
+        .send(list, event)
+        .handled
+}
+
+/// Send `event` with `modifiers` held.
+fn send_with<M: ListModel + 'static>(
+    list: &mut VirtualList<M>,
+    event: &WindowEvent,
+    modifiers: winit::keyboard::ModifiersState,
+    laid_out: (&TaffyTree<()>, NodeId),
+) -> bool {
+    Dispatch::new()
+        .modifiers(modifiers)
+        .layout(laid_out.0, laid_out.1)
+        .send(list, event)
+        .handled
+}
+
+#[test]
+fn tab_indents_the_focused_row_into_the_row_above_it_and_shift_tab_steps_it_back_out() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = movable(vec![0, 1, 2], &[])
+        .tab_indents(true)
+        .with_tree(Rc::clone(&marks))
+        .with_reorder(|_, source, target| source != &target.key, land);
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+    list.set_focus(true);
+    assert!(list.reveal(&2));
+    assert_eq!(list.focused_key(), Some(&2));
+
+    // Tab moves it under the row above it at its own depth, as an outliner does.
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::Tab),
+        laid_out
+    ));
+    assert_eq!(
+        list.model().parents.get(&2),
+        Some(&1),
+        "under the row above"
+    );
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(marks.depth(&2), 1, "one step deeper");
+    assert_eq!(
+        list.focused_key(),
+        Some(&2),
+        "the moved row keeps the keyboard"
+    );
+
+    // Shift+Tab steps it back out, directly after the row it stood under.
+    assert!(send_with(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::Tab),
+        winit::keyboard::ModifiersState::SHIFT,
+        laid_out,
+    ));
+    assert_eq!(list.model().parents.get(&2), None, "out of it again");
+    assert_eq!(
+        list.model().keys,
+        vec![0, 1, 2],
+        "beside the row it stood under"
+    );
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(marks.depth(&2), 0);
+}
+
+#[test]
+fn a_tab_that_cannot_move_the_row_is_left_to_focus_traversal() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = movable(vec![0, 1], &[])
+        .tab_indents(true)
+        .with_tree(Rc::clone(&marks))
+        .with_reorder(|_, source, target| source != &target.key, land);
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    list.set_focus(true);
+    assert!(list.reveal(&0));
+    assert!(
+        !send(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::Tab),
+            (&taffy, node)
+        ),
+        "a top row has no row above to indent into"
+    );
+    assert_eq!(list.model().parents.get(&0), None);
+}
+
+#[test]
+fn the_alt_arrows_move_a_row_through_its_tree_and_ctrl_moves_it_beside_its_siblings() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = movable(vec![0, 1, 2], &[(1, 0)])
+        .with_tree(Rc::clone(&marks))
+        .with_reorder(|_, source, target| source != &target.key, land);
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+    list.set_focus(true);
+    let alt = winit::keyboard::ModifiersState::ALT;
+    let ctrl = winit::keyboard::ModifiersState::CONTROL;
+
+    // Alt+Right indents it into the row it stands beside, the row above at its own depth;
+    // Alt+Left steps it back out beside that row.
+    assert!(list.reveal(&2));
+    assert!(send_with(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::ArrowRight),
+        alt,
+        laid_out
+    ));
+    assert_eq!(
+        list.model().parents.get(&2),
+        Some(&0),
+        "under the row above it"
+    );
+    assert!(send_with(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::ArrowLeft),
+        alt,
+        laid_out
+    ));
+    assert_eq!(list.model().parents.get(&2), None);
+
+    // Ctrl+Up moves it up through its own depth, never into the branch it passes: row 1
+    // stands under row 0, and row 2 passes both to stand above them, still a top row.
+    assert!(send_with(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::ArrowUp),
+        ctrl,
+        laid_out
+    ));
+    assert_eq!(list.model().parents.get(&2), None, "still a top row");
+    assert_eq!(list.model().keys, vec![2, 0, 1]);
+    assert_eq!(list.focused_key(), Some(&2));
+}
+
+#[test]
+fn a_drop_into_the_middle_of_a_row_lands_the_dragged_row_inside_it() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = movable(vec![0, 1, 2], &[])
+        .with_tree(Rc::clone(&marks))
+        .with_reorder(|_, source, target| source != &target.key, land);
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+
+    // Pick row 2 up and hold it over the middle of row 0.
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(20.0, 50.0),
+        laid_out,
+    );
+    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(20.0, 10.0),
+        laid_out,
+    );
+    assert_eq!(
+        list.reorder_target(),
+        Some(&DropTarget::new(0, DropPlacement::Inside)),
+        "the middle of a row that takes subtasks takes the row into it"
+    );
+    assert!(list.reorder_preview().is_some());
+    send(
+        &mut list,
+        &crate::synthetic_input::mouse_release(),
+        laid_out,
+    );
+
+    assert_eq!(list.model().parents.get(&2), Some(&0), "it landed inside");
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(marks.depth(&2), 1);
+    assert!(marks.is_branch(&0), "the row it landed in holds subtasks");
+}
+
+#[test]
+fn the_seam_below_an_open_branch_lands_at_the_first_row_it_holds() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = movable(vec![0, 1, 2], &[(1, 0)])
+        .with_tree(Rc::clone(&marks))
+        .with_reorder(|_, source, target| source != &target.key, land);
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+
+    // Row 0 holds row 1; the foot of row 0 is the seam above row 1, not row 0's next sibling.
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(20.0, 50.0),
+        laid_out,
+    );
+    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(20.0, 18.0),
+        laid_out,
+    );
+    assert_eq!(
+        list.reorder_target(),
+        Some(&DropTarget::new(1, DropPlacement::Before))
+    );
+    let preview = list.reorder_preview().expect("a line where it lands");
+    assert!(
+        (preview.center().y - 20.0).abs() < 2.0,
+        "above the row it holds: {preview:?}"
+    );
+}
+
+#[test]
+fn a_pointer_resting_on_a_folded_branch_shows_what_it_holds() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = movable(vec![0, 1, 2], &[(1, 0)])
+        .with_tree(Rc::clone(&marks))
+        .with_reorder(|_, source, target| source != &target.key, land);
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+    assert!(list.fold_row(&0, true));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    list.reorder = crate::reorder::ReorderController::new()
+        .with_drag_threshold(0.0)
+        .with_hover_expand_delay(crate::time::Duration::ZERO);
+
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(20.0, 30.0),
+        laid_out,
+    );
+    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(20.0, 10.0),
+        laid_out,
+    );
+    assert_eq!(
+        list.reorder_target(),
+        Some(&DropTarget::new(0, DropPlacement::Inside))
+    );
+    let doc = AutoCommit::new();
+    assert!(
+        list.update(&doc, &automerge::ROOT),
+        "the rest brings its rows into view"
+    );
+    assert!(!list.row_folded(&0), "what it holds comes into view");
+}
+
+#[test]
+fn delete_asks_the_host_and_removes_no_row_itself() {
+    let removed: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&removed);
+    let mut list = movable(vec![0, 1], &[]).on_delete(move |key| seen.borrow_mut().push(key));
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+    list.set_focus(true);
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::ArrowDown),
+        laid_out
+    ));
+    assert_eq!(list.focused_key(), Some(&0));
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::Delete),
+        laid_out
+    ));
+    assert_eq!(
+        *removed.borrow(),
+        vec![0],
+        "the focused row, for the host to remove"
+    );
+    assert_eq!(list.model().len(), 2, "the list removes nothing itself");
+}
+
+#[test]
+fn f2_renames_the_focused_row_in_place_and_reports_the_trimmed_title() {
+    let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&renamed);
+    let mut list =
+        movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+    list.set_focus(true);
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::ArrowDown),
+        laid_out
+    ));
+
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::F2),
+        laid_out
+    ));
+    assert_eq!(list.renaming(), Some(&0));
+    let field = list.rename_field().expect("the field stands over the row");
+    assert_eq!(field.value(), "row 0", "the row's own title to change");
+    let row = list.row_box(0).expect("the row stands somewhere");
+    assert!(
+        field.get_rect().y0 >= row.y0 - 0.5 && field.get_rect().y1 <= row.y1 + 0.5,
+        "the field sits on the row: {:?} in {row:?}",
+        field.get_rect()
+    );
+
+    // Typing goes into the field, never the list's type-ahead, and Enter commits.
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::char_key("!"),
+        laid_out
+    ));
+    let semantics = list.accessibility().expect("the list has a node");
+    let field = semantics.children[0]
+        .children
+        .iter()
+        .find(|child| child.role == crate::a11y::Role::TextInput)
+        .expect("the row carries the field over its label, for a reader to reach");
+    assert_eq!(field.value.as_deref(), Some("row 0!"));
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::Enter),
+        laid_out
+    ));
+    assert_eq!(list.renaming(), None, "the field closed");
+    assert_eq!(*renamed.borrow(), vec![(0, "row 0!".to_owned())]);
+}
+
+#[test]
+fn escape_cancels_a_rename_and_a_press_elsewhere_commits_it() {
+    let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&renamed);
+    let mut list =
+        movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+    list.set_focus(true);
+    assert!(list.begin_rename(&0));
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::char_key("x"),
+        laid_out
+    ));
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::Escape),
+        laid_out
+    ));
+    assert_eq!(list.renaming(), None);
+    assert!(
+        renamed.borrow().is_empty(),
+        "a cancelled rename reports nothing"
+    );
+
+    assert!(list.begin_rename(&0));
+    assert!(send(
+        &mut list,
+        &crate::synthetic_input::char_key("y"),
+        laid_out
+    ));
+    // A press on the row below is outside the field: it commits the title and reaches the row.
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(20.0, 30.0),
+        laid_out,
+    );
+    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+    send(
+        &mut list,
+        &crate::synthetic_input::mouse_release(),
+        laid_out,
+    );
+    assert_eq!(*renamed.borrow(), vec![(0, "row 0y".to_owned())]);
+    assert_eq!(
+        list.focused_key(),
+        Some(&1),
+        "the press chose the row below"
+    );
+}
+
+#[test]
+fn a_double_click_renames_the_row_it_lands_on_instead_of_opening_it() {
+    let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+    let opened: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&renamed);
+    let chosen = Rc::clone(&opened);
+    let mut list = movable(vec![0, 1], &[])
+        .on_rename(move |key, title| seen.borrow_mut().push((key, title)))
+        .rename_on_double_click()
+        .on_activate(move |key| chosen.borrow_mut().push(key));
+    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+    press(&mut list, 20.0, 10.0, &taffy, node);
+    press(&mut list, 20.0, 10.0, &taffy, node);
+
+    assert_eq!(
+        list.renaming(),
+        Some(&0),
+        "the second click renames the row"
+    );
+    assert!(opened.borrow().is_empty(), "and does not open it");
+    assert_eq!(
+        list.focused_key(),
+        Some(&0),
+        "the row it renames holds the keyboard"
+    );
+    assert_eq!(
+        list.rename_field().map(|field| field.value()),
+        Some("row 0")
+    );
+}
+
+#[test]
+fn a_tree_row_keeps_its_own_height_and_the_ends_and_pages_reach_its_rows() {
+    let marks = Rc::new(TreeMarks::default());
+    // Row 1 draws taller than its siblings, as a row with two lines does.
+    let model = Movable {
+        labels: (0..3).map(|key| (key, format!("row {key}"))).collect(),
+        keys: vec![0, 1, 2],
+        parents: [(1, 0)].into_iter().collect(),
+        takes_children: (0..3).collect(),
+    };
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        let height = if *key == 1 { 44.0 } else { 20.0 };
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            height,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0)
+    .with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    // The taller row keeps its height indented under row 0, and the row below it clears it.
+    assert_eq!(marks.depth(&1), 1);
+    assert_eq!(list.viewport.item_height(1), Some(f64::from(44.0_f32)));
+    assert_eq!(
+        list.row_box(2).map(|row| row.y0),
+        Some(64.0),
+        "row 2 starts under row 1's full height"
+    );
+
+    let key = |named| Key::Named(named);
+    assert!(list.on_key(&key(NamedKey::End), false, false));
+    assert_eq!(list.focused_key(), Some(&2), "End reaches the last row");
+    assert!(list.on_key(&key(NamedKey::Home), false, false));
+    assert_eq!(list.focused_key(), Some(&0), "Home the first");
+    assert!(list.on_key(&key(NamedKey::PageDown), false, false));
+    assert_eq!(list.focused_key(), Some(&2), "a page down the flat rows");
 }
 
 /// A tree whose rows stand under a group heading, as a project page's first task and its

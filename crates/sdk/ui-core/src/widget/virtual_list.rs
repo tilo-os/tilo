@@ -52,7 +52,12 @@ mod shown;
 use shown::ListShown;
 #[path = "virtual_list_tree.rs"]
 mod tree;
-pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeRow};
+pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow};
+#[path = "virtual_list_edit.rs"]
+mod edit;
+#[path = "virtual_list_reorder.rs"]
+mod reordering;
+use edit::{RenameCallback, RenameField};
 #[path = "virtual_list_press.rs"]
 mod press;
 #[path = "virtual_list_row_group.rs"]
@@ -181,6 +186,13 @@ pub trait ListModel {
         None
     }
 
+    /// Whether the row `index` takes other rows as its subtasks: a tree's drag offers a drop
+    /// into it ([`DropPlacement::Inside`]), and the keyboard indents a row into it. `false`
+    /// for a leaf, or a model that holds no tree.
+    fn accepts_children(&self, _index: usize) -> bool {
+        false
+    }
+
     /// Whether the list heads or nests its rows, keeping a disclosure gutter left of its column.
     fn discloses(&self) -> bool {
         false
@@ -206,7 +218,6 @@ type SelectCallback<K> = Box<dyn FnMut(K, bool)>;
 type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
-
 use super::row_selection::selection_sink;
 pub use super::row_selection::{RowSelection, RowSelectionSink};
 
@@ -447,6 +458,16 @@ pub struct VirtualList<M: ListModel> {
     tree_rows: HashMap<M::Key, TreeRow<M::Key>>,
     /// The rows standing under a folded row: they take no room and are never built.
     tree_hidden: HashSet<M::Key>,
+    /// A row renamed in place: the field over its label, its title reported as it commits
+    /// ([`Self::on_rename`]).
+    rename: Option<Box<RenameField<M::Key>>>,
+    on_rename: Option<RenameCallback<M::Key>>,
+    /// A double click on a row renames it rather than opening it, as an outliner does.
+    rename_on_double_click: bool,
+    /// `Tab` and `Shift+Tab` indent and outdent the focused row, as an outliner does.
+    tab_indents: bool,
+    /// A row the person asked to delete (`Delete` on the focused row).
+    on_delete: Option<KeyCallback<M::Key>>,
 }
 
 impl<M: ListModel> VirtualList<M> {
@@ -574,6 +595,11 @@ impl<M: ListModel> VirtualList<M> {
             tree: None,
             tree_rows: HashMap::new(),
             tree_hidden: HashSet::new(),
+            rename: None,
+            on_rename: None,
+            rename_on_double_click: false,
+            tab_indents: false,
+            on_delete: None,
         };
         list.refresh_anchor();
         list
@@ -875,6 +901,14 @@ impl<M: ListModel> VirtualList<M> {
     fn focus_row(&mut self, key: M::Key) {
         self.focused_group = None;
         self.focused_key = Some(key);
+    }
+
+    /// The layout node of the mounted row wearing the keyboard, when that row takes focus.
+    fn focused_row_node(&self) -> Option<NodeId> {
+        self.mounted
+            .iter()
+            .find(|row| Some(&row.key) == self.focused_key.as_ref() && row.widget.is_focusable())
+            .and_then(|row| row.node)
     }
 
     /// Follow the list's end, as a transcript does: it opens at its last row, and while it
@@ -1551,7 +1585,7 @@ impl<M: ListModel> VirtualList<M> {
             .flatten()
     }
 
-    fn reorder_candidate(&self, cursor: Point) -> Option<DropCandidate<M::Key>> {
+    fn reorder_candidate(&mut self, cursor: Point) -> Option<DropCandidate<M::Key>> {
         if self.model.is_empty() || self.rect.height() <= 0.0 {
             return None;
         }
@@ -1561,6 +1595,12 @@ impl<M: ListModel> VirtualList<M> {
             return None;
         }
         let key = self.model.key_at(index)?;
+        // A row that stands in a tree takes a drop into it, and the seam below an open branch
+        // at the row it holds ([`Self::tree_candidate`]).
+        if self.tree.is_some() {
+            let row = self.row_box(index)?;
+            return self.tree_candidate(index, &key, row, cursor);
+        }
         let top = self.viewport.item_view_top(index)?;
         let height = self.viewport.item_height(index)?.max(1.0);
         let before = local_y < top + height / 2.0;
@@ -1577,92 +1617,6 @@ impl<M: ListModel> VirtualList<M> {
             preview: Rect::new(self.rect.x0, y - 1.0, self.rect.x1, y + 1.0),
             can_hover_expand: false,
         })
-    }
-
-    fn update_reorder_pointer(&mut self, cursor: Point, now: Instant) {
-        let candidate = self.reorder_candidate(cursor);
-        let model = &self.model;
-        let validator = &mut self.reorder_validator;
-        self.reorder
-            .update(cursor, candidate, now, |source, target| {
-                validator
-                    .as_mut()
-                    .is_some_and(|validate| validate(model, source, target))
-            });
-    }
-
-    /// The direction a reorder chord moves the focused row, up being
-    /// `true`, when this list reorders and `key` with `modifiers` is one.
-    fn reorder_chord(&self, key: &Key, modifiers: winit::keyboard::ModifiersState) -> Option<bool> {
-        if self.reorder_validator.is_none() || self.reorder_commit.is_none() {
-            return None;
-        }
-        let chord = modifiers.control_key() != modifiers.alt_key()
-            && !modifiers.shift_key()
-            && !modifiers.super_key();
-        match key {
-            Key::Named(NamedKey::ArrowUp) if chord => Some(true),
-            Key::Named(NamedKey::ArrowDown) if chord => Some(false),
-            _ => None,
-        }
-    }
-
-    /// Move the focused row past its neighbour above or below, as a drop
-    /// there would, keeping it focused. Whether it moved: a move the list
-    /// refuses, or one past either end, moves nothing.
-    fn move_focused(&mut self, up: bool) -> bool {
-        let Some(source) = self.focused_row_key() else {
-            return false;
-        };
-        let Some(index) = self.model.index_of(&source) else {
-            return false;
-        };
-        let neighbour = if up {
-            index.checked_sub(1)
-        } else {
-            index.checked_add(1)
-        };
-        let Some(neighbour) = neighbour.and_then(|at| self.model.key_at(at)) else {
-            return false;
-        };
-        let target = DropTarget::new(
-            neighbour,
-            if up {
-                DropPlacement::Before
-            } else {
-                DropPlacement::After
-            },
-        );
-        let model = &self.model;
-        let accepted = self
-            .reorder_validator
-            .as_mut()
-            .is_some_and(|validate| validate(model, &source, &target));
-        if !accepted
-            || !self.commit_reorder(ReorderDrop {
-                source: source.clone(),
-                target,
-            })
-        {
-            return false;
-        }
-        if let Some(at) = self.model.index_of(&source) {
-            self.scroll_to_index(at);
-        }
-        self.focus_row(source);
-        true
-    }
-
-    fn commit_reorder(&mut self, dropped: ReorderDrop<M::Key>) -> bool {
-        let anchor = self.capture_anchor();
-        let changed = self
-            .reorder_commit
-            .as_mut()
-            .is_some_and(|commit| commit(&mut self.model, dropped));
-        if changed {
-            self.reconcile_model(anchor.as_ref());
-        }
-        changed
     }
 
     fn apply_selection(&mut self, key: M::Key, toggle: bool, extend: bool) {
@@ -1772,6 +1726,20 @@ impl<M: ListModel> VirtualList<M> {
                     }
                     ready
                 })
+            }
+            // A row renamed in place, as an outliner does.
+            Key::Named(NamedKey::F2) if self.on_rename.is_some() => self
+                .focused_row_key()
+                .is_some_and(|key| self.begin_rename(&key)),
+            // The host decides what deleting a row means; the list removes nothing itself.
+            Key::Named(NamedKey::Delete) if self.on_delete.is_some() => {
+                let Some(key) = self.focused_row_key() else {
+                    return false;
+                };
+                if let Some(callback) = &mut self.on_delete {
+                    callback(key);
+                }
+                true
             }
             _ if self.multi_select && super::rows::is_select_all(key, toggle) => {
                 self.selection.select_all();
@@ -2001,6 +1969,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         if self.reorder.is_active() {
             let motion = self.reorder.tick(self.rect, elapsed, now);
+            // A pointer dwelling on a folded branch shows what it holds, where a drop into it
+            // will land.
+            if let Some(key) = motion.hover_expand {
+                changed |= self.unfold_for_drop(&key);
+            }
             if motion.scroll_delta != 0.0 && self.scroll_by(motion.scroll_delta) {
                 changed = true;
                 if let Some(cursor) = self.last_cursor {
@@ -2376,6 +2349,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         // The headings over the groups, over the rows they hold.
         self.draw_bands(scene, transform, text_renderer, theme);
+        // A row renamed in place: the field over its label, kept on the row as it moves.
+        self.place_rename();
+        if let Some(field) = self.rename.as_mut() {
+            field
+                .input
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
         if let Some(preview) = self.reorder.preview() {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -2433,6 +2413,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         if self.handle_scrollbar_event(event, ctx.scale_factor) {
             *ctx.handled = true;
+            return;
+        }
+        // An open rename field takes the keys typed into it; a press outside it commits and
+        // falls through to the row.
+        if self.route_rename(event, ctx) {
             return;
         }
         // A press on a group's heading is the heading's, before the row under it acts: it
@@ -2617,6 +2602,19 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     // The menu it opens takes the keyboard while it is open.
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
+                } else if let Some(movement) =
+                    self.tree_move_chord(&event.logical_key, ctx.modifiers.state())
+                {
+                    // A tree move the hierarchy has no room for leaves the key alone (a `Tab`
+                    // steps the focus on), and one that moves keeps the keyboard on the row.
+                    let moved = self.move_focused_step(movement);
+                    *ctx.handled = moved;
+                    if moved
+                        && self.is_focused
+                        && let Some(node) = self.focused_row_node()
+                    {
+                        *ctx.focus_target = Some(node);
+                    }
                 } else if let Some(up) =
                     self.reorder_chord(&event.logical_key, ctx.modifiers.state())
                 {
@@ -2627,18 +2625,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     // A row that takes the keyboard holds it from here, so the
                     // focus stays on that row when whoever owns the order
                     // rebuilds the list.
-                    let moved = self.move_focused(up);
+                    let moved = if self.tree.is_some() {
+                        self.move_focused_step(if up { TreeMove::Up } else { TreeMove::Down })
+                    } else {
+                        self.move_focused(up)
+                    };
                     *ctx.handled = true;
                     if moved
                         && self.is_focused
-                        && let Some(node) = self
-                            .mounted
-                            .iter()
-                            .find(|row| {
-                                Some(&row.key) == self.focused_key.as_ref()
-                                    && row.widget.is_focusable()
-                            })
-                            .and_then(|row| row.node)
+                        && let Some(node) = self.focused_row_node()
                     {
                         *ctx.focus_target = Some(node);
                     }
@@ -2723,6 +2718,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        // Focus leaving the list ends an inline rename, keeping the edit.
+        if !focused && self.rename.is_some() {
+            self.commit_rename();
+        }
         self.is_focused = focused;
     }
 
@@ -2778,6 +2777,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             || self.arrivals.is_moving(now)
             || self.reorder.is_active()
             || self.model.needs_poll()
+            || self.rename_animating()
             || self
                 .mounted
                 .iter()
@@ -2858,6 +2858,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .momentum
             .give_needs_frame(crate::motion::frame_now())
             || self.arrivals.needs_redraw(crate::motion::frame_now())
+            || self.rename_needs_redraw()
             || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
@@ -2869,6 +2870,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // Not drawn this frame, what the screen shows where the list lies
         // is not known to be its rows: the next scroll repaints it.
         self.shown.present();
+        if self.rename.is_some() {
+            self.mark_rename_drawn();
+        }
         for row in &mut self.mounted {
             row.widget.mark_drawn();
         }

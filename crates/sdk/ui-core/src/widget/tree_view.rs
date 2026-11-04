@@ -91,8 +91,8 @@ mod reporting_tests;
 #[cfg(test)]
 mod tests;
 
+pub use crate::widget::virtual_list::TreeMove;
 pub use affordances::{TreeHeadingAction, TreeRowAction};
-pub use editing::TreeMove;
 pub use erased::{AnyTreeModel, DynTreeModel, TreeView};
 pub(crate) use nav::{NavItemSpec, NavPresentation, NavRowSpec, NavStatus};
 
