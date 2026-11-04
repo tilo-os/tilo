@@ -255,21 +255,35 @@ enum HeadlessPanel {
     Millimetres((u32, u32)),
 }
 
-/// The command line `ours` parsed, or `None` when it names a backend there
-/// is not.
+/// The argument `flag` names on `ours`.
 #[cfg(target_os = "linux")]
-fn command_line(ours: &[String]) -> Option<CommandLine> {
-    let value = |flag: &str| {
-        ours.iter()
-            .position(|arg| arg == flag)
-            .and_then(|index| ours.get(index.saturating_add(1)))
-    };
-    let name = value("--backend").map_or("drm", String::as_str);
+fn value<'a>(ours: &'a [String], flag: &str) -> Option<&'a str> {
+    ours.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| ours.get(index.saturating_add(1)))
+        .map(String::as_str)
+}
+
+/// The output `ours` asks for: its backend, the panel it draws, and whether
+/// the tilolang shell runs.
+#[cfg(target_os = "linux")]
+struct Output {
+    backend: Backend,
+    /// The panel's size across and down, in logical pixels.
+    size: (u16, u16),
+    /// The density a headless output draws at.
+    headless: HeadlessPanel,
+    shell: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn parse_output(ours: &[String]) -> Option<Output> {
+    let name = value(ours, "--backend").unwrap_or("drm");
     let Some(backend) = Backend::named(name) else {
         eprintln!("tilo-session: unknown backend {name} (drm, headless, nested)");
         return None;
     };
-    let shell = match value("--shell").map(String::as_str) {
+    let shell = match value(ours, "--shell") {
         None => false,
         Some("screen") => true,
         Some(other) => {
@@ -277,14 +291,14 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
             return None;
         }
     };
-    let size: (u16, u16) = value("--size")
+    let size: (u16, u16) = value(ours, "--size")
         .and_then(|size| size.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
     // A headless output's density, as DRM takes its own from the connector:
     // a scale named outright, or the panel's physical size, from which the
     // scale is derived. Without either it draws at 1.
-    let headless = match (value("--scale"), value("--panel-mm")) {
+    let headless = match (value(ours, "--scale"), value(ours, "--panel-mm")) {
         (Some(scale), _) => match scale.parse::<f64>() {
             Ok(scale) if scale.is_finite() && scale > 0.0 => HeadlessPanel::Scale(scale),
             _ => {
@@ -292,59 +306,96 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
                 return None;
             }
         },
-        (None, Some(mm)) => match mm.split_once('x') {
-            Some((w, h)) => match (w.parse::<u32>(), h.parse::<u32>()) {
-                (Ok(w), Ok(h)) if w > 0 && h > 0 => HeadlessPanel::Millimetres((w, h)),
-                _ => {
-                    eprintln!("tilo-session: --panel-mm takes WxH in whole millimetres");
-                    return None;
-                }
-            },
-            None => {
+        (None, Some(mm)) => {
+            let Some(size) = millimetres(mm) else {
                 eprintln!("tilo-session: --panel-mm takes WxH in whole millimetres");
                 return None;
-            }
-        },
+            };
+            HeadlessPanel::Millimetres(size)
+        }
         (None, None) => HeadlessPanel::Scale(1.0),
     };
     if !matches!(backend, Backend::Headless) && headless != HeadlessPanel::Scale(1.0) {
         eprintln!("tilo-session: --scale and --panel-mm are for a headless session");
     }
-    let bus = |flag: &str| match value(flag).map(String::as_str) {
+    Some(Output {
+        backend,
+        size,
+        headless,
+        shell,
+    })
+}
+
+/// The panel's physical size `--panel-mm` names: across and down, in whole
+/// millimetres.
+#[cfg(target_os = "linux")]
+fn millimetres(mm: &str) -> Option<(u32, u32)> {
+    let (across, down) = mm.split_once('x')?;
+    match (across.parse::<u32>(), down.parse::<u32>()) {
+        (Ok(across), Ok(down)) if across > 0 && down > 0 => Some((across, down)),
+        _ => None,
+    }
+}
+
+/// The bus `flag` names, for the desktop this session runs in.
+#[cfg(target_os = "linux")]
+fn bus(ours: &[String], flag: &str) -> Bus {
+    match value(ours, flag) {
         None => Bus::Default,
         Some("none") => Bus::None,
         Some(address) => Bus::Address(address.to_owned()),
-    };
-    // What a session in a window of another desktop reaches of it: no bus of
-    // it unless a flag names one, and no displays exported to it.
-    let reach = Reach::new(
+    }
+}
+
+/// What a session in a window of another desktop reaches of it: no bus of it
+/// unless a flag names one, and no displays exported to it.
+#[cfg(target_os = "linux")]
+fn reach(ours: &[String], backend: Backend) -> Reach {
+    Reach::new(
         backend,
         Buses {
-            session: bus("--session-bus"),
-            system: bus("--system-bus"),
+            session: bus(ours, "--session-bus"),
+            system: bus(ours, "--system-bus"),
         },
-    );
-    let admit_repl = ours
-        .iter()
+    )
+}
+
+/// The programs the person admits to act as them at the agent door
+/// (`--admit-repl PATH`, as often as they name one).
+#[cfg(target_os = "linux")]
+fn admit_repl(ours: &[String]) -> Vec<std::path::PathBuf> {
+    ours.iter()
         .zip(ours.iter().skip(1))
         .filter(|(flag, _)| *flag == "--admit-repl")
         .map(|(_, program)| std::path::PathBuf::from(program))
-        .collect();
-    let named = value("--test-control").map(String::as_str);
-    let test_control =
+        .collect()
+}
+
+/// Where the development test-control socket opens, when the command line
+/// named one and this build opens it.
+#[cfg(target_os = "linux")]
+fn test_control(ours: &[String]) -> Option<std::path::PathBuf> {
+    let named = value(ours, "--test-control");
+    let control =
         tilo_session::test_control::path(tilo_session::test_control::OPENED_BY_THIS_BUILD, named);
-    if named.is_some() && test_control.is_none() {
+    if named.is_some() && control.is_none() {
         eprintln!("tilo-session: --test-control is honoured by development builds only");
     }
+    control
+}
+
+/// Where the owner's control socket opens, when this session serves one.
+#[cfg(target_os = "linux")]
+fn admin_control(ours: &[String], backend: Backend) -> Option<std::path::PathBuf> {
     // The owner's door: the seat's own for a session that owns the machine, the
     // headless session's own when it was asked to open one, and nothing for a
     // session in another desktop's window.
-    let named_admin = ours
+    let named = ours
         .iter()
         .position(|arg| arg == "--admin-control")
         .and_then(|index| ours.get(index.saturating_add(1)))
         .map(std::path::PathBuf::from);
-    let named_admin = match named_admin {
+    let named = match named {
         Some(path) if !path.is_absolute() => {
             eprintln!("tilo-session: --admin-control takes an absolute path");
             None
@@ -365,7 +416,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
     // device at its first login. A path named on the command line is the person's own say-so,
     // and a session in another desktop's window, or one nobody asked for an owner's door,
     // serves none.
-    let owned = match named_admin {
+    let owned = match named {
         Some(_) => this_machine,
         None if !this_machine => false,
         None => match tilo_session::test_control::owner_decision(
@@ -379,23 +430,35 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
             }
         },
     };
-    let admin_control =
-        tilo_session::test_control::admin_path(owned, backend == Backend::Headless, named_admin);
-    let asked_seed = ours.iter().any(|arg| arg == "--seed-apps");
-    let seed_apps = asked_seed && tilo_session::seeded_apps::SEEDED_BY_THIS_BUILD;
-    if asked_seed && !seed_apps {
+    tilo_session::test_control::admin_path(owned, backend == Backend::Headless, named)
+}
+
+/// Whether the session publishes the seeded tilolang apps.
+#[cfg(target_os = "linux")]
+fn seed_apps(ours: &[String]) -> bool {
+    let asked = ours.iter().any(|arg| arg == "--seed-apps");
+    let seed = asked && tilo_session::seeded_apps::SEEDED_BY_THIS_BUILD;
+    if asked && !seed {
         eprintln!("tilo-session: --seed-apps is honoured by development builds only");
     }
+    seed
+}
+
+/// The command line `ours` parsed, or `None` when it names a backend there
+/// is not.
+#[cfg(target_os = "linux")]
+fn command_line(ours: &[String]) -> Option<CommandLine> {
+    let output = parse_output(ours)?;
     Some(CommandLine {
-        backend,
-        size,
-        headless,
-        reach,
-        shell,
-        admit_repl,
-        test_control,
-        admin_control,
-        seed_apps,
+        backend: output.backend,
+        size: output.size,
+        headless: output.headless,
+        shell: output.shell,
+        reach: reach(ours, output.backend),
+        admit_repl: admit_repl(ours),
+        test_control: test_control(ours),
+        admin_control: admin_control(ours, output.backend),
+        seed_apps: seed_apps(ours),
     })
 }
 
