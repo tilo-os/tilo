@@ -2632,6 +2632,74 @@ mod tests {
         secure_folder_round_trip_stays_anchored_and_does_not_replace_an_existing_folder();
         extraction_rejects_parent_traversal();
     }
+
+    #[test]
+    fn a_received_name_never_shows_bytes_that_are_not_whole() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("whole.bin");
+        let bytes: Vec<u8> = (0..4 * 1024 * 1024_u32)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        fs::write(&source, &bytes).unwrap();
+        let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
+        let entry = sender.stage(&source, "peer".into(), 10).unwrap();
+        let payload = fs::read(sender.object_path(entry.id)).unwrap();
+
+        let downloads = tmp.path().join("downloads");
+        ensure_private_dir(&downloads).unwrap();
+        let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
+        receiver
+            .begin_incoming(
+                IncomingManifest {
+                    id: entry.id,
+                    source: "peer".into(),
+                    request_id: [7; 16],
+                    name: entry.name.clone(),
+                    kind: entry.kind,
+                    total_bytes: entry.total_bytes,
+                    content_hash: entry.content_hash,
+                },
+                10,
+            )
+            .unwrap();
+        for (index, chunk) in payload.chunks(256 * 1024).enumerate() {
+            receiver
+                .append(entry.id, (index * 256 * 1024) as u64, chunk)
+                .unwrap();
+        }
+
+        // A person's Files polls the download folder while the receive goes
+        // on; whatever it can already name must be the whole file.
+        let polled_folder = downloads.clone();
+        let name = entry.name.clone();
+        let expected = u64::try_from(payload.len()).unwrap();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&finished);
+        let watcher = std::thread::spawn(move || {
+            let mut partial = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                match fs::metadata(polled_folder.join(&name)) {
+                    Ok(metadata) if metadata.len() == expected => break,
+                    Ok(metadata) => partial.push(metadata.len()),
+                    Err(_) => {}
+                }
+                if std::time::Instant::now() >= deadline {
+                    partial.push(u64::MAX);
+                    break;
+                }
+            }
+            partial
+        });
+        let installed = receiver.finish(entry.id, &downloads).unwrap();
+        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        let partial = watcher.join().unwrap();
+        assert!(
+            partial.is_empty(),
+            "a received name showed {partial:?} bytes, not {expected}, before it was whole"
+        );
+        assert_eq!(fs::read(installed).unwrap(), payload);
+    }
 }
 
 #[cfg(target_os = "macos")]
