@@ -194,6 +194,15 @@ impl View<'_> {
         let Some(conj) = conjuncts(pred)? else {
             return Ok(Listing::default());
         };
+        // A named filter keeps a column holding whether its predicate does: the column answers
+        // the predicate whole, so its run is read rather than a conjunct of it, which names
+        // every item that conjunct holds of and leaves the rest to be checked one by one.
+        let id = |f: &FieldRead| f.spec.id.clone();
+        let conj: Vec<&Pred> =
+            match pred.filter(|whole| columns::named(schema, whole, &id).is_some()) {
+                Some(whole) => vec![whole],
+                None => conj,
+            };
         let member = member_list(resource, field);
         let read: Vec<String> = conj
             .iter()

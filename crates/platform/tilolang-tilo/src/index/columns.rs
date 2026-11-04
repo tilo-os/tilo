@@ -299,6 +299,27 @@ fn flip(op: CmpOp) -> CmpOp {
     }
 }
 
+/// How a named filter's column answers `pred` as a whole, when `pred` is that filter's predicate
+/// (or its negation): the run of the items it holds (or of those it does not). The column holds
+/// whether the predicate does, so it answers every conjunct of it at once, where a conjunct read
+/// on its own is a wider run that leaves the rest to be checked item by item. `None` when the
+/// predicate is no named filter's.
+#[must_use]
+pub fn named<F>(schema: &TypeSchema, pred: &Pred<F>, id: &dyn Fn(&F) -> String) -> Option<Access> {
+    for column in schema.columns.iter().filter(|c| c.pred.is_some()) {
+        let mapped = pred.resolve(&mut |f: &F| Some(id(f)));
+        if mapped.as_ref() == column.pred.as_ref() {
+            return Some(run(column, one_value("1"), true));
+        }
+        if let Some(Pred::Not(inner)) = &mapped
+            && Some(&**inner) == column.pred.as_ref()
+        {
+            return Some(run(column, one_value("0"), true));
+        }
+    }
+    None
+}
+
 /// How `pred` is answered from the columns of `schema` (`id` naming the field of each of its
 /// field operands), when one answers it: the runs of one column for a comparison, membership,
 /// presence or pattern; several for one of several. `None` when it is read item by item.
@@ -311,16 +332,8 @@ pub fn access<F>(
     whole_type: bool,
 ) -> Option<Vec<Access>> {
     // A named filter: its column.
-    for column in schema.columns.iter().filter(|c| c.pred.is_some()) {
-        let mapped = pred.resolve(&mut |f: &F| Some(id(f)));
-        if mapped.as_ref() == column.pred.as_ref() {
-            return Some(vec![run(column, one_value("1"), true)]);
-        }
-        if let Some(Pred::Not(inner)) = &mapped
-            && Some(&**inner) == column.pred.as_ref()
-        {
-            return Some(vec![run(column, one_value("0"), true)]);
-        }
+    if let Some(named) = named(schema, pred, id) {
+        return Some(vec![named]);
     }
     let column_of = |f: &F| schema.column_of(&id(f));
     match pred {
