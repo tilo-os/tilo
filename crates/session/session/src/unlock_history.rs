@@ -126,14 +126,15 @@ impl UnlockHistory {
     /// Write what the person's fabric holds now into the record: every answer
     /// that validates against the device that published it and is not in the
     /// document yet, as one change by the device that answered and at the
-    /// time it did.
-    pub(crate) fn absorb(&self) {
+    /// time it did. Whether the record holds an answer it did not before.
+    pub(crate) fn absorb(&self) -> bool {
         if self.record.is_none() {
-            return;
+            return false;
         }
         let Some(link) = self.link.borrow().clone() else {
-            return;
+            return false;
         };
+        let mut wrote = false;
         let fabric = link.device_fabric();
         for (owner, snapshot) in fabric.snapshots() {
             for answer in &snapshot.unlock.decisions {
@@ -167,8 +168,10 @@ impl UnlockHistory {
                 }
                 drop(doc);
                 self.kept.borrow_mut().insert(key);
+                wrote = true;
             }
         }
+        wrote
     }
 
     /// The person's record, for a reader that lists what happened: `None`

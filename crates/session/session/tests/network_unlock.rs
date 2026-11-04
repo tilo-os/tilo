@@ -581,7 +581,7 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
         )
         .expect("the phone follows its history");
     // The answer reaches the phone's fabric, as it reaches every device of
-    // the person's; the window's next read draws the frame that lists it.
+    // the person's.
     devices.carry(|devices| {
         devices.phone.fabric().is_some_and(|link| {
             link.device_fabric()
@@ -590,14 +590,8 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
                 .any(|snapshot| !snapshot.unlock.decisions.is_empty())
         })
     });
-    requests
-        .follow(
-            &caller,
-            tilo_actions::InvocationId::new(),
-            wire::FEED,
-            feed_arguments(&wire::FeedQuery::default()),
-        )
-        .expect("the phone reads its history again");
+    // The history the phone already follows lists it with nothing asked and
+    // nothing touched: the answer is a change of what it reads.
     devices.carry(|_| {
         served::<wire::Feed>(&requests, &feed_follow).is_some_and(|feed| !feed.entries.is_empty())
     });

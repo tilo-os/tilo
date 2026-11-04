@@ -585,7 +585,9 @@ impl Shared {
     }
 
     /// Take up what the workspace's history wrote back and what the person
-    /// opened from it, and tell the apps following it what moved.
+    /// opened from it, and tell the apps following it what moved. A window
+    /// that asked, or a change of what the history reads, asks the desk for
+    /// the frame that serves it.
     fn serve_activity(&self) {
         if let Some(tree) = self.activity.take_restored() {
             self.handle.replace_tree(tree);
@@ -600,8 +602,8 @@ impl Shared {
         // desk draws a frame to read them.
         let described = self.activity.describe();
         if self.activity.take_woken() || described {
-            // A window asked the activity model something: the desk draws a
-            // frame, which serves it.
+            // A window asked the activity model something, or what the
+            // history reads moved: the desk draws a frame, which serves it.
             self.desktop.with_widgets(WidgetHost::relayout);
         }
     }

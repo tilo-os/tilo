@@ -11,9 +11,12 @@
 //!
 //! What the workspace holds is read away from the loop ([`Watched`]): the
 //! records belong to apps this process does not own, and one of them being
-//! slow to read must not hold up a frame. What this device has seen of a
-//! workspace is its own, kept in one file ([`HistoryMaps`]): only the person
-//! here marks it, and it never reaches a shared record.
+//! slow to read must not hold up a frame. A change of what the history reads
+//! — a record an app wrote, an answer another device made — asks the desk
+//! for one frame, which is how an open history lists it with nobody asking.
+//! What this device has seen of a workspace is its own, kept in one file
+//! ([`HistoryMaps`]): only the person here marks it, and it never reaches a
+//! shared record.
 //!
 //! The desk's layout is this session's to write, so a change the person
 //! undoes or restores reaches the desk itself: the model hands the workspace
@@ -103,8 +106,8 @@ struct Inner {
     /// The windows' end of what they ask of the activity, and what they
     /// follow.
     requests: ActivityRequests,
-    /// Raised when a window asked or followed something: the desk draws a
-    /// frame to take it.
+    /// Raised when a window asked or followed something, or when what the
+    /// history reads moved: the desk draws a frame to take it.
     woken: Arc<AtomicBool>,
     /// The broker's end of the same activity, once this session serves the
     /// apps it runs.
@@ -136,6 +139,17 @@ struct Inner {
 /// How often a session with nothing new on its desk looks again for a model
 /// the person may have configured meanwhile.
 const LOOK_FOR_MODEL: Duration = Duration::from_secs(30);
+
+/// Something the history reads moved — a record an app wrote, an answer
+/// another of the person's devices made: the desk draws a frame to read it,
+/// as it does for a window that asked, and the session's loop wakes to serve
+/// it. Raised by a change alone, never by a pass or a clock.
+fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
+    woken.store(true, Ordering::Release);
+    if let Some(wake) = wake {
+        wake();
+    }
+}
 
 impl Activity {
     /// This session's activity: the desk's document under `state` (kept in
@@ -257,9 +271,13 @@ impl Activity {
 
     /// Write what the person's fabric holds now into their own record,
     /// whether or not a window shows the history: an answer stands for
-    /// minutes, so it is written while it is there to be read.
+    /// minutes, so it is written while it is there to be read. An answer the
+    /// record did not hold yet is a change of the history, and asks the desk
+    /// for the frame that lists it.
     pub(crate) fn keep_unlock(&self) {
-        self.0.unlock.absorb();
+        if self.0.unlock.absorb() {
+            ask_for_frame(&self.0.woken, self.0.wake.as_ref());
+        }
     }
 
     /// Serve what the activity holds on this pass: tell the apps following it
@@ -360,8 +378,8 @@ impl Activity {
         std::mem::take(&mut *self.0.openings.borrow_mut())
     }
 
-    /// Whether a window asked the model something since this was last
-    /// taken: the desk draws a frame to answer it.
+    /// Whether a window asked the model something, or what the history reads
+    /// moved, since this was last taken: the desk draws a frame to take it.
     pub(crate) fn take_woken(&self) -> bool {
         self.0.woken.swap(false, Ordering::AcqRel)
     }
@@ -461,8 +479,13 @@ impl Activity {
         let read = move || read_workspace_records(&store, &by_workspace);
         let watch = Watched::start("tilo-activity-records", directories, read).ok()?;
         let moved = Arc::clone(&self.0.records_moved);
+        // The record was read again because it changed: the model reading it
+        // is told, so an open history lists the change with no one asking.
+        let woken = Arc::clone(&self.0.woken);
+        let wake = self.0.wake.clone();
         watch.on_change(move || {
             moved.fetch_add(1, Ordering::AcqRel);
+            ask_for_frame(&woken, wake.as_ref());
         });
         let watch = Rc::new(watch);
         self.0.records.borrow_mut().insert(key, Rc::clone(&watch));
@@ -548,7 +571,8 @@ impl HistorySource for Activity {
     fn revision(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
         // What the fabric holds now is written before the record is read: a
-        // pass that hears an answer is the pass that lists it.
+        // pass that hears an answer is the pass that lists it. The desk is
+        // reading the history as it stands, so this write needs no frame.
         self.0.unlock.absorb();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.0.desk.heads().hash(&mut hasher);
@@ -1040,6 +1064,27 @@ mod tests {
         assert!(
             feed.mutations,
             "the desk's own layout is the person's to undo"
+        );
+    }
+
+    /// Nothing the history reads moved, so no pass asks the desk for a
+    /// frame: the model is read again when a change says so, never on a
+    /// clock and never because a frame was drawn.
+    #[test]
+    fn a_pass_with_nothing_new_asks_for_no_frame() {
+        let mut desk = Desk::new();
+        desk.open_history();
+        let _following = desk.follow();
+        assert!(
+            desk.activity.take_woken(),
+            "the window asking for its history asks for the frame that serves it"
+        );
+        for _ in 0..3 {
+            desk.frame();
+        }
+        assert!(
+            !desk.activity.take_woken(),
+            "nothing moved, so nothing asks for a frame"
         );
     }
 
