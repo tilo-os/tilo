@@ -222,6 +222,19 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       && jsign --help >/dev/null; \
     fi
 
+# cargo 1.97.1 with rust-lang/cargo#17412 (https://github.com/rust-lang/cargo/pull/17412):
+# 1.97.1 builds and holds every unit's SBOM even when build.sbom is unset, about
+# 1.2 GB of the test family's 1.6 GB cargo driver while t's wrapper queues its
+# compiles. Only bin/cargo changes; rustc and the rest stay the toolchain's
+# (os/external-assets/cargo/README.md). Delete when rust-toolchain.toml moves to
+# >= 1.100.
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-cargo.sh,target=/tmp/install-cargo.sh,ro \
+    --mount=type=bind,source=os/external-assets/cargo,target=/tmp/cargo-patches,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    bash /tmp/install-cargo.sh /tilo-assets /tmp/tilo-assets.tsv /tmp/cargo-patches
+
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
 COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env

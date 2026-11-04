@@ -17,6 +17,7 @@ context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.ts
   tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh
   tools/ci/install-xwayland-satellite.sh os/external-assets/xwayland-satellite/*.patch
   tools/ci/install-wine.sh os/external-assets/wine/*.patch
+  tools/ci/install-cargo.sh os/external-assets/cargo/*.patch
   tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh)
 
 case ${1:-} in
@@ -36,6 +37,7 @@ case ${1:-} in
       "wasm-bindgen-0.2.108-$arch-unknown-linux-musl.tar.gz" \
       "cargo-xwin-v0.23.1.$arch-unknown-linux-musl.tar.gz" \
       "mold-2.40.4-$arch-linux.tar.gz" "$pdfium" "$(bash tools/ci/install-xwayland-satellite.sh --asset-name)" \
+      "$(bash tools/ci/install-cargo.sh --asset-name)" \
       "${extra[@]}")
     context=$scratch/ci-builder-context
     rm -rf "$context"
@@ -54,6 +56,7 @@ case ${1:-} in
     # here too, or a change to it would leave the image's date where it was.
     printf '%s\n' tools/ci/publish/ci-builder.sh os/Containerfile.builder rust-toolchain.toml \
       os/dev/cache-github-assets.sh os/external-assets/xwayland-satellite os/external-assets/wine \
+      os/external-assets/cargo \
       "${context_files[@]}" | sort -u
     ;;
   *) die 'usage: ci-builder.sh build ARCH OUT | ci-builder.sh inputs' ;;
