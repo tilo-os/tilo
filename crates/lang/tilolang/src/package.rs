@@ -509,6 +509,7 @@ fn build_meta(
                             doc: v.doc.clone(),
                             label: v.label.clone(),
                             icon: v.icon.clone(),
+                            tone: v.tone.clone(),
                             fields: v.fields.iter().map(|f| field_meta(f, app)).collect(),
                         })
                         .collect(),

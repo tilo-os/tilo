@@ -959,6 +959,22 @@
           }
         },
         {
+          "name": "tone",
+          "doc": "The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill is washed in that tone. `Neutral` for a chip that only names something.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        },
+        {
           "name": "selected",
           "doc": "Whether the filter it stands for is on; without it the chip is no filter.",
           "type": {
@@ -2345,6 +2361,22 @@
           }
         },
         {
+          "name": "meta_tone",
+          "doc": "The tone the trailing fact reads in, where the item it states has one: a day gone by is overdue. The UI host reads it off the day itself, as the one presenter gives it.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        },
+        {
           "name": "value",
           "doc": "The item's value on the trailing edge, as a setting shows it.",
           "type": {
@@ -2360,9 +2392,25 @@
         },
         {
           "name": "mark",
-          "doc": "A mark after the title: pinned, starred.",
+          "doc": "A mark after the title: pinned, starred, an item's priority.",
           "type": {
             "option": "icon"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The tone the mark and the row's checkbox ring read in: the item's priority, a theme role rather than a colour. `Neutral` draws them as the row's quiet ink.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
           }
         },
         {

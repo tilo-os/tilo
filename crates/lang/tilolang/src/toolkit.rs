@@ -41,6 +41,7 @@ pub fn enums() -> Vec<crate::resolve::EnumInfo> {
         doc: doc.to_string(),
         label: crate::resolve::variant_label(name, doc),
         icon: None,
+        tone: None,
         fields,
     };
     let mut choices: Vec<(String, Vec<String>)> = Vec::new();

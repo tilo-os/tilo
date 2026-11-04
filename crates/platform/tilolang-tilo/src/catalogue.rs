@@ -381,6 +381,7 @@ impl Reader<'_> {
                         doc: String::new(),
                         label: case.label.clone(),
                         icon: None,
+                        tone: None,
                         fields: case
                             .fields
                             .iter()

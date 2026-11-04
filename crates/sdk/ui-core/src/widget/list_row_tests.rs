@@ -391,6 +391,38 @@ fn toned_meta_spans_stay_legible_on_the_ground_and_the_lift() {
 }
 
 #[test]
+fn a_priority_tones_the_mark_and_the_trailing_fact() {
+    let props = ListRowProps {
+        key: "plants".to_owned(),
+        title: "Water the plants".to_owned(),
+        mark: Some(crate::icons::Icon::Flag),
+        tone: Tone::Danger,
+        meta: Some("Jul 2".to_owned()),
+        meta_tone: Tone::Warning,
+        ..ListRowProps::default()
+    };
+    let row = <ListRow as Described>::from_props("plants", props);
+    assert_eq!(row.mark, Some(crate::icons::Icon::Flag));
+    assert_eq!(row.mark_tone, Tone::Danger, "the mark and the box's ring");
+    assert_eq!(
+        row.meta_spans,
+        vec![("Jul 2".to_owned(), Tone::Warning)],
+        "the trailing fact reads in the tone it was given"
+    );
+    // A row no tone is given paints its mark as its quiet ink, and its fact plainly.
+    let props = ListRowProps {
+        key: "plain".to_owned(),
+        title: "Water the plants".to_owned(),
+        mark: Some(crate::icons::Icon::Flag),
+        meta: Some("Jul 2".to_owned()),
+        ..ListRowProps::default()
+    };
+    let row = <ListRow as Described>::from_props("plain", props);
+    assert_eq!(row.mark_tone, Tone::Neutral);
+    assert!(row.meta_spans.is_empty());
+}
+
+#[test]
 fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();

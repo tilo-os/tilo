@@ -501,6 +501,15 @@ impl Checker<'_> {
                 vec![Ex::local(p, Ty::View), Ex::local(node, Ty::View)],
                 Ty::Unit,
             )));
+            // A day's control picks the time of day it is due at too, where its type pairs one
+            // with it: the time picker stands right after it.
+            if let Some(time) = self.st.ui.paired.take() {
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiChild,
+                    vec![Ex::local(p, Ty::View), Ex::local(time, Ty::View)],
+                    Ty::Unit,
+                )));
+            }
         }
         node
     }

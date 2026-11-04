@@ -727,7 +727,7 @@ fn e097_lists_and_rows() {
     );
     expect(
         "E097",
-        &with_t("view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, mark: i.t)\n    }\n}"),
+        &with_t("view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, mark: i.n)\n    }\n}"),
     );
     ok(&with_t(
         "view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, secondary: i.t, meta: \"m\", badge: \"b\", value: i.n, icon: .pin, checkbox: i.b, mark: if i.b { .pin } else { .check })\n    }\n}",

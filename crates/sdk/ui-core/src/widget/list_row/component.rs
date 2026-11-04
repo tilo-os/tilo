@@ -5,6 +5,7 @@ use crate::icons::Icon;
 use crate::widget::{AvatarProps, Element};
 
 use super::{Leading, ListRow};
+use crate::widget::Tone;
 
 /// A row of a list: what an item is, in one line, with the start of its content under it and a
 /// quiet fact on its trailing edge. Pressing it activates it: a list opens what it shows.
@@ -28,12 +29,18 @@ pub struct ListRowProps {
     pub secondary: Option<String>,
     /// A quiet fact on the trailing edge: when it happened, how many.
     pub meta: Option<String>,
+    /// The tone the trailing fact reads in, where the item it states has one: a day gone by
+    /// is overdue. The UI host reads it off the day itself, as the one presenter gives it.
+    pub meta_tone: Tone,
     /// The item's value on the trailing edge, as a setting shows it.
     pub value: Option<String>,
     /// A short code in the leading column: a method, a kind.
     pub badge: Option<String>,
-    /// A mark after the title: pinned, starred.
+    /// A mark after the title: pinned, starred, an item's priority.
     pub mark: Option<Icon>,
+    /// The tone the mark and the row's checkbox ring read in: the item's priority, a theme
+    /// role rather than a colour. `Neutral` draws them as the row's quiet ink.
+    pub tone: Tone,
     /// A glyph in the leading column: what kind of item it is.
     pub icon: Option<Icon>,
     /// Whether the row is selected in its list.
@@ -77,9 +84,11 @@ impl ListRowProps {
             item: self.item.clone(),
             secondary: self.secondary.clone(),
             meta: self.meta.clone(),
+            meta_tone: self.meta_tone,
             value: self.value.clone(),
             badge: self.badge.clone(),
             mark: self.mark,
+            tone: self.tone,
             icon: self.icon,
             selected: self.selected,
             avatar_space: self.avatar_space,
@@ -171,9 +180,11 @@ impl ListRow {
             item: _,
             secondary,
             meta,
+            meta_tone,
             value,
             badge,
             mark,
+            tone,
             icon,
             selected,
             avatar_space,
@@ -190,8 +201,13 @@ impl ListRow {
         self.title = title;
         self.secondary = shown(secondary);
         self.meta = shown(meta);
+        self.meta_spans = match shown(self.meta.clone()) {
+            Some(text) if meta_tone != Tone::Neutral => vec![(text, meta_tone)],
+            _ => Vec::new(),
+        };
         self.value = shown(value).map(|value| (value, super::RowValue::Body));
         self.mark = mark;
+        self.mark_tone = tone;
         self.selected = selected;
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
         self.check_binding = None;

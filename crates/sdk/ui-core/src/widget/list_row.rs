@@ -371,6 +371,8 @@ pub struct ListRowFace<'a> {
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
     marks: [Option<RowMark>; MAX_MARKS],
+    /// The tone the row's own mark reads in: an item's priority, a status.
+    mark_tone: Tone,
     tags: &'a [(&'a str, ChipStyle)],
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
@@ -430,6 +432,7 @@ impl<'a> ListRowFace<'a> {
             meta_spans: &[],
             value: None,
             marks: [None; MAX_MARKS],
+            mark_tone: Tone::Neutral,
             tags: &[],
             count: None,
             leading: None,
@@ -563,6 +566,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
         self.push_mark(RowMark::Icon(icon));
+        self
+    }
+
+    /// The tone the row's mark reads in (an item's priority): a theme role,
+    /// never a colour.
+    #[must_use]
+    pub fn mark_tone(mut self, tone: Tone) -> Self {
+        self.mark_tone = tone;
         self
     }
 
@@ -1034,6 +1045,8 @@ pub struct ListRow {
     meta_spans: Vec<(String, Tone)>,
     value: Option<(String, RowValue)>,
     mark: Option<Icon>,
+    /// The tone the row's mark and its checkbox ring read in: an item's priority.
+    mark_tone: Tone,
     tags: Vec<(String, ChipStyle)>,
     count: Option<usize>,
     leading: Option<Leading>,
@@ -1131,6 +1144,7 @@ impl ListRow {
             meta_spans: Vec::new(),
             value: None,
             mark: None,
+            mark_tone: Tone::Neutral,
             tags: Vec::new(),
             count: None,
             leading: None,
@@ -1278,6 +1292,14 @@ impl ListRow {
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
         self.mark = Some(icon);
+        self
+    }
+
+    /// The tone the row's mark and its checkbox ring read in
+    /// ([`ListRowFace::mark_tone`]).
+    #[must_use]
+    pub fn mark_tone(mut self, tone: Tone) -> Self {
+        self.mark_tone = tone;
         self
     }
 
@@ -1985,7 +2007,7 @@ impl ListRow {
             };
         }
         if let Some(mark) = self.mark {
-            face = face.mark(mark);
+            face = face.mark(mark).mark_tone(self.mark_tone);
         }
         if let Some(count) = self.count {
             face = face.count(count);

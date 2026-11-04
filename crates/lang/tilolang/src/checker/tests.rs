@@ -237,6 +237,90 @@ fn a_type_with_a_row_view_lists_without_an_item_block() {
 }
 
 #[test]
+fn a_mark_and_a_chip_read_the_tone_their_cases_name() {
+    let (m, _) = lower(
+        "enum Priority {\n    low\n    high (icon: .flag, tone: .warning)\n    urgent (icon: .triangle_alert, tone: .danger)\n}\n\
+type Task {\n    title: Text (title)\n    priority: Priority = .low\n}\n\
+type Board {\n    tasks: Collection<Task>\n}\n\
+root Board\ndefault view board for Board\n\
+row view task_row for Task\n\
+view task_row(t: Task) {\n    row(t.title, mark: t.priority)\n}\n\
+view priority_chip(p: Priority) {\n    stack {\n        ui.Chip(p.label(), tone: p)\n    }\n}\n\
+view board(b: Board) {\n    list(b.tasks)\n}",
+    );
+    let row = ui_calls(func(&m, "task_row"));
+    assert_eq!(
+        row,
+        vec!["node ui.ListRow", "prop title", "prop mark", "prop tone"],
+        "the mark and its tone, off the case"
+    );
+    let tones = strings(func(&m, "task_row"));
+    for want in ["flag", "warning", "neutral"] {
+        assert!(tones.contains(&want.to_string()), "{want} in {tones:?}");
+    }
+    let chip = ui_calls(func(&m, "priority_chip"));
+    assert_eq!(
+        chip,
+        vec![
+            "node stack",
+            "node ui.Chip",
+            "prop label",
+            "prop tone",
+            "child"
+        ]
+    );
+    let tones = strings(func(&m, "priority_chip"));
+    for want in ["warning", "danger", "neutral"] {
+        assert!(tones.contains(&want.to_string()), "{want} in {tones:?}");
+    }
+    let wrong = diagnostics(
+        "enum Priority {\n    high\n}\ntype Task {\n    title: Text (title)\n    priority: Priority = .high\n}\nview task(t: Task) {\n    stack {\n        ui.Chip(t.title, tone: t.title)\n    }\n}",
+    );
+    assert!(wrong.iter().any(|d| d.code == "E065"), "{wrong:#?}");
+}
+
+#[test]
+fn a_day_on_a_row_reads_with_the_time_of_that_day() {
+    let (m, _) = lower(
+        "type Task {\n    title: Text (title)\n    due: Option<Date> = .none\n    at: Option<Time> (time of: due) = .none\n}\n\
+row view task_row for Task\n\
+view task_row(t: Task) {\n    row(t.title, meta: t.due)\n}",
+    );
+    let row = ui_calls(func(&m, "task_row"));
+    assert!(has(&row, "prop meta:time"), "{row:#?}");
+    assert!(
+        !has(&row, "prop meta"),
+        "the day and its time read as one fact: {row:#?}"
+    );
+}
+
+#[test]
+fn a_date_field_bound_to_a_days_date_offers_the_time_of_that_day() {
+    let (m, _) = lower(
+        "type Task {\n    due: Option<Date> = .none\n    at: Option<Time> (time of: due) = .none\n}\n\
+view task(t: Task) {\n    field(\"Due\") {\n        ui.DateField(bind: t.due, optional: true)\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "task"));
+    let day = calls
+        .iter()
+        .position(|c| c == "node ui.DateField")
+        .unwrap_or_else(|| panic!("the day's field in {calls:#?}"));
+    let time = calls
+        .iter()
+        .position(|c| c == "node ui.TimePicker")
+        .unwrap_or_else(|| panic!("the time of the day, after it: {calls:#?}"));
+    assert!(day < time, "the time follows the day: {calls:#?}");
+    assert_eq!(count(&calls, "bind"), 2, "the day and its time: {calls:#?}");
+    // A day the type pairs no time with is picked by its field alone.
+    let (m, _) = lower(
+        "type Task {\n    due: Option<Date> = .none\n}\n\
+view task(t: Task) {\n    field(\"Due\") {\n        ui.DateField(bind: t.due, optional: true)\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "task"));
+    assert!(!has(&calls, "node ui.TimePicker"), "{calls:#?}");
+}
+
+#[test]
 fn a_button_for_a_declared_action_takes_its_label_icon_and_role() {
     let (m, _) = lower(
         "type Draft {\n    text: Text\n}\n/// Send.\nprimary action send_draft(d: Draft) (icon: .send) {\n    d.text = \"\"\n}\nview draft_bar(d: Draft) {\n    stack {\n        input(bind: d.text)\n        button(send_draft(d))\n    }\n}",

@@ -374,7 +374,8 @@ impl Checker<'_> {
                     self.err("E022", value.span, format!("a list row takes one positional argument, its title; name the others: {ROW_ARGS_TEXT}"));
                     let _ = self.expr(value, None);
                 }
-                Some(name @ ("secondary" | "meta" | "badge")) => {
+                Some("meta") => self.meta_arg(&node, value),
+                Some(name @ ("secondary" | "badge")) => {
                     self.text_arg(&node, name, value);
                 }
                 Some("value") => {
@@ -390,12 +391,11 @@ impl Checker<'_> {
                         );
                     }
                 }
-                Some(name @ ("mark" | "icon")) => {
-                    if name == "icon" {
-                        icon = Some(value);
-                    }
-                    self.icon_value(n, name, value);
+                Some("icon") => {
+                    icon = Some(value);
+                    self.icon_value(n, "icon", value);
                 }
+                Some("mark") => self.mark_arg(n, value),
                 Some("avatar") => avatar = Some(value),
                 Some("checkbox") => {
                     if self.bind_typed(&node, value, &[Ty::Bool], false).is_some() {
@@ -589,6 +589,95 @@ impl Checker<'_> {
         )
     }
 
+    /// A row's `meta:`: when it happened, or the day an item is due. A day its type pairs a
+    /// time of day with (`at: Option<Time> (time of: due)`) reads with it as one fact
+    /// (`Today 09:00`), so the row is given both and the presenter joins them.
+    fn meta_arg(&mut self, node: &Ex, value: &ast::Expr) {
+        let ExprKind::Field { base, name } = &value.kind else {
+            self.text_arg(node, "meta", value);
+            return;
+        };
+        if !matches!(base.kind, ExprKind::Ident(_) | ExprKind::Field { .. }) {
+            self.text_arg(node, "meta", value);
+            return;
+        }
+        let b = self.expr(base, None);
+        let Ty::Record(key) = b.ty.clone() else {
+            self.text_arg(node, "meta", value);
+            return;
+        };
+        let env = self.env;
+        let Some(paired) = env
+            .type_info(&key)
+            .and_then(|info| info.field(&name.name))
+            .and_then(|day| {
+                env.type_info(&key)?.fields.iter().find(|field| {
+                    field
+                        .role
+                        .as_ref()
+                        .and_then(crate::types::FieldRole::time_of)
+                        == Some(day.name.as_str())
+                })
+            })
+            .map(|field| field.name.clone())
+        else {
+            self.text_arg(node, "meta", value);
+            return;
+        };
+        let time = ast::Ident {
+            name: paired,
+            span: value.span,
+        };
+        let read = self.field_read(b, &time);
+        self.prop(node.clone(), "meta:time", read, value.span);
+    }
+
+    /// A row's `mark:`: an icon (`mark: .pin`), the name of one (`mark: a.icon`), or an enum
+    /// value whose case names one (`mark: t.priority`), which also gives the row the tone the
+    /// case reads in: its mark and its checkbox ring show the item's priority.
+    fn mark_arg(&mut self, n: LocalId, e: &ast::Expr) {
+        let node = Ex::local(n, Ty::View);
+        if !matches!(e.kind, ExprKind::Ident(_) | ExprKind::Field { .. }) {
+            self.icon_value(n, "mark", e);
+            return;
+        }
+        let v = self.expr(e, None);
+        match v.ty.clone() {
+            Ty::Enum(key) => {
+                if let Some(icon) = self.enum_method(v.clone(), &key, "icon") {
+                    self.set_when_some(&node, "mark", icon, &Ty::Text, e.span);
+                }
+                self.enum_tone(&node, "tone", v, e.span);
+            }
+            Ty::Text => self.prop(node, "mark", v, e.span),
+            Ty::Option(inner) if *inner == Ty::Text => {
+                self.set_when_some(&node, "mark", v, &Ty::Text, e.span);
+            }
+            Ty::Error => {}
+            _ => {
+                let t = self.show(&v.ty);
+                self.err(
+                    "E097",
+                    e.span,
+                    format!("`mark:` takes an icon (`mark: .pin`), the name of one (`mark: a.icon`, `mark: c.icon()`) or an enum value whose cases name them and the tone they read in (`mark: t.priority`); found {t}"),
+                );
+            }
+        }
+    }
+
+    /// The tone the case `value` holds, as the prop `prop` of `node`: a case reads in the tone
+    /// its declaration gives it (`high (icon: .flag, tone: .warning)`), and in no tone when it
+    /// names none. `false` when `value` is not an enum value, so the caller says what it takes.
+    pub(super) fn enum_tone(&mut self, node: &Ex, prop: &str, value: Ex, span: Span) -> bool {
+        let Ty::Enum(key) = value.ty.clone() else {
+            return false;
+        };
+        if let Some(tone) = self.enum_method(value, &key, "tone") {
+            self.prop(node.clone(), prop, tone, span);
+        }
+        true
+    }
+
     fn text_arg(&mut self, node: &Ex, name: &str, value: &ast::Expr) {
         let v = self.expr(value, Some(&Ty::Text));
         self.text_prop(node, name, v, value.span);
@@ -771,9 +860,9 @@ impl Checker<'_> {
             return holder;
         };
         let key = concat(self.node_key(c), Ex::str("#person"));
-        let n = self.new_node(&crate::toolkit::kind(&d.name), key);
+        let n = self.new_node(&crate::toolkit::kind(&d.name), key.clone());
         for a in args.iter().filter(|a| is_bind(a)) {
-            self.binding_prop(n, d, &a.value, &d.bindings);
+            self.binding_prop(n, d, &a.value, &d.bindings, &key);
         }
         // Who may be picked, and which of them is "Me": the workspace's, never a copy the app
         // keeps.

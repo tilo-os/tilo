@@ -1,306 +1,18 @@
 //! Name resolution: the module's declarations, its imports, and the signatures the checker
 //! needs before it looks at any body.
 
-use crate::ast::{self, Expr, ExprKind, Item, MergeSpec, StateLayer, TypeExpr, TypeExprKind, UnOp};
+use crate::ast::{self, Expr, ExprKind, Item, MergeSpec, TypeExpr, TypeExprKind, UnOp};
 use crate::diag::{Diagnostic, Span};
 use crate::ids::IdsLock;
 use crate::meta::PackageMeta;
 use crate::prims;
-use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
+use crate::types::{MergeKind, Ty, TypeKey};
 use std::collections::{HashMap, HashSet};
 
 mod derived;
+mod model;
 
-#[derive(Clone, Debug)]
-pub struct FieldInfo {
-    pub name: String,
-    pub id: String,
-    pub ty: Ty,
-    pub merge: MergeKind,
-    pub doc: String,
-    pub default: Option<serde_json::Value>,
-    /// What the field is to the platform, from its marker (`(title)`, `(repeats: due)`).
-    pub role: Option<crate::types::FieldRole>,
-    /// What the store derives it from, for a `derive` key ([`crate::derived`]): a value no
-    /// record holds.
-    pub derived: Option<crate::derived::Derived<String>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TypeInfo {
-    pub key: TypeKey,
-    pub id: String,
-    pub doc: String,
-    pub fields: Vec<FieldInfo>,
-    /// Its filters, default order and hidden fields (search.md, "What a type declares").
-    pub search: crate::meta::SearchMeta,
-    /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
-    /// Code uses it as that container.
-    pub holder: bool,
-    /// The kind of an outside service's resource it holds (`crate::origin`).
-    pub origin: Option<String>,
-}
-
-/// The name of the one field of a type that names a container (`type Notes =
-/// Collection<Note>`): its ids lock entry is `Notes.items`.
-pub const HOLDER_FIELD: &str = "items";
-
-impl TypeInfo {
-    /// The container a holder type is.
-    pub fn held(&self) -> Option<&FieldInfo> {
-        if self.holder {
-            self.fields.first()
-        } else {
-            None
-        }
-    }
-
-    pub fn field(&self, name: &str) -> Option<&FieldInfo> {
-        self.fields.iter().find(|f| f.name == name)
-    }
-
-    pub fn field_names(&self) -> String {
-        self.fields
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-/// One variant of a declared enum and its payload fields.
-#[derive(Clone, Debug)]
-pub struct VariantInfo {
-    pub name: String,
-    pub id: String,
-    pub doc: String,
-    pub label: String,
-    /// `(icon: .x)`: a kebab-case name of the platform's icon set.
-    pub icon: Option<String>,
-    pub fields: Vec<FieldInfo>,
-}
-
-/// A declared `enum`.
-#[derive(Clone, Debug)]
-pub struct EnumInfo {
-    pub key: TypeKey,
-    pub id: String,
-    pub doc: String,
-    pub variants: Vec<VariantInfo>,
-}
-
-impl EnumInfo {
-    pub fn variant(&self, name: &str) -> Option<&VariantInfo> {
-        self.variants.iter().find(|v| v.name == name)
-    }
-
-    pub fn variant_names(&self) -> String {
-        self.variants
-            .iter()
-            .map(|v| format!(".{}", v.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-/// A `window` or `lens` declaration of a view.
-#[derive(Clone, Debug)]
-pub struct StateInfo {
-    pub view: String,
-    pub name: String,
-    pub id: String,
-    pub layer: StateLayer,
-    pub ty: Ty,
-}
-
-#[derive(Clone, Debug)]
-pub struct ParamInfo {
-    pub name: String,
-    pub ty: Ty,
-    /// An action parameter's invocation-time default (`done: Bool = not item.done`).
-    pub default: Option<ParamDefault>,
-}
-
-/// How an action parameter's default is computed: when the action is invoked without the
-/// argument, over the arguments before it, on the invoker's state, and recorded as the argument.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParamDefault {
-    /// The module export computing it: it takes the parameters before this one.
-    pub export: String,
-    /// The function computing it, when the action is declared in this module.
-    pub func: Option<usize>,
-    /// The default as written (`not item.done`), for descriptions.
-    pub text: String,
-}
-
-impl ParamDefault {
-    /// Whether the default is `.none`, a constant: see [`crate::meta::DefaultMeta::is_none`].
-    #[must_use]
-    pub fn is_none(&self) -> bool {
-        self.text == crate::meta::DefaultMeta::NONE
-    }
-}
-
-/// The function of an action parameter's default, which the checker lowers.
-#[derive(Clone, Debug)]
-pub struct DefaultFn {
-    /// The action's name.
-    pub action: String,
-    /// The index of the parameter in the action's parameters.
-    pub param: usize,
-    /// Index into the module's functions.
-    pub func: usize,
-}
-
-/// The export name of the default of the parameter `param` of the action `action` (an id).
-pub fn default_export(action: &str, param: &str) -> String {
-    format!("d_{action}_{param}")
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CKind {
-    Fn,
-    Action,
-    Flow,
-    View,
-}
-
-impl CKind {
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Fn => "fn",
-            Self::Action => "action",
-            Self::Flow => "flow",
-            Self::View => "view",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Callable {
-    pub kind: CKind,
-    pub name: String,
-    pub id: String,
-    pub app: String,
-    pub own: bool,
-    /// Index into the module's functions when declared here.
-    pub func: Option<usize>,
-    pub params: Vec<ParamInfo>,
-    pub result: Ty,
-    /// The class recorded in foreign metadata.
-    pub class: Option<EffectClass>,
-    /// How the platform presents an action or flow: its label, icon and role.
-    pub present: Presentation,
-    /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.
-    pub scenario: bool,
-}
-
-/// What a button or a menu shows for an action or flow, from its declaration.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Presentation {
-    pub label: String,
-    /// A kebab-case name of the platform's icon set.
-    pub icon: Option<String>,
-    /// `primary` or `destructive`.
-    pub role: Option<String>,
-    /// The id of the hidden view that presents the action's state for its subject, when its
-    /// `label:` or `icon:` is an `if`, or it declares `on:`.
-    pub view: Option<String>,
-    /// `label: "Move to {col.title}"` or `label: if pinned { "Pin" } else { "Unpin" }`: the
-    /// label as written, read where the action is applied with its arguments
-    /// (`button(move_to(b, card, col))`, `button(pin(n))`), so it follows them as they change.
-    pub label_text: Option<Expr>,
-    /// `icon: if n.pinned { .pin_off } else { .pin }`: read where the action is applied, as
-    /// `label_text` is.
-    pub icon_when: Option<Expr>,
-    /// `on: n.pinned`: whether the state it toggles is on, read where the action is applied: a
-    /// button for it shows as toggled.
-    pub on: Option<Expr>,
-    /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard,
-    /// and (on an item's action) while that item is selected or its view shows. One spelling
-    /// (`Ctrl+Shift+enter`: modifiers in one order, then the key's token), read through the
-    /// person's keymap and the platform's own command modifier, never as a key code.
-    pub key: Option<String>,
-    /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names
-    /// it. A surface that shows the resource's actions — a window bar, the desktop's action
-    /// bar — draws the runs in the order the app declared them, so an app decides which
-    /// commands read as one without any surface keeping a list of its own.
-    pub group: Option<String>,
-    /// `frequent`: a command the person reaches for on most things of this type, which the
-    /// desktop's action bar shows directly rather than behind its menu of the rest.
-    pub frequent: bool,
-}
-
-/// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in
-/// one order and the key's own token (`Ctrl+Shift+enter`), so `Ctrl+Enter` and `control+Return`
-/// are one shortcut. The error says what is wrong with it, for the person who wrote it.
-fn declared_key(e: &Expr) -> Result<String, String> {
-    let text = plain_text(e).unwrap_or_default();
-    tilo_ui_graph::keys::Chord::parse(&text)
-        .map(|chord| chord.text())
-        .map_err(|said| format!("`key:` takes a shortcut: {said}"))
-}
-
-/// `new_note` as "New note".
-pub fn sentence_case(name: &str) -> String {
-    let spaced = name.replace('_', " ");
-    let mut chars = spaced.trim().chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-/// The first line of a doc comment without its closing period, when there is one.
-fn doc_line(doc: &str) -> Option<String> {
-    let line = doc.lines().next()?.trim();
-    let line = line.strip_suffix('.').unwrap_or(line).trim_end();
-    (!line.is_empty()).then(|| line.to_string())
-}
-
-/// An action's or flow's label: its name in sentence case, or its doc's first line when that is
-/// shorter.
-pub fn action_label(name: &str, doc: &str) -> String {
-    let named = sentence_case(name);
-    match doc_line(doc) {
-        Some(line) if line.chars().count() < named.chars().count() => line,
-        _ => named,
-    }
-}
-
-/// A variant's label: its doc's first line, or its name in sentence case.
-pub fn variant_label(name: &str, doc: &str) -> String {
-    doc_line(doc).unwrap_or_else(|| sentence_case(name))
-}
-
-impl Callable {
-    /// A callable source never names: a scenario's action or an action's presentation view.
-    pub fn hidden(&self) -> bool {
-        self.scenario || self.name.ends_with(crate::ids::PRESENT_SUFFIX)
-    }
-
-    pub fn signature(&self, own_app: &str) -> String {
-        let params: Vec<String> = self
-            .params
-            .iter()
-            .map(|p| {
-                // A default says the argument may be left out, and what it then is.
-                let default = p
-                    .default
-                    .as_ref()
-                    .map(|d| format!(" = {}", d.text))
-                    .unwrap_or_default();
-                format!("{}: {}{default}", p.name, p.ty.display(own_app))
-            })
-            .collect();
-        let result = if matches!(self.result, Ty::Unit) {
-            String::new()
-        } else {
-            format!(" -> {}", self.result.display(own_app))
-        };
-        format!("{}({}){result}", self.name, params.join(", "))
-    }
-}
+pub use model::*;
 
 /// A view expanded where it is called ([`crate::checker`]'s templates): generic, or taking
 /// view state, functions or views of an item. It has no function of its own.
@@ -546,6 +258,7 @@ impl Env {
                             v.label.clone()
                         },
                         icon: v.icon.clone(),
+                        tone: v.tone.clone(),
                         fields: v.fields.iter().map(field_info).collect(),
                     })
                     .collect(),
@@ -1159,12 +872,13 @@ impl Resolver<'_> {
                 });
             }
             let doc = v.doc.join("\n");
-            let icon = self.variant_icon(v);
+            let (icon, tone) = self.variant_options(v);
             variants.push(VariantInfo {
                 name: v.name.name.clone(),
                 id: id_of(lock, &format!("{name}.{}", v.name.name)),
                 label: variant_label(&v.name.name, &doc),
                 icon,
+                tone,
                 doc,
                 fields,
             });
@@ -1180,32 +894,66 @@ impl Resolver<'_> {
         });
     }
 
-    /// A variant's `(icon: .x)`: what a control shows beside its label.
-    fn variant_icon(&mut self, v: &ast::VariantDecl) -> Option<String> {
+    /// A variant's options: `(icon: .x)`, what a control shows beside its label, and
+    /// `(tone: .x)`, the tone it reads in.
+    fn variant_options(&mut self, v: &ast::VariantDecl) -> (Option<String>, Option<String>) {
         let mut icon = None;
-        let mut seen = false;
+        let mut tone = None;
+        let mut icons = false;
+        let mut tones = false;
         for opt in &v.opts {
-            match (opt.name.name.as_str(), &opt.value.kind) {
-                ("icon", _) if seen => {
-                    self.err("E090", opt.name.span, "`icon:` is given twice");
-                }
-                ("icon", ExprKind::Variant { name, args: None }) => {
-                    seen = true;
+            let case = match &opt.value.kind {
+                ExprKind::Variant { name, args: None } => Some(name),
+                _ => None,
+            };
+            match (opt.name.name.as_str(), case) {
+                ("icon", _) if icons => self.err("E090", opt.name.span, "`icon:` is given twice"),
+                ("icon", Some(name)) => {
+                    icons = true;
                     icon = self.icon(name);
                 }
-                ("icon", _) => self.err(
+                ("icon", None) => self.err(
                     "E090",
                     opt.value.span,
                     "`icon:` takes an icon written with a dot, such as `icon: .pin`",
                 ),
+                ("tone", _) if tones => self.err("E090", opt.name.span, "`tone:` is given twice"),
+                ("tone", Some(name)) => {
+                    tones = true;
+                    tone = self.tone(name);
+                }
+                ("tone", None) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`tone:` takes a tone written with a dot, such as `tone: .warning`",
+                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("a variant takes the option `icon:`; `{other}:` is not one. Its label is its doc comment's first line"),
+                    format!("a variant takes the options `icon:` and `tone:`; `{other}:` is not one. Its label is its doc comment's first line"),
                 ),
             }
         }
-        icon
+        (icon, tone)
+    }
+
+    /// The tone a variant reads in, one of the toolkit's `ui.Tone` cases: a theme role, not a
+    /// colour.
+    fn tone(&mut self, name: &ast::Ident) -> Option<String> {
+        const TONES: [&str; 5] = ["neutral", "success", "warning", "danger", "info"];
+        if let Some(tone) = TONES.iter().find(|tone| **tone == name.name) {
+            return Some((*tone).to_owned());
+        }
+        self.err(
+            "E090",
+            name.span,
+            format!(
+                "`{}` is not a tone; the tones are {}, theme roles a control reads a mark in rather than colours",
+                name.name,
+                TONES.join(", ")
+            ),
+        );
+        None
     }
 
     fn field(&mut self, owner: &str, f: &ast::FieldDecl, lock: &IdsLock) -> FieldInfo {
@@ -1281,6 +1029,98 @@ impl Resolver<'_> {
                 ),
             );
         }
+    }
+
+    /// The day a `(time of: due)` field is the time of: the `Date` or `Option<Date>` field it
+    /// names, which reads with it as one fact.
+    fn time_of(
+        &mut self,
+        owner: &str,
+        marker: &ast::FieldMarker,
+        marked: &FieldInfo,
+        fields: &[FieldInfo],
+        positional: &[&ast::Ident],
+        named: &[(&str, &ast::Ident)],
+    ) -> Option<String> {
+        if let Some(extra) = positional.first() {
+            self.err(
+                "E092",
+                extra.span,
+                "`(time: …)` names no field: it is the time of day of the day it names. Write `(time of: due)`",
+            );
+            return None;
+        }
+        if let Some((name, _)) = named.iter().find(|(name, _)| *name != "of") {
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "`(time: …)` takes `of:` and nothing else; `{name}:` is not one of its names"
+                ),
+            );
+            return None;
+        }
+        let holds = marked.ty.display(&self.env.app);
+        if !holds_a(&marked.ty, &Ty::Time) {
+            let t = holds;
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "only a `Time` or `Option<Time>` field is the time of day of a day, so `(time of: …)` is not its marker: `{}` is {t}. Mark the field holding the time of day instead",
+                    marked.name
+                ),
+            );
+            return None;
+        }
+        let Some((_, day)) = named.iter().find(|(name, _)| *name == "of") else {
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "`(time: …)` names no day, so nothing says which day this time of day belongs to. Write `{}: {} (time of: due)`, naming the `Date` or `Option<Date>` field it is the time of",
+                    marked.name, holds
+                ),
+            );
+            return None;
+        };
+        let Some(found) = fields.iter().find(|x| x.name == day.name) else {
+            self.err(
+                "E092",
+                day.span,
+                format!(
+                    "`{owner}` has no field `{}`; `(time of: …)` names the day this time of day belongs to",
+                    day.name
+                ),
+            );
+            return None;
+        };
+        if !holds_a(&found.ty, &Ty::Date) {
+            let t = found.ty.display(&self.env.app);
+            self.err(
+                "E092",
+                day.span,
+                format!(
+                    "`{}` is {t}, and `(time of: …)` reads a Date; the time of day belongs to a `Date` or `Option<Date>` field",
+                    day.name
+                ),
+            );
+            return None;
+        }
+        if let Some(other) = fields.iter().find(|x| {
+            x.role
+                .as_ref()
+                .and_then(crate::types::FieldRole::time_of)
+                .is_some_and(|date| date == day.name)
+        }) {
+            self.err(
+                "E092",
+                marker.span,
+                format!("`{owner}` already has `{}` as the time of `{}`; a day has one time of day. Remove one of them", other.name, day.name),
+            );
+            return None;
+        }
+        Some(day.name.clone())
     }
 
     /// The role a field's marker gives it, and what the marker must name for it: the text that
@@ -1383,6 +1223,14 @@ impl Resolver<'_> {
                 FieldRole::Body
             });
         }
+        // The time of day a day is due at: the day and the time read as one fact wherever the
+        // day shows, and one control picks both.
+        if word == "time" {
+            if let Some(day) = self.time_of(owner, marker, marked, fields, &positional, &named) {
+                return Some(FieldRole::TimeOf { date: day });
+            }
+            return None;
+        }
         let (holds, wants, reads) = match word {
             "repeats" => (
                 "repeats",
@@ -1395,7 +1243,7 @@ impl Resolver<'_> {
                 "`(reminds: due, at, who: assignee)`, naming the `Date` or `Option<Date>` field it is due on, the `Time` or `Option<Time>` it is due at where the type has one, and the `Principal` or `Option<Principal>` field of who it reminds where it names one",
             ),
             _ => {
-                self.err("E092", marker.span, format!("`({word})` is not a field marker; a Text field can be marked `(title)`, what names the record, or `(body)`, its substance, any field `(previously)`, what the type held before, which only its migrations read, a `std.Repeat` field `(repeats: due)`, the day it counts from, and a `std.Reminder` field `(reminds: due, at, who: assignee)`"));
+                self.err("E092", marker.span, format!("`({word})` is not a field marker; a Text field can be marked `(title)`, what names the record, or `(body)`, its substance, any field `(previously)`, what the type held before, which only its migrations read, a `std.Repeat` field `(repeats: due)`, the day it counts from, and a `std.Reminder` field `(reminds: due, at, who: assignee)`, a `Time` field `(time of: due)`, the day whose time of day it is"));
                 return None;
             }
         };

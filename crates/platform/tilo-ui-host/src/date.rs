@@ -1,14 +1,17 @@
 //! Dates and times as people read them, and the `date` control.
 //!
 //! A `Date` or `Time` reaches the view as its ISO text with a sibling prop `<prop>:as` (`"date"`
-//! or `"time"`); [`shown`] formats it the person's way. The `date` control is the toolkit's
-//! [`DateField`] over the bound value, which it reports as ISO text (empty for no date) through
-//! the same edit every bound input reports.
+//! or `"time"`); [`shown`] formats it the person's way, and [`shown_brief`] as a list reads it,
+//! through the toolkit's one [day fact](ui::format::day_fact). A day paired with the time of day
+//! it is due ([`ui::format::DayFact`]) gives the sibling prop `<prop>:time`, and the two read as
+//! one fact (`Today 09:00`). The `date` control is the toolkit's [`DateField`] over the bound
+//! value, which it reports as ISO text (empty for no date) through the same edit every bound
+//! input reports.
 
 use crate::{UiNode, Value};
-use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, Utc};
 use ui::LocalState;
-use ui::widget::{DateField, Decorator, Widget};
+use ui::widget::{DateField, Decorator, Tone, Widget};
 
 use crate::reconcile::{EventSink, UiEvent, display};
 
@@ -16,34 +19,58 @@ use crate::reconcile::{EventSink, UiEvent, display};
 /// its date), anything else as [`display`] shows it.
 #[must_use]
 pub fn shown(node: &UiNode, name: &str) -> Option<String> {
+    let value = node.props.get(name)?;
+    let text = display(value);
+    if let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as"))
+        && kind == "date"
+        && let Some(day) = day_of(&text)
+        && let Some(time) = paired_time(node, name)
+    {
+        return Some(ui::format::timestamp(&day.and_time(time)));
+    }
     formatted(node, name, ui::format::date, ui::format::timestamp)
 }
 
-/// The prop `name` of `node` as a list row reads it: as briefly as it is still clear today. A
-/// time is `16:02`, `Yesterday` or `Jun 30`, as native lists show when a message came; a day is
-/// `Tomorrow`, `Oct 24`, or with its year when it is not this year's.
+/// The prop `name` of `node` as a list row reads it: the day fact (`Overdue`, `Today`,
+/// `Thursday`, `Jun 29`), with the time of day paired with it where the view names one
+/// (`Today 09:00`); a time is [`ui::format::list_date`], as native lists show when a message
+/// came.
 #[must_use]
 pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
-    formatted(node, name, brief_day, ui::format::list_date)
+    let value = node.props.get(name)?;
+    let text = display(value);
+    let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
+        return Some(text);
+    };
+    Some(match kind.as_str() {
+        "date" => day_of(&text).map_or(text, |day| {
+            ui::format::day_fact_today(day, paired_time(node, name)).text
+        }),
+        "time" => moment_of(&text).map_or(text, |at| ui::format::list_date(&at)),
+        _ => text,
+    })
 }
 
-/// A day as briefly as it is clear from today.
-fn brief_day(day: NaiveDate) -> String {
-    let today = ui::clock::today();
-    let ahead = day.signed_duration_since(today).num_days();
-    if let Some(near) = ui::format::near_day(ahead) {
-        return near;
+/// The tone the prop `name` of `node` reads in, when it reads in one: a day gone by is overdue
+/// ([`Tone::Danger`]). `None` for anything else, and for a day that is not gone by.
+#[must_use]
+pub fn shown_tone(node: &UiNode, name: &str) -> Option<Tone> {
+    let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
+        return None;
+    };
+    if kind != "date" {
+        return None;
     }
-    // The coming week reads by its weekday: a list grouped by day heads a group "Thursday"
-    // where a date would make the person count from today.
-    if (2..=6).contains(&ahead) {
-        return ui::format::weekday_name(day.weekday());
-    }
-    if day.year() == today.year() {
-        ui::format::month_day(day)
-    } else {
-        ui::format::month_day_year(day)
-    }
+    let day = day_of(&display(node.props.get(name)?))?;
+    let fact = ui::format::day_fact_today(day, paired_time(node, name));
+    (fact.tone != Tone::Neutral).then_some(fact.tone)
+}
+
+/// The time of day paired with the day `name` holds, in the person's zone: the view gives it as
+/// the sibling prop `<name>:time`.
+fn paired_time(node: &UiNode, name: &str) -> Option<NaiveTime> {
+    let text = display(node.props.get(&format!("{name}:time"))?);
+    moment_of(&text).map(|at| at.with_timezone(&Local).time())
 }
 
 fn formatted(
@@ -183,5 +210,64 @@ mod tests {
         assert!(control.follow_value());
         assert_eq!(control.field.value(), NaiveDate::from_ymd_opt(2026, 11, 2));
         assert!(sink.is_empty(), "showing a value reports no edit");
+    }
+
+    /// The instant today's person's clock shows at `hour`.
+    fn at(hour: u32) -> String {
+        use chrono::TimeZone;
+        Local
+            .with_ymd_and_hms(2026, 6, 30, hour, 0, 0)
+            .single()
+            .expect("nine in the morning exists")
+            .to_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
+
+    #[test]
+    fn a_day_reads_as_briefly_as_a_list_states_it() {
+        let today = ui::clock::today();
+        let yesterday = today - chrono::Days::new(1);
+        let day = yesterday.format("%Y-%m-%d").to_string();
+        let row = node(&[("value", &day), ("value:as", "date")]);
+        assert_eq!(
+            shown_brief(&row, "value"),
+            Some(ui::format::day_fact_today(yesterday, None).text)
+        );
+        assert_eq!(shown_tone(&row, "value"), Some(Tone::Danger));
+
+        let today_node = node(&[("value", &today.to_string()), ("value:as", "date")]);
+        assert_eq!(shown_tone(&today_node, "value"), None, "today is not late");
+    }
+
+    #[test]
+    fn a_day_and_the_time_it_is_due_read_as_one_fact() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let time = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        let alone = node(&[("value", &day), ("value:as", "date")]);
+        let paired = node(&[
+            ("value", &day),
+            ("value:as", "date"),
+            ("value:time", &at(9)),
+        ]);
+        assert_eq!(
+            shown_brief(&paired, "value"),
+            Some(ui::format::day_fact_today(today, Some(time)).text)
+        );
+        assert_ne!(
+            shown_brief(&paired, "value"),
+            shown_brief(&alone, "value"),
+            "the time of the day is part of the fact"
+        );
+        assert_eq!(
+            shown(&paired, "value"),
+            Some(ui::format::timestamp(&today.and_time(time))),
+            "a form states the day and its time together"
+        );
+        assert_eq!(
+            shown_tone(&paired, "value"),
+            None,
+            "a day still to come is on time"
+        );
     }
 }

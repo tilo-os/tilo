@@ -144,7 +144,7 @@ impl Checker<'_> {
     ) -> LocalId {
         let span = c.call.span;
         let key = self.node_key(c);
-        let n = self.new_node(&toolkit::kind(&d.name), key);
+        let n = self.new_node(&toolkit::kind(&d.name), key.clone());
         let positional: Vec<&str> = d.positional().map(|p| p.name.as_str()).collect();
         let mut given: HashSet<String> = HashSet::new();
         let mut at = 0usize;
@@ -182,7 +182,7 @@ impl Checker<'_> {
                 );
                 continue;
             }
-            self.component_arg(n, d, &name, &a.value);
+            self.component_arg(n, d, &name, &a.value, &key);
         }
         for p in d.props.iter().filter(|p| p.required) {
             if !given.contains(&p.name) {
@@ -203,9 +203,13 @@ impl Checker<'_> {
         if d.name == "RichInput" && !given.contains("speakers") && !given.contains("people") {
             self.drawer_props(n);
         }
+        // The control's own block builds slots of its own: one that pairs a time of day with a
+        // day keeps the pairing for itself.
+        let kept = self.st.ui.paired.take();
         if let Some(block) = &c.block {
             self.component_block(n, d, block, span);
         }
+        self.st.ui.paired = kept;
         n
     }
 
@@ -217,6 +221,7 @@ impl Checker<'_> {
         d: &'static Description,
         name: &str,
         value: &ast::Expr,
+        key: &Ex,
     ) {
         if let Some(msg) = super::ui::removed_arg(&d.name, name) {
             self.err("E096", value.span, msg);
@@ -236,7 +241,7 @@ impl Checker<'_> {
                     ),
                 );
             } else {
-                self.binding_prop(n, d, value, &d.bindings);
+                self.binding_prop(n, d, value, &d.bindings, key);
             }
             return;
         }
@@ -255,7 +260,7 @@ impl Checker<'_> {
             // view's `on change(v)`, which asks whoever holds the value to change it.
             self.typed_prop(n, d, name, &b.ty, &b.doc, value);
         } else if let Some(b) = d.binding(name) {
-            self.binding_prop(n, d, value, std::slice::from_ref(b));
+            self.binding_prop(n, d, value, std::slice::from_ref(b), key);
         } else if let Some(s) = d.state(name) {
             self.typed_prop(n, d, name, &s.ty, &s.doc, value);
         } else if prims::NODE_ARGS.contains(&name) {
@@ -290,6 +295,7 @@ impl Checker<'_> {
         d: &'static Description,
         value: &ast::Expr,
         bindings: &[tilo_ui_graph::component::Binding],
+        key: &Ex,
     ) {
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
@@ -305,6 +311,72 @@ impl Checker<'_> {
             Imp::UiPropH,
             vec![node, Ex::str("bind"), Ex::str(&b.name)],
         ));
+        // A day the type pairs a time of day with is picked by two controls that read as one
+        // fact: the day's, and the time's right after it.
+        self.paired_control(d, value, &ty, key);
+    }
+
+    /// The time of day control a day's control is followed by, when the day's type pairs one
+    /// with it (`at: Option<Time> (time of: due)`): the toolkit's `TimePicker` bound to that
+    /// time, placed after the day's control by [`super::ui::Checker::ui_call`].
+    fn paired_control(&mut self, d: &Description, value: &ast::Expr, ty: &Ty, key: &Ex) {
+        if d.name != "DateField" || !matches!(ty, Ty::Date | Ty::Option(_)) {
+            return;
+        }
+        let ast::ExprKind::Field { base, name } = &value.kind else {
+            return;
+        };
+        if !matches!(
+            base.kind,
+            ast::ExprKind::Ident(_) | ast::ExprKind::Field { .. }
+        ) {
+            return;
+        }
+        let b = self.expr(base, None);
+        let Ty::Record(record) = b.ty.clone() else {
+            return;
+        };
+        let env = self.env;
+        let Some((time, id, doc)) = env
+            .type_info(&record)
+            .and_then(|info| info.field(&name.name))
+            .and_then(|day| {
+                let info = env.type_info(&record)?;
+                info.fields.iter().find(|field| {
+                    field
+                        .role
+                        .as_ref()
+                        .and_then(crate::types::FieldRole::time_of)
+                        == Some(day.name.as_str())
+                })
+            })
+            .map(|field| (field.name.clone(), field.id.clone(), field.doc.clone()))
+        else {
+            return;
+        };
+        let node = self.new_node(
+            &toolkit::kind("TimePicker"),
+            Ex::host(
+                Imp::StrConcat,
+                vec![key.clone(), Ex::str("#time")],
+                Ty::Text,
+            ),
+        );
+        let view = Ex::local(node, Ty::View);
+        self.emit(host(
+            Imp::UiPropH,
+            vec![
+                view.clone(),
+                Ex::str("label"),
+                Ex::str(&crate::resolve::variant_label(&time, &doc)),
+            ],
+        ));
+        self.emit(host(Imp::UiBind, vec![view.clone(), b, Ex::str(&id)]));
+        self.emit(host(
+            Imp::UiPropH,
+            vec![view, Ex::str("bind"), Ex::str("value")],
+        ));
+        self.st.ui.paired = Some(node);
     }
 
     /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the
@@ -544,6 +616,16 @@ impl Checker<'_> {
                 }
             }
             _ => {
+                // A tone the view states is the tone its case's declaration gives it
+                // (`high (icon: .flag, tone: .warning)`): an enum value names the tone it
+                // holds, as a row's mark does.
+                let given = self.expr(e, None);
+                if choice == "Tone"
+                    && matches!(e.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
+                    && self.enum_tone(&Ex::local(n, Ty::View), prop, given, e.span)
+                {
+                    return;
+                }
                 self.err(
                     "E065",
                     e.span,
@@ -553,7 +635,6 @@ impl Checker<'_> {
                         cases.first().map_or("", String::as_str)
                     ),
                 );
-                let _ = self.expr(e, None);
             }
         }
     }

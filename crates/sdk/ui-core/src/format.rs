@@ -14,6 +14,7 @@
 //! | Style | Function | English | German |
 //! |---|---|---|---|
 //! | list | [`list_date`] | `16:02`, `Yesterday`, `Sun`, `Jun 30`, `Jun 30, 2025` | `16:02`, `Gestern`, `So.`, `30. Juni`, `30. Juni 2025` |
+//! | day fact | [`day_fact`], [`Formats::day_fact`] | `Overdue`, `Today`, `Tomorrow`, `Thursday`, `Jun 29`; `Today 09:00`, `Thu 14:30` | `Überfällig`, `Heute`, `Morgen`, `Donnerstag`, `29. Juni`; `Heute 09:00`, `Do. 14:30` |
 //! | timestamp | [`timestamp`] | `Jun 30, 2026, 13:42` (or ISO `2026-06-30 13:42`, …) | `30.06.2026, 13:42` |
 //! | date | [`date`] | `Jun 30, 2026` (or ISO, US, EU, `30 Jun 2026`) | `30.06.2026` (or `30. Juni 2026`, Long) |
 //! | time | [`time`] | `13:42` or `1:42 PM` | `13:42` |
@@ -697,6 +698,33 @@ pub fn near_day(days_from_today: i64) -> Option<String> {
         _ => return None,
     };
     Some(widget_format(key, &[]))
+}
+
+/// A day as a person reads it: the words, and the tone they are read in.
+///
+/// [`Tone::Danger`] says the day is overdue, so every surface that shows a date fact shows it
+/// the same way: a list's group heading, a row's trailing fact, a chip, a card. The tone is a
+/// theme role, never a colour.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayFact {
+    /// What it reads as: `Overdue`, `Today`, `Thursday`, `Jun 29`, `Today 09:00`.
+    pub text: String,
+    /// [`Tone::Danger`] for a day gone by, [`Tone::Neutral`] otherwise.
+    pub tone: crate::widget::Tone,
+}
+
+/// The day fact [`day_fact_today`] holds, against `today`: the person's formats, the language's
+/// words.
+#[must_use]
+pub fn day_fact(day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
+    Formats::current().day_fact(day, time, today)
+}
+
+/// [`day_fact`] against the person's own today ([`crate::clock::today`]): the one call a surface
+/// makes when it shows a date fact.
+#[must_use]
+pub fn day_fact_today(day: NaiveDate, time: Option<NaiveTime>) -> DayFact {
+    day_fact(day, time, crate::clock::today())
 }
 
 /// Abbreviate a large count to at most one fractional digit: `1.2K`, `3.4M`,

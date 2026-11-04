@@ -1199,29 +1199,42 @@ impl Reconciler {
     /// A form or a field: the native widget, with each part of its content in a [`Pane`] the
     /// reconciler reaches again, so content that runs again keeps its widgets.
     fn holder(&mut self, node: &UiNode) -> Element {
-        let mut panes: Vec<Element> = holder_parts(node)
-            .into_iter()
-            .map(|part| Box::new(Pane::new(self.build(part))) as Element)
-            .collect();
         let mut section = FormSection::untitled();
-        let fields: Vec<&UiNode> = if node.kind == "field" {
-            vec![node]
-        } else {
-            node.children.iter().collect()
-        };
-        panes.reverse();
-        for child in fields {
-            let Some(pane) = panes.pop() else {
-                break;
-            };
+        if node.kind == "field" {
+            return Box::new(section.field(self.field_of(node)));
+        }
+        for child in &node.children {
             if child.kind == "field" {
-                let label = crate::date::shown(child, "label").unwrap_or_default();
-                section = section.field(Field::custom(label, pane));
+                section = section.field(self.field_of(child));
             } else {
-                section = section.content(pane);
+                section = section.content(self.pane(child));
             }
         }
         Box::new(section)
+    }
+
+    /// The field `node`: its label and every control its block holds, one under the next. A
+    /// day and the time of that day stand as one field's two controls.
+    fn field_of(&mut self, node: &UiNode) -> Field {
+        let mut panes: Vec<Element> = node.children.iter().map(|child| self.pane(child)).collect();
+        let content = match panes.len() {
+            0 => Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element,
+            1 => panes.remove(0),
+            _ => {
+                let mut stack = Stack::stack();
+                for pane in panes {
+                    stack = stack.push(pane);
+                }
+                Box::new(stack)
+            }
+        };
+        let label = crate::date::shown(node, "label").unwrap_or_default();
+        Field::custom(label, content)
+    }
+
+    /// `node` built, in the pane the holder reaches it again by.
+    fn pane(&mut self, node: &UiNode) -> Element {
+        Box::new(Pane::new(self.build(node)))
     }
 
     /// A holder whose shape is the same keeps its widget; each part is reconciled in its pane.
@@ -1531,18 +1544,17 @@ impl Reconciler {
 }
 
 /// The nodes a holder shows each in a pane: a section's or card's children, a form's fields'
-/// controls (or its other content), a field's control.
+/// controls (or its other content), a field's controls.
 fn holder_parts(node: &UiNode) -> Vec<&UiNode> {
     match node.kind.as_str() {
-        "field" => node.children.first().into_iter().collect(),
         "form" => node
             .children
             .iter()
-            .filter_map(|child| {
+            .flat_map(|child| {
                 if child.kind == "field" {
-                    child.children.first()
+                    child.children.iter().collect::<Vec<_>>()
                 } else {
-                    Some(child)
+                    vec![child]
                 }
             })
             .collect(),
@@ -1704,17 +1716,20 @@ fn holder_shape(node: &UiNode) -> Vec<PartShape> {
                 .collect::<Vec<_>>(),
         )
     };
+    // A part in its pane changes in place: its key and kind are all the shape needs of it.
+    let shallow = |node: &UiNode| (node.key.clone(), node.kind.clone(), Vec::new());
     let mut shape = vec![entry(node)];
-    for child in &node.children {
-        shape.push(entry(child));
-        if node.kind == "form" && child.kind == "field" {
-            shape.extend(
-                child
-                    .children
-                    .iter()
-                    .map(|control| (control.key.clone(), control.kind.clone(), Vec::new())),
-            );
+    match node.kind.as_str() {
+        "field" => shape.extend(node.children.iter().map(shallow)),
+        "form" => {
+            for child in &node.children {
+                shape.push(entry(child));
+                if child.kind == "field" {
+                    shape.extend(child.children.iter().map(shallow));
+                }
+            }
         }
+        _ => shape.extend(node.children.iter().map(entry)),
     }
     shape
 }
@@ -1866,6 +1881,49 @@ mod tests {
         new.props.insert("gap".to_owned(), Value::text("section"));
         let updated = reconciler.update(built, &old, &new);
         assert_eq!(identities(&updated), before);
+    }
+
+    #[test]
+    fn a_field_shows_every_control_it_holds() {
+        let mut day = node("ui.DateField", "day");
+        day.props
+            .insert("value".to_owned(), Value::text("2026-06-30"));
+        let mut time = node("ui.TimePicker", "time");
+        time.props.insert("value".to_owned(), Value::text("09:00"));
+        let field = UiNode {
+            children: vec![day, time],
+            props: [("label".to_owned(), Value::text("Due"))]
+                .into_iter()
+                .collect(),
+            ..node("field", "due")
+        };
+        assert_eq!(
+            holder_parts(&field).len(),
+            2,
+            "the day and the time of that day are both the field's"
+        );
+        let mut reconciler = reconciler();
+        let mut built = reconciler.build(&field);
+        let mut panes = Vec::new();
+        collect_panes(built.as_mut(), &mut panes);
+        let before: Vec<usize> = panes
+            .iter()
+            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .collect();
+        assert_eq!(before.len(), 2, "both controls sit in a pane");
+        // The time moves: both panes stay, and each reconciles in place.
+        let mut new = field.clone();
+        new.children[1]
+            .props
+            .insert("value".to_owned(), Value::text("10:30"));
+        let mut updated = reconciler.update(built, &field, &new);
+        let mut panes = Vec::new();
+        collect_panes(updated.as_mut(), &mut panes);
+        let after: Vec<usize> = panes
+            .iter()
+            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .collect();
+        assert_eq!(after, before, "both keep their pane");
     }
 
     #[test]

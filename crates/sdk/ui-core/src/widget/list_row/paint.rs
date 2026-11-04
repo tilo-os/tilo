@@ -15,7 +15,7 @@ use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
 use crate::widget::{BadgeFace, MediaArt, Tone};
 
 pub(super) fn paint_badge(ctx: &mut PaintCtx<'_>, _m: &RowMetrics, column: Rect, badge: &str) {
@@ -329,11 +329,16 @@ impl ListRowFace<'_> {
                 x + m.mark,
                 line_cy + m.mark / 2.0,
             );
+            let ink = if self.mark_tone == Tone::Neutral {
+                theme.text_tertiary
+            } else {
+                self.mark_tone.colour(theme)
+            };
             match mark {
                 RowMark::Icon(icon @ (Icon::Star | Icon::Pin)) => {
-                    icon.draw_filled(ctx.scene, ctx.transform, r, theme.text_tertiary);
+                    icon.draw_filled(ctx.scene, ctx.transform, r, ink);
                 }
-                RowMark::Icon(icon) => icon.draw(ctx.scene, ctx.transform, r, theme.text_tertiary),
+                RowMark::Icon(icon) => icon.draw(ctx.scene, ctx.transform, r, ink),
                 RowMark::Swatch(color) => {
                     // The swatch sits inside the mark's box, as an icon's
                     // glyph does, with its own derived edge.
@@ -577,6 +582,13 @@ impl ListRowFace<'_> {
             RowLeading::Checkbox { checked } => {
                 let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
                 let mut face = crate::widget::checkbox::CheckboxFace::new(r, checked);
+                if self.mark_tone != Tone::Neutral {
+                    face = face.ring(theme.tokens.colors.ink_on_any(
+                        &[under],
+                        self.mark_tone.colour(theme),
+                        NON_TEXT_MIN_CONTRAST,
+                    ));
+                }
                 if let Some(pose) = self.check_pose {
                     face = face.pose(pose);
                 }

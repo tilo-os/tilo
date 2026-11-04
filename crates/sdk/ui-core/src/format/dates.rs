@@ -1,13 +1,63 @@
 //! Dates and times as a person reads them, in the formats they chose and the
 //! desktop's language. See [`super::Formats`] for the styles.
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike, Weekday};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Weekday};
 
-use super::Formats;
 use super::region::DateStyle;
+use super::{DayFact, Formats};
 use crate::i18n::widget_format;
+use crate::widget::Tone;
 
 impl Formats {
+    /// The **day fact** style: a calendar day as a heading, a row's trailing fact or a card
+    /// reads it, by how far `day` is from `today`. A day gone by is `Overdue`, in the overdue
+    /// tone; today and tomorrow are named; the week ahead its weekday (`Thursday`); this year
+    /// the month and day (`Jun 29`); other years the full date (`Jun 29, 2025`). Given a
+    /// `time`, the day and the time read as one fact (`Today 09:00`, `Thu 14:30`, `Jun 29
+    /// 09:00`); a day gone by keeps its own name there (`Yesterday 14:30`), in the overdue
+    /// tone, because a fact says when it is, not which heading it is under.
+    ///
+    /// The day is the person's own: `today` is [`crate::clock::today`].
+    #[must_use]
+    pub fn day_fact(&self, day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
+        let days = day.signed_duration_since(today).num_days();
+        let tone = if days < 0 {
+            Tone::Danger
+        } else {
+            Tone::Neutral
+        };
+        let Some(time) = time else {
+            return DayFact {
+                text: match days {
+                    ..0 => widget_format("day-overdue", &[]),
+                    0 => super::near_day(0).unwrap_or_default(),
+                    1 => super::near_day(1).unwrap_or_default(),
+                    2..=6 => self.weekday_name(day.weekday()),
+                    _ if day.year() == today.year() => self.month_day(day),
+                    _ => self.month_day_year(day),
+                },
+                tone,
+            };
+        };
+        let named = match days {
+            0 | 1 => super::near_day(days),
+            -1 => super::near_day(-1),
+            -6..=-2 | 2..=6 => Some(self.weekday_short(day.weekday())),
+            _ if day.year() == today.year() => Some(self.month_day(day)),
+            _ => Some(self.month_day_year(day)),
+        };
+        DayFact {
+            text: widget_format(
+                "day-at-time",
+                &[
+                    ("day", named.unwrap_or_default().into()),
+                    ("time", self.time(&time).into()),
+                ],
+            ),
+            tone,
+        }
+    }
+
     /// The **list** style: as compact as a list column allows, by how far
     /// `at` is from `now`. Today shows the time (`16:02`), the days next to
     /// today their name (`Yesterday`, `Tomorrow`), the rest of the past week

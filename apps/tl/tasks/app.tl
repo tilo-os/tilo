@@ -11,11 +11,11 @@ enum Priority {
     /// Low
     low (icon: .flag)
     /// Medium
-    medium (icon: .flag)
+    medium (icon: .flag, tone: .info)
     /// High
-    high (icon: .flag)
+    high (icon: .flag, tone: .warning)
     /// Urgent
-    urgent (icon: .triangle_alert)
+    urgent (icon: .triangle_alert, tone: .danger)
 }
 
 /// What the place a task's row stands in already says, and the row therefore leaves out.
@@ -35,7 +35,7 @@ type Task {
     /// The day it is due by, if any.
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
-    at: Option<Time> = .none
+    at: Option<Time> (time of: due) = .none
     /// Anything worth remembering about it.
     notes: RichText (body)
     /// Who is doing it.
@@ -733,7 +733,7 @@ view task_row(t: Task, place: RowPlace) {
         check: check(t),
         secondary: project,
         meta: due,
-        mark: t.priority.icon(),
+        mark: t.priority,
         avatar: t.assignee,
     )
 }
@@ -753,7 +753,7 @@ view task_summary(t: Task) {
         check: check(t),
         secondary: t.project?.name,
         meta: t.due,
-        mark: t.priority.icon(),
+        mark: t.priority,
         avatar: t.assignee,
     )
 }

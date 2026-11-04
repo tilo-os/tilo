@@ -260,8 +260,9 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
-/// A field's marker: `(title)`, `(body)`, `(previously)`, `(repeats: due)` or
-/// `(reminds: due, at, who: assignee)`. Its arguments name the type's own fields.
+/// A field's marker: `(title)`, `(body)`, `(previously)`, `(repeats: due)`,
+/// `(reminds: due, at, who: assignee)` or `(time of: due)`. Its arguments name the type's own
+/// fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldMarker {
     pub name: Ident,
@@ -271,14 +272,18 @@ pub struct FieldMarker {
 }
 
 impl FieldMarker {
-    /// The marker as the declaration writes it, `repeats: due` or `reminds: due, at, who:
-    /// assignee`.
+    /// The marker as the declaration writes it, `repeats: due`, `reminds: due, at, who:
+    /// assignee` or `time of: due`.
     #[must_use]
     pub fn text(&self) -> String {
         if self.args.is_empty() {
             return self.name.name.clone();
         }
         let args: Vec<String> = self.args.iter().map(MarkerArg::text).collect();
+        let named = self.args.iter().all(|a| a.name.is_some());
+        if named {
+            return format!("{} {}", self.name.name, args.join(", "));
+        }
         format!("{}: {}", self.name.name, args.join(", "))
     }
 }

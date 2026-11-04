@@ -181,6 +181,10 @@ pub struct VariantMeta {
     /// platform's icon set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// `(tone: .x)`: the tone the case reads in, one of `ui.Tone`'s cases, a theme role rather
+    /// than a colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<String>,
     /// The payload fields, in order. Their merge is always `register`.
     pub fields: Vec<FieldMeta>,
 }

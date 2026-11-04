@@ -1957,7 +1957,7 @@ impl Checker<'_> {
                 let next = self.expr_as(&next.value, &Ty::Action);
                 Ex::host(Imp::ActThen, vec![r, next], Ty::Action)
             }
-            (Ty::Enum(key), "label" | "icon" | "name") if args.is_empty() => {
+            (Ty::Enum(key), "label" | "icon" | "tone" | "name") if args.is_empty() => {
                 let key = key.clone();
                 self.enum_method(r, &key, m).unwrap_or_else(Ex::error)
             }

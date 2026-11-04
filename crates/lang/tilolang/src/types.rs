@@ -55,6 +55,9 @@ pub enum FieldRole {
     /// a type's items nest by and its derived keys read the items above and under it through
     /// ([`crate::derived`]).
     Parent,
+    /// `(time of: due)`: the time of day the day named here is due at, so the two read as one
+    /// fact (`Today 09:00`) wherever the day shows and one control picks both.
+    TimeOf { date: String },
 }
 
 impl FieldRole {
@@ -68,6 +71,7 @@ impl FieldRole {
             Self::Repeats { .. } => "repeats",
             Self::Reminds { .. } => "reminds",
             Self::Parent => "parent",
+            Self::TimeOf { .. } => "time",
         }
     }
 
@@ -77,6 +81,7 @@ impl FieldRole {
     pub fn text(&self) -> String {
         match self {
             Self::Title | Self::Body | Self::Previously | Self::Parent => self.word().to_owned(),
+            Self::TimeOf { date } => format!("time of: {date}"),
             Self::Repeats { date } => format!("repeats: {date}"),
             Self::Reminds { date, time, who } => {
                 let mut text = format!("reminds: {date}");
@@ -115,6 +120,15 @@ impl FieldRole {
     #[must_use]
     pub const fn is_parent(&self) -> bool {
         matches!(self, Self::Parent)
+    }
+
+    /// The day the field is the time of (`(time of: due)`), when it is one.
+    #[must_use]
+    pub fn time_of(&self) -> Option<&str> {
+        match self {
+            Self::TimeOf { date } => Some(date),
+            _ => None,
+        }
     }
 }
 

@@ -669,8 +669,9 @@ impl Checker<'_> {
         Ex::host(Imp::ActUndo, vec![what, of], Ty::Action)
     }
 
-    /// `e.label()`, `e.icon()` or `e.name()` of a value of a declared enum: what a control shows
-    /// for its case, the name of its icon, and the case's name.
+    /// `e.label()`, `e.icon()`, `e.tone()` or `e.name()` of a value of a declared enum: what a
+    /// control shows for its case, the name of its icon, the tone it reads in and the case's
+    /// name.
     pub(super) fn enum_method(&mut self, r: Ex, key: &TypeKey, m: &str) -> Option<Ex> {
         self.env.enum_info(key)?;
         match m {
@@ -683,6 +684,11 @@ impl Checker<'_> {
                     None => Ex::host(Imp::NoneV, Vec::new(), opt.clone()),
                 }))
             }
+            // The tone a case reads in, as the tone case name a component's `tone:` prop
+            // holds; a case that names none is neutral.
+            "tone" => Some(self.per_variant(r, key, Ty::Text, |v| {
+                Ex::str(v.tone.as_deref().unwrap_or("neutral"))
+            })),
             _ => None,
         }
     }

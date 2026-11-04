@@ -287,6 +287,23 @@ impl<'a> NodeSource<'a> {
     }
 
     fn value(&self, name: &str, ty: &Type) -> Option<Prop> {
+        // The tone of a date fact is the presenter's, not the view's: a component that declares
+        // `<prop>_tone` reads it off the date `<prop>` holds, so a day gone by is overdue in
+        // every list, card and chip alike.
+        if let (Type::Choice { name: choice, .. }, Some(base)) = (ty, name.strip_suffix("_tone"))
+            && choice == "Tone"
+            && !self.node.props.contains_key(name)
+            && let Some(tone) = crate::date::shown_tone(self.node, base)
+        {
+            let case = match tone {
+                ui::widget::Tone::Danger => "danger",
+                ui::widget::Tone::Warning => "warning",
+                ui::widget::Tone::Success => "success",
+                ui::widget::Tone::Info => "info",
+                ui::widget::Tone::Neutral | ui::widget::Tone::Presence(_) => "neutral",
+            };
+            return Some(Prop::Choice(case.to_owned()));
+        }
         let value = self.node.props.get(name)?;
         let text = match ty {
             Type::Option(inner) => **inner == Type::Text && !matches!(value, Value::Opt(None)),

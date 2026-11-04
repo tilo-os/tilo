@@ -1206,9 +1206,12 @@ impl<'a> Parser<'a> {
         };
         let marker_at = self.span();
         let marker = if self.eat(&Tok::LParen) {
-            let name = self.ident("`title`, `body`, `previously`, `repeats` or `reminds`")?;
+            let name =
+                self.ident("`title`, `body`, `previously`, `repeats`, `reminds` or `time`")?;
             let mut args = Vec::new();
-            if self.eat(&Tok::Colon) {
+            // A marker reads its fields after a colon, `(repeats: due)`, or after the words it
+            // takes, `(time of: due)`.
+            if self.eat(&Tok::Colon) || !matches!(self.peek(), Tok::RParen) {
                 loop {
                     let first = self.ident("a field of the type")?;
                     let arg = if self.eat(&Tok::Colon) {
