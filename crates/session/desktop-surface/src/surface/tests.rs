@@ -723,6 +723,28 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     );
 }
 
+/// The desk mints its ids under the device's range, and a tree kept beside the
+/// device's state file carries none of its own: installing the kept tree lays
+/// this device's changes in this desk's range, not in "nobody's".
+#[test]
+fn a_tree_kept_beside_the_state_file_installs_in_this_desks_range() {
+    let (_surface, handle) = desktop(1);
+    let minted = handle.read(Clone::clone);
+    assert_eq!(minted.salt, 7, "the desk mints in the device's range");
+    let mut kept = minted.clone();
+    kept.salt = 0;
+    handle.replace_tree(kept);
+    let installed = handle.read(Clone::clone);
+    assert_eq!(
+        installed.salt, minted.salt,
+        "the tree installed writes in this desk's range"
+    );
+    assert_eq!(
+        installed.workspaces[0].strips[0].id, minted.workspaces[0].strips[0].id,
+        "and it is the tree that was kept"
+    );
+}
+
 #[test]
 fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     let (mut surface, handle) = desktop(3);

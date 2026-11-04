@@ -30,9 +30,10 @@ use tilo_action_broker::owner_commits::OwnerCustody as _;
 use crate::engine::Engine;
 use crate::sync::Client as Sync;
 
-/// What a workspace's record held when this device last wrote it: its heads,
-/// and what its windows showed then.
-type Written = (Vec<ChangeHash>, Vec<(u64, String)>);
+/// What a workspace's record held when this device last wrote it, how far this
+/// desk had moved by then, and what its windows showed: a look that finds all
+/// three again writes nothing.
+type Written = (Vec<ChangeHash>, u64, Vec<(u64, String)>);
 
 /// This session's reading of the workspaces' shared desktops: what each
 /// record held when the desk was last laid out from it, and what this device
@@ -46,20 +47,30 @@ pub(crate) struct SharedDesktops {
     notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The heads each workspace's record was folded in at, by workspace.
     folded: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
-    /// What each workspace's record held when this device last wrote it: its
-    /// heads and what its windows showed then. A look that finds the same
-    /// again writes nothing.
+    /// What each workspace's record held when this device last wrote it, how
+    /// far this desk had moved by then, and what its windows showed: a look
+    /// that finds all three again writes nothing, and one that finds any of
+    /// them moved writes.
     written: RefCell<HashMap<WorkspaceId, Written>>,
+    /// Each workspace's record as this device last wrote it and the workspace
+    /// took it: what the next write is made on. The engine's copy of the
+    /// record reaches a member after the workspace admits the write, so it can
+    /// lag the write this device already made; writing on that lagging copy
+    /// would number a second change the same as the first, and the workspace
+    /// would refuse it.
+    kept: RefCell<HashMap<WorkspaceId, automerge::AutoCommit>>,
     /// The windows this device's desk shows that the workspace's record does
     /// not hold yet: what it opened since the last write, and what the next
     /// write adds.
     unrecorded: RefCell<BTreeSet<u64>>,
     /// Every workspace whose record this device has read: while each of the
-    /// workspaces it holds is among them and none of the engine's revision
-    /// moved since, there is nothing to read again.
+    /// workspaces it holds is among them and neither the engine's revision nor
+    /// this desk's own moved since, there is nothing to read again.
     read: RefCell<BTreeSet<WorkspaceId>>,
-    /// The engine revision this device last read the records at.
-    seen: Cell<Option<u64>>,
+    /// The engine's revision and this desk's own at the last look: what this
+    /// device changed on the desk itself moves nothing the engine published,
+    /// and is written back on the pass that sees it.
+    seen: Cell<Option<(u64, u64)>>,
     /// A failure to read or write a record is said once, not on every frame.
     warned: Cell<bool>,
 }
@@ -75,29 +86,36 @@ impl SharedDesktops {
     }
 
     /// Whether every workspace `tree` holds has had its record read here, and
-    /// the engine at revision `revision` has not published since: nothing of
-    /// the workspaces' desks can have moved, so no record is read again.
-    /// Notes `revision` as the one read at.
+    /// neither the engine at revision `revision` nor this desk has moved since:
+    /// nothing of the workspaces' desks can have changed, so no record is read
+    /// or written again. Notes what was looked at.
     pub(crate) fn settled(&self, revision: u64, tree: &DesktopTree) -> bool {
         let read = self.read.borrow();
-        let settled = self.seen.get() == Some(revision)
+        let settled = self.seen.get() == Some((revision, tree.external_revision))
             && tree
                 .workspaces
                 .iter()
                 .filter(|workspace| !workspace.id().is_nil())
                 .all(|workspace| read.contains(&workspace.id()));
-        self.seen.set(Some(revision));
+        self.seen.set(Some((revision, tree.external_revision)));
         settled
     }
 
     /// `workspace`'s shared desktop record, read from the engine's copy of
     /// the workspace: what the workspace last admitted, what it held before
-    /// this device joined included.
-    fn record(engine: &Engine, workspace: WorkspaceId) -> Option<automerge::AutoCommit> {
-        let bytes = engine
-            .record(&workspace.to_string(), DESKTOP_APP, DESKTOP_RECORD)
-            .ok()??;
-        automerge::AutoCommit::load(&bytes).ok()
+    /// this device joined included. `Ok(None)` for a workspace no one wrote
+    /// the desk of yet.
+    fn record(
+        engine: &Engine,
+        workspace: WorkspaceId,
+    ) -> Result<Option<automerge::AutoCommit>, String> {
+        let Some(bytes) = engine.record(&workspace.to_string(), DESKTOP_APP, DESKTOP_RECORD)?
+        else {
+            return Ok(None);
+        };
+        automerge::AutoCommit::load(&bytes)
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 
     /// Fold every workspace's shared desktop into `tree`: its strips, groups
@@ -115,7 +133,7 @@ impl SharedDesktops {
             if room.is_nil() {
                 continue;
             }
-            let Some(mut doc) = Self::record(engine, room) else {
+            let Some(mut doc) = Self::record(engine, room).ok().flatten() else {
                 // A workspace this device holds no record of (not its own,
                 // or one still arriving) says nothing of its desk yet: its
                 // record is read again next pass.
@@ -165,24 +183,60 @@ impl SharedDesktops {
         if room.is_nil() || local == 0 {
             return false;
         }
+        // Only a workspace whose app records this device commits has its
+        // shared desk written here: where the records are its members' sealed
+        // channels, the pages write the desk, and a write in the clear from
+        // this device would be refused as a downgrade.
+        if !engine.commits_documents(room) {
+            return false;
+        }
         let Some(person) = sync.and_then(|sync| sync.own().user) else {
             return false;
         };
-        let Some(mut held) = Self::record(engine, room) else {
-            return false;
-        };
-        let mut written = self.written.borrow_mut();
-        let heads = held.get_heads();
-        let notes = self.notes.of_workspace(room);
-        if written.get(&room) == Some(&(heads.clone(), notes.clone())) {
+        // What this device's desk has to share: its windows. A workspace it
+        // shows with none is a desk it keeps to itself.
+        let shares = workspace
+            .strips
+            .iter()
+            .any(|strip| !strip.window_groups.is_empty());
+        // What the workspace's copy of the record holds here: a record this
+        // device was never sent, or cannot read, is one it holds nothing of.
+        let reached = Self::record(engine, room).unwrap_or(None);
+        // A record nobody wrote yet is founded by the first desk with a window
+        // in it: a device with nothing to show founds nothing, so the record
+        // stays one the devices that do show something make.
+        if reached.is_none() && !shares {
             return false;
         }
+        // What this device writes on: the record as it last wrote and the
+        // workspace took it, with everything the workspace holds since laid
+        // over it. A workspace whose record nobody wrote yet starts from the
+        // empty record, and this device's desk is what founds it.
+        let mut held = self.base(room, reached);
+        let mut written = self.written.borrow_mut();
+        let heads = held.get_heads();
+        let own = tree.external_revision;
+        let notes = self.notes.of_workspace(room);
+        if written.get(&room) == Some(&(heads.clone(), own, notes.clone())) {
+            return false;
+        }
+        // The record is every member's: what this device writes into it goes
+        // in as this person on this device, never under the actor the copy
+        // here was last written by, which two devices writing at once would
+        // number the same.
+        held.set_actor(automerge::ActorId::from(
+            ui::history_source::authors::device_actor(
+                &person,
+                &automerge::ActorId::from(engine.identity().device_cert.device_public_key.to_vec()),
+            ),
+        ));
         // Fold the record into this desk's workspace, and lay this device's
         // own change on top: what the record holds and what this device's
         // desk holds are then one change, and nothing anyone else moved is
-        // undone by it.
+        // undone by it. This device's own layout stays: it is what the write
+        // adds, and a fold that dropped it would write nothing at all.
         let mut laid_out = workspace.clone();
-        device::fold(&held, &mut laid_out, "", &device::Kept::NOTHING);
+        device::fold(&held, &mut laid_out, "", &device::Kept::OWN);
         let mine = |id: u64| peer_salt_of(id) == local || self.is_unrecorded(id);
         let by_tab: BTreeMap<u64, String> = notes.iter().cloned().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
@@ -201,10 +255,13 @@ impl SharedDesktops {
         );
         match wrote {
             Ok(false) => {
-                written.insert(room, (heads, notes));
+                written.insert(room, (heads, own, notes));
                 false
             }
             Err(error) => {
+                // What the record refused is not written, and the look that
+                // found it is not one that wrote it: the next look tries again.
+                written.remove(&room);
                 if !self.warned.replace(true) {
                     tracing::warn!(
                         %error,
@@ -215,8 +272,13 @@ impl SharedDesktops {
                 false
             }
             Ok(true) => {
+                // Every change a device signs says what it is and who made
+                // it: the edit of the record this person just made here.
+                candidate.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(shared_record::change_message(Some(&person))),
+                );
                 let changes = candidate.save_after(&heads);
-                written.insert(room, (candidate.get_heads(), notes));
                 let key = engine.identity().device_signing_key.clone();
                 let committed = engine.owner().commit_document_with_current(
                     room,
@@ -245,6 +307,11 @@ impl SharedDesktops {
                 );
                 match committed {
                     Ok(_receipt) => {
+                        // What the workspace took is the record this device
+                        // wrote: the next look at the heads it now holds, and
+                        // this desk where it stands, writes nothing.
+                        written.insert(room, (candidate.get_heads(), own, notes));
+                        self.kept.borrow_mut().insert(room, candidate);
                         // What was just committed is this device's outgoing
                         // custody: the workspace's other devices read it as
                         // any member's change.
@@ -252,6 +319,11 @@ impl SharedDesktops {
                         true
                     }
                     Err(error) => {
+                        // The record is not the workspace's until it takes
+                        // it: the next look writes it again, on what the
+                        // workspace holds and not on the write it refused.
+                        written.remove(&room);
+                        self.kept.borrow_mut().remove(&room);
                         if !self.warned.replace(true) {
                             tracing::warn!(
                                 %error,
@@ -266,6 +338,33 @@ impl SharedDesktops {
         }
     }
 
+    /// The record this device makes its write on: the one it last wrote and
+    /// the workspace took, with what `reached` — the workspace's own copy of
+    /// the record — holds merged in. A device writes a record the workspace
+    /// has not handed back to it yet all the same, and its next change
+    /// continues the one it made instead of numbering it again.
+    fn base(
+        &self,
+        room: WorkspaceId,
+        reached: Option<automerge::AutoCommit>,
+    ) -> automerge::AutoCommit {
+        let kept = self.kept.borrow().get(&room).cloned();
+        let Some(mut base) = kept else {
+            return reached.unwrap_or_default();
+        };
+        if let Some(mut reached) = reached
+            && let Err(error) = base.merge(&mut reached)
+        {
+            // What the workspace holds cannot be laid over our own write:
+            // start from it, and say so once.
+            if !self.warned.replace(true) {
+                tracing::warn!(%error, %room, "the shared desktop was not laid together");
+            }
+            return reached;
+        }
+        base
+    }
+
     /// Every window the desk of `tree` shows, this device's own, that a
     /// write made since the fold would add to the record: what
     /// [`tilo_desktop_model::shared_record::device::Writer::mine`] has to
@@ -275,7 +374,7 @@ impl SharedDesktops {
             return;
         };
         let room = workspace.id();
-        let Some(doc) = Self::record(engine, room) else {
+        let Some(doc) = Self::record(engine, room).ok().flatten() else {
             return;
         };
         let Some(shared) = shared_record::read(&doc, None) else {

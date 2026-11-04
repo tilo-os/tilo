@@ -407,9 +407,13 @@ impl DesktopPolicy {
         Self::with_tree(seed_tree(&mut minter, "Desk", Vec::new()), salt)
     }
 
-    /// A policy over `tree`, the desktop as last kept.
+    /// A policy over `tree`, the desktop as last kept, minting under `salt`:
+    /// a kept tree carries no range of its own (it is not written to the
+    /// file), so the device whose session builds the desk says which it is.
     #[must_use]
     pub fn with_tree(tree: DesktopTree, salt: u16) -> (Self, DesktopSurface) {
+        let mut tree = tree;
+        tree.salt = salt;
         let arriving = Arriving::default();
         let launches = Launches::default();
         let crashed = Crashed::default();

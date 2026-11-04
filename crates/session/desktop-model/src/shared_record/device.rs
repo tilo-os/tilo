@@ -427,6 +427,13 @@ impl Kept<'_> {
         mine: &|_| false,
         private: &|_| false,
     };
+
+    /// All of this device's is: a writer's, whose own layout the record does
+    /// not hold yet and whose write adds it beside everyone else's.
+    pub const OWN: Kept<'static> = Kept {
+        mine: &|_| true,
+        private: &|_| true,
+    };
 }
 
 /// Fold the record `doc`'s layout of `workspace`'s workspace into `workspace`:

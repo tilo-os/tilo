@@ -503,9 +503,12 @@ impl DesktopHandle {
     /// running content, new tabs get content from the host's
     /// [`TileSource`], and removed tabs' applications close. Queued commands
     /// stay queued and are re-checked against the new tree when applied.
-    pub fn replace_tree(&self, tree: DesktopTree) {
+    pub fn replace_tree(&self, mut tree: DesktopTree) {
         let mut shared = self.shared.borrow_mut();
         observe_ids(&mut shared.minter, &tree);
+        // A tree kept beside the state file carries no range of its own: it
+        // writes where this desk's ids were minted.
+        tree.salt = shared.minter.salt();
         shared.tree = tree;
         shared.replaced = true;
         shared.changed();
