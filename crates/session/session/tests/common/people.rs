@@ -757,9 +757,17 @@ impl Device {
     /// What this device's session logged as a warning or an error, oldest
     /// first: what a failed step says when it never happened.
     pub fn warnings(&self) -> String {
-        self.log()
+        let log = self.log();
+        let warnings: Vec<&str> = log
             .lines()
             .filter(|line| line.contains(" WARN ") || line.contains(" ERROR "))
+            .collect();
+        warnings
+            .iter()
+            .rev()
+            .take(300)
+            .rev()
+            .copied()
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -767,7 +775,7 @@ impl Device {
     /// Read this device's session log, so a failed step says why.
     fn read_line_of_log(&self) -> String {
         let log = self.log();
-        log.lines().rev().take(20).collect::<Vec<_>>().join("\n")
+        log.lines().rev().take(400).collect::<Vec<_>>().join("\n")
     }
 
     /// What this device shows and logged, for a step that never happened.
@@ -789,7 +797,9 @@ impl Device {
                     .collect();
                 let shown = interesting
                     .iter()
+                    .rev()
                     .take(200)
+                    .rev()
                     .copied()
                     .collect::<Vec<_>>()
                     .join("\n");
