@@ -58,13 +58,31 @@ pub const EMPTY_WORKSPACE_MEET: &str = "shell.empty-workspace.meet";
 pub const EMPTY_WORKSPACE_INVITE: &str = "shell.empty-workspace.invite";
 pub const EMPTY_WORKSPACE_ACTIVITY: &str = "shell.empty-workspace.activity";
 
-/// An action an app publishes, as a launchpad card names it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An action an app publishes, as the desktop's chrome asks for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchpadAppAction {
-    pub app_id: &'static str,
-    pub display_name: &'static str,
-    pub resource: &'static str,
-    pub action: &'static str,
+    pub app_id: String,
+    pub display_name: String,
+    pub resource: String,
+    pub action: String,
+}
+
+impl LaunchpadAppAction {
+    /// The app action that opens (or starts) this person's conversation with
+    /// `root` (hex): Chat's own `open-direct-conversation` on the pair's
+    /// conversation, on the record the two of them share, its composer
+    /// ready. Chat publishes the action on a row named for the conversation
+    /// each person has with the person they talk to, so the desktop asks for
+    /// that row's resource.
+    #[must_use]
+    pub fn message_person(root: &str) -> Self {
+        Self {
+            app_id: "so.tilo.chat".to_owned(),
+            display_name: "Chat".to_owned(),
+            resource: format!("chat.person:{}", ui::person_chat::person_key(root)),
+            action: "open-direct-conversation".to_owned(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -111,19 +129,19 @@ impl LaunchpadAction {
     /// publishes the action on, and the action. The host delivers it to the
     /// app in the workspace, launching the app first when it is closed, so
     /// the card does what it names in one step.
-    pub const fn app_action(self) -> Option<LaunchpadAppAction> {
+    pub fn app_action(self) -> Option<LaunchpadAppAction> {
         match self {
             Self::Tasks => Some(LaunchpadAppAction {
-                app_id: "so.tilo.calendar",
-                display_name: "Calendar",
-                resource: "calendar.calendar",
-                action: "show-tasks",
+                app_id: "so.tilo.calendar".to_owned(),
+                display_name: "Calendar".to_owned(),
+                resource: "calendar.calendar".to_owned(),
+                action: "show-tasks".to_owned(),
             }),
             Self::Meet => Some(LaunchpadAppAction {
-                app_id: "so.tilo.chat",
-                display_name: "Chat",
-                resource: "chat.workspace",
-                action: "start-call",
+                app_id: "so.tilo.chat".to_owned(),
+                display_name: "Chat".to_owned(),
+                resource: "chat.workspace".to_owned(),
+                action: "start-call".to_owned(),
             }),
             Self::Chat | Self::Notes | Self::Invite | Self::Activity => None,
         }
@@ -1436,6 +1454,20 @@ mod tests {
     }
 
     #[test]
+    fn a_persons_card_asks_chat_for_the_conversation_between_them() {
+        let root = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
+        let ask = LaunchpadAppAction::message_person(root);
+        assert_eq!(ask.app_id, "so.tilo.chat");
+        assert_eq!(ask.display_name, "Chat");
+        assert_eq!(ask.action, "open-direct-conversation");
+        assert_eq!(
+            ask.resource,
+            format!("chat.person:{}", ui::person_chat::person_key(root)),
+            "Chat publishes the action on its conversation with them"
+        );
+    }
+
+    #[test]
     fn launchpad_cards_route_to_their_owning_apps_by_click_or_assistive_action() {
         fn desktop_launchpad_exposes_an_app_opener() {
             let pad = CollaborationLaunchpad::new();
@@ -1479,19 +1511,27 @@ mod tests {
         fn tasks_and_call_cards_name_the_action_they_perform() {
             let tasks = LaunchpadAction::Tasks.app_action().expect("tasks action");
             assert_eq!(
-                (tasks.app_id, tasks.resource, tasks.action),
+                (
+                    tasks.app_id.as_str(),
+                    tasks.resource.as_str(),
+                    tasks.action.as_str()
+                ),
                 ("so.tilo.calendar", "calendar.calendar", "show-tasks")
             );
             let call = LaunchpadAction::Meet.app_action().expect("call action");
             assert_eq!(
-                (call.app_id, call.resource, call.action),
+                (
+                    call.app_id.as_str(),
+                    call.resource.as_str(),
+                    call.action.as_str()
+                ),
                 ("so.tilo.chat", "chat.workspace", "start-call")
             );
             for card in LaunchpadAction::ALL {
                 if let Some(action) = card.app_action() {
                     assert_eq!(
                         card.app_target(),
-                        Some((action.app_id, action.display_name)),
+                        Some((action.app_id.as_str(), action.display_name.as_str())),
                         "{card:?} acts in the app it opens"
                     );
                 }

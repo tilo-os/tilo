@@ -226,6 +226,33 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
             public_key: ada_key.clone(),
         })
         .expect("Bob opens the conversation with Ada");
+    bob_window.with_chat(|chat| {
+        assert!(
+            matches!(chat.focus, crate::app::Focus::Main),
+            "the conversation opens with its composer ready"
+        );
+    });
+    // What a person's card asks of Chat when they press Message: the action
+    // Chat publishes on the row naming their conversation, so the desktop's
+    // ask is one Chat answers.
+    bob_window.with_chat(|chat| {
+        let row = chat
+            .person_conversation_rows()
+            .into_iter()
+            .find(|row| row.id() == format!("chat.person:{ada_key}"))
+            .expect("Chat lists the conversation with Ada");
+        let resource = row.into_resource();
+        assert_eq!(resource.kind, "chat.person", "{:?}", resource.id);
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == ChatEffect::OPEN_DIRECT_CONVERSATION.id),
+            "the row offers {}: {:?}",
+            ChatEffect::OPEN_DIRECT_CONVERSATION.id,
+            resource.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+        );
+    });
     let sent = ada_window
         .effect(&ChatEffect::SendDirectMessage {
             public_key: bob_key.clone(),

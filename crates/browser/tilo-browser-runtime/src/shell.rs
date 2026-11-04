@@ -93,6 +93,8 @@ pub(crate) enum HostRequest {
 const RENAME_ACTION: &str = "set-name";
 /// The avatar menu's "Report a problem…", which the page answers itself.
 const REPORT_PROBLEM: &str = "report-problem";
+/// Chat, which holds the conversation each pair of people shares.
+const CHAT_APP: &str = "so.tilo.chat";
 /// The popovers the bar opens, one at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarPopover {
@@ -1160,9 +1162,9 @@ impl BrowserShell {
 
     /// The card of the person `who` (their roster id, or their root key):
     /// who they are, what they are doing (their own words, or marked
-    /// automatic), their id that stays theirs, and following them. Someone
-    /// not here now (an author of an old message) still has a card: their
-    /// name, picture and id.
+    /// automatic), their id that stays theirs, and following them or
+    /// writing to them in Chat. Someone not here now (an author of an old
+    /// message) still has a card: their name, picture and id, and Message.
     fn person_model(&self, who: &str, name: Option<&str>) -> Option<ProfileModel> {
         let tree = self.handle.read(Clone::clone);
         let people = self.chrome.people(&tree);
@@ -1187,6 +1189,10 @@ impl BrowserShell {
             .user_of(id)
             .map(str::to_owned)
             .or_else(|| person.user.clone());
+        // Chat holds the conversation each pair of people shares; one without
+        // a known person (a guest before the host's line) has none.
+        let can_message =
+            !person.agent && key.is_some() && crate::desktop::known_application(CHAT_APP).is_some();
         let linked = key
             .as_deref()
             .map(|key| self.chrome.here.borrow().linked_of(key).to_vec())
@@ -1202,6 +1208,7 @@ impl BrowserShell {
                 place: row.activity.clone(),
                 following: self.pinned.followed() == Some(id),
                 can_follow: row.followable && !person.agent,
+                can_message,
                 linked,
             }),
             ..ProfileModel::default()
@@ -1328,6 +1335,15 @@ impl BrowserShell {
             ProfileChoice::Follow(id) => {
                 self.pinned.toggle_follow(&id);
                 (self.chrome.wake)();
+                return;
+            }
+            // The conversation the two of them share, in Chat: the session
+            // opens Chat when it is not up, then hands it the action that
+            // shows it with its composer ready.
+            ProfileChoice::Message(key) => {
+                self.chrome.shared.ask_app_action(
+                    tilo_desktop::launchpad::LaunchpadAppAction::message_person(&key),
+                );
                 return;
             }
             ProfileChoice::Availability(_)
@@ -1476,7 +1492,7 @@ impl BrowserShell {
                 // step, as on a native desktop: the session opens the app
                 // and hands it the action.
                 if let Some(target) = other.app_action()
-                    && crate::desktop::known_application(target.app_id).is_some()
+                    && crate::desktop::known_application(&target.app_id).is_some()
                 {
                     self.chrome.shared.ask_app_action(target);
                 } else if let Some((app, _)) = other.app_target() {
@@ -1797,7 +1813,8 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
 }
 
 /// The card of someone not here now, known by their root key `key` and the
-/// name they were shown by: no status or place, and nothing to follow.
+/// name they were shown by: no status or place, nothing to follow, and
+/// Message where Chat holds the conversation between the two of them.
 fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
     let key = key.to_ascii_lowercase();
     if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1814,6 +1831,7 @@ fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
             place: None,
             following: false,
             can_follow: false,
+            can_message: crate::desktop::known_application(CHAT_APP).is_some(),
             linked: Vec::new(),
         }),
         key: Some(key),

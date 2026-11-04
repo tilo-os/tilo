@@ -100,6 +100,7 @@ profile-id = ID
 profile-copy-id = ID kopieren
 profile-status-own-words = In eigenen Worten
 profile-status-automatic = Automatisch aus dem, was die Person tut
+profile-message = Nachricht
 profile-follow = Folgen
 profile-stop-following = Nicht mehr folgen
 profile-photo-change = Bild ändern

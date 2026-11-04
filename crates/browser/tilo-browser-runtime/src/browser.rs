@@ -560,7 +560,7 @@ impl Desktop {
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::application_action_target(
                     &self.workspace,
-                    asked.app_id,
+                    &asked.app_id,
                     asked.resource,
                     asked.action,
                 ),

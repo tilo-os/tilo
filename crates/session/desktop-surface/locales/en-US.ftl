@@ -88,6 +88,7 @@ profile-id = ID
 profile-copy-id = Copy ID
 profile-status-own-words = In their own words
 profile-status-automatic = Written automatically from what they do
+profile-message = Message
 profile-follow = Follow
 profile-stop-following = Stop following
 profile-photo-change = Change picture
