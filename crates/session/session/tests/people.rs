@@ -88,7 +88,9 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
         "one person joined the workspace, not their two devices: {members:?}"
     );
 
-    // Each of the four sessions keeps the workspace, and shows it on its desk.
+    // Each of the four sessions keeps the workspace, shows it on its desk,
+    // and has it in front: a person who joins a workspace lands in it, so
+    // the desk shows that workspace rather than the one it started on.
     for device in [&ada_laptop, &ada_phone, &bob_laptop, &bob_phone] {
         assert_eq!(
             device.held().as_slice(),
@@ -96,10 +98,11 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
             "{} holds the workspace it joined",
             device.label
         );
-        let tree = device.state()["state"]["workspace_tree"].clone();
-        assert!(
-            tree.to_string().contains(&site.workspace),
-            "{} shows the workspace it joined: {tree}",
+        device.wait_showing(&site.workspace);
+        assert_eq!(
+            device.showing().as_deref(),
+            Some(site.workspace.as_str()),
+            "{} shows the workspace it joined in front",
             device.label
         );
     }

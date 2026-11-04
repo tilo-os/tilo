@@ -90,6 +90,10 @@ impl Site {
     /// `owner`'s site: a relay of this machine governing the workspace `name`,
     /// listening on loopback with its directory and door served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
+        // The site keeps the keys of the channels it seals in the platform
+        // secret store, which this process keeps in memory: a site without one
+        // can host no sealed record, and its people's devices reach no plane.
+        tilo_secrets::keep_in_memory_for_process();
         let state = tempfile::tempdir().expect("a directory for the site's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -273,16 +277,43 @@ impl Site {
         });
     }
 
-    /// What the site keeps of the record `app`/`record` in the workspace: the
-    /// bytes of a document its people wrote, as a device that joins later is
-    /// replayed them.
-    pub fn record(&self, app: &str, record: &str) -> Option<Vec<u8>> {
+    /// The apps the workspace's governance lets author its records, as its
+    /// host records them now.
+    pub fn authors(&self) -> std::collections::BTreeSet<String> {
         self.runtime
-            .block_on(
-                self.workspaces
-                    .record_document(&self.workspace, app, record),
-            )
-            .expect("the site's records")
+            .block_on(self.workspaces.app_authors(&self.workspace))
+            .expect("the workspace's app authors")
+    }
+
+    /// Wait until the workspace's governance lets `app` author its records:
+    /// what the owner's device granting it there leaves the host holding, and
+    /// what a member's device joins with.
+    pub fn wait_for_author(&self, app: &str) {
+        tilo_test_env::wait_until(format!("the workspace lets {app} author"), || {
+            self.authors().contains(app)
+        });
+    }
+
+    /// Let the apps `apps` author the workspace's records, as the host of a
+    /// workspace does before its people open them there
+    /// ([`tilo_relay::workspaces::Workspaces::settle_app_authorship`]): a
+    /// member whose role lets them write writes through an app the workspace
+    /// lets author, and a member may not grant that themselves — the
+    /// workspace's own devices do.
+    pub fn author_apps(&self, apps: &[&str]) {
+        let apps: std::collections::BTreeSet<String> =
+            apps.iter().map(|app| (*app).to_owned()).collect();
+        self.runtime
+            .block_on(self.workspaces.settle_app_authorship(
+                &self.workspace,
+                &self.host,
+                &apps,
+                &std::collections::BTreeSet::new(),
+            ))
+            .expect("the workspace lets its people's apps author");
+        for app in apps {
+            self.wait_for_author(&app);
+        }
     }
 
     /// The workspace's shared desktop as the site keeps it now: its strips and
@@ -629,6 +660,16 @@ impl Device {
         std::fs::read_to_string(self.home.path().join("session.log")).unwrap_or_default()
     }
 
+    /// What this device's session logged as a warning or an error, oldest
+    /// first: what a failed step says when it never happened.
+    pub fn warnings(&self) -> String {
+        self.log()
+            .lines()
+            .filter(|line| line.contains(" WARN ") || line.contains(" ERROR "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Read this device's session log, so a failed step says why.
     fn read_line_of_log(&self) -> String {
         let log = self.log();
@@ -666,6 +707,13 @@ impl Device {
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env("XDG_RUNTIME_DIR", root.join("runtime"))
             .env("TILO_IDENTITY_ROOT", root.join("identity"))
+            // The apps installed on this device: what its desk opens, and
+            // what it starts them from.
+            .env("TILO_APPS_DATA_DIR", root.join("data/tilo-apps"))
+            // This device keeps the channel keys of the workspaces it is in
+            // here, as a machine with no keychain does: without them it holds
+            // a workspace it cannot read or reach its people through.
+            .env(tilo_secrets::SECRETS_DIR_ENV, root.join("secrets"))
             .env(FILE_SECRETS_ENV, "1")
             // The session says at info why a join did not land: what a failed
             // step reads.
@@ -787,6 +835,60 @@ impl Device {
         }
     }
 
+    /// The workspace in front on this device's desk, by id: what the door
+    /// opens an app into.
+    pub fn showing(&self) -> Option<String> {
+        let tree = &self.state()["state"]["workspace_tree"];
+        let active = tree["active"].as_u64()?;
+        tree["workspaces"]
+            .as_array()?
+            .iter()
+            .find(|workspace| workspace["id"].as_u64() == Some(active))
+            .and_then(|workspace| workspace["room"].as_str().map(str::to_owned))
+    }
+
+    /// Wait until the desk shows the workspace `workspace` in front: a person
+    /// who joins a workspace lands in it, so the door opens apps into it
+    /// rather than into the desk they were on.
+    pub fn wait_showing(&self, workspace: &str) {
+        tilo_test_env::wait_until(format!("{} shows {workspace} in front", self.label), || {
+            self.showing().as_deref() == Some(workspace)
+        });
+    }
+
+    /// The store this device's session reads its installed apps from.
+    pub fn store(&self) -> PathBuf {
+        self.home.path().join("data/tilo-apps")
+    }
+
+    /// Install Chat in this device's store, as a device with the app
+    /// installed has it: the app this run built, under its own manifest, in
+    /// the registry the session launches installed apps from.
+    ///
+    /// The manifest is the app's own (`apps/chat/tilo-app.toml`), except for
+    /// the runtime bundle it names: an app of this build runs on the machine
+    /// it was built on, and the bundle an installed desktop carries is not
+    /// here.
+    pub fn install_chat(&self) {
+        let binary = tilo_test_env::sibling_binary("chat", "chat");
+        let store = self.store();
+        let payload = store.join("payload/so.tilo.chat");
+        std::fs::create_dir_all(payload.join("bin")).expect("the package's payload");
+        std::fs::copy(&binary, payload.join("bin/chat")).expect("the app this run built");
+        let manifest = payload.join("manifest.toml");
+        std::fs::write(&manifest, chat_manifest()).expect("the app's manifest");
+        std::fs::write(
+            store.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = \"so.tilo.chat\"\nversion = \"0.1.0\"\n\
+                 payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
+                payload = payload.display(),
+                manifest = manifest.display(),
+            ),
+        )
+        .expect("the store's registry");
+    }
+
     /// The actions this device publishes now.
     pub fn actions(&self) -> Value {
         self.ask(&json!({"op": "actions_enumerate"}))
@@ -810,6 +912,52 @@ impl Device {
         }))
     }
 
+    /// [`Self::act`] held open until the invocation settles, as `tilo-control`
+    /// does when it waits: the answer says how the action ended, and carries
+    /// the value it returned when it returns one.
+    pub fn act_wait(&self, provider: &str, id: &str, args: &Value) -> Value {
+        self.invoke(provider, id, args, false)
+    }
+
+    /// [`Self::act_wait`], with the person's own confirmation of an action
+    /// that asked first: what pressing Allow in its prompt answers.
+    pub fn act_confirming(&self, provider: &str, id: &str, args: &Value) -> Value {
+        self.invoke(provider, id, args, true)
+    }
+
+    /// [`Self::act_wait`], with what the person said when the action asked
+    /// first (`confirmed`), followed until it settles.
+    fn invoke(&self, provider: &str, id: &str, args: &Value, confirmed: bool) -> Value {
+        let started = self.ask(&json!({
+            "op": "actions_invoke",
+            "provider": provider,
+            "id": id,
+            "args": args,
+            "confirmed": confirmed,
+        }));
+        let Some(number) = started["answer"]["receipt"]["broker_invocation_id"].as_u64() else {
+            return started;
+        };
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let answer = self.ask(&json!({
+                "op": "actions_status",
+                "invocation_id": number,
+                "wait_ms": 30_000,
+            }));
+            match answer["answer"]["receipt"]["update"]["state"].as_str() {
+                Some("accepted" | "progress") if Instant::now() < deadline => {}
+                _ => return answer,
+            }
+        }
+    }
+
+    /// Chat as this device runs it: the actions the app publishes to its
+    /// session's door, and the answers they give.
+    pub fn chat(&self) -> Chat<'_> {
+        Chat { device: self }
+    }
+
     /// Press the control named `named`, as an assistive technology activates
     /// it.
     pub fn press(&self, named: &str) {
@@ -831,19 +979,246 @@ impl Device {
         );
     }
 
-    /// Wait until this device's desk has `window`, a window's title, on it.
-    pub fn wait_for_window(&self, window: &str) {
-        tilo_test_env::wait_until(format!("{} shows {window}", self.label), || {
-            let windows = self.ask(&json!({"op": "windows"}));
-            windows.to_string().contains(window)
+    /// Wait until a window of the app `app` is open on this device's desk.
+    pub fn wait_for_window(&self, app: &str) {
+        tilo_test_env::wait_until(format!("{} shows a {app} window", self.label), || {
+            let answer = self.ask(&json!({"op": "windows"}));
+            answer["answer"]["windows"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
         });
     }
+}
+
+/// Chat as a device runs it: the app publishes its reading and sending as
+/// actions of its own, so a test asks the app what it shows rather than its
+/// session or its records.
+pub struct Chat<'a> {
+    device: &'a Device,
+}
+
+impl Chat<'_> {
+    /// The row the device's session publishes for the app's `operation`.
+    fn row(&self, operation: &str) -> Value {
+        let answer = self.device.actions();
+        answer["answer"]["actions"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| {
+                        row["application"] == "so.tilo.chat" && row["operation"] == operation
+                    })
+                    .cloned()
+            })
+            .unwrap_or_else(|| panic!("{} publishes Chat's {operation}", self.device.label))
+    }
+
+    /// The provider and id the session publishes for the app's `operation`,
+    /// once the app published it: the app names its own actions, so a caller
+    /// asks rather than writing them down.
+    fn action(&self, operation: &str) -> (String, String) {
+        tilo_test_env::wait_until(
+            format!("{} publishes Chat's {operation}", self.device.label),
+            || {
+                let answer = self.device.actions();
+                answer["answer"]["actions"].as_array().is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row["application"] == "so.tilo.chat" && row["operation"] == operation
+                    })
+                })
+            },
+        );
+        let row = self.row(operation);
+        (
+            row["provider"].as_str().expect("a provider").to_owned(),
+            row["id"].as_str().expect("an action's id").to_owned(),
+        )
+    }
+
+    /// Invoke the app's `operation` with `args` and wait for what it answered:
+    /// the value it returned, or the refusal it gave. An action the workspace
+    /// asks the person about first is answered, as the person at the device
+    /// answers its prompt.
+    fn invoke(&self, operation: &str, args: &Value) -> Value {
+        let answer = self.settled(operation, args);
+        let update = &answer["answer"]["receipt"]["update"];
+        match update["state"].as_str() {
+            Some("succeeded") => update["output"]["value"].clone(),
+            Some("failed") => panic!(
+                "{} Chat's {operation} failed: {}",
+                self.device.label, update["output"]["error"]
+            ),
+            other => panic!(
+                "{} Chat's {operation} ended as {other:?}: {answer}",
+                self.device.label
+            ),
+        }
+    }
+
+    /// The app's answer to `operation` with `args` once it settled: the
+    /// person's confirmation given where the action asked for it.
+    fn settled(&self, operation: &str, args: &Value) -> Value {
+        let (provider, id) = self.action(operation);
+        let answer = self.device.act_wait(&provider, &id, args);
+        if answer["err"]["code"].as_str() == Some("needs_confirmation") {
+            return self.device.act_confirming(&provider, &id, args);
+        }
+        answer
+    }
+
+    /// Open the conversation with `peer` in the app, as clicking their name
+    /// does: what is on screen is read, so their messages stop counting as
+    /// unread here.
+    pub fn open(&self, peer: &str) {
+        self.invoke("open-direct-conversation", &json!({"public_key": peer}));
+    }
+
+    /// Send `text` to the person `peer`, as typing it in the conversation
+    /// does: the app answers when it accepted the message into the record.
+    pub fn send(&self, peer: &str, text: &str) {
+        let answer = self.invoke(
+            "send-direct-message",
+            &json!({"public_key": peer, "text": text}),
+        );
+        assert_eq!(
+            answer["accepted"],
+            json!(true),
+            "{} sends to {peer}: {answer}",
+            self.device.label
+        );
+    }
+
+    /// The conversation with `peer` as Chat reads it now: its messages in the
+    /// order the app shows them, and how many of them its person has not read.
+    pub fn conversation(&self, peer: &str) -> Conversation {
+        let answer = self.invoke("read-direct-conversation", &json!({"public_key": peer}));
+        Conversation {
+            messages: answer["messages"]
+                .as_array()
+                .map(|messages| messages.to_vec())
+                .unwrap_or_default(),
+            unread: answer["unread"].as_u64().unwrap_or_default(),
+        }
+    }
+
+    /// The texts of the conversation with `peer`, in the order Chat shows
+    /// them.
+    pub fn texts(&self, peer: &str) -> Vec<String> {
+        self.conversation(peer)
+            .messages
+            .iter()
+            .filter_map(|message| message["text"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// How many of the messages `peer` wrote this device's person has not
+    /// read, as Chat counts them.
+    pub fn unread(&self, peer: &str) -> u64 {
+        self.conversation(peer).unread
+    }
+
+    /// What Chat answers when asked for the conversation with `peer`: `None`
+    /// when it can read it, and why not when it refuses — a person who is in
+    /// no workspace with this device's person has no conversation here.
+    pub fn refusal(&self, peer: &str) -> Option<String> {
+        let answer = self.settled("read-direct-conversation", &json!({"public_key": peer}));
+        if let Some(refusal) = answer.get("err") {
+            return Some(refusal["message"].as_str().unwrap_or_default().to_owned());
+        }
+        let update = &answer["answer"]["receipt"]["update"];
+        match update["state"].as_str() {
+            Some("succeeded") => None,
+            Some("failed") => Some(
+                update["output"]["error"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| update.to_string()),
+            ),
+            other => panic!(
+                "{} Chat's read of {peer} ended as {other:?}: {answer}",
+                self.device.label
+            ),
+        }
+    }
+
+    /// Wait until Chat offers `peer` as someone to talk to: until the
+    /// workspace's people are in its shared record, a conversation with them
+    /// reads as unavailable rather than as held.
+    pub fn wait_for_contact(&self, peer: &str) {
+        let deadline = tilo_test_env::hang_deadline();
+        while let Some(refusal) = self.refusal(peer) {
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "{} never had {peer} to talk to in Chat, and said why: {refusal}\n\
+                     what the session warned and failed at:\n{}",
+                    self.device.label,
+                    self.device.warnings()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Wait until the conversation with `peer` shows `texts` in that order,
+    /// and nothing else.
+    pub fn wait_for_texts(&self, peer: &str, texts: &[&str]) {
+        tilo_test_env::wait_until(
+            format!("{} shows {texts:?} from {peer}", self.device.label),
+            || {
+                self.reads(peer)
+                    && self
+                        .texts(peer)
+                        .iter()
+                        .map(String::as_str)
+                        .eq(texts.iter().copied())
+            },
+        );
+    }
+
+    /// Whether the app answered a read of the conversation with `peer`: it
+    /// refuses one with someone it does not know in the workspace.
+    fn reads(&self, peer: &str) -> bool {
+        self.refusal(peer).is_none()
+    }
+}
+
+/// A conversation as Chat shows it: its messages in the app's order, and what
+/// of it its person has not read.
+pub struct Conversation {
+    /// Each message as the app answers it: its id, its author and its text.
+    pub messages: Vec<Value>,
+    /// How many of the conversation's messages its person has not read.
+    pub unread: u64,
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Chat's manifest as one of this machine's stores installs it: the app's own
+/// description (`apps/chat/tilo-app.toml`), without the runtime bundle it
+/// names. An installed desktop carries that bundle; a build runs on the
+/// machine it was built on.
+fn chat_manifest() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/chat/tilo-app.toml");
+    let manifest = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("Chat's manifest at {}: {error}", path.display()));
+    let mut kept = String::new();
+    let mut isa = false;
+    for line in manifest.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            isa = trimmed == "[package.isa]";
+        }
+        if isa || trimmed.starts_with("runtime") {
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    kept
 }
 
 /// The role a member holds in a workspace, as [`WorkspaceRole`] names the

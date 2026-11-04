@@ -1451,6 +1451,7 @@ readers = [
   "crates/session/session/src/seeded_apps.rs",
   "crates/session/session/src/shell.rs",
   "crates/session/session/tests/common/mod.rs",
+  "crates/session/session/tests/common/people.rs",
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/session_package.rs",
   "crates/session/session/tests/app_side_records.rs",

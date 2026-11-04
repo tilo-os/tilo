@@ -143,6 +143,20 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 expected,
                 f"the {profile} profile builds the session's siblings for its tests",
             )
+        # Chat's acceptance starts the app and the launcher that starts it, so
+        # the run that drives it builds the two packages of other crates first.
+        chat = scripts.pop("chat-siblings")
+        self.assertEqual(chat["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
+        self.assertEqual(chat["command"][2:], ["chat:chat", "launcher:tilo-launcher"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "chat-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-session) and binary(chat_2x2)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds Chat and its launcher for the acceptance",
+            )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"]})
@@ -151,6 +165,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
+                                 "package(tilo-session) and binary(chat_2x2)": "chat-siblings",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures"})
 
     def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:
