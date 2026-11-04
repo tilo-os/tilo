@@ -1,5 +1,5 @@
 use crate::TransportOrigin;
-use crate::owner::testing::{APP, WORKSPACE, raw_fixture};
+use crate::owner::testing::{APP, WORKSPACE, raw_fixture, record_on_disk};
 use crate::owner::{
     DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, WorkspaceId, open_file,
 };
@@ -93,7 +93,7 @@ fn workspace_json(path: &std::path::Path, workspace: WorkspaceId) -> serde_json:
     serde_json::from_slice(&std::fs::read(workspace_file(path, workspace)).unwrap()).unwrap()
 }
 
-/// The record as a build before the split wrote it: one file's JSON.
+/// The record as a build before the split wrote it: JSON a file holds whole.
 fn whole_record(path: &std::path::Path) -> serde_json::Value {
     serde_json::to_value(crate::owner::read_file(path).unwrap()).unwrap()
 }
@@ -187,11 +187,13 @@ fn a_joined_workspace_is_kept_in_its_own_private_file_and_reopens() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(&joined.path)
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o077, 0, "the record is owner-only");
+        let parts = crate::owner::file_store::parts_of(&joined.path);
+        let mode = std::fs::metadata(&parts).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the record's directory is owner-only");
+        for (file, _) in record_on_disk(&joined.path) {
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{} is owner-only", file.display());
+        }
     }
 }
 
@@ -204,11 +206,11 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
         .owner
         .commit_document(request.clone(), joined.now)
         .unwrap();
-    let committed = std::fs::read(&joined.path).unwrap();
+    let committed = record_on_disk(&joined.path);
     let retry = joined.owner.commit_document(request, joined.now).unwrap();
     assert_eq!(retry.generation, receipt.generation);
     assert_eq!(
-        std::fs::read(&joined.path).unwrap(),
+        record_on_disk(&joined.path),
         committed,
         "an exact retry does not rewrite"
     );
@@ -937,7 +939,7 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
-    let committed = std::fs::read(&joined.path).unwrap();
+    let committed = record_on_disk(&joined.path);
     let later = joined
         .now
         .checked_add(std::time::Duration::from_secs(301))
@@ -951,7 +953,7 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
             later,
         )
         .unwrap();
-    assert_eq!(std::fs::read(&joined.path).unwrap(), committed);
+    assert_eq!(record_on_disk(&joined.path), committed);
     assert_eq!(
         joined
             .owner
@@ -1043,6 +1045,8 @@ fn an_owner_file_written_while_the_map_was_named_for_workspaces_restores() {
         .remove("rooms")
         .expect("the storage names its workspaces");
     value["workspaces"] = workspaces;
+    // That build's file, where the split layout this build keeps is not.
+    std::fs::remove_dir_all(crate::owner::file_store::parts_of(&joined.path)).unwrap();
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
     let reopened = open_file(&joined.path).expect("a file written by that build reads");
     assert_eq!(
@@ -1161,6 +1165,8 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
         "enrollment_intent".into(),
         serde_json::Value::String(STANDARD.encode(&previous_intent)),
     );
+    // That build's file, where the split layout this build keeps is not.
+    std::fs::remove_dir_all(crate::owner::file_store::parts_of(&joined.path)).unwrap();
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
 
     let reopened = open_file(&joined.path).expect("a file from before the join version bump reads");
@@ -1192,8 +1198,9 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
 #[test]
 fn owner_files_hold_byte_fields_as_compact_base64() {
     let joined = enrolled();
-    let index = std::fs::read(&joined.path).unwrap();
-    assert!(!index.contains(&b'\n'), "the record's index is compact");
+    for (file, bytes) in record_on_disk(&joined.path) {
+        assert!(!bytes.contains(&b'\n'), "{} is compact", file.display());
+    }
     let file = workspace_file(&joined.path, joined.workspace);
     let bytes = std::fs::read(&file).unwrap();
     assert!(!bytes.contains(&b'\n'), "the workspace's file is compact");
@@ -1213,7 +1220,7 @@ fn retained_replay_reuses_exact_committed_publication() {
         })
         .unwrap();
     let message = joined.replay.clone();
-    let before = std::fs::read(&joined.path).unwrap();
+    let before = record_on_disk(&joined.path);
     let generation = joined
         .owner
         .with_current(joined.workspace, |view| Ok(view.generation()))
@@ -1240,7 +1247,7 @@ fn retained_replay_reuses_exact_committed_publication() {
         "an unchanged authenticated replay must reuse the actual committed generation"
     );
     assert_eq!(
-        std::fs::read(&joined.path).unwrap(),
+        record_on_disk(&joined.path),
         before,
         "an unchanged authenticated replay must not rewrite durable owner state"
     );
@@ -1252,7 +1259,7 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     let reader = member().verifying_key().to_bytes();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
-    let before = std::fs::read(&joined.path).unwrap();
+    let before = record_on_disk(&joined.path);
     let mut decryptions = 0;
     let mut opener = |op: &collab_types::SignedOp| {
         decryptions += 1;
@@ -1312,7 +1319,7 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
             .unwrap(),
         SECRET
     );
-    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    assert_eq!(record_on_disk(&joined.path), before);
     let path = joined.path.clone();
     let workspace = joined.workspace;
     let now = joined.now;
@@ -1326,5 +1333,5 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
                     .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
             })
     }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(record_on_disk(&path), before);
 }

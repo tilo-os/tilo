@@ -1,13 +1,16 @@
 //! The owner's record on disk: an index and one file per workspace, written
 //! apart. A change writes its own workspace's file and the index; a record
-//! written as one file before the split reads once and is kept split.
+//! written as one file before the split reads once and is kept split, with
+//! the file it came from left as it is.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use super::{part_bytes, parts_of};
-use crate::owner::{NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing};
+use super::{index_of, part_bytes, parts_of};
+use crate::owner::{
+    NativeAuthorityStorage, NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing,
+};
 use ed25519_dalek::SigningKey;
 use std::{
     cell::Cell,
@@ -41,9 +44,18 @@ fn predecessor() -> Vec<u8> {
         .collect()
 }
 
+/// The record's index on disk.
+fn index_path(path: &Path) -> PathBuf {
+    index_of(&parts_of(path))
+}
+
+fn index_bytes(path: &Path) -> Vec<u8> {
+    std::fs::read(index_path(path)).unwrap()
+}
+
 /// The index on disk.
 fn index(path: &Path) -> serde_json::Value {
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    serde_json::from_slice(&index_bytes(path)).unwrap()
 }
 
 /// Every workspace file on disk, by name.
@@ -53,6 +65,7 @@ fn part_files(path: &Path) -> BTreeMap<String, Vec<u8>> {
     };
     entries
         .flatten()
+        .filter(|entry| entry.file_name() != "index.json")
         .map(|entry| {
             (
                 entry.file_name().into_string().unwrap(),
@@ -142,8 +155,14 @@ fn a_record_written_as_one_file_reads_once_and_is_then_kept_split() {
         vec![format!("{FOUNDERS}.3.json"), format!("{RESEARCH}.3.json")]
     );
     // The record was 16208 bytes as one file; the index that a publication
-    // rewrites beside the workspaces is smaller than it.
-    assert!(std::fs::read(&path).unwrap().len() < predecessor().len());
+    // rewrites beside the workspaces is smaller than it, and the file the
+    // record came from is left as it is.
+    assert!(index_bytes(&path).len() < predecessor().len());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        predecessor(),
+        "the file the record came from is not rewritten"
+    );
 
     // Reading a split record again publishes nothing.
     drop(owner);
@@ -186,7 +205,7 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
         .filter(|(name, _)| !before.contains_key(*name))
         .map(|(_, bytes)| bytes.len())
         .sum::<usize>()
-        + std::fs::read(&path).unwrap().len();
+        + index_bytes(&path).len();
     let whole = serde_json::to_vec(&record).unwrap().len();
     println!(
         "publishing into 3 workspaces writes {written} bytes; the whole record is {whole} bytes"
@@ -206,14 +225,14 @@ fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
     let first = owner.create_workspace("One", &device, &key, now).unwrap();
-    let durable = std::fs::read(&path).unwrap();
+    let durable = index_bytes(&path);
 
     // The workspace's file is written; the index that would name it is not.
     let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
         owner.create_workspace("Two", &device, &key, now)
     });
     assert!(stopped.is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(index_bytes(&path), durable);
     assert_eq!(
         part_files(&path).len(),
         2,
@@ -250,7 +269,7 @@ fn a_workspace_costs_its_own_record() {
     let founded_bytes = part_bytes(record.workspaces.get(&founded).unwrap())
         .unwrap()
         .len();
-    let index_one = std::fs::read(&path).unwrap().len();
+    let index_one = index_bytes(&path).len();
 
     // A second person joins a workspace: the record this device keeps of it
     // is what a workspace with two people costs.
@@ -260,7 +279,7 @@ fn a_workspace_costs_its_own_record() {
     let joined_bytes = part_bytes(record.workspaces.get(&joined).unwrap())
         .unwrap()
         .len();
-    let index_two = std::fs::read(&path).unwrap().len();
+    let index_two = index_bytes(&path).len();
     let whole = serde_json::to_vec(&record).unwrap().len();
     println!(
         "a founded workspace's file is {founded_bytes} bytes; a workspace with two people is \
@@ -276,6 +295,34 @@ fn a_workspace_costs_its_own_record() {
         index_two < 1024,
         "the index of two workspaces is {index_two} bytes"
     );
+}
+
+#[test]
+fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
+    let directory = directory();
+    let path = record_path(&directory);
+    std::fs::write(&path, predecessor()).unwrap();
+    let (key, device) = device();
+    let now = SystemTime::now();
+    let owner = open_file(&path).unwrap();
+    owner.create_workspace("Third", &device, &key, now).unwrap();
+    drop(owner);
+
+    // A build before the split reads the file it wrote, whole, and holds two
+    // workspaces: the split wrote the record beside that file, not over it.
+    let older: NativeAuthorityStorage =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(older.revision(), 3);
+    assert_eq!(older.held().count(), 2);
+
+    // That build publishing over its file, as one does after a rollback,
+    // does not take the record with it: this build reads its index.
+    let split = read_file(&path).unwrap();
+    assert_eq!(split.held().count(), 3);
+    std::fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+    let reread = read_file(&path).unwrap();
+    assert_eq!(reread.revision(), split.revision());
+    assert_eq!(reread.held().count(), 3);
 }
 
 #[test]

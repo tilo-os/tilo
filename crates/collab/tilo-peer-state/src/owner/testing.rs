@@ -20,6 +20,13 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 pub mod governor;
 
+/// The record at `path` as the disk holds it: the index and one file per
+/// workspace, sorted by path.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn record_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    crate::owner::file_store::record_files(path).unwrap()
+}
+
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const APP: &str = "so.tilo.chat";
 

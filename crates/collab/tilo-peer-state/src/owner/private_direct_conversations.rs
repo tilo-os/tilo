@@ -568,6 +568,7 @@ impl NativeWorkspaceOwner {
 mod tests {
     use super::*;
     use crate::join::{self, MemberRole};
+    use crate::owner::testing::record_on_disk;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -1041,7 +1042,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let before = std::fs::read(&fixture.path).unwrap();
+        let before = record_on_disk(&fixture.path);
         fixture.owner = crate::owner::open_file(&fixture.path).unwrap();
         assert_person_doors_refused(
             &fixture,
@@ -1077,7 +1078,7 @@ mod tests {
                 )
                 .is_ok()
         );
-        assert_eq!(before, std::fs::read(&fixture.path).unwrap());
+        assert_eq!(before, record_on_disk(&fixture.path));
     }
 
     #[test]
@@ -1339,9 +1340,10 @@ mod tests {
             .unwrap();
         assert_eq!(before, after);
         assert!(
-            !std::fs::read_to_string(&fixture.path)
-                .unwrap()
-                .contains("failed-store-body")
+            record_on_disk(&fixture.path)
+                .iter()
+                .all(|(_, bytes)| !String::from_utf8_lossy(bytes).contains("failed-store-body")),
+            "no file of the record holds the text"
         );
     }
 

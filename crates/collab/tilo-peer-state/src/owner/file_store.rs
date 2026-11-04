@@ -9,9 +9,12 @@
 //! touched. The index names each workspace's file and the revision that file
 //! was written at: it is the commit point of a change, and a workspace file
 //! the index does not name at that revision is not the record's — a
-//! publication that stopped between the two leaves the record as it was. A
-//! record written as one file, by a build before the split, is read once and
-//! kept in this layout from then on.
+//! publication that stopped between the two leaves the record as it was.
+//!
+//! The index has names of its own ([`parts_of`], and `index.json` in it), so
+//! the whole file a build before the split wrote is read once and then left
+//! exactly as it is. A build that predates the split still finds its record
+//! there — the one it last wrote, not this one — and never sees the index.
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
     Store,
@@ -39,6 +42,10 @@ const INDEX_VERSION: u32 = 1;
 
 /// The file a host whose own state is the file `state` keeps its owner's
 /// record in, beside it (`state.json` keeps it in `state.owner.json`).
+///
+/// A build before the split wrote the record to this file whole; this build
+/// reads such a file once, keeps the record beside it from then on, and does
+/// not touch the file again.
 #[must_use]
 pub fn owner_file_of(state: &Path) -> PathBuf {
     state.with_extension("owner.json")
@@ -95,9 +102,35 @@ enum Layout {
     Index(Held),
 }
 
-/// The directory beside the record file that holds one file per workspace.
+/// The directory beside the record file that holds the record: its index and
+/// one file per workspace.
 pub(crate) fn parts_of(path: &Path) -> PathBuf {
     path.with_extension("workspaces")
+}
+
+/// The record's index, in the directory beside the record file.
+///
+/// It has a name of its own, and the record file a build before the split
+/// wrote is left as it is: a build that predates the split reads that file
+/// whole, as it always did, and never sees the index.
+pub(crate) fn index_of(parts: &Path) -> PathBuf {
+    parts.join("index.json")
+}
+
+/// Every file of the record at `path` as the disk holds it — the index and
+/// each workspace's file — sorted by path.
+#[cfg(test)]
+pub(crate) fn record_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std::io::Error> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(parts_of(path)) else {
+        return Ok(files);
+    };
+    for entry in entries {
+        let entry = entry?;
+        files.push((entry.path(), std::fs::read(entry.path())?));
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// The file one workspace's record is in, as written at `revision`.
@@ -141,24 +174,26 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(bytes))
 }
 
-/// The record the file at `path` holds, empty when there is none, and how it
-/// held it.
+/// The record at `path`, empty when there is none, and how it is held: the
+/// split layout when the index is there, otherwise the whole file a build
+/// before the split wrote.
 fn read_record(path: &Path) -> Result<(NativeAuthorityStorage, Layout), String> {
+    let parts = parts_of(path);
+    if let Some(bytes) = read_bounded(&index_of(&parts))? {
+        let index: StoredIndex = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("the record's index does not parse: {error}"))?;
+        return read_index(path, index);
+    }
     let Some(bytes) = read_bounded(path)? else {
         return Ok((
             NativeAuthorityStorage::default(),
             Layout::Index(Held::new()),
         ));
     };
-    if let Ok(index) = serde_json::from_slice::<StoredIndex>(&bytes) {
-        read_index(path, index)
-    } else {
-        // A record this build wrote leads with an index naming each workspace's
-        // file; a file that is not one is a whole record written before the
-        // split, and this parse is the one that reports what it is missing.
-        let record = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        Ok((record, Layout::Whole))
-    }
+    // A record written as one file, by a build before the split: read whole,
+    // and kept beside it from here on, leaving this file as it is.
+    let record = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    Ok((record, Layout::Whole))
 }
 
 fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage, Layout), String> {
@@ -213,12 +248,13 @@ fn index_bytes(record: &NativeAuthorityStorage, held: &Held) -> Result<Vec<u8>, 
     Ok(bytes.into_inner())
 }
 
-/// Read the record the file at `path` and the workspace files it names hold,
-/// empty when there is none.
+/// Read the record kept at `path`: the index beside it and the workspace
+/// files the index names, or the whole file a build before the split wrote
+/// there. Empty when there is neither.
 ///
 /// # Errors
-/// The file cannot be read or holds an invalid record, or a workspace the
-/// record names has no file at the revision it names.
+/// It cannot be read or holds an invalid record, or a workspace the record
+/// names has no file at the revision it names.
 pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
     read_record(path).map(|(record, _)| record)
 }
@@ -253,11 +289,11 @@ pub fn open_file_with(
         SystemTime::now(),
     )?;
     if whole || migrated {
-        // A record this build rewrote on open: the split layout of a record
-        // written as one file, or the form of records already there. Either
-        // changes neither a workspace nor its relay workspace, so it goes
-        // straight to the files rather than through a publication of the
-        // store: nothing a host follows has changed.
+        // The split layout of a record written as one file, or the form of
+        // records already there. Either changes neither a workspace nor its
+        // relay workspace, so it goes straight to the files rather than
+        // through a publication of the store: nothing a host follows has
+        // changed, and the file the record was read from is left as it is.
         let record = owner.0.authority.read();
         store.write_all(&record)?;
     } else {
@@ -270,7 +306,6 @@ pub fn open_file_with(
 
 pub(crate) struct FileStore {
     pub(crate) host: Arc<dyn FileHost>,
-    path: PathBuf,
     parts: PathBuf,
     history: crate::owner::HistoryContent,
     /// The revision each held workspace's file was written at.
@@ -283,7 +318,6 @@ impl FileStore {
     fn at(path: &Path, host: Arc<dyn FileHost>, held: Held) -> Self {
         Self {
             host,
-            path: path.to_path_buf(),
             parts: parts_of(path),
             history: crate::owner::HistoryContent::for_state_file(path),
             held: RwLock::new(held),
@@ -322,8 +356,9 @@ impl FileStore {
     }
 
     fn write_index(&self, record: &NativeAuthorityStorage, held: &Held) -> Result<(), String> {
+        provision(&self.parts)?;
         let bytes = index_bytes(record, held)?;
-        self.replace(&self.path, &bytes, record)
+        self.replace(&index_of(&self.parts), &bytes, record)
     }
 
     /// Replace a file of the record durably. A replacement whose publication
@@ -358,9 +393,13 @@ impl FileStore {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
         };
+        let index = index_of(&self.parts);
         let held = self.held.read();
         for entry in entries.flatten() {
             let path = entry.path();
+            if path == index {
+                continue;
+            }
             if path
                 .file_name()
                 .and_then(part_name)

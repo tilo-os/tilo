@@ -1,5 +1,6 @@
 use super::ApplicationRecord;
 use crate::join::{self, JoinTransportRequest, JoinTransportResponse};
+use crate::owner::testing::record_on_disk;
 use crate::owner::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, open_file, testing};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
@@ -193,7 +194,7 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
         "apps still start empty"
     );
     let maximum = captured.bytes.len().saturating_sub(1);
-    let before = std::fs::read(fixture.directory.path().join("owner.json")).unwrap();
+    let before = record_on_disk(&fixture.directory.path().join("owner.json"));
     fixture
         .owner
         .with_current(
@@ -216,7 +217,7 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
         )
         .unwrap();
     assert_eq!(
-        std::fs::read(fixture.directory.path().join("owner.json")).unwrap(),
+        record_on_disk(&fixture.directory.path().join("owner.json")),
         before
     );
 }
@@ -238,7 +239,7 @@ fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody()
             )
             .unwrap()
     );
-    let bytes = std::fs::read(&path).unwrap();
+    let bytes = record_on_disk(&path);
     assert!(
         !fixture
             .owner
@@ -251,7 +252,7 @@ fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody()
             )
             .unwrap()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(record_on_disk(&path), bytes);
     let reopened = open_file(&path).unwrap();
     reopened
         .with_current(workspace, |view| {
@@ -334,7 +335,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
     let request = crate::owner::publication::request(&message).unwrap();
     fixture.owner.commit_document(request, fixture.now).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let bytes = std::fs::read(&path).unwrap();
+    let bytes = record_on_disk(&path);
     assert!(
         !fixture
             .owner
@@ -347,7 +348,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
             )
             .unwrap()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(record_on_disk(&path), bytes);
     let reopened = open_file(&path).unwrap();
     reopened
         .with_current(workspace, |view| {
@@ -379,7 +380,7 @@ fn creation_refuses_wrong_key_wrong_certificate_and_undeclared_kind_without_muta
     let fixture = fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let bytes = std::fs::read(&path).unwrap();
+    let bytes = record_on_disk(&path);
     assert!(
         fixture
             .owner
@@ -412,5 +413,5 @@ fn creation_refuses_wrong_key_wrong_certificate_and_undeclared_kind_without_muta
         )
         .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(record_on_disk(&path), bytes);
 }

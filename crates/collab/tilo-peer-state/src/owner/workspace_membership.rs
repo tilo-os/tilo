@@ -429,15 +429,13 @@ mod tests {
             },
         );
         let path = fixture.directory.path().join("owner.json");
+        let parts = crate::owner::file_store::parts_of(&path);
         let retained = fixture.directory.path().join("retained-owner.json");
         // The record's index and the workspace files it names move together.
-        std::fs::rename(&path, &retained).unwrap();
-        std::fs::rename(
-            crate::owner::file_store::parts_of(&path),
-            crate::owner::file_store::parts_of(&retained),
-        )
-        .unwrap();
-        std::fs::create_dir(&path).unwrap();
+        std::fs::rename(&parts, crate::owner::file_store::parts_of(&retained)).unwrap();
+        // A publication that cannot write its index fails.
+        std::fs::create_dir(&parts).unwrap();
+        std::fs::create_dir(crate::owner::file_store::index_of(&parts)).unwrap();
         assert!(
             fixture
                 .owner
