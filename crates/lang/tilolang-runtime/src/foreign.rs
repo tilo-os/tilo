@@ -20,7 +20,7 @@ use crate::ids::ModuleHash;
 use crate::meta::{Ty, TypeKey};
 use crate::registry::Registry;
 use crate::store::Lit;
-use crate::value::{EnumValue, RefValue, ResourceRef, Value};
+use crate::value::{RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
 
 /// How a resource of an app this runtime does not run printed when a program met it.
@@ -500,11 +500,7 @@ impl Decoder<'_> {
                 // A reading names the case as its service writes it (the enum's kebab-case
                 // name); the value holds the declared case's id, as every enum value here
                 // does, so a view's `== .wifi` asks the same thing of both.
-                Json::String(case) => Ok(Value::Enum(EnumValue {
-                    ty: format!("{}#{}", key.app, key.name),
-                    variant: self.registry.enum_case(key, case)?,
-                    fields: BTreeMap::new(),
-                })),
+                Json::String(case) => Ok(Value::Enum(self.registry.enum_value(key, case)?)),
                 encoded => crate::value::from_json(encoded),
             },
             Ty::Result(..) | Ty::RichText | Ty::Map(_) => crate::value::from_json(json),

@@ -722,6 +722,16 @@ impl ViewInstance {
             .field(&field_id)
             .cloned()
             .ok_or_else(|| RuntimeError::NotFound(format!("field {field_id}")))?;
+        // A control that picks a case hands over its name (the id the field holds it by): the
+        // field takes the case itself, so the name becomes that case before the field is
+        // written, as a case written in the language already is.
+        let value = match (&field.ty, value) {
+            (Ty::Enum(key), Value::Text(case)) => {
+                Value::Enum(reg.enum_value(key, case).map_err(RuntimeError::BadArgs)?)
+            }
+            _ => value.clone(),
+        };
+        let value = &value;
         drop(reg);
         let ctx = ExecCtx {
             invoker: self.live.viewer.clone(),

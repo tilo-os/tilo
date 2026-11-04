@@ -14,6 +14,7 @@ use crate::meta::{
     ViewMeta, field_kind, parse_ty,
 };
 use crate::store::{FieldSpec, NewRecord};
+use crate::value::EnumValue;
 
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
@@ -445,25 +446,48 @@ impl Registry {
             .find_map(|p| p.meta.enums.iter().find(|e| e.id == id).cloned())
     }
 
-    /// The id of `key`'s case `case`, named by its name or its id: what a value of the enum
-    /// holds (`LinkKind.wifi`), as the enum's package declares it.
+    /// The enum `key` names, as the package of its app declares it.
+    pub fn enum_of(&self, key: &TypeKey) -> Option<EnumMeta> {
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|hash| self.packages.get(hash))
+            .filter(|pkg| pkg.meta.app == key.app)
+            .find_map(|pkg| {
+                pkg.meta
+                    .enums
+                    .iter()
+                    .find(|declared| declared.name == key.name)
+                    .cloned()
+            })
+    }
+
+    /// The value of `case`, named by its name or its id, as a value of `key`'s enum holds it:
+    /// the enum's id, the case's id, and no fields.
     ///
     /// # Errors
     ///
     /// A message when no loaded package declares the enum, or it has no such plain case.
-    pub fn enum_case(&self, key: &TypeKey, case: &str) -> Result<String, String> {
-        let id = format!("{}#{}", key.app, key.name);
-        let declared = self
-            .enum_meta(&id)
-            .ok_or_else(|| format!("`{id}` is not declared by any loaded package"))?;
-        declared
+    pub fn enum_value(&self, key: &TypeKey, case: &str) -> Result<EnumValue, String> {
+        let declared = self.enum_of(key).ok_or_else(|| {
+            format!(
+                "`{}.{}` is not declared by any loaded package",
+                key.app, key.name
+            )
+        })?;
+        let variant = declared
             .variants
             .iter()
             .find(|variant| {
                 variant.fields.is_empty() && (variant.name == case || variant.id == case)
             })
             .map(|variant| variant.id.clone())
-            .ok_or_else(|| format!("`{case}` is not a case of `{}`", key.name))
+            .ok_or_else(|| format!("`{case}` is not a case of `{}`", key.name))?;
+        Ok(EnumValue {
+            ty: declared.id,
+            variant,
+            fields: std::collections::BTreeMap::new(),
+        })
     }
 
     /// The id of the view a window of type `ty` (an id) shows unless another is asked for: the

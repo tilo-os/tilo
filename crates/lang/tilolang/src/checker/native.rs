@@ -1464,9 +1464,10 @@ impl Checker<'_> {
 
     /// `facts(of) { ... }`: the facts of the resource as one row of chips — the same height,
     /// the same chevron, no labels, wrapping — each derived from what the field is: the day a
-    /// date field names, with the time of day its type pairs with it, and the person a
-    /// principal field names. The block adds the chips only the view can offer (the project's,
-    /// the enum's cases), in the same row.
+    /// date field names, with the time of day its type pairs with it, the person a principal
+    /// field names, and the case an enum field holds, in the case's glyph and tone, opening the
+    /// cases to pick another. The block adds the chips only the view can offer (the project's),
+    /// in the same row.
     fn facts(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
         let row = self.new_node("row", key.clone());
@@ -1488,6 +1489,7 @@ impl Checker<'_> {
                     Ty::Option(inner) if **inner == Ty::Principal => {
                         self.person_chip(&key, &b, field, c.call.span)
                     }
+                    Ty::Enum(enum_key) => self.enum_chip(&key, &b, field, enum_key),
                     _ => None,
                 };
                 if let Some(chip) = chip {
@@ -1562,6 +1564,78 @@ impl Checker<'_> {
             Ex::host(Imp::Viewer, Vec::new(), Ty::Principal),
             span,
         );
+        Some(view)
+    }
+
+    /// The chip that shows the case `field` holds: the toolkit's enum field, showing the
+    /// case's own glyph, label and tone, and opening the enum's cases to pick another — one
+    /// per case, each opening with the case's glyph and reading in its tone. A case is picked
+    /// by its name, which the field takes as that case, so an edit goes through the field
+    /// itself, never through a text the case would have to be read out of.
+    ///
+    /// A field whose cases carry values has no chip: a case is then a value with fields, and
+    /// one name does not say which.
+    fn enum_chip(
+        &mut self,
+        key: &Ex,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
+        enum_key: &crate::types::TypeKey,
+    ) -> Option<Ex> {
+        let info = self.env.enum_info(enum_key)?.clone();
+        if info.variants.iter().any(|case| !case.fields.is_empty()) {
+            return None;
+        }
+        let env = self.env;
+        let d = env.toolkit.and_then(|toolkit| toolkit.get("EnumField"))?;
+        let binding = d.bindings.first()?;
+        let n = self.new_node(
+            &crate::toolkit::kind(&d.name),
+            concat(key.clone(), Ex::str(&format!("#enum-{}", field.name))),
+        );
+        let view = Ex::local(n, Ty::View);
+        // The chip names what it chooses from, for whoever reads it without seeing it.
+        self.emit(host(
+            Imp::UiPropH,
+            vec![
+                view.clone(),
+                Ex::str("label"),
+                Ex::str(&crate::resolve::variant_label(&field.name, &field.doc)),
+            ],
+        ));
+        self.emit(host(
+            Imp::UiBind,
+            vec![view.clone(), b.clone(), Ex::str(&field.id)],
+        ));
+        self.emit(host(
+            Imp::UiPropH,
+            vec![view.clone(), Ex::str("bind"), Ex::str(&binding.name)],
+        ));
+        for case in &info.variants {
+            let n = self.new_node(
+                &crate::toolkit::kind("EnumOption"),
+                concat(
+                    key.clone(),
+                    Ex::str(&format!("#enum-{}-{}", field.name, case.id)),
+                ),
+            );
+            let option = Ex::local(n, Ty::View);
+            let prop = |name: &str, value: &str| {
+                host(
+                    Imp::UiPropH,
+                    vec![option.clone(), Ex::str(name), Ex::str(value)],
+                )
+            };
+            self.emit(prop("name", &case.id));
+            self.emit(prop("label", &case.label));
+            if let Some(icon) = &case.icon {
+                self.emit(prop("icon", icon));
+            }
+            if let Some(tone) = &case.tone {
+                self.emit(prop("tone", tone));
+            }
+            self.emit(host(Imp::UiChild, vec![view.clone(), option]));
+        }
         Some(view)
     }
 }

@@ -1284,6 +1284,15 @@ fn assignee(r: &Replica, task: &Value) -> Option<String> {
     }
 }
 
+/// The case a task's priority holds, by the case's name.
+#[cfg(feature = "record")]
+fn priority(r: &Replica, task: &Value) -> String {
+    match read(r, task, "priority") {
+        Value::Enum(case) => case.variant,
+        other => panic!("a priority: {other:?}"),
+    }
+}
+
 /// The key of the node bound to `field`.
 #[cfg(feature = "record")]
 fn bound_key(node: &UiNode, field: &str) -> Option<String> {
@@ -1319,7 +1328,7 @@ fn texts(node: &UiNode) -> Vec<String> {
 
 /// A task's assignee is one person field: a chip of who holds it that opens a list of "Me",
 /// "No one" and the workspace's people. Picking the person the page shows, another member, and
-/// nobody is one step of the task's history each, so one undo takes back one pick.
+/// nobody is one change of the task's history each, so one undo takes back one pick.
 #[cfg(feature = "record")]
 #[test]
 fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
@@ -1395,11 +1404,17 @@ fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
         Some(Value::none()),
         "the chip shows nobody"
     );
-    // Each pick reads as a plain entry of the task's history, named for the field it changed.
+    // The picks fold into one step of the task's history, the way one person's changes made in
+    // a row do, and the step reads named for the field they changed. The page itself draws the
+    // assignee as a chip, with no label beside it.
+    let shown = texts(page.tree());
     assert!(
-        texts(page.tree()).iter().any(|text| text == "Assignee"),
-        "the history names the field it changed: {:?}",
-        texts(page.tree())
+        shown.iter().any(|text| text == "Edited assignee"),
+        "the history names the field it changed: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text == "Assignee"),
+        "the assignee is a chip, not a labelled field: {shown:?}"
     );
 
     // One undo takes back one pick: the clearing, then Ben, then Me.
@@ -1426,6 +1441,113 @@ fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
     );
     undo(&mut ada);
     assert_eq!(assignee(&ada, &task), None, "picking Me is one step");
+}
+
+/// A task's priority is one case field: the page draws it as a chip of the case it holds, the
+/// chip offers every case the type declares in that case's own glyph and tone, and a pick
+/// writes the case into the task.
+#[cfg(feature = "record")]
+#[test]
+fn the_priority_is_one_case_field_and_each_pick_writes_the_case() {
+    let (mut ada, root) = workspace();
+    let task = call(
+        &ada,
+        "new_task",
+        vec![root, Value::text("Write the launch post")],
+    );
+    ada.commit();
+    let mut page = task_page(&ada, &task);
+    let field = {
+        let meta = &ada.host.package(APP).unwrap().meta;
+        crate::fixtures::field_id(meta, "Task", "priority")
+    };
+    let key = bound_key(page.tree(), &field).expect("the page binds its priority");
+    let node = node_of(page.tree(), &key).expect("the bound node is drawn");
+    assert_eq!(node.kind, "ui.EnumField", "the priority is one case field");
+    let declared = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .enums
+        .iter()
+        .find(|declared| declared.name == "Priority")
+        .expect("the type declares its priority")
+        .variants
+        .clone();
+    assert_eq!(
+        declared
+            .iter()
+            .map(|case| case.label.as_str())
+            .collect::<Vec<_>>(),
+        ["No priority", "Low", "Medium", "High", "Urgent"],
+        "the type's cases read as the app writes them"
+    );
+    let cases: Vec<(&str, &str)> = node
+        .children
+        .iter()
+        .filter(|child| child.kind == "ui.EnumOption")
+        .map(|child| {
+            let text = |name: &str| match child.props.get(name) {
+                Some(Value::Text(text)) => text.as_str(),
+                other => panic!("a case's {name}: {other:?}"),
+            };
+            (text("name"), text("label"))
+        })
+        .collect();
+    assert_eq!(
+        cases,
+        declared
+            .iter()
+            .map(|case| (case.id.as_str(), case.label.as_str()))
+            .collect::<Vec<_>>(),
+        "the chip offers every case the type declares, in its order"
+    );
+    let case = |name: &str| {
+        node.children
+            .iter()
+            .find(|child| child.props.get("name") == Some(&Value::text(name)))
+            .unwrap_or_else(|| panic!("the case {name}"))
+    };
+    let high = declared
+        .iter()
+        .find(|case| case.name == "high")
+        .expect("the type declares its high priority");
+    assert_eq!(
+        case(&high.id).props.get("icon"),
+        Some(&Value::text("flag")),
+        "a case says the glyph it reads as"
+    );
+    assert_eq!(
+        case(&high.id).props.get("tone"),
+        Some(&Value::text("warning")),
+        "a case says the tone it reads in"
+    );
+    assert_eq!(
+        case(&declared[0].id).props.get("tone"),
+        None,
+        "a case that names no tone reads plainly"
+    );
+
+    // A pick writes the case into the task, held by the id the enum declares it by, and the
+    // chip shows what the task holds.
+    for picked in ["high", "urgent", "none"] {
+        let held = declared
+            .iter()
+            .find(|case| case.name == picked)
+            .expect("the type declares the case")
+            .id
+            .clone();
+        page.edit(&key, &Value::text(picked)).unwrap();
+        ada.commit();
+        page.poll_patches().unwrap();
+        assert_eq!(priority(&ada, &task), held, "a pick writes {picked}");
+        assert_eq!(
+            page.bound_value(&key),
+            Some(read(&ada, &task, "priority")),
+            "the chip shows the case the task holds"
+        );
+    }
 }
 
 /// A step added while someone else checks the task off leaves that task done with the step

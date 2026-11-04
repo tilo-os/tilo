@@ -1959,6 +1959,42 @@
       }
     },
     {
+      "name": "EnumField",
+      "doc": "A value among an enum's cases: the case it holds, as a chip in the case's glyph and tone, opening the cases to pick another.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the field is for (\"Priority\"), as the app named it: what a screen reader hears before the case itself.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "cases",
+          "doc": "The cases to pick from, in the enum's order.",
+          "accepts": {
+            "component": "EnumOption"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The case it holds, by the case's name, and where a picked case goes.",
+          "type": "text",
+          "merge": "register"
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
       "name": "BarGauge",
       "doc": "A labelled level as a bar: a disk's use, a quota, a battery. Its label stands over the track's start and its readout over its end; the fill turns warning, then danger, as it fills, unless the share has no status.",
       "props": [
@@ -6180,6 +6216,52 @@
       }
     },
     {
+      "name": "EnumOption",
+      "doc": "One case an [`EnumField`] offers: its name, what it reads as, and how it reads.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "The case's own name, as the app declares it: what an edit writes back.",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "label",
+          "doc": "What the case reads as, in a word or two: \"High\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "The glyph the case names, when it names one.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The tone the case reads in: what the chip is washed in.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "MenuItem",
+        "label": "label"
+      }
+    },
+    {
       "name": "SwipeAction",
       "doc": "What swiping a row across does: one command on its item, uncovered under the row as it moves.",
       "props": [
@@ -6703,7 +6785,7 @@
         },
         {
           "name": "icon",
-          "doc": "A glyph instead of the label.",
+          "doc": "A glyph: before the label on a tab ([`ViewTabs`]), and instead of it on any other strip, named by the label either way.",
           "type": {
             "option": "icon"
           }
