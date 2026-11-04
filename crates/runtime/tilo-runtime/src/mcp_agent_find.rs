@@ -388,23 +388,27 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         // The rows the resource can hang under: the ones the publisher says
         // hold children, and the one its own id extends. A provider that
-        // publishes a tree whole lists its root as a plain row, and the
-        // tree answers under it all the same, so the id decides as well. The
-        // row an id extends leads: its level holds the resource, and the top
-        // level of a workspace lists more rows than a peek reads.
+        // publishes a tree whole lists its root as a plain row, and the tree
+        // answers under it all the same, so the id decides as well. The row an
+        // id extends is read down alone: its level holds the resource, and the
+        // top level of a workspace lists more rows than a peek reads, so the
+        // branch that names the resource is not spent looking elsewhere.
         let extends = |node: &&Node| {
             found
                 .resource
                 .strip_prefix(node.id.as_str())
                 .is_some_and(|rest| rest.starts_with('/'))
         };
-        let mut containers: Vec<&Node> = top
-            .children
-            .iter()
-            .filter(|node| node.container || extends(node))
-            .collect();
-        containers.sort_by_key(|node| !extends(node));
-        containers.truncate(ROOT_PEEK);
+        let extending: Vec<&Node> = top.children.iter().filter(extends).collect();
+        let containers: Vec<&Node> = if extending.is_empty() {
+            top.children
+                .iter()
+                .filter(|node| node.container)
+                .take(ROOT_PEEK)
+                .collect()
+        } else {
+            extending.into_iter().take(ROOT_PEEK).collect()
+        };
         // A bound field's row (a note's body) is published under the record
         // holding it, named by the key the bound id spells: the record's own
         // key with the field's after it. The record is asked by the name the
