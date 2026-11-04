@@ -655,8 +655,14 @@ fn the_person_s_lock_follows_their_other_devices() {
         changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(1),
         active_unix_ms: 0,
     });
+    // The device's own state reaches the fabric on a pass of its own: the wait
+    // takes in the publication too, rather than reading what it said before.
     until(&mut harness, |harness| {
-        harness.session.compositor().locked() && harness.session.surfaces().running("lock")
+        harness.session.compositor().locked()
+            && harness.session.surfaces().running("lock")
+            && link
+                .published()
+                .is_some_and(|published| published.locked && published.changed_unix_ms == 0)
     });
     assert!(
         harness.session.compositor().locked(),
@@ -677,7 +683,11 @@ fn the_person_s_lock_follows_their_other_devices() {
         active_unix_ms: 0,
     });
     until(&mut harness, |harness| {
-        !harness.session.compositor().locked() && !harness.session.surfaces().running("lock")
+        !harness.session.compositor().locked()
+            && !harness.session.surfaces().running("lock")
+            && link
+                .published()
+                .is_some_and(|published| !published.locked && published.changed_unix_ms != 0)
     });
     assert!(
         !harness.session.compositor().locked(),

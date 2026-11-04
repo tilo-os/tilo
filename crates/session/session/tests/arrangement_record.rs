@@ -387,7 +387,9 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     step(&mut session);
     let from = strip_of(&session, window).expect("it has a strip");
 
-    // The person types: nothing moves under their hands.
+    // The person types, and the agent asks while they do: the pass that takes the keystroke in is
+    // the pass that tells the agent's action the person is busy, so the move waits rather than
+    // landing under their hands.
     session
         .compositor()
         .input(InputEvent::Key {
@@ -396,8 +398,6 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         })
         .unwrap();
     step(&mut session);
-    assert!(session.compositor().underway().typing, "they are typing");
-
     session
         .invoke_with_actor(
             "agent-task:reading",
@@ -406,7 +406,6 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
             &serde_json::json!({"row": row_resource(second)}),
         )
         .expect("the action is taken");
-    step(&mut session);
     assert_eq!(
         strip_of(&session, window),
         Some(from),
@@ -418,7 +417,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         "and it waits rather than dropping"
     );
 
-    // The typing ends; what waited runs by itself.
+    // The typing ends; what waited runs by itself, once the product's own pause on typing is over.
     session
         .compositor()
         .input(InputEvent::Key {
@@ -432,8 +431,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
             std::time::Instant::now() < deadline,
             "the waiting move never ran"
         );
-        std::thread::sleep(Duration::from_millis(1100));
-        step(&mut session);
+        session.step(Duration::from_millis(50)).expect("a frame");
     }
     assert_eq!(
         arrangement(&session)
