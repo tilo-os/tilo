@@ -1489,6 +1489,72 @@ mod tests {
         assert!(PersonalStore::restore(&kept, &b_cert, now()).is_err());
     }
 
+    /// The write `mutation` makes of `record`, as `author`'s own store signs
+    /// it: what a link carries, and what a verdict names.
+    fn write(
+        mutation: &DocumentMutation,
+        author: &SigningKey,
+        seq: u64,
+        store_key: &str,
+    ) -> SignedOp {
+        let mut envelope = SignedOp::new_unsigned(
+            mutation.encode().unwrap(),
+            collab_types::document_artifact_id("tube", store_key, "prefs"),
+            Ed25519PublicKey::from_bytes(author.verifying_key().to_bytes()),
+            collab_types::document_attestation_id("tube", store_key, "prefs"),
+            OpKind::Change,
+            now(),
+            seq,
+        );
+        collab_types::sign_op(&mut envelope, author).unwrap();
+        envelope
+    }
+
+    /// A verdict on a change that later lands is let go, and its author is
+    /// told so: the write arrived after all, and what this device refused is
+    /// not missing from it.
+    #[test]
+    fn a_refused_write_that_later_lands_stops_being_missing() {
+        let root = SigningKey::from_bytes(&[12; 32]);
+        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+        let (b_key, _b_cert) = device(&root, 3, DeviceCapabilities::member());
+        let mut a = PersonalStore::open(root.verifying_key().to_bytes(), a_cert, now()).unwrap();
+        let refused = write(&change("font", "serif"), &b_key, 1, &a.store_key());
+        a.file_refusal(
+            "tube",
+            "prefs",
+            &refused,
+            "it waits for earlier writes",
+            &a_key,
+            now(),
+        )
+        .unwrap();
+        let held = a.write_refusals();
+        assert_eq!(held.len(), 1, "one verdict on the change: {held:?}");
+        assert_eq!(held[0].author, b_key.verifying_key().to_bytes());
+        assert_eq!(held[0].reason, RefusalReason::MissingDependency);
+        assert_eq!(a.take_refusal_updates().len(), 1, "its author is told");
+
+        // The author's next write of the route reaches this store: the change
+        // the verdict named is here, and the verdict goes.
+        a.landed(
+            &b_key.verifying_key().to_bytes(),
+            "tube",
+            "prefs",
+            refused.seq.saturating_add(1),
+        );
+        assert!(
+            a.write_refusals().is_empty(),
+            "the write landed after all: not missing"
+        );
+        let updates = a.take_refusal_updates();
+        assert_eq!(updates.len(), 1, "its author is told it stands");
+        assert!(
+            matches!(&updates[0], NeighbourMsg::WriteRefusals { refusals } if refusals.is_empty()),
+            "the set the author reads no longer names the change: {updates:?}"
+        );
+    }
+
     /// The certificate `key` holds under `root`, for a device that already
     /// sent its own.
     fn b_cert_of(root: &SigningKey, key: &SigningKey) -> DeviceCert {
