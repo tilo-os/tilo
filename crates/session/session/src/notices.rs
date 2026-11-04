@@ -140,8 +140,11 @@ impl Notice {
 
     /// Show it on the desk this session draws, for a session with no
     /// notifications service: what the session raises is kept there rather
-    /// than lost, and it stays until the person lets it go.
-    pub(crate) fn tell_desk(self, desk: &DesktopNotifications) {
+    /// than lost, and it stays until the person lets it go. What the notice
+    /// offers the person it offers there too, so a question keeps its
+    /// answers. Says which notification went out: the notice whose answer the
+    /// session waits on finds it by that id.
+    pub(crate) fn tell_desk(self, desk: &DesktopNotifications) -> u64 {
         let severity = match self.urgency {
             0 => NotificationSeverity::Info,
             1 => NotificationSeverity::Warning,
@@ -153,15 +156,16 @@ impl Notice {
             .expires_after
             .filter(|after| !after.is_zero())
             .unwrap_or(PERSISTENT_DISMISS);
-        let desk_notice = DeskNotification::new(self.title, self.body)
+        let mut desk_notice = DeskNotification::new(self.title, self.body)
             .with_app_name(self.app)
             .with_severity(severity)
             .with_dismiss_after(dismiss_after);
+        desk_notice.actions = self.actions;
         desk.post(if self.machine_wide {
             desk_notice.machine_wide()
         } else {
             desk_notice
-        });
+        })
     }
 
     /// Show it to the person, and say which notification went out: a producer

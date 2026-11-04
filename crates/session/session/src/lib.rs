@@ -158,6 +158,7 @@ mod update_finish;
 mod wallpapers;
 mod wifi_continuity;
 mod window_motion;
+mod window_move;
 mod window_share;
 mod window_warmth;
 mod workspace_gate;
@@ -392,6 +393,8 @@ struct Shared {
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
     notices: tilo_desktop_surface::DesktopNotifications,
+    /// The windows carried to another workspace, asked about first.
+    moves: window_move::Moves,
     /// The apps' live activities on the bar, which the clock shows and the
     /// controls pressed on it go back to the app through.
     clock: Rc<chrome::Clock>,
@@ -1835,6 +1838,7 @@ impl Session {
             owner_session: owner_session::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),
+            moves: window_move::Moves::new(notices.clone()),
             clock,
             tray,
             wallpapers,
@@ -2641,6 +2645,7 @@ impl Session {
             self.follow_app_asks();
             self.shared.follow_gestures();
             self.shared.follow_tab_menus();
+            self.follow_window_moves();
             let ran = self.shared.run_invocations(self.compositor.locked());
             let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
             let commanded = !commands.is_empty();

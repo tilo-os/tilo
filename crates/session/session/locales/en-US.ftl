@@ -278,3 +278,15 @@ unlock-history-app = Disk unlock
 unlock-approved = Approved unlocking { $item }
 unlock-denied = Declined to unlock { $item }
 unlock-history-unknown-device = a device this computer cannot name
+
+## What a window moved to another workspace asks, and what it says when the app
+## did not start where the person put it.
+window-move-app-name = Workspaces
+window-move-ask-title = Move { $app } to { $workspace }?
+window-move-ask-what = The app starts again there, with the access that workspace gives it, and opens the record that workspace keeps.
+window-move-ask-they-see = Everyone in { $workspace } can see the window and what it opens.
+window-move-ask-you-leave = In { $workspace } it stops running, and what that workspace keeps stays there.
+window-move-ask-carry = Move it
+window-move-ask-stay = Leave it
+window-move-failed-title = { $app } did not start in { $workspace }
+window-move-failed-body = The window stayed in { $workspace }.

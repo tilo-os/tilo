@@ -26,8 +26,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
-    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace,
+    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
 };
 use tilo_desktop_surface::crashed_app::Closed;
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
@@ -114,6 +115,20 @@ struct HeldTab {
 /// window lands in the one its own open asked for.
 type Held = Rc<RefCell<BTreeMap<String, Vec<HeldTab>>>>;
 
+/// A tab the person carried to another workspace whose window an app this
+/// device started fills: the session starts that app again where the person
+/// put it, and the tab takes the window that comes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarriedTab {
+    /// The tab the person carried.
+    pub tab: TabId,
+    /// The workspace they carried it to.
+    pub to: WorkspaceSlot,
+}
+
+/// The tabs the person carried to another workspace, waiting for the session.
+type Carried = Rc<RefCell<Vec<CarriedTab>>>;
+
 /// Where a window of an app that asked to open beside one of its own lands:
 /// the tab it lands after, and whether it takes focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +153,9 @@ struct Windows {
     titles: Titles,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the person carried to another workspace, which only the
+    /// session can move.
+    carried: Carried,
 }
 
 impl TileSource for Windows {
@@ -276,6 +294,11 @@ impl TileSource for Windows {
             });
         self.launches.borrow_mut().push(app_id.clone());
     }
+
+    fn carry(&self, tab: TabId, to: WorkspaceSlot) -> bool {
+        self.carried.borrow_mut().push(CarriedTab { tab, to });
+        true
+    }
 }
 
 /// The desktop's answer to where windows go and which has focus.
@@ -292,6 +315,9 @@ pub struct DesktopPolicy {
     titles: Titles,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the person carried to another workspace, waiting for the
+    /// session.
+    carried: Carried,
     /// The places the apps asked for, oldest first, by the app that asked:
     /// its next window lands at the one its open asked for.
     places: BTreeMap<String, Vec<Beside>>,
@@ -322,6 +348,7 @@ impl DesktopPolicy {
         let closures = Closures::default();
         let titles = Titles::default();
         let held = Held::default();
+        let carried = Carried::default();
         let (surface, handle) = DesktopSurface::new(
             tree,
             salt,
@@ -332,6 +359,7 @@ impl DesktopPolicy {
                 closures: Rc::clone(&closures),
                 titles: Rc::clone(&titles),
                 held: Rc::clone(&held),
+                carried: Rc::clone(&carried),
             }),
         );
         let policy = Self {
@@ -342,6 +370,7 @@ impl DesktopPolicy {
             closures,
             titles,
             held,
+            carried,
             places: BTreeMap::new(),
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
@@ -692,6 +721,27 @@ impl DesktopPolicy {
     /// are done with it. False when the tab is gone or holds no app.
     pub fn note_in_tab(&mut self, tab: TabId, note: &str) -> bool {
         self.handle.note_in_tab(tab, note)
+    }
+
+    /// The tabs the person carried to another workspace whose window an app
+    /// this device started fills, oldest first: the session starts each app
+    /// again where the person put it, and the tab takes the window that comes.
+    pub fn take_carried(&self) -> Vec<CarriedTab> {
+        std::mem::take(&mut *self.carried.borrow_mut())
+    }
+
+    /// Carry tab `tab` into the workspace at `to`, with a window of its own:
+    /// where the session puts a tab whose app it started again there.
+    ///
+    /// # Errors
+    /// The tab is not on the desk, it is already in that workspace, or there
+    /// is no such workspace.
+    pub fn carry(&mut self, tab: TabId, to: WorkspaceSlot) -> Result<(), String> {
+        let mut tree = self.handle.read(Clone::clone);
+        let mut mint = || Ok(self.handle.mint_id());
+        move_tab_to_workspace(&mut tree, tab, to, &mut mint)?;
+        self.handle.replace_tree(tree);
+        Ok(())
     }
 
     /// Whether `tab` still waits for the window of a saved app: what the

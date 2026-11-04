@@ -646,7 +646,9 @@ impl SessionNotifications {
             // A session without a notifications service still draws its
             // desk: what it raises is kept there, so nothing it says is
             // lost.
-            None => notice.tell_desk(&self.desktop),
+            None => {
+                notice.tell_desk(&self.desktop);
+            }
         }
     }
 

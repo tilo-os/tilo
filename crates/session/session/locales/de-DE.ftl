@@ -282,3 +282,15 @@ unlock-history-app = Datenträgerentsperrung
 unlock-approved = Entsperrung für { $item } freigegeben
 unlock-denied = Entsperrung für { $item } abgelehnt
 unlock-history-unknown-device = ein Gerät, das dieser Rechner nicht benennen kann
+
+## Was ein in einen anderen Arbeitsbereich verschobenes Fenster fragt und was es
+## sagt, wenn die App dort nicht gestartet ist.
+window-move-app-name = Arbeitsbereiche
+window-move-ask-title = { $app } nach { $workspace } verschieben?
+window-move-ask-what = Die App startet dort neu, mit dem Zugriff, den dieser Arbeitsbereich ihr gibt, und öffnet den Eintrag, den dieser Arbeitsbereich führt.
+window-move-ask-they-see = Alle in { $workspace } sehen das Fenster und was es öffnet.
+window-move-ask-you-leave = In { $workspace } läuft sie dann nicht mehr, und was dieser Arbeitsbereich führt, bleibt dort.
+window-move-ask-carry = Verschieben
+window-move-ask-stay = Lassen
+window-move-failed-title = { $app } ist in { $workspace } nicht gestartet
+window-move-failed-body = Das Fenster blieb in { $workspace }.

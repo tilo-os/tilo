@@ -24,7 +24,7 @@ use shown::ShownTabs;
 
 use tilo_desktop_model::{
     DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent, WindowWidth,
-    Workspace,
+    Workspace, WorkspaceSlot,
 };
 use ui::automerge::{AutoCommit, ObjId};
 use ui::collaboration::PresencePayload;
@@ -154,6 +154,19 @@ pub trait TileSource {
     /// apps sharing one process have none of their own.
     fn workspace_id(&self) -> Option<String> {
         None
+    }
+
+    /// The person carried `tab` to the workspace at `to`, and a window of an
+    /// app this device started fills it. Such a tab does not cross by itself:
+    /// the app runs in the workspace that started it, with that workspace's
+    /// grants and records, so the session starts it again where the person put
+    /// it. Recording the move is what hands it over
+    /// ([`tilo_desktop_policy::DesktopPolicy::take_carried`]).
+    ///
+    /// Whether the session took it: false keeps the move the desk's own, and
+    /// nothing else about it changes.
+    fn carry(&self, _tab: TabId, _to: WorkspaceSlot) -> bool {
+        false
     }
 
     /// Whether this desktop draws the views windows embed of other apps'
@@ -1701,6 +1714,20 @@ impl DesktopSurface {
                         if let Some(layer) = self.notices.as_mut() {
                             layer.set_center_open(open);
                         }
+                        continue;
+                    }
+                    // A window of an app this device started runs in the
+                    // workspace that started it, with its grants and its
+                    // records: the tab does not cross by itself. The session
+                    // carries it instead — asking first when the move crosses
+                    // to or from a workspace other people are in — and this
+                    // tab takes the window the app opens where the person put
+                    // it.
+                    Admitted::MoveToWorkspace(ids, to)
+                        if live(&shared.tree, ids)
+                            && shared.window_of_tab(ids.tab).is_some()
+                            && self.tiles.carry(ids.tab, to) =>
+                    {
                         continue;
                     }
                     // Everything else is a window menu's row: the desktop's
