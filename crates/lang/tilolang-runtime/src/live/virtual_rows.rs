@@ -61,6 +61,14 @@ impl Rows {
         }
     }
 
+    /// The collection whose items the rows are, if they are a collection's.
+    fn coll(&self) -> Option<Rc<CollRef>> {
+        match self {
+            Self::Coll { coll, .. } => Some(Rc::clone(coll)),
+            Self::List { .. } => None,
+        }
+    }
+
     /// The collection's item of row `index`, kept rows counted.
     fn coll_row(&self, index: usize) -> Option<Rc<str>> {
         let Self::Coll { listing, kept, .. } = self else {
@@ -347,6 +355,9 @@ impl Live {
             return Ok(None);
         };
         let holder = rows.holder;
+        // Where the row stands among the rows of the collection it is a row of, which its body
+        // reads the rows around it by.
+        let among = rows.rows.coll().map(|coll| (coll, index));
         let (key, args) = rows.template.row(&item, index);
         let fragment = rows.template.fragment(key.clone(), Vec::new());
         let place = rows.built.partition_point(|(other, _)| *other < index);
@@ -365,7 +376,7 @@ impl Live {
             _ => return Ok(None),
         }
         self.place_built(list, &at);
-        self.render_row(core, id)?;
+        self.render_row(core, id, among)?;
         // After the row is rendered: its render sets the fragment's children.
         self.divide_unread(&item, &key, &at);
         Ok(Some(key))

@@ -339,8 +339,16 @@ action indent(t: Task, above: Option<Task> (above)) (
     icon: .arrow_right,
     key: "Ctrl+]",
 ) {
-    applies above != .none "Nothing above it here"
-    if let a = above { move_to(tasks, t, .some(a), .none) }
+    // The task it already stands under shows over it as the first of its own: the row over it
+    // is the task it is under, and there is no place there to go.
+    applies above != .none "Nothing over it here"
+    applies above != t.parent "The task over it is the one it is under"
+    if let a = above {
+        // The task of its own level that the row over it stands under: the task over it when
+        // that one is on its level, else the one whose subtasks it is among.
+        let under = tasks.items.ancestors(a, .parent).find(x -> x.parent == t.parent) ?? a
+        move_to(tasks, t, .some(under), .none)
+    }
 }
 
 /// Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.

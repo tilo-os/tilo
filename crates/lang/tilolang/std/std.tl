@@ -259,22 +259,14 @@ view rows_list<T>(
         for x in shown {
             let heading: Option<Date> = if let g = group { g(x) } else { .none }
             let tail = if let c = closed { c(x) } else { false }
-            // The row just over this one in its group, as the list shows them: the same
-            // heading (the items naming none stand together under the list's own), on this
-            // side of the fold, under the same parent. That is the place the actions offered
-            // on the row get, and none for the first of a group. A group's rows come
-            // together, so one row back is the row over it; a tree's rows of one parent are
-            // not kept together, so those it looks back through.
-            let at = shown.index_of(x) ?? 0
-            let above: Option<T> = if nested {
-                shown
-                    .take(at)
-                    .filter(
-                        y -> if let g = group { g(y) == heading } else { true } and if let c = closed { c(y) == tail } else { true } and if let p = parent { p(y) == p(x) } else { true },
-                    )
-                    .last()
-            } else if let p = shown.take(at).last() {
-                if if let g = group { g(p) == heading } else { true } and if let c = closed { c(p) == tail } else { true } and if let q = parent { q(p) == q(x) } else { true } {
+            // The row just over this one in its group, as the list shows them: the item before
+            // it when that one has the same heading (the items naming none stand together
+            // under the list's own) and is on this side of the fold. That is the place the
+            // actions offered on the row get, and none for the first of a group. The list's
+            // rows are the host's, so a row reaching one back costs one step, however far
+            // along the list it stands.
+            let above: Option<T> = if let p = shown.previous(x) {
+                if if let g = group { g(p) == heading } else { true } and if let c = closed { c(p) == tail } else { true } {
                     .some(p)
                 } else { .none }
             } else { .none }
@@ -609,7 +601,9 @@ view transcript<R, T>(
                                             destructive: a.destructive,
                                             key: a.key,
                                             disabled: not a.available,
-                                            reason: if a.available { .none } else { .some(a.reason) },
+                                            reason: if a.available {
+                                                .none
+                                            } else { .some(a.reason) },
                                             group: if a.frequent { .none } else { a.group },
                                         ) {
                                             on choose: a.run

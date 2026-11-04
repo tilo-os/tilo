@@ -127,6 +127,10 @@ pub struct Core {
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
+    /// The row being rendered, while a view renders one: the rows of the list it is a row
+    /// of, and where in them it stands. A row reads the rows around it by that place, without
+    /// walking the list.
+    pub row_place: RefCell<Option<(Rc<crate::value::CollRef>, usize)>>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -235,6 +239,7 @@ impl Core {
             trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             seen_writes: RefCell::new(Vec::new()),
+            row_place: RefCell::new(None),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -313,29 +318,29 @@ impl Core {
             EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen,
             FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
             IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
-            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut,
-            MapRemove, MapSetAdd, MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now,
-            Outside, OutsideAt, Phrase, Places, PrincipalEq, PrincipalKind, PrincipalName,
-            PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI,
-            RefEq, RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext,
-            RepeatNextAt, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd,
-            SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
-            StrCmp, StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, StrToInt,
-            TimeShift, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-            TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild,
-            UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI,
-            ValueEq, VersionEnd, Versions, Viewer, Withdraw, Word, WorkspaceMembers,
+            ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH,
+            MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, Members, Mentions, MetaOf,
+            ModelCall, NoneV, Now, Outside, OutsideAt, Phrase, Places, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel,
+            RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
+            ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty, RichNew, RichPart, RichTime,
+            RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt,
+            StateGet, Steps, StrCmp, StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace,
+            StrSlice, StrToInt, TimeShift, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind,
+            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen,
+            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, Withdraw, Word,
+            WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
             | StrFind | StrSlice | StrReplace => self.text_import(imp, mem, a),
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | ListGetI
             | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf
-            | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH
-            | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => {
-                self.aggregate_import(imp, a)
-            }
+            | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI
+            | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI
+            | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             CollWhere => {
                 let found = self.coll_where(a.h(0)?, a.h(1)?)?;
                 self.ret_h(found)

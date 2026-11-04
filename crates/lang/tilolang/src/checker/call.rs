@@ -2004,6 +2004,20 @@ impl Checker<'_> {
                     Ty::Option(Box::new(Ty::Int)),
                 )
             }
+            // `items.previous(x)`: the item just before `x` in the list as a view shows it —
+            // the row over the one a list is rendering — or none for the first. A row's place
+            // is the host's, so a row tells what stands over it without walking the list.
+            (Ty::List(t) | Ty::Collection(t), "previous") => {
+                let elem = (**t).clone();
+                if !self.arity(name, args, 1, span) {
+                    return Ex::error();
+                }
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                let what = self.expr_as(&a.value, &elem);
+                Ex::host(Imp::ListPrevious, vec![r, what], Ty::Option(Box::new(elem)))
+            }
             (Ty::List(_), "of") => self.list_of(r, args, span),
             (Ty::List(t) | Ty::Collection(t), "matching") => {
                 let elem = (**t).clone();
@@ -2046,7 +2060,7 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single, descendants, ancestors"
+                        "len, is_empty, first, last, previous, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single, descendants, ancestors"
                     }
                     _ => "none",
                 };

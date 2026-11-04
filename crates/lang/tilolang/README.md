@@ -255,7 +255,9 @@ reference to it. An item cannot go inside itself. A place may count only a run o
 collection, the items a board's lane shows: `items.move(x, to: i, among: items.filter(t ->
 t.section == s))` puts `x` at the place `i` among that run's other items, beside the one it
 then comes before, or after the run's last. Where an item stands among them is
-`items.index_of(x)`, an `Option<Int>`: none when it is not one. A board lane's drop says both
+`items.index_of(x)`, an `Option<Int>`: none when it is not one, and the item just before it is
+`items.previous(x)`, an `Option<T>`: the row over the one a list is drawing, which the host
+knows without reading the items before it. A board lane's drop says both
 what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves,
 edits and removals made at the same time merge is convergence.md, "Storage and sync".
 

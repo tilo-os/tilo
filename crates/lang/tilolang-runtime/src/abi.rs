@@ -48,6 +48,7 @@ imports! {
     (ListReverse, "list_reverse", "i", "i"),
     (ListEnd, "list_end", "ii", "i"),
     (ListIndexOf, "list_index_of", "ii", "i"),
+    (ListPrevious, "list_previous", "ii", "i"),
 
     (TupleNew, "tuple_new", "i", "i"),
     (TupleSetI, "tuple_set_i", "iil", ""),

@@ -1,5 +1,7 @@
 //! Imports over plain values: text, lists, tuples, options and enum values.
 
+use std::rc::Rc;
+
 use crate::abi::Imp;
 use crate::core::{
     Args, Core, HResult, ordering_to_i32, ret_f64, ret_i32, ret_i64, ret_void, trap,
@@ -137,6 +139,63 @@ impl Core {
         self.ret_h(at)
     }
 
+    /// The item before `x` in a list, as the view's loop shows it: a row's place is the host's,
+    /// so the row above it is read without walking the rows before it. None past the first, and
+    /// none for an item the list does not hold.
+    fn previous(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let want = self.val_whole(a.h(1)?)?;
+        let list = self.with_val(a.h(0)?, |v| match v {
+            Value::List(items) => {
+                let at = items
+                    .iter()
+                    .position(|item| same_value(item, &want))
+                    .and_then(|at| at.checked_sub(1))
+                    .and_then(|at| items.get(at).cloned());
+                Ok(Ok(at))
+            }
+            Value::Coll(coll) => Ok(Err(Rc::clone(coll))),
+            other => trap(format!("expected a list, got {}", other.kind_name())),
+        })?;
+        let value = match list {
+            Ok(item) => item.map_or_else(Value::none, Value::some),
+            Err(coll) => {
+                let at = match self.place_of(&coll, &want)? {
+                    Some(at) => Some(at),
+                    None => match Self::item_id(&want) {
+                        Some(id) => self
+                            .coll_listing(&coll)?
+                            .iter()
+                            .position(|other| *other == *id),
+                        None => None,
+                    },
+                };
+                match at.and_then(|at| at.checked_sub(1)) {
+                    Some(before) => Value::some(self.coll_get(&coll, before)?),
+                    None => Value::none(),
+                }
+            }
+        };
+        self.ret_h(value)
+    }
+
+    /// Where `item` stands in `coll` while a view renders the row of it: the place the host gave
+    /// the row, which the row's own body knows without reading the rows before it.
+    fn place_of(&self, coll: &Rc<crate::value::CollRef>, item: &Value) -> HResult<Option<usize>> {
+        let place = self.row_place.borrow().clone();
+        let Some((rows, at)) = place else {
+            return Ok(None);
+        };
+        Ok((Rc::ptr_eq(&rows, coll) && Self::item_id(item).is_some()).then_some(at))
+    }
+
+    /// The item `v` is a reference to, if it is a reference.
+    fn item_id(v: &Value) -> Option<&str> {
+        match v {
+            Value::Ref(reference) => reference.target.item.as_deref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn aggregate_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ListNew => self.ret_h(Value::List(Vec::new())),
@@ -192,6 +251,7 @@ impl Core {
                 self.ret_h(end)
             }
             Imp::ListIndexOf => self.index_of(a),
+            Imp::ListPrevious => self.previous(a),
             Imp::ListReverse | Imp::ListSortByKey => self.ordered(imp, a),
             Imp::TupleNew => {
                 let n = index(i64::from(a.h(0)?), "tuple size")?;

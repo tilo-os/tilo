@@ -1229,7 +1229,8 @@ impl Live {
                 .insert(index, rows.rows.fragment(key, Vec::new()));
         }
         if !lazy {
-            self.render_row(core, id)?;
+            let place = Some((Rc::clone(&rows.coll), index));
+            self.render_row(core, id, place)?;
             if rows.rows.lazy {
                 self.shown
                     .entry(rows.parent.clone())
@@ -1240,10 +1241,18 @@ impl Live {
         Ok(self.node_at(&path).cloned())
     }
 
-    /// Render the row `id` into its `fragment`, at its path.
-    fn render_row(&mut self, core: &Rc<Core>, id: BoundId) -> Result<(), RuntimeError> {
+    /// Render the row `id` into its `fragment`, at its path, telling the view where it stands
+    /// among the rows of `place`: the list's rows and the row's place in them.
+    fn render_row(
+        &mut self,
+        core: &Rc<Core>,
+        id: BoundId,
+        place: Option<(Rc<crate::value::CollRef>, usize)>,
+    ) -> Result<(), RuntimeError> {
         self.reused.clear();
+        let outer = core.row_place.replace(place);
         let content = self.render(core, id);
+        core.row_place.replace(outer);
         self.reused.clear();
         // A row's first render has nothing to diff: lists inside it start as they are.
         self.row_changes.clear();
@@ -1445,7 +1454,7 @@ impl Live {
             path.push(index);
             b.path = path;
         }
-        if let Err(e) = self.render_row(core, id) {
+        if let Err(e) = self.render_row(core, id, None) {
             self.release(core);
             return Err(e);
         }
