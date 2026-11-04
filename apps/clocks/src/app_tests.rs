@@ -123,10 +123,13 @@ fn semantic_alarm_open_rejects_missing_targets_without_changing_selection() {
 #[test]
 fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     // The shared navigation is a rail of four screens. Back exposes it as
-    // a list on a phone; a little wider, the rail docks beside the screen.
-    // Every destination retains a full, independent pointer target.
+    // a list on a phone; from the width at which it fits beside the content's
+    // own minimum, it docks there as a labeled list. Every destination
+    // retains a full, independent pointer target.
     let phone_width = 360_u32;
-    for width in [phone_width, 520_u32] {
+    let metrics = Theme::light().tokens.metrics;
+    let docked_width = (metrics.sidebar_min_width + metrics.page_min_width) as u32;
+    for width in [phone_width, docked_width] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
         harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
