@@ -700,17 +700,9 @@ fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let mut login = std::process::Command::new(&wrapper).spawn_locked().unwrap();
     let wrapper_pid = login.id();
-    let started = Instant::now();
-    let compositor_pid = loop {
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "the fixture's compositor starts"
-        );
-        if let Some(compositor) = compositor_of(wrapper_pid) {
-            break compositor;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let compositor_pid = tilo_test_env::wait_for("the fixture's compositor starts", || {
+        compositor_of(wrapper_pid)
+    });
 
     assert_eq!(
         comm(wrapper_pid).as_deref(),
