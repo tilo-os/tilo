@@ -414,7 +414,7 @@ fn a_task_a_person_adds_lands_in_the_list() {
     // The entry at the list's foot, as a person adds a task: a title typed, then Enter. What is
     // typed names no day, so the row lands under the list's "No date" heading, below the rows
     // the band reaches.
-    let [x, y, w, h] = named(&mut app, "Draft");
+    let [x, y, w, h] = named(&mut app, "New task");
     let pressed = start + ui::time::Duration::from_millis(100);
     with_monotonic_time(pressed, || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
@@ -849,7 +849,7 @@ fn the_frames_a_person_sees() {
     let mut app = staged("a busy week");
     let start = ui::time::Instant::now();
     let _ = frame_at(&mut app, start);
-    let [x, y, w, h] = named(&mut app, "Draft");
+    let [x, y, w, h] = named(&mut app, "New task");
     let pressed = start + ui::time::Duration::from_millis(100);
     with_monotonic_time(pressed, || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
