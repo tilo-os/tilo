@@ -43,22 +43,28 @@ command = ["bash", "tools/test-env-setup.sh", "audio"]
 [scripts.setup.ntfs-fixtures]
 command = ["bash", "tools/test-env-setup.sh", "ntfs"]
 
-# The session's tests start the click-test client, the launcher, first-party
-# apps and the runtime host an agent's MCP client starts, which
-# tilo_test_env::sibling_binary would otherwise build inside the first test
-# that asks, against its hang bound (tools/build-sibling-binaries.sh).
+# The programs the session's tests start beside their own: the lock screen,
+# the on-screen keyboard and the quick-settings panel are apps of other
+# packages, which Cargo builds for no test. The harness builds them before any
+# test starts, in one Cargo invocation (tools/build-sibling-binaries.sh), and
+# hands each path to the run's tests as TILO_SIBLING_BIN_<bin>, which
+# tilo_test_env::sibling_binary answers with. A test starts only programs its
+# run built: one that asked Cargo for its own would resolve and compile the
+# workspace a second time, inside the run, in every test process that needs it.
+#
+# Every profile but `default` inherits these registrations (the `ci` profile
+# runs this setup too), so a profile that would run its tests elsewhere names
+# only what it adds.
 [scripts.setup.session-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "click-test-client:click_test_client", "launcher:tilo-launcher",
-    "notes:notes", "file-explorer:file-explorer", "tasks:tasks",
+    "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilo-quick-settings:tilo-quick-settings",
-    "tilo-runtime:tilo-runtime-mcp",
 ]
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session)"
+filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
 [[profile.ci.scripts]]

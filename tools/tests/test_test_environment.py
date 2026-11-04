@@ -124,18 +124,32 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertIn("setup-scripts", config["experimental"])
         scripts = dict(config["scripts"]["setup"])
         # The session's sibling binaries are built before its tests in every
-        # profile that has no environment of its own (the default one).
+        # profile: a test that started Cargo itself would build the workspace
+        # again inside the run.
         siblings = scripts.pop("session-siblings")
         self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
-        self.assertIn("click-test-client:click_test_client", siblings["command"][2:])
-        default_rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["default"]["scripts"]}
-        self.assertEqual(default_rules, {"package(tilo-session)": "session-siblings"})
+        self.assertEqual(siblings["command"][2:], [
+            "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+            "tilo-quick-settings:tilo-quick-settings",
+        ])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "session-siblings"]
+            expected = ([("package(tilo-session) or package(tilo-quick-settings)",
+                         {"host": 'cfg(target_os = "linux")'})]
+                        if profile == "default" else [])
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                expected,
+                f"the {profile} profile builds the session's siblings for its tests",
+            )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
+        # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures"})
 
