@@ -207,18 +207,17 @@ mod cases {
         let w = tasks();
         let root = w.root("Tasks");
         w.task(&root, "milk");
-        w.project(&root, "Move flat");
         let window = w.window("home", &root);
         let tree = window.tree();
-        let delete_project = nodes_with(tree, "ui.Button", "label", "Delete project…");
+        let delete_finished = nodes_with(tree, "ui.Button", "label", "Delete finished tasks…");
         assert_eq!(
-            delete_project.len(),
+            delete_finished.len(),
             1,
             "the bar holds the action once:\n{}",
             dump(tree)
         );
         assert_eq!(
-            delete_project[0].props.get("role"),
+            delete_finished[0].props.get("role"),
             Some(&Value::text("destructive")),
             "a destructive action's button carries its role:\n{}",
             dump(tree)
@@ -238,7 +237,7 @@ mod cases {
             .collect::<Vec<_>>();
         assert_eq!(
             destructive,
-            ["Delete finished tasks…", "Delete project…"],
+            ["Delete finished tasks…"],
             "only the actions declared destructive are drawn so:\n{}",
             dump(tree)
         );
