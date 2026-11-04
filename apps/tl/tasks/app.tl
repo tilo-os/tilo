@@ -533,18 +533,13 @@ view home(t: Tasks) {
     // place per project. A priority is picked in search, not chosen as a place.
     let side = places(Task, in: t)
     let chosen = side.places.find(p -> p.key == place)
-    // A place with a role comes in the order its role says (what is due soonest first, what
-    // was finished last first); any other list is the tasks by the day they are due.
+    // A place with a role comes in the order its role says; any other list, by the day.
     let role = chosen?.role ?? ""
-    let shown = if role == "" {
-        t.items.matching(place).sort_by(.due)
-    } else { t.items.matching(place) }
+    let found = t.items.matching(place)
+    let shown = if role == "" { found.sort_by(.due) } else { found }
     let title = chosen?.label ?? "Tasks"
-    // What the place counts where its role makes that a count people read: what waits to be
-    // sorted, what is due. A list of what is done says how many there are.
-    let count = if let c = chosen {
-        if c.counts { c.count } else { shown.len() }
-    } else { shown.len() }
+    // A role that counts says how many wait in it; the list says how many it holds.
+    let count = if chosen?.counts ?? false { chosen?.count ?? 0 } else { shown.len() }
     // A project's place adds to that project, in the place's own list.
     let project = if chosen?.group != .none { t.projects.find(p -> p.name == title) } else { .none }
     // The window's primary action is the one whose key puts the keyboard in the entry at the
