@@ -119,26 +119,23 @@ fn private_person_editor_survives_retained_surface_store_handoff() {
     assert_eq!(workspace.pending_ops(), 0);
 }
 
-/// Two people, a window each in one workspace, talk through the ordinary
-/// record their pair shares: what one's window sends, the other's window
-/// reads, and the conversation is the record `direct/<pair>` every app of
-/// the workspace opens — Messages' Tilo lane included.
-#[test]
-fn two_peoples_chat_talks_in_the_pairs_record() {
-    use crate::effects::ChatEffect;
+/// Ada's and Bob's windows in one workspace, each having introduced themself,
+/// the pair's record delivered both ways.
+fn a_pair_of_windows(
+    workspace: &str,
+    ada: &str,
+    bob: &str,
+) -> (
+    ui::framework::testing::TestApp<crate::ChatShell>,
+    ui::framework::testing::TestApp<crate::ChatShell>,
+) {
     use crate::record::chat::Introduce;
-    use crate::testing::MountedChat;
 
-    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
-    let ada = "ad".repeat(32);
-    let bob = "b0".repeat(32);
-    let ada_key = ui::person_chat::person_key(&ada);
-    let bob_key = ui::person_chat::person_key(&bob);
     let mut ada_window =
-        ui::framework::testing::TestApp::<crate::ChatShell>::for_person_in(&ada, WORKSPACE)
+        ui::framework::testing::TestApp::<crate::ChatShell>::for_person_in(ada, workspace)
             .expect("Ada's window opens");
     let mut bob_window =
-        ui::framework::testing::TestApp::<crate::ChatShell>::for_person_in(&bob, WORKSPACE)
+        ui::framework::testing::TestApp::<crate::ChatShell>::for_person_in(bob, workspace)
             .expect("Bob's window opens");
     for (window, name, initials, color) in [
         (&mut ada_window, "Ada", "A", 1),
@@ -160,6 +157,57 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
         .expect("one record");
     ada_window.harness().relayout();
     bob_window.harness().relayout();
+    (ada_window, bob_window)
+}
+
+/// What a window reads of its conversation with `peer`: each message's text,
+/// and the person it names as its author.
+fn read_conversation(
+    window: &mut ui::framework::testing::TestApp<crate::ChatShell>,
+    peer: &str,
+) -> Vec<(String, String)> {
+    use crate::effects::ChatEffect;
+
+    let read = window
+        .effect(&ChatEffect::ReadDirectConversation {
+            public_key: peer.into(),
+        })
+        .expect("the window reads the conversation");
+    let read = read.value.expect("the conversation as a value");
+    read["messages"]
+        .as_array()
+        .expect("the messages")
+        .iter()
+        .map(|message| {
+            (
+                message["text"]
+                    .as_str()
+                    .expect("a message's text")
+                    .to_owned(),
+                message["author"]
+                    .as_str()
+                    .expect("a message's author")
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Two people, a window each in one workspace, talk through the ordinary
+/// record their pair shares: what one's window sends, the other's window
+/// reads, and the conversation is the record `direct/<pair>` every app of
+/// the workspace opens — Messages' Tilo lane included.
+#[test]
+fn two_peoples_chat_talks_in_the_pairs_record() {
+    use crate::effects::ChatEffect;
+    use crate::testing::MountedChat;
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let ada_key = ui::person_chat::person_key(&ada);
+    let bob_key = ui::person_chat::person_key(&bob);
+    let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
     ada_window.with_chat(|chat| {
         assert_eq!(chat.direct_people.len(), 1, "Ada's window names Bob");
         assert_eq!(chat.direct_people[0].root, bob);
@@ -213,19 +261,10 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
             .expect("Bob takes the part in"),
         "Bob's conversation changed when the part arrived"
     );
-    let read = bob_window
-        .effect(&ChatEffect::ReadDirectConversation {
-            public_key: ada_key.clone(),
-        })
-        .expect("Bob's window reads the conversation");
-    let read = read.value.expect("the conversation as a value");
-    let messages = read["messages"].as_array().expect("the messages");
-    assert_eq!(messages.len(), 1, "Bob reads what Ada sent: {read}");
-    assert_eq!(messages[0]["text"], "hello from Ada");
-    assert_eq!(
-        messages[0]["author"], ada_key,
-        "the message says Ada wrote it"
-    );
+    let messages = read_conversation(&mut bob_window, &ada_key);
+    assert_eq!(messages.len(), 1, "Bob reads what Ada sent");
+    assert_eq!(messages[0].0, "hello from Ada");
+    assert_eq!(messages[0].1, ada_key, "the message says Ada wrote it");
 
     // Bob answers, and Ada reads the answer in the same record.
     let replied = bob_window
@@ -253,21 +292,13 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
             .expect("Ada takes the part in"),
         "Ada's conversation changed when the part arrived"
     );
-    let read = ada_window
-        .effect(&ChatEffect::ReadDirectConversation {
-            public_key: bob_key.clone(),
-        })
-        .expect("Ada's window reads the conversation");
-    let read = read.value.expect("the conversation as a value");
-    let said: Vec<&str> = read["messages"]
-        .as_array()
-        .expect("the messages")
-        .iter()
-        .filter_map(|message| message["text"].as_str())
+    let said: Vec<String> = read_conversation(&mut ada_window, &bob_key)
+        .into_iter()
+        .map(|(text, _)| text)
         .collect();
     assert_eq!(
         said,
         ["hello from Ada", "hello from Bob"],
-        "both people's messages are in the one conversation: {read}"
+        "both people's messages are in the one conversation"
     );
 }
