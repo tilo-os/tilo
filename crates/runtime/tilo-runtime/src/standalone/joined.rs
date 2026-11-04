@@ -622,7 +622,7 @@ impl Joined {
             return replay;
         };
         let author = input.author();
-        let delivered = collab_inbound::deliver(
+        collab_inbound::deliver(
             &self.channels,
             &self.fanout,
             RemoteDocument {
@@ -635,9 +635,7 @@ impl Joined {
             },
             |_| format!("peer@{}", hex::encode(author)),
         );
-        // A write sealed before its writer caught up with the channel's
-        // latest membership change is taken from the host's replay.
-        replay || delivered == collab_inbound::Delivery::SealedBehind
+        replay
     }
 
     /// `workspace`'s connected session, while there is one.

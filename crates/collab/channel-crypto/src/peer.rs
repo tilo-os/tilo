@@ -496,17 +496,12 @@ impl ChannelPeer {
 
     /// What a broker checks every document op of this channel against.
     pub fn gate(&self) -> ChannelGate {
-        let head_epoch = match &self.record {
-            MemberRecord::Joined(group) => Some(group.epoch()),
-            MemberRecord::Waiting(_) | MemberRecord::Removed => self.seen_epoch,
-        };
         ChannelGate {
             // A device that knows the channel has a group (it saw its
             // genesis or a commit of it, or is in it) must never take the
             // record for plaintext, whether or not it ever saw the genesis
             // itself: a member admitted later only ever sees a Welcome.
             encryption_required: self.knows_group(),
-            head_epoch,
         }
     }
 
@@ -972,12 +967,12 @@ impl ChannelPeer {
                 self.receive_genesis(&frame, incoming, vault)
             }
             MlsGovernanceAction::Commit { .. } => {
-                if let Some(allowed) = allowed {
-                    if !backs(&frame, allowed) {
-                        return Err(governance(
-                            "commit adds or removes a device the membership does not",
-                        ));
-                    }
+                if let Some(allowed) = allowed
+                    && !backs(&frame, allowed)
+                {
+                    return Err(governance(
+                        "commit adds or removes a device the membership does not",
+                    ));
                 }
                 match &self.record {
                     MemberRecord::Joined(_) => self.receive_commit(frame, incoming, allowed, vault),

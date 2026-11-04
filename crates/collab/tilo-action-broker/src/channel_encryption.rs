@@ -31,9 +31,9 @@
 //!   devices re-send their request with backoff. The workspace's host keeps each
 //!   channel's newest frame for whoever was away.
 //!
-//! Every change registers the channel's plaintext gate and head epoch with
-//! the broker, which refuses plaintext and stale-epoch content for the
-//! channel on every ingress path. The broker itself never holds a key.
+//! Every change registers the channel's plaintext gate with the broker,
+//! which refuses plaintext and ciphertext bound to another channel on every
+//! ingress path. The broker itself never holds a key.
 //!
 //! Every change is also announced ([`ChannelKeyProvider::channel_changed`]):
 //! an application endpoint holding a route's keys waits on that signal and

@@ -1,6 +1,6 @@
 //! Signed document ops another device's write carried to this host: each is
 //! validated against local channel state, recorded, and fanned to the local
-//! apps on its route, in its author's order ([`Behind`]).
+//! apps on its route.
 use crate::collab_broker::FanoutState;
 use crate::collab_core::{AuditEntry, BrokerChannels, apply_redaction_from_envelope};
 use crate::route::CrdtRoute;
@@ -10,7 +10,6 @@ use collab_types::{
 };
 use runtime_collab::event::CollabEvent;
 use std::{
-    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
@@ -59,85 +58,15 @@ pub fn validate_document(
 /// What [`deliver`] did with a peer's document op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {
-    /// Admitted and fanned out, held behind an earlier write of its author,
-    /// or refused and audited.
+    /// Admitted and fanned out, or refused and audited.
     Done,
     /// Nothing was decided: the channel state is poisoned.
     Halted,
-    /// Refused live because it is sealed under content keys older than the
-    /// channel's latest membership change: its writer had not caught up
-    /// with that change yet. The workspace's host, which admits only the workspace's
-    /// members, kept it; replayed as history it is taken, so the caller asks
-    /// the host to replay.
-    SealedBehind,
-}
-
-/// One author's writes to one record that wait on an earlier write of
-/// theirs, which was refused live as [`Delivery::SealedBehind`] and which
-/// the workspace's host replays.
-///
-/// An author's sequence only moves forward: admitting a later write first
-/// would refuse the earlier one when its replay arrives. So a later write is
-/// checked when it arrives and held, and admitted in its author's order once
-/// every refused write before it is. Nothing here is let go before it is
-/// admitted or refused: what is held is bounded by the writes an author made
-/// to the record between a refused write and its replay.
-#[derive(Default)]
-pub struct Behind {
-    /// Sequences of the author's writes refused live for their epoch.
-    refused: BTreeSet<u64>,
-    /// The author's later writes, by sequence.
-    held: BTreeMap<u64, HeldWrite>,
-}
-
-struct HeldWrite {
-    document: RemoteDocument,
-    from_user_id: String,
-    /// When it arrived: it is checked as fresh as it was then.
-    arrived: SystemTime,
-}
-
-impl Behind {
-    /// Whether the author's write under `seq` waits: a write of theirs
-    /// before it is still to be admitted.
-    fn waits(&self, seq: u64) -> bool {
-        self.refused.first().is_some_and(|first| seq > *first)
-    }
-
-    /// The held writes that wait on nothing any more, in their author's
-    /// order.
-    fn take_ready(&mut self) -> Vec<HeldWrite> {
-        let mut ready = Vec::new();
-        while let Some(entry) = self.held.first_entry() {
-            if self
-                .refused
-                .first()
-                .is_some_and(|first| entry.key() > first)
-            {
-                break;
-            }
-            ready.push(entry.remove());
-        }
-        ready
-    }
-
-    fn is_empty(&self) -> bool {
-        self.refused.is_empty() && self.held.is_empty()
-    }
-}
-
-/// What validation decided for an op that passed.
-enum Admission {
-    Admit,
-    /// Valid, and waiting on an earlier write of its author.
-    Hold,
 }
 
 /// Validate `document` and, when admitted, record it and fan it to the local
 /// apps on its route as said by `from_user_id`, the participant the host
-/// names for its author. A refused op is audited, never fanned. A write that
-/// follows one of its author's writes still to be replayed is held, and
-/// admitted after it ([`Behind`]).
+/// names for its author. A refused op is audited, never fanned.
 pub fn deliver(
     channels: &Arc<Mutex<BrokerChannels>>,
     fanout: &FanoutState,
@@ -155,12 +84,9 @@ fn deliver_at(
     now: SystemTime,
 ) -> Delivery {
     let artifact = document.envelope.artifact;
-    let author = document.envelope.author;
-    let seq = document.envelope.seq;
     let replayed = document.replayed;
     let route = CrdtRoute::record(&document.app_id, &document.cluster_id, &document.record_id);
     let payload = validate_route(&route, &document.envelope);
-    let mut sealed_behind = false;
     let validation = match &payload {
         Ok(payload) => {
             let Ok(mut ch) = channels.lock() else {
@@ -178,44 +104,45 @@ fn deliver_at(
                 collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
             };
             let encryption = document.envelope.encryption.as_ref();
-            let allowed = if replayed {
-                ch.document_history_allowed(channel, encryption)
+            if ch.document_encryption_allowed(channel, encryption) {
+                let state = ch.state_for(artifact);
+                state.room.clone_from(&document.cluster_id);
+                state.artifacts.insert(artifact, ArtifactKind::Note);
+                state
+                    .artifact_apps
+                    .insert(artifact, document.app_id.clone());
+                state
+                    .artifact_records
+                    .insert(artifact, document.record_id.clone());
+                validate_document(
+                    &document.envelope,
+                    &document.author,
+                    document.replayed,
+                    state,
+                    now,
+                )
             } else {
-                ch.document_encryption_allowed(channel, encryption)
-            };
-            // A write its author has written past here was admitted before
-            // (a late copy of a replayed write): nothing waits for it.
-            let ahead = ch
-                .states
-                .get(&artifact)
-                .and_then(|state| state.last_seq_per_author.get(&author))
-                .is_none_or(|seen| seq > *seen);
-            sealed_behind = !allowed
-                && !replayed
-                && encryption.is_some()
-                && ch.document_history_allowed(channel, encryption)
-                && ahead;
-            if allowed {
-                check(&mut ch, &document, now)
-            } else {
+                tracing::warn!(
+                    app = %document.app_id,
+                    record = %document.record_id,
+                    channel = ?channel,
+                    epoch = encryption.map(|metadata| metadata.epoch),
+                    replayed,
+                    "collab_broker (net): a document op its channel's gate does not take"
+                );
                 Err(ValidationError::DocumentRouteMismatch)
             }
         }
         Err(error) => Err(error.clone()),
     };
     match (payload, validation) {
-        (Ok(_), Ok(Admission::Admit)) => {
+        (Ok(_), Ok(())) => {
             accept(channels, fanout, document.envelope, &route, from_user_id);
-            release(channels, fanout, artifact, author, seq)
-        }
-        (Ok(_), Ok(Admission::Hold)) => {
-            let from_user_id = from_user_id(&route);
-            hold(channels, fanout, document, from_user_id, now)
+            Delivery::Done
         }
         (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
             record_already_redacted(channels, document.envelope, target);
-            // Settled: what follows it waits no longer.
-            release(channels, fanout, artifact, author, seq)
+            Delivery::Done
         }
         (Ok(_), Err(ValidationError::ReplaySeq { .. }))
             if replayed && validated_before(channels, &document.envelope) =>
@@ -226,48 +153,22 @@ fn deliver_at(
             fan_out(fanout, document.envelope, &route, from_user_id);
             Delivery::Done
         }
-        (_, Err(reason)) => refuse(channels, fanout, document, reason, sealed_behind, now),
-        (Err(_), Ok(_)) => Delivery::Halted,
+        (_, Err(reason)) => refuse(channels, document, reason, now),
+        (Err(_), Ok(())) => Delivery::Halted,
     }
 }
 
-/// Audit a refused peer op. One refused live for its epoch is remembered,
-/// for its author's later writes to wait on its replay.
+/// Audit a refused peer op.
 fn refuse(
     channels: &Arc<Mutex<BrokerChannels>>,
-    fanout: &FanoutState,
     document: RemoteDocument,
     reason: ValidationError,
-    sealed_behind: bool,
     now: SystemTime,
 ) -> Delivery {
-    let (artifact, author, seq, replayed) = (
-        document.envelope.artifact,
-        document.envelope.author,
-        document.envelope.seq,
-        document.replayed,
-    );
     tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
-    let mut decided = false;
     if let Ok(mut ch) = channels.lock() {
-        // The host's replay of a write refused for its epoch was
-        // decided on what it says: nothing waits on it any more.
-        decided = replayed
-            && ch
-                .behind
-                .get(&(artifact, author))
-                .is_some_and(|behind| behind.refused.contains(&seq));
-        if sealed_behind {
-            // The host replays it; the author's later writes wait
-            // for it.
-            ch.behind
-                .entry((artifact, author))
-                .or_default()
-                .refused
-                .insert(seq);
-        }
         ch.audit.record(
-            artifact,
+            document.envelope.artifact,
             AuditEntry {
                 envelope: Box::new(document.envelope),
                 rejection: Some(reason),
@@ -275,156 +176,7 @@ fn refuse(
             },
         );
     }
-    if decided {
-        release(channels, fanout, artifact, author, seq)
-    } else if sealed_behind {
-        Delivery::SealedBehind
-    } else {
-        Delivery::Done
-    }
-}
-
-/// Validate `document`, which the channel's gate let through, against its
-/// channel state: admitted now, or held behind an earlier write of its
-/// author.
-fn check(
-    ch: &mut BrokerChannels,
-    document: &RemoteDocument,
-    now: SystemTime,
-) -> Result<Admission, ValidationError> {
-    let (artifact, author, seq) = (
-        document.envelope.artifact,
-        document.envelope.author,
-        document.envelope.seq,
-    );
-    let waits = ch
-        .behind
-        .get(&(artifact, author))
-        .is_some_and(|behind| behind.waits(seq));
-    let state = ch.state_for(artifact);
-    state.room.clone_from(&document.cluster_id);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state
-        .artifact_apps
-        .insert(artifact, document.app_id.clone());
-    state
-        .artifact_records
-        .insert(artifact, document.record_id.clone());
-    let validate = |state: &mut ChannelState| {
-        validate_document(
-            &document.envelope,
-            &document.author,
-            document.replayed,
-            state,
-            now,
-        )
-    };
-    if !waits {
-        return validate(state).map(|()| Admission::Admit);
-    }
-    // Checked now; its author's sequence moves on only when it is
-    // admitted, after what it waits on.
-    let seen = state.last_seq_per_author.get(&author).copied();
-    let checked = validate(state);
-    match seen {
-        Some(seen) => state.last_seq_per_author.insert(author, seen),
-        None => state.last_seq_per_author.remove(&author),
-    };
-    checked.map(|()| Admission::Hold)
-}
-
-/// Hold `document`, valid but waiting on an earlier write of its author.
-fn hold(
-    channels: &Arc<Mutex<BrokerChannels>>,
-    fanout: &FanoutState,
-    document: RemoteDocument,
-    from_user_id: String,
-    arrived: SystemTime,
-) -> Delivery {
-    let key = (document.envelope.artifact, document.envelope.author);
-    let seq = document.envelope.seq;
-    {
-        let Ok(mut ch) = channels.lock() else {
-            return Delivery::Halted;
-        };
-        let channels = &mut *ch;
-        if let Some(behind) = channels.behind.get_mut(&key)
-            && behind.waits(seq)
-        {
-            match behind.held.entry(seq) {
-                std::collections::btree_map::Entry::Vacant(slot) => {
-                    slot.insert(HeldWrite {
-                        document,
-                        from_user_id,
-                        arrived,
-                    });
-                }
-                // The same write again (live, then in the host's replay).
-                std::collections::btree_map::Entry::Occupied(held)
-                    if held.get().document.envelope == document.envelope => {}
-                std::collections::btree_map::Entry::Occupied(_) => {
-                    // Another write under a sequence its author already used.
-                    channels.audit.record(
-                        key.0,
-                        AuditEntry {
-                            envelope: Box::new(document.envelope),
-                            rejection: Some(ValidationError::ReplaySeq {
-                                seen: seq,
-                                incoming: seq,
-                            }),
-                            at: arrived,
-                        },
-                    );
-                }
-            }
-            return Delivery::Done;
-        }
-    }
-    // What it waited on was settled meanwhile.
-    deliver_at(channels, fanout, document, move |_| from_user_id, arrived)
-}
-
-/// `author`'s write under `seq` to `artifact` is settled: deliver their
-/// writes held behind it, in their order. Says [`Delivery::SealedBehind`]
-/// when one of them is refused as sealed behind in turn.
-fn release(
-    channels: &Arc<Mutex<BrokerChannels>>,
-    fanout: &FanoutState,
-    artifact: collab_types::ArtifactId,
-    author: collab_types::Ed25519PublicKey,
-    seq: u64,
-) -> Delivery {
-    let ready = {
-        let Ok(mut ch) = channels.lock() else {
-            return Delivery::Halted;
-        };
-        let key = (artifact, author);
-        let Some(behind) = ch.behind.get_mut(&key) else {
-            return Delivery::Done;
-        };
-        // A refused write at or before an admitted one can never be
-        // admitted after it: nothing waits on it.
-        behind.refused.retain(|refused| *refused > seq);
-        let ready = behind.take_ready();
-        if behind.is_empty() {
-            ch.behind.remove(&key);
-        }
-        ready
-    };
-    let mut delivery = Delivery::Done;
-    for HeldWrite {
-        document,
-        from_user_id,
-        arrived,
-    } in ready
-    {
-        match deliver_at(channels, fanout, document, move |_| from_user_id, arrived) {
-            Delivery::Done => {}
-            Delivery::Halted => return Delivery::Halted,
-            Delivery::SealedBehind => delivery = Delivery::SealedBehind,
-        }
-    }
-    delivery
+    Delivery::Done
 }
 
 /// The payload `envelope` carries, when it was signed for exactly `route`:
@@ -452,7 +204,9 @@ fn accept(
     from_user_id: impl FnOnce(&CrdtRoute) -> String,
 ) {
     let artifact = envelope.artifact;
+    let mut first_of_the_record = false;
     let unsynced = channels.lock().ok().map(|mut ch| {
+        first_of_the_record = !ch.routes.contains_key(&artifact);
         let unsynced = ch.record_history(route, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
@@ -473,6 +227,9 @@ fn accept(
     }
     crate::services::tracker_written(route);
     fan_out(fanout, envelope, route, from_user_id);
+    if first_of_the_record {
+        announce_record(fanout, route);
+    }
 }
 
 /// Whether this exact op, signature included, passed validation here.
@@ -499,6 +256,25 @@ fn fan_out(
     };
     // An unaddressed route is dropped rather than shown to every app.
     fanout.fanout_to_route(&event, u64::MAX, route);
+}
+
+/// Tell a window open on the app that a peer wrote a record of one of its
+/// trees (a chain's next part, a container's child): it holds no part of that
+/// tree yet, so nothing else brings the record to it. A window opened later
+/// learns the same records as it subscribes
+/// ([`crate::collab_core::BrokerChannels::tree_records_held`]).
+fn announce_record(fanout: &FanoutState, route: &CrdtRoute) {
+    if !ui::record::RecordId::parse(&route.record_id).is_some_and(|record| record.tree().is_some())
+    {
+        return;
+    }
+    fanout.fanout_to_route(
+        &CollabEvent::RecordsArrived {
+            records: vec![route.record_id.clone()],
+        },
+        u64::MAX,
+        &CrdtRoute::app(route.app_id.clone(), route.cluster_id.clone()),
+    );
 }
 
 /// An op that arrived after its redaction: never fanned, but a marker keeps
@@ -657,14 +433,6 @@ mod tests {
         assert_eq!(count(), 2, "another op under a used sequence is refused");
     }
 
-    /// How a write reaches the member over the net: as it was written, or in
-    /// the workspace's host's replay of its history.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct Carried {
-        replayed: bool,
-        envelope: SignedOp,
-    }
-
     /// A writer's two edits to a sealed note: the first sealed under the
     /// channel's keys from before the member joined (epoch 1), the second
     /// under the current ones (epoch 2), each its own Automerge change.
@@ -699,31 +467,22 @@ mod tests {
         [first, second]
     }
 
-    /// One way the net brings the member the writer's writes and the host's
-    /// replay.
-    #[derive(Clone, Copy, Debug)]
-    enum Arrival {
-        /// The first write as written: sealed before the member joined.
-        Refused,
-        /// The second write as written.
-        Newer,
-        /// The host's replay of the first write, which it kept.
-        Replay,
+    struct MemberTook {
+        deliveries: Vec<Delivery>,
+        note: automerge::AutoCommit,
+        shown: Vec<SignedOp>,
     }
 
-    /// A member of a sealed note whose channel's latest membership change
-    /// is epoch 2 takes what the fake net delivers in `order`. Answers what
-    /// each delivery said, and the note the member's app holds from the
-    /// writes it was shown, in the order it was shown them, and the writes.
-    fn member_takes(order: &[Arrival]) -> MemberTook {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        let [first, second] = two_sealed_writes(&key);
+    /// A member of a sealed note, whose channel has moved on since its
+    /// member joined, is shown the writer's `writes` in that order. Answers
+    /// what each delivery said, and the note the member's app holds, from
+    /// the writes it was shown in the order it was shown them.
+    fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
         channels.lock().unwrap().register_channel_gate(
             collab_types::document_channel_id("notes", "workspace", "record"),
             channel_crypto::ChannelGate {
                 encryption_required: true,
-                head_epoch: Some(2),
             },
         );
         let fanout = FanoutState::new();
@@ -737,29 +496,10 @@ mod tests {
                 }
             }),
         );
-
-        let mut net = tilo_test_env::FakeNet::new();
-        let writer = net.peer("writer");
-        let host = net.peer("host");
-        let _member = net.peer("member");
-        let carried = |replayed: bool, envelope: &SignedOp| {
-            postcard::to_stdvec(&Carried {
-                replayed,
-                envelope: envelope.clone(),
-            })
-            .unwrap()
-        };
-        let mut deliveries = Vec::new();
-        for arrival in order {
-            match arrival {
-                Arrival::Refused => net.publish(&writer, carried(false, &first)),
-                Arrival::Newer => net.publish(&writer, carried(false, &second)),
-                Arrival::Replay => net.publish(&host, carried(true, &first)),
-            }
-            // Each arrival reaches the member before the next is sent.
-            net.deliver_to("member", |_, bytes| {
-                let Carried { replayed, envelope } = postcard::from_bytes(bytes).unwrap();
-                deliveries.push(deliver(
+        let deliveries = writes
+            .iter()
+            .map(|envelope| {
+                deliver(
                     &channels,
                     &fanout,
                     RemoteDocument {
@@ -767,13 +507,13 @@ mod tests {
                         cluster_id: "workspace".into(),
                         record_id: "record".into(),
                         author: editor(),
-                        replayed,
-                        envelope,
+                        replayed: false,
+                        envelope: envelope.clone(),
                     },
                     |_| "writer".into(),
-                ));
-            });
-        }
+                )
+            })
+            .collect();
         drop(fanout);
         let shown = shown.lock().unwrap().clone();
         let mut note = automerge::AutoCommit::new();
@@ -784,15 +524,7 @@ mod tests {
             deliveries,
             note,
             shown,
-            written: [first, second],
         }
-    }
-
-    struct MemberTook {
-        deliveries: Vec<Delivery>,
-        note: automerge::AutoCommit,
-        shown: Vec<SignedOp>,
-        written: [SignedOp; 2],
     }
 
     fn text(note: &automerge::AutoCommit, field: &str) -> Option<String> {
@@ -802,47 +534,102 @@ mod tests {
             .and_then(|(value, _)| value.into_string().ok())
     }
 
-    /// The writer's newer write reaches the member before the host's replay
-    /// of the earlier one it refused: the newer write is held, and both are
-    /// applied in the order they were written once the replay arrives.
+    /// A write sealed under the channel's earlier epoch is taken live: its
+    /// author was a member when they wrote it, and whoever receives it holds
+    /// the key it was sealed under.
     #[test]
-    fn a_newer_write_arriving_before_the_replay_of_a_refused_one_waits_and_both_apply() {
-        let took = member_takes(&[Arrival::Refused, Arrival::Newer, Arrival::Replay]);
-        assert_eq!(
-            took.deliveries,
-            [Delivery::SealedBehind, Delivery::Done, Delivery::Done],
-            "the refused write asks for the replay; the newer one waits for it"
-        );
-        assert_eq!(
-            took.shown, took.written,
-            "both are applied, in the order they were written"
-        );
+    fn a_write_sealed_under_an_earlier_epoch_is_admitted_live() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let [first, second] = two_sealed_writes(&key);
+        let took = member_takes(&[first.clone(), second.clone()]);
+        assert_eq!(took.deliveries, [Delivery::Done, Delivery::Done]);
+        assert_eq!(took.shown, [first, second]);
         assert_eq!(text(&took.note, "title").as_deref(), Some("Groceries"));
         assert_eq!(text(&took.note, "body").as_deref(), Some("oat milk"));
     }
 
-    /// The host's replay reaches the member before the writer's newer write:
-    /// each is applied as it arrives.
+    /// A peer wrote the next part of a chat's messages: a window already open
+    /// on Chat is told the part arrived, so it opens it and shows what was
+    /// posted. A record of no tree (a conversation itself) is read directly
+    /// once and is told no arrival, and a record is announced once, not for
+    /// every message written into it.
     #[test]
-    fn a_replay_arriving_before_the_newer_write_applies_both() {
-        let took = member_takes(&[Arrival::Refused, Arrival::Replay, Arrival::Newer]);
-        assert_eq!(
-            took.deliveries,
-            [Delivery::SealedBehind, Delivery::Done, Delivery::Done]
+    fn a_peer_written_part_is_announced_to_the_apps_open_window() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+        let part =
+            ui::record::RecordId::derived("messages", &ui::record::RecordId::workspace_default())
+                .part(0)
+                .to_string();
+        let conversation = ui::record::RecordId::for_tab(7).to_string();
+        let write = |record: &str, sequence: u64, title: &str| {
+            let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
+            let mut op = SignedOp::new_unsigned(
+                mutation.encode().unwrap(),
+                document_artifact_id("so.tilo.chat", "workspace", record),
+                collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                document_attestation_id("so.tilo.chat", "workspace", record),
+                OpKind::Change,
+                std::time::SystemTime::now(),
+                sequence,
+            );
+            collab_types::sign_op(&mut op, &key).unwrap();
+            op
+        };
+        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        let fanout = FanoutState::new();
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&told);
+        let _app = fanout.subscribe_workspaces(
+            vec!["workspace".into()],
+            Box::new(move |event, origin| {
+                if let CollabEvent::RecordsArrived { records } = event {
+                    sink.lock().unwrap().push((origin.clone(), records.clone()));
+                }
+            }),
         );
-        assert_eq!(took.shown, took.written);
-        assert_eq!(text(&took.note, "title").as_deref(), Some("Groceries"));
-        assert_eq!(text(&took.note, "body").as_deref(), Some("oat milk"));
-
-        // The replay arrives even before the write as written: that late
-        // copy is refused for its epoch, but nothing waits on it.
-        let took = member_takes(&[Arrival::Replay, Arrival::Refused, Arrival::Newer]);
+        let take = |record: &str, envelope: SignedOp| {
+            deliver(
+                &channels,
+                &fanout,
+                RemoteDocument {
+                    app_id: "so.tilo.chat".into(),
+                    cluster_id: "workspace".into(),
+                    record_id: record.into(),
+                    author: editor(),
+                    replayed: false,
+                    envelope,
+                },
+                |_| "peer".into(),
+            )
+        };
+        assert_eq!(take(&part, write(&part, 1, "hello")), Delivery::Done);
         assert_eq!(
-            took.deliveries,
-            [Delivery::Done, Delivery::Done, Delivery::Done]
+            told.lock().unwrap().as_slice(),
+            &[(
+                CrdtRoute::app("so.tilo.chat", "workspace"),
+                vec![part.clone()]
+            )],
+            "the window is told the part, on the app's route"
         );
-        assert_eq!(took.shown, took.written);
-        assert_eq!(text(&took.note, "title").as_deref(), Some("Groceries"));
-        assert_eq!(text(&took.note, "body").as_deref(), Some("oat milk"));
+        assert_eq!(
+            take(&part, write(&part, 2, "hello again")),
+            Delivery::Done,
+            "a later message in a part the window opened is delivered to it"
+        );
+        assert_eq!(
+            take(&conversation, write(&conversation, 1, "hi")),
+            Delivery::Done
+        );
+        assert_eq!(
+            take(&conversation, write(&conversation, 2, "hi again")),
+            Delivery::Done,
+            "a window tells its app a record of no tree is read"
+        );
+        drop(fanout);
+        assert_eq!(
+            told.lock().unwrap().len(),
+            1,
+            "only the part is an arrival, and only once"
+        );
     }
 }

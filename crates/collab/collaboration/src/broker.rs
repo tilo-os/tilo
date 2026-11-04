@@ -7085,8 +7085,6 @@ mod tests {
         pub caret_publishes: Vec<(Vec<u8>, u64)>,
         pub selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         pub typing_publishes: Vec<(Vec<u8>, u64, u64)>,
-        /// `(key, composing)`: whether each publish said the person was composing.
-        pub composing_publishes: Vec<(Vec<u8>, bool)>,
         pub arrived: Vec<Vec<u8>>,
         pub left: Vec<Vec<u8>>,
         pub scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
