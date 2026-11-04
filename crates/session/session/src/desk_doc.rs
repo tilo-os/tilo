@@ -398,6 +398,30 @@ impl crate::Shared {
             .record_desk_now(&tree, crate::activity::now_seconds());
         tilo_durable_writer::global().flush();
     }
+
+    /// Keep the person's arrangement as it stands: its own file, so the next
+    /// session places the same desk from it. Written when the record moved,
+    /// not every frame.
+    pub(crate) fn keep_arrangement(&self) {
+        let Some(state) = &self.arrangement_state else {
+            return;
+        };
+        let mut arrangement = self.arrangement.borrow_mut();
+        let heads = arrangement.heads();
+        if self
+            .kept_arrangement
+            .borrow()
+            .as_ref()
+            .is_some_and(|kept| *kept == heads)
+        {
+            return;
+        }
+        if let Err(error) = arrangement.save(state) {
+            tracing::warn!(%error, "the arrangement is not kept");
+            return;
+        }
+        *self.kept_arrangement.borrow_mut() = Some(heads);
+    }
 }
 
 /// The actor `person` writes the desk's changes as: their handle itself, so a

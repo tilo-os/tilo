@@ -166,6 +166,7 @@ mod workspaces;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
@@ -585,30 +586,6 @@ impl Shared {
         })
     }
 
-    /// Keep the person's arrangement as it stands: its own file, so the next
-    /// session places the same desk from it. Written when the record moved,
-    /// not every frame.
-    fn keep_arrangement(&self) {
-        let Some(state) = &self.arrangement_state else {
-            return;
-        };
-        let mut arrangement = self.arrangement.borrow_mut();
-        let heads = arrangement.heads();
-        if self
-            .kept_arrangement
-            .borrow()
-            .as_ref()
-            .is_some_and(|kept| *kept == heads)
-        {
-            return;
-        }
-        if let Err(error) = arrangement.save(state) {
-            tracing::warn!(%error, "the arrangement is not kept");
-            return;
-        }
-        *self.kept_arrangement.borrow_mut() = Some(heads);
-    }
-
     /// Take up what the workspace's history wrote back and what the person
     /// opened from it, and tell the apps following it what moved.
     fn serve_activity(&self) {
@@ -768,6 +745,8 @@ pub struct Session {
     /// The workspace in front, as this pass last read it: a change is a
     /// switch to time.
     active_workspace: Option<u64>,
+    /// When the desk's own bookkeeping last read it.
+    kept_at: Instant,
     /// The magnifier's zoom level and the one its toggle turns on at.
     magnifier: (u8, u8),
     /// Setup, while it runs: it withholds the desktop's actions.
@@ -2059,6 +2038,7 @@ impl Session {
             ended: false,
             first_frame: false,
             active_workspace: None,
+            kept_at: Instant::now(),
             magnifier: (
                 settings_store::magnifier::OFF,
                 settings_store::magnifier::DEFAULT_ZOOM,

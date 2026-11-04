@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 use crate::{Session, import_readiness, quick_settings};
 use tilo_compositor::{Compositor, Error};
 
+/// How long the desk's own bookkeeping may wait for a turn that draws
+/// nothing: a desk that keeps drawing is read this often all the same.
+const KEEP_INTERVAL: Duration = Duration::from_millis(100);
+
 impl Session {
     /// How long this pass may sleep: no longer than `timeout`, and no longer
     /// than the next thing that is due on a clock of its own — a held
@@ -93,6 +97,15 @@ impl Session {
         let timeout = self.wait(timeout.into());
         tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
+        // What search reads of the desk is read in turns that have nothing to
+        // draw. What arrived above is drawn first: a window committing the
+        // frame it was configured for is answered by this turn's frame rather
+        // than by a turn the index is read in first. A desk that keeps
+        // drawing is still read, every tenth of a second.
+        if !self.compositor.owes_frame() || self.kept_at.elapsed() >= KEEP_INTERVAL {
+            self.kept_at = Instant::now();
+            self.shared.observe();
+        }
         self.follow_logout_request();
         // What the session itself does before the frame: the desk, the apps
         // and the overlays this pass lays out.
@@ -155,6 +168,11 @@ impl Session {
         // The desk's windows are drawn as far as they have come; an animated
         // switch owns its frames until they rest.
         self.compositor.set_switch_holding(self.windows.animating());
+        // What the pass laid out went out before it is drawn: a client that
+        // answers it at once — a window committing the frame it was placed
+        // in, an app acking the configure — is in this frame, not in the next
+        // one.
+        self.compositor.catch_up()?;
         let drawn = self.compositor.frames_presented();
         self.compositor.render()?;
         if self.compositor.frames_presented() == drawn {
@@ -162,7 +180,27 @@ impl Session {
             // after work gets freed heap back once it stays quiet a moment.
             tilo_compositor::heap_trim::request_when_quiet();
         }
+        // What arrived while the frame was drawn — the first pixels of a
+        // window that just opened — is drawn in this turn too, so a first
+        // frame never waits a whole turn of the loop for it. A turn answers
+        // at most a frame or two of arrivals and leaves the rest to the next.
+        for _ in 0..2 {
+            if !self.compositor.catch_up()? {
+                break;
+            }
+            self.compositor.render()?;
+        }
         self.first_frame_presented();
+        self.serve_drawn_frame();
+        self.follow_desk_over_frame()?;
+        self.compositor.end_tick();
+        Ok(())
+    }
+
+    /// What the frame just drawn asked of the session: the control socket's
+    /// answer, what assistive technology reads of it, a live projection and a
+    /// call it is shared to.
+    fn serve_drawn_frame(&mut self) {
         let answering = Instant::now();
         // What `tilo-control` asks of the frame just drawn.
         let locked = self.compositor.locked();
@@ -192,10 +230,17 @@ impl Session {
         // A call shares the same pass: it takes the frame when it wants one,
         // and a locked desktop hands it nothing.
         crate::calls::share_screen(&mut self.compositor);
+    }
+
+    /// What the desk reads of the frame just drawn: the shell and the slots
+    /// laid out again, what their records say, and the picture of the
+    /// workspace in front.
+    fn follow_desk_over_frame(&mut self) -> Result<(), Error> {
         self.follow_shell()?;
         self.follow_slot_views()?;
         self.settle()?;
-        self.shared.observe();
+        // The desk this turn drew is the desk kept: its records are written
+        // here, where a change made by this turn's layout goes with it.
         self.shared.keep_desk();
         self.shared.keep_arrangement();
         // The picture is the workspace in front's, which a change covering one workspace lands on.
@@ -215,7 +260,6 @@ impl Session {
             self.compositor.workspace_switched();
         }
         self.active_workspace = active;
-        self.compositor.end_tick();
         Ok(())
     }
 

@@ -482,6 +482,32 @@ impl Compositor {
         self.recorder.end_tick();
     }
 
+    /// Whether a client has drawn something no frame has shown yet: the
+    /// frame the desk owes answers it, and until it is drawn a client is
+    /// waiting on this turn.
+    pub fn owes_frame(&self) -> bool {
+        !self.data.state.redraw.is_empty()
+    }
+
+    /// Take in what arrived while the caller worked out this frame — a
+    /// commit with the frame a surface just laid out, a configure it
+    /// acknowledged, a door message — and tell the clients what the caller
+    /// queued for them, without waiting for any of it.
+    ///
+    /// Whether an output then owes a frame: what arrived is drawn now and
+    /// answers its client in this turn rather than the next.
+    ///
+    /// # Errors
+    /// The display is gone.
+    pub fn catch_up(&mut self) -> Result<bool, Error> {
+        self.display.flush_clients()?;
+        self.event_loop
+            .dispatch(Some(Duration::ZERO), &mut self.data)
+            .map_err(io)?;
+        self.display.flush_clients()?;
+        Ok(self.owes_frame())
+    }
+
     /// How long a loop may wait for clients, devices and its own work before
     /// the next frame is due; `None` when nothing is due, and it waits for an
     /// event.
@@ -1791,8 +1817,16 @@ impl Compositor {
             // Nothing was drawn: no frame will answer this turn's input.
             self.recorder.settle_unpainted_input();
         }
+        // The frame is on the output now, so the clients that drew it hear
+        // about it before anything the frame itself asked for is served: a
+        // capture to read back, a blur of what lies below a window. Those go
+        // with the frame but are not what answers it, so they run behind it
+        // and the client starts its next frame while they are made.
+        self.display.flush_clients()?;
         self.data.backend.serve_captures(&mut self.data.state);
         self.data.backend.serve_backdrops(&mut self.data.state);
+        // Answers read back after the frame's own pictures, and whatever is
+        // still queued for clients, reach them here.
         self.data.state.confirm_lock();
         self.display.flush_clients()?;
         Ok(())
