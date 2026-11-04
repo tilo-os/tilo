@@ -247,9 +247,18 @@ view sidebar(b: Board) {
         );
         let places = t.places_of();
         assert_eq!(
-            places[0],
+            places[..5]
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            ["is:inbox", "is:today", "is:upcoming", "is:mine", "is:done"],
+            "the place comes after the places that are open and before what is done with, \
+             so the inbox stays the place a window opens on: {places:?}"
+        );
+        assert_eq!(
+            places[3],
             ("is:mine".to_owned(), Some(0)),
-            "in a shared workspace the place leads, and counts what waits in it: {places:?}"
+            "it counts what waits in it: {places:?}"
         );
         t.assign("later", &viewer);
         t.assign("today", &ben);
@@ -259,7 +268,7 @@ view sidebar(b: Board) {
             "what the viewer holds, open"
         );
         assert_eq!(
-            t.places_of()[0],
+            t.places_of()[3],
             ("is:mine".to_owned(), Some(1)),
             "the place counts what the viewer has left"
         );
@@ -274,7 +283,7 @@ view sidebar(b: Board) {
             Vec::<String>::new(),
             "finished work leaves the place"
         );
-        assert_eq!(t.places_of()[0].1, Some(0), "and the place counts nothing");
+        assert_eq!(t.places_of()[3].1, Some(0), "and the place counts nothing");
         // A workspace of one again: nothing is anyone's but theirs.
         t.rt.set_members(vec![Member::person("me", "owner")], None);
         let places = t.places_of();

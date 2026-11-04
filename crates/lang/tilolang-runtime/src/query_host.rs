@@ -483,6 +483,10 @@ impl Core {
     /// (`Task.project: Option<Project>` with `Tasks.projects`: a place per project, under
     /// "Projects", its add the action that makes another).
     ///
+    /// A type that names who its items belong to, in a workspace shared with someone else, also
+    /// offers the place of what the person looking holds: after the places that are open and
+    /// before the one of what is done with, so the place a window opens on does not move.
+    ///
     /// A place counts the items it holds that are open — the index's answer, never a scan.
     pub(crate) fn places_import(&self, ty: i32, root: i32) -> HResult<Value> {
         let ty = self.text(ty)?;
@@ -711,19 +715,37 @@ impl Places<'_> {
     /// The places of a sidebar: what the person looking holds, the type's own filters, then a
     /// group of the ones the root holds.
     fn build(&self) -> HResult<Value> {
-        let mut places = Vec::new();
-        if let Some(mine) = self.mine_place()? {
-            places.push(mine);
-        }
-        places.extend(self.core.filter_places(
+        let mut places = self.core.filter_places(
             self.declared,
             &self.items,
             self.info,
             &self.pkg.enums,
             self.done,
-        )?);
+        )?;
+        if let Some(mine) = self.mine_place()? {
+            let at = self.mine_at(places.len());
+            places.insert(at, mine);
+        }
         let groups = self.group_places(&mut places)?;
         Ok(Value::Tuple(vec![Value::List(places), Value::List(groups)]))
+    }
+
+    /// Where the place of what the person looking holds goes: after the type's places that are
+    /// open, before the one of what is done with. It is a place to visit, never the one a window
+    /// opens on — the inbox is.
+    fn mine_at(&self, filter_places: usize) -> usize {
+        self.declared
+            .search
+            .filters
+            .iter()
+            .filter(|filter| matches!(filter.kind, FilterKind::Bool | FilterKind::Predicate))
+            .position(|filter| {
+                filter
+                    .role
+                    .as_ref()
+                    .is_some_and(|role| matches!(role, FilterRole::Logbook))
+            })
+            .unwrap_or(filter_places)
     }
 
     /// The place of what the person looking is assigned (`is:mine`), for a type that names who
