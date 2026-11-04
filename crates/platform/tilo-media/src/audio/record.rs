@@ -172,7 +172,7 @@ impl Capture {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         bounded_command::own_process_tree(&mut command);
-        bind_to_owner(&mut command);
+        let mut command = bind_to_owner(command);
         let mut child = command
             .spawn()
             .map_err(|error| format!("start PipeWire capture of {}: {error}", spec.label))?;
@@ -326,10 +326,11 @@ fn read_audio(
 /// A recorder must not survive its owner disappearing, even when Rust Drop
 /// cannot run. The exec target is an ordinary image binary; no elevated or
 /// capability-bearing program may replace it.
-fn bind_to_owner(command: &mut Command) {
+fn bind_to_owner(command: Command) -> Command {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt as _;
+        let mut command = command;
         // SAFETY: getpid is an argument-free identity query and cannot fail.
         let parent = unsafe { libc::getpid() };
         // SAFETY: this callback performs only async-signal-safe identity
@@ -346,9 +347,14 @@ fn bind_to_owner(command: &mut Command) {
                 Ok(())
             });
         }
+        command
     }
+    // Elsewhere the recorder's own process group is what bounds its life:
+    // there is no parent-death signal to bind it to.
     #[cfg(not(target_os = "linux"))]
-    let _ = command;
+    {
+        command
+    }
 }
 
 #[cfg(test)]
@@ -565,8 +571,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_recorder_does_not_survive_its_owner() {
-        let mut recorder = Command::new("true");
-        bind_to_owner(&mut recorder);
+        let mut recorder = bind_to_owner(Command::new("true"));
         // SAFETY: query the actual child kernel state after the production
         // callback and before exec; no microphone, allocation or lock is used.
         unsafe {
