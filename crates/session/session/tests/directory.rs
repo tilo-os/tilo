@@ -881,9 +881,8 @@ fn block_on_within<T>(
     // reactor to be woken by.
     match runtime.run_on(async move { tokio::time::timeout(bound, work).await }) {
         Ok(value) => value,
-        Err(_) => panic!(
-            "gave up waiting for {what} after {bound:?}; it looks hung (set \
-             TILO_TEST_HANG_BOUND_SECS to wait longer)"
+        Err(elapsed) => panic!(
+            "gave up waiting for {what}: {elapsed} (set TILO_TEST_HANG_BOUND_SECS to wait longer)"
         ),
     }
 }
