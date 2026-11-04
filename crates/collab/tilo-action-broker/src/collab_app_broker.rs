@@ -8212,6 +8212,7 @@ impl AppBrokerState {
                         .is_none_or(|native| native.admitted != *admitted)
             });
         }
+        drop(channels);
         Ok(())
     }
 

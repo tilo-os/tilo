@@ -221,12 +221,6 @@ impl Workspace {
             .collect()
     }
 
-    /// The length the store answers `q` with, and whether it is exact.
-    fn counted(&self, q: &str) -> (usize, bool) {
-        let listing = self.listing(q);
-        (listing.len(), listing.len_is_exact())
-    }
-
     /// The same, every task read and checked one by one, in the collection's order and then
     /// sorted as the query asks.
     fn anew(&self, q: &str) -> Vec<String> {

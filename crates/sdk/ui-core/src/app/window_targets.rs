@@ -8,6 +8,7 @@
 // person presses, a screen reader activates and a session names are the same
 // control.
 
+#[cfg(feature = "native")]
 use crate::window_targets::{MAX_TARGETS, TargetAction, WindowTarget};
 
 impl App {

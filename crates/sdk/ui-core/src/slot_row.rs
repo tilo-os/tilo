@@ -217,6 +217,7 @@ impl SlotRow {
     }
 
     /// The window is maximized: its maximize control shows restore.
+    #[cfg(feature = "native")]
     pub(crate) fn set_maximized(&mut self, maximized: bool) {
         if self.controls_state.maximized != maximized {
             self.controls_state.maximized = maximized;

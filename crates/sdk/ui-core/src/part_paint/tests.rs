@@ -593,7 +593,7 @@ fn pixelated_patterns(tokens: &PartTokens, part: Part) -> Vec<f32> {
                 now: States::REST,
             },
             1.0,
-            &tokens,
+            tokens,
         )
         .expect("pixelated draws the four surface parts");
     painted

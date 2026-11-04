@@ -202,7 +202,7 @@ impl DirectPart {
     #[action]
     pub fn send(
         &mut self,
-        cx: &mut ActionCx,
+        cx: &ActionCx,
         #[param("The message's id")] id: String,
         #[param("What it says")] text: String,
     ) -> Result<(), Refusal> {
