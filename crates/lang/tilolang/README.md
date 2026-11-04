@@ -346,9 +346,8 @@ ladder of how far a view may go — options, composing `ui.*`, drawing, native w
 `window name: T = default` is how each person looking at the window shows its resource, and
 `lens name: T = default` is where each person is in it; both are each person's own, so one
 person's window setting or draft never moves another's view. The view reads them like
-variables; they change only through a
-control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or the platform
-action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
+variables; they change only through a control bound to them (`input(bind: query)`,
+`checkbox("Open", bind: open)`) or the platform action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`. An action's arguments are evaluated when it is invoked, on
 what the invoker sees, as its parameter defaults are: an action a view applies reads the view
 state its arguments use when the control fires (`send(c, draft)`, `set(open, not open)`,

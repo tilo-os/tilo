@@ -13,8 +13,8 @@
 /// items it says `empty` and the bar keeps the type's actions. The places in the sidebar are
 /// the item type's filters that are on or off (`filters(T)`), after all of the items, each with
 /// how many it holds where its filter says `count: true`; the one chosen is the window's
-/// query, as people type it in search (`is:done`), so each person's window shows the list they
-/// picked; a window starts on `place` (all of the items when empty). The place of all of the items is
+/// query, as people type it in search (`is:done`), so each person sees the list they picked; a
+/// window starts on `place` (all of the items when empty). The place of all of the items is
 /// called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view
 /// state is the bar's sort menu. Items whose type has a window of their own open in the next
 /// column; the list follows which one is open.
