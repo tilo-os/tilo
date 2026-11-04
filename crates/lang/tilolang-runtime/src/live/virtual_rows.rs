@@ -165,14 +165,17 @@ impl Rows {
             }
             (
                 Self::List {
-                    values: mine,
+                    values: mine_values,
                     kept: kept_here,
                 },
                 Self::List {
-                    values: theirs,
+                    values: theirs_values,
                     kept: kept_there,
                 },
-            ) => kept_here == kept_there && (Rc::ptr_eq(mine, theirs) || mine == theirs),
+            ) => {
+                kept_here == kept_there
+                    && (Rc::ptr_eq(mine_values, theirs_values) || mine_values == theirs_values)
+            }
             _ => false,
         }
     }
