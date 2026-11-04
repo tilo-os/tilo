@@ -43,14 +43,14 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The row the keyboard is on: the mounted row holding the focus — a control inside it
-    /// counts, as `Tab` leaves it there — else the row this list's own keys last took while
-    /// the list has the focus. The row a key that acts on one row acts on.
+    /// counts, as `Tab` leaves it there — else the row this list's own keys last took. The
+    /// row a key that acts on one row acts on.
     pub(super) fn focused_row_key(&self) -> Option<M::Key> {
         self.mounted
             .iter()
             .find(|row| crate::widget::context_menu_area::focus_within(row.widget.as_ref()))
             .map(|row| row.key.clone())
-            .or_else(|| self.focused_key.clone().filter(|_| self.is_focused))
+            .or_else(|| self.focused_key.clone())
     }
 
     /// The rows an agent may choose, by semantic key alone (a renamed row
