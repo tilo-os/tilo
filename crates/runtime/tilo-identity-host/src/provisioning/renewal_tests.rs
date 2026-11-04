@@ -2,6 +2,7 @@
 //! and while the device runs, so expiry is never how a device loses its
 //! workspaces.
 use super::*;
+use crate::provisioning::*;
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
@@ -63,7 +64,7 @@ fn every_class_reissues_an_expiring_certificate_once_it_is_due_and_not_before() 
 /// A throwaway identity in `tmp`, with its device certificate replaced by
 /// one issued `age_ns` ago, as a session that ran that long ago left it.
 #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-pub(super) fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths, DeviceCert) {
+pub(crate) fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths, DeviceCert) {
     let personal = tmp.join("config/tilo/identity");
     let paths = IdentityPaths::under(tmp.join("system"));
     ensure_throwaway_test_identity(&personal, &paths, FILES).expect("provision");

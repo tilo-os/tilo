@@ -48,6 +48,7 @@ use tilo_desktop_surface::{
 };
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{DirectoryEffect, DirectorySeat, ListingAction};
+use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_user_identity::{
     DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory, WorkspaceMeta,
 };
@@ -144,6 +145,14 @@ pub(crate) fn follow_directory(
             }
             Err(error) => {
                 tracing::warn!(%error, workspace = %joined.workspace_id, "a joined workspace was not added");
+                tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    workspace = %joined.workspace_id,
+                    name = %joined.name,
+                    %error,
+                    outcome = "slot removed",
+                    "join: the desk would not make the workspace's slot, so nothing was joined"
+                );
                 directory.set_note(Some(error));
             }
         }
@@ -1157,19 +1166,47 @@ impl crate::Shared {
             return;
         };
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                workspace = %joined.workspace_id,
+                held_locally = true,
+                "join: this session holds no workspaces or takes no part in the collaboration plane, so the workspace stays as this computer keeps it"
+            );
             return;
         };
         let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
         engine.bind(slot, workspace);
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            workspace = %joined.workspace_id,
+            slot = slot.0,
+            "join: the workspace slot is made for the workspace"
+        );
         let asked = sync.enroll(crate::sync::Enrolling {
             slot,
             workspace_id: workspace,
             invitation: joined.invitation.clone(),
         });
         match asked {
-            Ok(()) => self.directory_store.expect_enrollment(&joined.workspace_id),
+            Ok(()) => {
+                tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    workspace = %joined.workspace_id,
+                    slot = slot.0,
+                    "join: the invitation is presented to the workspace's host"
+                );
+                self.directory_store.expect_enrollment(&joined.workspace_id);
+            }
             Err(error) => {
                 tracing::warn!(%error, workspace = %joined.workspace_id, "the invitation was not redeemed");
+                tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    workspace = %joined.workspace_id,
+                    slot = slot.0,
+                    %error,
+                    outcome = "slot removed",
+                    "join: the invitation could not be presented, so the slot is taken away"
+                );
                 engine.unbind(slot);
                 self.release_workspace(workspace);
                 self.directory_store.set_note(Some(error));
@@ -1196,14 +1233,33 @@ impl crate::Shared {
                         .map(|workspace| workspace.name.clone())
                 })
                 .unwrap_or_else(|| key.clone());
-            if let Err(error) = &enrolled.result {
-                if let Some(engine) = &self.engine {
-                    engine.unbind(enrolled.slot);
+            match &enrolled.result {
+                Ok(()) => tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    workspace = %key,
+                    slot = enrolled.slot.0,
+                    name = %name,
+                    outcome = "enrolled",
+                    "join: the host admitted this device and the workspace is held here"
+                ),
+                Err(error) => {
+                    tracing::info!(
+                        target: JOIN_FLOW_TARGET,
+                        workspace = %key,
+                        slot = enrolled.slot.0,
+                        name = %name,
+                        %error,
+                        outcome = "slot removed",
+                        "join: the workspace was not enrolled, so its slot is taken away and the person stays where they were"
+                    );
+                    if let Some(engine) = &self.engine {
+                        engine.unbind(enrolled.slot);
+                    }
+                    self.release_workspace(enrolled.workspace_id);
+                    // The sheet says why to a person looking at it; a session
+                    // nobody is looking at says it here too.
+                    tracing::warn!(%key, %error, "a workspace was not joined");
                 }
-                self.release_workspace(enrolled.workspace_id);
-                // The sheet says why to a person looking at it; a session
-                // nobody is looking at says it here too.
-                tracing::warn!(%key, %error, "a workspace was not joined");
             }
             self.directory_store.enrolled(&key, &name, &enrolled.result);
             settled = true;
@@ -1293,21 +1349,50 @@ impl crate::Shared {
     /// Take a workspace off this desk through the desk's own
     /// action, which refuses to leave the person with none.
     fn release_workspace(&self, workspace: WorkspaceId) {
-        let Some(id) = self.handle.read(|tree| {
+        let held = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
                 .find(|candidate| candidate.id() == workspace)
-                .map(|workspace| workspace.slot.0.to_string())
-        }) else {
+                .map(|held| {
+                    (
+                        held.slot.0.to_string(),
+                        held.name.clone(),
+                        held.strips.len(),
+                    )
+                })
+        });
+        let Some((id, name, strips)) = held else {
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                %workspace,
+                outcome = "slot gone",
+                "join: the workspace has no slot on this desk to take away"
+            );
             return;
         };
         let args =
             serde_json::Map::from_iter([("workspace".to_owned(), serde_json::Value::from(id))]);
-        if let Err(error) = self.ask_of_desk("leave-workspace", &args) {
-            // The desk keeps its one workspace: the person is never left
-            // with none, and the list brings it back on the next pass.
-            // ignored-failure: the desk keeps its one workspace, and the list brings it back
-            tracing::debug!(%error, %workspace, "a workspace not shown here was not taken off the desk");
+        match self.ask_of_desk("leave-workspace", &args) {
+            Ok(()) => tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                %workspace,
+                name = %name,
+                strips,
+                "join: the workspace's slot is taken off this desk"
+            ),
+            Err(error) => {
+                // The desk keeps its one workspace: the person is never left
+                // with none, and the list brings it back on the next pass.
+                tracing::debug!(%error, %workspace, "a workspace not shown here was not taken off the desk");
+                tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    %workspace,
+                    name = %name,
+                    %error,
+                    outcome = "slot kept",
+                    "join: the desk would not take the workspace's slot away"
+                );
+            }
         }
     }
 }

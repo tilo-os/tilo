@@ -148,21 +148,49 @@ pub fn keep_device_certificates_renewed(identity_dir: &Path) {
 ///
 /// As the provisioning that renews them.
 pub fn renew_due_device_certificates() -> std::io::Result<()> {
+    use tilo_startup_metrics::JOIN_FLOW_TARGET;
     let renewing = RENEWING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(identity_dir) = renewing.as_deref() else {
+        tracing::debug!(
+            target: JOIN_FLOW_TARGET,
+            "renewal: no renewal loop runs, so nothing was renewed before this device is presented"
+        );
         return Ok(());
     };
     let paths = collaboration_identity_paths();
-    let renewed =
-        if tilo_identity_host::provisioning::next_device_certificate_renewal(identity_dir, &paths)
-            .is_some_and(|due| due <= tilo_clock::unix_now_ns())
-        {
-            renew_device_certificates(identity_dir, &paths)
-        } else {
-            Ok(())
-        };
+    let due =
+        tilo_identity_host::provisioning::next_device_certificate_renewal(identity_dir, &paths);
+    let now = tilo_clock::unix_now_ns();
+    let renewed = if due.is_some_and(|due| due <= now) {
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            identity = %identity_dir.display(),
+            due_ns = due,
+            now_ns = now,
+            "renewal: a certificate is due; renewing it now, before this device is presented"
+        );
+        let renewed = renew_device_certificates(identity_dir, &paths);
+        match &renewed {
+            Ok(()) => tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                identity = %identity_dir.display(),
+                outcome = "renewed",
+                "renewal: this device's certificate was renewed"
+            ),
+            Err(error) => tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                identity = %identity_dir.display(),
+                %error,
+                outcome = "failed",
+                "renewal: this device's certificate could not be renewed"
+            ),
+        }
+        renewed
+    } else {
+        Ok(())
+    };
     drop(renewing);
     renewed
 }
