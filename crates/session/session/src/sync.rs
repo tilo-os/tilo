@@ -70,6 +70,16 @@ const PRESENCE_AGAIN: Duration = Duration::from_secs(20);
 /// three times, each exchange with its own bound.
 const REDEEM_WITHIN: Duration = Duration::from_secs(120);
 
+/// How long taking the granted workspace in may take: installing what the host
+/// granted and telling the plane to carry it is this device's own work, and the
+/// person is told a join did not happen rather than left waiting on it.
+const SETTLE_WITHIN: Duration = Duration::from_secs(30);
+
+/// How long the session waits for this device's endpoint to bind before it
+/// starts without one: a desktop with no one else on it, rather than a session
+/// that never opens.
+const BIND_WITHIN: Duration = Duration::from_secs(30);
+
 /// What this session says of itself here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OwnPresence {
@@ -868,8 +878,13 @@ impl Client {
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
-            .recv()
-            .map_err(std::io::Error::other)?
+            .recv_timeout(BIND_WITHIN)
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the collaboration endpoint did not bind",
+                )
+            })?
             .map_err(std::io::Error::other)?;
         if let (Some(live), Some(bound)) = (&mut live, endpoint_handle.get()) {
             live.attach(bound.clone());
@@ -2505,29 +2520,38 @@ async fn redeem(
     )
     .await
     .map_err(|_| "the workspace's host did not answer".to_owned())??;
-    owner.install(&enrollment, std::time::SystemTime::now())?;
-    // The workspace is held here now: this device takes part in it, so what its
-    // people say and record reaches it as it happens, and the devices it
-    // admits are told to the plane.
-    if let Some(link) = link {
-        link.workspace_changed(request.workspace_id);
-    }
-    // The workspace's subscription comes before the session it carries: what the
-    // host says the moment this device joins is the workspace as it stands, and a
-    // workspace nobody listens to yet drops it.
-    plane
-        .send(NetCmd::JoinWorkspace {
-            ws: topic,
-            on_event: events.clone(),
-        })
-        .await
-        .map_err(|_| "the collaboration plane is gone".to_owned())?;
-    let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.workspace_id)
-        .map_err(|error| format!("the workspace was not taken in: {error}"))?;
-    plane
-        .send(NetCmd::NativeConnect(connect, None))
-        .await
-        .map_err(|_| "the collaboration plane is gone".to_owned())
+    // What the host granted is taken in here, and the plane told to carry it:
+    // a person waiting to be let into a workspace is told when it did not
+    // happen rather than left on a plane that stopped taking work.
+    tokio::time::timeout(SETTLE_WITHIN, async {
+        owner.install(&enrollment, std::time::SystemTime::now())?;
+        // The workspace is held here now: this device takes part in it, so what its
+        // people say and record reaches it as it happens, and the devices it
+        // admits are told to the plane.
+        if let Some(link) = link {
+            link.workspace_changed(request.workspace_id);
+        }
+        // The workspace's subscription comes before the session it carries: what the
+        // host says the moment this device joins is the workspace as it stands, and a
+        // workspace nobody listens to yet drops it.
+        plane
+            .send(NetCmd::JoinWorkspace {
+                ws: topic,
+                on_event: events.clone(),
+            })
+            .await
+            .map_err(|_| "the collaboration plane is gone".to_owned())?;
+        let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.workspace_id)
+            .map_err(|error| format!("the workspace was not taken in: {error}"))?;
+        plane
+            .send(NetCmd::NativeConnect(connect, None))
+            .await
+            .map_err(|_| "the collaboration plane is gone".to_owned())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|_| "the workspace was not taken in time".to_owned())??;
+    Ok(())
 }
 
 /// The certificate among `certs` that says who authored `update`, if the

@@ -405,6 +405,23 @@ fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
     }
 }
 
+/// Wait until the directory is done with the person: it closes once the join's
+/// enrollment settles, which is the pass after the workspace is held here, so
+/// the person lands in the workspace they joined a frame later.
+fn wait_until_the_directory_is_done(session: &mut Session) {
+    wait_until(
+        session,
+        "the directory is done, leaving them in the workspace they joined",
+        |session| {
+            !session
+                .workspace_directory()
+                .expect("the session hosts the workspace directory")
+                .presentation()
+                .is_open()
+        },
+    );
+}
+
 /// What the site lists: its own community workspace, a club, and the
 /// workspace this computer holds already.
 fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> String {
@@ -650,14 +667,7 @@ fn joining_a_listed_workspace_asks_its_door_and_lands_in_it() {
         }),
         "as this person, by the name they go by rather than their device's"
     );
-    assert!(
-        !session
-            .workspace_directory()
-            .expect("the session hosts the workspace directory")
-            .presentation()
-            .is_open(),
-        "and the sheet is done, leaving them in the workspace they joined"
-    );
+    wait_until_the_directory_is_done(&mut session);
     // Opening the directory again shows the club as one this computer holds.
     open_directory(&mut session);
     assert_eq!(
@@ -1377,14 +1387,7 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         Some(hex::encode(person).as_str()),
         "and never the person who only joined it"
     );
-    assert!(
-        !session
-            .workspace_directory()
-            .expect("the session hosts the workspace directory")
-            .presentation()
-            .is_open(),
-        "and the sheet is done, leaving them in the workspace they joined"
-    );
+    wait_until_the_directory_is_done(&mut session);
 }
 
 #[test]
@@ -1444,14 +1447,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
         joined.1, "Lounge",
         "under the name the site's entry gives it"
     );
-    assert!(
-        !session
-            .workspace_directory()
-            .expect("the session hosts the workspace directory")
-            .presentation()
-            .is_open(),
-        "and the sheet is done, leaving them in the workspace they joined"
-    );
+    wait_until_the_directory_is_done(&mut session);
 }
 
 /// The lounge's workspace as its people left it: two strips, and three
