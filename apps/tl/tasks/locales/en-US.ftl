@@ -134,7 +134,7 @@ d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
 d-u7a3fue4 = Quick add
-    .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`.
+    .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in the lane `s` of its board.
 
 d-rs3ubifz = New task
     .doc = Adds a task under the title a program or an agent gives it: no task stands without one.
@@ -221,7 +221,7 @@ d-vi6srojh = Delete section
     .doc = Deletes a section; its tasks go to the project's first lane.
 
 d-pcn3xgni = New task
-    .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first), under the title the entry that adds there carries: a project's primary action, so that entry is where its key and its menu row bring the person.
+    .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first), under a title a program or an agent gives it.
 
 d-scjlkb6d = Place
     .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
