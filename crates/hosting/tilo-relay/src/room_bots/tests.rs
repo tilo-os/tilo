@@ -7,7 +7,7 @@
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::workspaces::fixtures::{governor, restricted_until, test_host};
+use crate::workspaces::fixtures::{governor, restricted_until, test_host, test_host_taking_part};
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
@@ -30,6 +30,18 @@ pub(super) async fn bot_host(
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
     test_host(state, key, cert).await
+}
+
+/// The same host run on a device that takes part in its workspaces' channels,
+/// as a relay whose device owns workspaces does.
+async fn bot_host_taking_part(
+    state: &std::path::Path,
+    key: &ed25519_dalek::SigningKey,
+    cert: &DeviceCert,
+) -> crate::workspaces::fixtures::TestHost {
+    let _ = AppCatalogue::native();
+    crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+    test_host_taking_part(state, key, cert).await
 }
 
 /// `bot`'s runner in `workspace`, the bot installed as a member first, as the
@@ -989,7 +1001,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_room(&workspaces, &cert).await;
     let (guest, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;

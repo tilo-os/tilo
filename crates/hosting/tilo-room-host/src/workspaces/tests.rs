@@ -8,7 +8,7 @@ use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
     admit_view_reader, door_join, governor, governor_with, restricted_until, signed_pre_admission,
-    test_host,
+    test_host, test_host_taking_part,
 };
 
 #[cfg(feature = "agents")]

@@ -10,7 +10,7 @@
 )]
 
 use super::super::Workspaces;
-use super::super::tests::{governor_with, test_host};
+use super::super::tests::{governor_with, test_host_taking_part};
 use super::fixtures::{SealingMember, governor_published, member_device};
 use super::*;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
@@ -62,7 +62,7 @@ struct Lounge {
 async fn lounge() -> Lounge {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
-    let relay = test_host(dir.path(), &key, &cert).await;
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (member_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -295,7 +295,7 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     const WRITES: usize = 400;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
-    let relay = test_host(dir.path(), &key, &cert).await;
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
@@ -432,6 +432,8 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         .await
         .path
         .clone();
+    // The next start runs on the same device, with the keys it took the writes in under.
+    let device = workspaces.device_keys();
 
     // What a hard stop leaves on disk, copied (the workspace file before the
     // files it names) and opened as the next start opens it.
@@ -441,7 +443,7 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         let copy = stopped.path().join(path.file_name().unwrap());
         std::fs::copy(&path, &copy).unwrap();
         copy_dir(path.parent().unwrap(), stopped.path());
-        let held = match GovernedWorkspace::open(copy, &governor, None) {
+        let held = match GovernedWorkspace::open(copy, &governor, device.as_ref()) {
             Ok(reopened) => reopened.readable_document(APP, RECORD).await.unwrap(),
             // Copied while the workspace wrote its next state.
             Err(_) => None,
@@ -503,7 +505,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
     const WRITES: usize = tilo_peer_state::MAX_HELD_INPUTS + 16;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
-    let relay = test_host(dir.path(), &key, &cert).await;
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
@@ -656,7 +658,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     const LOBBY: &str = "lobby";
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
-    let relay = test_host(dir.path(), &key, &cert).await;
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -748,7 +750,7 @@ async fn retained_once(
 async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
-    let relay = test_host(dir.path(), &key, &cert).await;
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
@@ -782,7 +784,7 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     const LEGACY: &str = "legacy";
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
-    let relay = test_host(dir.path(), &key, &cert).await;
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
@@ -858,7 +860,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     const NOTE: &str = "tab:0000000000000001";
     let dir = tempfile::tempdir().unwrap();
     let (key, ada) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
-    let relay = test_host(dir.path(), &key, &ada).await;
+    let relay = test_host_taking_part(dir.path(), &key, &ada).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);

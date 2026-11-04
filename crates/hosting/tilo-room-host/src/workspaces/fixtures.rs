@@ -7,14 +7,18 @@
     reason = "a fixture failing is its test failing"
 )]
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+use collab_types::ChannelRoute;
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use super::{PreAdmitRequest, Workspaces};
+use super::{ChannelKeys, ChannelKeysAnswerFuture, DeviceChannels, PreAdmitRequest, Workspaces};
 use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 
 /// A host certified only to host workspaces: it governs them without taking part in
@@ -92,12 +96,96 @@ impl TestHost {
     }
 }
 
+/// The channel service of a device that takes part in its workspaces' channels:
+/// it opens a channel's keys the first time something starts the channel's
+/// record, as the channel service of the device a page or a bot runs on does,
+/// and answers with the same keys every time after.
+#[derive(Default)]
+pub struct TestChannelKeys {
+    held: Mutex<BTreeMap<(String, String, String), ChannelContentKeys>>,
+}
+
+impl ChannelKeys for TestChannelKeys {
+    fn channel_keys<'a>(
+        &'a self,
+        workspace: &'a str,
+        route: &'a ChannelRoute,
+        create: bool,
+    ) -> ChannelKeysAnswerFuture<'a> {
+        Box::pin(async move {
+            let named = (
+                workspace.to_owned(),
+                route.app.clone(),
+                route.record.clone(),
+            );
+            let held = {
+                let keys = self.held.lock().expect("the fixture's keys");
+                keys.get(&named).cloned()
+            };
+            if let Some(keys) = held {
+                return Some(Ok(keys));
+            }
+            if !create {
+                return Some(Err("this channel has no keys yet".into()));
+            }
+            let name = format!("{workspace}/{}/{}", route.app, route.record);
+            let keys = ChannelGroup::create(
+                route.channel(workspace),
+                MemberKey::generate(&name).expect("a fixture member key"),
+            )
+            .expect("a fixture channel opens")
+            .content_keys()
+            .expect("a fresh channel holds its epoch's keys");
+            self.held
+                .lock()
+                .expect("the fixture's keys")
+                .insert(named, keys.clone());
+            Some(Ok(keys))
+        })
+    }
+}
+
 /// A certified host of `cert`'s device keeping its state under `state_root`.
 ///
 /// # Panics
 ///
 /// The endpoint cannot bind or the host cannot open.
 pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -> TestHost {
+    host_on(state_root, key, cert, None).await
+}
+
+/// The same host, run on a device that takes part in its workspaces' channels,
+/// as a relay whose device owns workspaces does: what its members seal it opens,
+/// and what it writes itself it seals.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_taking_part(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> TestHost {
+    host_on(
+        state_root,
+        key,
+        cert,
+        Some(DeviceChannels {
+            keys: Arc::new(TestChannelKeys::default()),
+            sink: None,
+        }),
+    )
+    .await
+}
+
+/// `cert`'s device hosting under `state_root`, taking part in the workspaces'
+/// channels through `channels` when it is given.
+async fn host_on(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    channels: Option<DeviceChannels>,
+) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .bind()
@@ -112,7 +200,7 @@ pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
-        None,
+        channels,
     )
     .await
     .expect("the host opens");
