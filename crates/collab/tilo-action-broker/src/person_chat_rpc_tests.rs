@@ -33,13 +33,9 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
                         .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
                         .ok_or("invalid conversation peer")?,
                 );
-                let conversation = match self
+                let conversation = self
                     .0
-                    .old_direct_conversation(workspace, &stored, &authority, page, now)
-                {
-                    Ok(conversation) => conversation,
-                    Err(error) => return Err(error),
-                };
+                    .old_direct_conversation(workspace, &stored, &authority, page, now)?;
                 // A person with no old conversation has nothing to import.
                 let Some(conversation) = conversation else {
                     return serde_json::to_vec(&serde_json::json!({
