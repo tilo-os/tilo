@@ -458,6 +458,7 @@ impl Reader<'_> {
                 name: snake_case(own),
                 ty: own.to_owned(),
                 default: None,
+                place: false,
             });
         }
         for param in &verb.params {
@@ -488,6 +489,7 @@ impl Reader<'_> {
                 name: action_name(&param.name),
                 ty,
                 default: (!param.required).then(DefaultMeta::none),
+                place: false,
             });
         }
         self.meta.actions.push(ActionMeta {
@@ -509,6 +511,7 @@ impl Reader<'_> {
             group: None,
             frequent: false,
             guard: false,
+            applies: false,
         });
     }
 

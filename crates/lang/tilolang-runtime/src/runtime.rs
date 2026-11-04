@@ -198,6 +198,12 @@ impl Runtime {
                     .iter()
                     .filter(|a| a.guard)
                     .map(|a| tilolang::ir::guard_export(&a.id)),
+            )
+            .chain(
+                meta.actions
+                    .iter()
+                    .filter(|a| a.applies)
+                    .map(|a| tilolang::ir::applies_export(&a.id)),
             );
         for name in wanted {
             if !exports.contains(&name) {

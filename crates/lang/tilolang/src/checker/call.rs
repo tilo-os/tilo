@@ -393,6 +393,7 @@ impl Checker<'_> {
                 name: name.clone(),
                 ty,
                 default: None,
+                place: false,
             });
             args.push(arg);
         }

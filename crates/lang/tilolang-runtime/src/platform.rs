@@ -91,7 +91,32 @@ pub(crate) fn names_type(meta: &Meta, name: &str, id: &str) -> bool {
 pub(crate) fn all_asked(meta: &Meta, params: &[ParamMeta]) -> bool {
     params
         .iter()
+        .filter(|param| !param.place)
         .all(|param| param.default.is_some() || form_asks(meta, &param.ty))
+}
+
+/// How many parameters of `action` the view offering it supplies: the places that follow its
+/// subject (`above: Option<Task> (above)`).
+fn places_of(action: &ActionMeta) -> usize {
+    action
+        .params
+        .iter()
+        .skip(1)
+        .take_while(|param| param.place)
+        .count()
+}
+
+/// What an offer of `action` on `subject` gives before the parameters it asks for: the subject,
+/// then each place the view supplies, from `above` or as nothing when the offer stands in no
+/// view of the item.
+fn offered_args(action: &ActionMeta, subject: &RefValue, above: &Value) -> Vec<Value> {
+    let places = places_of(action);
+    let mut args = Vec::with_capacity(places.saturating_add(1));
+    args.push(Value::Ref(subject.clone()));
+    for _ in 0..places {
+        args.push(above.clone());
+    }
+    args
 }
 
 /// Whether an action on a holder asks for one of the items it holds (`remove(tasks, t: Task)`):
@@ -175,6 +200,15 @@ fn mark_of(held: Option<&Value>) -> Option<SeenMark> {
     }
 }
 
+/// What decides whether an action can take an item now, or apply to it where a view offers it.
+#[derive(Clone, Copy)]
+enum Decides {
+    /// Its `require` conditions: a menu shows it disabled, with the reason.
+    Requirement,
+    /// Its `applies` conditions: a menu leaves it out.
+    Applies,
+}
+
 /// One action offered on a subject, before it is presented.
 pub(crate) struct Offered<'m> {
     pub(crate) action: &'m ActionMeta,
@@ -239,7 +273,10 @@ impl Core {
             Imp::EventPart => self.ret_h(Value::EventPart(usize::try_from(a.h(0)?).unwrap_or(0))),
             Imp::Actions => {
                 let target = self.ref_arg(a.h(0)?)?;
-                let offered = self.actions_on(&target)?;
+                // Where the view shows the item: the item just above it in its group, which
+                // the actions offered get as their place, never one read in storage order.
+                let above = self.val(a.h(1)?)?;
+                let offered = self.actions_on(&target, &above)?;
                 self.ret_h(Value::List(offered))
             }
             Imp::Delivery => {
@@ -1254,7 +1291,7 @@ impl Core {
     /// resource holding it that take it as their second argument — in the order their packages
     /// declare them, the primary one first, each a `host.Action`. An app declares its actions in
     /// the order a person reads them, so a menu of one item lists them as it wrote them.
-    fn actions_on(&self, subject: &RefValue) -> HResult<Vec<Value>> {
+    fn actions_on(&self, subject: &RefValue, above: &Value) -> HResult<Vec<Value>> {
         let target = &subject.target;
         let packages = self.registry.borrow().packages();
         let rank = |pkg: &Rc<Package>| {
@@ -1283,8 +1320,11 @@ impl Core {
                 }
                 let shown = Offered {
                     action,
-                    args: vec![Value::Ref(subject.clone())],
-                    rest: action.params.get(1..).unwrap_or_default(),
+                    args: offered_args(action, subject, above),
+                    rest: action
+                        .params
+                        .get(places_of(action).saturating_add(1)..)
+                        .unwrap_or_default(),
                     present: true,
                 };
                 found.push((action.role.as_deref() == Some("primary"), at, index, shown));
@@ -1372,11 +1412,20 @@ impl Core {
                 _ => None,
             };
         }
-        // Whether it can run on the subject now, as the requirements its subject decides say: a
-        // control for it stands disabled with the reason, rather than failing when pressed.
+        // Whether it applies to the item where the view offers it at all, and whether it can
+        // run on it now, as the conditions its subject and place decide say: a menu leaves out
+        // what cannot apply, and a control for what cannot run stands disabled with the reason.
+        let viewer = self.viewer_here();
+        let mut applies = true;
         let mut available = true;
         let mut why = String::new();
-        if let Some(refused) = self.refusal(&action.id, subject, &self.viewer_here())? {
+        if let Some(refused) = self.decided(&action.id, &shown.args, &viewer, Decides::Applies)? {
+            applies = false;
+            available = false;
+            why = refused;
+        } else if let Some(refused) =
+            self.decided(&action.id, &shown.args, &viewer, Decides::Requirement)?
+        {
             available = false;
             why = refused;
         }
@@ -1424,6 +1473,7 @@ impl Core {
             Value::Bool(action.frequent),
             Value::Bool(available),
             Value::Text(why),
+            Value::Bool(applies),
             // After its fields, the action's id, which `a.is(edit)` compares
             // (`tilolang::host::action_id_at`).
             Value::Text(action.id.clone()),
@@ -1432,8 +1482,8 @@ impl Core {
 
     /// Why the action `action` cannot run on `subject` now, as the requirements its subject
     /// alone decides say: the first that does not hold, in `viewer`'s words. `None` when they
-    /// all hold, or when the app keeps none the subject could decide. What it reads is the
-    /// view's it is offered in, so a surface showing the action runs again when that changes.
+    /// all hold, or when the app keeps none the subject could decide. A place the view would
+    /// supply is given as nothing: the item stands in no view here.
     ///
     /// # Errors
     ///
@@ -1444,7 +1494,34 @@ impl Core {
         subject: &RefValue,
         viewer: &Principal,
     ) -> HResult<Option<String>> {
-        let (pkg, params) = {
+        let places = {
+            let registry = self.registry.borrow();
+            registry
+                .action_package(action)
+                .and_then(|pkg| pkg.action(action).map(places_of))
+                .unwrap_or(0)
+        };
+        let mut args = vec![Value::Ref(subject.clone())];
+        args.extend((0..places).map(|_| Value::none()));
+        self.decided(action, &args, viewer, Decides::Requirement)
+    }
+
+    /// Why the action `action` cannot do what `which` asks — run on the item now, or apply to
+    /// the item where the view offers it — as the conditions its subject and the place it is
+    /// offered in decide say: the first that does not hold, in `viewer`'s words, or `None` when
+    /// they all hold. `args` is what the offer gives before the parameters it asks for.
+    ///
+    /// # Errors
+    ///
+    /// A condition that traps, or answers something else than a text.
+    fn decided(
+        &self,
+        action: &str,
+        args: &[Value],
+        viewer: &Principal,
+        which: Decides,
+    ) -> HResult<Option<String>> {
+        let (pkg, params, export) = {
             let registry = self.registry.borrow();
             let Some(pkg) = registry.action_package(action) else {
                 return Ok(None);
@@ -1452,11 +1529,20 @@ impl Core {
             let Some(meta) = pkg.action(action) else {
                 return Ok(None);
             };
-            if !meta.guard {
+            let exported = match which {
+                Decides::Requirement => meta.guard,
+                Decides::Applies => meta.applies,
+            };
+            if !exported {
                 return Ok(None);
             }
-            let params = meta.params.get(..1).unwrap_or_default().to_vec();
-            (pkg.clone(), params)
+            let decided = places_of(meta).saturating_add(1);
+            let params = meta.params.get(..decided).unwrap_or_default().to_vec();
+            let export = match which {
+                Decides::Requirement => tilolang::ir::guard_export(action),
+                Decides::Applies => tilolang::ir::applies_export(action),
+            };
+            (pkg.clone(), params, export)
         };
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
@@ -1465,14 +1551,9 @@ impl Core {
                 ..ViewState::default()
             }),
         );
+        let given = args.get(..params.len()).unwrap_or(args);
         let answered = self
-            .call_in_frame(
-                &pkg,
-                &tilolang::ir::guard_export(action),
-                &params,
-                &[Value::Ref(subject.clone())],
-                Some("Text"),
-            )
+            .call_in_frame(&pkg, &export, &params, given, Some("Text"))
             .map_err(|e| e.to_string());
         let frame = self.frames.borrow_mut().pop();
         let Some(FrameKind::View(reads)) = frame.map(|f| f.kind) else {

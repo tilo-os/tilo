@@ -191,7 +191,7 @@ d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task just over it, as `Ctrl+]` does in an outline: one change, undone as one.
+    .doc = Moves a task under the task the view shows just over it in its group (`above`), as `Ctrl+]` does in an outline: one change, undone as one.
 
 d-khy6tj7s = Outdent
     .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
@@ -255,8 +255,6 @@ d-lvbdxuzj = Set priority urgent~present
 d-day53wfn = Unfile~present
 
 d-mg3c777a = Move to~present
-
-d-hefmcmk4 = Outdent~present
 
 d-tpvjqy5m = Clear done~present
 

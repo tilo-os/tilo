@@ -100,8 +100,15 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "reason",
                 "Text",
-                "Why it cannot run now, as the `require` that does not hold says it, in the \
-                 person's language; empty while it can.",
+                "Why it cannot run now, as the `require` or `applies` that does not hold says \
+                 it, in the person's language; empty while it can.",
+            ),
+            (
+                "applies",
+                "Bool",
+                "Whether it can apply to the item where it is offered at all: the `applies` \
+                 conditions its subject and place decide hold. A menu leaves one that does not \
+                 apply out; a palette lists it, disabled with `reason`.",
             ),
         ],
     },

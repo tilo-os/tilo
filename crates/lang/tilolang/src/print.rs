@@ -288,7 +288,10 @@ fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
             let value = expr_with(default, 0, col + head.len() + 3, level, ctx);
             format!("{head} = {value}")
         }
-        None => head,
+        None => match &p.place {
+            Some(place) => format!("{head} ({})", place.name),
+            None => head,
+        },
     }
 }
 
@@ -1066,12 +1069,14 @@ impl Printer<'_> {
                 let lead = format!("{role}action {}", a.name.name);
                 self.head(&lead, &a.params, &tail, &opts, " {", param_text);
                 self.level += 1;
-                for r in &a.requires {
-                    self.comments_before(r.span.start);
-                    let col = self.level * 4;
-                    let cond = self.ex_at(&r.cond, col + 8);
-                    let reason = self.ex_at(&r.reason, col + 8 + cond.len() + 1);
-                    self.line(&format!("require {cond} {reason}"));
+                for (word, lines) in [("require", &a.requires), ("applies", &a.applies)] {
+                    for r in lines {
+                        self.comments_before(r.span.start);
+                        let col = self.level * 4;
+                        let cond = self.ex_at(&r.cond, col + 8);
+                        let reason = self.ex_at(&r.reason, col + 8 + cond.len() + 1);
+                        self.line(&format!("{word} {cond} {reason}"));
+                    }
                 }
                 self.level -= 1;
                 self.block_body(&a.body);

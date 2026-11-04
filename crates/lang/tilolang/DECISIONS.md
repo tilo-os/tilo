@@ -531,3 +531,17 @@ search.md, "What a type declares" and "Types, references and paths".
   field to declare, and a view or a function cannot call it (E040). Nothing happens for an item
   that repeats nowhere or for `done = false`, so a check that does not repeat is the app's own
   `done` write.
+- **A place the view supplies, and the commands only a view can offer.** An action parameter
+  written `above: Option<T> (above)` is a *place*: the view offering the action fills it with
+  what it shows there — `std.rows` and `std.outline` pass the item just over this one in its
+  group, under the same parent, on the same side of the fold — through `actions(x, above)`. The
+  store's order never decides it, so a task first under its day's heading is never nested under
+  one of another day. An `applies` line states what this view must show for the action to be
+  offered at all (`applies above != .none "Nothing above it here"`); a `require` line states
+  what the item's own state must be, and a menu keeps that one listed, disabled, with its
+  reason. An item menu (a row's, a window's `...`) leaves out what does not apply there, while
+  the published `applies` flag beside `available` and `reason` lets a surface that lists
+  everything — a palette, an agent's choices — show it disabled, why. The `run` of an offered
+  action carries the place it was offered with, so what runs is what the person saw. Two
+  actions offered on one kind of item that both ask for a value of one type and write it to the
+  same field are one command under two names (E120).

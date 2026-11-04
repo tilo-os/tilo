@@ -842,7 +842,12 @@ fn a_subtask_indents_over_itself_and_outdents_beside_its_parent() {
     let (mut ada, parent) = launch_post();
     let draft = task(&ada, "First draft");
     let shots = task(&ada, "Screenshots");
-    call(&ada, "indent", vec![shots.clone()]);
+    // Under the task the list shows over it, which the row's menu carries as the move's place.
+    call(
+        &ada,
+        "indent",
+        vec![shots.clone(), Value::some(draft.clone())],
+    );
     ada.commit();
     assert_eq!(
         target(&read(&ada, &shots, "parent")),
@@ -1734,7 +1739,9 @@ fn button_command(node: &UiNode) -> Command {
     }
 }
 
-/// The commands every item menu offers, in the order a person reads them.
+/// The commands a task's menus offer, in the order a person reads them: every command, and of
+/// the two moves only the one this task's place allows. This is a task with nothing over it in
+/// its group standing at the top level: neither move has a place, so neither is offered.
 fn spec_commands() -> Vec<&'static str> {
     vec![
         "Complete",
@@ -1753,8 +1760,6 @@ fn spec_commands() -> Vec<&'static str> {
         "Project…",
         "Inbox",
         "Assign…",
-        "Indent",
-        "Outdent",
         "Duplicate",
         "Delete",
     ]
@@ -1799,17 +1804,31 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
         .expect("the row it listed")
 }
 
-/// The commands a task's row offers from its own menu.
-fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
+/// The menu a task's row offers.
+fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
     let row = home_row(view, want);
-    let menu = all(row, "slot")
+    all(row, "slot")
         .into_iter()
         .find(|slot| slot.props.get("name") == Some(&Value::text("menu")))
-        .unwrap_or_else(|| panic!("the row offers a menu: {row:?}"));
-    all(menu, "ui.MenuItem")
+        .unwrap_or_else(|| panic!("the row offers a menu: {row:?}"))
+}
+
+/// The commands a task's row offers from its own menu.
+fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
+    all(row_menu(view, want), "ui.MenuItem")
         .into_iter()
         .map(menu_command)
         .collect()
+}
+
+/// The key of the command `label` of a task's row menu: the node running it names.
+fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String {
+    all(row_menu(view, want), "ui.MenuItem")
+        .into_iter()
+        .find(|item| text_of(item, "label").as_deref() == Some(label))
+        .unwrap_or_else(|| panic!("the row offers {label}"))
+        .key
+        .clone()
 }
 
 /// The commands a page offers behind its `...` door.
@@ -1858,10 +1877,8 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         "what it already is cannot be chosen: {:?}",
         commands[7]
     );
-    assert_eq!(commands[15].key.as_deref(), Some("Ctrl+]"));
-    assert_eq!(commands[16].key.as_deref(), Some("Ctrl+["));
     assert_eq!(
-        commands[17].key.as_deref(),
+        commands[15].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );
@@ -1871,6 +1888,88 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         "delete is drawn as taking something away"
     );
     assert_eq!(delete.key.as_deref(), Some("delete"));
+}
+
+/// A command whose place this view does not have is not among the commands it offers: a task
+/// with nothing over it in its day cannot be indented under it, though the store holds another
+/// day's task before it, and the one under a task it can see is. Running the one offered nests
+/// it under the task the person sees over it.
+#[test]
+fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
+    let (mut ada, root) = workspace();
+    let van = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Book the van")],
+    );
+    let tent = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Pack the tent")],
+    );
+    let tank = call(&ada, "new_task", vec![root, Value::text("Fill the tank")]);
+    ada.commit();
+    for (task, day) in [
+        (&van, "2026-10-30"),
+        (&tent, "2026-10-29"),
+        (&tank, "2026-10-30"),
+    ] {
+        call(
+            &ada,
+            "schedule",
+            vec![task.clone(), Value::some(Value::text(day))],
+        );
+    }
+    ada.commit();
+
+    let mut view = ada.view(APP);
+    let offered = |view: &mut ViewInstance, task: &Value| {
+        labels(&row_commands(view, task))
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<String>>()
+    };
+    assert!(
+        !offered(&mut view, &van).contains(&"Indent".to_owned()),
+        "the first task of its day has nothing over it to go under"
+    );
+    assert!(
+        !offered(&mut view, &tent).contains(&"Indent".to_owned()),
+        "and neither has the first of another day, though a task of the day before stands \
+         over it in the store"
+    );
+    assert!(
+        offered(&mut view, &tank).contains(&"Indent".to_owned()),
+        "the one under a task of its own day does: {:?}",
+        offered(&mut view, &tank)
+    );
+
+    // Running it nests it under the task over it, which is the one of its own day.
+    let key = row_command_key(&mut view, &tank, "Indent");
+    let indent = view
+        .event_action(&key, "choose")
+        .expect("Indent runs where it is offered");
+    ada.host
+        .runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (indent.action.as_str(), indent.args.clone()),
+        )
+        .expect("indented");
+    ada.commit();
+    assert_eq!(
+        target(&read(&ada, &tank, "parent")),
+        target(&van),
+        "under the task the list shows over it, never one of another day"
+    );
+
+    // The task's own window shows no row over it, so it offers no move that needs one.
+    let page = page_commands(&task_page(&ada, &tank));
+    assert!(
+        !labels(&page).contains(&"Indent"),
+        "the window offers no Indent: {:?}",
+        labels(&page)
+    );
 }
 
 /// The page a task opens offers the same commands, in the same order, with the same keys and the

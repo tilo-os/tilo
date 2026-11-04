@@ -167,7 +167,7 @@ imports! {
     (EventValue, "event_value", "", "i"),
     (StateAt, "state_at", "iii", "i"),
     (ArgAt, "arg_at", "iii", "i"),
-    (Actions, "actions", "i", "i"),
+    (Actions, "actions", "ii", "i"),
     (Lenses, "lenses", "i", "i"),
     (Delivery, "delivery", "i", "i"),
     (WorkspaceMembers, "workspace_members", "", "i"),

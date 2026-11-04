@@ -256,9 +256,18 @@ view rows_list<T>(
         on select(x: T): open(x, front: false)
         on activate(x: T): open(x)
         for x in shown {
-            let offered = actions(x)
             let heading: Option<Date> = if let g = group { g(x) } else { .none }
             let tail = if let c = closed { c(x) } else { false }
+            // The row just over this one in its group, as the list shows them: the same
+            // heading, on this side of the fold, under the same parent. That is the place the
+            // actions offered on the row get, and none for the first of a group.
+            let above = shown
+                .take(shown.index_of(x) ?? 0)
+                .filter(
+                    y -> if let g = group { g(y) == heading } else { true } and if let c = closed { c(y) == tail } else { true } and if let p = parent { p(y) == p(x) } else { true },
+                )
+                .last()
+            let offered = actions(x, above)
             let under: Option<T> = if let p = parent { p(x) } else { .none }
             let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
             let count: Option<Text> = if let c = progress { c(x) } else { .none }
@@ -273,16 +282,18 @@ view rows_list<T>(
             ) {
                 menu: {
                     for a in offered {
-                        ui.MenuItem(
-                            a.label,
-                            icon: a.icon,
-                            destructive: a.destructive,
-                            key: a.key,
-                            disabled: not a.available,
-                            reason: if a.available { .none } else { .some(a.reason) },
-                            group: if a.frequent { .none } else { a.group },
-                        ) {
-                            on choose: a.run
+                        if a.applies {
+                            ui.MenuItem(
+                                a.label,
+                                icon: a.icon,
+                                destructive: a.destructive,
+                                key: a.key,
+                                disabled: not a.available,
+                                reason: if a.available { .none } else { .some(a.reason) },
+                                group: if a.frequent { .none } else { a.group },
+                            ) {
+                                on choose: a.run
+                            }
                         }
                     }
                 }
@@ -339,24 +350,32 @@ view outline<T>(
         ) {
             on drop(moved: T): place(moved, .none, .none)
             for x in items {
-                let offered = actions(x)
+                // The node just above this one under the same parent, as the outline shows
+                // them: the place the actions offered on it get. None for a first child.
+                let above = items
+                    .take(items.index_of(x) ?? 0)
+                    .filter(y -> parent(y) == parent(x))
+                    .last()
                 let count: Option<Text> = if let c = progress { c(x) } else { .none }
+                let offered = actions(x, above)
                 ui.TreeViewNode(x, label(x), parent: parent(x), progress: count) {
                     on drop(moved: T): place(moved, .none, .some(x))
                     on into(moved: T): place(moved, .some(x), .none)
                     on check: toggled(x)
                     menu: {
                         for a in offered {
-                            ui.MenuItem(
-                                a.label,
-                                icon: a.icon,
-                                destructive: a.destructive,
-                                key: a.key,
-                                disabled: not a.available,
-                                reason: if a.available { .none } else { .some(a.reason) },
-                                group: if a.frequent { .none } else { a.group },
-                            ) {
-                                on choose: a.run
+                            if a.applies {
+                                ui.MenuItem(
+                                    a.label,
+                                    icon: a.icon,
+                                    destructive: a.destructive,
+                                    key: a.key,
+                                    disabled: not a.available,
+                                    reason: if a.available { .none } else { .some(a.reason) },
+                                    group: if a.frequent { .none } else { a.group },
+                                ) {
+                                    on choose: a.run
+                                }
                             }
                         }
                     }
@@ -396,10 +415,12 @@ view header<S>(
     }
     ui.SearchButton()
     extra
-    // The view with an entry at its list's end adds there: the primary action keeps its key on
-    // that entry, so the header does not press it, and stays in the menu where its label shows.
+    // What this window cannot do to what it shows — no place to offer it in — is not among its
+    // commands: a command that would only say why it cannot run here is not one. The view with an
+    // entry at its list's end adds there: the primary action keeps its key on that entry, so the
+    // header does not press it, and stays in the menu where its label shows.
     for a in offered {
-        if a.primary and not entry {
+        if a.applies and a.primary and not entry {
             ui.Button(
                 a.label,
                 icon: a.icon,
@@ -413,37 +434,39 @@ view header<S>(
         }
     }
     for a in offered {
-        if a.frequent and not a.primary and a.icon != .none {
-            ui.Button(
-                a.label,
-                icon: a.icon,
-                icon_only: true,
-                toggled: a.on == .some(true),
-                key: a.key,
-                enabled: a.available,
-                description: a.reason,
-            ) {
-                on press: a.run
-            }
-        } else if a.frequent and not a.primary {
-            ui.Button(
-                a.label,
-                toggled: a.on == .some(true),
-                key: a.key,
-                enabled: a.available,
-                description: a.reason,
-            ) {
-                on press: a.run
+        if a.applies and a.frequent and not a.primary {
+            if a.icon != .none {
+                ui.Button(
+                    a.label,
+                    icon: a.icon,
+                    icon_only: true,
+                    toggled: a.on,
+                    key: a.key,
+                    enabled: a.available,
+                    description: a.reason,
+                ) {
+                    on press: a.run
+                }
+            } else {
+                ui.Button(
+                    a.label,
+                    toggled: a.on,
+                    key: a.key,
+                    enabled: a.available,
+                    description: a.reason,
+                ) {
+                    on press: a.run
+                }
             }
         }
     }
     for a in offered {
-        if (not a.primary or entry) and not a.frequent {
+        if a.applies and (not a.primary or entry) and not a.frequent {
             ui.Button(
                 a.label,
                 icon: a.icon,
                 role: if a.destructive { .destructive } else { .secondary },
-                toggled: a.on == .some(true),
+                toggled: a.on,
                 key: a.key,
                 in_menu: true,
                 group: a.group,
@@ -568,16 +591,18 @@ view transcript<R, T>(
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
                             menu: {
                                 for a in offered {
-                                    ui.MenuItem(
-                                        a.label,
-                                        icon: a.icon,
-                                        destructive: a.destructive,
-                                        key: a.key,
-                                        disabled: not a.available,
-                                        reason: if a.available { .none } else { .some(a.reason) },
-                                        group: if a.frequent { .none } else { a.group },
-                                    ) {
-                                        on choose: a.run
+                                    if a.applies {
+                                        ui.MenuItem(
+                                            a.label,
+                                            icon: a.icon,
+                                            destructive: a.destructive,
+                                            key: a.key,
+                                            disabled: not a.available,
+                                            reason: if a.available { .none } else { .some(a.reason) },
+                                            group: if a.frequent { .none } else { a.group },
+                                        ) {
+                                            on choose: a.run
+                                        }
                                     }
                                 }
                             }

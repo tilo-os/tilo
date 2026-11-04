@@ -394,6 +394,11 @@ pub struct ParamMeta {
     /// out gets it, computed then over the arguments before it and recorded as the argument.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<DefaultMeta>,
+    /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
+    /// place the item stands in, which no invocation gives. A surface offering the action with
+    /// no such view (a palette over the item alone) supplies `.none`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub place: bool,
 }
 
 /// How an action parameter's default is computed.
@@ -448,6 +453,10 @@ pub struct ProposalMeta {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one part of what a surface offers and is read on its own: whether the action is a scenario's, whether it is frequent, and the two conditions its subject and its place decide"
+)]
 pub struct ActionMeta {
     pub id: String,
     pub name: String,
@@ -502,6 +511,12 @@ pub struct ActionMeta {
     /// while it can. What a surface offering the action reads its availability from.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub guard: bool,
+    /// Whether the action keeps an `applies` condition, exported as
+    /// [`crate::ir::applies_export`]: the first reason it cannot apply to the item where it is
+    /// offered, or empty while it can. A menu leaves such an action out; a palette lists it,
+    /// disabled with the reason.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub applies: bool,
 }
 
 impl ActionMeta {

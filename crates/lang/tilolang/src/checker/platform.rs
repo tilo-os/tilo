@@ -57,11 +57,43 @@ impl Checker<'_> {
     /// take it (`delete(nb, n)` on a note). Each is a `host.Action`: label, icon, role,
     /// whether it is the primary one, its parameters with their defaults, and `run`, the
     /// action applied to `r`, which a control runs.
+    ///
+    /// `actions(r, above)` offers them where the view shows `r` under `above`: the item just
+    /// above it in its group, or `.none` for the first of its group. An action that reads a
+    /// place (`above: Option<T> (above)`) is offered with it, and one whose `applies` does not
+    /// hold there is left out.
     pub(super) fn builtin_actions(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let Some(r) = self.resource_arg("actions", args, span) else {
+        let Some(r) = self.resource_arg("actions", args.get(..1).unwrap_or_default(), span) else {
             return Ex::error();
         };
-        Ex::host(Imp::Actions, vec![r], Ty::List(Box::new(host_ty("Action"))))
+        let subject = r.ty.clone();
+        let above = match args.get(1) {
+            Some(a) => {
+                if a.name.is_some() {
+                    self.err(
+                        "E022",
+                        a.value.span,
+                        "`actions` takes the place it offers the item in by position: `actions(r, above)`",
+                    );
+                }
+                let want = Ty::Option(Box::new(subject));
+                self.expr_as(&a.value, &want)
+            }
+            None => Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(subject))),
+        };
+        if let Some(extra) = args.get(2) {
+            self.err(
+                "E022",
+                extra.value.span,
+                "`actions` takes the item and where the view shows it: `actions(r)` or `actions(r, above)`",
+            );
+            let _ = self.expr(&extra.value, None);
+        }
+        Ex::host(
+            Imp::Actions,
+            vec![r, above],
+            Ty::List(Box::new(host_ty("Action"))),
+        )
     }
 
     /// `lenses(r)`: the lenses on `r` now, the person's own and everyone else's: the people

@@ -117,6 +117,9 @@ pub struct ParamInfo {
     pub ty: Ty,
     /// An action parameter's invocation-time default (`done: Bool = not item.done`).
     pub default: Option<ParamDefault>,
+    /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
+    /// place the item stands in, as a row of a list gives the row above it.
+    pub place: bool,
 }
 
 /// How an action parameter's default is computed: when the action is invoked without the

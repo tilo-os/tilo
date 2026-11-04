@@ -103,6 +103,10 @@ pub enum FuncKind {
     /// action cannot run on the subject now, or the empty text while it can
     /// ([`guard_export`]).
     Guard,
+    /// An action's `applies` conditions its subject and place decide: it answers the first
+    /// reason the action cannot apply to the item where it is offered, or the empty text while
+    /// it can ([`applies_export`]).
+    Applies,
 }
 
 /// An action or flow that code can apply: `app` and `id` name it for the host.
@@ -184,6 +188,14 @@ pub fn at_event_export(id: &str) -> String {
 /// text while it can ([`FuncKind::Guard`]).
 pub fn guard_export(id: &str) -> String {
     format!("q_{id}")
+}
+
+/// The export of the `applies` conditions of the action with id `id`: the action's conditions
+/// its subject and the place it is offered in alone decide, answering the first reason it cannot
+/// apply to the item where it stands now, or the empty text while it can
+/// ([`FuncKind::Applies`]).
+pub fn applies_export(id: &str) -> String {
+    format!("p_{id}")
 }
 
 /// A view the checker made of the body of a UI `for`: one boundary per item, keyed by it, which

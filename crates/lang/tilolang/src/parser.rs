@@ -1345,11 +1345,20 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
+            // `above: Option<Task> (above)`: the place the view offering the action supplies.
+            let place = if self.eat(&Tok::LParen) {
+                let place = self.ident("a place a view supplies (`above`)")?;
+                self.expect(&Tok::RParen)?;
+                Some(place)
+            } else {
+                None
+            };
             out.push(Param {
                 node,
                 name,
                 ty,
                 default,
+                place,
             });
             if !self.eat(&Tok::Comma) {
                 break;
@@ -1396,7 +1405,7 @@ impl<'a> Parser<'a> {
             None
         };
         let opts = self.action_opts()?;
-        let (requires, body) = self.action_body()?;
+        let (requires, applies, body) = self.action_body()?;
         Ok(ActionDecl {
             node,
             doc,
@@ -1407,6 +1416,7 @@ impl<'a> Parser<'a> {
             proposal,
             opts,
             requires,
+            applies,
             body,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
@@ -1505,35 +1515,46 @@ impl<'a> Parser<'a> {
     // ---- statements -----------------------------------------------------------------------
 
     /// An action's body: the `require` lines heading it, then its statements.
-    fn action_body(&mut self) -> PResult<(Vec<crate::ast::Require>, Block)> {
+    fn action_body(
+        &mut self,
+    ) -> PResult<(Vec<crate::ast::Require>, Vec<crate::ast::Require>, Block)> {
         let start = self.expect(&Tok::LBrace)?;
         let mut requires = Vec::new();
+        let mut applies = Vec::new();
         loop {
             self.skip_nl();
-            // `require` is a word of its own only where it heads a line of an action's body
-            // and a condition follows; elsewhere it is an ordinary name.
-            let heads = matches!(self.peek(), Tok::Ident(word) if word == "require")
-                && !matches!(
+            // `require` and `applies` are words of their own only where they head a line of an
+            // action's body and a condition follows; elsewhere they are ordinary names.
+            let head = match self.peek() {
+                Tok::Ident(word) if word == "require" || word == "applies" => (!matches!(
                     self.peek_at(1),
                     Tok::Assign | Tok::Dot | Tok::LParen | Tok::Newline | Tok::RBrace
-                );
-            if !heads {
+                ))
+                .then(|| word == "applies"),
+                _ => None,
+            };
+            let Some(is_applies) = head else {
                 break;
-            }
+            };
             let at = self.span();
             self.bump();
             let cond = self.expr()?;
             let reason = self.expr()?;
-            requires.push(crate::ast::Require {
+            let line = crate::ast::Require {
                 cond,
                 span: at.to(reason.span),
                 reason,
-            });
+            };
+            if is_applies {
+                applies.push(line);
+            } else {
+                requires.push(line);
+            }
             if !matches!(self.peek(), Tok::Newline | Tok::RBrace) {
                 return self.unexpected("a new line after the requirement's reason");
             }
         }
-        Ok((requires, self.block_after(start)?))
+        Ok((requires, applies, self.block_after(start)?))
     }
 
     fn block(&mut self) -> PResult<Block> {

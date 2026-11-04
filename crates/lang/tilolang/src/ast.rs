@@ -335,6 +335,9 @@ pub struct Param {
     /// `done: Bool = not item.done`: an action parameter's default, evaluated when the action is
     /// invoked without it, over the parameters before it, and recorded as the argument.
     pub default: Option<Expr>,
+    /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, and
+    /// no invocation does: a row of a list gives the row above it in its own visible group.
+    pub place: Option<Ident>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -401,6 +404,11 @@ pub struct ActionDecl {
     pub opts: Vec<ActionOpt>,
     /// The `require` lines heading the body: when the action is available on its subject.
     pub requires: Vec<Require>,
+    /// The `applies` lines heading the body: when the action can apply to its subject at all,
+    /// as the item it is offered on stands in the view offering it (`applies above != .none`).
+    /// A surface offering it says so, and leaves it out of an item's menu rather than showing
+    /// a row that can never work there.
+    pub applies: Vec<Require>,
     pub body: Block,
     pub span: Span,
 }

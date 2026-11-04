@@ -40,7 +40,7 @@ mod ui;
 mod union;
 mod words;
 
-pub(crate) use native::subject_decided;
+pub(crate) use native::offer_decided;
 pub use program::{RESOURCE_TYPE_NAME, check_program, resource_key};
 pub use template::is_template;
 
@@ -120,6 +120,9 @@ struct FnState {
     /// What the code being checked was written as: a scenario or an agent's program
     /// allows what declared code does not.
     written: Written,
+    /// The fields the code being checked writes, by the type that declares them: what two
+    /// actions offered on one kind of item must not both do with a value they ask for.
+    writes: Vec<(String, String, Ty)>,
     /// Whether the callable takes a resource: an outside effect is queued on the first one,
     /// so an action without one cannot hand any over.
     takes_resource: bool,
@@ -205,7 +208,23 @@ pub(crate) struct Checker<'a> {
     at_event: Vec<(ir::Func, ir::AtEventFn)>,
     /// The words the views show as written, each once per view and key.
     words: Vec<crate::meta::WordMeta>,
+    /// What each offered action of the module writes, with where it is declared: read once the
+    /// bodies are checked, to find one command written twice.
+    offers: Vec<Offer>,
+    /// What the body checked last writes: `end` takes the state it was checked in, so the
+    /// fields are kept here for the module to read.
+    last_writes: Vec<FieldWritten>,
 }
+
+/// A field an offered action writes from a value it asks for: the action, the field, its type.
+type FieldWritten = (String, String, Ty);
+
+/// What one offered action of the module writes, with the name and span it is declared at.
+type Offer = (String, Span, Vec<FieldWritten>);
+
+/// A condition an action keeps: which kind it is, the export that publishes it, and the lines
+/// that make it.
+type Condition<'a> = (FuncKind, fn(&str) -> String, &'a [ast::Require]);
 
 /// What a checked agent block evaluates to.
 pub struct BlockResult {
@@ -233,6 +252,8 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         states: Vec::new(),
         at_event: Vec::new(),
         words: Vec::new(),
+        offers: Vec::new(),
+        last_writes: Vec::new(),
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -241,7 +262,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             continue;
         };
         let f = match item {
-            Item::Action(a) => c.run_action(&callable, &a.requires, &a.body),
+            Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
@@ -258,6 +279,16 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             }
         };
         funcs.push(f);
+        if let Item::Action(a) = item
+            && !matches!(
+                a.role.as_ref().map(|(role, _)| *role),
+                Some(ast::ActionRole::Internal | ast::ActionRole::Migration)
+            )
+            && !c.last_writes.is_empty()
+        {
+            let writes = std::mem::take(&mut c.last_writes);
+            c.offers.push((a.name.name.clone(), a.name.span, writes));
+        }
     }
     // The presentation views of actions, in the order the resolver numbered them.
     for item in &module.items {
@@ -289,6 +320,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         funcs.push(c.run_default(action, d.param, written));
     }
     c.check_proposals(module);
+    c.check_one_command();
     let mut views = Vec::new();
     let mut at_event = Vec::new();
     if funcs.len() == c.synth_base {
@@ -308,21 +340,29 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             "internal: the declared functions and their indexes disagree",
         );
     }
-    // The guard of each action that keeps a requirement its subject alone decides: what a
-    // surface offering it reads whether it can run now from.
+    // The guard and the `applies` conditions of each action that keeps one its subject and the
+    // place it is offered in alone decide: what a surface offering it reads whether it can run
+    // there, and whether it applies at all, from.
     for item in &module.items {
         let Item::Action(a) = item else { continue };
         let Some(action) = env.own_callable(&a.name.name) else {
             continue;
         };
-        if !a
-            .requires
-            .iter()
-            .any(|r| native::subject_decided(r, &action.params))
-        {
-            continue;
+        let decides = |lines: &[ast::Require]| {
+            lines
+                .iter()
+                .any(|r| native::offer_decided(r, &action.params))
+        };
+        let conditions: [Condition; 2] = [
+            (FuncKind::Guard, ir::guard_export, &a.requires),
+            (FuncKind::Applies, ir::applies_export, &a.applies),
+        ];
+        for (kind, export, lines) in conditions {
+            if !decides(lines) {
+                continue;
+            }
+            funcs.push(c.run_guard(action, lines, &action.params, kind, export));
         }
-        funcs.push(c.run_guard(action, &a.requires, &action.params));
     }
     let module = ir::Module {
         funcs,
@@ -350,6 +390,8 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         states: Vec::new(),
         at_event: Vec::new(),
         words: Vec::new(),
+        offers: Vec::new(),
+        last_writes: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     let ex = c.expr(e, None);
@@ -383,6 +425,8 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         states: Vec::new(),
         at_event: Vec::new(),
         words: Vec::new(),
+        offers: Vec::new(),
+        last_writes: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -486,9 +530,13 @@ impl Checker<'_> {
         &mut self,
         c: &Callable,
         requires: &[ast::Require],
+        applies: &[ast::Require],
         body: &ast::Block,
     ) -> ir::Func {
-        self.run_guarded(c, FuncKind::Action, Ctx::Action, requires, body)
+        // What it applies to comes before what it can do: an invocation where it does not apply
+        // is refused with the condition's reason, like one that does not meet a requirement.
+        let guards: Vec<&ast::Require> = applies.iter().chain(requires).collect();
+        self.run_guarded(c, FuncKind::Action, Ctx::Action, &guards, body)
     }
 
     fn run_body(&mut self, c: &Callable, kind: FuncKind, ctx: Ctx, body: &ast::Block) -> ir::Func {
@@ -500,11 +548,11 @@ impl Checker<'_> {
         c: &Callable,
         kind: FuncKind,
         ctx: Ctx,
-        requires: &[ast::Require],
+        guards: &[&ast::Require],
         body: &ast::Block,
     ) -> ir::Func {
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
-        for r in requires {
+        for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             let reason = self.expr_as(&r.reason, &Ty::Text);
             let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
@@ -552,7 +600,10 @@ impl Checker<'_> {
             FuncKind::View => "v_",
             FuncKind::Block => "b_",
             FuncKind::Guard => "q_",
+            FuncKind::Applies => "p_",
         };
+        // The fields it writes, kept for the module's own reading after `end` takes the rest.
+        self.last_writes = std::mem::take(&mut self.st.writes);
         let mut f = self.end(kind, &c.name, &format!("{prefix}{}", c.id));
         f.nparams = c.params.len();
         f
@@ -1082,6 +1133,9 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         }
+        self.st
+            .writes
+            .push((info.id.clone(), f.name.clone(), f.ty.clone()));
         let fid = Ex::str(&f.id);
         match (op, f.merge) {
             (ast::AssignOp::Add | ast::AssignOp::Sub, MergeKind::Counter) => {
@@ -1182,5 +1236,56 @@ impl Checker<'_> {
                 self.err("E020", p.view.span, format!("the proposal view must take the action's arguments; `{}` is {}, the action passes ({})", p.view.name, view.signature(&env.app), args.join(", ")));
             }
         }
+    }
+
+    /// Two actions offered on one kind of item that both ask for a value of the same type and
+    /// write it to the same field are one command under two names: the item's menu offers both,
+    /// and a person cannot tell which to pick. One goes, or the pair is one action with a
+    /// choice of its own.
+    fn check_one_command(&mut self) {
+        let offers = std::mem::take(&mut self.offers);
+        let mut found: Vec<(Span, String)> = Vec::new();
+        for (index, (name, span, writes)) in offers.iter().enumerate() {
+            for (other, _, theirs) in offers.iter().take(index) {
+                for (kind, field, ty) in writes {
+                    let both_write = theirs.iter().any(|(theirs_kind, theirs_field, theirs_ty)| {
+                        theirs_kind == kind && theirs_field == field && theirs_ty.same(ty)
+                    });
+                    if !both_write {
+                        continue;
+                    }
+                    let (Some(subject), Some(theirs_subject)) =
+                        (self.takes(name, ty), self.takes(other, ty))
+                    else {
+                        continue;
+                    };
+                    if !subject.same(theirs_subject) {
+                        continue;
+                    }
+                    let shown = ty.display(&self.env.app);
+                    found.push((
+                        *span,
+                        format!(
+                            "`{name}` and `{other}` both ask for a {shown} and write it to `{field}`: \
+                             one command under two names. Keep one, or make them one action that \
+                             asks for it once"
+                        ),
+                    ));
+                }
+            }
+        }
+        for (span, said) in found {
+            self.err("E120", span, said);
+        }
+    }
+
+    /// What the action `name` is offered on, when it also takes a value of `ty` to write: a
+    /// parameter of that type that is not a place a view supplies.
+    fn takes(&self, name: &str, ty: &Ty) -> Option<&Ty> {
+        let c = self.env.own_callable(name)?;
+        if !c.params.iter().any(|p| !p.place && p.ty.same(ty)) {
+            return None;
+        }
+        c.params.first().map(|p| &p.ty)
     }
 }

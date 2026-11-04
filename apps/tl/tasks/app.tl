@@ -261,7 +261,7 @@ action due_clear(t: Task) (label: "No date", group: "Due") {
 }
 
 /// Sets how much a task matters.
-action set_priority_none(t: Task) (label: "No priority", group: "Priority") {
+action set_priority_none(t: Task) (label: "No priority", icon: .flag, group: "Priority") {
     require t.priority != .none "It has no priority"
     t.priority = .none
 }
@@ -332,20 +332,20 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
     }
 }
 
-/// Moves a task under the task just over it, as `Ctrl+]` does in an outline: one change, undone
-/// as one.
-action indent(t: Task) (label: "Indent", icon: .arrow_right, key: "Ctrl+]") {
-    let siblings = tasks.items.filter(x -> x.parent == t.parent)
-    if let at = siblings.index_of(t) {
-        if at > 0 {
-            if let above = siblings.take(at).last() { move_to(tasks, t, .some(above), .none) }
-        }
-    }
+/// Moves a task under the task the view shows just over it in its group (`above`), as `Ctrl+]`
+/// does in an outline: one change, undone as one, where there is a row above it to move under.
+action indent(t: Task, above: Option<Task> (above)) (
+    label: "Indent",
+    icon: .arrow_right,
+    key: "Ctrl+]",
+) {
+    applies above != .none "Nothing above it here"
+    if let a = above { move_to(tasks, t, .some(a), .none) }
 }
 
 /// Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
 action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[") {
-    require t.parent != .none "It is at the top level already"
+    applies t.parent != .none "It is at the top level already"
     if let p = t.parent {
         t.parent = p.parent
         tasks.items.move(t, after: p)
@@ -680,7 +680,7 @@ view task_card(t: Task, sections: List<Section>) {
                     }
                 }
             }
-            for a in actions(t) {
+            for a in actions(t).filter(a -> a.applies) {
                 ui.MenuItem(
                     a.label,
                     icon: a.icon,

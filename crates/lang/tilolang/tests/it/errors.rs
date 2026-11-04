@@ -609,3 +609,22 @@ fn a_derived_key_that_reads_the_items_under_it_says_which_field_they_stand_under
         "the error says which field the items stand under: {said}"
     );
 }
+
+#[test]
+fn two_commands_that_write_one_field_from_a_value_they_ask_for_are_one_command() {
+    // A command that asks for a when and writes it, a second that asks for another and writes
+    // the same field, and a third that writes it without asking: the pair are one command
+    // under two names, and the preset is a command of its own.
+    let when = "type Day {\n    day: Text\n}\ntype Task {\n    title: Text (title)\n    due: Option<Day>\n}\n";
+    let schedule = "action schedule(t: Task, due: Option<Day>) {\n    t.due = due\n}\n";
+    let preset = "action due_none(t: Task) {\n    t.due = .none\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{when}{schedule}{preset}")),
+        Vec::<String>::new()
+    );
+    let snooze = "action snooze(t: Task, until: Option<Day>) {\n    t.due = until\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{when}{schedule}{snooze}")),
+        ["E120"]
+    );
+}

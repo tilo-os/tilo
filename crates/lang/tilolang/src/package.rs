@@ -321,6 +321,7 @@ fn params_meta(params: &[ParamInfo], app: &str) -> Vec<ParamMeta> {
                 export: d.export.clone(),
                 text: d.text.clone(),
             }),
+            place: p.place,
         })
         .collect()
 }
@@ -485,6 +486,7 @@ fn build_meta(
                     group: None,
                     frequent: false,
                     guard: false,
+                    applies: false,
                 });
                 meta.scenarios.push(ScenarioMeta {
                     id: c.id.clone(),
@@ -568,7 +570,11 @@ fn build_meta(
                     guard: a
                         .requires
                         .iter()
-                        .any(|r| crate::checker::subject_decided(r, &c.params)),
+                        .any(|r| crate::checker::offer_decided(r, &c.params)),
+                    applies: a
+                        .applies
+                        .iter()
+                        .any(|r| crate::checker::offer_decided(r, &c.params)),
                 });
                 if let Some(v) = env.callables.iter().find(|v| {
                     v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
@@ -827,6 +833,7 @@ pub fn compile_program_reading(
                 name: b.name.clone(),
                 ty,
                 default: None,
+                place: false,
             });
         }
     }

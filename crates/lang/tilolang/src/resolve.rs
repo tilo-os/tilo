@@ -298,6 +298,7 @@ impl Env {
                         func: None,
                         text: d.text.clone(),
                     }),
+                    place: p.place,
                 })
                 .collect()
         };
@@ -1827,9 +1828,46 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
+    /// Checks the parameters a view supplies (`above: Option<Task> (above)`): only an action's,
+    /// starting right after its subject, each optional and with no default, and each a place a
+    /// view knows (`above`).
+    fn places(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
+        let mut in_run = true;
+        for (i, p) in written.iter().enumerate() {
+            let Some(place) = &p.place else {
+                if i > 0 {
+                    in_run = false;
+                }
+                continue;
+            };
+            if i == 0 {
+                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
+                continue;
+            }
+            if kind != CKind::Action {
+                self.err("E052", p.name.span, format!("`{}` is a parameter of the {}; only an action takes a place a view supplies (`(above)`)", p.name.name, kind.word()));
+                continue;
+            }
+            if place.name != "above" {
+                self.err("E054", place.span, format!("`{}` names no place a view supplies; the one there is is `above`, the item just above the one the action is offered on", place.name));
+                continue;
+            }
+            if !in_run {
+                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
+                continue;
+            }
+            if !matches!(params.get(i).map(|p| &p.ty), Some(Ty::Option(_))) {
+                self.err("E055", p.ty.span, format!("`{}` is a place a view supplies, so it is `Option<…>`: a view may have nothing above the item it offers the action on", p.name.name));
+            }
+            if let Some(default) = &p.default {
+                self.err("E056", default.span, format!("`{}` is a place a view supplies: no caller gives it, so it takes no default", p.name.name));
+            }
+        }
+    }
+
     /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
     /// is: a view is handed it live (views are components, and these are their props).
-    fn params(&mut self, params: &[ast::Param], view: bool) -> Vec<ParamInfo> {
+    fn params(&mut self, params: &[ast::Param], view: bool, action: bool) -> Vec<ParamInfo> {
         let mut out: Vec<ParamInfo> = Vec::new();
         for p in params {
             if out.iter().any(|x| x.name == p.name.name) {
@@ -1845,6 +1883,7 @@ impl Resolver<'_> {
                 name: p.name.name.clone(),
                 ty,
                 default: None,
+                place: action && p.place.is_some(),
             });
         }
         out
@@ -1915,7 +1954,8 @@ impl Resolver<'_> {
                 );
             }
             let ast_params = params;
-            let params = self.params(params, kind == CKind::View);
+            let params = self.params(params, kind == CKind::View, kind == CKind::Action);
+            self.places(ast_params, &params, kind, name.span);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(

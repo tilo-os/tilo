@@ -760,20 +760,19 @@ impl Instance {
         Some(host)
     }
 
-    /// The name a bound control is announced by: the field or view state it edits.
+    /// The name a bound control is announced by: the field it edits, through what the host
+    /// declares of that field.
     fn field_name(host: &Host, binding: &Binding) -> String {
-        let (target, field) = match &binding.target {
-            BindTarget::State { name, .. } => return sentence(name),
-            BindTarget::Field { target, field } => (target, field),
-        };
-        type_of(host, &target.ty)
-            .and_then(|(_, ty)| {
-                ty.fields
-                    .iter()
-                    .find(|declared| declared.id == *field)
-                    .map(|declared| sentence(&declared.name))
-            })
-            .unwrap_or_default()
+        announced(binding, |target, field| {
+            type_of(host, &target.ty)
+                .and_then(|(_, ty)| {
+                    ty.fields
+                        .iter()
+                        .find(|declared| declared.id == field)
+                        .map(|declared| sentence(&declared.name))
+                })
+                .unwrap_or_default()
+        })
     }
 
     // ----- later builds --------------------------------------------------------------------
@@ -2807,6 +2806,21 @@ pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
     })
 }
 
+/// The name a bound control is announced by, as `field` says what a field of a resource is
+/// called. A view state's name is a name in the code (`draft`, `step`), not a word a person
+/// says: a control bound to one is named by what the view says it is for — its placeholder,
+/// its label — and carries no name of ours.
+#[must_use]
+pub fn announced(binding: &Binding, field: impl FnOnce(&ResourceRef, &str) -> String) -> String {
+    match &binding.target {
+        BindTarget::State { .. } => String::new(),
+        BindTarget::Field {
+            target,
+            field: name,
+        } => field(target, name),
+    }
+}
+
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
 #[must_use]
 pub fn sentence(name: &str) -> String {
@@ -2911,6 +2925,36 @@ mod tests {
         assert_eq!(sentence("toggle_pin"), "Toggle pin");
         assert_eq!(sentence("Note"), "Note");
         assert_eq!(sentence(""), "");
+    }
+
+    /// A control bound to view state is not announced by that state's name in the code, which
+    /// a person never says; it is announced by what the view says it is for.
+    #[test]
+    fn a_bound_control_is_not_named_by_a_name_in_the_code() {
+        let state = Binding {
+            target: BindTarget::State {
+                key: crate::runtime::StateKey {
+                    window: "w".to_owned(),
+                    principal: None,
+                    state: "draft".to_owned(),
+                },
+                name: "draft".to_owned(),
+                ty: "Text".to_owned(),
+            },
+            author: crate::runtime::ModuleHash(String::new()),
+        };
+        assert_eq!(
+            announced(&state, |_, _| "should not be asked".to_owned()),
+            ""
+        );
+        let field = Binding {
+            target: BindTarget::Field {
+                target: ResourceRef::parse_id("r1", String::new()).expect("a resource id"),
+                field: "due".to_owned(),
+            },
+            author: crate::runtime::ModuleHash(String::new()),
+        };
+        assert_eq!(announced(&field, |_, field| sentence(field)), "Due");
     }
 
     #[test]

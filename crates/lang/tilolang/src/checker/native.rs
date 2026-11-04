@@ -1186,20 +1186,27 @@ impl Checker<'_> {
         f
     }
 
-    /// The guard of the action `c`: the requirements its subject alone decides, as one function
-    /// answering the first reason the action cannot run on the subject now, or the empty text
-    /// while it can ([`crate::ir::FuncKind::Guard`]). A requirement that reads what a caller
-    /// gives (`to` in `move_to(t, to)`) cannot be decided before it is given: it is checked when
-    /// the action runs with it, and a form shows its reason as the refusal.
+    /// The guard of the action `c` (or its `applies` conditions): the requirements its subject
+    /// and the place it is offered in alone decide, as one function answering the first reason
+    /// the action cannot run on the subject now, or the empty text while it can
+    /// ([`crate::ir::FuncKind::Guard`], [`crate::ir::FuncKind::Applies`]). A requirement that
+    /// reads what a caller gives (`to` in `move_to(t, to)`) cannot be decided before it is
+    /// given: it is checked when the action runs with it, and a form shows its reason as the
+    /// refusal.
     pub(super) fn run_guard(
         &mut self,
         c: &Callable,
         requires: &[ast::Require],
         params: &[crate::resolve::ParamInfo],
+        kind: crate::ir::FuncKind,
+        export: fn(&str) -> String,
     ) -> crate::ir::Func {
-        let subject = params.get(..1).unwrap_or_default();
+        // The subject, then the places a view supplies: everything an offer knows before it is
+        // made.
+        let decided = 1 + params.iter().skip(1).take_while(|p| p.place).count();
+        let subject = params.get(..decided).unwrap_or_default();
         self.begin(super::Ctx::View, subject, Ty::Text, &c.id);
-        for r in requires.iter().filter(|r| subject_decided(r, params)) {
+        for r in requires.iter().filter(|r| offer_decided(r, params)) {
             // A requirement may read `invoker`: here, the person looking, who would run it.
             self.st.invoker = super::Invoker::Viewer;
             let cond = self.expr_as(&r.cond, &Ty::Bool);
@@ -1208,11 +1215,7 @@ impl Checker<'_> {
             self.emit(Stmt::If(cond, Vec::new(), vec![Stmt::Return(Some(reason))]));
         }
         self.emit(Stmt::Return(Some(Ex::str(""))));
-        let mut f = self.end(
-            crate::ir::FuncKind::Guard,
-            &c.name,
-            &crate::ir::guard_export(&c.id),
-        );
+        let mut f = self.end(kind, &c.name, &export(&c.id));
         f.nparams = subject.len();
         f
     }
@@ -1572,8 +1575,13 @@ impl Checker<'_> {
 /// alone decides, so a surface offering the action can say whether it can run before anyone gives
 /// the rest. One that reads another argument (`to` in `move_to(t, to)`) is checked when the action
 /// runs with it.
-pub(crate) fn subject_decided(r: &ast::Require, params: &[crate::resolve::ParamInfo]) -> bool {
-    let others: Vec<&str> = params.iter().skip(1).map(|p| p.name.as_str()).collect();
+pub(crate) fn offer_decided(r: &ast::Require, params: &[crate::resolve::ParamInfo]) -> bool {
+    let others: Vec<&str> = params
+        .iter()
+        .skip(1)
+        .filter(|p| !p.place)
+        .map(|p| p.name.as_str())
+        .collect();
     mentions(&r.cond, &others).is_none() && mentions(&r.reason, &others).is_none()
 }
 

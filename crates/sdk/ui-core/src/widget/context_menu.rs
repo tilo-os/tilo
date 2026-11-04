@@ -1479,6 +1479,10 @@ const MENU_WIDTH: f64 = 220.0;
 const CAPTION_ROW_SHARE: f64 = 0.75;
 /// The air between the query field and the first row: the `s1` step.
 const QUERY_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+/// The rows a menu needs before it takes typing: a short menu is read at a
+/// glance, and a field over it only pushes the commands away. At and below
+/// this many, the menu opens as a plain list.
+pub(super) const QUERY_MIN_ROWS: usize = 12;
 /// How far, in logical pixels, the pointer may be from where the menu opened
 /// and still count as not having moved: the opening position went through
 /// `f32`, the pointer's did not.
