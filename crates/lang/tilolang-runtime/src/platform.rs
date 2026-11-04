@@ -25,6 +25,22 @@ pub const LENS_WINDOW: &str = "$lenses";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
 
+/// A shown day with the time of day it holds beside it (`value:time`): the two read as one
+/// fact ("Tomorrow 9:00 AM").
+fn with_time(shown: &Value, at: &str) -> Value {
+    let Value::Tuple(parts) = shown else {
+        return shown.clone();
+    };
+    let [kind, held, _] = parts.as_slice() else {
+        return shown.clone();
+    };
+    Value::Tuple(vec![
+        kind.clone(),
+        held.clone(),
+        Value::Opt(Some(Box::new(Value::Text(at.to_owned())))),
+    ])
+}
+
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
 #[must_use]
 pub fn sentence(name: &str) -> String {
@@ -423,13 +439,14 @@ impl Core {
             .borrow()
             .action_package(&v.action)
             .and_then(|pkg| pkg.action(&v.action).cloned());
-        let description = declared.as_ref().map_or_else(
-            || self.bound_edit_words(&v.action, named.first().map(String::as_str)),
-            |a| a.doc.clone(),
-        );
-        // What the action did, in the app's words for it, read through its catalogue so a
-        // translation says it in the reader's language.
-        let did = declared
+        let description = declared
+            .as_ref()
+            .map_or_else(String::new, |a| a.doc.clone());
+        // What it did, in the words a sentence goes on with after who did it: the app's own
+        // words for the action (`did:`) where it declares them, else what the change itself
+        // says (`self.changes_value`), and for one that made or removed the resource, that.
+        // Read through the catalogue, so a translation says it in the reader's language.
+        let declared_did = declared
             .as_ref()
             .map_or_else(String::new, |a| match (&a.did, &a.id) {
                 (Some(source), id) => {
@@ -438,11 +455,21 @@ impl Core {
                 }
                 (None, _) => String::new(),
             });
+        let did = match v.kind {
+            crate::store::VersionKind::Created if declared_did.is_empty() => {
+                self.word("tilolang-did-created", "created this")
+            }
+            crate::store::VersionKind::Removed if declared_did.is_empty() => {
+                self.word("tilolang-did-removed", "removed this")
+            }
+            _ => declared_did,
+        };
         let icon = declared
             .as_ref()
             .and_then(|a| a.icon.clone())
             .map(|icon| Box::new(Value::Text(icon)));
         let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
+        let actor = self.actor(&v.who, mine);
         let changes = match &info {
             Some(info) => self.changes_value(&v, of, info)?,
             None => Vec::new(),
@@ -456,6 +483,7 @@ impl Core {
             Value::List(fields),
             Value::resource(of),
             Value::Bool(mine),
+            Value::Text(actor),
             Value::Text(description),
             Value::Text(did),
             Value::Opt(icon),
@@ -466,8 +494,10 @@ impl Core {
     }
 
     /// Each field the version `v` of `of` changed, as a `host.Change`: its name, its name in
-    /// words, and what it held before and after as its type shows it, read from the change
-    /// itself. None for a version that made or removed the resource, or one not committed yet.
+    /// words, what it held before and after as its type shows it, and the words history says it
+    /// with ([`crate::did`]), read from the change itself. None for a version that made or
+    /// removed the resource, or one not committed yet. A time of day that moved with its day
+    /// reads with it ("Tomorrow 9:00 AM"), not as a change of its own.
     fn changes_value(
         &self,
         v: &crate::store::Version,
@@ -495,25 +525,128 @@ impl Core {
             .borrow()
             .written(of, &specs, &v.change)
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        let mut out = Vec::with_capacity(written.len());
+        // Each field it wrote, with what it held before and after as its type shows it.
+        let mut held: Vec<(&crate::registry::FieldInfo, Value, Value)> =
+            Vec::with_capacity(written.len());
         for (id, before, after) in written {
             let Some(field) = info.field(&id) else {
                 continue;
             };
-            let side = |held| -> HResult<Value> {
+            let side = |held: crate::store::FieldValue| -> HResult<Value> {
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;
                 self.change_shown(&field.ty, &value)
             };
+            held.push((field, side(before)?, side(after)?));
+        }
+        let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
+        let actor = self.actor(&v.who, mine);
+        let mut out = Vec::with_capacity(held.len());
+        let mut first = true;
+        for (field, before, after) in &held {
+            // A time of day that moved with its day reads with it.
+            if let Some(tilolang::types::FieldRole::TimeOf { date }) = &field.role
+                && held.iter().any(|(other, ..)| &other.name == date)
+            {
+                continue;
+            }
+            // The name the words use: a time of day names its day ("set the due time to").
+            let named = match &field.role {
+                Some(tilolang::types::FieldRole::TimeOf { date }) => field_of_sentence(date),
+                _ => field_of_sentence(&field.name),
+            };
+            let said = crate::did::said(field, &named, before, after);
+            // A day reads with the time of day it holds ("Tomorrow 9:00 AM").
+            let after = match said.shows {
+                crate::did::Shows::After => self
+                    .time_of(of, info, v, &held, field)
+                    .map_or_else(|| after.clone(), |at| with_time(after, &at)),
+                _ => after.clone(),
+            };
+            let args: Vec<(String, String)> = said
+                .field
+                .iter()
+                .map(|name| ("field".to_owned(), name.clone()))
+                .collect();
+            let source = match &said.field {
+                Some(name) => said.source.replace("{ $field }", name),
+                None => said.source.to_owned(),
+            };
+            let voices = self.words.borrow().word(said.key, &args, &source);
+            // One sentence for the whole version: who made it opens it, "and" goes on with it.
+            let leading = if first {
+                actor.clone()
+            } else {
+                self.word("tilolang-did-and", "and")
+            };
+            first = false;
             out.push(Value::Tuple(vec![
                 Value::Text(field.name.clone()),
                 Value::Text(sentence(&field.name)),
-                side(before)?,
-                side(after)?,
+                before.clone(),
+                after,
+                Value::Text(format!("{leading} {voices}")),
+                Value::Text(said.shows.word().to_owned()),
             ]));
         }
         Ok(out)
+    }
+
+    /// The time of day the day `field` holds, as the instant it stands at, for a change that
+    /// shows the day: what the change of the time field that is a time of it left, or, where
+    /// the change left that alone, the time it stood at, which is the time it still stands at.
+    fn time_of(
+        &self,
+        of: &ResourceRef,
+        info: &crate::registry::TypeInfo,
+        v: &crate::store::Version,
+        held: &[(&crate::registry::FieldInfo, Value, Value)],
+        field: &crate::registry::FieldInfo,
+    ) -> Option<String> {
+        let time = info.fields.iter().find(|f| {
+            matches!(&f.role, Some(tilolang::types::FieldRole::TimeOf { date }) if *date == field.name)
+        })?;
+        let shown = if let Some((_, _, after)) = held.iter().find(|(other, ..)| other.id == time.id)
+        {
+            after.clone()
+        } else {
+            let spec = crate::store::FieldSpec {
+                id: time.id.clone(),
+                kind: time.kind,
+            };
+            let stood = self
+                .store
+                .borrow()
+                .read_before(of, &spec, &v.change)
+                .ok()?;
+            let value = self.field_value(of, time, stood, None).ok()?;
+            self.change_shown(&time.ty, &value).ok()?
+        };
+        match shown {
+            Value::Tuple(parts) if parts.first().and_then(Value::as_text) == Some("time") => {
+                parts.get(1).and_then(Value::as_text).map(str::to_owned)
+            }
+            _ => None,
+        }
+    }
+
+    /// The platform's words for `key`, in the reader's language; `source` where no catalogue
+    /// holds it.
+    fn word(&self, key: &str, source: &str) -> String {
+        self.words.borrow().word(key, &[], source)
+    }
+
+    /// Who made a version, as a sentence names them: the person looking as the platform's word
+    /// for them, anyone else by the name the avatar beside it shows.
+    fn actor(&self, who: &str, mine: bool) -> String {
+        if mine {
+            return self.word("tilolang-you", "You");
+        }
+        self.names
+            .borrow()
+            .as_ref()
+            .map_or_else(|| who.to_owned(), |host| host.name(&Principal(who.to_owned())))
     }
 
     /// `value`, of the type `ty`, as `c.before` and `c.after` show it ([`Self::change_view`]):
@@ -1154,24 +1287,6 @@ impl Core {
             return found;
         }
         sentence(id.trim_start_matches('$'))
-    }
-
-    /// What a bound control's change of `field` says it does, where history reads it: the
-    /// toolkit's words for a text or flag edit, naming the field it wrote. Empty for every
-    /// other action, which history names by its label.
-    fn bound_edit_words(&self, action: &str, field: Option<&str>) -> String {
-        let (key, verb) = match action.trim_start_matches('$') {
-            crate::store::EDIT_TEXT_ACTION => ("tilolang-history-edit-field", "Edited"),
-            crate::store::EDIT_FLAG_ACTION => ("tilolang-history-set-field", "Changed"),
-            _ => return String::new(),
-        };
-        let named = field.map(field_of_sentence);
-        let (key, source) = match &named {
-            Some(name) => (key, format!("{verb} {name}")),
-            None => (key.trim_end_matches("-field"), format!("{verb} a field")),
-        };
-        let args = named.map_or_else(Vec::new, |name| vec![("field".to_owned(), name)]);
-        self.words.borrow().word(key, &args, &source)
     }
 
     /// Take a view state slot read into the running view's reads, when a view runs.

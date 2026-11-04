@@ -16,10 +16,31 @@ tilolang-ask-always = Always allow
 tilolang-ask-denied = That change is not allowed here.
 tilolang-ask-needs-approval = That change needs approval first.
 tilolang-embed-source = Block
-tilolang-history-edit = Edited a field
-tilolang-history-edit-field = Edited { $field }
-tilolang-history-set-field = Changed { $field }
-tilolang-history-set = Changed a field
+# What a change reads as in history, worked out from the field it wrote and what it held before
+# and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
+# is the field's name in a sentence ("due", "priority").
+tilolang-did-renamed = renamed this to
+tilolang-did-edited = edited the { $field }
+tilolang-did-changed = changed { $field }
+tilolang-did-completed = completed this
+tilolang-did-reopened = reopened this
+tilolang-did-created = created this
+tilolang-did-removed = removed this
+tilolang-did-moved = moved this to
+tilolang-did-moved-under = moved this under
+tilolang-did-moved-top = moved this to the top level
+tilolang-did-taken-out = moved this out of
+tilolang-did-assigned = assigned this to
+tilolang-did-unassigned = unassigned this
+tilolang-did-set = set { $field } to
+tilolang-did-cleared = cleared { $field }
+tilolang-did-set-date = set the { $field } date to
+tilolang-did-cleared-date = cleared the { $field } date
+tilolang-did-set-time = set the { $field } time to
+tilolang-did-cleared-time = cleared the { $field } time
+# How one sentence goes on with the next field a change wrote ("… and set priority to High").
+tilolang-did-and = and
+
 tilolang-invocation-pending = Waiting
 tilolang-invocation-done = Done
 tilolang-invocation-suggested = Waiting for approval

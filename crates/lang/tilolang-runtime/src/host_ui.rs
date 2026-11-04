@@ -574,6 +574,33 @@ fn chip_node(vs: &mut ViewState, key: String, label: Value, icon: Option<Value>)
 /// in the person's format, a person as their avatar and name, a case of an enum as its label
 /// and icon, a resource as its title, a flag as yes or no, nothing as a quiet "None", and the
 /// elements of a set side by side. Returns its index.
+/// A day or a time of day, as the text component shows it (`value:as`); a day the change moved
+/// with the time of day it holds reads as one fact, and carries it beside it (`value:time`).
+fn shown_moment(
+    vs: &mut ViewState,
+    key: &str,
+    kind: &str,
+    value: Value,
+    extra: Option<Value>,
+) -> usize {
+    let mut props = vec![
+        ("value", value),
+        ("value:as", Value::Text(kind.to_owned())),
+    ];
+    if let (Some(Value::Text(at)), "date") = (extra, kind) {
+        props.push(("value:time", Value::Text(at)));
+    }
+    push_node(
+        vs,
+        Made {
+            kind: "ui.Text",
+            key: key.to_owned(),
+            props,
+            children: Vec::new(),
+        },
+    )
+}
+
 fn shown_nodes(
     vs: &mut ViewState,
     key: &str,
@@ -622,15 +649,7 @@ fn shown_nodes(
     };
     match kind {
         "none" => text_node(vs, key, Value::Text(phrase("tilolang-none-value")), true),
-        "date" | "time" => push_node(
-            vs,
-            Made {
-                kind: "ui.Text",
-                key: key.to_owned(),
-                props: vec![("value", value), ("value:as", Value::Text(kind.to_owned()))],
-                children: Vec::new(),
-            },
-        ),
+        "date" | "time" => shown_moment(vs, key, kind, value, extra),
         "principal" => {
             let avatar = push_node(
                 vs,

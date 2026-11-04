@@ -22,6 +22,9 @@ pub struct FieldInfo {
     pub name: String,
     pub ty: Ty,
     pub kind: FieldKind,
+    /// What the field is of its type, where it declares it (`(title)`, `(done)`, `(time of:
+    /// due)`): what a sentence about a change to it reads with ([`crate::did`]).
+    pub role: Option<FieldRole>,
     pub default: Option<Json>,
     /// What a store works it out from, for a `derive` key: a value no record holds
     /// ([`crate::derived`]).
@@ -177,6 +180,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
                 name: f.name.clone(),
                 ty,
                 kind,
+                role: f.role.clone(),
                 default: f.default.clone(),
                 derived,
             })

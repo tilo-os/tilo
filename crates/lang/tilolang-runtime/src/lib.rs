@@ -19,6 +19,7 @@ mod colls;
 mod core;
 pub mod delegate;
 pub mod derived;
+pub mod did;
 mod embed;
 pub mod engine;
 pub mod error;

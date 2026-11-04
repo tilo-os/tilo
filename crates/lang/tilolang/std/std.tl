@@ -536,12 +536,12 @@ view thread_chip<T>(thread: T, count: Int) {
 
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
 /// consecutive changes by one person or by one task run, is an entry saying who made it, what
-/// they did and how long ago. What an action did is the sentence the entry says, "{who} {did}",
-/// where the action declares it, the person looking as "You"; without, the entry says what the
-/// action does beside who did it. A step of one change shows each field it changed, what it held
-/// before beside what it holds now, each as the field's type shows it; a step of several opens
-/// to each of them. A step the person looking made offers Undo for it, and a run's step Undo
-/// for the whole run; each change of theirs in a longer step is undone on its own.
+/// they did and how long ago. What they did is the sentence its last change says
+/// (`version_sentence`), worked out from the fields the change wrote, the person looking as
+/// "You". A step of one change shows each field it changed, what it held before beside what it
+/// holds now, each as the field's type shows it; a step of several opens to each of them. A step
+/// the person looking made offers Undo for it, and a run's step Undo for the whole run; each
+/// change of theirs in a longer step is undone on its own.
 view history<R>(of: R) {
     lens open: Text = ""
     let steps = steps(of)
@@ -550,29 +550,19 @@ view history<R>(of: R) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
                 let single = s.versions.len() == 1
-                // Who did it, as a sentence names them: "You" for the person looking, everyone
-                // else by the name the avatar beside it shows (an agent's names it as one).
-                let actor = if s.mine { phrase("tilolang-you") } else { s.who.name() }
-                // What was done, in the words the action declares for it (`did:`), when the step
-                // is one change: the sentence is "{actor} {did}". Without, the step says what
-                // the action does, beside who did it.
-                let did = if single {
-                    if let v = s.versions.last() { v.did } else { "" }
-                } else { "" }
-                let what = if let run = s.task {
-                    run.title
-                } else if let v = s.versions.last() {
-                    if v.description == "" { v.what } else { v.description }
-                } else { "" }
+                // What was done: the sentence its last change says, or, for a step of a run,
+                // who ran it and what it ran.
                 stack(gap: .related) {
                     row(gap: .related, align: .center) {
                         avatar(s.who)
                         stack(gap: .tight) {
-                            if did != "" {
-                                ui.Text("{actor} {did}", role: .label)
-                            } else {
-                                ui.Text(actor, role: .label)
-                                ui.Text(what, role: .caption, secondary: true)
+                            if let run = s.task {
+                                if let v = s.versions.last() {
+                                    ui.Text(v.actor, role: .label)
+                                }
+                                ui.Text(run.title, role: .caption, secondary: true)
+                            } else if let v = s.versions.last() {
+                                std.version_sentence(v)
                             }
                             if not single {
                                 ui.Text(
@@ -607,14 +597,7 @@ view history<R>(of: R) {
                         for v in s.versions {
                             stack(gap: .tight) {
                                 row(gap: .related, align: .center) {
-                                    ui.Text(
-                                        if v.did != "" {
-                                            v.did
-                                        } else if v.description == "" {
-                                            v.what
-                                        } else { v.description },
-                                        role: .caption,
-                                    )
+                                    std.version_sentence(v)
                                     spacer()
                                     ui.Time(v.at, role: .caption, secondary: true)
                                     if v.mine {
@@ -634,6 +617,36 @@ view history<R>(of: R) {
                 }
             }
         }
+    }
+}
+
+/// A version in one sentence: who made it, then what it did, joined by what the platform keeps
+/// beside each change (`said`, `shows`). The words come from the fields the change wrote and
+/// what they held before and after ("moved this to", then the day as a day), or from what the
+/// action declares (`did:`); a version that says neither says what its action does.
+view version_sentence(v: host.Version) {
+    if v.did != "" {
+        ui.Text("{v.actor} {v.did}", role: .label)
+    } else if not v.changes.is_empty() {
+        row(gap: .tight, wrap: true) {
+            for c in v.changes {
+                row(gap: .tight) {
+                    ui.Text(c.said, role: .label)
+                    if c.shows == "after" {
+                        c.after
+                    } else if c.shows == "before" {
+                        c.before
+                    }
+                }
+            }
+        }
+    } else {
+        ui.Text(v.actor, role: .label)
+        ui.Text(
+            if v.description == "" { v.what } else { v.description },
+            role: .caption,
+            secondary: true,
+        )
     }
 }
 

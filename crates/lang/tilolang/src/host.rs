@@ -227,6 +227,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether the person looking made it, outside any task run: one they may undo on its own.",
             ),
             (
+                "actor",
+                "Text",
+                "Who made it, as a sentence names them: you for the person looking, everyone else by their name.",
+            ),
+            (
                 "description",
                 "Text",
                 "What the action that made it does, as its declaration describes it: `Renames a note.`; empty for one that describes nothing.",
@@ -234,8 +239,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "did",
                 "Text",
-                "What the action that made it did, as its declaration says it after who did it \
-                 (`moved this`); empty for one that says nothing of its own.",
+                "What it did, in words a sentence goes on with after who did it \
+                 (`moved this to`): the sentence of the fields it changed, derived from the \
+                 change itself; what its action declares (`did:`); or, for one that made or \
+                 removed the resource, `created this` or `removed this`. Empty when there is \
+                 nothing to say but what the action does.",
             ),
             (
                 "icon",
@@ -272,7 +280,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Change",
         id: "host-change",
-        doc: "A field a version changed: which, and what it held before and after, each shown as the field's type shows it.",
+        doc: "A field a version changed: which, what it held before and after, each shown as the field's type shows it, and the words history says it with.",
         fields: &[
             ("field", "Text", "The field, by its name in the source."),
             ("label", "Text", "The field, in words: `Due` for `due`."),
@@ -285,6 +293,22 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "after",
                 "View",
                 "What the field holds after the change, shown as its type shows it.",
+            ),
+            (
+                "said",
+                "Text",
+                "The change in words a sentence goes on with (`moved this to`, `assigned this \
+                 to`), decided by the field's role and type and by what it held before and \
+                 after, from the words the platform keeps; empty when the field reads as \
+                 nothing of its own. The first change of a version opens with who made it, and \
+                 each later one with `and`.",
+            ),
+            (
+                "shows",
+                "Text",
+                "Which of the two values the words speak of: `after` (`renamed this to`), \
+                 `before` (`moved this out of`), or empty when they speak of neither \
+                 (`completed this`).",
             ),
         ],
     },
