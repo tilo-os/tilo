@@ -221,12 +221,14 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
 /// person's own face flush at the trailing edge, as a macOS or GNOME bar has them. As the output
 /// narrows the window's menu stands as its icon, the tasks and who is here give way, and on a
 /// phone the sound does too (the time, the connection, the charge, the notifications and the
-/// person's face stay), so the row never wraps and its parts never press into each other.
+/// person's face stay), so the row never wraps. Its controls stand a cluster gap apart at every
+/// width, a finger's or a mouse's press target being wider than the face it is drawn in: at the
+/// tightest gap a press between two would reach whichever is drawn last.
 view traditional_bar(d: Desk) {
     let room = if space.width_class == .wide {
         BarRoom.roomy
     } else if space.compact { BarRoom.one } else { BarRoom.menus }
-    row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {
+    row(gap: .related, align: .center, fill) {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
             on press: session.tilo_menu()
         }
@@ -245,7 +247,11 @@ view traditional_bar(d: Desk) {
         if room != .one {
             people_button(d)
         }
-        status_icons()
+        if not space.compact {
+            volume_status()
+        }
+        network_status()
+        battery_status()
         bell(d)
         if d.person != "" {
             ui.Avatar(name: .some(d.person))
