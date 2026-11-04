@@ -1328,6 +1328,13 @@ impl ListRow {
         self.dirty = true;
     }
 
+    /// Whether the row stands as a card: its own surface, as a card component showed it
+    /// ([`CardBody::show_as_card`]).
+    #[must_use]
+    pub const fn is_card(&self) -> bool {
+        self.card
+    }
+
     /// Have a press on the row (or Enter or Space while it has the keyboard) report `event`:
     /// what a component's card does when it opens what it stands for.
     pub fn set_activate(&mut self, event: crate::component::Event) {

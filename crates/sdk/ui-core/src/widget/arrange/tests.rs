@@ -134,6 +134,41 @@ fn a_container_that_leads_stands_what_it_holds_under_the_text_a_control_leads_to
     }
 }
 
+/// A container that keeps a padding holds what it holds that far in on every side, so a surface
+/// standing against a window's edge keeps the window's gutter whatever it covers; one that keeps
+/// none holds it at its own edge, and a lead stands on top of the padding it keeps.
+#[test]
+fn a_container_that_keeps_a_padding_insets_what_it_holds() {
+    let theme = Theme::dark();
+    let pad = gap(&theme, Rhythm::Section);
+    let mut padded = Stack::stack()
+        .fill_width()
+        .padding(Rhythm::Section)
+        .push(boxed(100.0));
+    solve(&mut padded, &theme, 400.0);
+    let held = rects(&padded)[0];
+    assert!(
+        (held.x0 - pad).abs() < 0.5 && (held.y0 - pad).abs() < 0.5,
+        "the padding stands what it holds {pad} in from its edge: {held:?}"
+    );
+
+    let mut bare = Stack::stack().fill_width().push(boxed(100.0));
+    solve(&mut bare, &theme, 400.0);
+    assert!(rects(&bare)[0].x0.abs() < 0.5, "no padding, no inset");
+
+    let mut led = Stack::stack()
+        .fill_width()
+        .padding(Rhythm::Section)
+        .push(boxed(100.0));
+    led.set_lead(1);
+    solve(&mut led, &theme, 400.0);
+    let held = rects(&led)[0];
+    assert!(
+        held.x0 > pad + 0.5,
+        "a lead stands what it holds further in than the padding alone: {held:?}"
+    );
+}
+
 /// Where the body of `root` — its second child, which leads — holds what is written in it.
 fn held_in(root: &Stack) -> vello::kurbo::Rect {
     root.children()[1]

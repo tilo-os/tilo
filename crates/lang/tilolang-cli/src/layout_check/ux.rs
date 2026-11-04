@@ -5,10 +5,14 @@
 //!
 //! Every rule is read off the inspection alone — the retained boxes, their clips, the grid each row
 //! reports and the semantics a screen reader is given — so no app has to know about it, and one
-//! that composes its screen differently is held to the same rules as every other.
+//! that composes its screen differently is held to the same rules as every other. The one thing
+//! the inspection cannot tell is what a control was declared to do: a field's clear button and one
+//! that deletes an item are drawn alike, and only the view that sent it says which it is
+//! ([`Declared`], read off the tree the app sent beside the inspection).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use tilo_ui_host::{UiNode, Value};
 use ui::a11y::Role;
 use ui::headless::InspectionNode;
 use ui::kurbo::Rect;
@@ -38,14 +42,52 @@ const OTHER_DELETE_VERBS: [&str; 6] = ["remove ", "erase ", "discard ", "purge "
 /// The one verb a destructive control says its action with.
 pub const DELETE_VERB: &str = "Delete";
 
-/// What this screen holds that a person would see wrong though its geometry is sound.
-pub fn inspect(root: &InspectionNode, viewport: (u32, u32)) -> Vec<Problem> {
+/// What a view declares its controls do, where the inspection cannot tell: the controls it sends
+/// that destroy what they name, by the key each is drawn with.
+#[derive(Debug, Default)]
+pub struct Declared {
+    destructive: BTreeSet<String>,
+}
+
+impl Declared {
+    /// Read the tree `tree` a view sent, and every tree under it.
+    pub fn read(&mut self, tree: &UiNode) {
+        if destroys(tree) {
+            self.destructive.insert(tree.key.clone());
+        }
+        for child in &tree.children {
+            self.read(child);
+        }
+    }
+
+    /// Whether the control drawn as `key` was declared to destroy what it names.
+    #[must_use]
+    pub fn destroys(&self, key: &str) -> bool {
+        self.destructive.contains(key)
+    }
+}
+
+/// Whether `node` is a control its view declared destructive: an action's control
+/// (`ui.MenuItem`, `ui.SwipeAction`) says so in a flag, a button in its role. A control that
+/// clears a field's value declares no role and destroys nothing.
+fn destroys(node: &UiNode) -> bool {
+    let flagged = match node.props.get("destructive") {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Int(count)) => *count != 0,
+        _ => false,
+    };
+    flagged || node.props.get("role") == Some(&Value::text("destructive"))
+}
+
+/// What this screen holds that a person would see wrong though its geometry is sound, as the
+/// views that drew it declared what their controls do.
+pub fn inspect(root: &InspectionNode, viewport: (u32, u32), declared: &Declared) -> Vec<Problem> {
     let mut out = Vec::new();
     columns(root, &mut out);
     selections(root, &mut Vec::new(), false, &mut out);
     adds(root, &mut Vec::new(), false, &mut out);
     names(root, &mut Vec::new(), &mut out);
-    verbs(root, &mut Vec::new(), &mut out);
+    verbs(root, declared, &mut Vec::new(), &mut out);
     cards(root, &mut Vec::new(), false, &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
     out
@@ -452,9 +494,20 @@ fn identifier_shape(name: &str) -> Option<&'static str> {
 
 // --- destructive verbs -------------------------------------------------------------------------
 
-/// A control that destroys something says so with the one verb every screen uses for it.
-fn verbs(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
+/// A control that destroys something says so with the one verb every screen uses for it. Only
+/// what the view declared destroys is held to the verb: a button that clears a field's value
+/// says "Remove" and destroys nothing.
+fn verbs(
+    node: &InspectionNode,
+    declared: &Declared,
+    keys: &mut Vec<String>,
+    out: &mut Vec<Problem>,
+) {
     if matches!(role(node), Some(Role::Button | Role::MenuItem))
+        && node
+            .test_id
+            .as_deref()
+            .is_some_and(|key| declared.destroys(key))
         && let Some(name) = semantics_name(node)
         && let Some(other) = OTHER_DELETE_VERBS
             .iter()
@@ -472,7 +525,7 @@ fn verbs(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) 
     }
     let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
     for child in &node.children {
-        verbs(child, keys, out);
+        verbs(child, declared, keys, out);
     }
     if pushed {
         keys.pop();
@@ -636,10 +689,31 @@ mod tests {
     }
 
     fn found(kind: Kind, root: &InspectionNode, viewport: (u32, u32)) -> Vec<Problem> {
-        inspect(root, viewport)
+        found_as(kind, root, viewport, &Declared::default())
+    }
+
+    /// What `root` holds wrong of `kind`, as `declared` says what its controls do.
+    fn found_as(
+        kind: Kind,
+        root: &InspectionNode,
+        viewport: (u32, u32),
+        declared: &Declared,
+    ) -> Vec<Problem> {
+        inspect(root, viewport, declared)
             .into_iter()
             .filter(|problem| problem.kind == kind)
             .collect()
+    }
+
+    /// The declaration a view makes of the button `key`: pressing it destroys what it names.
+    fn declared_destructive(key: &str) -> Declared {
+        let mut button = UiNode::empty("ui.Button", key);
+        button
+            .props
+            .insert("role".to_owned(), Value::text("destructive"));
+        let mut declared = Declared::default();
+        declared.read(&button);
+        declared
     }
 
     /// Rows of one box stand their titles on one x at each depth, and every nesting step indents
@@ -878,7 +952,8 @@ mod tests {
         }
     }
 
-    /// A control that destroys something says "Delete", as every screen does.
+    /// A control that destroys something says "Delete", as every screen does; one that clears a
+    /// field's value declares no destruction and may say "Remove".
     #[test]
     fn a_destructive_control_says_delete() {
         let say = |name: &str| {
@@ -895,10 +970,31 @@ mod tests {
                 )],
             )
         };
-        assert!(found(Kind::UnsharedVerb, &say("Delete project"), (1280, 800)).is_empty());
-        let problems = found(Kind::UnsharedVerb, &say("Remove project"), (1280, 800));
+        let destroys = declared_destructive("button");
+        assert!(
+            found_as(
+                Kind::UnsharedVerb,
+                &say("Delete project"),
+                (1280, 800),
+                &destroys
+            )
+            .is_empty()
+        );
+        let problems = found_as(
+            Kind::UnsharedVerb,
+            &say("Remove project"),
+            (1280, 800),
+            &destroys,
+        );
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].detail.contains("Delete"), "{problems:?}");
+
+        // A field's own button clears the value the field holds: the view declares nothing of
+        // it, so the word it says is its own.
+        assert!(
+            found(Kind::UnsharedVerb, &say("Remove time"), (1280, 800)).is_empty(),
+            "a control the view declares nothing of is nobody's destructive control"
+        );
     }
 
     /// A surface holds its content on the page: a card drawn on a card is one surface too many.

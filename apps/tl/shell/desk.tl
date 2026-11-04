@@ -245,9 +245,10 @@ view top_bar(d: Desk) {
 /// The desk at rest under its bar: the banner a notice rose as. A person with windows sees
 /// them through the compositor behind this, and who is here is in the bar's own menu, so the
 /// desk at rest adds nothing to its bar's band: closed, it lays nothing out and draws nothing.
+/// A banner stands the desk's gutter in from the window's edge, as a surface does.
 view at_rest(d: Desk) {
-    stack(gap: .section) {
-        if d.banner != "" {
+    if d.banner != "" {
+        stack(padding: if space.compact { .section } else { .none }) {
             banner(d)
         }
     }
@@ -255,25 +256,29 @@ view at_rest(d: Desk) {
 
 /// The surface the person is in, at the place its kind shows: the launcher fills the desk
 /// under the bar, the overview and the workspaces fill it, the centre sits at the trailing
-/// edge and the composer at the foot.
+/// edge and the composer at the foot. Every one of them stands the desk's gutter in from the
+/// window's edge, where that window is narrow enough to have no page gutter of its own: a
+/// surface is a panel over the desk, not a band of the window.
 view surface(d: Desk) {
-    if d.here == "overview" {
-        overview(d, fill)
-    } else if d.here == "switcher" {
-        switcher(d, fill)
-    } else if d.here == "launcher" {
-        launcher(d, fill)
-    } else if d.here == "centre" {
-        notices(d, fill)
-    } else if d.here == "quick-settings" {
-        quick_settings(d, fill)
-    } else if d.here == "workspaces" {
-        workspaces(d, fill)
-    } else if d.here == "composer" {
-        composer(d, fill)
-    } else if d.here == "conversation" {
-        if let r = d.runs.last() {
-            conversation(r, fill)
+    stack(fill, padding: if space.compact { .section } else { .none }) {
+        if d.here == "overview" {
+            overview(d, fill)
+        } else if d.here == "switcher" {
+            switcher(d, fill)
+        } else if d.here == "launcher" {
+            launcher(d, fill)
+        } else if d.here == "centre" {
+            notices(d, fill)
+        } else if d.here == "quick-settings" {
+            quick_settings(d, fill)
+        } else if d.here == "workspaces" {
+            workspaces(d, fill)
+        } else if d.here == "composer" {
+            composer(d, fill)
+        } else if d.here == "conversation" {
+            if let r = d.runs.last() {
+                conversation(r, fill)
+            }
         }
     }
 }

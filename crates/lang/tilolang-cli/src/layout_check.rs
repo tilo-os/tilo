@@ -1169,13 +1169,17 @@ impl AppCheck<'_> {
             }
         }
         self.note_shown(&inspection.root);
-        // A view that ran but drew nothing has no widget; what the app sent still names it.
+        // A view that ran but drew nothing has no widget; what the app sent still names it. What
+        // it declared its controls do is read off the same trees.
+        let mut declared = ux::Declared::default();
         if let Some(composed) = staged.composed() {
             self.note_shown_row(&composed);
+            declared.read(&composed);
         }
         let rows = staged.rows();
         for row in rows.values() {
             self.note_shown_row(row);
+            declared.read(row);
         }
         let mut problems = audit::inspect(
             &inspection.root,
@@ -1191,7 +1195,7 @@ impl AppCheck<'_> {
             self.text,
             viewport,
         ));
-        problems.extend(ux::inspect(&inspection.root, viewport));
+        problems.extend(ux::inspect(&inspection.root, viewport, &declared));
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
@@ -2247,10 +2251,21 @@ mod board_lane {
             && rect.y1 <= clip.y1 + SLACK
     }
 
+    /// Whether `node` is a card as a board draws one: the card's own chrome around a body, or
+    /// the row a card component showed as its surface ([`ui::widget::CardBody`]), which a board's
+    /// card is.
+    fn shows_as_card(node: &dyn Widget) -> bool {
+        node.name() == "Card"
+            || node
+                .as_any()
+                .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+                .is_some_and(ui::widget::ListRow::is_card)
+    }
+
     /// The cards `node` holds that stand whole inside `clip`, in drawing order.
     fn whole_cards(node: &dyn Widget, clip: Rect, out: &mut Vec<Rect>) {
         let rect = node.get_rect();
-        if node.name() == "Card" && inside(clip, rect) {
+        if shows_as_card(node) && inside(clip, rect) {
             out.push(rect);
         }
         let clip = node.child_clip_rect().map_or(clip, |own| {

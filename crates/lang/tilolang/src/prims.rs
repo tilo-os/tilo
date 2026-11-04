@@ -102,7 +102,7 @@ pub const PRIMS: &[Prim] = &[
     prim_of("field", &["label"], &[]),
     prim_of("choice", &[], &["bind"]),
     // Layout for content.
-    prim_of("stack", &[], &["gap", "align"]),
+    prim_of("stack", &[], &["gap", "padding", "align"]),
     // With a block, a layout row; with a title and no block, a list row (`ListRow`).
     prim_of("row", &[], LAYOUT_ROW_ARGS),
     prim_of("grid", &[], &["min", "columns", "gap"]),
@@ -163,7 +163,7 @@ pub const CHOICES: &[Choice] = &[
     Choice {
         kind: "gap",
         name: "Gap",
-        variants: &["tight", "related", "sibling", "section", "group"],
+        variants: &["tight", "related", "sibling", "section", "group", "none"],
     },
     Choice {
         kind: "align",

@@ -21,8 +21,8 @@ aspect ratio and text size. Getting it wrong should take effort. The engine unde
 ## 2. Units and sizes
 
 - Units: `rem` (body text size, after the person's setting), `dp` (a logical pixel, rarely
-  needed), rhythm tokens (`tight`, `related`, `sibling`, `section`, `group`) for every gap, `fr`
-  for shares of space.
+  needed), rhythm tokens (`tight`, `related`, `sibling`, `section`, `group`, `none`) for every
+  gap and every padding, `fr` for shares of space.
 - Per axis: `hug` (default), `fill` or `fill(2)`, `min:` and `max:`, and `aspect:` (e.g. `16/9`).
   No absolute positions; overlays use `layers`.
 
@@ -39,8 +39,9 @@ aspect ratio and text size. Getting it wrong should take effort. The engine unde
 | `scroll` | scrolls on its axis |
 | `spacer` | takes leftover space |
 
-Widgets own their padding and size, as the design system says. Text wraps by default; `lines: n`
-clamps it.
+Widgets own their padding and size, as the design system says. A container that holds what it did
+not draw — a desk's surfaces, a panel's body — keeps a padding of its own (`padding: .section`):
+the room it holds back on every side. Text wraps by default; `lines: n` clamps it.
 
 ## 4. Responding to space
 

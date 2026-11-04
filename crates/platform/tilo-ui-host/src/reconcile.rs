@@ -227,6 +227,7 @@ fn length(node: &UiNode, name: &str) -> Option<Length> {
 
 fn rhythm(node: &UiNode, name: &str, default: Rhythm) -> Rhythm {
     match token(node, name) {
+        Some("none") => Rhythm::None,
         Some("tight") => Rhythm::Tight,
         Some("related") => Rhythm::Related,
         Some("sibling") => Rhythm::Sibling,
@@ -674,8 +675,9 @@ impl Reconciler {
     /// The widgets of the tree under `node`.
     pub fn build(&mut self, node: &UiNode) -> Element {
         let mut element = self.build_kind(node);
-        // A container's lead is its own padding: what it holds stands that far in from its
-        // leading edge, under the text a heading's control leads to.
+        // A container's lead is room of its own, over the padding it keeps: what it holds
+        // stands that far in from its leading edge, under the text a heading's control leads
+        // to.
         let lead = lead(node);
         if lead > 0 {
             with_host(&mut element, |host| host.set_lead(lead));
@@ -910,6 +912,7 @@ impl Reconciler {
         let mut stack = Stack::stack()
             .fill_width()
             .gap(rhythm(node, "gap", default))
+            .padding(rhythm(node, "padding", Rhythm::None))
             .align(align(node, Align::Stretch))
             .with_id(node.key.clone());
         for slot in self.slots(node) {
@@ -922,6 +925,7 @@ impl Reconciler {
         let mut row = Row::row()
             .fill_width()
             .gap(rhythm(node, "gap", Rhythm::Related))
+            .padding(rhythm(node, "padding", Rhythm::None))
             .align(align(node, Align::Center))
             .distribute(match token(node, "distribute") {
                 Some("center") => Distribute::Center,
