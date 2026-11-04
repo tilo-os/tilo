@@ -315,6 +315,15 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
             "the run's entry and Ada's own, each saying when"
         );
         shoot(&mut app, "tasks-history", settle);
+        // The task's own fields stand above its history, so the pane scrolls to the history's
+        // rows before the run's entry is opened, as a person reaches them.
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(700.0, 400.0));
+        settle(&mut app);
+        for _ in 0..6 {
+            app.harness().scroll(0.0, -1.0);
+            settle(&mut app);
+        }
         let show = named(&mut app, "Button", "Show changes");
         app.harness()
             .click_at(show[0] + show[2] / 2.0, show[1] + show[3] / 2.0);
