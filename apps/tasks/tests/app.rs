@@ -678,6 +678,42 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
     assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
 }
 
+/// A lane of the board adds at its foot, in its own lane: what is typed
+/// there is made in that lane's status, and the board itself carries no
+/// entry of its own above the lanes.
+#[test]
+fn a_lanes_foot_adds_the_issue_to_that_lane() {
+    let mut app = open();
+    press_view(&mut app, "Board");
+    app.settle();
+    let add = |app: &mut TestApp<App>, status: Status, title: &str| {
+        app.harness()
+            .click_named(&format!("tasks-board-new-{}-title", status.label_key()))
+            .unwrap_or_else(|error| panic!("the {status:?} lane is addable: {error}"));
+        app.harness().type_text(title);
+        app.harness().key("Enter");
+        app.settle();
+    };
+    add(&mut app, Status::Todo, "Ship the launch");
+    add(&mut app, Status::InProgress, "Archive the banner");
+
+    let state = app.state();
+    let statuses: Vec<(&str, Status)> = state
+        .issues
+        .values()
+        .map(|issue| (issue.title.as_str(), issue.status))
+        .collect();
+    assert!(
+        statuses.contains(&("Ship the launch", Status::Todo)),
+        "what the to-do lane's entry makes starts there: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&("Archive the banner", Status::InProgress)),
+        "and the working lane's entry starts a card that is being worked on: {statuses:?}"
+    );
+    assert_eq!(statuses.len(), 2, "one card per entry, nothing else");
+}
+
 /// One task, read through every view the app has: the conversation it is
 /// is the thread, and the card on the board and the row in the list open the
 /// same page rather than a copy of it.

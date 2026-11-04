@@ -23,12 +23,12 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
         })
     });
     // The board's name is the window's location: the bar says where the
-    // window is, so nothing here titles it a second time.
+    // window is, so nothing here titles it a second time. Each lane adds at
+    // its foot, in its own place: what is typed there lands in that lane.
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .with_fill_remaining_height()
-            .push(crate::new_issue(cx, None, "tasks-board-new"))
             .push(Box::new(
                 Scrollable::new_horizontal()
                     .fill_parent_height()
@@ -62,7 +62,17 @@ fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&s
             ],
         ))
         .with_role(TextRole::Subheading);
-        board = board.lane(status.label_key(), Box::new(header), cards);
+        board = board.lane(
+            status.label_key(),
+            Box::new(header),
+            cards,
+            Some(crate::new_issue(
+                cx,
+                None,
+                Some(status),
+                &format!("tasks-board-new-{}", status.label_key()),
+            )),
+        );
     }
     // A drop is the `place` action: one gesture, one undo step, confirmed
     // and permitted like the same move made anywhere else.

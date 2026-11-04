@@ -52,8 +52,8 @@ use ui::widget::{NavItem, NavSection};
 
 pub use chat::{SCHEME as CHAT_SCHEME, uri as chat_uri};
 pub use model::Tracker;
-use model::area_resource;
 pub use model::{NOTES, TasksEffect};
+use model::{Status, area_resource};
 
 /// What the window shows when no issue is open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -309,8 +309,14 @@ fn sidebar_sections(tracker: &Tracker, me: Option<&str>) -> Vec<NavSection> {
     sections
 }
 
-/// A row to create an issue: its title, then Enter or the button.
-pub(crate) fn new_issue(cx: &ViewCx<Tracker>, parent: Option<Id>, id: &str) -> Element {
+/// A row to create an issue: its title, then Enter or the button. `status`
+/// is where it starts, when the row stands in a lane of the board.
+pub(crate) fn new_issue(
+    cx: &ViewCx<Tracker>,
+    parent: Option<Id>,
+    status: Option<Status>,
+    id: &str,
+) -> Element {
     let draft = cx.local(String::new());
     let create_under_parent = parent.is_some();
     // The issue is made from what the field parses to: nothing while it is
@@ -321,7 +327,7 @@ pub(crate) fn new_issue(cx: &ViewCx<Tracker>, parent: Option<Id>, id: &str) -> E
             title: ui::tilo_resource::NonBlank::parse(&title)?,
             parent: parent.clone(),
             body: None,
-            status: None,
+            status,
             assignee: None,
         })
     });

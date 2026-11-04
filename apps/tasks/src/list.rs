@@ -50,7 +50,7 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .with_fill_remaining_height()
-            .push(crate::new_issue(cx, None, "tasks-list-new"))
+            .push(crate::new_issue(cx, None, None, "tasks-list-new"))
             .push(list),
     )
 }
