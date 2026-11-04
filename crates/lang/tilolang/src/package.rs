@@ -78,6 +78,8 @@ fn analyze_module(
     imports: &[PackageMeta],
     rng: &mut dyn Entropy,
 ) -> Result<Analysis, Vec<Diagnostic>> {
+    let mut module = module;
+    crate::outline::derive(&mut module);
     let mut lock = ids.clone();
     lock.sync(&declared_names(&module), rng);
     let mut diags = Vec::new();

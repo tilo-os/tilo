@@ -1225,6 +1225,19 @@ impl Resolver<'_> {
             }
             return Some(FieldRole::Parent);
         }
+        // What an item keeps of the one it stands under: the child a type's add-subtask action
+        // makes starts with it.
+        if word == "inherit" {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!("`(inherit)` names no field: it marks the field an item keeps of the `{owner}` it stands under, which a new subtask starts with"),
+                );
+                return None;
+            }
+            return Some(FieldRole::Inherit);
+        }
         if matches!(word, "title" | "body") {
             if !marker.args.is_empty() {
                 self.err(

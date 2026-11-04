@@ -331,23 +331,24 @@ view rows_list<T>(
 /// Items as an outline, each item over its own to any depth, opened and closed where a person
 /// puts them, its row the one `row` draws. The outline is named `name` for a reader; the name
 /// is the page's, not a row over the items, so the page states it once. A move — a drag, `Tab`
-/// and `Shift-Tab`, the accessibility move actions — is reported with the item it lands under
-/// and the item it lands before, and `place` puts it in the one place they name:
-/// `(moved, .none, .none)` is the end of the top level, `(moved, .some(x), .none)` the end of
-/// `x`'s own, and `(moved, .none, .some(x))` where `x` stands. One step, so two people moving
-/// items at once never leave one in two places. A row's checkbox asks `toggled`. Give `progress`
-/// and a row with items under it says how far its branch got ("1/3"), as the list of the same
-/// items says it. An item whose parent is not among `items` stands at the top, so a deleted
-/// parent never hides what was inside it. `row` draws an item with the item it stands under
-/// (`.none` at the top), so a child leaves out what its parent already says.
+/// and `Shift-Tab`, the accessibility move actions — puts the item in the place named: the end
+/// of the top level, the end of the items of the one it lands under, or where the one it lands
+/// before stands. One step, so two people moving items at once never leave one in two places.
+/// A row's checkbox checks its item off, or opens it again. Give `progress` and a row with
+/// items under it says how far its branch got ("1/3"), as the list of the same items says it.
+/// An item whose parent is not among `items` stands at the top, so a deleted parent never hides
+/// what was inside it. `row` draws an item with the item it stands under (`.none` at the top),
+/// so a child leaves out what its parent already says.
+///
+/// A type whose items nest gets the actions the outline moves and checks them with from its
+/// `(parent)` and `(done)` fields, so the page names none of them: `std.move` and `std.check`
+/// reach the type's own. A type without them has an outline that moves and checks nothing.
 view outline<T>(
     name: Text,
     items: List<T>,
     parent: (T) -> Option<T>,
     label: (T) -> Text,
     empty: Text,
-    place: (T, Option<T>, Option<T>) -> Action,
-    toggled: (T) -> Action,
     progress: Option<(T) -> Option<Text>> = .none,
     icon: Option<Text> = .none,
     fill: Bool = true,
@@ -363,7 +364,7 @@ view outline<T>(
             tab_indents: true,
             hide_root: true,
         ) {
-            on drop(moved: T): place(moved, .none, .none)
+            on drop(moved: T): std.move(moved, .none, .none)
             for x in items {
                 // The node just above this one under the same parent, as the outline shows
                 // them: the place the actions offered on it get. None for a first child.
@@ -373,9 +374,9 @@ view outline<T>(
                     .last()
                 let count: Option<Text> = if let c = progress { c(x) } else { .none }
                 ui.TreeViewNode(x, label(x), parent: parent(x), above: above, progress: count) {
-                    on drop(moved: T): place(moved, .none, .some(x))
-                    on into(moved: T): place(moved, .some(x), .none)
-                    on check: toggled(x)
+                    on drop(moved: T): std.move(moved, .none, .some(x))
+                    on into(moved: T): std.move(moved, .some(x), .none)
+                    on check: std.check(x)
                     row: {
                         row(x, parent(x))
                     }

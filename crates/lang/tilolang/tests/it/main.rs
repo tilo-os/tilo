@@ -19,6 +19,7 @@ mod multifile;
 mod native;
 mod origins;
 mod outcomes;
+mod outline;
 mod principal;
 mod repeats;
 mod roles;

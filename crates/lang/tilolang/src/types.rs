@@ -62,6 +62,10 @@ pub enum FieldRole {
     /// `(done)`: the `Bool` that says the item is finished: what a place leaves out of its
     /// count and folds into its foot, and what a window's complete action sets.
     Done,
+    /// `(inherit)`: what an item keeps of the one it stands under, so the child the outline's
+    /// add-subtask action makes starts with it (`(inherit)` on a section keeps a new subtask in
+    /// that section).
+    Inherit,
 }
 
 impl FieldRole {
@@ -76,6 +80,7 @@ impl FieldRole {
             Self::Repeats { .. } => "repeats",
             Self::Reminds { .. } => "reminds",
             Self::Parent => "parent",
+            Self::Inherit => "inherit",
             Self::TimeOf { .. } => "time",
         }
     }
@@ -85,9 +90,12 @@ impl FieldRole {
     #[must_use]
     pub fn text(&self) -> String {
         match self {
-            Self::Title | Self::Body | Self::Previously | Self::Done | Self::Parent => {
-                self.word().to_owned()
-            }
+            Self::Title
+            | Self::Body
+            | Self::Previously
+            | Self::Done
+            | Self::Parent
+            | Self::Inherit => self.word().to_owned(),
             Self::TimeOf { date } => format!("time of: {date}"),
             Self::Repeats { date } => format!("repeats: {date}"),
             Self::Reminds { date, time, who } => {
@@ -133,6 +141,12 @@ impl FieldRole {
     #[must_use]
     pub const fn is_done(&self) -> bool {
         matches!(self, Self::Done)
+    }
+
+    /// Whether an item born under another keeps this field from it (`(inherit)`).
+    #[must_use]
+    pub const fn is_inherit(&self) -> bool {
+        matches!(self, Self::Inherit)
     }
 
     /// The day the field is the time of (`(time of: due)`), when it is one.

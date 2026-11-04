@@ -41,10 +41,10 @@ type Task {
     /// Who is doing it.
     assignee: Option<Principal> = .none
     /// The project it belongs to; none while it waits in the inbox.
-    project: Option<Project> = .none
+    project: Option<Project> (inherit) = .none
     /// The section of its project it is in, a lane of the project's board; none for the
     /// project's first lane.
-    section: Option<Section> = .none
+    section: Option<Section> (inherit) = .none
     priority: Priority = .none
     /// The task it is a subtask of; none for a task of its own. Tasks nest to any depth.
     parent: Option<Task> (parent) = .none
@@ -188,44 +188,6 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
     tasks.projects.insert(Project(name: "New project"))
 }
 
-/// Checks a task off with every task under it, or opens it again with the tasks it is under.
-action check(t: Task, done: Bool = not t.done) (
-    label: if done { "Complete" } else { "Reopen" },
-    icon: .check,
-    on: t.done,
-    key: "Ctrl+Enter",
-) {
-    t.done = done
-    if done {
-        for x in tasks.items.descendants(t, .parent) {
-            x.done = true
-        }
-    } else {
-        // Everything above the one opened is open again.
-        for a in tasks.items.ancestors(t, .parent) {
-            a.done = false
-        }
-    }
-}
-
-/// Adds a subtask under a task: a task of its own, in its project and section, under the title
-/// given. It stands with its siblings, and a task that was done opens again: there is work under
-/// it now.
-action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task (
-    label: "Add subtask",
-    icon: .list_tree,
-    did: "added a subtask",
-    key: "Ctrl+Shift+N",
-) {
-    let made = tasks.items.insert(
-        Task(title: title, parent: .some(t), project: t.project, section: t.section),
-    )
-    let last = tasks.items.filter(x -> x.parent == .some(t) and x != made).last() ?? t
-    tasks.items.move(made, after: last)
-    if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
-    made
-}
-
 /// Sets the day a task is due by, or clears it: the presets take the day, and one entry asks
 /// for any day.
 action due_today(t: Task) (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
@@ -312,72 +274,6 @@ action assign(t: Task, who: Option<Principal>) (label: "Assign", icon: .user) {
     t.assignee = who
 }
 
-/// Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level
-/// for none), where `before` stands when it is given, or at the end of the top level. A task
-/// cannot go inside itself, and open work put under a done task opens it. The outline's drag,
-/// `Ctrl+]` and `Ctrl+[` name it; it is not a command of its own.
-internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) {
-    require not within(tasks.items, parent, moved)
-        and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
-    if let b = before {
-        moved.parent = b.parent
-        tasks.items.move(moved, before: b)
-    } else {
-        moved.parent = parent
-        if let last = tasks.items.filter(x -> x.parent == parent and x != moved).last() {
-            tasks.items.move(moved, after: last)
-        } else if let p = parent { tasks.items.move(moved, after: p) }
-    }
-    if not moved.done and tasks.items.ancestors(moved, .parent).any(a -> a.done) {
-        check(moved, false)
-    }
-}
-
-/// Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does:
-/// the row over it names the task of its own level it ends up under.
-action indent(t: Task, above: Option<Task> (above)) (
-    label: "Indent",
-    icon: .arrow_right,
-    key: "Ctrl+]",
-) {
-    applies above != .none and above != t.parent "Nothing over it to move under"
-    if let a = above {
-        let under = tasks.items.ancestors(a, .parent).find(x -> x.parent == t.parent) ?? a
-        move_to(tasks, t, .some(under), .none)
-    }
-}
-
-/// Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
-action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[") {
-    applies t.parent != .none "It is at the top level already"
-    if let p = t.parent {
-        t.parent = p.parent
-        tasks.items.move(t, after: p)
-    }
-}
-
-/// Copies a task, with every task under it, just after the one it copies.
-action duplicate(tasks: Tasks, t: Task) -> Task (
-    label: "Duplicate",
-    icon: .copy,
-    key: "Ctrl+Shift+D",
-) {
-    let copy = tasks.items.insert(copied(t, t.parent))
-    if let last = last_below(tasks.items, t) {
-        tasks.items.move(copy, after: last)
-    } else { tasks.items.move(copy, after: t) }
-    copy_below(tasks, t, copy)
-    copy
-}
-
-/// Deletes a task and its subtasks.
-destructive action remove(tasks: Tasks, t: Task) (label: "Delete", icon: .trash, key: "Delete") {
-    for x in tasks.items.descendants(t, .parent) {
-        tasks.items.remove(x)
-    }
-    tasks.items.remove(t)
-}
-
 /// Deletes every finished task, and answers how many went: a task is finished when everything
 /// under it is done too, so deleting takes whole finished branches and never unfinished work
 /// with it, and a task done with a step still open under it stays. Finished tasks are the
@@ -453,50 +349,6 @@ internal action place(t: Task, s: Option<Section>, at: Int) {
 /// Renames a project.
 action rename(p: Project, name: Text) {
     p.name = name
-}
-
-/// Whether `place` is `top` or one of the tasks over it.
-fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
-    if let p = place {
-        p == top or items.ancestors(p, .parent).any(a -> a == top)
-    } else { false }
-}
-
-/// `t` as a task of its own under `parent`: what a copy of it says, without the tasks under it.
-fn copied(t: Task, parent: Option<Task>) -> Task {
-    Task(
-        title: t.title,
-        done: t.done,
-        due: t.due,
-        at: t.at,
-        notes: t.notes,
-        assignee: t.assignee,
-        project: t.project,
-        section: t.section,
-        priority: t.priority,
-        parent: parent,
-    )
-}
-
-/// The task that ends the run `t` begins: the last task of the list that stands under `t`,
-/// `t` itself when none does.
-fn last_below(items: List<Task>, t: Task) -> Option<Task> {
-    items.filter(x -> x == t or items.ancestors(x, .parent).any(a -> a == t)).last()
-}
-
-/// Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it
-/// copies did; answers the last task the copies end with. It is what Duplicate runs, not a
-/// command of its own.
-internal action copy_below(tasks: Tasks, t: Task, copy: Task) -> Task {
-    for k in tasks.items.filter(x -> x.parent == .some(t)) {
-        // Where the copy of this one goes: after the run the copies under `copy` make so far,
-        // read before it is inserted, since it would end that run itself.
-        let after = last_below(tasks.items, copy)
-        let made = tasks.items.insert(copied(k, .some(copy)))
-        if let last = after { tasks.items.move(made, after: last) }
-        copy_below(tasks, k, made)
-    }
-    last_below(tasks.items, copy) ?? copy
 }
 
 /// How many of a task's subtasks are done, of all of them ("1/3"): its row in a list and its
@@ -748,13 +600,6 @@ view task_page(t: Task) {
                         x -> x.parent,
                         x -> x.title,
                         "No subtasks yet",
-                        (moved, parent, before) -> move_to(
-                            tasks,
-                            moved,
-                            parent,
-                            before,
-                        ),
-                        x -> check(x),
                         progress: x -> subtask_count(x),
                         fill: false,
                     ) { (x, under) ->

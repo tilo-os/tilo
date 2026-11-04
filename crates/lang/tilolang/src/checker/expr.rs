@@ -499,7 +499,7 @@ impl Checker<'_> {
     }
 
     /// The workspace's resource of the root type `key` (id `ty_id`): `root-<type id>`.
-    fn root_ref(app: &str, ty_id: &str, key: &crate::types::TypeKey) -> Ex {
+    pub(super) fn root_ref(app: &str, ty_id: &str, key: &crate::types::TypeKey) -> Ex {
         Ex::host(
             Imp::RefLit,
             vec![
