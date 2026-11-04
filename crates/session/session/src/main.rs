@@ -166,19 +166,6 @@ fn split_command(args: &[String]) -> (&[String], &[String]) {
     }
 }
 
-/// Whether the renderer's pipelines are warmed as well (`TILO_STARTUP_WARM_VELLO`).
-/// Opt-in: warming them takes the process-wide render context the desk's own
-/// renderer builds against, and measured slower than not warming it.
-#[cfg(target_os = "linux")]
-fn warms_renderer() -> bool {
-    std::env::var("TILO_STARTUP_WARM_VELLO").is_ok_and(|value| {
-        !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "off" | "false" | "no"
-        )
-    })
-}
-
 /// The machine's first boot: setup runs and the process stops there, before
 /// any GPU, font or session state is opened. What it returns is the code the
 /// process exits with when it stops here.
@@ -513,16 +500,13 @@ fn start(
     // asks of the identity directory waits on the disk.
     tilo_session::identity::install();
     tilo_startup_metrics::mark("identity-installed");
-    // The font system every renderer shares — and, when asked for, the
-    // renderer's pipelines — is built on a thread from here: the services,
-    // the desk build and the compositor's first frame run beside it, and what
-    // needs text finds it ready. Building it on this thread instead put font
-    // discovery and face mapping (the font index alone is a large read) in
-    // front of everything the session says to its first client.
-    // `TILO_STARTUP_WARM=off` measures what it is worth; the renderer stage
-    // stays opt-in (`TILO_STARTUP_WARM_VELLO=1`), as it holds the
-    // process-wide render context the desk's own renderer takes.
-    let _warmup = ui::warmup::spawn_warmup(!warms_renderer());
+    // The font system every renderer shares is built on a thread from here:
+    // the services, the desk build and the compositor's first frame run
+    // beside it, and what needs text finds it ready. Building it on this
+    // thread instead put font discovery and face mapping (the font index
+    // alone is a large read) in front of everything the session says to its
+    // first client.
+    let _warmup = ui::warmup::spawn_warmup();
     let wake = tilo_service::LoopWake::default();
     // The person's settings, read once here: the power policy they resolve is
     // part of them.
