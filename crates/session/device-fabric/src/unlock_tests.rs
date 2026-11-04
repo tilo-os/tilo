@@ -201,14 +201,6 @@ fn pending_code(frame: &SiblingFrame) -> String {
     }
 }
 
-fn outcomes(sibling: &mut UnlockSibling) -> Vec<UnlockOutcome> {
-    sibling
-        .drain_history()
-        .into_iter()
-        .map(|event| event.outcome)
-        .collect()
-}
-
 #[test]
 fn an_approved_request_releases_the_half_to_that_boot_only() {
     let cert = boot_cert(None);
@@ -235,17 +227,14 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
         )
         .unwrap();
     assert_eq!(boot.open(&request, &decided.frame), half());
-    assert_eq!(
-        outcomes(&mut service),
-        vec![
-            UnlockOutcome::Requested {
-                approval_code: code
-            },
-            UnlockOutcome::Approved {
-                approver: sibling()
-            },
-        ]
-    );
+    let record = decided
+        .record
+        .expect("an approval is the person's own signed answer");
+    assert_eq!(record.outcome, DecisionOutcome::Approve);
+    assert_eq!(record.decided_by, sibling());
+    assert_eq!(record.decided_at_ns, NOW + 1);
+    assert_eq!(record.boot_id, boot.id);
+    assert_eq!(record.slot, slot());
     // Decided once; a second decision finds nothing.
     assert!(
         service
@@ -264,26 +253,30 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
 #[test]
 fn a_denied_or_unanswered_request_releases_nothing() {
     let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let mut world = World::new(&cert);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert.clone(), 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
     let request = boot.answer(&challenge, None);
     service.request(&request, &boot.hello, &challenge.nonce, &world.view(), NOW);
     let digest = service.pending().next().unwrap().request_digest;
-    assert_eq!(
-        service
-            .decide(
-                &digest,
-                UnlockDecision::Deny {
-                    approver: sibling()
-                },
-                &world.view(),
-                NOW + 1
-            )
-            .map(|decided| decided.frame),
-        Some(SiblingFrame::Denied)
-    );
+    let decided = service
+        .decide(
+            &digest,
+            UnlockDecision::Deny {
+                approver: sibling(),
+            },
+            &world.view(),
+            NOW + 1,
+        )
+        .unwrap();
+    assert_eq!(decided.frame, SiblingFrame::Denied);
+    let record = decided
+        .record
+        .clone()
+        .expect("a denial is the person's own signed answer");
+    assert_eq!(record.outcome, DecisionOutcome::Deny);
+    world.kept(&decided);
 
     // Nobody answers the next boot's request, and its handler goes away with
     // the boot: once its window passes it is no longer pending, and nothing
@@ -312,16 +305,12 @@ fn a_denied_or_unanswered_request_releases_nothing() {
         SiblingFrame::Pending { .. }
     ));
     assert_eq!(service.pending().count(), 1, "the spent question is gone");
-    let history = outcomes(&mut service);
-    assert!(history.contains(&UnlockOutcome::Denied {
-        approver: Some(sibling())
-    }));
-    assert!(
-        !history
-            .iter()
-            .any(|outcome| matches!(outcome, UnlockOutcome::Denied { approver: None })),
-        "a question nobody saw is not a denial in the person's name"
+    assert_eq!(
+        world.decisions.len(),
+        1,
+        "the person's record holds the one answer they made; a question nobody saw is not a denial in their name"
     );
+    assert!(world.decisions.contains_key(&record.key()));
 }
 
 #[test]
@@ -345,7 +334,6 @@ fn replayed_exchanges_are_refused() {
         )
         .unwrap()
         .frame;
-    service.drain_history();
 
     // The recorded request answered again on the same challenge.
     assert_eq!(
@@ -388,11 +376,6 @@ fn replayed_exchanges_are_refused() {
         ),
         SiblingFrame::Refused(RefusalReason::ChallengeExpired)
     );
-    let refusals = outcomes(&mut service)
-        .into_iter()
-        .filter(|outcome| matches!(outcome, UnlockOutcome::Refused { .. }))
-        .count();
-    assert_eq!(refusals, 4, "every refusal is in the history");
 }
 
 #[test]
@@ -408,12 +391,6 @@ fn requests_are_rate_limited_per_device() {
     assert_eq!(
         service.hello(&boot.hello, &world.view(), [99; 32], NOW + 1),
         SiblingFrame::Refused(RefusalReason::RateLimited)
-    );
-    assert_eq!(
-        outcomes(&mut service).last(),
-        Some(&UnlockOutcome::Refused {
-            reason: RefusalReason::RateLimited
-        })
     );
     // The window moves on.
     challenge_of(service.hello(&boot.hello, &world.view(), [98; 32], NOW + RATE_WINDOW_NS));
@@ -454,8 +431,12 @@ fn a_device_removed_from_the_fleet_is_refused() {
         service.hello(&boot.hello, &world.view(), [10; 32], NOW),
         SiblingFrame::Refused(RefusalReason::Revoked)
     );
-    service.remove_device(device(), NOW);
-    assert_eq!(outcomes(&mut service).last(), Some(&UnlockOutcome::Removed));
+    service.remove_device(device());
+    assert_eq!(
+        service.pending().count(),
+        0,
+        "nothing is kept waiting for a device that left the fleet"
+    );
     // With its enrolment gone too, nothing is held for it at all.
     world.enrolments.clear();
     assert_eq!(
@@ -603,8 +584,7 @@ fn auto_approval_needs_the_owner_setting_and_an_attested_boot_chain() {
         SiblingFrame::Pending { .. }
     ));
 
-    // Everything in place: released without a prompt, and logged.
-    service.drain_history();
+    // Everything in place: released without a prompt.
     let boot = Boot::new(cert, 11);
     let challenge =
         challenge_of(service.hello(&boot.hello, &world.view(), [5; 32], NOW + RATE_WINDOW_NS));
@@ -617,10 +597,6 @@ fn auto_approval_needs_the_owner_setting_and_an_attested_boot_chain() {
         NOW + RATE_WINDOW_NS,
     );
     assert_eq!(boot.open(&request, &frame), half());
-    assert_eq!(
-        outcomes(&mut service),
-        vec![UnlockOutcome::AutoApproved { boot_chain: chain }]
-    );
 }
 
 /// A marshalled TPM2 quote over `pcrs`, as a TPM would produce it.
@@ -670,7 +646,6 @@ fn a_denied_boot_hears_it_again_without_a_second_question() {
         .unwrap();
     assert_eq!(decided.frame, SiblingFrame::Denied);
     world.kept(&decided);
-    service.drain_history();
 
     // The boot's stream went away before the answer reached it: it comes back
     // with a fresh challenge and its own new key, and hears the same answer.
@@ -693,9 +668,10 @@ fn a_denied_boot_hears_it_again_without_a_second_question() {
         0,
         "nobody is asked a second time"
     );
-    assert!(
-        outcomes(&mut service).is_empty(),
-        "the person's ledger holds the one denial they made"
+    assert_eq!(
+        world.decisions.len(),
+        1,
+        "the person's record holds the one answer they made"
     );
 
     // Once the answer no longer holds, the person is asked again.
@@ -736,7 +712,6 @@ fn an_allowed_boot_that_reconnects_gets_a_half_for_its_own_key() {
         .unwrap();
     assert_eq!(boot.open(&request, &decided.frame), half());
     world.kept(&decided);
-    service.drain_history();
 
     // The boot that asked never read its release: its next attempt draws a
     // new key, and the half is sealed to that one.
@@ -757,7 +732,11 @@ fn an_allowed_boot_that_reconnects_gets_a_half_for_its_own_key() {
         0,
         "nobody is asked a second time"
     );
-    assert!(outcomes(&mut service).is_empty());
+    assert_eq!(
+        world.decisions.len(),
+        1,
+        "releasing the same boot again adds no second answer"
+    );
 }
 
 #[test]

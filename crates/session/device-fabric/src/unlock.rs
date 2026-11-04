@@ -20,15 +20,13 @@
 //!   on auto-approval for exactly this device and the request carries a TPM
 //!   quote of a boot chain the owner accepted.
 //!
-//! The half then travels sealed to the request's ephemeral key. Every
-//! request, approval, denial and refusal becomes an [`UnlockEvent`] for the
-//! owner's activity history.
-//!
-//! The owner's answer itself is a fact ([`UnlockDecisionRecord`]): the device
-//! that answered keeps it in its own fabric snapshot for as long as it holds
+//! The half then travels sealed to the request's ephemeral key. The owner's
+//! answer itself is a fact ([`UnlockDecisionRecord`]): the device that
+//! answered keeps it in its own fabric snapshot for as long as it holds
 //! ([`DECISION_LIFETIME_NS`]), so a boot whose stream went away before the
 //! answer reached it hears the same answer from any of the person's devices
-//! instead of asking them all over again.
+//! instead of asking them all over again. Those signed answers are what the
+//! owner's activity history shows, on every one of their devices.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -384,32 +382,6 @@ pub struct UnlockView<'a> {
     pub secret_sync: Option<&'a SecretKey>,
 }
 
-/// One entry for the owner's activity history.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnlockEvent {
-    pub at_ns: u64,
-    pub device_public_key: [u8; 32],
-    pub slot: Option<SlotId>,
-    pub boot_id: Option<BootId>,
-    pub outcome: UnlockOutcome,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UnlockOutcome {
-    /// A request is waiting for the owner; the code is on the boot screen.
-    Requested { approval_code: String },
-    /// The owner approved on `approver`, and the half was released.
-    Approved { approver: [u8; 32] },
-    /// Released without asking: auto-approval and an attested boot chain.
-    AutoApproved { boot_chain: [u8; 32] },
-    /// The owner declined on `approver`, or nobody decided in time (`None`).
-    Denied { approver: Option<[u8; 32]> },
-    /// Refused before anyone was asked.
-    Refused { reason: RefusalReason },
-    /// The device left the fleet; its halves were deleted.
-    Removed,
-}
-
 /// A request waiting for the owner's decision on `device.unlock`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingUnlock {
@@ -457,7 +429,6 @@ pub struct UnlockSibling {
     served_order: VecDeque<([u8; 32], BootId)>,
     attempts: BTreeMap<[u8; 32], VecDeque<u64>>,
     pending: BTreeMap<[u8; 32], PendingUnlock>,
-    history: Vec<UnlockEvent>,
 }
 
 impl UnlockSibling {
@@ -471,7 +442,6 @@ impl UnlockSibling {
             served_order: VecDeque::new(),
             attempts: BTreeMap::new(),
             pending: BTreeMap::new(),
-            history: Vec::new(),
         }
     }
 
@@ -484,9 +454,6 @@ impl UnlockSibling {
         nonce: [u8; 32],
         now_ns: u64,
     ) -> SiblingFrame {
-        let cert = &hello.boot_cert;
-        let device = cert.device_public_key;
-        let slot = Some(cert.slot);
         match self.admit(hello, view, now_ns) {
             Ok(enrolment) => {
                 let challenge = Challenge {
@@ -510,7 +477,7 @@ impl UnlockSibling {
                 );
                 SiblingFrame::Challenge(challenge)
             }
-            Err(reason) => self.refuse(device, slot, None, reason, now_ns),
+            Err(reason) => refuse(reason),
         }
     }
 
@@ -580,15 +547,7 @@ impl UnlockSibling {
         let (pending, enrolment) =
             match self.check_request(request, cert, challenge_nonce, view, now_ns) {
                 Ok(checked) => checked,
-                Err(reason) => {
-                    return self.refuse(
-                        device,
-                        Some(request.slot),
-                        Some(request.boot_id),
-                        reason,
-                        now_ns,
-                    );
-                }
+                Err(reason) => return refuse(reason),
             };
         // The person already answered this boot: it hears that answer again,
         // with a half sealed to this request's own key where they allowed
@@ -600,49 +559,19 @@ impl UnlockSibling {
             .served
             .contains(&(pending.device_public_key, pending.boot_id))
         {
-            return self.refuse(
-                device,
-                Some(pending.slot),
-                Some(pending.boot_id),
-                RefusalReason::BootAlreadyServed,
-                now_ns,
-            );
+            return refuse(RefusalReason::BootAlreadyServed);
         }
         self.forget_unanswered(now_ns);
         if self.pending.len() >= MAX_PENDING {
-            return self.refuse(
-                device,
-                Some(pending.slot),
-                Some(pending.boot_id),
-                RefusalReason::RateLimited,
-                now_ns,
-            );
+            return refuse(RefusalReason::RateLimited);
         }
-        if let Some(chain) = auto_approved(request, cert, self.sibling_public_key, view) {
+        if auto_approved(request, cert, self.sibling_public_key, view).is_some() {
             let frame = release(&pending, &enrolment, view);
-            match &frame {
-                SiblingFrame::Released(_) => {
-                    self.mark_served(device, request.boot_id);
-                    self.log(
-                        &pending,
-                        UnlockOutcome::AutoApproved { boot_chain: chain },
-                        now_ns,
-                    );
-                }
-                SiblingFrame::Refused(reason) => {
-                    self.log(&pending, UnlockOutcome::Refused { reason: *reason }, now_ns);
-                }
-                _ => {}
+            if matches!(frame, SiblingFrame::Released(_)) {
+                self.mark_served(device, request.boot_id);
             }
             return frame;
         }
-        self.log(
-            &pending,
-            UnlockOutcome::Requested {
-                approval_code: pending.approval_code.clone(),
-            },
-            now_ns,
-        );
         let code = pending.approval_code.clone();
         self.pending.insert(pending.request_digest, pending);
         SiblingFrame::Pending {
@@ -756,7 +685,6 @@ impl UnlockSibling {
     ) -> Option<Decided> {
         let pending = self.pending.remove(request_digest)?;
         if pending.expires_at_ns <= now_ns {
-            self.log(&pending, UnlockOutcome::Denied { approver: None }, now_ns);
             return Some(Decided {
                 frame: SiblingFrame::Denied,
                 record: None,
@@ -764,13 +692,6 @@ impl UnlockSibling {
         }
         let approver = match decision {
             UnlockDecision::Deny { approver } => {
-                self.log(
-                    &pending,
-                    UnlockOutcome::Denied {
-                        approver: Some(approver),
-                    },
-                    now_ns,
-                );
                 return Some(Decided {
                     frame: SiblingFrame::Denied,
                     record: Some(decision_record(
@@ -798,17 +719,12 @@ impl UnlockSibling {
         let record = match &frame {
             SiblingFrame::Released(_) => {
                 self.mark_served(pending.device_public_key, pending.boot_id);
-                self.log(&pending, UnlockOutcome::Approved { approver }, now_ns);
                 Some(decision_record(
                     &pending,
                     DecisionOutcome::Approve,
                     approver,
                     now_ns,
                 ))
-            }
-            SiblingFrame::Refused(reason) => {
-                self.log(&pending, UnlockOutcome::Refused { reason: *reason }, now_ns);
-                None
             }
             _ => None,
         };
@@ -817,22 +733,10 @@ impl UnlockSibling {
 
     /// The device left the fleet: forget everything about it. The fabric
     /// drops its enrolments (and with them the sealed halves) separately.
-    pub fn remove_device(&mut self, device_public_key: [u8; 32], now_ns: u64) {
+    pub fn remove_device(&mut self, device_public_key: [u8; 32]) {
         self.pending
             .retain(|_, pending| pending.device_public_key != device_public_key);
         self.attempts.remove(&device_public_key);
-        self.history.push(UnlockEvent {
-            at_ns: now_ns,
-            device_public_key,
-            slot: None,
-            boot_id: None,
-            outcome: UnlockOutcome::Removed,
-        });
-    }
-
-    /// Events for the owner's activity history since the last drain.
-    pub fn drain_history(&mut self) -> Vec<UnlockEvent> {
-        std::mem::take(&mut self.history)
     }
 
     fn mark_served(&mut self, device: [u8; 32], boot_id: BootId) {
@@ -844,34 +748,11 @@ impl UnlockSibling {
         self.served_order.push_back((device, boot_id));
         self.served.insert((device, boot_id));
     }
+}
 
-    fn refuse(
-        &mut self,
-        device: [u8; 32],
-        slot: Option<SlotId>,
-        boot_id: Option<BootId>,
-        reason: RefusalReason,
-        now_ns: u64,
-    ) -> SiblingFrame {
-        self.history.push(UnlockEvent {
-            at_ns: now_ns,
-            device_public_key: device,
-            slot,
-            boot_id,
-            outcome: UnlockOutcome::Refused { reason },
-        });
-        SiblingFrame::Refused(reason)
-    }
-
-    fn log(&mut self, pending: &PendingUnlock, outcome: UnlockOutcome, now_ns: u64) {
-        self.history.push(UnlockEvent {
-            at_ns: now_ns,
-            device_public_key: pending.device_public_key,
-            slot: Some(pending.slot),
-            boot_id: Some(pending.boot_id),
-            outcome,
-        });
-    }
+/// The answer to a request nobody will be asked about.
+fn refuse(reason: RefusalReason) -> SiblingFrame {
+    SiblingFrame::Refused(reason)
 }
 
 /// The accepted boot chain when the owner auto-approves this device and the

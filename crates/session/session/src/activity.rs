@@ -40,6 +40,7 @@ use tilo_desktop_surface::activity::{
 };
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
+use tilo_device_fabric::link::SharedLink;
 use tilo_files::native::Watched;
 use tilo_lock::MutexRecover as _;
 use ui::record::RecordCheckout;
@@ -47,6 +48,7 @@ use ui::record::RecordCheckout;
 use crate::activity_provider::ActivityWire;
 use crate::desk_doc::{DeskDoc, Kept};
 use crate::lists::Lists;
+use crate::unlock_history::UnlockHistory;
 
 /// What this device keeps of its own view of the workspaces' activity: the
 /// changes it has seen, when it left a workspace, and the morning sources it
@@ -72,6 +74,9 @@ struct Inner {
     /// The desk's document, whose changes are its history, and where it is
     /// kept.
     desk: DeskDoc,
+    /// What the person's devices answered when one of them asked to be
+    /// unlocked, as their own record.
+    unlock: UnlockHistory,
     /// Who sits here.
     person: String,
     host: Rc<NativeActivityHost>,
@@ -138,6 +143,7 @@ impl Activity {
         let requests = activity_requests(Arc::clone(&woken));
         Self(Rc::new(Inner {
             desk: DeskDoc::load(state, old_desk, &person),
+            unlock: UnlockHistory::new(state, &person),
             host: Rc::new(NativeActivityHost {
                 person: person.clone(),
                 maps: HistoryMaps::load(state),
@@ -178,6 +184,19 @@ impl Activity {
     /// and is told when it served something new.
     pub(crate) fn serve_apps(&self, wire: Arc<ActivityWire>) {
         *self.0.wire.borrow_mut() = Some(wire);
+    }
+
+    /// Take part in `link`'s fabric: what the person's devices answer each
+    /// other about unlocking a disk is kept in their own record here.
+    pub(crate) fn watch_fabric(&self, link: SharedLink) {
+        self.0.unlock.watch(link);
+    }
+
+    /// Write what the person's fabric holds now into their own record,
+    /// whether or not a window shows the history: an answer stands for
+    /// minutes, so it is written while it is there to be read.
+    pub(crate) fn keep_unlock(&self) {
+        self.0.unlock.absorb();
     }
 
     /// Tell the apps following the activity that what they read may have
@@ -356,19 +375,27 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         workspace: WorkspaceSlot,
     ) -> Vec<DetachedRecordHistory> {
-        let Some(workspace_id) = Self::id_of(tree, workspace) else {
-            return Vec::new();
-        };
-        let Some(watch) = self.records_of(workspace_id) else {
-            return Vec::new();
-        };
-        let held = tree.workspace_records_held.get(&workspace_id);
-        let records = watch.get();
+        let mut records = Vec::new();
+        if let Some(workspace_id) = Self::id_of(tree, workspace)
+            && let Some(watch) = self.records_of(workspace_id)
+        {
+            let held = tree.workspace_records_held.get(&workspace_id);
+            let read = watch.get();
+            records.extend(
+                read.iter()
+                    .filter(|record| {
+                        held.is_none_or(|held| held.contains_key(record.checkout.id.as_str()))
+                    })
+                    .cloned(),
+            );
+        }
+        // What the person's devices answered when one of them asked to be
+        // unlocked is theirs and not any one workspace's: it reads the same
+        // in every workspace's history.
+        if let Some(record) = self.0.unlock.history() {
+            records.push(record);
+        }
         records
-            .iter()
-            .filter(|record| held.is_none_or(|held| held.contains_key(record.checkout.id.as_str())))
-            .cloned()
-            .collect()
     }
 
     fn host(&self) -> Rc<dyn ActivityHost> {
@@ -388,12 +415,22 @@ impl HistorySource for Activity {
                 authors.register_local_identity(actor);
             }
         }
+        // The devices that answered a boot are named as their own snapshots
+        // name them, and this one of them is the person here.
+        history_log::register_authors(authors, &self.0.unlock.authors(), &|_| None);
+        if let Some(actor) = self.0.unlock.local_actor() {
+            authors.register_local_identity(&actor);
+        }
     }
 
     fn revision(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
+        // What the fabric holds now is written before the record is read: a
+        // pass that hears an answer is the pass that lists it.
+        self.0.unlock.absorb();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.0.desk.heads().hash(&mut hasher);
+        self.0.unlock.heads().hash(&mut hasher);
         self.0
             .records_moved
             .load(Ordering::Acquire)
@@ -409,6 +446,11 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         target: &ui::HistoryResourceTarget,
     ) -> Option<tilo_desktop_model::TabId> {
+        // No app holds the person's own record of what their devices
+        // answered: its rows are read in the history, and opened nowhere.
+        if self.0.unlock.holds(&target.id) {
+            return None;
+        }
         let workspace_id = tree.active_workspace().map(Workspace::id)?;
         self.0
             .openings

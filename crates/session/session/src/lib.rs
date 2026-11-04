@@ -153,6 +153,7 @@ mod task_programs;
 pub mod termination;
 pub mod test_control;
 pub mod unlock;
+mod unlock_history;
 mod update_finish;
 mod wallpapers;
 mod wifi_continuity;
@@ -595,6 +596,7 @@ impl Shared {
         for (workspace, target) in self.activity.take_openings() {
             self.open_from_history(&workspace, &target);
         }
+        self.activity.keep_unlock();
         self.activity.tell_followers();
         // What the history says its changes were, and the names over the runs
         // of them, are written into the desk's document as models answer; the
@@ -1294,6 +1296,12 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
+        // The person's own record of what their devices answered when one of
+        // them asked to be unlocked reads their fabric: what it carries is
+        // written there as their history.
+        if let Some(link) = &fabric {
+            activity.watch_fabric(Arc::clone(link));
+        }
         // Nearby Send: one engine for every file that leaves this device for
         // another of the person's, whether a screenshot the studio sends or a
         // file Files hands over. It stages into this machine's own spool, and
@@ -2384,6 +2392,13 @@ impl Session {
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement
+    }
+
+    /// What the windows ask of the workspace's activity and follow, as this
+    /// session serves it: the same door the desk's own pane reads through.
+    #[must_use]
+    pub fn activity(&self) -> tilo_desktop_surface::session::ActivityRequests {
+        self.shared.activity.requests()
     }
 
     /// The resource the text `text` typed on the canvas places: the top

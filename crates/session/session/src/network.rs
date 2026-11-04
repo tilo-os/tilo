@@ -20,7 +20,7 @@ mod approvers;
 mod unlock;
 
 pub(crate) use approvers::{AgentQuestion, KIND as AGENT_QUESTION};
-pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion};
+pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name};
 
 /// Install the session's services for the actor started from now on: the
 /// person's other devices' disk unlock ([`unlock`]), the questions their

@@ -270,3 +270,11 @@ session-lock-screen = Lock screen
 task-programs-resource = Task programs
 task-programs-run = Run a program
 task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.
+
+## What the person's own devices answered when one of them asked to be
+## unlocked after a reboot, as their activity history lists it: the package
+## the rows stand under, and what an answer says.
+unlock-history-app = Disk unlock
+unlock-approved = Approved unlocking { $item }
+unlock-denied = Declined to unlock { $item }
+unlock-history-unknown-device = a device this computer cannot name

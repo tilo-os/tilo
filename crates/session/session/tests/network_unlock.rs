@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
+use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
 use tilo_device_fabric::link::{FabricLink as _, SharedLink};
 use tilo_device_fabric::unlock::{UnlockEnrolment, UnlockFabricState};
@@ -141,14 +142,17 @@ fn seal_key(person: &Person) -> tilo_seal::PublicKey {
 
 /// The desk's session, the phone's, and the boot early boot plays.
 struct Devices {
-    _person: Person,
+    person: Person,
     half: Half,
     cert: BootKeyCert,
     boot_key: ed25519_dalek::SigningKey,
     questions: Questions,
     desk: Rc<Client>,
-    phone: Client,
+    phone: Rc<Client>,
     session: Session,
+    /// The person's other device, at its own desk: what it reads of the
+    /// answer is the person's, as it is here.
+    phone_session: Session,
     runtime: tokio::runtime::Runtime,
     boot_endpoint: Endpoint,
 }
@@ -211,23 +215,25 @@ impl Devices {
         let desk_addr = desk.endpoint_addr();
         // The phone's session, on its own key, publishing what its record
         // holds.
-        let phone = Client::start(
-            Some(HostIdentity {
-                device_cert: person.phone_cert.clone(),
-                device_signing_key: person.phone_key.clone(),
-                workspace_device_certs: std::collections::HashMap::default(),
-                workspace_revocations: std::collections::HashMap::default(),
-                identity_paths: None,
-            }),
-            None,
-            OwnPresence::default(),
-            Vec::new(),
-            Continuity::default(),
-            Arc::new(|| {}),
-            None,
-            Vec::new(),
-        )
-        .expect("the phone's endpoint binds");
+        let phone = Rc::new(
+            Client::start(
+                Some(HostIdentity {
+                    device_cert: person.phone_cert.clone(),
+                    device_signing_key: person.phone_key.clone(),
+                    workspace_device_certs: std::collections::HashMap::default(),
+                    workspace_revocations: std::collections::HashMap::default(),
+                    identity_paths: None,
+                }),
+                None,
+                OwnPresence::default(),
+                Vec::new(),
+                Continuity::default(),
+                Arc::new(|| {}),
+                None,
+                Vec::new(),
+            )
+            .expect("the phone's endpoint binds"),
+        );
         phone.connect(desk_addr);
         let session = Session::headless(
             Options {
@@ -240,6 +246,18 @@ impl Devices {
             &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         )
         .expect("session");
+        // The same person on their other device: its own desk, its own
+        // endpoint, and what the person here answered carried to it.
+        let phone_session = Session::headless(
+            Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: false,
+                sync: Some(Rc::clone(&phone)),
+                ..Options::default()
+            },
+            &[OutputConfig::new("HEADLESS-2", 1280, 720)],
+        )
+        .expect("the phone's session");
         phone
             .fabric()
             .expect("the phone's session keeps a fabric")
@@ -255,7 +273,7 @@ impl Devices {
                 .expect("the boot's endpoint binds")
         });
         Self {
-            _person: person,
+            person,
             half,
             cert,
             boot_key,
@@ -263,6 +281,7 @@ impl Devices {
             desk,
             phone,
             session,
+            phone_session,
             runtime,
             boot_endpoint,
         }
@@ -282,6 +301,9 @@ impl Devices {
             self.session
                 .step(Duration::from_millis(1))
                 .expect("the session steps");
+            self.phone_session
+                .step(Duration::from_millis(1))
+                .expect("the phone's session steps");
             self.phone.follow();
             if done(self) {
                 return;
@@ -517,6 +539,151 @@ fn a_boot_that_went_away_takes_its_question_with_it() {
         devices.questions.pending().is_empty(),
         "nobody is left waiting for a boot that stopped waiting"
     );
+}
+
+/// An answer is the person's own on every device of theirs: the desk answers
+/// the phone's boot, and the phone's own activity history lists that answer —
+/// what was unlocked, by which device, and when.
+#[test]
+fn an_answer_on_one_device_reads_in_the_others_history() {
+    let mut devices = Devices::new();
+    devices.enrolled();
+    let half = devices.half.clone();
+
+    let mut boot = devices.dial(BOOT, tilo_seal::SecretKey::generate().expect("a key"));
+    assert!(matches!(boot.read(), Some(SiblingFrame::Pending { .. })));
+    let shown = devices.questioned();
+    assert!(devices.questions.answer(&shown.handle, Answer::default()));
+    let Some(frame) = boot.read() else {
+        panic!("the person released the half");
+    };
+    assert_eq!(boot.open(&frame), half);
+
+    // The answer the desk made, as its own fabric carries it to the phone:
+    // signed by the desk, for the boot that asked.
+    let decided = devices
+        .desk_link()
+        .device_fabric()
+        .snapshots()
+        .values()
+        .find_map(|snapshot| snapshot.unlock.decisions.first().cloned())
+        .expect("the desk keeps the answer it made");
+    let (desk, desk_label) = devices
+        .desk_link()
+        .local_device_fabric_identity()
+        .expect("this device is certified");
+    assert_eq!(hex::encode(decided.decided_by), desk.as_str());
+
+    // The phone reads its own history, as the Activity app does there.
+    let workspace = devices.phone_session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|held| held.id().to_string())
+            .expect("the phone's desk shows a workspace")
+    });
+    let requests = devices.phone_session.activity();
+    let caller = tilo_actions::remote::Caller::local_person(&devices.person.identity)
+        .in_workspace(workspace);
+    let feed_follow = tilo_actions::InvocationId::new();
+    requests
+        .follow(
+            &caller,
+            feed_follow,
+            wire::FEED,
+            feed_arguments(&wire::FeedQuery::default()),
+        )
+        .expect("the phone follows its history");
+    // The answer reaches the phone's fabric, as it reaches every device of
+    // the person's; the window's next read draws the frame that lists it.
+    devices.carry(|devices| {
+        devices.phone.fabric().is_some_and(|link| {
+            link.device_fabric()
+                .snapshots()
+                .values()
+                .any(|snapshot| !snapshot.unlock.decisions.is_empty())
+        })
+    });
+    requests
+        .follow(
+            &caller,
+            tilo_actions::InvocationId::new(),
+            wire::FEED,
+            feed_arguments(&wire::FeedQuery::default()),
+        )
+        .expect("the phone reads its history again");
+    devices.carry(|_| {
+        served::<wire::Feed>(&requests, &feed_follow).is_some_and(|feed| !feed.entries.is_empty())
+    });
+    let feed = served::<wire::Feed>(&requests, &feed_follow).expect("the history is read");
+    let entry = feed
+        .entries
+        .iter()
+        .find(|entry| entry.app.as_deref() == Some("Disk unlock"))
+        .expect("the answer is listed in the history");
+
+    // What the person answered, and to which boot's disk.
+    assert_eq!(entry.summary, "Approved unlocking The phone");
+    // An answer brings facts with it: the boot, the slot and the outcome.
+    assert_eq!(entry.kind, wire::Kind::Details);
+    // By which of their devices, named as its own presence names it.
+    assert_eq!(entry.author.name, desk_label);
+    assert_eq!(
+        entry.author.relation,
+        wire::Relation::Person,
+        "another device of the person answered, not this one"
+    );
+    // When: the moment the answer was made, not when it was read here.
+    assert_eq!(
+        entry.at_ms,
+        i64::try_from(decided.decided_at_ns / 1_000_000_000).expect("seconds") * 1_000
+    );
+
+    // The answer's own facts: the boot's id, the slot it asked for and the
+    // outcome, as the person's record keeps them.
+    let detail_follow = tilo_actions::InvocationId::new();
+    requests
+        .follow(
+            &caller,
+            detail_follow,
+            wire::DETAIL,
+            feed_arguments(&wire::DetailQuery {
+                range: wire::Range::one(&entry.id),
+                compare: false,
+            }),
+        )
+        .expect("the phone asks what the answer was");
+    devices.carry(|_| served::<wire::Detail>(&requests, &detail_follow).is_some());
+    let detail = served::<wire::Detail>(&requests, &detail_follow).expect("the answer is read");
+    let boot_fact = format!("boot: {}", hex::encode(decided.boot_id.0));
+    assert!(
+        detail.provenance.contains(&boot_fact),
+        "the boot that asked is in the answer's facts: {}",
+        detail.provenance
+    );
+    assert!(
+        detail.provenance.contains("outcome: approved"),
+        "the outcome is in the answer's facts: {}",
+        detail.provenance
+    );
+    assert_eq!(detail.title, "Approved unlocking The phone");
+}
+
+/// `query` as an action's arguments.
+fn feed_arguments(query: &impl serde::Serialize) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::to_value(query)
+        .expect("a query")
+        .as_object()
+        .cloned()
+        .expect("a query object")
+}
+
+/// What `requests` last read for `invocation`, once it read it.
+fn served<T: serde::de::DeserializeOwned>(
+    requests: &tilo_desktop_surface::session::ActivityRequests,
+    invocation: &tilo_actions::InvocationId,
+) -> Option<T> {
+    let read = requests.served(invocation)?;
+    let value = read.ok()?;
+    serde_json::from_value(value).ok()
 }
 
 /// The desk's fleet key: the sibling the boot is answered by.

@@ -525,8 +525,9 @@ fn boot_cert_digest(cert: &BootKeyCert) -> Option<[u8; 32]> {
     cert.signing_digest().ok()
 }
 
-/// The slot as the boot screen names it.
-fn slot_name(slot: &SlotId) -> String {
+/// The slot as the boot screen names it, and as the person's own record of
+/// their answers keeps it.
+pub(crate) fn slot_name(slot: &SlotId) -> String {
     format!("{}:{}", hex::encode(slot.volume_uuid), slot.keyslot)
 }
 
