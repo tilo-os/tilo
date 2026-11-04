@@ -21390,7 +21390,6 @@ dependencies = [
  "tilo-liveness",
  "tilo-lock",
  "tilo-media",
- "tilo-messaging",
  "tilo-model-client",
  "tilo-native-media",
  "tilo-nearby-service",
