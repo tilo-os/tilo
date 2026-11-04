@@ -987,7 +987,6 @@ impl LoungeHost {
                     cert: self.page_device.clone(),
                     host_cert: self.host_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
-                    watching: false,
                     background: false,
                 },
                 Arc::new(self.page_key.clone()) as Arc<dyn tilo_browser_peer::DeviceSigner>,

@@ -561,7 +561,7 @@ function spectating(spectateReply) {
   const calls = {posted: [], connected: []};
   // A real clock reading, beyond 2^53: it must reach the runtime unrounded.
   const certificate = '{"user_public_key":[' + Array(32).fill(0x5e).join(',') + '],"device_public_key":[' + Array(32).fill(1).join(',')
-    + '],"device_label":"Spectator","issued_at_ns":1791962530023125779}';
+    + '],"device_label":"Visitor","issued_at_ns":1791962530023125779}';
   return {
     calls,
     certificate,
@@ -577,7 +577,7 @@ function spectating(spectateReply) {
   };
 }
 
-test('a spectator certifies an in-memory device key and connects without a person or storage', async () => {
+test('a visiting page certifies an in-memory device key and connects without a person or storage', async () => {
   const {calls, certificate, options} = spectating();
   await spectate(options);
   assert.equal(calls.posted[0].url, 'https://rooms.example/spectate');
@@ -589,7 +589,6 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal(connected.origin, 'https://rooms.example');
   assert.equal(connected.workspace, 'WORKSPACE');
   assert.equal(connected.userPublicKey, '5e'.repeat(32));
-  assert.equal(connected.watching, true, 'the page only watches');
   assert.equal(Array.from(connected.custody.publicKey, b => b.toString(16).padStart(2, '0')).join(''), devicePublicKey);
   assert.equal(connected.deviceCertificate, `{"cert":${certificate},"hostCert":{"device_public_key":[${Array(32).fill(9).join(',')}]}}`);
   assert.match(connected.deviceCertificate, /"issued_at_ns":1791962530023125779[,}]/);
@@ -599,7 +598,7 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal(await connected.store.get('k'), 'v');
 });
 
-test("the host's certificate reaches a spectator's session byte for byte, its nanosecond timestamps intact", async () => {
+test("the host's certificate reaches a visiting page's session byte for byte, its nanosecond timestamps intact", async () => {
   const nanos = '1792023733547123457';
   const certificate = `{"user_public_key":[${Array(32).fill(94)}],"device_public_key":[1],"issued_at_ns":${nanos}}`;
   const {calls, options} = spectating({body: {certificate, origin: 'https://rooms.example', room: 'WORKSPACE'}});
@@ -609,7 +608,7 @@ test("the host's certificate reaches a spectator's session byte for byte, its na
   assert.equal(calls.connected[0].userPublicKey, '5e'.repeat(32));
 });
 
-test('above the spectator cap the embed is told the workspace is full', async () => {
+test('above the visitor cap the embed is told the workspace is full', async () => {
   const {calls, options} = spectating({status: 503, headers: {'retry-after': '30'}, body: {error: 'too many people are watching'}});
   await assert.rejects(spectate(options), error => error instanceof HostAdmissionError && error.code === 'full' && error.retryAfter === 30);
   assert.equal(calls.connected.length, 0);
@@ -834,7 +833,7 @@ test('the person switches between the home and the workspaces they entered, neve
   ]);
 });
 
-test('a watching page joins only once the door has a seat, asking without taking one', async () => {
+test('a page waiting for a seat joins only once the door has one, asking without taking one', async () => {
   const asked = [], timers = [];
   const answers = [{open: false}, {open: false}, {open: true}];
   let joined = 0;
@@ -854,7 +853,7 @@ test('a watching page joins only once the door has a seat, asking without taking
   assert.equal(timers.length, 3, 'and asks no more after');
 });
 
-test('a watching page that stops asking never joins', async () => {
+test('a page that stops asking for a seat never joins', async () => {
   const timers = [];
   let joined = 0;
   const stop = joinWhenSeated({

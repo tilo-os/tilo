@@ -96,7 +96,6 @@ profile-photo-remove = Remove picture
 profile-name = Your name
 profile-name-placeholder = Your name
 profile-name-hint = How everyone here sees you
-profile-watching-hint = You’re watching. Nobody here sees you
 profile-add-your-name = Add your name
 profile-section-identity = Your identity
 profile-section-devices = Devices
@@ -1039,11 +1038,6 @@ people-panel-here-watching = { $count ->
     [one] You and 1 other
    *[other] You and { $count } others
 }, { $watching } watching
-people-panel-here-spectating = { $count ->
-    [0] Nobody here
-    [one] 1 person here
-   *[other] { $count } people here
-}, { $watching } watching, you among them
 people-panel-section-people = People
 people-panel-section-agents = Agents
 people-panel-section-devices = Your devices

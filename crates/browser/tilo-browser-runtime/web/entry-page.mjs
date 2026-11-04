@@ -6,9 +6,10 @@
  * about what the link opens.
  *
  * `?embed=1` is the page inside another site (the homepage's live
- * preview): a workspace whose host has an admission door is first watched
- * read-only as its spectator, so scrolling past mints no member, and the
- * visitor joins as themselves on their first click, tap or key press. A
+ * preview): a workspace whose host has an admission door is first visited as
+ * the workspace's visitor person, a member with the role its host gives
+ * visitors, so scrolling past stores nothing, and the visitor joins as
+ * themselves on their first click, tap or key press. A
  * visitor who already joined that host comes back at once. The embedding page,
  * if it is the web host's embedder (`entry.json` `embedder`), hears
  * `{type: 'tilo-embed', state}`: `watching`, `joined`, or `full` /
@@ -42,7 +43,7 @@ import {
   settleFailedWorkspace, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
-/** Set for the one reload that turns an embed's spectator into a member. */
+/** Set for the one reload that joins an embed's visiting page as the person. */
 const JOIN_NOW = 'tilo-embed-join';
 
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
@@ -1590,7 +1591,7 @@ function joinByReload() {
 /**
  * What a visitor let in through a host's door sees beyond the workspace,
  * said as the door's presence has it (`visitLine`): as a watching embed, the
- * invitation to join on the first gesture (captured, so the spectator
+ * invitation to join on the first gesture (captured, so the visiting
  * surface never sees it), unless only invitees get in or nobody joins for
  * now; without a seat, that they watch live and are let in when one frees
  * up (asked after the host's Retry-After, with jitter so a full workspace is not

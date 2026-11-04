@@ -334,7 +334,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       ...(linkOffer ? {linkOffer} : {}),
-      // The workspace service's spectator count, for the desktop's "watching".
+      // The workspace service's watching count, for the desktop's people panel.
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
       ...invite, ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});

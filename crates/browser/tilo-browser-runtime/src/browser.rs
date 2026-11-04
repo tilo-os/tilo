@@ -1361,8 +1361,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let definition = definition(config.app.as_deref())?;
     let profile = crate::storage::load(&config.profile, &config.device, &hydrated)?;
-    // Through a peer kept in no profile (a watching page's), the mount keeps
-    // its records where the peer keeps what the workspace delivers: in the page.
+    // Through a peer kept in no profile (a page's), the mount keeps its
+    // records where the peer keeps what the workspace delivers: in the page.
     let store = config
         .peer
         .and_then(crate::replication::page_store)

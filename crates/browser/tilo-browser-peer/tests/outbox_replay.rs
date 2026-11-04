@@ -101,7 +101,6 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
             cert: browser.cert.clone(),
             host_cert: host_device.cert.clone(),
             revocations: RevocationList::new(),
-            watching: false,
             background: false,
         },
         Arc::new(browser.key.clone()),

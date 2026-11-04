@@ -655,7 +655,6 @@ impl Widget for Panel {
                 watching: 0,
                 waved: &waved,
                 waved_until,
-                spectating: false,
             };
             let cursor = shown.cursor;
             shown

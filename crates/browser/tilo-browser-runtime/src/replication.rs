@@ -397,7 +397,7 @@ pub(crate) enum Kept {
     /// In the person's profile, with everything else of theirs.
     InProfile,
     /// Only in the page, for as long as it is open: a peer kept in no
-    /// profile (a watching page's). Its mounts keep their records there too.
+    /// profile (a page's). Its mounts keep their records there too.
     InPage,
 }
 
@@ -475,7 +475,6 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             shared
                 .own_layout
                 .set(joined.desktop_sending == DesktopSending::KeptOwn);
-            shared.watching.set(joined.peer.watching());
             shared.members.replace(joined.members.clone());
             joined.moderates = Arc::clone(&shared.moderates);
             joined.standing.share(&shared.standing);

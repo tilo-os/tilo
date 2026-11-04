@@ -50,14 +50,14 @@
  * host that cannot be reached, or fails, says nothing about its workspaces, so
  * they stay, marked as not opening last time (`settleFailedWorkspace`).
  *
- * Spectating (the homepage embed): the page makes a device key in memory
- * only and asks the host to certify it as the workspace's one read-only
- * spectator person (`POST <admission>spectate`), then connects through the
- * ordinary `connectPeer` path with that certificate, watching only (it
- * writes nothing, and takes the keys of what members seal from the workspace's
- * node). Nothing is stored and
- * no person is created, so a visitor who only scrolls past leaves no member
- * behind.
+ * Visiting (the homepage embed): the page makes a device key in memory only
+ * and asks the host to certify it as the workspace's visitor person
+ * (`POST <admission>spectate`), a member like any other with the role the
+ * host gives visitors. It then connects through the ordinary `connectPeer`
+ * path with that certificate: it reads what its person reads, and what it
+ * may change there is what that role allows. Nothing is stored, so a visitor
+ * who only scrolls past leaves nothing behind but the row of its page's
+ * certificate, which the host drops once it expires.
  */
 import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
@@ -926,9 +926,9 @@ export async function ownDesktopOpen(home, {memberships = globalThis.localStorag
 }
 
 /**
- * Watch `workspace` read-only as its spectator person. Rejects with
- * `HostAdmissionError` code `full` above the host's spectator cap, so an
- * embedding site can show its static fallback.
+ * Visit `workspace` as its visitor person, whose role the host chooses.
+ * Rejects with `HostAdmissionError` code `full` above the host's visitor cap,
+ * so an embedding site can show its static fallback.
  */
 export async function spectate({
   workspace, fetch = globalThis.fetch, crypto = globalThis.crypto, connect = connectPeer,
@@ -945,7 +945,7 @@ export async function spectate({
   // a rounded copy no longer matches its signature (json-text.mjs).
   return connect({
     ...connectOptions, origin, workspace: room, runtime, custody, store: memoryStore(), fetch,
-    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator', watching: true,
+    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Visitor',
     deviceCertificate: `{"cert":${certificate},"hostCert":${memberText(hostText, 'hostCert')}}`,
   });
 }

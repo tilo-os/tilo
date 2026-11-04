@@ -601,7 +601,7 @@ impl PeerGovernanceMut<'_> {
             .core
             .workspace_doc
             .as_ref()
-            .map(|doc| doc.policy())
+            .map(crate::cached_document::CachedDocument::policy)
         else {
             return Ok(false);
         };

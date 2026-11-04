@@ -152,13 +152,6 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
-    /// This page only watches the workspaces it joins: a public workspace's
-    /// spectator. It writes nothing: no document, live frame, action,
-    /// compaction or presence of its own, and no live join. It takes part in
-    /// its records' encrypted channels like any device and asks their
-    /// participants for access; the keys it opens them with are the ones the
-    /// channel's group gives it, never a key handed over by the host.
-    pub watching: bool,
     /// The page keeps this session beside the workspace in front, only to
     /// deliver for it (problem reports to the page's home workspace): the
     /// host counts nobody online by it, so it takes no seat and shows no
@@ -629,8 +622,6 @@ pub struct PeerHandle {
     commands: mpsc::UnboundedSender<Command>,
     shared: Arc<Mutex<Shared>>,
     events: Queue,
-    /// [`PeerConfig::watching`].
-    watching: bool,
 }
 
 /// One consumer's view of the session's events: every event produced after
@@ -732,7 +723,6 @@ impl PeerHandle {
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
-        let watching = config.watching;
         let mut channels = crate::channels::Channels::new(
             config.cert.device_public_key,
             store.channel_vault().unwrap_or_else(rand::random),
@@ -796,14 +786,7 @@ impl PeerHandle {
             commands,
             shared,
             events,
-            watching,
         }
-    }
-
-    /// Whether the page only watches its workspaces, as a public workspace's
-    /// spectator: nobody there sees it, and it writes nothing.
-    pub fn watching(&self) -> bool {
-        self.watching
     }
 
     /// Why this page cannot join its workspaces' live plane at all, in the
@@ -1234,7 +1217,6 @@ struct Task {
     /// This session's own command queue, for answers it waits on in the
     /// background; weak, so the session still ends with its last handle.
     commands: mpsc::WeakUnboundedSender<Command>,
-    /// The records a watching page asks the node for keys of.
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
@@ -1331,10 +1313,6 @@ impl Task {
     /// certificate and that it answers compaction requests. Returns `false`
     /// when the session could not take them.
     fn announce(&self, client: &Link, workspace_id: u64) -> bool {
-        if self.config.watching {
-            // Its hello and volunteering would be writes the workspace refuses.
-            return true;
-        }
         if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
             && client.send(hello).is_err()
         {
@@ -1903,9 +1881,6 @@ impl Task {
         reason = "one arm per command, each handing off to its own method"
     )]
     async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
-        let Some(command) = self.unless_watching(command) else {
-            return true;
-        };
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
             Command::JoinPlaced(workspace, name) => self.join_placed(workspace, name, client),
@@ -2036,8 +2011,7 @@ impl Task {
                 Self::request_node(done, client);
                 true
             }
-            // Handled by the caller's loop, and a watching page's writes by
-            // `unless_watching`.
+            // Handled by the caller's loop.
             Command::Reconnect | Command::Retry | Command::Refresh | Command::Close => true,
         }
     }
@@ -2104,50 +2078,6 @@ impl Task {
             Link::Iroh { .. } => placed(),
         }
         true
-    }
-
-    /// `command`, unless this page only watches and it would write: then
-    /// it is answered here, sending nothing, and `None` is returned. A
-    /// watching page joins no live plane, publishes, compacts and acts on
-    /// nothing, and is not listed as here. It takes part in its records'
-    /// channels, and asks them for access, as any device does.
-    fn unless_watching(&mut self, command: Command) -> Option<Command> {
-        if !self.config.watching {
-            return Some(command);
-        }
-        match command {
-            // A watching page still asks the workspace for content its records
-            // reference: a public workspace's host answers it. It hands the
-            // workspace none of its own.
-            Command::Live(..)
-            | Command::Presence(..)
-            | Command::CallAudio(..)
-            | Command::Publish(..)
-            | Command::Compact(..)
-            | Command::SendContent(..)
-            | Command::CallLaneEnd(_) => {}
-            Command::RemoteAction(workspace_id, to, _) => {
-                self.emit(&PeerEvent::RemoteActionUndeliverable {
-                    workspace_id,
-                    to,
-                    reason: "a page that only watches acts on nothing".into(),
-                });
-            }
-            Command::Here(_, done) => {
-                done(Err("a page that only watches is not listed as here".into()));
-            }
-            Command::Private(_, done) => {
-                done(Err(
-                    "a page that only watches has no private conversations".into()
-                ));
-            }
-            Command::CallLane(_, _, done) => {
-                done(Err("a page that only watches takes part in no call".into()));
-            }
-            Command::OpenRoute(route) => self.open_channel(&route),
-            command => return Some(command),
-        }
-        None
     }
 
     /// Restore this session's workspaces, pending commits and call participations.

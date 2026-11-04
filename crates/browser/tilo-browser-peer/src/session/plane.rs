@@ -439,10 +439,6 @@ impl Task {
         let Some(client) = client else {
             return;
         };
-        if self.config.watching {
-            // A watching page is here as a spectator: it joins no plane.
-            return;
-        }
         self.planes.keep_only(&self.workspaces);
         let now = tilo_clock::unix_now_ms();
         let workspaces: Vec<u64> = self.workspaces.iter().copied().collect();

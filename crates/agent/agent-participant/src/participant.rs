@@ -408,7 +408,6 @@ impl AgentParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                watching: false,
                 background: false,
             },
             Arc::new(identity.key.clone()),

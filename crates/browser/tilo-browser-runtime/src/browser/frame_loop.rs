@@ -384,7 +384,7 @@ pub(super) async fn watch_first_frame(id: u64) {
         if !await_runtime_admission().await {
             return;
         }
-        let watching = with_mount_quietly(id, |m| {
+        let driven = with_mount_quietly(id, |m| {
             if m.error.is_some() {
                 return Ok(false);
             }
@@ -462,7 +462,7 @@ pub(super) async fn watch_first_frame(id: u64) {
             }
             Ok(true)
         });
-        if !matches!(watching, Ok(true)) {
+        if !matches!(driven, Ok(true)) {
             return;
         }
     }

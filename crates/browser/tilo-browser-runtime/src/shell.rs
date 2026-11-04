@@ -665,7 +665,6 @@ impl BrowserShell {
                 watching,
                 waved: &self.chrome.here.borrow().waved(now_ms()),
                 waved_until: self.chrome.here.borrow().waved_until(now_ms()),
-                spectating: self.chrome.shared.watching.get(),
             },
             self.cursor,
         );
@@ -710,9 +709,7 @@ impl BrowserShell {
         };
         // Every window here, by the record it shows as the live layer names
         // it: a window on someone's screen showing one of these is shared.
-        // A spectator only watches: nobody here reads them, so no row.
-        let own = (!self.chrome.shared.watching.get())
-            .then(|| own_row(&self.chrome.here.borrow(), theme));
+        let own = Some(own_row(&self.chrome.here.borrow(), theme));
         let records: Vec<(TabId, String, String)> = tree
             .workspaces
             .iter()
@@ -1318,7 +1315,6 @@ impl BrowserShell {
             .borrow()
             .own_label()
             .map_or_else(tilo_desktop::here::guest_label, str::to_owned);
-        let watching = self.chrome.shared.watching.get();
         ProfileModel {
             identity: ui::collaboration::local_user_id().0,
             name,
@@ -1328,9 +1324,8 @@ impl BrowserShell {
             actions,
             linked: self.chrome.shared.linked.accounts(),
             // What the page shares of what the person is doing is theirs to
-            // choose here, beside their name; a spectator shares nothing,
-            // since nobody here sees them.
-            sharing: (!watching).then(|| self.chrome.here.borrow().sharing()),
+            // choose here, beside their name.
+            sharing: Some(self.chrome.here.borrow().sharing()),
             // What they are doing, in their own words: the card's field
             // beside how it is shared.
             status: self
@@ -1340,11 +1335,6 @@ impl BrowserShell {
                 .own_words()
                 .unwrap_or_default()
                 .to_owned(),
-            seen: if watching {
-                tilo_desktop::profile_card::Seen::Watching
-            } else {
-                tilo_desktop::profile_card::Seen::Here
-            },
             control_hints: Some(self.hints.enabled()),
             key: self.chrome.here.borrow().own_user().map(str::to_owned),
             // Status, colour and what people see are the desktop's to keep;

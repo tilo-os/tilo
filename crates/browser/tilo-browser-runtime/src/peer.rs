@@ -310,10 +310,6 @@ struct ConnectConfig {
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
-    /// The page only watches the workspaces it joins, as a public workspace's
-    /// spectator ([`PeerConfig::watching`]).
-    #[serde(default)]
-    watching: bool,
     /// The page keeps this peer beside the workspace in front, to deliver for
     /// it ([`PeerConfig::background`]).
     #[serde(default)]
@@ -1670,8 +1666,7 @@ fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
 #[wasm_bindgen]
 impl WasmPeer {
     /// Start a session. `configJson` is `{cert, hostCert}` from
-    /// [`certify_device`], optionally with `displayName`, and `watching:
-    /// true` for a page that only watches public workspaces. With `namespace`
+    /// [`certify_device`], optionally with `displayName`. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
@@ -1736,7 +1731,6 @@ impl WasmPeer {
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                watching: config.watching,
                 background: config.background,
             },
             Arc::new(signer),
@@ -1754,8 +1748,8 @@ impl WasmPeer {
         }
         // Every peer replicates the workspace it joins, so a desktop mounted
         // through it always has a replica to attach to. A peer kept in no
-        // profile (a watching page's, whose device lives only in memory)
-        // keeps the workspace's documents in memory for as long as the page.
+        // profile (a page's, whose device lives only in memory) keeps the
+        // workspace's documents in memory for as long as the page.
         let replication_store = match profile_store {
             Some(store) => (store, crate::replication::Kept::InProfile),
             None => (
@@ -1848,21 +1842,16 @@ impl WasmPeer {
         self.listeners.borrow_mut().push(listener);
     }
 
-    /// Join a workspace (uuid). A page of the person's own joins it once its
-    /// host governs it, creating it there as `name` (the workspace's name,
-    /// `Workspace` when the page knows none) unless the host has it; a
-    /// page that only watches joins it as it is.
+    /// Join a workspace (uuid). The page joins it once its host governs it,
+    /// creating it there as `name` (the workspace's name, `Workspace` when the
+    /// page knows none) unless the host has it.
     #[wasm_bindgen(js_name = joinWorkspace)]
     pub fn join_workspace(&self, workspace: &str, name: Option<String>) -> Result<(), JsError> {
         let workspace_id = workspace_number(workspace)?;
-        if self.handle.watching() {
-            self.handle.join(workspace_id).map_err(js_error)?;
-        } else {
-            let name = name.filter(|name| !name.trim().is_empty());
-            self.handle
-                .join_placed(workspace, name.as_deref().unwrap_or("Workspace"))
-                .map_err(js_error)?;
-        }
+        let name = name.filter(|name| !name.trim().is_empty());
+        self.handle
+            .join_placed(workspace, name.as_deref().unwrap_or("Workspace"))
+            .map_err(js_error)?;
         self.voice_workspaces
             .borrow_mut()
             .insert(workspace_id, workspace.to_owned());
@@ -1878,8 +1867,8 @@ impl WasmPeer {
             )
             .map_err(js_error)?;
             // The workspace the page replicates is the one its person talks in
-            // privately; a page that only watches has no conversations.
-            if !self.handle.watching() && crate::page_person::speaks(self.id) {
+            // privately.
+            if crate::page_person::speaks(self.id) {
                 crate::person_chat::install(self.handle.clone(), workspace);
                 if let Some(identity) = ui::local_identity::load() {
                     set_member_name(&self.handle, workspace, &identity.display_name);
@@ -2342,7 +2331,7 @@ impl WasmPeer {
     /// `workspace` is the workspace's uuid, as its records' routes name it:
     /// the call's frames are sealed with the content keys of the channel its
     /// app and record belong to. Rejects when this page holds no keys for that
-    /// channel, when the session is watching only, or when it is closed.
+    /// channel, or when the session is closed.
     #[wasm_bindgen(js_name = callLaneTurn)]
     pub async fn call_lane_turn(&self, workspace: String, turn: String) -> Result<String, JsError> {
         let turn: tilo_browser_peer::LaneTurn = serde_json::from_str(&turn).map_err(js_error)?;
