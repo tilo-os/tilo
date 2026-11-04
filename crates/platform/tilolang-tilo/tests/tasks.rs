@@ -1929,7 +1929,7 @@ fn only_an_action_that_shows_a_state_is_drawn_as_a_toggle() {
         "the one action that reports a state is the one drawn as a toggle"
     );
     assert!(
-        ["New task", "New section", "Rename…"]
+        ["New task…", "New section", "Rename…"]
             .iter()
             .all(|label| commands.contains(&label.to_string())),
         "and the commands beside it are buttons, not switches: {commands:?}"
