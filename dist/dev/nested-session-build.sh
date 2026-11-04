@@ -133,10 +133,18 @@ build_host() {
 # turns on in the crates both use (media, the toolkit's services) would unify into it, and its
 # binary would link libraries its sandbox, the tilolang runtime on the app runtime alone, does
 # not hold.
+#
+# Without a symbol table: the session bakes this binary into the signed runtime bundle it
+# installs, and that bundle takes no binary over 64 MiB (runtime-bundle). At this profile's 16
+# codegen units and no LTO its linked names alone are 19 MB of the 67 MB file, and nothing that
+# reads the bundle reads them; the session's other programs keep theirs, which their crash logs
+# do read.
 build_tilolang_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
-    cargo build --locked --timings "${args[@]}" -p tilolang-host --bin tilolang-host
+    cargo build --locked --timings "${args[@]}" \
+        --config "profile.$host_profile.package.tilolang-host.strip=\"symbols\"" \
+        -p tilolang-host --bin tilolang-host
 }
 # The `tilolang` CLI authors run against the session (`tilolang dev --session`), in
 # a build of its own for the same reason: its toolkit features stay out of the
