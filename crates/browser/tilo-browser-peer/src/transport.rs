@@ -333,7 +333,6 @@ impl RelayCollabTransport {
                 | PeerEvent::ContentWanted { .. }
                 | PeerEvent::Voice(_)
                 | PeerEvent::CallAudio { .. }
-                | PeerEvent::Pairs { .. }
                 | PeerEvent::WorkspaceLayout { .. } => {}
             }
         }
