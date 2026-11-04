@@ -615,3 +615,219 @@ type Todos {
         )
     );
 }
+
+const PLACES: &str = r#"/// A thing to do.
+type Task {
+    title: Text (title)
+    done: Bool (done) = false
+    due: Option<Date> = .none
+    project: Option<Project> = .none
+
+    search {
+        filter "Inbox" = inbox(filed: project, day: due) (icon: .inbox)
+        filter "Today" = agenda(day: due) (icon: .star)
+        filter "Upcoming" = upcoming(day: due) (icon: .calendar)
+        filter "Done" = logbook (icon: .circle_check)
+        filter project
+        sort due oldest
+    }
+}
+
+/// What tasks are filed under.
+type Project {
+    name: Text (title)
+    tasks: Collection<Task>
+}
+
+/// Tasks, in one place.
+type Board {
+    tasks: Collection<Task>
+}
+"#;
+
+#[test]
+fn a_place_holds_what_its_role_says_in_the_terms_of_the_fields_it_names() {
+    let meta = compile_body(PLACES).meta;
+    let task = type_meta(&meta, "Task");
+    let keys: Vec<&str> = task.search.filters.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, ["inbox", "today", "upcoming", "done", "project"]);
+    let due = field_id(task, "due");
+    let done = field_id(task, "done");
+    let project = field_id(task, "project");
+    let open = Pred::Cmp(
+        CmpOp::Eq,
+        Operand::Field(done),
+        Operand::Lit(Lit::Bool(false)),
+    );
+    let place = |key: &str| {
+        let filter = task
+            .search
+            .filter(key)
+            .unwrap_or_else(|| panic!("no filter {key}"));
+        assert_eq!(filter.kind, FilterKind::Predicate, "{key}");
+        assert!(filter.field.is_none(), "{key} is on no field");
+        (
+            filter.role.clone().map(|r| r.word()),
+            filter.pred.clone().unwrap_or_else(|| panic!("{key}")),
+        )
+    };
+    assert_eq!(
+        place("inbox"),
+        (
+            Some("inbox"),
+            Pred::And(vec![
+                open.clone(),
+                Pred::Not(Box::new(Pred::Present(project))),
+                Pred::Not(Box::new(Pred::Present(due.clone()))),
+            ])
+        )
+    );
+    // What is due is what is for a day up to today and not done; what is due later is what is
+    // for a day after it.
+    let today = Operand::Clock {
+        day: true,
+        offset: 0,
+    };
+    assert_eq!(
+        place("today"),
+        (
+            Some("agenda"),
+            Pred::And(vec![
+                Pred::Present(due.clone()),
+                Pred::Cmp(CmpOp::Le, Operand::Field(due.clone()), today.clone()),
+                open.clone(),
+            ])
+        )
+    );
+    assert_eq!(
+        place("upcoming"),
+        (
+            Some("upcoming"),
+            Pred::And(vec![Pred::Cmp(CmpOp::Gt, Operand::Field(due), today), open,])
+        )
+    );
+    assert_eq!(
+        place("done"),
+        (
+            Some("logbook"),
+            Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(field_id(task, "done")),
+                Operand::Lit(Lit::Bool(true))
+            )
+        )
+    );
+    // A field filter written beside them is still a field filter.
+    let project_filter = task.search.filter("project").expect("project");
+    assert_eq!(project_filter.role, None);
+    assert_eq!(project_filter.kind, FilterKind::Reference);
+}
+
+#[test]
+fn a_field_named_as_a_role_is_still_a_field() {
+    let meta = compile_body(
+        r#"/// A thing to do.
+type Task {
+    title: Text (title)
+    inbox: Bool = false
+
+    search {
+        filter "Filed" = inbox
+    }
+}
+"#,
+    )
+    .meta;
+    let task = type_meta(&meta, "Task");
+    let filed = task.search.filter("filed").expect("filed");
+    assert_eq!(filed.role, None);
+    assert_eq!(
+        filed.pred,
+        Some(Pred::Cmp(
+            CmpOp::Eq,
+            Operand::Field(field_id(task, "inbox")),
+            Operand::Lit(Lit::Bool(true))
+        )),
+        "a field called `inbox` reads as it did before there were roles"
+    );
+}
+
+#[test]
+fn a_place_that_does_not_name_the_fields_its_role_needs_is_an_error() {
+    let todo = |search: &str, done: bool| {
+        let done = if done { "    done: Bool = false\n" } else { "" };
+        format!(
+            "/// Something to do.\ntype Todo {{\n    title: Text (title)\n{done}    due: Option<Date>\n    owner: Option<Todo>\n\n    search {{\n{search}\n    }}\n}}"
+        )
+    };
+    let cases = [
+        (
+            todo("        filter \"Today\" = agenda", true),
+            "it reads the day an item is due on, `agenda(day: due)`",
+        ),
+        (
+            todo("        filter \"Soon\" = upcoming", true),
+            "it reads the day an item is due on, `upcoming(day: due)`",
+        ),
+        (
+            todo("        filter \"Today\" = agenda(title)", true),
+            "each written `name: field`",
+        ),
+        (
+            todo("        filter \"Today\" = agenda(when: due)", true),
+            "`when:` is not one",
+        ),
+        (
+            todo("        filter \"Today\" = agenda(day: title)", true),
+            "`title` is Text; a place reads the day an item is for from a Date field",
+        ),
+        (
+            todo("        filter \"Inbox\" = inbox(filed: due)", true),
+            "a place reads what files an item under something from a reference",
+        ),
+        (
+            todo("        filter \"Today\" = agenda(filed: owner)", true),
+            "`filed:` is the inbox's",
+        ),
+        (
+            todo("        filter \"Done\" = logbook(day: due)", true),
+            "a logbook place holds what the type's `(done)` field marks finished",
+        ),
+        (
+            todo("        filter \"Done\" = logbook", false),
+            "has no `(done)` field saying what is finished",
+        ),
+    ];
+    for (body, needle) in cases {
+        let err = first_message(&body);
+        assert!(
+            err.contains("E095") && err.contains(needle),
+            "expected E095 saying {needle:?} for:\n{body}\ngot:\n{err}"
+        );
+    }
+}
+
+#[test]
+fn a_place_that_needs_no_field_needs_none() {
+    // What is not sorted yet may hold every item of a type that has no `(done)`, nothing above
+    // it and no day: the place is still a place.
+    let meta = compile_body(
+        r#"/// A note.
+type Note {
+    title: Text (title)
+
+    search {
+        filter "Inbox" = inbox
+    }
+}
+"#,
+    )
+    .meta;
+    let note = type_meta(&meta, "Note");
+    let inbox = note.search.filter("inbox").expect("inbox");
+    assert_eq!(
+        inbox.role.as_ref().map(tilolang::meta::FilterRole::word),
+        Some("inbox")
+    );
+    assert_eq!(inbox.pred, Some(Pred::And(Vec::new())));
+}

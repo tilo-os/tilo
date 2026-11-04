@@ -320,7 +320,8 @@ impl Core {
             IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
             ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH,
             MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, Outside, OutsideAt, Phrase, Places, PrincipalEq, PrincipalKind,
+            ModelCall, NoneV, Now, Outside, OutsideAt, Phrase, PlacedDay, Places, PrincipalEq,
+            PrincipalKind,
             PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
             RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel,
             RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
@@ -358,6 +359,7 @@ impl Core {
                 self.ret_h(found)
             }
             Filters | Places => self.catalogue_import(imp, a),
+            PlacedDay => self.placed_day_import(a),
             IdentPart => {
                 let part = self.ident_part(a.h(0)?, a.h(1)?)?;
                 self.ret_h(part)

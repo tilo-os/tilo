@@ -128,6 +128,7 @@ impl Checker<'_> {
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             "places" => return self.builtin_places(args, span),
+            "placed_day" => return self.builtin_placed_day(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {

@@ -203,6 +203,7 @@ imports! {
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     Places = "places" ([H, H] -> [H]);
+    PlacedDay = "placed_day" ([H, H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);
     RichNew = "rich_new" ([H] -> [H]);
     RichPart = "rich_part" ([H, I32] -> [H]);

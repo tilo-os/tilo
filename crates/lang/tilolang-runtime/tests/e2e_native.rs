@@ -172,20 +172,28 @@ view detail(n: Note) {
     }
 
     #[test]
-    fn the_sort_is_view_state_and_the_places_the_item_types_filters_with_counts() {
+    fn the_sort_is_view_state_and_its_places_show_no_count() {
         let (rt, app, nb) = setup();
         let mut view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
             .unwrap();
-        let counts = |tree: &UiNode| -> Vec<Value> {
+        // A place counts what it holds where its role says the count is one people read: the
+        // one waiting to be sorted, the one due. This type's places are not those, so they
+        // show no count.
+        let counts = |tree: &UiNode| -> Vec<Option<Value>> {
             ["all", "is:pinned"]
                 .iter()
-                .map(|place| node_with(tree, "ui.NavItem", "key", place).props["count"].clone())
+                .map(|place| {
+                    node_with(tree, "ui.NavItem", "key", place)
+                        .props
+                        .get("count")
+                        .cloned()
+                })
                 .collect()
         };
         let tree = view.tree();
         assert_eq!(text_prop(of_kind(tree, "ui.NavList")[0], "selected"), "all");
-        assert_eq!(counts(tree), [Value::Int(3), Value::Int(1)]);
+        assert_eq!(counts(tree), [None, None]);
         let checked = |tree: &UiNode, label: &str| {
             node_with(tree, "ui.MenuItem", "label", label)
                 .props
@@ -209,8 +217,8 @@ view detail(n: Note) {
         assert_eq!(titles(tree), ["Q3 plan"]);
         assert_eq!(
             counts(tree),
-            [Value::Int(3), Value::Int(1)],
-            "the counts do not depend on the filter shown"
+            [None, None],
+            "the places show no count whichever is chosen"
         );
         let title = node_with(tree, "ui.MenuItem", "label", "Title").key.clone();
         view.fire(&title, "choose").unwrap();

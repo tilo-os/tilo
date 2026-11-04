@@ -12,7 +12,7 @@
 
 use crate::ast::{self, BinOp, Expr, ExprKind, SearchBlock, SearchEntryKind, StrPart, UnOp};
 use crate::diag::{Diagnostic, Span};
-use crate::meta::{FilterKind, FilterMeta, SearchMeta, SortMeta, SortOrder};
+use crate::meta::{FilterKind, FilterMeta, FilterRole, SearchMeta, SortMeta, SortOrder};
 use crate::pred::{CmpOp, Float, Lit, Operand, Pred};
 use crate::resolve::{Env, FieldInfo, TypeInfo, sentence_case};
 use crate::types::Ty;
@@ -185,7 +185,283 @@ impl Ctx<'_> {
             optional,
             many,
             icon: None,
+            role: None,
         })
+    }
+
+    /// The place a named filter declares, when its predicate states a role rather than reading
+    /// a field: `agenda(day: due)`, `logbook`. `None` when the predicate is one as any other,
+    /// so it lowers as one.
+    ///
+    /// A role names the fields its place reads, as `name: field` options: `day:`, the day an
+    /// item is for, and `filed:`, the reference that files it under something. What the place
+    /// holds, how its list groups it and whether it counts follow from the role.
+    fn role_of<'e>(&self, expr: &'e Expr) -> Option<(FilterRole, &'e [ast::Arg], Span)> {
+        let (word, given) = match &expr.kind {
+            ExprKind::Ident(word) => (word, &[][..]),
+            ExprKind::Call { callee, args } => match &callee.kind {
+                ExprKind::Ident(word) => (word, args.as_slice()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let role = FilterRole::from_word(word)?;
+        // A field called `inbox` is a field, as it was before there were roles.
+        if self.info.field(word).is_some() {
+            return None;
+        }
+        Some((role, given, expr.span))
+    }
+
+    /// The place a role makes, as the filter it is: the predicate its members are found by,
+    /// read from the type's `(done)` field and the fields the role names.
+    fn place_filter(
+        &mut self,
+        label: &str,
+        span: Span,
+        at: Span,
+        role: &FilterRole,
+        given: &[ast::Arg],
+    ) -> Option<FilterMeta> {
+        let mut day = None;
+        let mut filed = None;
+        for arg in given {
+            let Some(name) = &arg.name else {
+                self.err(
+                    "E095",
+                    arg.value.span,
+                    format!(
+                        "`{}` names the fields its place reads, each written `name: field`: `{}(day: {})`",
+                        role.word(),
+                        role.word(),
+                        self.day_hint()
+                    ),
+                );
+                continue;
+            };
+            match name.name.as_str() {
+                "day" => day = self.day_field(&arg.value),
+                "filed" => filed = self.filed_field(role, &arg.value),
+                other => self.err(
+                    "E095",
+                    name.span,
+                    format!(
+                        "`{}` takes `day:` (the field that puts an item on a day) and `filed:` (the field that files it under something); `{other}:` is not one",
+                        role.word()
+                    ),
+                ),
+            }
+        }
+        let role = match role {
+            FilterRole::Inbox { .. } => FilterRole::Inbox {
+                filed,
+                day,
+            },
+            FilterRole::Agenda { .. } => FilterRole::Agenda {
+                day: day.or_else(|| {
+                    self.err(
+                        "E095",
+                        span,
+                        format!(
+                            "the \"{label}\" place is the agenda, what is due: it reads the day an item is due on, `agenda(day: {})`",
+                            self.day_hint()
+                        ),
+                    );
+                    None
+                })?,
+            },
+            FilterRole::Upcoming { .. } => FilterRole::Upcoming {
+                day: day.or_else(|| {
+                    self.err(
+                        "E095",
+                        span,
+                        format!(
+                            "the \"{label}\" place is what is due later: it reads the day an item is due on, `upcoming(day: {})`",
+                            self.day_hint()
+                        ),
+                    );
+                    None
+                })?,
+            },
+            FilterRole::Logbook => {
+                if day.is_some() || filed.is_some() {
+                    self.err(
+                        "E095",
+                        at,
+                        "a logbook place holds what the type's `(done)` field marks finished; it names no field",
+                    );
+                }
+                FilterRole::Logbook
+            }
+        };
+        let done = self
+            .info
+            .fields
+            .iter()
+            .find(|f| {
+                f.role
+                    .as_ref()
+                    .is_some_and(crate::types::FieldRole::is_done)
+            })
+            .map(|f| f.id.clone());
+        if done.is_none() && !matches!(role, FilterRole::Inbox { .. }) {
+            self.err(
+                "E095",
+                span,
+                format!(
+                    "the \"{label}\" place is {}; {} has no `(done)` field saying what is finished",
+                    role.meaning(),
+                    about(self.info)
+                ),
+            );
+            return None;
+        }
+        let open = |done: &Option<String>| {
+            done.as_ref().map(|id| {
+                Pred::Cmp(
+                    CmpOp::Eq,
+                    Operand::Field(id.clone()),
+                    Operand::Lit(Lit::Bool(false)),
+                )
+            })
+        };
+        let today = || Operand::Clock {
+            day: true,
+            offset: 0,
+        };
+        let none_of = |id: &Option<String>| {
+            id.as_ref()
+                .map(|id| Pred::Not(Box::new(Pred::Present(id.clone()))))
+        };
+        let pred = match &role {
+            FilterRole::Inbox { filed, day } => {
+                let parts: Vec<Pred<String>> = [open(&done), none_of(filed), none_of(day)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if parts.len() == 1 {
+                    parts.into_iter().next()?
+                } else {
+                    Pred::And(parts)
+                }
+            }
+            FilterRole::Agenda { day } => {
+                let mut parts = vec![
+                    Pred::Present(day.clone()),
+                    Pred::Cmp(CmpOp::Le, Operand::Field(day.clone()), today()),
+                ];
+                parts.extend(open(&done));
+                Pred::And(parts)
+            }
+            FilterRole::Upcoming { day } => {
+                let mut parts = vec![Pred::Cmp(CmpOp::Gt, Operand::Field(day.clone()), today())];
+                parts.extend(open(&done));
+                Pred::And(parts)
+            }
+            FilterRole::Logbook => Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(done?),
+                Operand::Lit(Lit::Bool(true)),
+            ),
+        };
+        Some(FilterMeta {
+            key: key_of_label(label),
+            label: label.to_owned(),
+            doc: String::new(),
+            kind: FilterKind::Predicate,
+            field: None,
+            ty: String::new(),
+            pred: Some(pred),
+            optional: false,
+            many: false,
+            icon: None,
+            role: Some(role),
+        })
+    }
+
+    /// The field an error that asks for a day names as its example: the type's first Date
+    /// field, or `due`.
+    fn day_hint(&self) -> String {
+        self.info
+            .fields
+            .iter()
+            .find(|f| matches!(f.ty, Ty::Date) || matches!(&f.ty, Ty::Option(t) if **t == Ty::Date))
+            .map_or_else(|| "due".to_owned(), |f| f.name.clone())
+    }
+
+    /// The field an option of a place names, copied so the errors can be reported after it.
+    fn place_field(&mut self, e: &Expr, opt: &str) -> Option<FieldInfo> {
+        let ExprKind::Ident(name) = &e.kind else {
+            self.err(
+                "E095",
+                e.span,
+                format!("`{opt}:` names a field of {}", about(self.info)),
+            );
+            return None;
+        };
+        match self.info.field(name) {
+            Some(field) => Some(field.clone()),
+            None => {
+                let msg = format!(
+                    "`{opt}:` names a field of {}, which has none called `{name}`; its fields: {}",
+                    about(self.info),
+                    self.info.field_names()
+                );
+                self.err("E095", e.span, msg);
+                None
+            }
+        }
+    }
+
+    /// The field a place's `day:` names: the Date that puts an item on a day.
+    fn day_field(&mut self, e: &Expr) -> Option<String> {
+        let field = self.place_field(e, "day")?;
+        let date =
+            matches!(field.ty, Ty::Date) || matches!(&field.ty, Ty::Option(t) if **t == Ty::Date);
+        if !date {
+            let t = field.ty.display(&self.env.app);
+            self.err(
+                "E095",
+                e.span,
+                format!(
+                    "`{}` is {t}; a place reads the day an item is for from a Date field (`due: Option<Date>`)",
+                    field.name
+                ),
+            );
+            return None;
+        }
+        Some(field.id)
+    }
+
+    /// The field a place's `filed:` names: the reference that files an item under something.
+    fn filed_field(&mut self, role: &FilterRole, e: &Expr) -> Option<String> {
+        if !matches!(role, FilterRole::Inbox { .. }) {
+            self.err(
+                "E095",
+                e.span,
+                format!(
+                    "`filed:` is the inbox's; what the \"{}\" place holds is not read from a reference",
+                    role.word()
+                ),
+            );
+            return None;
+        }
+        let field = self.place_field(e, "filed")?;
+        let reference = matches!(field.ty, Ty::Record(_))
+            || matches!(&field.ty, Ty::Option(t) if matches!(**t, Ty::Record(_)));
+        if !reference {
+            let t = field.ty.display(&self.env.app);
+            self.err(
+                "E095",
+                e.span,
+                format!(
+                    "`{}` is {t}; a place reads what files an item under something from a reference (`project: Option<Project>`)",
+                    field.name
+                ),
+            );
+            return None;
+        }
+        Some(field.id)
     }
 
     fn named_filter(&mut self, label: &str, span: Span, expr: &Expr) -> Option<FilterMeta> {
@@ -217,6 +493,7 @@ impl Ctx<'_> {
                 optional: false,
                 many: false,
                 icon: None,
+                role: None,
             }),
             Err((at, why)) => {
                 let msg = format!(
@@ -320,7 +597,13 @@ pub fn resolve(
                 opts,
             } => {
                 let icon = ctx.icon(opts);
-                if let Some(mut filter) = ctx.named_filter(label, *label_span, expr) {
+                let filter = match ctx.role_of(expr) {
+                    Some((role, given, at)) => {
+                        ctx.place_filter(label, *label_span, at, &role, given)
+                    }
+                    None => ctx.named_filter(label, *label_span, expr),
+                };
+                if let Some(mut filter) = filter {
                     filter.icon = icon;
                     push_filter(&mut ctx, &mut out, filter, entry.span);
                 }
@@ -431,6 +714,7 @@ pub fn defaults(info: &TypeInfo, env: &Env) -> SearchMeta {
             optional,
             many,
             icon: None,
+            role: None,
         });
     }
     out.sort = info

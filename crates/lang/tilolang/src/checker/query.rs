@@ -113,6 +113,51 @@ impl Checker<'_> {
         )
     }
 
+    /// `placed_day(item, place)`: the day an item stands at in a place's list, as the place's
+    /// role reads it — the day it is due on in the agenda and in what is due later, the day it
+    /// was finished on in the logbook — and `.none` where its role has no days and for an item
+    /// that names none.
+    pub(super) fn builtin_placed_day(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [item, place] = args else {
+            self.err(
+                "E022",
+                span,
+                "`placed_day` takes the item and the place's key: `placed_day(x, p.key)`",
+            );
+            return Ex::error();
+        };
+        if item.name.is_some() || place.name.is_some() {
+            self.err(
+                "E022",
+                span,
+                "`placed_day` takes its two values alone: `placed_day(x, p.key)`",
+            );
+        }
+        let item = self.expr(&item.value, None);
+        if !item.ty.is_error() && !matches!(item.ty, Ty::Record(_) | Ty::Option(_)) {
+            let t = self.show(&item.ty);
+            self.err(
+                "E105",
+                span,
+                format!("`placed_day` reads an item of a place; `{t}` is not an item"),
+            );
+        }
+        let place = self.expr(&place.value, None);
+        if !place.ty.is_error() && !matches!(place.ty, Ty::Text | Ty::Option(_)) {
+            let t = self.show(&place.ty);
+            self.err(
+                "E105",
+                span,
+                format!("`placed_day` reads the place's key, the query it answers (`is:today`); `{t}` is not text"),
+            );
+        }
+        Ex::host(
+            Imp::PlacedDay,
+            vec![item, place],
+            Ty::Option(Box::new(Ty::Date)),
+        )
+    }
+
     /// `query(T, in: x, filter: value, ..., sort: .field_order)`: the resources of `T` the
     /// filters hold of, inside `x` (or anywhere in the workspace), as a lazy list the index
     /// answers.

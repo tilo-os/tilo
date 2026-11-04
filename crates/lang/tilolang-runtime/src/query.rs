@@ -25,7 +25,7 @@ use std::cell::Cell;
 
 use tilolang::calendar::{DAY, calendar_span, day_text, instant, time_text};
 use tilolang::identifier;
-use tilolang::meta::{EnumMeta, FilterKind, FilterMeta, TypeMeta};
+use tilolang::meta::{EnumMeta, FilterKind, FilterMeta, FilterRole, TypeMeta};
 use tilolang::pred::{CmpOp, Float, Lit, Operand, Pred};
 
 /// A query, typed or built in code.
@@ -322,7 +322,7 @@ pub fn resolve(
     }
     let order = match &query.sort {
         Some(sort) => Some(order_of(sort, ty)?),
-        None => None,
+        None => role_order(&query.terms, ty),
     };
     let pred = match all.len() {
         0 => Pred::Const(true),
@@ -742,6 +742,44 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
 }
 
 /// `-received` or `received`: the field by name, and whether the latest or last comes first.
+/// The order a place's role gives its list, when the query is that place and nothing else: what
+/// is due soonest first in the agenda and in what is due later, and what was finished last
+/// first in the logbook. `None` for a place whose role says nothing about order (the inbox's)
+/// and for any other query, which keeps the type's order.
+fn role_order(terms: &[Term], ty: &TypeMeta) -> Option<Order> {
+    let [term] = terms else {
+        return None;
+    };
+    if term.value != "true" {
+        return None;
+    }
+    let filter = ty
+        .search
+        .filters
+        .iter()
+        .find(|f| Some(&f.key) == term.key.as_ref())?;
+    let order = match filter.role.as_ref()? {
+        FilterRole::Agenda { day } | FilterRole::Upcoming { day } => Order {
+            field: day.clone(),
+            kind: crate::meta::FieldKind::Register,
+            descending: false,
+            absent_last: true,
+            then: None,
+        },
+        // A logbook reads newest first: the last change to an item is the one that finished
+        // it (the store's log, never a field the type would hold).
+        FilterRole::Logbook => Order {
+            field: crate::store::Reflected::UPDATED.to_owned(),
+            kind: crate::meta::FieldKind::Register,
+            descending: true,
+            absent_last: true,
+            then: None,
+        },
+        FilterRole::Inbox { .. } => return None,
+    };
+    Some(order)
+}
+
 fn order_of(sort: &str, ty: &TypeMeta) -> Result<Order, String> {
     let (name, descending) = match sort.strip_prefix('-') {
         Some(name) => (name, true),

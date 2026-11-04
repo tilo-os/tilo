@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use tilolang::meta::{FilterKind, TypeMeta};
+use tilolang::meta::{FilterKind, FilterRole, TypeMeta};
 use tilolang::pred::{CmpOp, Lit as LangLit, Operand, Pred as LangPred};
 
 use crate::abi::Imp;
@@ -274,6 +274,93 @@ impl Core {
         self.ret_h(found)
     }
 
+    /// `placed_day(item, place)`: the day an item stands at in a place's list, as the place's
+    /// role reads it — the day it is due on in the agenda and in what is due later, the day it
+    /// was finished on in the logbook — and `.none` where the role has no days (the inbox's),
+    /// and for an item that names none.
+    ///
+    /// `place` is the place's key (`is:today`), which is the query the place answers.
+    pub(crate) fn placed_day_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let item = self.ref_arg(a.h(0)?)?;
+        let place = self.text(a.h(1)?)?;
+        self.ret_h(self.placed_day(&item, &place)?)
+    }
+
+    fn placed_day(&self, item: &RefValue, place: &str) -> HResult<Value> {
+        let Some(key) = place.strip_prefix("is:") else {
+            return Ok(Value::none());
+        };
+        let (pkg, _) = self
+            .registry
+            .borrow()
+            .type_info(&item.target.ty)
+            .ok_or_else(|| {
+                format!(
+                    "placed_day: `{}` is no type a loaded package declares",
+                    item.target.ty
+                )
+            })?;
+        let Some(declared) = pkg.meta.types.iter().find(|t| t.id == item.target.ty) else {
+            return trap(format!("placed_day: `{}` is not declared", item.target.ty));
+        };
+        let Some(role) = declared
+            .search
+            .filters
+            .iter()
+            .find(|f| f.key == key)
+            .and_then(|f| f.role.as_ref())
+        else {
+            return Ok(Value::none());
+        };
+        match role {
+            FilterRole::Inbox { .. } => Ok(Value::none()),
+            FilterRole::Agenda { day } | FilterRole::Upcoming { day } => {
+                let (_, field) = self.lookup_field(&item.target, day)?;
+                let held = self.read_value(&item.target, &field, item.author.as_ref())?;
+                Ok(match held {
+                    Value::Text(text) => self.day_value(&text),
+                    Value::Opt(Some(inner)) => match *inner {
+                        Value::Text(text) => self.day_value(&text),
+                        _ => Value::none(),
+                    },
+                    _ => Value::none(),
+                })
+            }
+            FilterRole::Logbook => {
+                // What is done was finished by a change, and that change's time is the day it
+                // was finished on: the store's log says it, so the type holds no field for it.
+                if crate::foreign::is_foreign(&item.target) {
+                    return Ok(Value::none());
+                }
+                let at = &item.target;
+                let end = self
+                    .store
+                    .borrow()
+                    .version_end(at, true)
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                self.read_versions_of(at);
+                Ok(end.map_or_else(Value::none, |version| self.day_value(&version.at)))
+            }
+        }
+    }
+
+    /// The day `text` names: a date as it stands, an instant as the person's day of it (a
+    /// change recorded at `2026-01-01T23:00:00Z` for someone two hours ahead happened on the
+    /// 2nd).
+    fn day_value(&self, text: &str) -> Value {
+        if text.len() == 10
+            && let Some(day) = text.get(..10)
+        {
+            return Value::some(Value::Text(day.to_owned()));
+        }
+        let Some(secs) = tilolang::calendar::instant(text) else {
+            return Value::none();
+        };
+        let zone = self.zone.borrow().as_ref().map_or(0, |zone| zone());
+        let days = secs.saturating_add(zone).div_euclid(86_400);
+        Value::some(Value::Text(tilolang::calendar::day_text(days)))
+    }
+
     /// `ident_part(id, 0)` is an identifier's scheme, `ident_part(id, 1)` its value.
     pub(crate) fn ident_part(&self, id: i32, part: i32) -> HResult<Value> {
         let held = self.text(id)?;
@@ -286,13 +373,20 @@ impl Core {
 /// one per case for an enum, one with no query for a filter whose value is picked.
 #[must_use]
 pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Value> {
-    let filter = |key: &str, label: &str, icon: Option<&str>, query: String, toggle: bool| {
+    let filter = |key: &str,
+                  label: &str,
+                  icon: Option<&str>,
+                  query: String,
+                  toggle: bool,
+                  role: Option<&FilterRole>| {
         Value::Tuple(vec![
             Value::text(key),
             Value::text(label),
             icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
             Value::Text(query),
             Value::Bool(toggle),
+            Value::Text(role.map_or_else(String::new, |role| role.word().to_owned())),
+            Value::Bool(role.is_some_and(FilterRole::counts)),
         ])
     };
     let mut out = Vec::new();
@@ -305,6 +399,7 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                     f.icon.as_deref(),
                     format!("is:{}", f.key),
                     true,
+                    f.role.as_ref(),
                 ));
             }
             FilterKind::Enum => {
@@ -328,13 +423,14 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                                 v.icon.as_deref(),
                                 format!("{}:{}", f.key, v.name),
                                 true,
+                                None,
                             ));
                         }
                     }
-                    None => out.push(filter(&f.key, &f.label, None, String::new(), false)),
+                    None => out.push(filter(&f.key, &f.label, None, String::new(), false, None)),
                 }
             }
-            _ => out.push(filter(&f.key, &f.label, None, String::new(), false)),
+            _ => out.push(filter(&f.key, &f.label, None, String::new(), false, None)),
         }
     }
     out
@@ -347,6 +443,7 @@ fn place_value(
     icon: Option<&str>,
     count: usize,
     group: Option<&str>,
+    role: Option<&FilterRole>,
 ) -> Value {
     let some = |text: Option<&str>| {
         text.map_or_else(Value::none, |t| Value::some(Value::Text(t.to_owned())))
@@ -357,6 +454,8 @@ fn place_value(
         some(icon),
         Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
         some(group),
+        Value::Text(role.map_or_else(String::new, |role| role.word().to_owned())),
+        Value::Bool(role.is_some_and(FilterRole::counts)),
     ])
 }
 
@@ -469,6 +568,7 @@ impl Core {
                 filter.icon.as_deref(),
                 count,
                 None,
+                filter.role.as_ref(),
             ));
         }
         Ok(places)
@@ -704,7 +804,7 @@ impl Places<'_> {
                     &query,
                     self.done,
                 )?;
-                places.push(place_value(&query, &label, None, count, Some(&title)));
+                places.push(place_value(&query, &label, None, count, Some(&title), None));
             }
             // A heading with nothing under it and nothing to add is a dead end. With an add
             // it is where the first one is made, so it stays while the collection is empty.
