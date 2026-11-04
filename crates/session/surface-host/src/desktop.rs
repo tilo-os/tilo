@@ -585,12 +585,18 @@ impl SurfaceHost for DesktopHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
-        // Something outside the desk's tree asked for a pass — an app
-        // described the controls of its window's content, a service published
-        // what the desk shows. The desk reads what they changed in a pass of
-        // its own, as it does standing under the shell
-        // ([`crate::shell::Aside`]), and draws the frame that pass asks for.
-        self.advance();
+        {
+            let mut desk = self.desk.borrow_mut();
+            // Something outside the desk's tree asked for a pass — an app
+            // described the controls of its window's content, a service
+            // published what the desk shows. The desk reads what it changed in
+            // that frame, as it does standing under the shell
+            // ([`crate::shell::Aside`]), rather than whenever the next frame
+            // comes for another reason. A desk nobody asked draws nothing.
+            if desk.host.asking().get() {
+                desk.host.relayout();
+            }
+        }
         self.desk.borrow_mut().host.prepare_frame()
     }
 
