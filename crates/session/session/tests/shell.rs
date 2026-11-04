@@ -20,7 +20,7 @@
 
 mod common;
 
-use common::press;
+use common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press};
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -696,7 +696,7 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
         "the window is not in the workspace in front"
     );
     show(&mut session, "overview");
-    let field = "Query";
+    let field = OVERVIEW_SEARCH;
     until(&mut session, |session| {
         session.shell_control(field).is_some()
     });
@@ -1895,9 +1895,9 @@ fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query(
     until(&mut session, |session| says(session, &desk(session).clock));
     show(&mut session, "launcher");
     until(&mut session, |session| {
-        session.shell_control("Query").is_some()
+        session.shell_control(LAUNCHER_SEARCH).is_some()
     });
-    press(&mut session, "Query");
+    press(&mut session, LAUNCHER_SEARCH);
     type_text(&mut session, "quarterly");
     let button = "Search everywhere for quarterly";
     until(&mut session, |session| {
@@ -2073,9 +2073,9 @@ fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
     until(&mut session, |session| says(session, &desk(session).clock));
     show(&mut session, "workspaces");
     until(&mut session, |session| {
-        session.shell_control("Name").is_some()
+        session.shell_control(WORKSPACE_NAME).is_some()
     });
-    press(&mut session, "Name");
+    press(&mut session, WORKSPACE_NAME);
     type_text(&mut session, "studio");
     press(&mut session, "Create");
     until(&mut session, |session| {

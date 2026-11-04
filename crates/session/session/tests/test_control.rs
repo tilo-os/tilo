@@ -37,7 +37,7 @@ use tilo_session::mount::shell::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use common::{HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
+use common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
 /// Click the shell's control `name` through the test-control socket, as the person does: the
 /// socket takes the click, and what it presses is what stands there.
@@ -147,7 +147,7 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
     click(&mut session, &socket, "Frames");
     assert!(
         reached(&mut session, |session| session
-            .shell_control("Typed")
+            .shell_control(CANVAS_ENTRY)
             .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0)),
         "the canvas: {:?}",
         session.accessible_labels()
@@ -478,7 +478,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         .is_some()));
     click(&mut session, &socket, "Frames");
     assert!(reached(&mut session, |session| session
-        .shell_control("Typed")
+        .shell_control(CANVAS_ENTRY)
         .is_some()));
 
     let (workspace, row) = {

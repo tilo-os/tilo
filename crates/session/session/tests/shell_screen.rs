@@ -25,12 +25,10 @@ use tilo_session::{Options, Session};
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
-    HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press, show_preset,
-    until,
+    CANVAS_ENTRY, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press,
+    show_preset, until,
 };
 
-/// The framed canvas's entry, named for what it holds: the text typed to find what to place.
-const CANVAS_ENTRY: &str = "Typed";
 /// What the strips show of a desk holding no window: their own empty state, which no other
 /// surface of the desk shows.
 const NO_WINDOW: &str = "No window here yet";

@@ -33,8 +33,9 @@ use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use common::{
-    HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, preset_menu, press,
-    press_sheet, private_home, seeded_session, seeded_session_with, type_text, until,
+    CANVAS_ENTRY, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources,
+    preset_menu, press, press_sheet, private_home, seeded_session, seeded_session_with, type_text,
+    until,
 };
 
 /// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the
@@ -88,7 +89,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
         on_screen(session, "Frames").is_none()
     });
     assert!(
-        on_screen(&session, "Typed").is_none(),
+        on_screen(&session, CANVAS_ENTRY).is_none(),
         "the strips stand first, not the canvas"
     );
 
@@ -182,7 +183,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
 
     // The framed canvas first: the entry typed at stands, and no strip does.
     assert!(
-        on_screen(&session, "Typed").is_some(),
+        on_screen(&session, CANVAS_ENTRY).is_some(),
         "the canvas stands: {:?}",
         session.accessible_labels()
     );
@@ -194,7 +195,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches the preset: {answer}");
     until(&mut session, "the strips", |session| {
-        on_screen(session, "Typed").is_none()
+        on_screen(session, CANVAS_ENTRY).is_none()
             && preset_menu(session).as_deref() == Some("Showing Strips")
     });
 
@@ -609,9 +610,9 @@ fn typing_in_the_canvas_entry_shows_what_is_typed() {
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the canvas entry", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
-    press(&mut session, "Typed");
+    press(&mut session, CANVAS_ENTRY);
     type_text(&mut session, "groceries");
     until(&mut session, "the typed words in the entry", |session| {
         session.shell_says("groceries")

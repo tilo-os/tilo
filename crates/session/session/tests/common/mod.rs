@@ -33,6 +33,19 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
 
+/// The canvas's entry, as assistive technology names it: a field bound to a view's state takes
+/// the name the view gives it for a person to read, its own words, rather than the state's name
+/// in the code (`typed`).
+pub const CANVAS_ENTRY: &str = "Find something, or ask";
+/// The launcher's field, announced the same way: the view's own words for it, not the state's
+/// name in the code (`query`).
+pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
+/// The overview's field, announced the same way rather than by the state's name in the code
+/// (`query`).
+pub const OVERVIEW_SEARCH: &str = "Search windows across your workspaces";
+/// The workspaces surface's field, announced the same way rather than by the state's name in
+/// the code (`name`).
+pub const WORKSPACE_NAME: &str = "Name a new workspace";
 /// The display every headless session here draws on.
 pub const WIDTH: i32 = 1280;
 /// See [`WIDTH`].
@@ -467,7 +480,7 @@ pub fn seeded_session_with(
     .expect("session");
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
     session
 }

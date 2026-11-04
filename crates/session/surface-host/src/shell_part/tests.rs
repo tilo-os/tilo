@@ -36,6 +36,17 @@ fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
 }
 
+/// The canvas's entry, as assistive technology names it: the field is bound to a view state,
+/// whose name in the code (`typed`) is no word a person says, so it is announced by its own
+/// words.
+const CANVAS_ENTRY: &str = "Find something, or ask";
+/// The launcher's field, announced the same way: the view's own words for it, not the state's
+/// name in the code (`query`).
+const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
+/// The workspaces surface's field, announced the same way rather than by the state's name in
+/// the code (`name`).
+const WORKSPACE_NAME: &str = "Name a new workspace";
+
 fn click(part: &mut ShellPart, name: &str) {
     let (x, y, w, h) = part
         .control_bounds(name)
@@ -604,7 +615,7 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
     );
     click(&mut part, "Showing Strips");
     click(&mut part, "Frames");
-    click(&mut part, "Typed");
+    click(&mut part, CANVAS_ENTRY);
     assert!(
         SurfaceHost::text_input(&part).is_some(),
         "the press put the caret in the canvas's entry"
@@ -768,7 +779,7 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     let labels = crate::Published::accessible_labels(&mut part);
     assert!(
         !labels.iter().any(|label| label == "This window")
-            && labels.iter().any(|label| label == "Typed"),
+            && labels.iter().any(|label| label == CANVAS_ENTRY),
         "the canvas shows: {labels:?}; refused {:?}",
         part.refusals()
     );
@@ -937,13 +948,13 @@ fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
         part.draw();
     }
     let (_, _, width, _) = part
-        .control_bounds("Name")
+        .control_bounds(WORKSPACE_NAME)
         .expect("the surface shows its field");
     assert!(
         width >= 100.0,
         "the name field is wide enough to type in: {width}"
     );
-    click(&mut part, "Name");
+    click(&mut part, WORKSPACE_NAME);
     type_into(&mut part, "studio");
     click(&mut part, "Create");
     assert!(part.refusals().is_empty(), "{:?}", part.refusals());
@@ -972,7 +983,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         part.prepare_frame();
         part.draw();
     }
-    click(&mut part, "Query");
+    click(&mut part, LAUNCHER_SEARCH);
     for letter in "quarterly".chars() {
         for pressed in [true, false] {
             let key = tilo_compositor::HostKey {
