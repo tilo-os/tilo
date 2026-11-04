@@ -70,6 +70,12 @@ static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
+    // A workspace this session joins is decoded in a worker process started
+    // from this executable; that worker is served here and exits. This comes
+    // before anything here starts a thread, as serving one requires.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return ExitCode::from(code);
+    }
     // The earliest point the process can measure itself from: what the
     // session's own startup marks are read against.
     tilo_startup_metrics::init();

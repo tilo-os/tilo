@@ -1150,11 +1150,14 @@ impl crate::Shared {
                         .map(|workspace| workspace.name.clone())
                 })
                 .unwrap_or_else(|| key.clone());
-            if enrolled.result.is_err() {
+            if let Err(error) = &enrolled.result {
                 if let Some(engine) = &self.engine {
                     engine.unbind(enrolled.slot);
                 }
                 self.release_workspace(enrolled.workspace_id);
+                // The sheet says why to a person looking at it; a session
+                // nobody is looking at says it here too.
+                tracing::warn!(%key, %error, "a workspace was not joined");
             }
             self.directory_store.enrolled(&key, &name, &enrolled.result);
             settled = true;

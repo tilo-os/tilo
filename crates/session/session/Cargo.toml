@@ -55,6 +55,9 @@ image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
 tilo-surface-host = { path = "../surface-host" }
+# A joined workspace's records are untrusted bytes: a worker process of this
+# executable decodes them, and `main` serves that worker.
+tilo-automerge-isolate.workspace = true
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the desk's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
@@ -356,8 +359,6 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 # and the page of its person that recorded there first.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
-# The worker a host admits the records of its members through.
-tilo-automerge-isolate.workspace = true
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 # The other device's tunnel and this one's, in memory, for what a route
