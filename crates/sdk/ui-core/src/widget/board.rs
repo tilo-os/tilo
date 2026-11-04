@@ -1,7 +1,7 @@
 //! `Board`: cards in lanes, moved between them by dragging (a kanban board,
 //! a pipeline, a hand of tasks by status).
 //!
-//! Each lane is a column with a header and its cards, side by side. The
+//! Each lane is a column with a header, where it has one, and its cards, side by side. The
 //! cards are any widgets (usually a pressable [`Card`](super::Card)), so a
 //! card opens, takes focus and is read out as itself. Dragging one shows a
 //! ghost under the pointer and the insertion line where it would land, over
@@ -51,6 +51,9 @@ pub struct BoardDrop {
 struct LaneKeys {
     key: String,
     cards: Vec<String>,
+    /// Whether the lane heads itself: its column starts with the heading, over the view that
+    /// scrolls its cards. A lane nobody named heads nothing, and its cards start at its top.
+    heading: bool,
 }
 
 /// A drag from press to release.
@@ -114,14 +117,18 @@ impl Board {
         }
     }
 
-    /// Add a lane keyed `key`, headed by `header`, holding `cards` (each
+    /// Add a lane keyed `key`, headed by `header` where it has one, holding `cards` (each
     /// with its key) in order, and `foot` standing at the lane's end under them: what adds to
     /// the lane, always in reach while the cards scroll above it.
+    ///
+    /// A lane with no heading starts its cards at its top, where a list's first row stands. The
+    /// board's owner gives a lane without a name of its own the heading row of the lanes beside
+    /// it — an empty one — where they have headings, so every lane's cards line up.
     #[must_use]
     pub fn lane(
         mut self,
         key: impl Into<String>,
-        header: Element,
+        header: Option<Element>,
         cards: Vec<(String, Element)>,
         foot: Option<Element>,
     ) -> Self {
@@ -143,11 +150,12 @@ impl Board {
             .with_child(Box::new(cards_column));
         // A lane takes the board's height where the board has one (a pane's),
         // and its content's where it does not.
-        let column = Column::new()
-            .with_no_padding()
-            .with_rhythm(Rhythm::Related)
-            .push(header)
-            .push(Box::new(scrolling));
+        let heading = header.is_some();
+        let mut column = Column::new().with_no_padding().with_rhythm(Rhythm::Related);
+        if let Some(header) = header {
+            column = column.push(header);
+        }
+        let column = column.push(Box::new(scrolling));
         // What adds to the lane stands at its foot, under the cards, whichever of them shows.
         let column = match foot {
             Some(foot) => column.push(foot),
@@ -164,6 +172,7 @@ impl Board {
         self.lanes.push(LaneKeys {
             key: key.into(),
             cards: keys,
+            heading,
         });
         self
     }
@@ -231,10 +240,10 @@ impl Board {
         let Some(column) = lane_children.first() else {
             return Vec::new();
         };
-        // The column holds the lane's header, then the view that scrolls its
+        // The column holds the lane's heading where it has one, then the view that scrolls its
         // cards, whose only child holds them.
         let column_children = column.children();
-        let Some(scrolling) = column_children.get(1) else {
+        let Some(scrolling) = column_children.get(usize::from(keys.heading)) else {
             return Vec::new();
         };
         let scrolled = scrolling.children();
@@ -701,13 +710,13 @@ mod tests {
         Board::new()
             .lane(
                 "todo",
-                Box::new(Text::new("Todo")),
+                Some(Box::new(Text::new("Todo")) as Element),
                 vec![("a".into(), card()), ("b".into(), card())],
                 None,
             )
             .lane(
                 "done",
-                Box::new(Text::new("Done")),
+                Some(Box::new(Text::new("Done")) as Element),
                 vec![("c".into(), card())],
                 None,
             )
@@ -730,7 +739,7 @@ mod tests {
         let cards: Vec<(String, Element)> = (0..8)
             .map(|index| (format!("card-{index}"), card()))
             .collect();
-        let board = Board::new().lane("todo", Box::new(Text::new("Todo")), cards, None);
+        let board = Board::new().lane("todo", Some(Box::new(Text::new("Todo"))), cards, None);
         let host = harness(board);
         let root = host.root::<Board>();
         let shown = root.card_rects(0);
@@ -768,7 +777,7 @@ mod tests {
         let pane = 1280u32;
         let mut lanes = Board::new();
         for key in ["todo", "doing", "done"] {
-            let header = Box::new(Text::new(key)) as Element;
+            let header = Some(Box::new(Text::new(key)) as Element);
             lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())], None);
         }
         let host =

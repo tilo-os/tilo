@@ -288,6 +288,11 @@ impl Described for Board {
         let BoardProps { name, lanes } = props;
         let mut board = Self::new().with_id(key.to_owned());
         board.name = name;
+        // Whether any lane of the board heads itself: a lane nobody named heads nothing, but
+        // keeps a heading's height while a lane beside it has one, so the lanes' cards line up.
+        // On a board no lane heads, no lane keeps it, and the cards start where a list's first
+        // row stands.
+        let headed = lanes.iter().any(|lane| lane.title.is_some());
         // What each card stands for and what lands before it, and each lane's drop and its
         // cards in order, by key.
         let mut items: HashMap<String, ResourceId> = HashMap::new();
@@ -305,19 +310,15 @@ impl Described for Board {
                 act,
                 drop,
             } = lane;
-            // A lane nobody named heads nothing: the lane that holds what is in no section keeps
-            // a heading's height, so its cards line up with the lanes that have one, and says
-            // nothing over them.
-            let heading = match title {
-                Some(title) => {
-                    let heading = SectionHeader::group(title);
-                    match count {
-                        Some(count) => heading.count(usize::try_from(count).unwrap_or(0)),
-                        None => heading,
-                    }
+            let named = title.is_some();
+            let heading = (named || headed).then(|| {
+                let heading = SectionHeader::group(title.unwrap_or_default());
+                match count {
+                    Some(count) => heading.count(usize::try_from(count).unwrap_or(0)),
+                    None => heading,
                 }
-                None => SectionHeader::group(""),
-            };
+                .into_element()
+            });
             // The one add stands at the lane's foot, where the cards end, not in its heading:
             // a lane gives its own entry there, or the label of its adding action.
             let foot = foot.or_else(|| {
@@ -345,7 +346,7 @@ impl Described for Board {
                 widgets.push((card_key, widget));
             }
             lane_drops.insert(lane_key.clone(), (drop, order));
-            board = board.lane(lane_key, heading.into_element(), widgets, foot);
+            board = board.lane(lane_key, heading, widgets, foot);
         }
         board.on_drop(
             move |BoardDrop {
@@ -425,12 +426,123 @@ mod tests {
     }
 
     fn harness(queue: &Intents<Fired>) -> crate::headless::FrameHarness {
+        laid_out(props(queue))
+    }
+
+    fn laid_out(props: BoardProps) -> crate::headless::FrameHarness {
         crate::headless::FrameHarness::for_root(
             crate::State::new(),
-            Board::from_props("board", props(queue)),
+            Board::from_props("board", props),
             (900, 600),
             Theme::dark(),
         )
+    }
+
+    /// A lane nobody named, holding the cards `keys`.
+    fn lane(key: &str, keys: &[&str]) -> BoardLaneProps {
+        BoardLaneProps {
+            key: key.into(),
+            cards: keys
+                .iter()
+                .map(|card| BoardCardProps {
+                    key: (*card).into(),
+                    item: Some(ResourceId(format!("res-{card}"))),
+                    body: vec![Box::new(Text::new("body"))],
+                    ..BoardCardProps::default()
+                })
+                .collect(),
+            ..BoardLaneProps::default()
+        }
+    }
+
+    /// A board no lane heads has nothing to line its cards up with: no lane keeps a heading's
+    /// height, so the first card stands where the first row of a list of the same items does.
+    #[test]
+    fn a_board_no_lane_heads_starts_its_cards_where_a_list_starts_its_first_row() {
+        let host = laid_out(BoardProps {
+            name: Some("Loose".into()),
+            lanes: vec![lane("loose", &["a", "b"])],
+        });
+        let (card, lane) = {
+            let root = host.root::<Board>();
+            (root.card_rects(0)[0], root.lane_rects()[0])
+        };
+        assert!(
+            (card.y0 - lane.y0).abs() < 0.5,
+            "no band stands over the cards: {card:?} in a lane from {lane:?}"
+        );
+        // The same room, holding a list of the same items: its first row starts at the top.
+        let list = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            crate::widget::Column::new()
+                .with_no_padding()
+                .push(Box::new(crate::widget::ListRow::new("a", "body"))),
+            (900, 600),
+            Theme::dark(),
+        );
+        let list = list.inspection();
+        let row = list
+            .root
+            .children
+            .iter()
+            .find(|node| node.widget == "ListRow")
+            .map(|node| node.rect[1])
+            .expect("the list shows its row");
+        assert!(
+            (card.y0 - row).abs() < 0.5,
+            "the first card starts where a list's first row does: {card:?} against {row}"
+        );
+        assert_eq!(
+            headings(&host.inspection()),
+            0,
+            "no lane of the board heads itself, so no heading row stands over the cards"
+        );
+    }
+
+    /// A lane nobody named keeps a heading's height while a lane beside it has one, so the cards
+    /// of every lane line up and the unnamed lane heads nothing.
+    #[test]
+    fn a_lane_nobody_named_keeps_the_heading_row_of_the_lanes_beside_it() {
+        let mut named = lane("doing", &["c"]);
+        named.title = Some("Doing".into());
+        let host = laid_out(BoardProps {
+            name: Some("Plan".into()),
+            lanes: vec![lane("loose", &["a"]), named],
+        });
+        let (loose, doing, top) = {
+            let root = host.root::<Board>();
+            (
+                root.card_rects(0)[0],
+                root.card_rects(1)[0],
+                root.lane_rects()[0].y0,
+            )
+        };
+        assert!(
+            (loose.y0 - doing.y0).abs() < 0.5,
+            "the lanes' cards line up: {loose:?} against {doing:?}"
+        );
+        assert!(
+            loose.y0 > top,
+            "the headings stand over the cards: {loose:?} in a lane from {top}"
+        );
+        assert_eq!(
+            headings(&host.inspection()),
+            2,
+            "the unnamed lane keeps the heading row of the lane beside it"
+        );
+    }
+
+    /// How many heading rows a frame draws.
+    fn headings(frame: &crate::headless::InspectionSnapshot) -> usize {
+        let mut children = vec![&frame.root];
+        let mut found = 0;
+        while let Some(node) = children.pop() {
+            if node.widget == "SectionHeader" {
+                found += 1;
+            }
+            children.extend(node.children.iter());
+        }
+        found
     }
 
     #[test]

@@ -64,7 +64,7 @@ fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&s
         .with_role(TextRole::Subheading);
         board = board.lane(
             status.label_key(),
-            Box::new(header),
+            Some(Box::new(header) as Element),
             cards,
             Some(crate::new_issue(
                 cx,

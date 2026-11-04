@@ -47,10 +47,13 @@ pub enum Kind {
     /// A page's "…" standing in a column rather than at the trailing edge of its title's line:
     /// the door takes a line of its own and shows a lone glyph under the title.
     LoneDoor,
+    /// A heading with nothing in it: a band's height taken over the content, where a heading is
+    /// the words its section goes by.
+    EmptyHeading,
 }
 
 impl Kind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -67,6 +70,7 @@ impl Kind {
         Self::UnsharedVerb,
         Self::NestedCard,
         Self::LoneDoor,
+        Self::EmptyHeading,
     ];
 
     pub fn name(self) -> &'static str {
@@ -87,6 +91,7 @@ impl Kind {
             Self::UnsharedVerb => "unshared-verb",
             Self::NestedCard => "nested-card",
             Self::LoneDoor => "lone-door",
+            Self::EmptyHeading => "empty-heading",
         }
     }
 }
@@ -119,12 +124,24 @@ const DOOR: &str = "~more";
 /// A line's widget: its children side by side, where a door belongs at the trailing edge.
 const LINE: &str = "Row";
 
+/// A heading's widget: the band a section goes by, over what the section holds.
+const HEADING: &str = "SectionHeader";
+
 fn rect(r: [f64; 4]) -> Rect {
     Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3])
 }
 
 fn has_area(r: Rect) -> bool {
     r.width() > EPSILON && r.height() > EPSILON
+}
+
+/// Whether a box, or anything it holds, gives a screen reader words to announce.
+fn has_words(node: &InspectionNode) -> bool {
+    node.semantics
+        .as_ref()
+        .and_then(|access| access.name.as_deref())
+        .is_some_and(|name| !name.trim().is_empty())
+        || node.children.iter().any(has_words)
 }
 
 fn size(r: Rect) -> String {
@@ -422,6 +439,7 @@ impl Walk<'_> {
             self.pixels(node, keys, own);
             self.bare_row(node, keys, own);
             self.lone_door(node, keys, above);
+            self.empty_heading(node, keys, own);
         }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
@@ -583,6 +601,21 @@ impl Walk<'_> {
             node,
             keys,
             format!("it stands in a {above} of its own rather than at the trailing edge of the title's line"),
+        );
+    }
+
+    /// A heading with nothing in it: it takes the band a section goes by, and the content it
+    /// stands over starts below an empty strip. A heading is the words its section goes by;
+    /// where nothing heads the content, the content starts at the page's own distance.
+    fn empty_heading(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        if node.widget != HEADING || has_words(node) {
+            return;
+        }
+        self.push(
+            Kind::EmptyHeading,
+            node,
+            keys,
+            format!("it takes {} and says nothing", size(own)),
         );
     }
 
@@ -1136,6 +1169,78 @@ mod tests {
         assert!(
             lone_doors(&bar).is_empty(),
             "the window bar's own menu is no page's door"
+        );
+    }
+
+    fn empty_headings(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (1280, 800), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::EmptyHeading)
+            .collect()
+    }
+
+    /// A heading nobody named takes its band's height over a lane's cards all the same: the
+    /// strip says nothing, and the cards start below it. Named, it is the lane's words; a lane
+    /// no heading heads starts its cards where a list starts its first row.
+    #[test]
+    fn a_heading_with_nothing_in_it_is_caught() {
+        let heading = |name: &str| {
+            let words = !name.is_empty();
+            let mut header = node(
+                HEADING,
+                "heading",
+                [304.0, 80.0, 320.0, 29.0],
+                Some(Role::Heading { level: 2 }),
+            );
+            header.semantics = Some(AccessNode {
+                name: words.then(|| name.to_owned()),
+                ..AccessNode::new(Role::Heading { level: 2 })
+            });
+            let text = if words {
+                [304.0, 84.0, 69.0, 21.0]
+            } else {
+                [304.0, 94.0, 0.0, 0.0]
+            };
+            header.children = vec![node(
+                "Text",
+                "title",
+                text,
+                Some(Role::Heading { level: 2 }),
+            )];
+            header
+        };
+        let lane = |header: Option<InspectionNode>| {
+            let top = if header.is_some() { 117.0 } else { 80.0 };
+            let cards = stack_node(
+                "cards",
+                [304.0, top, 320.0, 200.0],
+                vec![node("ListRow", "card", [304.0, top, 320.0, 49.0], None)],
+            );
+            let column = holding(
+                node("Column", "column", [304.0, 80.0, 320.0, 300.0], None),
+                header.into_iter().chain([cards]).collect(),
+            );
+            holding(
+                node("Container", "lane", [304.0, 80.0, 320.0, 300.0], None),
+                vec![column],
+            )
+        };
+        let board = |lane: InspectionNode| {
+            holding(
+                node("Row", "board", [280.0, 80.0, 1000.0, 600.0], None),
+                vec![lane],
+            )
+        };
+        let found = empty_headings(&board(lane(Some(heading("")))));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].keys.first().map(String::as_str), Some("heading"));
+        assert!(
+            empty_headings(&board(lane(Some(heading("Doing"))))).is_empty(),
+            "a named heading is the lane's words"
+        );
+        assert!(
+            empty_headings(&board(lane(None))).is_empty(),
+            "a lane no heading heads starts its cards at its top"
         );
     }
 

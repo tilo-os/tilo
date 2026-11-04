@@ -75,7 +75,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::CodedName
             | Kind::UnsharedVerb
             | Kind::NestedCard
-            | Kind::LoneDoor => "(no view)",
+            | Kind::LoneDoor
+            | Kind::EmptyHeading => "(no view)",
         };
         assert_eq!(
             finding.view,
