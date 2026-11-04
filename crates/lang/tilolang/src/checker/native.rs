@@ -402,7 +402,10 @@ impl Checker<'_> {
                 Some("mark") => self.mark_arg(n, value),
                 Some("avatar") => avatar = Some(value),
                 Some("checkbox") => {
-                    if self.bind_typed(&node, value, &[Ty::Bool], false).is_some() {
+                    if self
+                        .bind_typed(&node, value, &[Ty::Bool], false, false)
+                        .is_some()
+                    {
                         self.emit(host(
                             Imp::UiPropH,
                             vec![node.clone(), Ex::str("bind"), Ex::str("checkbox")],

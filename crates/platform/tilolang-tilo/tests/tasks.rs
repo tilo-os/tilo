@@ -2261,8 +2261,17 @@ fn the_declared_views_are_the_bars_labeled_switch() {
         .collect();
     assert_eq!(
         segments,
-        ["Project list", "Project board"],
-        "the views it declares, in the order it declares them"
+        ["List", "Board"],
+        "the views it declares, in the order it declares them, each saying what it adds to the type's name"
+    );
+    let icons: Vec<Option<String>> = all(switch, "ui.Segment")
+        .into_iter()
+        .map(|segment| text_of(segment, "icon"))
+        .collect();
+    assert_eq!(
+        icons,
+        [Some("list".to_owned()), Some("columns-2".to_owned())],
+        "each view says the glyph it reads as"
     );
     assert_eq!(
         switch.props.get("selected"),

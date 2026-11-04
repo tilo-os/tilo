@@ -375,7 +375,11 @@ view quiet_page(q: Quiet) {
             .filter(|child| child.kind == "ui.Segment")
             .map(|segment| text_of(segment, "label"))
             .collect();
-        assert_eq!(labels, ["Project list", "Project board"]);
+        assert_eq!(
+            labels,
+            ["List", "Board"],
+            "each view says what it adds to the type's name"
+        );
         assert_eq!(
             tabs.props.get("selected"),
             Some(&Value::Opt(Some(Box::new(Value::Int(0))))),

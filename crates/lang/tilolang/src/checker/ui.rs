@@ -948,24 +948,36 @@ impl Checker<'_> {
         )));
     }
 
-    /// `bind:` to a field or view state whose type is one of `allowed`; `titled` when the
-    /// control draws a document's title, bound to the field marked `(title)`.
+    /// `bind:` to a field or view state whose type is one of `allowed`, or — with `enum_case` —
+    /// of whichever enum the field declares; `titled` when the control draws a document's title,
+    /// bound to the field marked `(title)`.
     pub(super) fn bind_typed(
         &mut self,
         node: &Ex,
         value: &ast::Expr,
         allowed: &[Ty],
+        enum_case: bool,
         titled: bool,
     ) -> Option<Ty> {
-        let names = allowed
-            .iter()
-            .map(|t| self.show(t))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let takes = |ty: &Ty| allowed.contains(ty) || (enum_case && matches!(ty, Ty::Enum(_)));
+        let names = {
+            let mut names = allowed
+                .iter()
+                .map(|t| self.show(t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if enum_case {
+                if !names.is_empty() {
+                    names.push_str(", ");
+                }
+                names.push_str("a case of an enum");
+            }
+            names
+        };
         if let ExprKind::Ident(n) = &value.kind
             && let Some(state) = self.state_named(n)
         {
-            if !allowed.contains(&state.ty) {
+            if !takes(&state.ty) {
                 let t = self.show(&state.ty);
                 self.err("E062", value.span, format!("this binds view state of type {names}; `{n}` is {t}; change it with `on: set({n}, value)`"));
                 return None;
@@ -1028,7 +1040,7 @@ impl Checker<'_> {
             );
             return None;
         };
-        if f.ty.is_container() || !allowed.contains(&f.ty) {
+        if f.ty.is_container() || !takes(&f.ty) {
             let t = self.show(&f.ty);
             self.err(
                 "E062",

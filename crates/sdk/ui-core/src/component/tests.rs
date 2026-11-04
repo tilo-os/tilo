@@ -113,7 +113,8 @@ fn given(key: &str, props: &[(&str, Value)]) -> Given {
 /// A value of `ty` for a required prop.
 fn sample(ty: &Type) -> Value {
     match ty {
-        Type::Text => Value::Text("x".into()),
+        // Text, and a case a binding holds, travel as their words.
+        Type::Text | Type::Enum => Value::Text("x".into()),
         Type::Int => Value::Int(1),
         Type::Float => Value::Float(1.0),
         Type::Bool => Value::Bool(true),

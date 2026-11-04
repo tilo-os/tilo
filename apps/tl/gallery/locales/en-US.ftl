@@ -109,6 +109,9 @@ d-lvaal6xy = Share
 d-rzo2wdf2 = Room
     .doc = The room it is in.
 
+d-tfraxdz4 = Urgency
+    .doc = How soon the report is due.
+
 d-cb2aj7ey = Owner
     .doc = Who looks after the report.
 
@@ -303,6 +306,17 @@ d-uuewf2cr = Pinned
 
 d-ciwf3kva = Title
 
+d-shklew6c = Urgency
+    .doc = How soon a report is due, as a case the report holds.
+
+d-52af4spl = No hurry
+
+d-xv6amesr = Low
+
+d-jrcgjyzr = Medium
+
+d-fglwr2mx = High
+
 d-eqcr4df3 = Picture from
     .doc = A page shown in a picture, from the first to the last.
 
@@ -393,6 +407,12 @@ d-z5ai6zk5 = Controls
     .w-summary = Summary
     .w-details = Details
     .w-history = History
+    .w-cases = Cases
+    .w-urgency = Urgency
+    .w-no-hurry = No hurry
+    .w-low = Low
+    .w-medium = Medium
+    .w-high = High
     .w-people = People
     .w-who-looks-after-it = Who looks after it
     .w-who-reviews-it-still-to-be = Who reviews it, still to be picked

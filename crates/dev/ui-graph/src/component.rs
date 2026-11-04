@@ -426,6 +426,9 @@ pub enum Type {
     Cases {
         name: String,
     },
+    /// A case of one of the app's own enums, by its name: which cases it holds is the field the
+    /// binding names, so a description says only that it takes such a field.
+    Enum,
 }
 
 impl Type {
@@ -449,6 +452,7 @@ impl Type {
             Self::Set(inner) => format!("Set<{}>", inner.show()),
             Self::Map { key, value } => format!("Map<{}, {}>", key.show(), value.show()),
             Self::Action => "Action".into(),
+            Self::Enum => "a case of an enum".into(),
         }
     }
 }

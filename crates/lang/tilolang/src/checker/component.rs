@@ -295,12 +295,13 @@ impl Checker<'_> {
     ) {
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
+        let enum_case = bindings.iter().any(|b| b.ty == Type::Enum);
         // A document's title is drawn by a control that declares it, as TextInput does.
         let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
-        let Some(ty) = self.bind_typed(&node, value, &want, titled) else {
+        let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled) else {
             return;
         };
-        let Some(b) = bindings.iter().find(|b| binding_types(&b.ty).contains(&ty)) else {
+        let Some(b) = bindings.iter().find(|b| binds(&b.ty, &ty)) else {
             return;
         };
         self.emit(host(
@@ -1200,6 +1201,15 @@ pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
     }
 }
 
+/// Whether a binding described as `ty` takes a field of the language type `field`: a case
+/// binding takes a field of whichever enum the app declares, whose cases are the field's.
+fn binds(ty: &Type, field: &Ty) -> bool {
+    match ty {
+        Type::Enum => matches!(field, Ty::Enum(_)),
+        other => binding_types(other).contains(field),
+    }
+}
+
 /// The language's type of a description's scalar type, for checking literals against it.
 fn lang_type(ty: &Type) -> Ty {
     match ty {
@@ -1217,7 +1227,8 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Action => super::platform::host_ty("Action"),
         // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
         Type::Cases { name } => Ty::Enum(toolkit::key(name)),
-        Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
+        // A case is whichever enum the bound field declares, which a description does not name.
+        Type::Resource | Type::Icon | Type::Choice { .. } | Type::Enum => Ty::Error,
     }
 }
 

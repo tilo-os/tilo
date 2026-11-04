@@ -1985,7 +1985,7 @@
         {
           "name": "value",
           "doc": "The case it holds, by the case's name, and where a picked case goes.",
-          "type": "text",
+          "type": "enum",
           "merge": "register"
         }
       ],
@@ -6221,9 +6221,10 @@
       "props": [
         {
           "name": "name",
-          "doc": "The case's own name, as the app declares it: what an edit writes back.",
+          "doc": "The case's own name, as the app declares it: what an edit writes back, never read out.",
           "type": "text",
-          "required": true
+          "required": true,
+          "data": true
         },
         {
           "name": "label",

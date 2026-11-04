@@ -43,7 +43,10 @@ view contact_row(c: Contact) {
   (`ui.TextInput(bind: t.title)`, `ui.Checkbox(bind: t.done)`, `ui.DatePicker(bind: t.due)`,
   `ui.RichInput(bind: t.notes)`), with the type and the merge it declares; no widget has binding
   code of its own. A component may declare several bindings, and `bind:` takes the one whose
-  type the bound place has. A primitive that is a component (`text`, `input`, `checkbox`, ...)
+  type the bound place has. A binding a description declares to take a case (`ui.EnumField`'s
+  `value`) takes a field of any enum the app declares, whose cases are what the field offers;
+  the app names the cases it offers in the description's slot, and a pick is the case's name.
+  A primitive that is a component (`text`, `input`, `checkbox`, ...)
   is its shorter name and nothing else.
 - A box bound to a value writes that field when it is pressed, unless the view names what a
   press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and

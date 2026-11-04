@@ -12,8 +12,8 @@ crate::component::part_slot!(EnumOptionProps);
 #[derive(Clone, Component, Default)]
 #[component(name = "EnumOption", role = "MenuItem", label = "label")]
 pub struct EnumOptionProps {
-    /// The case's own name, as the app declares it: what an edit writes back.
-    #[component(required)]
+    /// The case's own name, as the app declares it: what an edit writes back, never read out.
+    #[component(required, data)]
     pub name: String,
     /// What the case reads as, in a word or two: "High".
     #[component(required, positional)]
@@ -30,7 +30,7 @@ pub struct EnumOptionProps {
 #[component(name = "EnumField", role = "Button", label = "label")]
 pub struct EnumFieldProps {
     /// The case it holds, by the case's name, and where a picked case goes.
-    #[component(bind)]
+    #[component(bind(ty = crate::component::EnumCase))]
     pub value: Bound<String>,
     /// The cases to pick from, in the enum's order.
     #[component(slot(default))]
