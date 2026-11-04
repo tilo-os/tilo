@@ -2101,10 +2101,11 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
     assert_eq!(delete.key.as_deref(), Some("delete"));
 }
 
-/// Only an action that says what state it shows (`on:`) is drawn as a toggle, in the state it
-/// reports; the commands offered beside it run once and stay buttons.
+/// A window whose type declares more than one view offers them as one labeled switch, in the
+/// order it declares them, the view it shows chosen; the commands beside the switch run once and
+/// no action is drawn as a switch of its own.
 #[test]
-fn only_an_action_that_shows_a_state_is_drawn_as_a_toggle() {
+fn the_declared_views_are_the_bars_labeled_switch() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root]);
     ada.commit();
@@ -2113,27 +2114,45 @@ fn only_an_action_that_shows_a_state_is_drawn_as_a_toggle() {
     };
     let mut view = ada.host.open_resource(&at.target, None).unwrap();
     view.poll_patches().unwrap();
-    let (mut toggles, mut commands) = (Vec::new(), Vec::new());
+    let switch = all(view.tree(), "ui.ViewTabs")
+        .into_iter()
+        .next()
+        .expect("the project's window switches between the views it declares");
+    let segments: Vec<String> = all(switch, "ui.Segment")
+        .into_iter()
+        .filter_map(|segment| text_of(segment, "label"))
+        .collect();
+    assert_eq!(
+        segments,
+        ["Project list", "Project board"],
+        "the views it declares, in the order it declares them"
+    );
+    assert_eq!(
+        switch.props.get("selected"),
+        Some(&Value::Opt(Some(Box::new(Value::Int(0))))),
+        "the view the window shows is the one chosen"
+    );
+    let mut toggles = Vec::new();
+    let mut commands = Vec::new();
     for button in all(view.tree(), "ui.Button") {
         let Some(label) = text_of(button, "label") else {
             continue;
         };
-        // A flag prop is the node's 0 or 1: only an action that reports a state is given one.
-        match button.props.get("toggled") {
-            Some(_) => toggles.push(label),
-            None => commands.push(label),
+        if button.props.contains_key("toggled") {
+            toggles.push(label);
+        } else {
+            commands.push(label);
         }
     }
-    assert_eq!(
-        toggles,
-        ["Board"],
-        "the one action that reports a state is the one drawn as a toggle"
+    assert!(
+        toggles.is_empty(),
+        "no action is drawn as a switch: {toggles:?}"
     );
     assert!(
-        ["New task…", "New section", "Rename…"]
+        ["New task", "New section", "Rename…"]
             .iter()
             .all(|label| commands.contains(&label.to_string())),
-        "and the commands beside it are buttons, not switches: {commands:?}"
+        "and the commands beside it are buttons: {commands:?}"
     );
 }
 

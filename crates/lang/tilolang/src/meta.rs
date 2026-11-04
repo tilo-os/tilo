@@ -800,19 +800,6 @@ impl PackageMeta {
         self.actions.iter().filter(|a| a.is_migration())
     }
 
-    /// Whether a declaration attaches the view `id` to a type: the type's default view, its row
-    /// view, or one of the views a window of it switches between. A view no declaration names is
-    /// the app's own helper, which the app places itself and no window offers.
-    #[must_use]
-    pub fn is_declared_view(&self, id: &str) -> bool {
-        self.default_views.iter().any(|d| d.view == id)
-            || self.row_views.iter().any(|d| d.view == id)
-            || self
-                .views_of
-                .iter()
-                .any(|v| v.views.iter().any(|view| view == id))
-    }
-
     /// The views a person or an agent can open or apply: every view but the hidden ones that
     /// present an action's state or are the rows of a loop.
     pub fn offered_views(&self) -> impl Iterator<Item = &ViewMeta> {
@@ -833,7 +820,6 @@ impl PackageMeta {
             )
         };
         self.offered_views()
-            .filter(|view| self.is_declared_view(&view.id))
             .filter(|view| matches!(&view.params[..], [only] if of_type(only)))
             .collect()
     }
