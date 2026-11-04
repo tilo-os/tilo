@@ -63,6 +63,9 @@ ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default
 # `#[resource]` and `#[derive(Model)]` expansions resolve through the prelude.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The spelling of a conversation's record id, shared with the workspace's own
+# record list.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The link grammar `share-link` renders.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-history = { version = "0.1.0", path = "../tilo-history" }

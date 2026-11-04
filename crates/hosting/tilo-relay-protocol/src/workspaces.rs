@@ -478,20 +478,9 @@ pub enum WorkspacesRequest {
         workspace: String,
         name: String,
     },
-    /// Record `announcement`, the pair this page's person shares with another
-    /// member of `workspace`, as an announcement their own device signed
-    /// (`DirectPair` in JSON): answered with [`WorkspacesReply::Paired`].
-    /// Whoever is a member, for a pair of their own. The text of a
-    /// conversation never goes through here; the record is the pair's.
-    Pair {
-        #[serde(rename = "room")]
-        workspace: String,
-        /// The pair's id, `direct_` and its hash, which names the record it
-        /// is the conversation of.
-        pair: String,
-        /// The announcement the page's device signed.
-        announcement: Vec<u8>,
-    },
+    /// Retired: a conversation is an ordinary record of the workspace. It
+    /// keeps the requests after it at their encoded positions.
+    RetiredPair {},
 }
 
 /// The answer to a [`WorkspacesRequest`].
@@ -524,8 +513,9 @@ pub enum WorkspacesReply {
     Shared(u32),
     /// The workspace names the caller as asked, for [`WorkspacesRequest::Name`].
     Named,
-    /// The workspace holds the pair, for [`WorkspacesRequest::Pair`].
-    Paired,
+    /// Retired with [`WorkspacesRequest::RetiredPair`]; it keeps the replies
+    /// after it at their encoded positions.
+    RetiredPaired,
 }
 
 /// One `/join` step.

@@ -113,12 +113,6 @@ pub enum WorkspaceRefusal {
     /// The batch adds or changes the shortcut `0` naming who saved it
     /// without that person's device's proof ([`super::saved_shortcut`]).
     ShortcutAuthorship(String),
-    /// The batch records the pair `0` without the proof of a device of one of
-    /// its two people ([`super::direct_pair`]).
-    DirectPairProof(String),
-    /// The batch changes or removes the pair `0`, which a workspace records
-    /// once.
-    DirectPairImmutable(String),
 }
 
 impl std::fmt::Display for WorkspaceRefusal {
@@ -139,13 +133,6 @@ impl std::fmt::Display for WorkspaceRefusal {
                 f,
                 "the shortcut `{shortcut}` names who saved it without their device's proof"
             ),
-            Self::DirectPairProof(pair) => write!(
-                f,
-                "the pair `{pair}` is not proven by a device of one of its two people"
-            ),
-            Self::DirectPairImmutable(pair) => {
-                write!(f, "the pair `{pair}` is not the one the workspace holds")
-            }
         }
     }
 }
@@ -224,9 +211,8 @@ pub fn admit_workspace_changes(
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
 /// 6. The media policy is well formed and its transition is permitted
 ///    ([`media::validate_transition`]).
-/// 7. A shortcut names as who saved it only a proven saver, and a pair record
-///    only its two proven people, each written once
-///    ([`super::saved_shortcut`], [`super::direct_pair`]).
+/// 7. A shortcut names as who saved it only a proven saver
+///    ([`super::saved_shortcut`]).
 ///
 /// # Errors
 ///
@@ -312,7 +298,6 @@ fn checked(
     // Every writer, the owner's devices included: it relays and merges what members
     // write, so who sent a batch says nothing about who saved a shortcut.
     saved_shortcuts_proven(before, candidate, workspace, now_ns)?;
-    direct_pairs_proven(before, candidate, workspace, now_ns)?;
     if !super::immutable_receipts(before, candidate) {
         return Err(WorkspaceRefusal::ReceiptImmutable);
     }
@@ -356,63 +341,6 @@ fn saved_shortcuts_proven(
             != shortcut.saved_by
         {
             return Err(WorkspaceRefusal::ShortcutAuthorship(shortcut.id));
-        }
-    }
-    Ok(())
-}
-
-/// Every pair a batch adds is the two people it names, proven by a device of
-/// one of them in this workspace ([`super::direct_pair::proven_pair`]), and
-/// every pair the workspace holds is left as it is: a pair is written once,
-/// and what it names is who reads its record. Unlike a shortcut's, the proof is
-/// asked again at each read, so a document received with nothing held before it
-/// is not a change to judge here.
-fn direct_pairs_proven(
-    before: Option<&AutoCommit>,
-    candidate: &AutoCommit,
-    workspace: &str,
-    now_ns: u64,
-) -> Result<(), WorkspaceRefusal> {
-    let Some(before) = before else {
-        return Ok(());
-    };
-    let held = super::direct_pair::direct_pairs_of(before);
-    let written = super::direct_pair::direct_pairs_of(candidate);
-    if written.len() > super::direct_pair::MAX_DIRECT_PAIRS {
-        return Err(WorkspaceRefusal::DirectPairProof(format!(
-            "the workspace holds as many pairs as it can ({})",
-            super::direct_pair::MAX_DIRECT_PAIRS
-        )));
-    }
-    if let Some((pair, _)) = held
-        .iter()
-        .find(|(pair, bytes)| written.get(*pair).is_none_or(|now| now != *bytes))
-    {
-        return Err(WorkspaceRefusal::DirectPairImmutable(pair.clone()));
-    }
-    let mut added = written
-        .iter()
-        .filter(|(pair, bytes)| held.get(*pair).is_none_or(|held| held != *bytes))
-        .peekable();
-    if added.peek().is_none() {
-        return Ok(());
-    }
-    let revocations = super::saved_shortcut::workspace_revocations(candidate);
-    for (pair, bytes) in added {
-        // ignored-failure: a pair announcement that does not decode proves no pair
-        let proven = serde_json::from_slice::<super::direct_pair::DirectPair>(bytes)
-            .ok()
-            .and_then(|announcement| {
-                super::direct_pair::proven_pair(
-                    workspace,
-                    pair,
-                    &announcement,
-                    &revocations,
-                    now_ns,
-                )
-            });
-        if proven.is_none() {
-            return Err(WorkspaceRefusal::DirectPairProof(pair.clone()));
         }
     }
     Ok(())

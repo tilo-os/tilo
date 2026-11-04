@@ -215,13 +215,11 @@ impl PeerGovernance<'_> {
         );
         let mut withheld = std::collections::HashMap::new();
         for (app, record) in records {
-            // Only a grant below the workspace, a member's own record (read by
-            // that person alone), or a pair's (read by its two people alone)
-            // can decide a record otherwise than the workspace: a record
-            // neither covers is read by every member.
+            // Only a grant below the workspace or a member's own record (read
+            // by that person alone) can decide a record otherwise than the
+            // workspace: a record neither covers is read by every member.
             let node = collab_types::document_node(workspace, app, record);
             let covered = collab_types::member_record(record).is_some()
-                || collab_types::direct_pair(record).is_some()
                 || policy
                     .grants
                     .iter()

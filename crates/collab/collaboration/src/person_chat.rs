@@ -1,10 +1,10 @@
 //! What the workspace's owner alone can say about a person's conversations,
 //! and how a page's views read and write them: the door of `Request`s, the
 //! page's session with its host (`install_transport`), and the lane a selected
-//! view keeps. A native window keeps its conversations in the pair records
-//! and asks the door only for what the records cannot say: which pairs this
-//! person is in, the pair's announcement, the old private store to import
-//! once, and its emptying. Reads on the UI sync path use a bounded, revocable
+//! view keeps. A native window keeps its conversations in their records and
+//! asks the door only for what the records cannot say: the old private store
+//! to import once, and its emptying. Reads on the UI sync path use a bounded,
+//! revocable
 //! local snapshot; an operation answers with a [`Pending`] reply that a page
 //! fills later, never by waiting on the UI thread.
 use crate::time::{Duration, Instant};
@@ -36,7 +36,7 @@ pub struct Conversation {
     pub messages: Vec<Message>,
 }
 /// One page of a conversation still held in the old private store, read to
-/// import it into the pair's record.
+/// import it into the conversation's record.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportPage {
     /// The person the conversation is with, as asked for.
@@ -58,13 +58,6 @@ pub struct StoredMessage {
     #[serde(default)]
     pub at: i64,
 }
-/// A pair the workspace holds a proof of: the record the two people share,
-/// and who they are (their root public keys, as the workspace spells them).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Pair {
-    pub pair: String,
-    pub people: [String; 2],
-}
 
 /// What a private operation asks of the host: the closed vocabulary the
 /// native host's person door takes, in the same JSON.
@@ -84,26 +77,26 @@ pub enum Request {
         text: String,
         invocation: uuid::Uuid,
     },
-    /// Announce the pair this device's person shares with `public_key`, so
-    /// that both of them read and change its record. The conversation itself
-    /// is the record's, never this door's.
-    Announce { public_key: String },
-    /// The pairs this person is in that the workspace holds a proof of: the
-    /// records their devices read and change, whether or not one of them is
-    /// open here.
-    Pairs,
+    /// Retired: a conversation is an ordinary record of the workspace, named
+    /// by the two people it is between, so nothing proves a pair before one
+    /// is opened.
+    RetiredAnnounce { public_key: String },
+    /// Retired with [`Self::RetiredAnnounce`]: no list of a person's pair
+    /// records is asked for.
+    RetiredPairs,
     /// One page of the conversation with `public_key` as the old private
-    /// store keeps it, read for the import into the pair's record. People are
-    /// named as the workspace names them here, on every target, whichever
-    /// store holds the old conversation. What answers it only reads: the
-    /// conversations' own writes go to their pair records, and this door goes
-    /// with the stored conversations, the release after the import.
+    /// store keeps it, read for the import into the conversation's record.
+    /// People are named as the workspace names them here, on every target,
+    /// whichever store holds the old conversation. What answers it only
+    /// reads: the conversations' own writes go to their records, and this
+    /// door goes with the stored conversations, the release after the
+    /// import.
     Import {
         public_key: String,
         after_sequence: u64,
     },
     /// Empty the device's old private store, once its conversations are in
-    /// the pair records.
+    /// their records.
     Clear,
 }
 
@@ -111,9 +104,6 @@ pub enum Request {
 pub enum Answer {
     Contacts(Vec<Contact>),
     Conversation(Conversation),
-    /// The pair was announced; nothing of the conversation came back.
-    Announced,
-    Pairs(Vec<Pair>),
     ImportPage(ImportPage),
     /// The old private store was emptied.
     Cleared,
@@ -366,27 +356,6 @@ fn wake_all() {
     }
     crate::WakeHandle::new().wake();
 }
-/// Counts the times the workspace told this process that the pairs its
-/// people are in may have changed: a governance change that admits a pair's
-/// record. A window asks for the pairs again when it changes, and never on a
-/// clock: nothing about them moves without the workspace saying so.
-static PAIRS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// [`PAIRS_GENERATION`]: what a window compares to know whether the pairs it
-/// read are still the workspace's.
-#[must_use]
-pub fn pairs_generation() -> u64 {
-    PAIRS_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// The workspace's word that the pairs may have changed: every window
-/// reading them is woken, and asks for them again. A native host says it when
-/// its governance changes; a page says it when its replica admits a pair.
-pub fn pairs_changed() {
-    PAIRS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    wake_all();
-}
-
 /// Drop the cached contacts and conversations: the host calls this when
 /// the identity or connection changes.
 pub(crate) fn invalidate() {
@@ -461,9 +430,6 @@ fn exchange(
 enum Reply {
     Contacts,
     Conversation,
-    /// Nothing of the conversation comes back: the host announced its pair.
-    Announced,
-    Pairs,
     ImportPage,
     Cleared,
 }
@@ -473,13 +439,15 @@ impl Reply {
     fn of(request: &Request) -> Self {
         match request {
             Request::Contacts => Self::Contacts,
-            Request::Announce { .. } => Self::Announced,
-            Request::Pairs => Self::Pairs,
             Request::Import { .. } => Self::ImportPage,
             Request::Clear => Self::Cleared,
-            Request::Open { .. } | Request::Read { .. } | Request::Send { .. } => {
-                Self::Conversation
-            }
+            Request::Open { .. }
+            | Request::Read { .. }
+            | Request::Send { .. }
+            // Never sent: the host's vocabulary has no such request, so the
+            // bytes come back refused before an answer is read.
+            | Request::RetiredAnnounce { .. }
+            | Request::RetiredPairs => Self::Conversation,
         }
     }
 }
@@ -496,10 +464,6 @@ fn decode(reply: Reply, bytes: &[u8]) -> Result<Answer, String> {
         Reply::Conversation => serde_json::from_slice(bytes)
             .map(Answer::Conversation)
             .map_err(|_| "invalid private conversation reply".into()),
-        Reply::Announced => Ok(Answer::Announced),
-        Reply::Pairs => serde_json::from_slice(bytes)
-            .map(Answer::Pairs)
-            .map_err(|_| "invalid private pairs reply".into()),
         Reply::ImportPage => serde_json::from_slice(bytes)
             .map(Answer::ImportPage)
             .map_err(|_| "invalid private conversation import reply".into()),
@@ -646,53 +610,9 @@ fn note_conversation(value: &mut Cache, conversation: &Conversation) {
     }
 }
 
-/// Announce the pair this device's person shares with `public_key`, so that
-/// the two of them and no one else read and change its record. Answers once
-/// the workspace holds the proof; the conversation itself is the record's.
-pub fn announce(public_key: &str) -> Pending<()> {
-    let original = match original() {
-        Ok(original) => original,
-        Err(error) => return Pending::ready(Err(error)),
-    };
-    let (pending, fill) = Pending::new();
-    exchange(
-        Request::Announce {
-            public_key: public_key.to_owned(),
-        },
-        original,
-        move |answer| {
-            fill.fill(match answer {
-                Ok(Answer::Announced) => Ok(()),
-                Ok(_) => Err("invalid private conversation reply".into()),
-                Err(error) => Err(error),
-            });
-        },
-    );
-    pending
-}
-
-/// The pairs this person is in, as the workspace proves them: the records
-/// their devices read and change, whichever conversation is open. A device
-/// that never opened one learns it here, and opens it so it syncs.
-pub fn pairs() -> Pending<Vec<Pair>> {
-    let original = match original() {
-        Ok(original) => original,
-        Err(error) => return Pending::ready(Err(error)),
-    };
-    let (pending, fill) = Pending::new();
-    exchange(Request::Pairs, original, move |answer| {
-        fill.fill(match answer {
-            Ok(Answer::Pairs(pairs)) if pairs.len() <= 4096 => Ok(pairs),
-            Ok(_) => Err("invalid private pairs reply".into()),
-            Err(error) => Err(error),
-        });
-    });
-    pending
-}
-
 /// One page of the conversation with `peer` as the old private store keeps
-/// it, read to import it into the pair's record: the app has it imported
-/// once, and never writes that store again.
+/// it, read to import it into the conversation's record: the app has it
+/// imported once, and never writes that store again.
 pub fn import_archive(public_key: &str, after_sequence: u64) -> Pending<ImportPage> {
     let original = match original() {
         Ok(original) => original,
@@ -718,8 +638,8 @@ pub fn import_archive(public_key: &str, after_sequence: u64) -> Pending<ImportPa
 }
 
 /// Empty the device's old private conversation store, once every conversation
-/// it held is in its pair's record: what the workspace keeps of a person's
-/// old history is the records.
+/// it held is in its record: what the workspace keeps of a person's old
+/// history is the records.
 pub fn clear_archive() -> Pending<()> {
     let original = match original() {
         Ok(original) => original,
@@ -765,12 +685,12 @@ fn start_subscription(peer: &str, original: Option<uuid::Uuid>) -> Result<uuid::
             },
         );
     }
-    // Only a page's host watches a conversation: a native window's pair
-    // records wake its window themselves, and this build has no page door.
+    // Only a page's host watches a conversation: a native window's records
+    // wake its window themselves, and this build has no page door.
     #[cfg(feature = "broker-transport")]
     let result: Result<(), String> = {
         let _ = (original, receiver);
-        Err("a window's conversations are its pair's records".to_owned())
+        Err("a window's conversations are its records".to_owned())
     };
     #[cfg(not(feature = "broker-transport"))]
     let result = {

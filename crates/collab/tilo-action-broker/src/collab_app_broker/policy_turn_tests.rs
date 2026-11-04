@@ -168,7 +168,6 @@ fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
         Some(NativeContext {
             admitted,
             roster: Vec::new(),
-            pairs: Vec::new(),
         }),
     );
     assert_eq!(

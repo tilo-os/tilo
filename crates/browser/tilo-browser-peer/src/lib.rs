@@ -54,8 +54,8 @@ pub use health::{PeerSnapshot, SessionHealth};
 pub use previews::{LiveChange, LiveState, RemoteMember};
 pub use session::{
     CallFrame, Completion, Failure, FailureSubject, Host, LaneCompletion, LocalState,
-    NodeCompletion, PAGE_FAILURE_CODES, PairsCompletion, PeerConfig, PeerEvent, PeerEvents,
-    PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
+    NodeCompletion, PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus,
+    RoomsCompletion, TransportPhase,
 };
 pub use tilo_live::live::Track;
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, HttpsLink, LinkError, host_info};

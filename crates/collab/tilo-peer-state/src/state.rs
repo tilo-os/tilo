@@ -32,7 +32,6 @@ pub(crate) mod json_resource_tests;
 use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
-mod direct_pairs;
 mod member_records;
 use member_records::empty_genesis;
 mod facades;
@@ -1114,13 +1113,6 @@ impl StatePeer {
 
     /// Read permission for an exact canonical record using the same governed
     /// actor/resource vocabulary as document mutation admission.
-    ///
-    /// A pair record ([`collab_types::direct_pair`]) is decided by its two
-    /// people alone ([`Self::direct_pair`]): whoever the workspace's grants
-    /// name, the owner and the workspace host included, reads nothing of a
-    /// conversation they are not in. One the workspace holds no proof of is
-    /// nobody's: its id names a pair, so the workspace's grants say nothing
-    /// about who its two people are.
     pub fn check_document_read(
         &self,
         device: [u8; 32],
@@ -1129,18 +1121,13 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
-        let allowed = match collab_types::direct_pair(record) {
-            Some(_) => self
-                .direct_pair(record, now)
-                .is_some_and(|pair| pair.contains(&member.person)),
-            None => backend::access::document_read(
-                &member.authority(&tilo_action_policy::roles::foreign_device_bound()),
-                &self.core.workspace,
-                app,
-                record,
-                now,
-            ),
-        };
+        let allowed = backend::access::document_read(
+            &member.authority(&tilo_action_policy::roles::foreign_device_bound()),
+            &self.core.workspace,
+            app,
+            record,
+            now,
+        );
         if !allowed {
             return Err(format!("record read forbidden: {app}/{record}"));
         }
@@ -1551,16 +1538,8 @@ impl StatePeer {
             Some(document) => Some(held_units(&document.doc, envelope)),
             None => enforced.then(AutoCommit::new),
         };
-        // A pair record is its two people's to write, whoever the workspace's
-        // grants name ([`Self::direct_pair`]). One the workspace holds no
-        // proof of is nobody's to write.
-        let pair =
-            collab_types::direct_pair(record).map(|_| self.direct_pair(record, authorization_time));
-        let allows = |node: &TreePath, kind: ActionKind| match &pair {
-            Some(Some(pair)) => pair.contains(&member.person),
-            Some(None) => false,
-            None => member.allows(node, kind, authorization_time),
-        };
+        let allows =
+            |node: &TreePath, kind: ActionKind| member.allows(node, kind, authorization_time);
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {

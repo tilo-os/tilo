@@ -1,14 +1,13 @@
 //! What only the workspaces' owner can say about a person's private
-//! conversations: which pairs the workspace proves they are in, the
-//! announcement that makes a pair's record theirs, and the old private store
-//! their history is imported from once and then emptied.
+//! conversations: the old private store their history is imported from once
+//! and then emptied.
 //!
-//! A conversation's body is its pair's record, which the app reads and writes
-//! itself; nothing of it passes this door. What does is decided here: the
-//! caller is the certificate the broker attested on the app's connection,
-//! never something an app said about itself, and the owner refuses one that
-//! is not a current device of a person here, and every call on a workspace
-//! this device only enrolled in rather than hosts.
+//! A conversation is an ordinary record of the workspace, which the app reads
+//! and writes itself; nothing of it passes this door. What does is decided
+//! here: the caller is the certificate the broker attested on the app's
+//! connection, never something an app said about itself, and the owner refuses
+//! one that is not a current device of a person here, and every call on a
+//! workspace this device only enrolled in rather than hosts.
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -40,23 +39,6 @@ impl PersonChat {
         Self { engine }
     }
 
-    /// The pairs this person is in, in `workspace`: the pair's record id
-    /// and the two people it proves, as the owner holds the proof.
-    fn pairs_of(
-        &self,
-        workspace: WorkspaceId,
-        caller: &DeviceCert,
-    ) -> Result<Vec<(String, [String; 2])>, String> {
-        let me = hex::encode(caller.user_public_key);
-        Ok(self
-            .engine
-            .owner()
-            .direct_pairs(workspace, SystemTime::now())?
-            .into_iter()
-            .filter(|(_, people)| people.contains(&me))
-            .collect())
-    }
-
     /// The owner every call is decided by, and the workspace as the owner
     /// names it.
     fn owner(&self, workspace: &str) -> Result<(WorkspaceId, &NativeWorkspaceOwner), String> {
@@ -66,14 +48,6 @@ impl PersonChat {
 }
 
 impl PersonChatServices for PersonChat {
-    fn pairs(&self, workspace: &str, caller: &DeviceCert) -> Result<Vec<String>, String> {
-        Ok(self
-            .pairs_of(self.owner(workspace)?.0, caller)?
-            .into_iter()
-            .map(|(pair, _)| pair)
-            .collect())
-    }
-
     fn command(
         &self,
         workspace: &str,
@@ -91,39 +65,6 @@ impl PersonChatServices for PersonChat {
         };
         let now = SystemTime::now();
         let value = match command {
-            // The records this person's conversations live in, so a device
-            // that never opened one still syncs it. Only their own pairs:
-            // who else talks with whom is not this door's.
-            PersonChatCommand::Pairs => serde_json::json!(
-                self.pairs_of(workspace, caller)?
-                    .into_iter()
-                    .map(|(pair, people)| serde_json::json!({
-                        "pair": pair,
-                        "people": people,
-                    }))
-                    .collect::<Vec<_>>()
-            ),
-            // The one write a conversation needs of its host: the pair the
-            // two people share, so their devices read and change its record.
-            // What it holds is the record's own, and stays off this door.
-            PersonChatCommand::Announce { public_key } => {
-                use tilo_action_broker::owner_commits::OwnerCustody as _;
-                let other = peer_key(&public_key)?;
-                // Chat names people by their root public key; the private
-                // store hashed each person to name its conversations. The
-                // pair is the same one either way.
-                let stored = tilo_peer_state::owner::person_store_key(other);
-                if !owner
-                    .direct_contacts(workspace, &authority, now)?
-                    .iter()
-                    .any(|contact| contact.public_key == stored)
-                {
-                    return Err("a conversation is opened with a person of this workspace".into());
-                }
-                let key = self.engine.signing_key(owner, workspace)?;
-                owner.commit_direct_pair(workspace, caller, &other, &key, now)?;
-                serde_json::json!({})
-            }
             // The old store's conversations are in the pair records: one
             // publication empties it, and nothing writes there again.
             PersonChatCommand::Clear => {

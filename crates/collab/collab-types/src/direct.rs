@@ -1,15 +1,14 @@
-//! A record two people share privately: `direct/<pair id>`.
+//! The id of a conversation's record: `direct/<pair id>`.
 //!
 //! A conversation between two people is an ordinary record of the workspace,
-//! one record = one channel = one content-key group, read by the two people's
-//! devices and by no one else's
-//! ([`member_record`](crate::member_record) is the same shape for one person).
-//! Its id names the pair rather than the text, so anyone in the workspace can
-//! derive it: that a conversation exists is metadata, its text is not.
+//! decided by the workspace's policy like any other record. Its id names the
+//! pair rather than the text, so either person's device derives the same id
+//! and both reach the one record they share.
 //!
 //! The pair id is the one the owner-side conversation store has always spelt
 //! (`direct_` and the hash of the workspace and the two people, both keyed
-//! and sorted), so a stored conversation moves to its record unchanged.
+//! and sorted), so a stored conversation is imported into its record unchanged
+//! and a record written before it stays readable.
 
 const RECORD_PREFIX: &str = "direct/";
 
@@ -51,26 +50,6 @@ pub fn canonical_pair(pair: &str) -> bool {
     pair.strip_prefix("direct_").is_some_and(canonical)
 }
 
-/// The pair whose record `record` is, `None` for any other record.
-///
-/// A conversation of more than one record — parts of a chain
-/// (`derived:part.<n>@`), a record a workspace's hosts send only once asked
-/// (`derived:on-demand@`) — is the same pair's, so the wrappers a record id
-/// carries are peeled first.
-#[must_use]
-pub fn direct_pair(record: &str) -> Option<&str> {
-    let mut record = record;
-    while let Some((_, base)) = record
-        .strip_prefix("derived:")
-        .and_then(|derived| derived.split_once('@'))
-    {
-        record = base;
-    }
-    record
-        .strip_prefix(RECORD_PREFIX)
-        .filter(|pair| canonical_pair(pair))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,23 +67,9 @@ mod tests {
         let (ada, bob) = (person(0x11), person(0x22));
         let pair = direct_pair_id(WORKSPACE, &ada, &bob).unwrap();
         assert_eq!(direct_pair_id(WORKSPACE, &bob, &ada), Some(pair.clone()));
-        assert_eq!(direct_pair(&direct_record(&pair)), Some(pair.as_str()));
-        assert_eq!(direct_pair("tab:1"), None);
-        assert_eq!(direct_pair("direct/not-a-pair"), None);
-    }
-
-    #[test]
-    fn a_pairs_parts_and_asked_for_records_are_the_pairs() {
-        let pair = direct_pair_id(WORKSPACE, &person(0x11), &person(0x22)).unwrap();
-        let record = direct_record(&pair);
-        for wrapped in [
-            record.clone(),
-            format!("derived:on-demand@{record}"),
-            format!("derived:part.3@{record}"),
-            format!("derived:part.0@derived:on-demand@{record}"),
-        ] {
-            assert_eq!(direct_pair(&wrapped), Some(pair.as_str()), "{wrapped}");
-        }
+        assert_eq!(direct_record(&pair), format!("direct/{pair}"));
+        assert!(canonical_pair(&pair));
+        assert!(!canonical_pair("direct/not-a-pair"));
     }
 
     #[test]

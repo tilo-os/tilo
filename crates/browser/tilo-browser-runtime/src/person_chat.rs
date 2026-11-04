@@ -1,11 +1,8 @@
 //! The page's door to what only the workspace can say about a person's direct
-//! conversations: which pairs they are in, the announcement that makes a
-//! pair's record theirs, and the old private store their history is imported
-//! from once. A conversation's body is its pair's record, which the app reads
-//! and writes through the page's replica like any other record; the page's
-//! pairs come from that replica, and the announcement goes to the host, which
-//! records the proof the page's own device signed. Nothing waits on the page
-//! thread: each answer comes back through the toolkit's callbacks.
+//! conversations: the old private store their history is imported from once.
+//! A conversation is an ordinary record of the workspace, which the app reads
+//! and writes through the page's replica like any other record. Nothing waits
+//! on the page thread: each answer comes back through the toolkit's callbacks.
 //!
 //! The workspace's private conversations ([`ask_private`]) are the page's
 //! remaining read of the old store and the door the page shell's people
@@ -17,7 +14,7 @@ use tilo_relay_protocol::workspaces::private::{
     PrivateCall, PrivateOperation, PrivateReply, read_whole,
 };
 use ui::person_chat::{
-    Answer, AnswerDone, Contact, Conversation, ImportPage, Message, Pair, Request, StoredMessage,
+    Answer, AnswerDone, Contact, Conversation, ImportPage, Message, Request, StoredMessage,
     WatchDone,
 };
 
@@ -125,27 +122,6 @@ impl PagePrivate {
         }))
     }
 
-    /// The pairs this page's person is in, as the page's replica holds the
-    /// workspace's proofs: only their own, so who else talks with whom stays
-    /// the workspace's.
-    async fn pairs(&self) -> Result<Answer, String> {
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        crate::replication::direct_pairs(
-            self.page,
-            Box::new(move |pairs| {
-                let _ = reply.send(pairs);
-            }),
-        )?;
-        let pairs = answer.await.map_err(|_| "peer session closed")??;
-        let mut pairs: Vec<Pair> = pairs
-            .into_iter()
-            .filter(|(_, people)| people.contains(&self.me))
-            .map(|(pair, people)| Pair { pair, people })
-            .collect();
-        pairs.sort_by(|left, right| left.pair.cmp(&right.pair));
-        Ok(Answer::Pairs(pairs))
-    }
-
     /// One page of the conversation with `peer` as the old private store keeps
     /// it: read only, so the migration takes it over and nothing is written
     /// back there.
@@ -241,22 +217,6 @@ impl PagePrivate {
                 }
                 self.whole(&public_key).await
             }
-            // The page signs its pair where its key is kept, and the host
-            // records it in the workspace's governance.
-            Request::Announce { public_key } => {
-                let other = peer_key(&public_key)?;
-                let (reply, answer) = tokio::sync::oneshot::channel();
-                crate::replication::announce_pair(
-                    self.page,
-                    other,
-                    Box::new(move |announced| {
-                        let _ = reply.send(announced);
-                    }),
-                )?;
-                answer.await.map_err(|_| "peer session closed")??;
-                Ok(Answer::Announced)
-            }
-            Request::Pairs => self.pairs().await,
             Request::Import {
                 public_key,
                 after_sequence,
@@ -268,6 +228,11 @@ impl PagePrivate {
             // conversations are imported from is the host's, and stays there
             // read only until it goes.
             Request::Clear => Ok(Answer::Cleared),
+            // Retired: a conversation is an ordinary record of the workspace,
+            // which a page opens like any other.
+            Request::RetiredAnnounce { .. } | Request::RetiredPairs => {
+                Err("a conversation is a record of the workspace".into())
+            }
         }
     }
 }

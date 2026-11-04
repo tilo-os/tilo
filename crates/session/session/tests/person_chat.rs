@@ -1,9 +1,8 @@
-//! What Chat still needs of the session for a direct conversation: which pair
-//! records this person shares, the announcement that makes a pair's record
-//! theirs, and the one import of the old private store before it is emptied.
+//! What Chat still needs of the session for a direct conversation: the one
+//! import of the old private store before it is emptied.
 //!
-//! The conversation itself is the pair's record, which Chat reads and writes
-//! as the app's own resource and which never passes this door
+//! The conversation itself is an ordinary record of the workspace, which Chat
+//! reads and writes as the app's own resource and which never passes this door
 //! (`apps/chat/src/direct/acceptance.rs`). The people of this workspace are
 //! the person whose device runs the session, another device of theirs, and
 //! someone else the workspace certified; the app reaches the door as the
@@ -93,12 +92,8 @@ struct Fixture {
     _root: tempfile::TempDir,
 }
 
-fn fixture() -> Fixture {
-    fixture_with(false)
-}
-
 /// The fixture, with the old private store a conversation when
-/// `old_conversation`: the history a person's pair record imports.
+/// `old_conversation`: the history a person's conversation imports.
 fn fixture_with(old_conversation: bool) -> Fixture {
     let root = tempfile::tempdir().expect("a directory for the identity");
     let xdg = root.path().join("config");
@@ -429,147 +424,15 @@ async fn ask(
     serde_json::from_slice(&reply).expect("the session answers JSON")
 }
 
-/// A person's root public key as a pair's people are spelt, and as the pair's
-/// id is named with.
+/// A person's root public key as the workspace and a conversation spell it.
 fn root_hex(root: [u8; 32]) -> String {
     hex::encode(root)
-}
-
-/// What the pair door answered: the pairs before and after the announcement,
-/// the refusal of a person this workspace never certified, and the same
-/// question asked by the person's other device.
-struct PairProof {
-    before: serde_json::Value,
-    refused: String,
-    confirmed: serde_json::Value,
-    after: serde_json::Value,
-    theirs: serde_json::Value,
-}
-
-/// Chat asks which pair records it is in, announces the pair with the other
-/// person, and asks again: once from this device, once from the other
-/// person's.
-fn announce_calls(socket: &PathBuf, keys: &Keys) -> PairProof {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime for the app");
-    let peer = root_hex(keys.peer_cert.user_public_key);
-    runtime.block_on(async {
-        let client = connect(socket);
-        let mine = client
-            .join_channel(&channel(), &presentation(&keys.device, &keys.cert))
-            .await
-            .expect("the app the session launched joins the workspace's channel");
-        let before = ask(&mine, serde_json::json!({"operation": "pairs"})).await;
-        let refused = mine
-            .person_chat(
-                &serde_json::to_vec(&serde_json::json!({
-                    "operation": "announce",
-                    "public_key": "ab".repeat(32),
-                }))
-                .expect("a command is JSON"),
-                &[],
-            )
-            .await
-            .expect_err("the workspace never certified that person")
-            .to_string();
-        let confirmed = ask(
-            &mine,
-            serde_json::json!({"operation": "announce", "public_key": peer}),
-        )
-        .await;
-        let after = ask(&mine, serde_json::json!({"operation": "pairs"})).await;
-        // The person's other device sees the same pair: the proof is the
-        // workspace's, not the announcing device's in memory.
-        let theirs = connect(socket);
-        let theirs = theirs
-            .join_channel(&channel(), &presentation(&keys.phone, &keys.phone_cert))
-            .await
-            .expect("the person's other device joins the workspace's channel");
-        let theirs = ask(&theirs, serde_json::json!({"operation": "pairs"})).await;
-        PairProof {
-            before,
-            refused,
-            confirmed,
-            after,
-            theirs,
-        }
-    })
-}
-
-#[test]
-fn chat_announces_its_pair_and_the_workspace_proves_it() {
-    let home = private_home();
-    let socket = home.path().join("collab.sock");
-    let fixture = fixture();
-    let mut session = session(&socket, &fixture);
-
-    let (done, received) = std::sync::mpsc::channel();
-    let plane = socket;
-    let keys = fixture.keys.clone();
-    let apps = std::thread::spawn(move || {
-        let _ = done.send(announce_calls(&plane, &keys));
-    });
-    let proof = until_the_apps_are_done(&mut session, &received);
-    let ended = apps.join();
-    let proof = match (proof, ended) {
-        (Some(proof), Ok(())) => proof,
-        (_, Err(panic)) => panic!("the app's calls failed: {panic:?}"),
-        (None, Ok(())) => panic!("the app left without answering"),
-    };
-
-    assert_eq!(
-        proof.before.as_array().map(Vec::len),
-        Some(0),
-        "no pair is proved before a device opens the conversation: {}",
-        proof.before
-    );
-    assert!(
-        proof
-            .refused
-            .contains("a conversation is opened with a person of this workspace"),
-        "the workspace refuses a pair with a person it never certified: {}",
-        proof.refused
-    );
-    assert_eq!(
-        proof.confirmed,
-        serde_json::json!({}),
-        "announcing answers the pair's record may now be written"
-    );
-    let pair = collab_types::direct_pair_id(
-        WORKSPACE,
-        &root_hex(fixture.keys.root),
-        &root_hex(fixture.keys.peer_cert.user_public_key),
-    )
-    .expect("the workspace names a pair of two people");
-    let after = proof.after.as_array().expect("a list of pairs");
-    assert_eq!(after.len(), 1, "the workspace proves one pair: {after:?}");
-    assert_eq!(after[0]["pair"], pair);
-    let mut people: Vec<&str> = after[0]["people"]
-        .as_array()
-        .expect("a pair's two people")
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .collect();
-    people.sort_unstable();
-    let mut expected = vec![
-        root_hex(fixture.keys.root),
-        root_hex(fixture.keys.peer_cert.user_public_key),
-    ];
-    expected.sort_unstable();
-    assert_eq!(people, expected, "the pair is the two people of it");
-    assert_eq!(
-        proof.theirs, proof.after,
-        "the person's other device reads the same pair record"
-    );
 }
 
 /// What the import door answered: the conversation the old store holds, what
 /// asking again past its end answers, and what is left after the migration
 /// empties it.
 struct ImportProof {
-    announced: serde_json::Value,
     first: serde_json::Value,
     ended: serde_json::Value,
     kept: serde_json::Value,
@@ -590,16 +453,6 @@ fn import_calls(socket: &PathBuf, keys: &Keys) -> ImportProof {
             .join_channel(&channel(), &presentation(&keys.device, &keys.cert))
             .await
             .expect("the app the session launched joins the workspace's channel");
-        // The pair's record is the two people's before the history moves into
-        // it: importing writes there, so the workspace proves the pair first.
-        let announced = ask(
-            &mine,
-            serde_json::json!({
-                "operation": "announce",
-                "public_key": root_hex(keys.peer_cert.user_public_key),
-            }),
-        )
-        .await;
         let first = ask(
             &mine,
             serde_json::json!({
@@ -641,7 +494,6 @@ fn import_calls(socket: &PathBuf, keys: &Keys) -> ImportProof {
         )
         .await;
         ImportProof {
-            announced,
             first,
             ended,
             kept,
@@ -672,11 +524,6 @@ fn chat_imports_the_conversation_the_old_store_holds() {
         (None, Ok(())) => panic!("the app left without answering"),
     };
 
-    assert_eq!(
-        proof.announced,
-        serde_json::json!({}),
-        "the pair the history moves into is proved first"
-    );
     assert_eq!(
         proof.first["peer"],
         root_hex(fixture.keys.peer_cert.user_public_key)
@@ -718,119 +565,4 @@ fn chat_imports_the_conversation_the_old_store_holds() {
         proof.emptied
     );
     assert_eq!(proof.emptied["has_more"], false);
-}
-
-/// What the app heard about the pairs it is in: the updates it read from the
-/// channel's context, and whether one repeated, without the app ever asking
-/// the owner for the list.
-struct PairsWakeProof {
-    /// Every pair list the context named, in the order it named them.
-    named: Vec<Vec<String>>,
-    /// Whether the context named the same list again after the change.
-    repeated: bool,
-}
-
-/// Chat subscribes to the workspace's context and announces its pair: the
-/// list of pairs it is in arrives on the subscription, and nothing asks for
-/// it again.
-fn pairs_wake_calls(socket: &PathBuf, keys: &Keys) -> PairsWakeProof {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime for the app");
-    let pair = collab_types::direct_pair_id(
-        WORKSPACE,
-        &root_hex(keys.root),
-        &root_hex(keys.peer_cert.user_public_key),
-    )
-    .expect("the workspace names a pair of two people");
-    runtime.block_on(async move {
-        let client = connect(socket);
-        let mine = client
-            .join_channel(&channel(), &presentation(&keys.device, &keys.cert))
-            .await
-            .expect("the app the session launched joins the workspace's channel");
-        // The app follows the channel's context: who is here, and which pair
-        // records this person's windows may open.
-        let context = mine
-            .subscribe_context()
-            .await
-            .expect("the channel's context");
-        ask(
-            &mine,
-            serde_json::json!({
-                "operation": "announce",
-                "public_key": root_hex(keys.peer_cert.user_public_key),
-            }),
-        )
-        .await;
-        let mut named = Vec::new();
-        loop {
-            let next = context.read().await.expect("the context as it changed");
-            let Some(pairs) = next.person_pairs else {
-                continue;
-            };
-            let done = pairs.contains(&pair);
-            named.push(pairs);
-            if done {
-                break;
-            }
-        }
-        // Nothing repeats it: a change is told once, so a window builds its
-        // list from what arrives and never from a clock.
-        let repeated = tokio::time::timeout(std::time::Duration::from_millis(20), context.read())
-            .await
-            .is_ok_and(|next| {
-                next.expect("the context as it changed")
-                    .person_pairs
-                    .is_some()
-            });
-        PairsWakeProof { named, repeated }
-    })
-}
-
-#[test]
-fn chat_learns_its_pair_from_the_workspaces_governance_change() {
-    let home = private_home();
-    let socket = home.path().join("collab.sock");
-    let fixture = fixture();
-    let mut session = session(&socket, &fixture);
-
-    let (done, received) = std::sync::mpsc::channel();
-    let plane = socket;
-    let keys = fixture.keys.clone();
-    let apps = std::thread::spawn(move || {
-        let _ = done.send(pairs_wake_calls(&plane, &keys));
-    });
-    let proof = until_the_apps_are_done(&mut session, &received);
-    let ended = apps.join();
-    let proof = match (proof, ended) {
-        (Some(proof), Ok(())) => proof,
-        (_, Err(panic)) => panic!("the app's calls failed: {panic:?}"),
-        (None, Ok(())) => panic!("the app left without answering"),
-    };
-
-    let pair = collab_types::direct_pair_id(
-        WORKSPACE,
-        &root_hex(fixture.keys.root),
-        &root_hex(fixture.keys.peer_cert.user_public_key),
-    )
-    .expect("the workspace names a pair of two people");
-    assert_eq!(
-        proof.named.last().map(Vec::len),
-        Some(1),
-        "the change names exactly the pair the governance admitted: {:?}",
-        proof.named
-    );
-    assert_eq!(
-        proof.named.last().map(|pairs| pairs[0].clone()),
-        Some(pair),
-        "the pair is the one the workspace proves: {:?}",
-        proof.named
-    );
-    assert!(
-        !proof.repeated,
-        "the pair is told once, not on a clock: {:?}",
-        proof.named
-    );
 }

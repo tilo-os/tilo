@@ -188,8 +188,9 @@ impl RecordId {
     }
 
     /// The record of the pair two people share in a workspace
-    /// ([`collab_types::direct_pair_id`]): read and changed by their devices
-    /// and by no one else's. `None` for a key that names no pair.
+    /// ([`collab_types::direct_pair_id`]): an ordinary record of the
+    /// workspace, named by the two people so either derives it. `None` for a
+    /// key that names no pair.
     #[must_use]
     pub fn of_direct(pair: &str) -> Option<Self> {
         collab_types::canonical_pair(pair).then(|| Self(collab_types::direct_record(pair)))

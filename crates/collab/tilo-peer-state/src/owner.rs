@@ -14,7 +14,6 @@ mod application_record;
 mod certified;
 mod checkpoint;
 mod create;
-mod direct_pair;
 mod document_read;
 mod effect_history;
 mod effect_receipt;

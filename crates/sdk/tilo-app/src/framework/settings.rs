@@ -336,14 +336,13 @@ impl ViewStorage {
         self.workspace.as_ref()?.open::<P>(owner)
     }
 
-    /// The record the two people of `pair` share, that `owner` keeps, opened
-    /// on first use.
-    pub(crate) fn shared_direct<P: tilo_resource::Resource>(
+    /// The record `id` that `owner` keeps, opened on first use.
+    pub(crate) fn shared_record<P: tilo_resource::Resource>(
         &self,
         owner: &'static str,
-        pair: &str,
+        id: &str,
     ) -> Option<super::workspace::WorkspaceRecord<P>> {
-        self.workspace.as_ref()?.open_direct::<P>(owner, pair)
+        self.workspace.as_ref()?.open_at::<P>(owner, id)
     }
 
     /// The shared record of the person's `P`.

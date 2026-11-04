@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-//! The record the two people of a pair share, opened beside the window's own:
-//! one record of that pair in the workspace, written by either person's
+//! A conversation's record, opened beside the window's own: one record of
+//! the two people it is between in the workspace, written by either person's
 //! devices, each person's read mark theirs, merged without an owner in
 //! between.
 
@@ -59,12 +59,16 @@ impl ResourceApp for TalkApp {
     }
 }
 
-/// The app that keeps the pair's records.
+/// The app that keeps the conversations' records.
 const KEEPER: &str = "so.tilo.test-direct";
-/// The workspace the pair's records are in.
+/// The workspace the conversations' records are in.
 const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
-/// The pair, as the workspace names it.
-const PAIR: &str = "direct_0000000000000000000000000000000000000000000000000000000000000000";
+/// One conversation's record, as the workspace names it.
+const WITH_BOB: &str =
+    "direct/direct_0000000000000000000000000000000000000000000000000000000000000000";
+/// Another conversation's record.
+const WITH_BO: &str =
+    "direct/direct_1111111111111111111111111111111111111111111111111111111111111111";
 
 fn ada() -> String {
     "ad".repeat(32)
@@ -95,18 +99,18 @@ fn devices() -> (TestApp<TalkApp>, TestApp<TalkApp>, TestApp<TalkApp>) {
 }
 
 #[test]
-fn the_pairs_record_is_one_record_on_all_their_devices() {
+fn the_conversations_record_is_one_record_on_all_their_devices() {
     let (mut laptop, mut phone, _) = devices();
     let on_laptop = laptop
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Ada's laptop opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Ada's laptop opens the conversation's record");
     let on_phone = phone
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Ada's phone opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Ada's phone opens the conversation's record");
     assert_eq!(
         on_laptop.id(),
         on_phone.id(),
-        "one record per pair, wherever it is opened"
+        "one record per conversation, wherever it is opened"
     );
     let route = on_laptop.record().route().expect("a route");
     assert_eq!(route.app_id, TalkApp::ID);
@@ -117,8 +121,8 @@ fn the_pairs_record_is_one_record_on_all_their_devices() {
     );
     assert_eq!(
         route.record.as_deref(),
-        Some(format!("direct/{PAIR}").as_str()),
-        "the record is the pair's, beside the workspace's own"
+        Some(WITH_BOB),
+        "the conversation's record sits beside the workspace's own"
     );
 }
 
@@ -126,11 +130,11 @@ fn the_pairs_record_is_one_record_on_all_their_devices() {
 fn either_person_writes_and_the_other_reads_it_after_they_meet() {
     let (mut laptop, _, mut bobs) = devices();
     let on_laptop = laptop
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Ada's laptop opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Ada's laptop opens the conversation's record");
     let on_bobs = bobs
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Bob's phone opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Bob's phone opens the conversation's record");
     on_laptop.invoke(&Talk::SAY.with("hi from Ada")).unwrap();
     on_bobs.invoke(&Talk::SAY.with("hi from Bob")).unwrap();
     let her = on_laptop.record().document().expect("Ada's record");
@@ -154,14 +158,14 @@ fn either_person_writes_and_the_other_reads_it_after_they_meet() {
 fn each_persons_read_mark_is_theirs_and_their_devices_agree() {
     let (mut laptop, mut phone, mut bobs) = devices();
     let on_laptop = laptop
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Ada's laptop opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Ada's laptop opens the conversation's record");
     let on_phone = phone
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Ada's phone opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Ada's phone opens the conversation's record");
     let on_bobs = bobs
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Bob's phone opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Bob's phone opens the conversation's record");
     on_bobs.invoke(&Talk::SAY.with("hello")).unwrap();
     on_laptop.invoke(&Talk::MARK_READ.with(1_000_i64)).unwrap();
     let hers = on_laptop.record().document().expect("Ada's record");
@@ -184,21 +188,18 @@ fn each_persons_read_mark_is_theirs_and_their_devices_agree() {
 }
 
 #[test]
-fn another_pair_is_another_record() {
+fn another_conversation_is_another_record() {
     let (mut laptop, _, _) = devices();
     let with_bob = laptop
-        .shared_direct::<Talk>(KEEPER, PAIR)
-        .expect("Ada opens the pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BOB)
+        .expect("Ada opens the conversation's record");
     let with_bo = laptop
-        .shared_direct::<Talk>(
-            KEEPER,
-            "direct_1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .expect("Ada opens another pair's record");
+        .shared_record::<Talk>(KEEPER, WITH_BO)
+        .expect("Ada opens another conversation's record");
     assert_ne!(with_bob.id(), with_bo.id());
     with_bob.invoke(&Talk::SAY.with("only Bob")).unwrap();
     assert!(
         with_bo.get().said.is_empty(),
-        "one pair's words are not in another pair's record"
+        "one conversation's words are not in another's record"
     );
 }

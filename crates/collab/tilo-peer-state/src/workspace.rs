@@ -2,7 +2,6 @@
 mod admit;
 mod adopt;
 pub mod base;
-pub mod direct_pair;
 pub mod media;
 pub mod membership;
 pub(crate) mod policy;
@@ -16,7 +15,6 @@ pub use admit::{
 };
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
-pub use direct_pair::{DirectPair, proven_pair};
 pub use saved_shortcut::{proven_saver, sign_saved_shortcut, workspace_revocations};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;

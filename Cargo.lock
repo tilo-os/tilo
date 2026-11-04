@@ -17311,6 +17311,7 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "collab-types",
  "durable-store",
  "neighbour-wire",
  "registry-types",

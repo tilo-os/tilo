@@ -1,10 +1,9 @@
-//! Page DMs on the pair's record: a page announces the pair its person shares
-//! through the host's workspace door, learns it from the workspace's
-//! governance, and then talks to the pair's other person in the record it
-//! names. The pair's desktop (a native device of the other person) admits the
-//! page to the record's channel and opens what it wrote, live; the page opens
-//! what the desktop writes back. The host carries ciphertext only, and the
-//! page's import door, the old plaintext store, holds nothing.
+//! A page and the other person's desktop talking in their conversation's
+//! record: the record's id is the two people's, derived on both sides, so the
+//! page opens it like any other record of the workspace. The desktop (a
+//! native device of the other person) admits the page to the record's channel
+//! and opens what it wrote, live; the page opens what the desktop writes
+//! back. The host carries ciphertext only.
 
 #![allow(
     clippy::unwrap_used,
@@ -75,7 +74,7 @@ fn take(peer: &mut ChannelPeer, vault: &VaultKey) -> Vec<MlsGovernanceFrame> {
     reason = "async Relay::shutdown consumes the relay; the suggested later drop is a use-after-move"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
+async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record() {
     // Alice runs the host her workspace lives on, and her desktop is another
     // device of hers; Bob takes part through the workspace's door.
     let (alice_root, _) = UserIdentity::generate("Alice", 1);
@@ -129,46 +128,16 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
     )
     .await;
 
-    // Bob's page announces the pair its person shares; the workspace proves it
-    // and hands the page the pairs it is in, as it hands them to every device.
-    let (done, answer) = tokio::sync::oneshot::channel();
-    bob.announce_pair_then(
-        workspace.workspace_id,
-        alice_root_key,
-        Box::new(move |result| {
-            let _ = done.send(result);
-        }),
-    )
-    .unwrap();
-    answer.await.unwrap().unwrap();
+    // The conversation's record is named by the two people it is between, so
+    // the page derives its id without asking anyone: it opens the record like
+    // any other record of the workspace.
     let mut people = [hex::encode(bob_root_key), hex::encode(alice_root_key)];
     people.sort_unstable();
     let pair = collab_types::direct_pair_id(&workspace.workspace, &people[0], &people[1]).unwrap();
-    let wanted = pair.clone();
-    let held = wait_for("the workspace to prove the pair", || {
-        let (done, answer) = tokio::sync::oneshot::channel();
-        bob.pairs_then(
-            workspace.workspace_id,
-            Box::new(move |pairs| {
-                let _ = done.send(pairs);
-            }),
-        )
-        .unwrap();
-        let wanted = wanted.clone();
-        async move {
-            answer
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .and_then(|pairs| pairs.get(&wanted).cloned())
-        }
-    })
-    .await;
-    assert_eq!(held, people, "the page learns the pair it is in");
 
-    // Alice's desktop holds the pair's record channel, as a pair's own device
-    // does; the page opens the record and writes its message, which waits for
-    // the keys the desktop has to hand out.
+    // Alice's desktop holds the conversation's record channel, as one of the
+    // record's own devices; the page opens the record and writes its message,
+    // which waits for the keys the desktop has to hand out.
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
@@ -219,9 +188,9 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
             },
         );
     }
-    // The record's channel is the pair's: the desktop's own device and the
-    // requiring person's devices, exactly as the workspace's governance names
-    // its readers.
+    // The record's channel is the two people's: the desktop's own device and
+    // the requiring person's devices, exactly as the workspace's governance
+    // names its readers.
     let bob_device = Ed25519PublicKey::from_bytes(bob_cert.device_public_key);
 
     bob.open_record(workspace.workspace_id, route.clone())
@@ -276,7 +245,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
                 assert_eq!(envelope.author, bob_device, "what the page wrote");
                 let metadata = envelope
                     .encryption
-                    .expect("the page never writes the pair's record in the clear");
+                    .expect("the page never writes the conversation's record in the clear");
                 let clear = desktop_channel
                     .content_keys()
                     .unwrap()
@@ -289,7 +258,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
     }
     assert!(
         admitted,
-        "the desktop admitted the page to the pair's record"
+        "the desktop admitted the page to the conversation's record"
     );
     assert_eq!(
         opened,
@@ -328,7 +297,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
         },
     );
     let reader = bob.clone();
-    let reply = wait_for("the desktop's message on the pair's record", || {
+    let reply = wait_for("the desktop's message on the conversation's record", || {
         let (reader, route) = (reader.clone(), route.clone());
         async move {
             reader.drain().into_iter().find_map(|event| match event {

@@ -4804,13 +4804,6 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
-                if context.person_pairs.is_some() {
-                    // The workspace proved a different set of pairs for this
-                    // person: the windows holding their conversations ask
-                    // again, now, and no window polls for it.
-                    crate::person_chat::pairs_changed();
-                    continue;
-                }
                 if let Some(agents) = context.history_agents {
                     let agents = agents
                         .into_iter()

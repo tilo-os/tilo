@@ -1,12 +1,13 @@
-//! A pair's conversation, as the pair's own record: the one resource every
-//! app reads and writes it as.
+//! A conversation, as the record the two people it is between share: the one
+//! resource every app reads and writes it as.
 //!
-//! A conversation between two people is theirs, not a workspace's: it lives
-//! in the record the pair shares (`direct/<pair>`, kept by [`OWNER`]), which
-//! the workspace proves for the two of them and for no one else's devices.
-//! [`OWNER`] is the record's owner for every app that opens it, so a
-//! conversation read in one app is the same record, under the same id and the
-//! same stored names, as in any other.
+//! A conversation lives in an ordinary record of the workspace
+//! (`direct/<pair>`, kept by [`OWNER`]), named by the two people it is
+//! between and decided by the workspace's policy like any other record of the
+//! app: the workspace's grants on its owner's node say who reads and changes
+//! it. [`OWNER`] is the record's owner for every app that
+//! opens it, so a conversation read in one app is the same record, under the
+//! same id and the same stored names, as in any other.
 //!
 //! The record itself is small: who the pair is, how far each of them read
 //! ([`DirectConversation::marks`]), and the messages the pair wrote before
@@ -18,11 +19,10 @@
 //! A window reads and writes them through [`Records`], which opens the
 //! record through the framework's workspace handle
 //! ([`crate::framework::WorkspaceHandle`]) so a message another device sends
-//! wakes it like any other change of its own record. What only the session's
-//! owner can do stays on its door ([`crate::person_chat`]): announcing the
-//! pair, reading which pairs this person is in, and reading the old private
-//! store so the conversations kept there are imported once
-//! ([`Records::import_old_store`]).
+//! wakes it like any other change of one of the app's records. What only the
+//! session's owner can do stays on its door ([`crate::person_chat`]): reading
+//! the old private store so the conversations kept there are imported once
+//! ([`Records::import_old_store`]), and emptying it.
 //!
 //! A person is kept in the conversation under the key the private store has
 //! always used for them ([`crate::person_chat::person_key`], the hash of their

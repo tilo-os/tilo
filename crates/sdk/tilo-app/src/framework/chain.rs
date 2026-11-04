@@ -87,9 +87,9 @@ pub trait Chained: Resource {
     fn chain() -> RecordId;
 
     /// The chain that belongs beside `base` rather than beside the app's own
-    /// record: the messages of one direct conversation, kept in the record
-    /// the two people share ([`RecordId::of_direct`]). [`Self::chain`] for
-    /// every chain there is only one of.
+    /// record: the messages of one conversation, kept beside its record
+    /// ([`RecordId::of_direct`]). [`Self::chain`] for every chain there is
+    /// only one of.
     fn chain_beside(base: &RecordId) -> RecordId {
         let _ = base;
         Self::chain()

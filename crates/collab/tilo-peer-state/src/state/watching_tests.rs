@@ -65,7 +65,7 @@ fn a_watching_device_reads_uncovered_records_and_is_withheld_from_covered_ones()
     let public = collab_types::ChannelRoute::new(app, "note-1");
     let covered = collab_types::ChannelRoute::new(
         app,
-        &collab_types::member_record_id(
+        collab_types::member_record_id(
             &hex::encode(peer.governance().owner_user_public_key()),
             "notes",
         ),

@@ -355,15 +355,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// The record the two people of `pair` share that `owner` keeps, as the
-    /// app's views open it.
-    pub fn shared_direct<P: Resource>(
+    /// The record `id` that `owner` keeps, as the app's views open it.
+    pub fn shared_record<P: Resource>(
         &mut self,
         owner: &'static str,
-        pair: &str,
+        id: &str,
     ) -> Option<super::WorkspaceRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_direct::<P>(owner, pair))
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_record::<P>(owner, id))
             .flatten()
     }
 

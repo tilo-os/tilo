@@ -1,16 +1,16 @@
-//! Two people's direct conversation, on two devices each, through the
-//! workspace's store: what each of them reads and how far, over the pair's
-//! record and its parts.
+//! Two people's conversation, on two devices each, through the workspace's
+//! store: what each of them reads and how far, over the conversation's record
+//! and its parts.
 //!
-//! The four devices keep their own copies of the pair's records and hand the
-//! workspace's store their bytes, as a device syncs its records through the
-//! host: the store holds what it is given and nothing more (no key, no
-//! readable conversation), so A→B works when the two people are never online
-//! at the same time. The store can be restarted between deliveries without
-//! losing what it kept. What a stranger reads of a pair's records, and what
+//! The four devices keep their own copies of the conversation's records and
+//! hand the workspace's store their bytes, as a device syncs its records
+//! through the host: the store holds what it is given and nothing more (no
+//! key, no readable conversation), so A→B works when the two people are never
+//! online at the same time. The store can be restarted between deliveries
+//! without losing what it kept. What a stranger reads of a record, and what
 //! the host may decrypt, is the workspace's rule
-//! (`tilo_peer_state::state::direct_pairs_tests`); this test proves the
-//! conversation those rules carry.
+//! (`tilo_peer_state::state::governance`); this test proves the conversation
+//! those rules carry.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -613,17 +613,17 @@ fn a_conversation_that_fills_a_part_keeps_going_in_the_next_one() {
     );
 }
 
-/// The pair id of the conversation, as the workspace derives it: the record
-/// a stranger cannot read is another pair's, not this one's.
+/// The conversation's record, as the workspace derives it: one conversation's
+/// record is not another's.
 #[test]
-fn another_pair_is_another_record() {
+fn another_conversation_is_another_record() {
     let workspace = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     let carol = "c0".repeat(32);
     let ours = crate::person_chat::direct_pair_id(workspace, ADA, BOB).expect("a pair");
     let theirs = crate::person_chat::direct_pair_id(workspace, ADA, &carol).expect("a pair");
     assert_ne!(ours, theirs);
     assert_ne!(
-        ui_core::record::workspace::direct_record_id(&ours),
-        ui_core::record::workspace::direct_record_id(&theirs)
+        collab_types::direct_record(&ours),
+        collab_types::direct_record(&theirs)
     );
 }

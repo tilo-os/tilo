@@ -17,25 +17,6 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
         };
         let now = std::time::SystemTime::now();
         let value = match command {
-            PersonChatCommand::Pairs => {
-                let me = hex::encode(caller.user_public_key);
-                serde_json::json!(
-                    self.0
-                        .direct_pairs(workspace, now)?
-                        .into_iter()
-                        .filter(|(_, people)| people.contains(&me))
-                        .map(|(pair, people)| serde_json::json!({
-                            "pair": pair,
-                            "people": people,
-                        }))
-                        .collect::<Vec<_>>()
-                )
-            }
-            // This double holds the workspace owner, not the caller's device
-            // key, so it cannot sign an announcement.
-            PersonChatCommand::Announce { .. } => {
-                return Err("the double announces no pair".into());
-            }
             PersonChatCommand::Import {
                 public_key,
                 after_sequence,
@@ -142,32 +123,15 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge));
             let (worker, _) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 451).await;
-            let request = br#"{"operation":"pairs"}"#;
+            let request = br#"{"operation":"clear"}"#;
             let actual: serde_json::Value =
                 serde_json::from_slice(&worker.handle.person_chat(request, &[]).await.unwrap())
                     .unwrap();
-            assert_eq!(
-                actual,
-                serde_json::to_value(
-                    owner
-                        .direct_pairs(workspace_id, std::time::SystemTime::now())
-                        .unwrap()
-                        .into_iter()
-                        .filter(|(_, people)| {
-                            people.contains(&hex::encode(env.cert.user_public_key))
-                        })
-                        .map(|(pair, people)| serde_json::json!({
-                            "pair": pair,
-                            "people": people,
-                        }))
-                        .collect::<Vec<_>>()
-                )
-                .unwrap()
-            );
+            assert_eq!(actual, serde_json::json!({}));
             assert!(
                 worker
                     .handle
-                    .person_chat(br#"{"operation":"pairs","role":"person"}"#, &[])
+                    .person_chat(br#"{"operation":"clear","role":"person"}"#, &[])
                     .await
                     .is_err()
             );

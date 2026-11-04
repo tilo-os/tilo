@@ -1,10 +1,12 @@
-//! The records a pair's conversation lives in, read and written for an app's
-//! views.
+//! The record a conversation lives in, read and written for an app's views.
 //!
-//! A window's views ask here; what they read is the pair's record and its
-//! chain of parts ([`super::DirectConversation`], [`super::parts`]), opened
-//! through the framework's workspace handle so a message another device sends
-//! wakes the window like any other change of its own record.
+//! A window's views ask here; what they read is the conversation's record
+//! and its chain of parts ([`super::DirectConversation`], [`super::parts`]),
+//! opened through the framework's workspace handle so a message another
+//! device sends wakes the window like any other change of one of the app's
+//! records. The record is an ordinary record of the workspace, named by the
+//! two people it is between, and the workspace's grants on the app decide
+//! every change to it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -15,9 +17,6 @@ use crate::framework::{Chain, WorkspaceRecord};
 use super::parts::{self, DirectPart, PART_MESSAGES, PART_TEXT_BYTES, StoredMessage};
 use super::{DirectConversation, OWNER, conversation};
 
-/// What a conversation answers while its pair is being announced: the device
-/// that signs the pair may answer a sync later.
-const ANNOUNCING: &str = "the pair is being announced";
 /// How many people one window imports from the old store per sync: the
 /// import is a migration, not a reason to stall a frame.
 const IMPORTS_PER_SYNC: usize = 4;
@@ -64,19 +63,6 @@ pub struct Records {
     clearing: RefCell<Option<crate::person_chat::Pending<()>>>,
     /// The old store is empty: the migration is done here.
     cleared: Cell<bool>,
-    /// The workspace's answer on which pairs this person is in, and the
-    /// time it answered for: `None` until the first answer.
-    pairs: RefCell<Option<Vec<crate::person_chat::Pair>>>,
-    /// The pair list's generation that answer was asked at
-    /// ([`crate::person_chat::pairs_generation`]): the workspace announces a
-    /// governance change, and the list is asked again only then.
-    pairs_generation: Cell<Option<u64>>,
-    /// The pairs this window announced, so a send asks the workspace once.
-    announced: RefCell<BTreeSet<String>>,
-    /// The pairs this window is announcing: the device that signs one may
-    /// answer a sync later (a page signs where its key is kept), and the
-    /// request is held here until it does.
-    announcing: RefCell<BTreeMap<String, crate::person_chat::Pending<()>>>,
 }
 
 impl Records {
@@ -91,10 +77,6 @@ impl Records {
             imported: RefCell::default(),
             clearing: RefCell::default(),
             cleared: Cell::default(),
-            pairs: RefCell::new(None),
-            pairs_generation: Cell::default(),
-            announced: RefCell::default(),
-            announcing: RefCell::default(),
         })
     }
 
@@ -110,36 +92,6 @@ impl Records {
             }
         }
         *self.people.borrow_mut() = people;
-    }
-
-    /// The pairs this person is in, asked of the workspace again when its
-    /// governance changed ([`crate::person_chat::pairs_generation`]): a device
-    /// that never opened one learns it here, and opens it so it syncs. A
-    /// pair the workspace proved exists: opening its record creates nothing
-    /// nobody asked for.
-    fn refresh_pairs(&self) {
-        let generation = crate::person_chat::pairs_generation();
-        if self.pairs.borrow().is_some() && self.pairs_generation.get() == Some(generation) {
-            return;
-        }
-        let Some(Ok(pairs)) = crate::person_chat::pairs().take() else {
-            return;
-        };
-        self.pairs_generation.set(Some(generation));
-        let me = self.root();
-        let mut pairs: Vec<_> = pairs
-            .into_iter()
-            .filter(|pair| pair.people.contains(&me))
-            .collect();
-        pairs.sort_by_key(|pair| pair.pair.clone());
-        for pair in &pairs {
-            if !self.open.borrow().contains_key(&pair.pair)
-                && let Some(open) = self.opened(&pair.pair)
-            {
-                self.open.borrow_mut().insert(pair.pair.clone(), open);
-            }
-        }
-        *self.pairs.borrow_mut() = Some(pairs);
     }
 
     /// How many messages of `peer`'s conversation this person has not read.
@@ -178,7 +130,9 @@ impl Records {
     /// `pair`'s record and its parts, opened (the record created where the
     /// workspace holds none) and followed change by change.
     fn opened(&self, pair: &str) -> Option<Open> {
-        let record = self.handle.direct::<DirectConversation>(OWNER, pair)?;
+        let record = self
+            .handle
+            .record::<DirectConversation>(OWNER, &collab_types::direct_record(pair))?;
         let chain = self.handle.chain_beside::<DirectPart>(OWNER, &record)?;
         Some(Open { record, chain })
     }
@@ -207,7 +161,10 @@ impl Records {
         if let Some(open) = self.open.borrow().get(&pair) {
             return Some(open.clone());
         }
-        if !self.handle.holds_direct::<DirectConversation>(OWNER, &pair) {
+        if !self
+            .handle
+            .holds_record::<DirectConversation>(OWNER, &collab_types::direct_record(&pair))
+        {
             return None;
         }
         let open = self.opened(&pair)?;
@@ -277,54 +234,6 @@ impl Records {
                 .any(|(_, part)| !part.messages.is_empty())
     }
 
-    /// Announce the pair with `peer` to the workspace, so that its record is
-    /// the two people's: the door holds the device key that proves it, and
-    /// names the other person by their root public key. Answers
-    /// [`ANNOUNCING`] while the device that signs it has not answered yet.
-    fn announce(&self, peer: &str) -> Result<(), String> {
-        let person = self
-            .person(peer)
-            .ok_or_else(|| "no direct conversation with them here".to_owned())?;
-        let pair = self.pair(&person.root)?;
-        if self.announced.borrow().contains(&pair) {
-            return Ok(());
-        }
-        if self.announcing.borrow().contains_key(&pair) {
-            let answered = self
-                .announcing
-                .borrow()
-                .get(&pair)
-                .and_then(crate::person_chat::Pending::take);
-            return match answered {
-                None => Err(ANNOUNCING.into()),
-                Some(Ok(())) => {
-                    self.announcing.borrow_mut().remove(&pair);
-                    self.announced.borrow_mut().insert(pair);
-                    Ok(())
-                }
-                // The workspace refused it, or the door could not ask: the
-                // pair is not being announced any more, and the window says so.
-                Some(Err(error)) => {
-                    self.announcing.borrow_mut().remove(&pair);
-                    Err(error)
-                }
-            };
-        }
-        self.announcing
-            .borrow_mut()
-            .insert(pair, crate::person_chat::announce(&person.root));
-        Err(ANNOUNCING.into())
-    }
-
-    /// Whether the pair of the conversation with `peer` is being announced:
-    /// the conversation opens once the device that signs it answers.
-    pub fn announcing(&self, peer: &str) -> bool {
-        match self.announce(peer) {
-            Ok(()) => false,
-            Err(error) => error == ANNOUNCING,
-        }
-    }
-
     /// Whether this person has read up to the newest message of `peer`'s
     /// conversation, marking them read when not: what an open conversation
     /// does as it shows what came in.
@@ -385,7 +294,7 @@ impl Records {
             self.imported.borrow_mut().insert(peer.to_owned());
             return true;
         }
-        let Ok(open) = self.announce(peer).and_then(|()| self.record(peer)) else {
+        let Ok(open) = self.record(peer) else {
             return false;
         };
         // A part holds 2000 messages or 1 MiB of them, so a long
@@ -490,7 +399,7 @@ impl Records {
     /// The workspace's people this person may talk to, each with whether a
     /// conversation of theirs holds messages.
     pub fn contacts(&self) -> Vec<crate::person_chat::Contact> {
-        self.refresh_pairs();
+        self.observe();
         let held: Vec<String> = self
             .open
             .borrow()
@@ -516,13 +425,35 @@ impl Records {
             .collect()
     }
 
+    /// Open the conversation records this device already holds, so a message
+    /// that came in for one wakes this window like any other change of its
+    /// own record: a conversation is named by the two people it is between,
+    /// and one there is a record of here is read from now on.
+    fn observe(&self) {
+        let people = self.people.borrow().clone();
+        for person in people {
+            let Ok(pair) = self.pair(&person.root) else {
+                continue;
+            };
+            if self.open.borrow().contains_key(&pair) {
+                continue;
+            }
+            if !self
+                .handle
+                .holds_record::<DirectConversation>(OWNER, &collab_types::direct_record(&pair))
+            {
+                continue;
+            }
+            let opened = self.opened(&pair);
+            if let Some(open) = opened {
+                self.open.borrow_mut().insert(pair, open);
+            }
+        }
+    }
+
     /// The whole conversation with `peer`, opened: its record is created
     /// where the workspace holds none yet.
     pub fn open(&self, peer: &str) -> Result<crate::person_chat::Conversation, String> {
-        // Whoever opens a conversation makes its record the pair's: the one
-        // write only the session's owner can sign. Before the record is
-        // opened here, so this window writes nothing an unproved pair owns.
-        self.announce(peer)?;
         let open = self.record(peer)?;
         // The whole conversation is what a view opens: every earlier part is
         // asked for, and arrives change by change as the workspace sends it.
@@ -553,7 +484,7 @@ impl Records {
         text: &str,
         invocation: tilo_actions::InvocationId,
     ) -> Result<crate::person_chat::Conversation, String> {
-        let open = self.announce(peer).and_then(|()| self.record(peer))?;
+        let open = self.record(peer)?;
         open.chain
             .invoke(&DirectPart::SEND.with(parts::direct_part::Send {
                 id: parts::message_id(invocation),

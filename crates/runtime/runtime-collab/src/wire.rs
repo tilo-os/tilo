@@ -596,11 +596,10 @@ pub enum ContextUpdate {
     HistoryAgents(Vec<RosterAgent>),
     /// Records of the application's trees a peer wrote and no window holds.
     RecordsArrived(Vec<String>),
-    /// The pairs this person is in that the workspace proves, by their
-    /// record ids ([`collab_types::direct_pair_id`]), replacing the last: the
-    /// records the person's direct conversations live in. Sent when the
-    /// workspace's governance changes them.
-    PersonPairs(Vec<String>),
+    /// Retired: a conversation is an ordinary record of the workspace, which
+    /// every window of it opens like any other. It keeps the updates after it
+    /// at their encoded positions.
+    RetiredPersonPairs,
 }
 
 /// What the host sends an endpoint.
