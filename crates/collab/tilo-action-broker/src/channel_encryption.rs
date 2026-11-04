@@ -79,6 +79,10 @@ const REQUEST_FRESH: Duration = Duration::from_secs(60);
 const CHANNELS_DIR: &str = "channels";
 /// Channels remembered as having a group this device takes no part in.
 const MAX_GROUPS_SEEN: usize = 1 << 16;
+/// Frames one channel keeps for the policy that has not named their signer
+/// yet. Bounded, newest kept: a frame this device's policy still does not
+/// back after that many later ones is not going to be applied.
+const MAX_HELD_FRAMES: usize = 8;
 
 /// How long a device that holds no state for a channel waits for its genesis
 /// (from the workspace's retained frames, or a participant answering its request)
@@ -296,6 +300,11 @@ struct PeerEntry {
     /// An endpoint of this device opened the route. A channel taken up only
     /// because another device asked is left once a genesis arrives.
     wanted: bool,
+    /// Frames this device's policy does not back yet, oldest first. The
+    /// workspace's governance reaches a device as the workspace does, so a
+    /// frame from a device admitted a moment ago is judged again once the
+    /// policy here names it.
+    held: Vec<MlsGovernanceFrame>,
 }
 
 /// A channel an endpoint asked about that this device could not open: no
@@ -693,6 +702,7 @@ impl ChannelEncryption {
         for inbound in inbound {
             self.receive(inbound, now, wall);
         }
+        self.retry_held(now, wall);
         // Read before the policy is: a change announced while the groups
         // reconcile has a later epoch and makes the next re-check due.
         let epoch = self.directory.policy_epoch();
@@ -837,6 +847,25 @@ impl ChannelEncryption {
         }
     }
 
+    /// Judge the frames each channel held for the policy ([`Self::receive_frame`])
+    /// again: a frame whose signer the policy names now is applied as if it had
+    /// just arrived, and one it still does not back is held again.
+    fn retry_held(&mut self, now: Instant, wall: u64) {
+        let held: Vec<(WorkspaceId, MlsGovernanceFrame)> = self
+            .peers
+            .iter_mut()
+            .flat_map(|(_, entry)| {
+                let workspace = entry.workspace;
+                std::mem::take(&mut entry.held)
+                    .into_iter()
+                    .map(move |frame| (workspace, frame))
+            })
+            .collect();
+        for (workspace, frame) in held {
+            self.receive_frame(workspace, frame, now, wall);
+        }
+    }
+
     fn receive_frame(
         &mut self,
         workspace: WorkspaceId,
@@ -864,6 +893,21 @@ impl ChannelEncryption {
         let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
+        if let Some(allowed) = &allowed
+            && !channel_crypto::backs(&frame, allowed)
+        {
+            // The workspace's governance reached this device before the
+            // policy here named the frame's signer. Keep the frame for the
+            // policy that moves instead of refusing a write from a device
+            // admitted a moment ago for good.
+            if !entry.held.contains(&frame) {
+                if entry.held.len() == MAX_HELD_FRAMES {
+                    entry.held.remove(0);
+                }
+                entry.held.push(frame);
+            }
+            return;
+        }
         let received = match &allowed {
             Some(allowed) => entry.peer.receive(frame, allowed, &store.vault),
             None => entry.peer.follow(frame, &store.vault),
@@ -1205,6 +1249,7 @@ impl ChannelEncryption {
                     allowed: true,
                 },
                 wanted: true,
+                held: Vec::new(),
             },
         );
         self.register_gate(channel, gate);
@@ -3327,4 +3372,6 @@ mod tests {
     }
 
     include!("channel_encryption_personal_cluster_tests.rs");
+
+    include!("channel_encryption_held_frame_tests.rs");
 }

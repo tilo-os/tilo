@@ -75,6 +75,22 @@ use crate::{
     VaultKey,
 };
 
+/// Whether the membership `allowed` backs `frame`: it is signed by a device
+/// the membership names, and a commit changes the group only by devices the
+/// membership names. A genesis carries no add or remove, so this is its whole
+/// rule.
+pub fn backs(frame: &MlsGovernanceFrame, allowed: &BTreeSet<Ed25519PublicKey>) -> bool {
+    if !allowed.contains(&frame.signed_by) {
+        return false;
+    }
+    let removed: BTreeSet<_> = frame.removed().iter().collect();
+    let added: BTreeSet<_> = frame.added().iter().collect();
+    !added.iter().any(|device| !allowed.contains(*device))
+        && !removed
+            .iter()
+            .any(|device| allowed.contains(*device) && !added.contains(*device))
+}
+
 /// Requests one channel keeps, one per device.
 const MAX_REQUESTS: usize = 4096;
 /// Sealed peer state larger than this is refused when read.
@@ -957,13 +973,7 @@ impl ChannelPeer {
             }
             MlsGovernanceAction::Commit { .. } => {
                 if let Some(allowed) = allowed {
-                    let removed: BTreeSet<_> = frame.removed().iter().collect();
-                    let added: BTreeSet<_> = frame.added().iter().collect();
-                    if added.iter().any(|device| !allowed.contains(*device))
-                        || removed
-                            .iter()
-                            .any(|device| allowed.contains(*device) && !added.contains(*device))
-                    {
+                    if !backs(&frame, allowed) {
                         return Err(governance(
                             "commit adds or removes a device the membership does not",
                         ));
