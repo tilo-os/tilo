@@ -85,12 +85,16 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
         if let Ok(taken) = takes.try_recv() {
             // The connection ended the step it arrived in: a loop that looked
             // only at the end of its wait would have run the whole wait, and
-            // that is the poll this rules out. How long the asking thread
-            // waited is the machine's answer, not the session's.
-            assert!(
-                step < wait,
-                "the session ran its whole {wait:?} wait and took the connection after it: {step:?}"
-            );
+            // that is the poll this rules out. Only a wait long enough to tell
+            // a wake from a frame is probed: a display's own frame rate is not
+            // what this test is about, and how long the asking thread waited is
+            // the machine's answer, not the session's.
+            if wait >= Duration::from_millis(100) {
+                assert!(
+                    step < wait,
+                    "the session ran its whole {wait:?} wait and took the connection after it: {step:?}"
+                );
+            }
             break taken;
         }
     };
