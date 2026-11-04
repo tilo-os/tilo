@@ -183,6 +183,23 @@ fn floats(widget: &str) -> bool {
     matches!(widget, "HoverToolbarFace")
 }
 
+/// Whether a widget the window's top layer paints: it stands against the window it floats in,
+/// not the box that opened it, so it neither widens what its owner holds nor reaches past it.
+fn floats_in_window(widget: &str) -> bool {
+    matches!(widget, "ContextMenu" | "Tooltip")
+}
+
+/// The boxes a widget holds: what it shows inside itself. What the window's top layer paints
+/// over it (a menu its rows opened) is not one of them.
+fn held(node: &InspectionNode) -> Option<Rect> {
+    node.children
+        .iter()
+        .filter(|child| !floats(&child.widget) && !floats_in_window(&child.widget))
+        .map(|child| rect(child.rect))
+        .filter(|r| has_area(*r))
+        .reduce(|a, b| a.union(b))
+}
+
 /// Whether a node is text itself.
 fn is_text(node: &InspectionNode) -> bool {
     use ui::a11y::Role;
@@ -437,6 +454,23 @@ impl Walk<'_> {
             if floats(&child.widget) {
                 continue;
             }
+            // A menu the window's top layer paints stands against the window, not the box that
+            // opened it: it is measured from the window's edges, and its own edges and targets
+            // are still checked.
+            if floats_in_window(&child.widget) {
+                let (beyond, across, off_pixel) = (self.beyond, self.across, self.off_pixel);
+                (self.beyond, self.across, self.off_pixel) = (false, false, false);
+                self.node(
+                    child,
+                    keys,
+                    self.viewport,
+                    self.viewport,
+                    Scrolls::default(),
+                    false,
+                );
+                (self.beyond, self.across, self.off_pixel) = (beyond, across, off_pixel);
+                continue;
+            }
             // A scroll view holds its content in a box of its own, which is the view's own
             // content rather than a frame around it.
             self.node(
@@ -568,12 +602,7 @@ impl Walk<'_> {
 
     /// A scroll view whose content is wider than it.
     fn sideways(&mut self, node: &InspectionNode, keys: &[String], clip: Rect) {
-        let content = node
-            .children
-            .iter()
-            .map(|child| rect(child.rect))
-            .filter(|r| has_area(*r))
-            .reduce(|a, b| a.union(b));
+        let content = held(node);
         if let Some(content) = content
             && content.width() > clip.width() + EPSILON
         {
@@ -593,12 +622,7 @@ impl Walk<'_> {
     /// A scroll view with no room on the way it scrolls, holding more than that: nothing under
     /// it can be scrolled into view, so a card or a line the person was promised is gone.
     fn lost(&mut self, node: &InspectionNode, keys: &[String], shown: Rect) {
-        let content = node
-            .children
-            .iter()
-            .map(|child| rect(child.rect))
-            .filter(|r| has_area(*r))
-            .reduce(|a, b| a.union(b));
+        let content = held(node);
         let Some(content) = content else {
             return;
         };

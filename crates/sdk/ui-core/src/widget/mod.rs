@@ -1834,6 +1834,15 @@ pub trait Widget {
         false
     }
 
+    /// The box a context menu opened from the keyboard stands against: the
+    /// item that has the keyboard, so the menu opens under it rather than
+    /// under the whole widget. A widget that holds items (a list) answers
+    /// for the one with the keyboard; `None` leaves the menu to stand under
+    /// the focused widget's own box.
+    fn context_menu_anchor(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
     /// Whether a focused widget owns Tab instead of the host's focus
     /// traversal. This is deliberately opt-in: ordinary form fields and
     /// controls retain platform-standard Tab/Shift+Tab navigation, while a

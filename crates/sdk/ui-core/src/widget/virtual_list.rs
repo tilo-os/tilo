@@ -2720,6 +2720,21 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.is_focused
     }
 
+    /// The row with the keyboard: a menu opened from the keyboard stands
+    /// under that row, not under the list.
+    fn context_menu_anchor(&self) -> Option<Rect> {
+        let focus_inside = self.is_focused
+            || self
+                .mounted
+                .iter()
+                .any(|row| crate::widget::context_menu_area::focus_within(row.widget.as_ref()));
+        if !focus_inside {
+            return None;
+        }
+        let key = self.focused_row_key()?;
+        self.row_box(self.model.index_of(&key)?)
+    }
+
     /// A finger on a row is the row's to claim (a row that swipes takes a sideways drag); the
     /// list scrolls whatever the row leaves to the pointer.
     fn touch_claim(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {

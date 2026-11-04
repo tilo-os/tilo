@@ -483,6 +483,7 @@ decorator_trait! {
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;
         fn is_focused() -> bool;
+        fn context_menu_anchor() -> Option<vello::kurbo::Rect>;
         fn wants_tab_input() -> bool;
         fn ime_cursor_rect() -> Option<vello::kurbo::Rect>;
         fn traps_focus() -> bool;

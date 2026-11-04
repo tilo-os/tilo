@@ -49,15 +49,14 @@ fn bounded_menu_measures_and_clamps_in_every_viewport() {
         let min = f64::from(Theme::dark().tokens.metrics.menu_min_width);
         assert!(narrow.get_rect().width() >= min - 0.5);
         wide.open_at([900.0, 950.0]);
-        assert_eq!(
-            wide.get_rect(),
-            Rect::new(
-                900.0,
-                950.0,
-                900.0 + MENU_WIDTH,
-                950.0 + ROW_HEIGHT + 2.0 * PADDING
-            )
-        );
+        // Opened at the pointer it stands at that point, as far as the window
+        // lets it: it keeps its size and puts no part of itself past an edge.
+        let window = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+        let rect = wide.get_rect();
+        assert_eq!(rect.intersect(window), rect);
+        assert_eq!(rect.width(), MENU_WIDTH);
+        assert_eq!(rect.height(), ROW_HEIGHT + 2.0 * PADDING);
+        assert!(rect.x0 > window.center().x && rect.y0 > window.center().y);
         assert_eq!(wide.scroll_offset(), 0.0);
     }
 

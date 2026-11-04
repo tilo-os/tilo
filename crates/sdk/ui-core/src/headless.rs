@@ -3979,7 +3979,9 @@ impl FrameHarness {
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         let draw_phase = tilo_resource::profiling::Phase::start("ui.draw");
         // Logical layout, rasterised at the capture's device scale, as the
-        // live host draws at its window's scale factor.
+        // live host draws at its window's scale factor. What a widget places
+        // again as it paints lands on the same pixels layout does.
+        let _grid = crate::widget::layout::enter_device_scale(self.input_scale);
         let transform = self.capture_draw_transform();
         // A quiet frame that only re-applied positions moved laid-out
         // content and nothing else; nothing in presence fades or animates.

@@ -2293,7 +2293,7 @@ impl ui::widget::Decorator for FeedsApp {
         core.window = window;
         let bounds = core.menu_bounds();
         if let Some(open) = core.menu.as_mut() {
-            open.menu.constrain_to(bounds);
+            open.menu.set_viewport(Some(bounds));
         }
     }
 

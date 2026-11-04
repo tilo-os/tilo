@@ -594,6 +594,75 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
     );
 }
 
+/// The row the keyboard is on, as the list publishes it, and the open menu's box.
+fn keyboard_row(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .filter(|node| node.widget == "SwipeRow")
+        .find(|node| {
+            node.semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.state.selected)
+        })
+        .map(|node| node.rect)
+}
+
+fn open_menu(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .filter(|node| node.widget == "ContextMenu")
+        .find(|node| {
+            node.semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.state.expanded == Some(true))
+        })
+        .map(|node| node.rect)
+}
+
+/// The menu the keyboard opens on a row stands against that row: as Menu/Shift+F10 opens it on
+/// every platform, right under the row's own edge rather than somewhere in the list.
+#[test]
+fn a_row_menu_opened_from_the_keyboard_stands_under_that_row() {
+    let _settled = ui::motion::testing::settled();
+    support::installed("tasks");
+    let mut app =
+        TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
+    settle(&mut app);
+    // The list takes the keyboard, and Down puts it on a row.
+    app.harness().key("Tab");
+    settle(&mut app);
+    app.harness().key("Down");
+    settle(&mut app);
+    let row = keyboard_row(&mut app).unwrap_or_else(|| {
+        let snapshot = app.harness().inspection();
+        let mut all = Vec::new();
+        walk(&snapshot.root, &mut all);
+        let focused: Vec<_> = all
+            .iter()
+            .filter(|node| {
+                node.semantics
+                    .as_ref()
+                    .is_some_and(|semantics| semantics.state.focused)
+            })
+            .map(|node| node.widget.clone())
+            .collect();
+        panic!("the keyboard is on a row, not on {focused:?}");
+    });
+    app.harness().key("Shift+F10");
+    settle(&mut app);
+    let menu = open_menu(&mut app).expect("Shift+F10 opens the focused row's menu");
+    let row_bottom = row[1] + row[3];
+    // Under the row, one step of air off it, and not at the list's foot.
+    assert!(
+        menu[1] >= row_bottom - 1.0 && menu[1] - row_bottom <= 8.0,
+        "the menu stands under the row it opened from: menu at {menu:?}, row {row:?}"
+    );
+}
+
 #[test]
 fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
     use ui::time::testing::with_wall;
