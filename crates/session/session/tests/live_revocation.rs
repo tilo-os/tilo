@@ -73,11 +73,20 @@ fn acl_path(root: &Path) -> std::path::PathBuf {
     root.join("config/tilo/fs-capabilities.json")
 }
 
+/// The list the daemon was handed last, as it signed it, if it was handed one
+/// whose signature step has finished.
+fn published(seen: &Path) -> Option<collab_types::FsAuthority> {
+    let last = publications(seen);
+    if last == 0 {
+        return None;
+    }
+    let bytes = std::fs::read(seen.join(format!("{last}.json"))).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 /// The list the daemon was handed last, as it signed it.
 fn last_published(seen: &Path) -> collab_types::FsAuthority {
-    let last = publications(seen);
-    assert!(last > 0, "the daemon was handed no list");
-    serde_json::from_slice(&std::fs::read(seen.join(format!("{last}.json"))).unwrap()).unwrap()
+    published(seen).expect("the daemon was handed a list")
 }
 
 #[test]
@@ -151,12 +160,17 @@ fn change_workspace(session: &Session, change: impl FnOnce(&mut tilo_desktop_mod
 
 /// Give `MEMBER` `role` in the workspace in front and return the list the
 /// daemon was handed in answer: the session notices the replica's change on
-/// its own, with no timer and no request for it.
+/// its own, with no timer and no request for it. `arrived` is what that list
+/// says, so the wait is for the access the role gives and not for a number of
+/// publications: a list published for a change still in flight may carry this
+/// one too, and how many publications a change takes is not what a role
+/// change promises.
 fn published_after_role(
     session: &mut Session,
     seen: &Path,
     publications_before: u64,
     role: tilo_action_policy::Role,
+    arrived: impl Fn(&collab_types::FsAuthority) -> bool,
 ) -> collab_types::FsAuthority {
     let owner = common::PERSON.to_owned();
     change_workspace(session, |workspace| {
@@ -169,7 +183,8 @@ fn published_after_role(
         .expect("the person changes the member's role");
     });
     common::until(session, "the list after the role", |_| {
-        publications(seen) == publications_before.saturating_add(1)
+        publications(seen) > publications_before
+            && published(seen).is_some_and(|list| arrived(&list))
     });
     last_published(seen)
 }
@@ -182,7 +197,7 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
     let acl = acl_path(root.path());
     let mut session = common::seeded_session(root.path());
     common::until(&mut session, "the file access list", |_| {
-        acl.is_file() && publications(&seen) == 1
+        acl.is_file() && publications(&seen) >= 1
     });
     assert!(
         !member_may(
@@ -195,7 +210,13 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
 
     // Admitted read-only, they read the workspace's files and cannot write
     // them.
-    let read_only = published_after_role(&mut session, &seen, 1, tilo_action_policy::Role::Viewer);
+    let read_only = published_after_role(
+        &mut session,
+        &seen,
+        publications(&seen),
+        tilo_action_policy::Role::Viewer,
+        |list| member_may(list, NOTE, collab_types::caps::Access::Read),
+    );
     assert!(member_may(
         &read_only,
         NOTE,
@@ -207,7 +228,13 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
     );
 
     // Their role changes to editor: the daemon is handed writing too.
-    let editing = published_after_role(&mut session, &seen, 2, tilo_action_policy::Role::Editor);
+    let editing = published_after_role(
+        &mut session,
+        &seen,
+        publications(&seen),
+        tilo_action_policy::Role::Editor,
+        |list| member_may(list, NOTE, collab_types::caps::Access::Write),
+    );
     assert!(
         member_may(&editing, NOTE, collab_types::caps::Access::Write),
         "the daemon is handed the editor's access"
@@ -215,13 +242,23 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
 
     // Removed from the workspace, their device reaches nothing at its next
     // open, and the relay membership drops them in the same revision.
+    let before_removal = publications(&seen);
     let owner = common::PERSON.to_owned();
     change_workspace(&session, |workspace| {
         tilo_desktop::workspace_settings::remove_member(workspace, &owner, &MEMBER.to_owned())
             .expect("the person removes the member");
     });
     common::until(&mut session, "the list after the removal", |_| {
-        publications(&seen) == 4
+        publications(&seen) > before_removal
+            && published(&seen).is_some_and(|list| {
+                !member_may(&list, NOTE, collab_types::caps::Access::Read)
+                    && !member_may(&list, NOTE, collab_types::caps::Access::Write)
+                    && list
+                        .workspace_members
+                        .values()
+                        .flatten()
+                        .all(|member| member.user.0 != member_key())
+            })
     });
     let removed = last_published(&seen);
     assert!(!member_may(
