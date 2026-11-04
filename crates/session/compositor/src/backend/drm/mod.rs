@@ -757,8 +757,17 @@ impl Backend for DrmBackend {
             .gpus
             .values()
             .flat_map(|gpu| gpu.outputs.values())
-            .filter(|lit| !lit.queued && !lit.dark && state.redraw_owed(&lit.output))
-            .map(|lit| lit.next_frame)
+            .filter(|lit| !lit.dark && state.redraw_owed(&lit.output))
+            // A frame already queued is shown at the blank it was built for:
+            // what changed since is drawn in the frame built after it.
+            .filter_map(|lit| {
+                if lit.queued {
+                    lit.pacing
+                        .queued_next_frame(lit.interval, lit.vrr == Vrr::On)
+                } else {
+                    Some(lit.next_frame)
+                }
+            })
             .min()
     }
 }
