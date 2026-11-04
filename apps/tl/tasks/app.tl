@@ -959,6 +959,39 @@ scenario "all done" {
     tasks.items.insert(Task(title: "Sun cream", done: true))
 }
 
+/// A task the day went by on: its page says which day it was due, that it is late, and the
+/// steps under it, one of them due the same day as the task it is under and one of them not.
+scenario "a task that is late" -> Task {
+    let flat = tasks.projects.insert(Project(name: "Move flat"))
+    let call = tasks.items.insert(
+        Task(
+            title: "Call the landlord about the boiler",
+            notes: RichText("Ask whether Tuesday morning works for the engineer."),
+            project: flat,
+            due: 2026-06-29,
+            at: 2026-06-29T09:00,
+            priority: .high,
+        ),
+    )
+    tasks.items.insert(
+        Task(
+            title: "Find the last service date",
+            parent: .some(call),
+            project: flat,
+            due: 2026-06-29,
+        ),
+    )
+    tasks.items.insert(
+        Task(
+            title: "Book the engineer's visit",
+            parent: .some(call),
+            project: flat,
+            due: 2026-07-02,
+        ),
+    )
+    call
+}
+
 /// A move a week away, on its project's board: a lane per stage, the tasks in each.
 scenario "a project board" -> Project {
     let flat = tasks.projects.insert(

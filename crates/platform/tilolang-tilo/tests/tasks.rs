@@ -1509,6 +1509,95 @@ fn a_scenario_reads_the_keys_of_the_branch_it_stages() {
     );
 }
 
+/// A step names the day it is due only when that is not the day of the task it stands under:
+/// the day the page around it already says, the step leaves unsaid.
+#[test]
+fn a_step_names_its_day_only_when_its_task_does_not() {
+    let (mut ada, _) = workspace();
+    let scenario = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "a task that is late")
+        .expect("Tasks stages a task that is late")
+        .action
+        .clone();
+    let page = match ada
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .unwrap()
+    {
+        InvokeOutcome::Done(page) => page,
+        other => panic!("{other:?}"),
+    };
+    ada.commit();
+    let Value::Ref(task) = page else {
+        panic!("the scenario hands back the task: {page:?}");
+    };
+    let mut window = ada
+        .host
+        .open_resource(&task.target, None)
+        .expect("a task's page");
+    let rows = step_rows(&mut window);
+    let day = |title: &str| {
+        rows.iter()
+            .find(|(label, _, _)| label == title)
+            .unwrap_or_else(|| panic!("{title}'s row"))
+            .1
+            .clone()
+    };
+    assert_eq!(
+        day("Find the last service date"),
+        None,
+        "a step due the day its task is due repeats nothing the page says"
+    );
+    assert_eq!(
+        day("Book the engineer's visit").as_deref(),
+        Some("2026-07-02"),
+        "a step due another day names it"
+    );
+    let kind = |title: &str| {
+        rows.iter()
+            .find(|(label, _, _)| label == title)
+            .unwrap_or_else(|| panic!("{title}'s row"))
+            .2
+            .clone()
+    };
+    assert_eq!(
+        kind("Book the engineer's visit").as_deref(),
+        Some("date"),
+        "the day it names is a day the host writes, not a string the app formats"
+    );
+}
+
+/// What each step's row of a task's page says of the day it is due, by the step's title: the day
+/// it gives, which kind of fact that is, and none where it leaves the day to the page.
+fn step_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>)> {
+    view.poll_patches().unwrap();
+    let tree = all(view.tree(), "ui.TreeView")
+        .into_iter()
+        .find(|tree| tree.props.get("name") == Some(&Value::text("Subtasks")))
+        .expect("the page's subtasks");
+    all(tree, "ui.TreeViewNode")
+        .into_iter()
+        .filter_map(|node| {
+            let Some(Value::Text(label)) = node.props.get("label") else {
+                return None;
+            };
+            let row = all(node, "ui.TreeViewRow").first().copied()?;
+            let text = |name: &str| match row.props.get(name) {
+                Some(Value::Text(text)) if !text.is_empty() => Some(text.clone()),
+                _ => None,
+            };
+            Some((label.clone(), text("trailing"), text("trailing:as")))
+        })
+        .collect()
+}
+
 /// Every node of this kind in the drawn view.
 fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
     fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
