@@ -141,9 +141,11 @@ d-zjuy7y7f = New project
 
 d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
+    .did = changed whether this is done
 
 d-fykojijd = Add subtask
     .doc = Adds a subtask under a task: a task of its own, in its project and section, under the title given.
+    .did = added a subtask
 
 d-tmwdrpev = Today
     .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
@@ -177,12 +179,15 @@ d-lrdm4l3c = Urgent
 
 d-laxsa3x6 = Project…
     .doc = Files a task under a project the person picks.
+    .did = moved this to a project
 
 d-dshqxolf = Inbox
     .doc = Takes a task out of its project, back to the inbox.
+    .did = moved this to the inbox
 
 d-c6y4cxdd = Assign…
     .doc = Gives a task to someone, or to nobody.
+    .did = changed who this is assigned to
 
 d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.

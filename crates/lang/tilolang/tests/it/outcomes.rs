@@ -309,6 +309,7 @@ fn published() -> tilolang::PackageMeta {
             icon: None,
             role: None,
             scenario: false,
+            did: None,
             applies: false,
             present: None,
             toggles: None,

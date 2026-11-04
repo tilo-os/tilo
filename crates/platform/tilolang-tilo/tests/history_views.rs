@@ -663,11 +663,11 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
     ada.commit_in_run(AGENT, RUN, "Tidy the notes");
     let mut editor = ada.host.open_resource(&target(&note), None).unwrap();
     let section = history(&mut editor);
-    // The run's rename, newest, then Ada's own: the row reads the name the avatar shows, and
-    // the agent as its name plus that it is software.
+    // The run's rename, newest, then Ada's own: the agent reads as its name plus that it is
+    // software, and the step the person looking made reads as the platform's word for them.
     assert_eq!(
         labels(&section),
-        ["Helper (agent)", "Ada Lovelace"],
+        ["Helper (agent)", "tilolang-you"],
         "the rows name people as the avatars do, never their ids"
     );
     assert!(
@@ -727,12 +727,11 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
     );
 }
 
-/// Checking a task off is one entry of history, saying in a sentence what it did: it took the
-/// tasks under it with it, and the step before it is an entry of its own.
+/// Checking a task off is one entry of history, saying in a sentence who did it and what it
+/// did: it took the tasks under it with it, and the step before it is an entry of its own.
 #[test]
 fn checking_a_task_off_is_one_entry_saying_what_it_did() {
-    const SAYS: &str = "Checks a task off with every task under it, or opens it again with the \
-                        tasks it is under.";
+    const SAYS: &str = "tilolang-you changed whether this is done";
     let (mut ada, _, tasks) = two_people();
     let parent = call(
         &ada,
@@ -770,7 +769,7 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
     );
     assert!(
         nodes(&section).iter().any(|n| text(n) == Some(SAYS)),
-        "the check's entry says what it did: {section:#?}"
+        "the check's entry says who checked it and what it did: {section:#?}"
     );
     let (label, ..) = changes(&section)
         .into_iter()

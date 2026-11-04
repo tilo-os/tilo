@@ -2687,3 +2687,103 @@ fn a_place_whose_tasks_are_all_done_says_so() {
         "and what is done with folds under it"
     );
 }
+
+/// A workspace that names who a task belongs to offers the place of what the person looking
+/// holds, as its sidebar's first place, once someone else is in it; on their own, nothing is
+/// anyone's but theirs and the place would say what a list of everything does.
+#[test]
+fn a_shared_workspace_offers_the_place_of_what_the_person_looking_holds() {
+    use tilolang_runtime::members::Member;
+
+    let (mut ada, _root) = workspace();
+    let mut view = ada.view(APP);
+    view.poll_patches().unwrap();
+    assert!(
+        !places(&view)
+            .iter()
+            .any(|(label, _)| label == "Assigned to me"),
+        "a workspace of one has no place of their own: {:?}",
+        places(&view)
+    );
+    let scenario = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "a shared week")
+        .expect("Tasks stages a shared week")
+        .action
+        .clone();
+    ada.host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .unwrap();
+    ada.commit();
+    view.poll_patches().unwrap();
+    assert_eq!(
+        places(&view).first(),
+        Some(&("Assigned to me".to_owned(), Some(1))),
+        "the place leads, and counts the one open task the person looking holds: {:?}",
+        places(&view)
+    );
+    // The workspace narrows to the person looking alone: the place goes.
+    ada.host
+        .runtime()
+        .set_members(vec![Member::person("ada", "owner")], None);
+    view.poll_patches().unwrap();
+    assert!(
+        !places(&view)
+            .iter()
+            .any(|(label, _)| label == "Assigned to me"),
+        "the place goes when no one else is in the workspace: {:?}",
+        places(&view)
+    );
+}
+
+/// The assignee's person field offers the workspace's members and its agents, by the people
+/// and software a staged workspace has in it.
+#[cfg(feature = "record")]
+#[test]
+fn the_assignee_offers_the_workspaces_people_and_agents() {
+    let (mut ada, _root) = workspace();
+    let scenario = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "a shared week")
+        .expect("Tasks stages a shared week")
+        .action
+        .clone();
+    ada.host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .unwrap();
+    ada.commit();
+    let post = task(&ada, "Write the launch post");
+    let page = task_page(&ada, &post);
+    let field = {
+        let meta = &ada.host.package(APP).unwrap().meta;
+        crate::fixtures::field_id(meta, "Task", "assignee")
+    };
+    let key = bound_key(page.tree(), &field).expect("the page binds its assignee");
+    let node = node_of(page.tree(), &key).expect("the bound node is drawn");
+    assert_eq!(node.kind, "ui.PersonField");
+    assert_eq!(
+        node.props.get("people"),
+        Some(&Value::List(vec![
+            Value::Principal(Principal::new("scenario:Mia")),
+            Value::Principal(Principal::new("scenario:Scout")),
+        ])),
+        "the list offers the workspace's people and agents"
+    );
+    assert_eq!(
+        node.props.get("me"),
+        Some(&Value::Principal(Principal::new("ada"))),
+        "the list leads with the person the page is shown to"
+    );
+}

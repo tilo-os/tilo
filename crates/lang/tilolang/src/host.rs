@@ -232,6 +232,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "What the action that made it does, as its declaration describes it: `Renames a note.`; empty for one that describes nothing.",
             ),
             (
+                "did",
+                "Text",
+                "What the action that made it did, as its declaration says it after who did it \
+                 (`moved this`); empty for one that says nothing of its own.",
+            ),
+            (
                 "icon",
                 "Option<Text>",
                 "The icon of the action that made it, when it declares one.",

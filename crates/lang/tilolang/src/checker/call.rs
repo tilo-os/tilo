@@ -108,6 +108,7 @@ impl Checker<'_> {
             "open" => return self.builtin_open(args, span),
             "resource" => return self.builtin_resource(args, span),
             "person" => return self.builtin_person(args, span),
+            "agent" => return self.builtin_agent(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
             "delivery" => return self.builtin_delivery(args, span),
@@ -833,6 +834,27 @@ impl Checker<'_> {
         };
         let name = self.expr_as(value, &Ty::Text);
         Ex::host(Imp::PrincipalNamed, vec![name], Ty::Principal)
+    }
+
+    /// `agent(name)`: software in the workspace a scenario stages, offered beside its people.
+    fn builtin_agent(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.written != Written::Scenario {
+            self.err("E094", span, "`agent(name)` makes sample software for a scenario; elsewhere a principal comes only from `invoker` or a stored field");
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [ast::Arg { name: None, value }] = args else {
+            self.err(
+                "E022",
+                span,
+                "`agent` takes the agent's name: `agent(\"Scout\")`",
+            );
+            return Ex::error();
+        };
+        let name = self.expr_as(value, &Ty::Text);
+        Ex::host(Imp::AgentNamed, vec![name], Ty::Principal)
     }
 
     fn builtin_outside(&mut self, args: &[ast::Arg], span: Span) -> Ex {

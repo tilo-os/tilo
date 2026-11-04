@@ -341,6 +341,7 @@ impl Env {
                 key: a.key.clone(),
                 group: a.group.clone(),
                 frequent: a.frequent,
+                did: a.did.clone(),
             };
             add(
                 CKind::Action,
@@ -2163,6 +2164,7 @@ impl Resolver<'_> {
             key: None,
             group: None,
             frequent: false,
+            did: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -2241,6 +2243,26 @@ impl Resolver<'_> {
                 ),
                 // `frequent: true`: a command the person reaches for on most things of this
                 // type, which a surface showing the resource's actions draws directly.
+                // `did: "moved this"`: what the action did, said after who did it, so history
+                // reads as people say it ("Ana moved this"). A phrase of the app's own, one
+                // verb for each thing a person does.
+                ("did", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
+                    let said = plain_text(&opt.value).unwrap_or_default();
+                    if said.trim().is_empty() {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`did:` says what the action did, after who did it: `did: \"moved this\"`",
+                        );
+                    } else {
+                        out.did = Some(said);
+                    }
+                }
+                ("did", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`did:` takes words in quotes, without `{ }`: `did: \"moved this\"`",
+                ),
                 ("frequent", ExprKind::Bool(frequent)) => out.frequent = *frequent,
                 ("frequent", _) => self.err(
                     "E090",
@@ -2250,7 +2272,7 @@ impl Resolver<'_> {
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:` and `frequent:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `frequent:` and `did:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

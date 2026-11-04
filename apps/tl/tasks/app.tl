@@ -191,6 +191,7 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
 action check(t: Task, done: Bool = not t.done) (
     label: if done { "Complete" } else { "Reopen" },
     icon: .check,
+    did: "changed whether this is done",
     on: t.done,
     key: "Ctrl+Enter",
 ) {
@@ -213,6 +214,7 @@ action check(t: Task, done: Bool = not t.done) (
 action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task (
     label: "Add subtask",
     icon: .list_tree,
+    did: "added a subtask",
     key: "Ctrl+Shift+N",
 ) {
     let made = tasks.items.insert(
@@ -293,6 +295,7 @@ action set_priority_urgent(t: Task) (label: "Urgent", icon: .triangle_alert, gro
 action file(t: Task, p: Project) (
     label: "Project…",
     icon: .folder,
+    did: "moved this to a project",
     key: "Ctrl+Shift+M",
     group: "Move to project",
 ) {
@@ -300,13 +303,22 @@ action file(t: Task, p: Project) (
 }
 
 /// Takes a task out of its project, back to the inbox.
-action unfile(t: Task) (label: "Inbox", icon: .inbox, group: "Move to project") {
+action unfile(t: Task) (
+    label: "Inbox",
+    icon: .inbox,
+    group: "Move to project",
+    did: "moved this to the inbox",
+) {
     require t.project != .none "It is in the inbox already"
     t.project = .none
 }
 
 /// Gives a task to someone, or to nobody.
-action assign(t: Task, who: Option<Principal>) (label: "Assign…", icon: .user) {
+action assign(t: Task, who: Option<Principal>) (
+    label: "Assign…",
+    icon: .user,
+    did: "changed who this is assigned to",
+) {
     t.assignee = who
 }
 
@@ -885,6 +897,46 @@ scenario "a task's subtasks" -> Task {
         ),
     )
     tasks.items.insert(Task(title: "Screenshots", parent: .some(copy), project: launch))
+    copy
+}
+
+/// A week a person, a colleague and their agent share: who holds what, and what each of them
+/// did to it.
+scenario "a shared week" -> Task {
+    let mia = person("Mia")
+    let scout = agent("Scout")
+    let launch = tasks.projects.insert(Project(name: "Website launch"))
+    let copy = tasks.items.insert(
+        Task(
+            title: "Write the launch post",
+            project: launch,
+            due: 2026-07-06,
+            assignee: .some(mia),
+        ),
+    )
+    let quotes = tasks.items.insert(
+        Task(
+            title: "Collect the quotes from the beta testers",
+            parent: .some(copy),
+            project: launch,
+            assignee: .some(scout),
+        ),
+    )
+    tasks.items.insert(
+        Task(
+            title: "Check the pricing page on phones",
+            project: launch,
+            due: 2026-07-08,
+            assignee: .some(invoker),
+        ),
+    )
+    tasks.items.insert(Task(title: "Book the van", due: 2026-07-10, assignee: .some(mia)))
+    as scout {
+        add_subtask(tasks, copy, "Ask three customers for a quote")
+    }
+    as mia {
+        check(quotes, true)
+    }
     copy
 }
 

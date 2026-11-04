@@ -831,3 +831,96 @@ type Note {
     );
     assert_eq!(inbox.pred, Some(Pred::And(Vec::new())));
 }
+
+/// A field naming who an item belongs to is a filter of its own: `assignee:me` reads the same
+/// in every app that has one, and the place of what the person looking holds (`is:mine`) is
+/// read from it.
+const MEMBERS: &str = r"
+/// A task someone does.
+type Task {
+    title: Text (title)
+    done: Bool (done) = false
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+}
+
+/// The tasks a workspace shares.
+type Board {
+    tasks: Collection<Task>
+}
+";
+
+#[test]
+fn a_field_naming_a_member_is_a_filter_without_declaring_one() {
+    // `me` reads as the person looking rather than as a binding, so the view compiles.
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+view mine(b: Board) {{
+    for t in query(Task, in: b.tasks, assignee: me) {{
+        text(t.title)
+    }}
+}}
+"
+    ))
+    .meta;
+    let task = type_meta(&meta, "Task");
+    let assignee = task
+        .search
+        .filter("assignee")
+        .expect("the member field is a filter");
+    assert_eq!(assignee.kind, FilterKind::Person);
+    assert!(assignee.optional, "nobody may hold it");
+    assert_eq!(assignee.label, "Assignee");
+    assert_eq!(
+        assignee.field.as_deref(),
+        Some(field_id(task, "assignee").as_str())
+    );
+}
+
+#[test]
+fn the_member_filter_is_declared_once_or_hidden_away() {
+    // Declaring it names it, without making a second one.
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+type Named {{
+    title: Text (title)
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+
+    search {{
+        filter assignee
+    }}
+}}
+"
+    ))
+    .meta;
+    let named = type_meta(&meta, "Named");
+    let people: Vec<&tilolang::meta::FilterMeta> = named
+        .search
+        .filters
+        .iter()
+        .filter(|f| f.kind == FilterKind::Person)
+        .collect();
+    assert_eq!(people.len(), 1, "one member filter, declared: {people:?}");
+    assert_eq!(people[0].key, "assignee");
+    // Hiding it keeps it out, as hiding any field does.
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+type Quiet {{
+    title: Text (title)
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+
+    search {{
+        hide assignee
+    }}
+}}
+"
+    ))
+    .meta;
+    let quiet = type_meta(&meta, "Quiet");
+    assert!(
+        quiet.search.filter("assignee").is_none(),
+        "a hidden member field is no filter"
+    );
+}

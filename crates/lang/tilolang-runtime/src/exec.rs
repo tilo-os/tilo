@@ -1539,11 +1539,15 @@ impl Core {
                 drop(frames);
                 self.ret_h(who)
             }
-            Imp::PrincipalNamed => {
+            Imp::PrincipalNamed | Imp::AgentNamed => {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;
                 let who = Principal(format!("scenario:{name}"));
-                self.named_person(who.clone());
+                if imp == Imp::AgentNamed {
+                    self.named_agent(who.clone());
+                } else {
+                    self.named_person(who.clone());
+                }
                 self.ret_h(Value::Principal(who))
             }
             Imp::InvokerPush => {

@@ -513,6 +513,10 @@ print(xs, fields: [.title, .due])
   the subject as an `if` does; over another argument it is read where the action is applied
   with it, `button(move_to(b, card, col))`. `button(pin(n))` reads its `label:`, `icon:` and
   `on:` with the arguments it applies, as the view draws: Pin turns into Unpin, toggled.
+- An action says what it did, as history reads it after who did it: `did: "moved this"` or
+  `did: "added a subtask"`. A history row is then one sentence in a person's terms — "Ana
+  moved this", "You added a subtask" — rather than a label beside a paragraph about the
+  command.
 - An action declares its shortcut: `key: "Ctrl+Enter"`, `key: "Ctrl+Shift+M"`, `key: "Delete"` —
   modifiers in any order, then one key. The command modifier is the platform's own, so
   `Ctrl+Enter` is Command+Enter on a Mac. Where the action is offered its key runs it: an

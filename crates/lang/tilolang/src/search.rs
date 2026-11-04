@@ -19,7 +19,7 @@ use crate::types::Ty;
 
 /// The words of a typed search that a filter's key cannot be: `is:done`, `sort:-due`,
 /// `in:list`.
-pub const RESERVED_KEYS: &[&str] = &["is", "sort", "in", "text"];
+pub const RESERVED_KEYS: &[&str] = &["is", "sort", "in", "text", "mine"];
 
 /// What a filter on a field of type `ty` is: its kind, whether it may hold no value (an option
 /// or a set) and whether it holds several (a set). `None` for a type no filter compares.
@@ -679,7 +679,15 @@ pub fn resolve(
         .filter(|f| !out.filters.iter().any(|x| x.key == f.name))
         .filter_map(|f| {
             let (kind, optional, many) = filter_kind(&f.ty)?;
-            (kind == FilterKind::Person).then(|| FilterMeta {
+            if kind != FilterKind::Person {
+                return None;
+            }
+            // A member field is read as a filter by its name, which cannot be search's own word
+            // (`defaults` leaves such a field out too).
+            if RESERVED_KEYS.contains(&f.name.as_str()) {
+                return None;
+            }
+            Some(FilterMeta {
                 key: f.name.clone(),
                 label: sentence_case(&f.name),
                 doc: f.doc.lines().next().unwrap_or_default().trim().to_owned(),
@@ -701,7 +709,7 @@ pub fn resolve(
 fn push_filter(ctx: &mut Ctx<'_>, out: &mut SearchMeta, filter: FilterMeta, span: Span) {
     if RESERVED_KEYS.contains(&filter.key.as_str()) {
         let msg = format!(
-            "a filter named `{}` reads as search's own word (`is:`, `sort:`, `in:`, `text:`); label it otherwise",
+            "a filter named `{}` reads as search's own word (`is:`, `sort:`, `in:`, `text:`, `mine:`); label it otherwise",
             filter.key
         );
         ctx.err("E104", span, msg);

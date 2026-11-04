@@ -154,6 +154,10 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
     }
     for action in meta.actions.iter().filter(|action| !action.scenario) {
         message(&mut out, &action.id, &action.label, &action.doc);
+        // What the action did, as a history entry says it after who did it.
+        if let Some(did) = &action.did {
+            attribute(&mut out, "did", &pattern(did));
+        }
     }
     // A view's doc comment says how it draws, for its author; a person sees its label.
     // The words it shows as written are its attributes (i18n.md §2).

@@ -505,6 +505,7 @@ impl Reader<'_> {
             icon: None,
             role: verb.destructive.then(|| "destructive".to_owned()),
             scenario: false,
+            did: None,
             present: None,
             toggles: None,
             key: None,

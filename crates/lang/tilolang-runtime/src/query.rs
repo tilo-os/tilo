@@ -394,9 +394,10 @@ fn term_pred(
         }
         return Ok(text_pred(std::slice::from_ref(&term.value), ty));
     };
-    // `is:mine`: what the person looking is assigned, still open. A type that names no member
-    // holds none of it, as a type with no text holds no word.
-    if key == "is" && term.value == "mine" {
+    // `is:mine` (read as the toggle `mine:true`, as every `is:` is): what the person looking is
+    // assigned, still open. A type that names no member holds none of it, as a type with no text
+    // holds no word.
+    if key == "mine" && term.value == "true" {
         return mine_pred(ty, viewer);
     }
     if let Some(filter) = ty.search.filter(key) {
@@ -478,6 +479,20 @@ fn one_of(mut each: Vec<Pred<String>>) -> Pred<String> {
     }
 }
 
+/// A person filter's value: `me` is whoever is looking, so a filter that names it reads
+/// differently for each of the people a workspace is shared with; anything else is a member by
+/// their id.
+fn person_lit(value: &str, viewer: Option<&str>) -> Result<Lit, String> {
+    let who = if value == "me" {
+        viewer
+            .ok_or("`me` is only known where someone is looking")?
+            .to_owned()
+    } else {
+        value.to_owned()
+    };
+    Ok(Lit::Principal(who))
+}
+
 fn filter_pred(
     f: &FilterMeta,
     value: &str,
@@ -557,18 +572,7 @@ fn filter_pred(
             Ok(one_of(each))
         }
         FilterKind::Reference => Ok(member(Lit::Ref(value.to_owned()))),
-        FilterKind::Person => {
-            // `me` is whoever is looking, so a place that names it reads differently for each
-            // of the people it is shared with; anything else is a member by their id.
-            let who = if value == "me" {
-                viewer
-                    .ok_or("`me` is only known where someone is looking")?
-                    .to_owned()
-            } else {
-                value.to_owned()
-            };
-            Ok(member(Lit::Principal(who)))
-        }
+        FilterKind::Person => Ok(member(person_lit(value, viewer)?)),
         FilterKind::Text => Ok(member(Lit::Text(value.to_owned()))),
         FilterKind::Identifier => {
             let pattern = identifier::normalize_pattern(value)?;
@@ -772,17 +776,12 @@ fn role_order(terms: &[Term], ty: &TypeMeta) -> Option<Order> {
     let key = term.key.as_deref()?;
     // A place is a toggle on a named filter (`is:today`) or the member place (`is:mine`); a
     // filter by a value (`due:today`) lists in the type's own order.
-    let place = if key == "is" {
-        format!("is:{}", term.value)
-    } else {
-        format!("{key}:{}", term.value)
-    };
-    if term.value != "true" && place != MINE_PLACE {
+    if term.value != "true" {
         return None;
     }
-    let order = match place_role(ty, &place)? {
+    let order = match place_role(ty, &format!("is:{key}"))? {
         FilterRole::Agenda { day } | FilterRole::Upcoming { day } => Order {
-            field: day.clone(),
+            field: day,
             kind: crate::meta::FieldKind::Register,
             descending: false,
             absent_last: true,

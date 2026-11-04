@@ -102,12 +102,12 @@ pub enum Lit {
     Ref(String),
     /// An identifier as it is held, `scheme:value`.
     Ident(String),
-    /// A person or agent of the workspace, by the id the host names them with.
-    Principal(String),
     /// No value: an option that is none.
     Absent,
     /// The members of a set, as a field holds them.
     Set(Vec<Lit>),
+    /// A person or agent of the workspace, by the id the host names them with.
+    Principal(String),
 }
 
 /// A Float a predicate compares: equal, ordered and hashed by its value, `-0.0` as `0.0`.

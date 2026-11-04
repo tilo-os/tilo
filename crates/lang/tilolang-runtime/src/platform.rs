@@ -396,9 +396,9 @@ impl Core {
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
-    /// fields it changed by name, the resource, what its action says it does and its icon, and
-    /// each field it changed with what it held before and after; then the id of the action that
-    /// made it, which `v.is(edit)` compares (`tilolang::host::action_id_at`).
+    /// fields it changed by name, the resource, what its action says it does, what it did and
+    /// its icon, and each field it changed with what it held before and after; then the id of
+    /// the action that made it, which `v.is(edit)` compares (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
         let task = v.task.as_ref().map(|run| {
             Box::new(Value::Tuple(vec![
@@ -427,6 +427,17 @@ impl Core {
             || self.bound_edit_words(&v.action, named.first().map(String::as_str)),
             |a| a.doc.clone(),
         );
+        // What the action did, in the app's words for it, read through its catalogue so a
+        // translation says it in the reader's language.
+        let did = declared
+            .as_ref()
+            .map_or_else(String::new, |a| match (&a.did, &a.id) {
+                (Some(source), id) => {
+                    let key = format!("{}.did", tilolang::messages::key_of(id));
+                    self.words.borrow().word(&key, &[], source)
+                }
+                (None, _) => String::new(),
+            });
         let icon = declared
             .as_ref()
             .and_then(|a| a.icon.clone())
@@ -446,6 +457,7 @@ impl Core {
             Value::resource(of),
             Value::Bool(mine),
             Value::Text(description),
+            Value::Text(did),
             Value::Opt(icon),
             Value::List(changes),
             Value::Text(v.action),

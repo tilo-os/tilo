@@ -410,11 +410,11 @@ pub enum FilterKind {
     Identifier,
     /// Tags: `tag:urgent`.
     Text,
+    /// A named filter, a toggle.
+    Predicate,
     /// A person or agent of the workspace: `assignee:me`, `assignee:<id>`. A field of
     /// `Principal` is one without declaring it.
     Person,
-    /// A named filter, a toggle.
-    Predicate,
 }
 
 impl FilterKind {
@@ -585,6 +585,11 @@ pub struct ActionMeta {
     /// The hidden action of a scenario: never offered, run only to seed a workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub scenario: bool,
+    /// `did: "moved this"`: what the action did to its subject, as a history entry reads it
+    /// after who did it. An attribute of the action's message in the app's catalogue
+    /// (`d-<id>.did`), so a translation says it in the reader's language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
     /// The id of the view that presents the action's state for a subject, when its `label:` or
     /// `icon:` follows the subject or it declares `on:`. The view takes the action's first
     /// parameter and builds one node of kind `present` with the props given dynamically:

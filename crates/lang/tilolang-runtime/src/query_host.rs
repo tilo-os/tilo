@@ -740,13 +740,8 @@ impl Places<'_> {
             return Ok(None);
         }
         let me = self.core.looking()?;
-        let shared = self
-            .core
-            .members
-            .borrow()
-            .list()
-            .iter()
-            .any(|member| member.who.0 != me);
+        let members = self.core.read_members();
+        let shared = members.iter().any(|member| member.who.0 != me);
         if !shared {
             return Ok(None);
         }

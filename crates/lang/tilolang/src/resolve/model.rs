@@ -244,6 +244,10 @@ pub struct Presentation {
     /// `frequent`: a command the person reaches for on most things of this type, which the
     /// desktop's action bar shows directly rather than behind its menu of the rest.
     pub frequent: bool,
+    /// `did: "moved this"`: what the action did to its subject, as history's sentence reads it
+    /// after who did it ("Ana moved this"); empty for one that says nothing, which history then
+    /// names by the action and its description.
+    pub did: Option<String>,
 }
 
 /// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in

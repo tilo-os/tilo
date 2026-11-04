@@ -10,8 +10,11 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
+    use tilolang_runtime::members::Member;
     use tilolang_runtime::query::{Clock, find, resolve};
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
+    use tilolang_runtime::{
+        AmStore, Principal, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
+    };
 
     const NOW: &str = "2026-10-27T10:00:00Z";
 
@@ -22,6 +25,8 @@ type Task {
     done: Bool (done) = false
     due: Option<Date> = .none
     project: Option<Project> = .none
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
 
     search {
         filter "Inbox" = inbox(filed: project, day: due) (icon: .inbox)
@@ -53,6 +58,10 @@ action seed(b: Board) {
 
 action finish(t: Task) {
     t.done = true
+}
+
+action assign(t: Task, who: Principal) {
+    t.assignee = .some(who)
 }
 
 view titles(b: Board, q: Text) {
@@ -111,6 +120,15 @@ view sidebar(b: Board) {
             *self.now.borrow_mut() = when.to_owned();
             let task = self.item(title);
             self.run("finish", vec![Value::resource(&task)]);
+        }
+
+        /// Gives the task titled `title` to `who`.
+        fn assign(&self, title: &str, who: &Principal) {
+            let task = self.item(title);
+            self.run(
+                "assign",
+                vec![Value::resource(&task), Value::Principal(who.clone())],
+            );
         }
 
         fn item(&self, title: &str) -> ResourceRef {
@@ -208,6 +226,62 @@ view sidebar(b: Board) {
 
     fn nav_items(node: &UiNode) -> Vec<&UiNode> {
         of_kind(node, "ui.NavItem")
+    }
+
+    #[test]
+    fn the_person_an_item_belongs_to_has_a_place_of_their_own() {
+        let t = Tasks::new();
+        let viewer = me();
+        let ben = Principal::new("ben");
+        // On their own, nothing is anyone's but theirs: no place of their own to offer.
+        assert!(
+            !t.places_of().iter().any(|(key, _)| key == "is:mine"),
+            "a workspace of one has no place for what is theirs"
+        );
+        t.rt.set_members(
+            vec![
+                Member::person("me", "owner"),
+                Member::person("ben", "editor"),
+            ],
+            None,
+        );
+        let places = t.places_of();
+        assert_eq!(
+            places[0],
+            ("is:mine".to_owned(), Some(0)),
+            "in a shared workspace the place leads, and counts what waits in it: {places:?}"
+        );
+        t.assign("later", &viewer);
+        t.assign("today", &ben);
+        assert_eq!(
+            t.titles("is:mine"),
+            ["later"],
+            "what the viewer holds, open"
+        );
+        assert_eq!(
+            t.places_of()[0],
+            ("is:mine".to_owned(), Some(1)),
+            "the place counts what the viewer has left"
+        );
+        assert_eq!(
+            t.days("is:mine"),
+            ["later 2026-10-30"],
+            "an agenda's place stands each item at the day it is due"
+        );
+        t.finish("later", "2026-10-30T09:00:00Z");
+        assert_eq!(
+            t.titles("is:mine"),
+            Vec::<String>::new(),
+            "finished work leaves the place"
+        );
+        assert_eq!(t.places_of()[0].1, Some(0), "and the place counts nothing");
+        // A workspace of one again: nothing is anyone's but theirs.
+        t.rt.set_members(vec![Member::person("me", "owner")], None);
+        let places = t.places_of();
+        assert!(
+            !places.iter().any(|(key, _)| key == "is:mine"),
+            "the place goes when the workspace has no one else in it: {places:?}"
+        );
     }
 
     #[test]

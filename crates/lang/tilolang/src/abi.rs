@@ -121,6 +121,7 @@ imports! {
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);
+    AgentNamed = "agent_named" ([H] -> [H]);
     InvokerPush = "invoker_push" ([H, H] -> []);
     InvokerPop = "invoker_pop" ([] -> []);
     PrincipalKind = "principal_kind" ([H] -> [I64]);
