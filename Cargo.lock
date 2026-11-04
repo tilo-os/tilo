@@ -18426,6 +18426,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "flate2",
+ "host-fs",
  "libc",
  "lzma-rust2",
  "rustix 1.1.4",

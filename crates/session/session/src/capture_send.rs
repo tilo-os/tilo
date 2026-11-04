@@ -6,11 +6,11 @@
 //! spool, offered to the device as a fabric action, and its bytes stream from
 //! that spool; the receiving device's person still decides where it lands
 //! there. A workspace save copies the screenshot into the workspace's
-//! `Screenshots` folder, where the person's collaborators see it like anything
-//! else placed there. That copy reads and writes files - possibly over a
-//! remote workspace mount - so it happens on a worker of its own, never on the
-//! session's pass: the pass hands the worker the save and takes what became of
-//! it.
+//! `Screenshots` folder through the same engine every other copy takes, where
+//! the person's collaborators see it like anything else placed there. That
+//! copy reads and writes files - possibly over a remote workspace mount - so
+//! it happens on a worker of its own, never on the session's pass: the pass
+//! hands the worker the save and takes what became of it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +19,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use tilo_capture_studio::{Refusal, Sent};
 use tilo_device_fabric::DeviceId;
 use tilo_service::Wake;
+
+use host_fs::transfer::Failure;
 
 use crate::nearby_transfer::NearbyTransfer;
 
@@ -178,7 +180,7 @@ fn save(path: &Path, root: &Path) -> Sent {
             path: path.to_path_buf(),
         });
     }
-    match copy_into_workspace(path, root) {
+    match into_workspace(path, root) {
         Ok(saved) => Sent::saved(in_workspace_name(&saved)),
         Err(why) => Sent::not_saved(why),
     }
@@ -192,64 +194,24 @@ fn in_workspace_name(saved: &Path) -> String {
     )
 }
 
-/// Copy `source` into `root`'s [`WORKSPACE_SCREENSHOTS_DIR`] folder, under its
-/// own name, and the next free `stem (n).ext` when that one is taken: two
-/// sends never replace each other.
-fn copy_into_workspace(source: &Path, root: &Path) -> Result<PathBuf, Refusal> {
+/// Copy `source` into `root`'s [`WORKSPACE_SCREENSHOTS_DIR`] folder through the
+/// session's one transfer engine: it is written privately in that folder,
+/// flushed, and only then takes its own name, or the next free numbered one.
+/// Two sends never replace each other, and a send cut off part-way leaves no
+/// half screenshot under a name a later send would take for whole.
+fn into_workspace(source: &Path, root: &Path) -> Result<PathBuf, Refusal> {
     let folder = root.join(WORKSPACE_SCREENSHOTS_DIR);
     std::fs::create_dir_all(&folder).map_err(|error| Refusal::CreateFailed {
         folder: folder.clone(),
         error: error.to_string(),
     })?;
-    let name = source.file_name().ok_or_else(|| Refusal::NoFileName {
-        path: source.to_path_buf(),
-    })?;
-    let stem = Path::new(name)
-        .file_stem()
-        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-    let ext = Path::new(name)
-        .extension()
-        .map(|ext| ext.to_string_lossy().into_owned());
-    for attempt in 0..1000_u32 {
-        let candidate = if attempt == 0 {
-            folder.join(name)
-        } else {
-            let numbered = format!("{stem} ({attempt})");
-            folder.join(match &ext {
-                Some(ext) => format!("{numbered}.{ext}"),
-                None => numbered,
-            })
-        };
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(mut target) => {
-                // From here the copy is this person's: a write that fails
-                // part-way must not leave half a screenshot under a name
-                // another send would then take for whole.
-                match copy_bytes(source, &mut target) {
-                    Ok(()) => return Ok(candidate),
-                    Err(error) => {
-                        let _ = std::fs::remove_file(&candidate);
-                        return Err(error);
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(Refusal::NotSaved(error.to_string())),
-        }
-    }
-    Err(Refusal::NoFreeName { folder })
-}
-
-/// Write every byte of `source` into `target`.
-fn copy_bytes(source: &Path, target: &mut std::fs::File) -> Result<(), Refusal> {
-    let mut input =
-        std::fs::File::open(source).map_err(|error| Refusal::NotSaved(error.to_string()))?;
-    std::io::copy(&mut input, target).map_err(|error| Refusal::NotSaved(error.to_string()))?;
-    Ok(())
+    host_fs::transfer::transfer(source, &folder, false, &mut ()).map_err(|failure| match failure {
+        Failure::NoSourceName => Refusal::NoFileName {
+            path: source.to_path_buf(),
+        },
+        Failure::NamesExhausted { .. } => Refusal::NoFreeName { folder },
+        failure => Refusal::NotSaved(failure.to_string()),
+    })
 }
 
 #[cfg(test)]
@@ -630,10 +592,7 @@ mod tests {
         woken
             .recv_timeout(Duration::from_secs(60))
             .expect("the second save is answered");
-        assert_eq!(
-            sends.take(),
-            Some(Sent::saved("Screenshot 1 (1).png".into()))
-        );
+        assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1 2.png".into())));
         assert_eq!(
             std::fs::read(&saved).expect("the first copy"),
             b"the screenshot's bytes",
@@ -643,8 +602,86 @@ mod tests {
             workspace
                 .path()
                 .join("Screenshots")
-                .join("Screenshot 1 (1).png")
+                .join("Screenshot 1 2.png")
                 .is_file()
+        );
+        let mut names: Vec<String> = std::fs::read_dir(workspace.path().join("Screenshots"))
+            .expect("the folder")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "Screenshot 1 2.png".to_owned(),
+                "Screenshot 1.png".to_owned()
+            ],
+            "nothing is left staged beside the copies"
+        );
+    }
+
+    #[test]
+    fn a_send_whose_predecessor_was_cut_off_still_lands_whole() {
+        let (_dir, shot, _fake) = fixture();
+        let workspace = tempfile::tempdir().expect("a workspace");
+        let folder = workspace.path().join("Screenshots");
+        std::fs::create_dir_all(folder.join(".tilo-transfer-cut-off")).expect("a cut-off staging");
+        std::fs::write(
+            folder.join(".tilo-transfer-cut-off/payload"),
+            b"half a screenshot",
+        )
+        .expect("a half copy");
+        let (wake, woken) = waking();
+        let sends = Sends::new(
+            None,
+            Some(workspace.path().to_path_buf()),
+            Arc::clone(&wake),
+        );
+        assert_eq!(sends.send_to_workspace(shot), None);
+        woken
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the save is answered");
+        assert_eq!(sends.take(), Some(Sent::saved("Screenshot 1.png".into())));
+        assert_eq!(
+            std::fs::read(folder.join("Screenshot 1.png")).expect("the copy"),
+            b"the screenshot's bytes"
+        );
+        assert_eq!(
+            std::fs::read(folder.join(".tilo-transfer-cut-off/payload")).expect("the half copy"),
+            b"half a screenshot",
+            "a copy cut off part-way is never published"
+        );
+    }
+
+    #[test]
+    fn a_screenshot_is_not_saved_when_its_folder_cannot_be_made() {
+        let (_dir, shot, _fake) = fixture();
+        let workspace = tempfile::tempdir().expect("a workspace");
+        std::fs::write(workspace.path().join("Screenshots"), b"in the way").expect("a file");
+        let (wake, woken) = waking();
+        let sends = Sends::new(
+            None,
+            Some(workspace.path().to_path_buf()),
+            Arc::clone(&wake),
+        );
+        assert_eq!(sends.send_to_workspace(shot), None);
+        woken
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the save is answered");
+        assert!(
+            matches!(
+                sends.take(),
+                Some(Sent::NotSaved {
+                    why: Refusal::CreateFailed { .. }
+                })
+            ),
+            "the folder cannot be made"
+        );
+        assert_eq!(
+            std::fs::read(workspace.path().join("Screenshots")).expect("the file"),
+            b"in the way",
+            "nothing was written through it"
         );
     }
 

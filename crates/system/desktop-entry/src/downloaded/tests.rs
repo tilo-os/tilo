@@ -422,13 +422,53 @@ fn moving_into_applications_keeps_the_name_and_never_overwrites() {
     let again = tmp.path().join("home/Downloads/Krita.AppImage");
     executable(&again, b"two");
     let second = move_into(&again, &applications).unwrap();
-    assert_eq!(second, applications.join("Krita (2).AppImage"));
+    assert_eq!(second, applications.join("Krita 2.AppImage"));
     assert_eq!(
         std::fs::read(&moved).unwrap(),
         b"one",
         "nothing is overwritten"
     );
     assert_eq!(move_into(&second, &applications).unwrap(), second);
+}
+
+#[test]
+fn a_move_that_cannot_be_taken_leaves_the_program_where_it_was() {
+    let tmp = tempfile::tempdir().unwrap();
+    let applications = tmp.path().join("home/Applications");
+    // Something that is not a folder holds the name the programs go under.
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    std::fs::write(&applications, b"in the way").unwrap();
+    let program = tmp.path().join("home/Downloads/Krita.AppImage");
+    executable(&program, b"one");
+    assert!(move_into(&program, &applications).is_err());
+    assert_eq!(
+        std::fs::read(&program).unwrap(),
+        b"one",
+        "the program is where it was"
+    );
+}
+
+#[test]
+fn a_move_whose_predecessor_was_cut_off_still_lands_whole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let applications = tmp.path().join("home/Applications");
+    std::fs::create_dir_all(applications.join(".tilo-transfer-cut-off")).unwrap();
+    std::fs::write(
+        applications.join(".tilo-transfer-cut-off/payload"),
+        b"half a program",
+    )
+    .unwrap();
+    let program = tmp.path().join("home/Downloads/Krita.AppImage");
+    executable(&program, b"one");
+    let moved = move_into(&program, &applications).unwrap();
+    assert_eq!(moved, applications.join("Krita.AppImage"));
+    assert_eq!(std::fs::read(&moved).unwrap(), b"one");
+    assert_eq!(
+        std::fs::read(applications.join(".tilo-transfer-cut-off/payload")).unwrap(),
+        b"half a program",
+        "a copy cut off part-way is never published"
+    );
+    assert!(!program.exists(), "the move took the original");
 }
 
 #[test]

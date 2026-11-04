@@ -32,6 +32,8 @@ mod squashfs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use host_fs::transfer::Failure;
+
 use crate::icon_theme::IconFormat;
 
 /// The subdirectory of `applications` the entries live in; through the
@@ -1225,9 +1227,11 @@ pub fn is_program(path: &Path) -> bool {
 }
 
 /// Move the file at `program` into `folder` (the person's Applications
-/// folder), keeping its name, or `<name> (2)` and on when that is taken.
-/// Within one filesystem it is a rename; across filesystems the copy is
-/// written and synced before the original goes. Returns where it is now.
+/// folder), keeping its name, or the next free numbered one when that is
+/// taken. The move goes through the shared transfer engine: one filesystem is
+/// a rename, another a private copy published once it is whole, and a move
+/// that cannot finish puts the program back where it was. Returns where it is
+/// now.
 ///
 /// Only for a self-contained file (an `AppImage`): a program that sits
 /// among files it needs must stay where it is.
@@ -1236,56 +1240,13 @@ pub fn is_program(path: &Path) -> bool {
 ///
 /// The folder could not be made or the file could not be moved; the file
 /// is then where it was.
-pub fn move_into(program: &Path, folder: &Path) -> io::Result<PathBuf> {
-    let name = program
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file"))?;
-    if program.parent() == Some(folder) {
-        return Ok(program.to_path_buf());
-    }
+pub fn move_into(program: &Path, folder: &Path) -> Result<PathBuf, Failure> {
     std::fs::create_dir_all(folder)?;
-    let target = free_name(folder, Path::new(name));
-    match std::fs::rename(program, &target) {
-        Ok(()) => Ok(target),
-        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-            copy_then_remove(program, &target)?;
-            Ok(target)
-        }
-        Err(error) => Err(error),
+    match host_fs::transfer::transfer(program, folder, true, &mut ()) {
+        // It is already in the folder it belongs in: there is nothing to move.
+        Err(Failure::AlreadyHere) => Ok(program.to_path_buf()),
+        moved => moved,
     }
-}
-
-/// `name` in `folder`, or the first `<stem> (n).<ext>` nothing has taken.
-fn free_name(folder: &Path, name: &Path) -> PathBuf {
-    let first = folder.join(name);
-    if std::fs::symlink_metadata(&first).is_err() {
-        return first;
-    }
-    let stem = name
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let extension = name
-        .extension()
-        .map(|ext| format!(".{}", ext.to_string_lossy()))
-        .unwrap_or_default();
-    (2_u32..=u32::MAX)
-        .map(|n| folder.join(format!("{stem} ({n}){extension}")))
-        .find(|candidate| std::fs::symlink_metadata(candidate).is_err())
-        .unwrap_or(first)
-}
-
-/// Copy `from` to `to` with its permissions, sync it, then remove `from`.
-fn copy_then_remove(from: &Path, to: &Path) -> io::Result<()> {
-    let written = std::fs::copy(from, to).and_then(|_| {
-        let file = std::fs::File::open(to)?;
-        file.sync_all()
-    });
-    if let Err(error) = written {
-        let _ = std::fs::remove_file(to);
-        return Err(error);
-    }
-    std::fs::remove_file(from)
 }
 
 /// `key` as a file name: letters, digits, `.`, `_` and `-` kept, anything
