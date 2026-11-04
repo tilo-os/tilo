@@ -104,3 +104,6 @@ shell. Each is being replaced by the model above, not kept beside it.
 - [Security model](../security/README.md): threat model, sign-in, boot chain.
 - [Surfaces](surfaces.md), [window management](window-management.md),
   [theming](theming.md): the shell and the toolkit.
+- [Session UI inventory](ui-inventory.md): which shell surfaces still lay
+  themselves out by hand, what replaces each, and the policy that stops new
+  ones.
