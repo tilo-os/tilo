@@ -637,6 +637,132 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     );
 }
 
+/// Every frame the session wrote back on `connection` within `steps` of its
+/// loop: whole lines, each a host message.
+fn host_frames(
+    session: &mut Session,
+    connection: &mut UnixStream,
+    steps: usize,
+) -> Vec<ui::floating_surface::FloatingSurfaceHostMessage> {
+    connection
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..steps {
+        session.step(Duration::from_millis(1)).unwrap();
+        let mut chunk = [0u8; 1024];
+        match std::io::Read::read(connection, &mut chunk) {
+            Ok(read) => seen.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("the connection broke: {error}"),
+        }
+    }
+    String::from_utf8(seen)
+        .expect("frames are text")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line.trim()).expect("the session wrote a host message"))
+        .collect()
+}
+
+/// A presented frame's marker inventory is read, not refused: the window
+/// paints its own markers at the control an agent would press, and its host
+/// has nothing to add to them.
+#[test]
+fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
+    use ui::PaintedActionMarker;
+    use ui::floating_surface::FloatingSurfaceHostMessage;
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+
+    let interaction = tilo_actions::SemanticInteraction {
+        version: tilo_actions::INTERACTION_VERSION,
+        invocation: tilo_actions::InvocationId::new(),
+        sequence: 1,
+        actor: tilo_actions::InteractionActor {
+            id: "scribe".to_owned(),
+            kind: tilo_actions::ActorKind::Agent,
+            for_person: None,
+        },
+        phase: tilo_actions::InteractionPhase::Applying,
+        action: tilo_actions::InteractionAction {
+            id: "rename".to_owned(),
+            label: "Rename".to_owned(),
+            app: None,
+        },
+        resource: tilo_actions::ActionResource {
+            id: "documents".to_owned(),
+            kind: "folder".to_owned(),
+            label: "Documents".to_owned(),
+        },
+        anchor: tilo_actions::InteractionAnchor::Resource,
+        group: None,
+    };
+    let mut connection = ask(
+        &launches,
+        PROBE,
+        &workspace,
+        pid,
+        &FloatingSurfaceClientMessage::ActionMarkers {
+            markers: vec![PaintedActionMarker {
+                interaction,
+                viewport: [0.0, 0.0, 800.0, 600.0],
+                marker: [30.0, 18.0, 14.0, 14.0],
+                locus: [4.0, 6.0, 44.0, 24.0],
+                protected: [4.0, 6.0, 44.0, 24.0],
+            }],
+        },
+    );
+    let answered = host_frames(&mut session, &mut connection, 300);
+    assert!(
+        !answered.iter().any(|frame| matches!(
+            frame,
+            FloatingSurfaceHostMessage::Unanswered { message, .. } if message == "action_markers"
+        )),
+        "the session reads the markers a window presents: {answered:?}"
+    );
+    assert_eq!(
+        groups(&session),
+        vec![vec![PROBE.to_owned()]],
+        "the window whose markers were read stays on the desk"
+    );
+}
+
+/// A message this session has no layer for is still said so, so nothing of an
+/// app's waits on an answer that will not come.
+#[test]
+fn a_message_the_session_cannot_answer_is_said_so() {
+    use ui::floating_surface::FloatingSurfaceHostMessage;
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+
+    let mut connection = ask(
+        &launches,
+        PROBE,
+        &workspace,
+        pid,
+        &FloatingSurfaceClientMessage::Dismiss {
+            id: "primary".to_owned(),
+        },
+    );
+    let answered = host_frames(&mut session, &mut connection, 300);
+    assert!(
+        answered.iter().any(|frame| matches!(
+            frame,
+            FloatingSurfaceHostMessage::Unanswered { message, .. } if message == "dismiss"
+        )),
+        "a message the session cannot answer is said so: {answered:?}"
+    );
+}
+
 /// The workspace in front, and who the desk holds as its owner.
 fn front_workspace(session: &Session) -> (String, Option<String>) {
     session.handle().read(|tree| {

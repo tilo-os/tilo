@@ -498,18 +498,22 @@ impl Answers<'_> {
                 Some(studio) => studio.open_asked(mode),
                 None => refuse(&reply, &app, &name, NO_CAPTURE),
             },
-            // A picture in a picture, an app's second surface of its own and
-            // the markers a presented frame carries belong to a shell that
-            // floats surfaces over the desktop. This session places every
-            // window of an app in a tab, and has no layer to float one in.
+            // A window paints its own action markers, at the control an agent
+            // would press, so nothing here draws a second one; and the session
+            // names none of them to assistive technology or opens what one
+            // points at, so the inventory is read and adds nothing.
+            FloatingSurfaceClientMessage::ActionMarkers { .. } => {}
+            // A picture in a picture and an app's second surface of its own
+            // belong to a shell that floats surfaces over the desktop. This
+            // session places every window of an app in a tab, and has no layer
+            // to float one in.
             FloatingSurfaceClientMessage::Present { .. }
             | FloatingSurfaceClientMessage::UpdateRegion { .. }
             | FloatingSurfaceClientMessage::SurfaceGeometry { .. }
             | FloatingSurfaceClientMessage::SourceCleared { .. }
             | FloatingSurfaceClientMessage::DestinationPresented { .. }
             | FloatingSurfaceClientMessage::Suspend { .. }
-            | FloatingSurfaceClientMessage::Dismiss { .. }
-            | FloatingSurfaceClientMessage::ActionMarkers { .. } => {
+            | FloatingSurfaceClientMessage::Dismiss { .. } => {
                 refuse(&reply, &app, &name, NO_FLOATING);
             }
             // What a window shares live, the embeds it draws of other apps'
