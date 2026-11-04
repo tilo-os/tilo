@@ -211,7 +211,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     )
     .unwrap();
     // And removes one it added.
-    let remove = action_id(&mut app, &tasks, "Remove");
+    let remove = action_id(&mut app, &tasks, "Delete");
     let mut which = serde_json::Map::new();
     which.insert(
         "t".to_owned(),
@@ -280,8 +280,8 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     app.invoke(None, None, &tasks, &add, &titled, false)
         .unwrap();
     settle(&mut app);
-    let task = published_with(&mut app, &tasks, "Set due date");
-    let schedule = action_id(&mut app, &task, "Set due date");
+    let task = published_with(&mut app, &tasks, "Pick date…");
+    let schedule = action_id(&mut app, &task, "Pick date…");
     let due = |day: &str| {
         let mut args = serde_json::Map::new();
         args.insert("due".to_owned(), day.into());
@@ -406,8 +406,9 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
         .into_iter()
         .map(|node| node.name)
         .collect();
+    // An inbox task with a step under it is finished once that step is, so it stands in the
+    // list's Done tail rather than among the open ones.
     for title in [
-        "Buy oat milk and eggs",
         "Call the landlord about the boiler",
         "Book a haircut",
         "Reply to Mia about Sunday lunch",
@@ -420,6 +421,10 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
     assert!(
         !shows(&mut app, "No tasks here"),
         "the inbox has tasks in it: {names:?}"
+    );
+    assert!(
+        !shows(&mut app, "Buy oat milk and eggs"),
+        "a task whose one step is done is finished with it: {names:?}"
     );
     assert!(
         !shows(&mut app, "Order boxes and tape"),
@@ -441,7 +446,10 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
         settle(&mut app);
         click_item(&mut app, "Today");
         settle(&mut app);
-        assert!(shows(&mut app, "Buy oat milk"), "today's task is listed");
+        assert!(
+            shows(&mut app, "Call the landlord"),
+            "today's task is listed"
+        );
         assert!(
             !shows(&mut app, "Reply to Mia"),
             "tomorrow's task is not listed today"

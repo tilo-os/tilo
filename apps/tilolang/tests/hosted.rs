@@ -1612,9 +1612,10 @@ fn list_nodes(widget: &dyn Widget) -> Option<ui::a11y::AccessNode> {
 }
 
 /// The task open beside the list is the list's selected row, and a task nobody has named yet
-/// shows its place: an "Untitled" row under the heading for the days it does not have.
+/// shows its place: a row named for its empty title, under the heading for the days it does
+/// not have.
 #[test]
-fn a_new_task_shows_an_untitled_row_under_no_day_and_the_open_tasks_row_is_selected() {
+fn a_new_task_shows_a_row_named_for_its_empty_title_under_no_day_and_is_selected() {
     let mut session = Session::tasks();
     let mut found = Vec::new();
     named(session.window.root(), "New task", &mut found);
@@ -1636,8 +1637,8 @@ fn a_new_task_shows_an_untitled_row_under_no_day_and_the_open_tasks_row_is_selec
     assert_eq!(row.role, ui::a11y::Role::ListItem);
     assert_eq!(
         row.name.as_deref(),
-        Some("Untitled"),
-        "a row of a task nobody has named yet says so"
+        Some("Title"),
+        "a row of a task nobody has named yet shows the field its title is typed in"
     );
     assert!(
         row.state.selected,
@@ -1715,7 +1716,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
             .clone()
     };
     assert_eq!(key("New task").as_deref(), Some("Ctrl+n"));
-    assert_eq!(key("Remove").as_deref(), Some("delete"));
+    assert_eq!(key("Delete").as_deref(), Some("delete"));
 
     // The window's own palette lists them, as a native app window's does.
     let listed: Vec<(String, Option<String>)> = session
@@ -1763,7 +1764,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         Some("Ctrl+N")
     );
     assert_eq!(
-        row("Remove").keybinding_label(platform).as_deref(),
+        row("Delete").keybinding_label(platform).as_deref(),
         Some("Delete")
     );
     session
@@ -2014,15 +2015,16 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Tasks",
             "New task",
             "New project",
+            "Titled row",
             "Task summary",
             "Complete",
-            "Snooze until…",
-            "Set due date",
-            "Prioritize",
-            "Indent",
-            "Undo",
-            "Redo",
-            "Checkpoint",
+            "Today",
+            "Tomorrow",
+            "Next week",
+            "Pick date…",
+            "Low",
+            "Medium",
+            "High",
         ],
         "the open task's palette"
     );
@@ -2051,7 +2053,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 
     // What cannot run now is no row: a task in the inbox has nowhere to move out of, the app
     // has nothing done to clear, and a task at the outline's top has nowhere to outdent to.
-    for not_now in ["Move to inbox", "Clear done", "Outdent"] {
+    for not_now in ["Inbox", "Clear done", "Outdent"] {
         assert!(
             !titles.contains(&not_now),
             "{not_now} cannot run now, so it is no row: {titles:?}"
