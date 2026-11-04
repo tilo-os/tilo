@@ -15,12 +15,14 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
-/// Whether call arguments name only a filter's options: `(icon: .circle)`.
+/// Whether call arguments name only a filter's options: `(icon: .circle, count: true)`.
 fn only_opts(args: &[Arg]) -> bool {
     !args.is_empty()
-        && args
-            .iter()
-            .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon"))
+        && args.iter().all(|a| {
+            a.name
+                .as_ref()
+                .is_some_and(|n| matches!(n.name.as_str(), "icon" | "count"))
+        })
 }
 
 /// The arguments as a filter's options.

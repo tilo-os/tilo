@@ -67,8 +67,8 @@ fn items(r: &Replica) -> Vec<Value> {
     }
 }
 
-/// A place as the sidebar draws it: its label, and the count it draws when its role makes one a
-/// count people read (the inbox's and the agenda's).
+/// A place as the sidebar draws it: its label, and the count it draws when its filter says
+/// `count: true` (the inbox's and today's).
 type ShownPlace = (String, Option<i64>);
 
 /// A heading of the sidebar with the places under it, in the order they stand.
@@ -95,7 +95,7 @@ fn places(view: &ViewInstance) -> Vec<ShownPlace> {
     out
 }
 
-/// What the sidebar counts at `place`: a count only where the place's role makes one people read.
+/// What the sidebar counts at `place`: a count only where the place's filter asks for one.
 fn count(view: &ViewInstance, place: &str) -> Option<i64> {
     places(view)
         .into_iter()
@@ -303,10 +303,10 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     assert_eq!(
         count(&view, "Done"),
         None,
-        "a logbook counts nothing: {:?}",
+        "Done counts nothing: {:?}",
         places(&view)
     );
-    // Each place holds what its role makes of the tasks, read when it is asked.
+    // Each place holds what its filter says of the tasks, read when it is asked.
     go_to(&mut view, "Inbox");
     assert_eq!(home_list_titles(&ada, &mut view), ["Water the plants"]);
     go_to(&mut view, "Today");
@@ -321,7 +321,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     assert_eq!(
         home_list_titles(&ada, &mut view),
         ["Take the bins out"],
-        "the logbook holds what is done with"
+        "Done holds what is done with"
     );
     // A day later, what was upcoming is today's: the window opened then asks for that day.
     ada.host
@@ -1943,8 +1943,8 @@ fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
 fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
     let (mut ada, root) = workspace();
     // The task is in a project, whose list is where a step done with under an open task stands
-    // under it: a place of a role holds only what belongs in it, and what is done is the
-    // logbook's.
+    // under it: the list stands each step under the task it belongs to, and Done holds what is
+    // done with.
     let project = call(&ada, "new_project", vec![root.clone()]);
     call(
         &ada,
@@ -2649,7 +2649,7 @@ fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
     assert_eq!(
         count(&view, "Done"),
         None,
-        "and a logbook counts nothing: {:?}",
+        "and Done counts nothing: {:?}",
         places(&view)
     );
     let groups = sections(&view);
@@ -2780,8 +2780,8 @@ fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
 #[test]
 fn a_place_whose_tasks_are_all_done_says_so() {
     let (mut ada, root) = workspace();
-    // A project, the place that folds what is done with under its list: the places of a role
-    // hold only what belongs in them, so theirs is empty of it.
+    // A project, the place that folds what is done with under its list: the places that count
+    // count what they leave open, so theirs counts nothing.
     let project = call(&ada, "new_project", vec![root.clone()]);
     call(
         &ada,
@@ -2839,9 +2839,9 @@ fn a_place_whose_tasks_are_all_done_says_so() {
 }
 
 /// A workspace that names who a task belongs to offers the place of what the person looking
-/// holds once someone else is in it, after the places that are open and before what is done
-/// with, so the place a window opens on does not move; on their own, nothing is anyone's but
-/// theirs and the place would say what a list of everything does.
+/// holds once someone else is in it, after the type's own places, so the place a window opens
+/// on does not move; on their own, nothing is anyone's but theirs and the place would say what
+/// a list of everything does.
 #[test]
 fn a_shared_workspace_offers_the_place_of_what_the_person_looking_holds() {
     use tilolang_runtime::members::Member;
@@ -2879,12 +2879,12 @@ fn a_shared_workspace_offers_the_place_of_what_the_person_looking_holds() {
             .take(5)
             .map(|(label, _)| label.as_str())
             .collect::<Vec<_>>(),
-        ["Inbox", "Today", "Upcoming", "Assigned to me", "Done"],
-        "the place of what the person looking holds comes after the places that are open, so the \
-         one a window opens on does not move: {all:?}"
+        ["Inbox", "Today", "Upcoming", "Done", "Assigned to me"],
+        "the place of what the person looking holds comes after the type's own, so the one a \
+         window opens on does not move: {all:?}"
     );
     assert_eq!(
-        all.get(3),
+        all.get(4),
         Some(&("Assigned to me".to_owned(), Some(1))),
         "and counts the one open task the person looking holds: {all:?}"
     );

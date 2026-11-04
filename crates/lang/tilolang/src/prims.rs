@@ -255,7 +255,6 @@ pub const BUILTINS: &[&str] = &[
     "invoker",
     "now",
     "dated",
-    "placed_day",
     "open",
     "set",
     "resource",

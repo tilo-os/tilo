@@ -320,18 +320,18 @@ impl Core {
             IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen,
             ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey,
             MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, Members, Mentions,
-            MetaOf, ModelCall, NoneV, Now, Outside, OutsideAt, Phrase, PlacedDay, Places,
-            PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query,
-            QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt,
-            ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF,
-            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty,
-            RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI,
-            SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrFind,
-            StrLen, StrLit, StrReplace, StrSlice, StrToInt, TimeShift, Today, TryInvoke, TupleGetF,
-            TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions,
-            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
-            WallClock, Withdraw, Word, WorkspaceMembers,
+            MetaOf, ModelCall, NoneV, Now, Outside, OutsideAt, Phrase, Places, PrincipalEq,
+            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew,
+            RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt, ReminderLabel,
+            RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
+            ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty, RichNew, RichPart,
+            RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers,
+            StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrFind, StrLen, StrLit,
+            StrReplace, StrSlice, StrToInt, TimeShift, Today, TryInvoke, TupleGetF, TupleGetH,
+            TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor,
+            UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
+            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock,
+            Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -358,7 +358,6 @@ impl Core {
                 self.ret_h(found)
             }
             Filters | Places => self.catalogue_import(imp, a),
-            PlacedDay => self.placed_day_import(a),
             IdentPart => {
                 let part = self.ident_part(a.h(0)?, a.h(1)?)?;
                 self.ret_h(part)

@@ -25,7 +25,7 @@ use std::cell::Cell;
 
 use tilolang::calendar::{DAY, calendar_span, day_text, instant, time_text};
 use tilolang::identifier;
-use tilolang::meta::{EnumMeta, FilterKind, FilterMeta, FilterRole, TypeMeta};
+use tilolang::meta::{EnumMeta, FilterKind, FilterMeta, TypeMeta};
 use tilolang::pred::{CmpOp, Float, Lit, Operand, Pred};
 
 /// A query, typed or built in code.
@@ -323,7 +323,7 @@ pub fn resolve(
     }
     let order = match &query.sort {
         Some(sort) => Some(order_of(sort, ty)?),
-        None => role_order(&query.terms, ty),
+        None => None,
     };
     let pred = match all.len() {
         0 => Pred::Const(true),
@@ -765,67 +765,9 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
     })
 }
 
-/// The order a place's role gives its list, when the query is that place and nothing else: what
-/// is due soonest first in the agenda and in what is due later, and what was finished last
-/// first in the logbook. `None` for a place whose role says nothing about order (the inbox's)
-/// and for any other query, which keeps the type's order.
-fn role_order(terms: &[Term], ty: &TypeMeta) -> Option<Order> {
-    let [term] = terms else {
-        return None;
-    };
-    let key = term.key.as_deref()?;
-    // A place is a toggle on a named filter (`is:today`) or the member place (`is:mine`); a
-    // filter by a value (`due:today`) lists in the type's own order.
-    if term.value != "true" {
-        return None;
-    }
-    let order = match place_role(ty, &format!("is:{key}"))? {
-        FilterRole::Agenda { day } | FilterRole::Upcoming { day } => Order {
-            field: day,
-            kind: crate::meta::FieldKind::Register,
-            descending: false,
-            absent_last: true,
-            then: None,
-        },
-        // A logbook reads newest first: an item's latest change is the one that finished it,
-        // while nothing changes it after (the store's log, never a field the type would hold).
-        FilterRole::Logbook => Order {
-            field: crate::store::Reflected::UPDATED.to_owned(),
-            kind: crate::meta::FieldKind::Register,
-            descending: true,
-            absent_last: true,
-            then: None,
-        },
-        FilterRole::Inbox { .. } => return None,
-    };
-    Some(order)
-}
-
 /// The place of what the person looking is assigned, still open: the key a query asks it by,
 /// which every type with a member field holds.
 pub const MINE_PLACE: &str = "is:mine";
-
-/// The role a place's list stands at, from the place's key: the named filter it is a toggle on
-/// (`is:today`), or the member place, which is an agenda of what the person looking has, by the
-/// day the type's own agenda groups by.
-#[must_use]
-pub fn place_role(ty: &TypeMeta, place: &str) -> Option<FilterRole> {
-    if let Some(key) = place.strip_prefix("is:") {
-        if key == "mine" {
-            return ty.search.filters.iter().find_map(|f| match &f.role {
-                Some(role @ FilterRole::Agenda { .. }) => Some(role.clone()),
-                _ => None,
-            });
-        }
-        return ty
-            .search
-            .filters
-            .iter()
-            .find(|f| f.key == key)
-            .and_then(|f| f.role.clone());
-    }
-    None
-}
 
 /// `is:mine`: the items whose member field holds the person looking, still open — the place of
 /// what is theirs to do, and the same in every app whose type names who it belongs to.

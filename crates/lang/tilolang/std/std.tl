@@ -12,7 +12,7 @@
 /// command the app marked `frequent` a button of its own, never folded into a run; with no
 /// items it says `empty` and the bar keeps the type's actions. The places in the sidebar are
 /// the item type's filters that are on or off (`filters(T)`), after all of the items, each with
-/// how many it holds where its role makes a count people read; the one chosen is the window's
+/// how many it holds where its filter says `count: true`; the one chosen is the window's
 /// query, as people type it in search (`is:done`), so everyone looking sees the same list; a
 /// window starts on `place` (all of the items when empty). The place of all of the items is
 /// called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view
@@ -80,8 +80,6 @@ view list<R, T, S>(
                     shown,
                     empty,
                     kind.icon,
-                    role: chosen?.role ?? "",
-                    place: query,
                     entry: entry,
                     entry_placeholder: entry_placeholder,
                 ) { (x, under) ->
@@ -97,8 +95,6 @@ view list<R, T, S>(
                     shown,
                     empty,
                     kind.icon,
-                    role: chosen?.role ?? "",
-                    place: query,
                     entry: entry,
                     entry_placeholder: entry_placeholder,
                 ) { (x, under) ->
@@ -117,12 +113,10 @@ view list<R, T, S>(
 /// folded away until the person opens them. Give `parent` and the items stand as a tree: each
 /// indented under the item it is a subtask of, with a disclosure that folds its subtasks away.
 ///
-/// Give `role` and `place`, the place a list of items is of, and its role says how the list
-/// reads instead of `group`, `closed` and `all_done`: the agenda and what is due later stand
-/// under the days they are due on, soonest first, a day gone by as overdue; the logbook stands
-/// under the days it was finished on, newest first; an inbox lists its items plainly, for there
-/// is nothing about them to sort by yet. A place does not fold what is done with away: it holds
-/// only what belongs in it.
+/// A place whose own state says whether its list is one of days, and whether it folds what is
+/// done with, says so with `headings` and `folding` rather than by leaving `group` and `closed`
+/// out: the flags are read, never the items, so a list of thousands is drawn without reading
+/// all of them to find out.
 ///
 /// `row` draws an item with the item it stands under (`.none` at the top), so a child leaves
 /// out what its parent already says — the day they are both due, the project they both are of.
@@ -131,10 +125,10 @@ view rows<T>(
     empty: Text,
     icon: Option<Text>,
     group: Option<(T) -> Option<Date>> = .none,
+    headings: Bool = true,
     closed: Option<(T) -> Bool> = .none,
+    folding: Bool = true,
     closed_title: Text = phrase("tilolang-done"),
-    role: Text = "",
-    place: Text = "",
     parent: Option<(T) -> Option<T>> = .none,
     parent_title: Option<(T) -> Option<Text>> = .none,
     progress: Option<(T) -> Option<Text>> = .none,
@@ -143,8 +137,8 @@ view rows<T>(
     entry_placeholder: Text = phrase("tilolang-add"),
     row: (T, Option<T>) -> View,
 ) {
-    // A list that is no place's is grouped by the caller, and folds what it leaves done.
-    let all_done = all_done and role == "" and not items.is_empty()
+    // Nothing of a list that holds something is left open: its rows fold under the entry.
+    let all_done = all_done and not items.is_empty()
     // The entry at the list's end is the list's own way to add: the host gives it the window's
     // primary action's key, so the key and the bar's button lead the person there, and what is
     // typed is what the list gains.
@@ -159,10 +153,10 @@ view rows<T>(
                             items,
                             icon,
                             group,
+                            headings,
                             closed,
+                            folding,
                             closed_title,
-                            role,
-                            place,
                             parent,
                             parent_title,
                             progress,
@@ -182,10 +176,10 @@ view rows<T>(
                     items,
                     icon,
                     group,
+                    headings,
                     closed,
+                    folding,
                     closed_title,
-                    role,
-                    place,
                     parent,
                     parent_title,
                     progress,
@@ -204,10 +198,10 @@ view rows<T>(
                     items,
                     icon,
                     group,
+                    headings,
                     closed,
+                    folding,
                     closed_title,
-                    role,
-                    place,
                     parent,
                     parent_title,
                     progress,
@@ -222,10 +216,10 @@ view rows<T>(
             items,
             icon,
             group,
+            headings,
             closed,
+            folding,
             closed_title,
-            role,
-            place,
             parent,
             parent_title,
             progress,
@@ -245,39 +239,34 @@ view add_entry(placeholder: Text, commit: (Text) -> Action) {
 }
 
 /// The items of a list as the rows of a column, with `rows`' grouping, nesting and folded tail.
-/// `role` and `place` are the place the list is of, when it is one of a place's: what its role
-/// groups the list by, and the place's key (`is:today`), which reads the day each item stands
-/// at in it.
 ///
 /// `row` draws an item with the item it stands under, as `rows` does.
 view rows_list<T>(
     items: List<T>,
     icon: Option<Text>,
     group: Option<(T) -> Option<Date>>,
+    headings: Bool,
     closed: Option<(T) -> Bool>,
+    folding: Bool,
     closed_title: Text,
-    role: Text,
-    place: Text,
     parent: Option<(T) -> Option<T>>,
     parent_title: Option<(T) -> Option<Text>>,
     progress: Option<(T) -> Option<Text>>,
     row: (T, Option<T>) -> View,
 ) {
-    // An item that names no day stands under a heading of its own, in the order the caller
-    // gave, rather than under the last group's heading. A place lists by its role's days, and
-    // its role's order is the order they come in, so its list is not sorted here.
-    let by_role = role != "" and role != "inbox"
-    let grouped: Bool = if let g = group { true } else { false }
-    // A place lists what it holds under no other heading: an item it holds that stands at no
-    // day stands at none, not under a heading of "No date".
-    let ungrouped: Option<Text> = if role != "" {
-        .none
-    } else if grouped { .some(phrase("tilolang-no-date")) } else { .none }
+    // The flags say whether the list reads by the two at all: a place that decides so at runtime
+    // is drawn from the flags, never from a walk over its items to find out what they say.
+    // An item that names no group stands under a heading of its own, in the order the caller
+    // gave, rather than under the last group's heading. The caller whose list stands plainly
+    // has its items read as they come, with no heading over them.
+    let grouped: Bool = if let g = group { headings } else { false }
+    let ungrouped: Option<Text> = if grouped { .some(phrase("tilolang-no-date")) } else { .none }
     // The items done with stand last, under the one heading their group folds: a sort is
-    // stable, so the order the caller gave holds among them and among the rest.
-    let shown = if role != "" {
-        items
-    } else if let c = closed { items.sort_by(x -> c(x)) } else { items }
+    // stable, so the order the caller gave holds among them and among the rest. A caller whose
+    // list folds nothing keeps the list it gave, collection and order both.
+    let shown = if let c = closed {
+        if folding { items.sort_by(x -> c(x)) } else { items }
+    } else { items }
     let nested = if let p = parent { true } else { false }
     ui.VirtualList(
         selection_follows_focus: true,
@@ -289,10 +278,10 @@ view rows_list<T>(
         on select(x: T): open(x, front: false)
         on activate(x: T): open(x)
         for x in shown {
-            let heading: Option<Date> = if role == "inbox" {
-                .none
-            } else if by_role { placed_day(x, place) } else if let g = group { g(x) } else { .none }
-            let tail = if role != "" { false } else if let c = closed { c(x) } else { false }
+            let heading: Option<Date> = if let g = group {
+                if headings { g(x) } else { .none }
+            } else { .none }
+            let tail = if let c = closed { folding and c(x) } else { false }
             // The row just over this one in its group, as the list shows them: the item before
             // it when that one has the same heading (the items naming none stand together
             // under the list's own) and is on this side of the fold. That is the place the
@@ -300,12 +289,10 @@ view rows_list<T>(
             // rows are the host's, so a row reaching one back costs one step, however far
             // along the list it stands.
             let above: Option<T> = if let p = shown.previous(x) {
-                let same_heading = if role == "inbox" {
-                    true
-                } else if by_role {
-                    placed_day(p, place) == heading
-                } else if let g = group { g(p) == heading } else { true }
-                let same_side = if let c = closed { c(p) == tail } else { true }
+                let same_heading = if let g = group {
+                    not headings or g(p) == heading
+                } else { true }
+                let same_side = if let c = closed { not folding or c(p) == tail } else { true }
                 if same_heading and same_side { .some(p) } else { .none }
             } else { .none }
             let under: Option<T> = if let p = parent { p(x) } else { .none }
@@ -315,7 +302,6 @@ view rows_list<T>(
                 item: x,
                 presence: lenses(x).find(l -> not l.mine)?.who,
                 group: heading,
-                group_done: role == "logbook",
                 tail: tail,
                 above: above,
                 parent: under,

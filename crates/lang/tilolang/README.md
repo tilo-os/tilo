@@ -458,19 +458,13 @@ chips show them (`host.Filter`). `places(T, in: x)` gives what a window of `x`'s
 its sidebar, derived from the schema (`host.Sidebar`): a place for each of `T`'s filters that
 is on or off, and a group for each type a `T` names through an option while `x` holds a
 collection of it (`Task.project` with `Tasks.projects`: "Projects", its add the action that
-makes another). A place counts what it leaves open only where its role makes that a count
-people read — the inbox and the agenda; what is due later, what is done and a project count
-nothing, and `std.sidebar(side, place)` draws it that way.
+makes another). A place counts what it leaves open, and shows that count only where its filter
+says `count: true`; `std.sidebar(side, place)` draws it that way.
 
-A filter may declare a **place role** instead of writing its predicate out: `filter "Today" =
-agenda(day: due)`, `filter "Done" = logbook`. The role derives what the place holds, the day
-each item stands at, the order of its list and whether it counts: `inbox(filed:, day:)` holds
-what is open and neither filed nor for a day and lists it plainly, counting it; `agenda(day:)`
-holds what is open and for a day up to today, soonest first, counting it; `upcoming(day:)` holds
-what is open and for a later day, soonest first; `logbook` holds what the type's `(done)` field
-marks done, under the day it was done on, the newest first. `std.rows` and `std.list` group,
-order and count a place by its role (`std.rows(role:, place:)`), and `placed_day(x, p.key)`
-reads the day an item stands at in a place's list (`Option<Date>`).
+A filter is a predicate over the type's own fields, and nothing more: what a place holds is
+what its predicate says (`filter "Today" = due <= today and not done`), how its list reads is
+the app's (`std.rows(group:, closed:)`, and `headings:`/`folding:` where the place decides so
+itself), and its order is the app's (`sort_by`).
 
 **Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
 door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across

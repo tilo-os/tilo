@@ -1166,15 +1166,15 @@ mod cases {
                 .get("count")
                 .cloned()
         };
-        // What each place leaves open, in the places whose role makes a count: the task done
-        // with is in none of them, and a logbook shows no count at all.
+        // What each counted place holds: the task done with is open in neither of them, and
+        // Done says nothing about a count.
         assert_eq!(count("is:inbox"), Some(Value::Int(1)), "the unsorted task");
         assert_eq!(
             count("is:today"),
             Some(Value::Int(0)),
             "nothing is due today"
         );
-        assert_eq!(count("is:done"), None, "a logbook shows no count");
+        assert_eq!(count("is:done"), None, "Done shows no count");
 
         assert_eq!(
             w.rt.history(&list.doc).unwrap().len(),

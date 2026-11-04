@@ -319,94 +319,10 @@ pub struct FilterMeta {
     /// (`filter done (icon: .circle_check)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// What the place a filter makes means, when it declares one (`filter "Today" = agenda(day:
-    /// due)`): the members it holds, how its list groups them, and whether it counts them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<FilterRole>,
-}
-
-/// What a filter that declares a place role makes: a place whose membership, grouping, order
-/// and count the platform derives, rather than the app writing a predicate and grouping
-/// lambdas for it.
-///
-/// The roles are the four a list of items has: the ones waiting to be sorted (`inbox`), the
-/// ones due (`agenda`), the ones due later (`upcoming`), and the ones done (`logbook`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FilterRole {
-    /// What is not sorted yet: open, filed under nothing, and for no day.
-    Inbox {
-        /// The field that files an item under something (`project`), when the type has one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        filed: Option<String>,
-        /// The field that puts an item on a day (`due`), when the type has one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        day: Option<String>,
-    },
-    /// What is due: open and for a day up to today. Its list groups the days gone by first
-    /// ("Overdue", in the danger tone), then today, and counts both.
-    Agenda {
-        /// The field that puts an item on a day (`due`), by id.
-        day: String,
-    },
-    /// What is due later: open and for a day after today. Its list groups by day, and counts
-    /// nothing.
-    Upcoming {
-        /// The field that puts an item on a day (`due`), by id.
-        day: String,
-    },
-    /// What is done: the items the type's `(done)` field marks finished, grouped by the day
-    /// they were done on, newest first, and counted nowhere.
-    Logbook,
-}
-
-impl FilterRole {
-    /// The role `word` names (`inbox`, `agenda`, `upcoming`, `logbook`).
-    #[must_use]
-    pub fn from_word(word: &str) -> Option<Self> {
-        Some(match word {
-            "inbox" => Self::Inbox {
-                filed: None,
-                day: None,
-            },
-            "agenda" => Self::Agenda { day: String::new() },
-            "upcoming" => Self::Upcoming { day: String::new() },
-            "logbook" => Self::Logbook,
-            _ => return None,
-        })
-    }
-
-    /// The word it is declared by.
-    #[must_use]
-    pub const fn word(&self) -> &'static str {
-        match self {
-            Self::Inbox { .. } => "inbox",
-            Self::Agenda { .. } => "agenda",
-            Self::Upcoming { .. } => "upcoming",
-            Self::Logbook => "logbook",
-        }
-    }
-
-    /// What it holds, for the errors about a place: "what is not sorted yet" and the like.
-    #[must_use]
-    pub const fn meaning(&self) -> &'static str {
-        match self {
-            Self::Inbox { .. } => "what is not sorted yet",
-            Self::Agenda { .. } => "what is due",
-            Self::Upcoming { .. } => "what is due later",
-            Self::Logbook => "what is done",
-        }
-    }
-
-    /// The role words a filter's predicate may name.
-    pub const WORDS: &'static [&'static str] = &["inbox", "agenda", "upcoming", "logbook"];
-
-    /// How many of its items it counts: a place counts what needs attention (the inbox's
-    /// unsorted items and what is due), and nothing else.
-    #[must_use]
-    pub const fn counts(&self) -> bool {
-        matches!(self, Self::Inbox { .. } | Self::Agenda { .. })
-    }
+    /// Whether the place it makes shows how many of its items it holds, as its declaration says
+    /// (`filter "Today" = due <= today (count: true)`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub count: bool,
 }
 
 /// What a filter compares, and so the control it is.

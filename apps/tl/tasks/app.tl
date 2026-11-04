@@ -61,10 +61,10 @@ type Task {
     derive subtasks_done: Int = children.count(done)
 
     search {
-        filter "Inbox" = inbox(filed: project, day: due) (icon: .inbox)
-        filter "Today" = agenda(day: due) (icon: .star)
-        filter "Upcoming" = upcoming(day: due) (icon: .calendar)
-        filter "Done" = logbook (icon: .circle_check)
+        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox, count: true)
+        filter "Today" = due <= today and not done (icon: .star, count: true)
+        filter "Upcoming" = due > today and not done (icon: .calendar)
+        filter "Done" = done (icon: .circle_check)
         filter due
         filter project
         filter priority
@@ -381,8 +381,8 @@ destructive action remove(tasks: Tasks, t: Task) (label: "Delete", icon: .trash,
 /// Deletes every finished task, and answers how many went: a task is finished when everything
 /// under it is done too, so deleting takes whole finished branches and never unfinished work
 /// with it, and a task done with a step still open under it stays. Finished tasks are the
-/// logbook a person reads back, so this is no command of the bar: it stands with the window's
-/// other commands, behind its menu.
+/// list of what was done a person reads back, so this is no command of the bar: it stands with
+/// the window's other commands, behind its menu.
 destructive action clear_done(tasks: Tasks) -> Int (
     icon: .circle_check,
     label: "Delete finished tasks",
@@ -529,23 +529,30 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
     tasks.items.filter(t -> t.project == p and t.section == s and not t.done and t.parent == .none)
 }
 
-/// The tasks window: Inbox, Today, Upcoming and Done, each the place its role makes of the
-/// tasks (`inbox`, `agenda`, `upcoming`, `logbook`), and the projects, each showing its tasks
-/// where they are. The place chosen is the window's, so everyone looking sees the same list;
-/// what is typed in the entry at its end is each person's own until Enter adds it.
+/// The tasks window: Inbox, Today, Upcoming and Done, each the filter its predicate says of the
+/// tasks, and the projects, each showing its tasks where they are. The place chosen is the
+/// window's, so everyone looking sees the same list; what is typed in the entry at its end is
+/// each person's own until Enter adds it.
 view home(t: Tasks) {
     window place: Text = "is:inbox"
     // The sidebar's places are the schema's: this type's filters that are on or off, and a
     // place per project. A priority is picked in search, not chosen as a place.
     let side = places(Task, in: t)
     let chosen = side.places.find(p -> p.key == place)
-    // A place with a role comes in the order its role says; any other list, by the day.
-    let role = chosen?.role ?? ""
     let found = t.items.matching(place)
-    let shown = if role == "" { found.sort_by(.due) } else { found }
+    // What is done reads newest first, by the change that finished it; any other list by the
+    // day it is due.
+    let shown = if place == "is:done" {
+        found.sort_by(x -> updated(x), desc)
+    } else { found.sort_by(.due) }
+    // A place of days, and a project's list, stand each task under the day it is due; a place
+    // of what waits to be sorted or is done lists plainly. A project's list folds a finished
+    // branch under its foot, so the open work it holds stands over what is done with.
+    let by_day = place == "is:today" or place == "is:upcoming" or chosen?.group != .none
+    let folds = chosen?.group != .none
     let title = chosen?.label ?? "Tasks"
-    // A role that counts says how many wait in it. Only the places that count say a number:
-    // a project's place is its own list, not a tally.
+    // A place that says `count: true` says how many wait in it: a project's place is its own
+    // list, not a tally.
     let header_count: Option<Int> = if chosen?.counts ?? false {
         .some(chosen?.count ?? 0)
     } else { .none }
@@ -572,9 +579,9 @@ view home(t: Tasks) {
                 "No tasks here",
                 .some("list-checks"),
                 group: .due,
+                headings: by_day,
                 closed: .folded,
-                role: role,
-                place: place,
+                folding: folds,
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),

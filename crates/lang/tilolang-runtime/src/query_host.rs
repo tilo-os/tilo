@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use tilolang::meta::{FilterKind, FilterRole, TypeMeta};
+use tilolang::meta::{FilterKind, TypeMeta};
 use tilolang::pred::{CmpOp, Lit as LangLit, Operand, Pred as LangPred};
 
 use crate::abi::Imp;
@@ -275,86 +275,6 @@ impl Core {
         self.ret_h(found)
     }
 
-    /// `placed_day(item, place)`: the day an item stands at in a place's list, as the place's
-    /// role reads it — the day it is due on in the agenda and in what is due later, the day it
-    /// was finished on in the logbook — and `.none` where the role has no days (the inbox's),
-    /// and for an item that names none.
-    ///
-    /// `place` is the place's key (`is:today`), which is the query the place answers.
-    pub(crate) fn placed_day_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let item = self.ref_arg(a.h(0)?)?;
-        let place = self.text(a.h(1)?)?;
-        self.ret_h(self.placed_day(&item, &place)?)
-    }
-
-    fn placed_day(&self, item: &RefValue, place: &str) -> HResult<Value> {
-        let (pkg, _) = self
-            .registry
-            .borrow()
-            .type_info(&item.target.ty)
-            .ok_or_else(|| {
-                format!(
-                    "placed_day: `{}` is no type a loaded package declares",
-                    item.target.ty
-                )
-            })?;
-        let Some(declared) = pkg.meta.types.iter().find(|t| t.id == item.target.ty) else {
-            return trap(format!("placed_day: `{}` is not declared", item.target.ty));
-        };
-        let Some(role) = crate::query::place_role(declared, place) else {
-            return Ok(Value::none());
-        };
-        match &role {
-            FilterRole::Inbox { .. } => Ok(Value::none()),
-            FilterRole::Agenda { day } | FilterRole::Upcoming { day } => {
-                let (_, field) = self.lookup_field(&item.target, day)?;
-                let held = self.read_value(&item.target, &field, item.author.as_ref())?;
-                Ok(match held {
-                    Value::Text(text) => self.day_value(&text),
-                    Value::Opt(Some(inner)) => match *inner {
-                        Value::Text(text) => self.day_value(&text),
-                        _ => Value::none(),
-                    },
-                    _ => Value::none(),
-                })
-            }
-            FilterRole::Logbook => {
-                // What is done was finished by a change, and that change's time is the day it
-                // was finished on: the store's log says it, so the type holds no field for it.
-                // Its latest change stands for it, which is the finishing one while nothing
-                // changes the item after.
-                if crate::foreign::is_foreign(&item.target) {
-                    return Ok(Value::none());
-                }
-                let at = &item.target;
-                let end = self
-                    .store
-                    .borrow()
-                    .version_end(at, true)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(at);
-                Ok(end.map_or_else(Value::none, |version| self.day_value(&version.at)))
-            }
-        }
-    }
-
-    /// The day `text` names: a date as it stands, an instant as the person's day of it (a
-    /// change recorded at `2026-01-01T23:00:00Z` for someone two hours ahead happened on the
-    /// 2nd).
-    fn day_value(&self, text: &str) -> Value {
-        if text.len() == 10
-            && let Some(day) = text.get(..10)
-        {
-            return Value::some(Value::Text(day.to_owned()));
-        }
-        let Some(secs) = tilolang::calendar::instant(text) else {
-            return Value::none();
-        };
-        let zone = self.zone.borrow().as_ref().map_or(0, |zone| zone());
-        let days = secs.saturating_add(zone).div_euclid(86_400);
-        Value::some(Value::Text(tilolang::calendar::day_text(days)))
-    }
-
     /// `ident_part(id, 0)` is an identifier's scheme, `ident_part(id, 1)` its value.
     pub(crate) fn ident_part(&self, id: i32, part: i32) -> HResult<Value> {
         let held = self.text(id)?;
@@ -367,22 +287,17 @@ impl Core {
 /// one per case for an enum, one with no query for a filter whose value is picked.
 #[must_use]
 pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Value> {
-    let filter = |key: &str,
-                  label: &str,
-                  icon: Option<&str>,
-                  query: String,
-                  toggle: bool,
-                  role: Option<&FilterRole>| {
-        Value::Tuple(vec![
-            Value::text(key),
-            Value::text(label),
-            icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
-            Value::Text(query),
-            Value::Bool(toggle),
-            Value::Text(role.map_or_else(String::new, |role| role.word().to_owned())),
-            Value::Bool(role.is_some_and(FilterRole::counts)),
-        ])
-    };
+    let filter =
+        |key: &str, label: &str, icon: Option<&str>, query: String, toggle: bool, counts: bool| {
+            Value::Tuple(vec![
+                Value::text(key),
+                Value::text(label),
+                icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
+                Value::Text(query),
+                Value::Bool(toggle),
+                Value::Bool(counts),
+            ])
+        };
     let mut out = Vec::new();
     for f in &ty.search.filters {
         match f.kind {
@@ -393,7 +308,7 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                     f.icon.as_deref(),
                     format!("is:{}", f.key),
                     true,
-                    f.role.as_ref(),
+                    f.count,
                 ));
             }
             FilterKind::Enum => {
@@ -417,14 +332,14 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                                 v.icon.as_deref(),
                                 format!("{}:{}", f.key, v.name),
                                 true,
-                                None,
+                                false,
                             ));
                         }
                     }
-                    None => out.push(filter(&f.key, &f.label, None, String::new(), false, None)),
+                    None => out.push(filter(&f.key, &f.label, None, String::new(), false, false)),
                 }
             }
-            _ => out.push(filter(&f.key, &f.label, None, String::new(), false, None)),
+            _ => out.push(filter(&f.key, &f.label, None, String::new(), false, false)),
         }
     }
     out
@@ -437,7 +352,7 @@ fn place_value(
     icon: Option<&str>,
     count: usize,
     group: Option<&str>,
-    role: Option<&FilterRole>,
+    counts: bool,
 ) -> Value {
     let some = |text: Option<&str>| {
         text.map_or_else(Value::none, |t| Value::some(Value::Text(t.to_owned())))
@@ -448,21 +363,8 @@ fn place_value(
         some(icon),
         Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
         some(group),
-        Value::Text(role.map_or_else(String::new, |role| role.word().to_owned())),
-        Value::Bool(role.is_some_and(FilterRole::counts)),
+        Value::Bool(counts),
     ])
-}
-
-/// Whether `pred` holds only items whose `field` is true (`is:done`, or a filter that says
-/// it): what such a place holds is done with, and leaves nothing open.
-fn requires_true(pred: &LangPred<String>, field: &str) -> bool {
-    match pred {
-        LangPred::Cmp(CmpOp::Eq, Operand::Field(held), Operand::Lit(LangLit::Bool(true))) => {
-            held == field
-        }
-        LangPred::And(parts) => parts.iter().any(|part| requires_true(part, field)),
-        _ => false,
-    }
 }
 
 /// A field's name as a heading over what it holds: `projects` as "Projects".
@@ -484,10 +386,10 @@ impl Core {
     /// "Projects", its add the action that makes another).
     ///
     /// A type that names who its items belong to, in a workspace shared with someone else, also
-    /// offers the place of what the person looking holds: after the places that are open and
-    /// before the one of what is done with, so the place a window opens on does not move.
+    /// offers the place of what the person looking holds, last of the type's own places.
     ///
-    /// A place counts the items it holds that are open — the index's answer, never a scan.
+    /// A place counts the items it holds that are open, unless its filter says what is done
+    /// with — the index's answer, never a scan.
     pub(crate) fn places_import(&self, ty: i32, root: i32) -> HResult<Value> {
         let ty = self.text(ty)?;
         let root = self.ref_arg(root)?;
@@ -522,8 +424,9 @@ impl Core {
                 declared.name
             ));
         };
-        // The flag saying an item is finished is the role the count leaves out, so the place
-        // of what is done with counts nothing open: the list says it is all done.
+        // A place counts what it leaves open: the flag saying an item is finished is what the
+        // count leaves out, unless the place's own filter says what is done with, and then it
+        // counts what it holds.
         let done = declared
             .fields
             .iter()
@@ -566,7 +469,7 @@ impl Core {
                 filter.icon.as_deref(),
                 count,
                 None,
-                filter.role.as_ref(),
+                filter.count,
             ));
         }
         Ok(places)
@@ -645,9 +548,9 @@ impl Core {
         Ok(Value::none())
     }
 
-    /// How many of a place's items are open: the items of the collection `items` whose query
-    /// `query` holds of, with the items the type's `done` flag marks finished left out, counted
-    /// from the index's columns.
+    /// How many items a place holds: the items of the collection `items` whose query `query`
+    /// holds of, with the items the type's `done` flag marks finished left out unless the query
+    /// says what is done with, counted from the index's columns.
     ///
     /// # Errors
     ///
@@ -667,24 +570,19 @@ impl Core {
         let resolved = resolve(&parsed, declared, enums, &clock, viewer.as_deref())?;
         self.note_time(clock.changes_at());
         let mut pred = resolved.pred;
-        // A place counts what it leaves open, never what is done with.
-        if let Some(done) = done {
-            if requires_true(&pred, &done.id) {
-                // What it holds is all done with, so it leaves nothing open: the list says
-                // that it is all done instead.
-                return Ok(0);
-            }
-            // A place that names the flag itself already says what it leaves open.
-            if !pred.fields().iter().any(|held| **held == done.id) {
-                pred = LangPred::And(vec![
-                    pred,
-                    LangPred::Cmp(
-                        CmpOp::Eq,
-                        Operand::Field(done.id.clone()),
-                        Operand::Lit(LangLit::Bool(false)),
-                    ),
-                ]);
-            }
+        // A place counts what it leaves open, never what is done with; a filter that names the
+        // flag itself already says what it leaves open.
+        if let Some(done) = done
+            && !pred.fields().iter().any(|held| **held == done.id)
+        {
+            pred = LangPred::And(vec![
+                pred,
+                LangPred::Cmp(
+                    CmpOp::Eq,
+                    Operand::Field(done.id.clone()),
+                    Operand::Lit(LangLit::Bool(false)),
+                ),
+            ]);
         }
         let Some(read) = field_reads(&pred, info) else {
             return trap(format!(
@@ -712,7 +610,7 @@ struct Places<'a> {
 }
 
 impl Places<'_> {
-    /// The places of a sidebar: what the person looking holds, the type's own filters, then a
+    /// The places of a sidebar: the type's own filters, what the person looking holds, then a
     /// group of the ones the root holds.
     fn build(&self) -> HResult<Value> {
         let mut places = self.core.filter_places(
@@ -723,29 +621,12 @@ impl Places<'_> {
             self.done,
         )?;
         if let Some(mine) = self.mine_place()? {
-            let at = self.mine_at(places.len());
-            places.insert(at, mine);
+            // After the type's own places, before the root's groups: a place to visit, never
+            // the one a window opens on.
+            places.push(mine);
         }
         let groups = self.group_places(&mut places)?;
         Ok(Value::Tuple(vec![Value::List(places), Value::List(groups)]))
-    }
-
-    /// Where the place of what the person looking holds goes: after the type's places that are
-    /// open, before the one of what is done with. It is a place to visit, never the one a window
-    /// opens on — the inbox is.
-    fn mine_at(&self, filter_places: usize) -> usize {
-        self.declared
-            .search
-            .filters
-            .iter()
-            .filter(|filter| matches!(filter.kind, FilterKind::Bool | FilterKind::Predicate))
-            .position(|filter| {
-                filter
-                    .role
-                    .as_ref()
-                    .is_some_and(|role| matches!(role, FilterRole::Logbook))
-            })
-            .unwrap_or(filter_places)
     }
 
     /// The place of what the person looking is assigned (`is:mine`), for a type that names who
@@ -783,14 +664,13 @@ impl Places<'_> {
             .words
             .borrow()
             .word("tilolang-assigned-to-me", &[], "Assigned to me");
-        let role = crate::query::place_role(self.declared, query);
         Ok(Some(place_value(
             query,
             &label,
             Some("user"),
             count,
             None,
-            role.as_ref(),
+            true,
         )))
     }
 
@@ -872,7 +752,14 @@ impl Places<'_> {
                     &query,
                     self.done,
                 )?;
-                places.push(place_value(&query, &label, None, count, Some(&title), None));
+                places.push(place_value(
+                    &query,
+                    &label,
+                    None,
+                    count,
+                    Some(&title),
+                    false,
+                ));
             }
             // A heading with nothing under it and nothing to add is a dead end. With an add
             // it is where the first one is made, so it stays while the collection is empty.

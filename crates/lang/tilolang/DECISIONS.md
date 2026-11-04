@@ -408,23 +408,16 @@ search.md, "What a type declares" and "Types, references and paths".
   field), E101 (a type no filter compares), E102 (a named filter the index cannot keep), E103
   (an order the field does not have), E104 (repeated, hidden and filtered, a reserved key),
   each naming the type with its doc comment's first line.
-- **A filter's icon is declared** with the annotation enum cases and actions take:
-  `filter done (icon: .circle_check)`, `filter "Open" = not done (icon: .circle)`. After a
-  named filter's predicate the parenthesis would read as a call; one that names only options
-  is the filter's options. A filter that declares none has no icon.
+- **A filter's options are declared** with the annotation enum cases and actions take:
+  `filter done (icon: .circle_check)`, `filter "Today" = due <= today (icon: .star, count:
+  true)`. After a named filter's predicate the parenthesis would read as a call; one that names
+  only options is the filter's options. `icon:` is what its control shows beside its label, and
+  `count:` whether the place it makes shows how many items it holds. A filter that declares
+  neither has no icon and shows no count.
 - **Named filters are predicates of the existing vocabulary.** They read fields with `not`,
   `and`, `or`, comparisons, `.len()` and `.is_empty()`. search.md's
   `attachments.count > 0` is written `not attachments.is_empty()` or
   `attachments.len() > 0`: `count` is the counting method that takes a predicate.
-- **A filter may declare a place role instead of its predicate.** `filter "Today" =
-  agenda(day: due)`, `filter "Done" = logbook`: the role (`inbox`, `agenda`, `upcoming`,
-  `logbook`) reads the fields it names and derives the members as a predicate of the same
-  vocabulary, so `matching("is:today")` and a place's count answer it as any filter's do. It
-  adds what the predicate cannot say: the order the place's list comes in (the agenda's and
-  what is due later's by day, soonest first; the logbook's by the item's latest change, which is
-  the one that finished it while nothing changes it after, newest first) and whether its count is one to show (the inbox's and the agenda's).
-  `std.rows(role:, place:)` groups by the day each item stands at in the place, which
-  `placed_day(x, p.key)` reads. A field named like a role word is a field, as before.
 - **`std.Identifier` is a built-in value type**, held as its URI text like `Date` and `Time`
   are ISO text, with `.scheme` and `.value` (`ident_part`). search.md has services' types
   (`MailAddress`, `DiscordUser`) implement `std.Identifier`; declaring that a type implements an
@@ -451,9 +444,15 @@ search.md, "What a type declares" and "Types, references and paths".
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
   (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
   the place a window starts on, the state's default (Letters starts on `is:drafts`). A place shows a
-  count only where its role makes that a count people read (`inbox`, `agenda`: `items.matching(p.query).len()`),
-  never the all place, what is due later, what is done or a project. The `filter:` and `count:`
-  parameters are gone.
+  count only where its filter declares `count: true` (`items.matching(p.query).len()`), never the
+  all place, a project's or one that declares none. The `filter:` and `count:` parameters are
+  gone.
+- **A list that stands plainly says so.** `std.rows(group:, closed:)` groups a list by the days
+  its items name and folds what is done with; `headings:` and `folding:` say whether it reads by
+  them at all, so a place whose own state decides — a project's list stands under the day each
+  task is due and folds a finished branch, the inbox does neither — is drawn from what the place
+  says rather than from a walk over its items, which would read the whole collection on every
+  change.
 - **Reflection reads the log, and may not have it.** `created(r)` and `updated(r)` are
   `Option<host.Version>` (`who`, `at`, `what`): a resource whose changes the device has not
   read yet has no versions to show, and code says what it shows then. A version is a change

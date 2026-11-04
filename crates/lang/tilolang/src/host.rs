@@ -153,17 +153,10 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "The heading it stands under, when it is one of a group's places; `.none` for a place of its own.",
             ),
             (
-                "role",
-                "Text",
-                "The place role the filter declaring it names (`inbox`, `agenda`, `upcoming`, \
-                 `logbook`), empty for a filter that names none: what its list groups, in what \
-                 order, and where each item's day comes from follow from the role.",
-            ),
-            (
                 "counts",
                 "Bool",
-                "Whether its count is one to show: what a place holds to be sorted or done \
-                 counts, a list of what is done or a project's does not.",
+                "Whether its count is one to show: whether the filter declaring it says \
+                 `count: true`.",
             ),
         ],
     },
@@ -441,16 +434,10 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether it is on or off: a place of a list, a chip of search.",
             ),
             (
-                "role",
-                "Text",
-                "The place role the filter declares (`inbox`, `agenda`, `upcoming`, `logbook`), \
-                 empty for one that declares none: how its list reads follows from it.",
-            ),
-            (
                 "counts",
                 "Bool",
-                "Whether its count is one to show: what waits to be sorted or is due counts, \
-                 a list of what is done does not.",
+                "Whether the place it makes shows how many items it holds: whether it declares \
+                 `count: true`.",
             ),
         ],
     },

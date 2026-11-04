@@ -191,7 +191,6 @@ imports! {
     (Query, "query", "iiii", "i"),
     (Filters, "filters", "i", "i"),
     (Places, "places", "ii", "i"),
-    (PlacedDay, "placed_day", "ii", "i"),
     (IdentPart, "ident_part", "ii", "i"),
     (RichNew, "rich_new", "i", "i"),
     (RichPart, "rich_part", "ii", "i"),
