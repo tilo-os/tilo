@@ -4,7 +4,14 @@
 
 pub use collab_types::scope;
 
+/// A stream's frames: the track they are sealed under, the sealing and
+/// opening, and the scope a frame belongs to.
+pub mod frame;
+
 pub mod preface;
+
+/// The devices whose frames a scope opens.
+pub mod roster;
 pub mod video;
 pub mod voice;
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish.workspace = true
-description = "A call's media lane between two devices: the frames one device sends, how they are sealed under the channel's content keys, who may send them, the connections they travel on, and the bridge that carries a page into the call."
+description = "A call's media lane between two devices: the connections its frames travel on, the page's side of a call and the bridge that carries it."
 
 [features]
 default = ["lanes"]
@@ -22,8 +22,9 @@ path = "src/lib.rs"
 channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
 # A call is a channel of an app's record, named by its id.
 collab-types = { version = "0.1.0", path = "../collab-types" }
-# The counter-nonce AEAD the frames are sealed with.
-tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+# The frames, the roster and the object profiles: the live plane's, which a
+# lane and a page seal and open the same way.
+tilo-live = { version = "0.1.0", path = "../tilo-live", default-features = false }
 # The real-time H.264 encoder a camera or screen picture is encoded with, and
 # the camera capture it comes from.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"], optional = true }

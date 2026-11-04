@@ -28,7 +28,6 @@ use std::time::Duration;
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
-use tilo_call_lane::Roster;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
@@ -37,6 +36,7 @@ use tilo_live::relay::{
     AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
     VoiceRoute,
 };
+use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_test_env::wait_until;

@@ -18,10 +18,10 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
+use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
+use crate::roster::Roster;
 use channel_crypto::ChannelContentKeys;
 use moq_net::origin::{Consumer, Producer};
-use tilo_call_lane::frame::{Opener, Refusal, Sealer, Stream, TrackName};
-use tilo_call_lane::roster::Roster;
 use tilo_lock::MutexRecover as _;
 
 use crate::Task;

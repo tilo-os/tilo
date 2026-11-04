@@ -1,40 +1,12 @@
-//! A call's media frames: what one device's stream is, how its frames are
-//! sealed, which devices may send them, and the lane they travel on.
+//! The connections a call's media travels on: the lanes two devices open to
+//! each other, the page's side of a call and the bridge that carries it.
 //!
-//! A call lives in a channel, so everyone in it already holds the keys the
-//! channel's content is sealed with: the per-epoch content keys MLS derives
-//! (`channel_crypto`). This crate derives one media key per stream from them
-//! ([`channel_crypto::ChannelContentKeys::media_key`]) and seals every frame
-//! under it, instead of spending a random nonce and a whole at-rest envelope
-//! on each 20 ms frame.
-//!
-//! A frame on the wire is its header followed by its ciphertext:
-//!
-//! | Bytes | Field |
-//! | --- | --- |
-//! | 8 | epoch (LE) |
-//! | 4 | sequence (LE), the sender's counter under that key |
-//! | .. | body sealed with XChaCha20-Poly1305, 16-byte tag appended |
-//!
-//! The epoch and the sequence travel in the clear — a receiver picks the key
-//! by them — and both, with the stream and the full name of the track
-//! ([`TrackName`]: the workspace, the scope within it and the track), are the
-//! tag's associated data, so a frame does not authenticate as another
-//! stream's, another position's, another epoch's, or another track's: a
-//! window's frame never opens as another window's. The sender is not in the
-//! frame: the lane knows which device it is talking to, and the check that the
-//! device is on the roster happens before anything is decrypted ([`Roster`]).
-//!
-//! A track is sealed under the content keys of its scope
-//! ([`collab_types::scope::Scope`]): the workspace, one channel, or one
-//! record. So a call in a private channel is sealed under that channel's keys,
-//! and a member the channel does not hold derives nothing for it.
-//!
-//! Sealing derives the key once per stream ([`Sealer`]); opening derives it
-//! per frame from whichever epoch the frame names, which is what lets a
-//! member that joined later open frames a lagging sender still seals under
-//! an earlier epoch. A device removed from the channel holds no key for the
-//! epochs after its removal and so derives nothing for them ([`Refusal::NoKey`]).
+//! The frames themselves are [`tilo_live`]'s: how a stream's frames are
+//! sealed under its scope's content keys ([`frame`]), which devices may send
+//! them ([`roster`]), and the tilo-voice/1 and tilo-video/1 object profiles
+//! ([`voice`], [`picture`]) are the live plane's, so a lane, a plane and a
+//! page all seal, open and read the same objects. This crate re-exports them
+//! and adds only what is a lane's own.
 //!
 //! Voice frames travel as the datagrams of a tilo-voice/1 bundle
 //! ([`audio::Microphone`], [`audio::heard`]) on the connections two devices
@@ -59,14 +31,15 @@ pub mod audio;
 pub mod bridge;
 #[cfg(feature = "lanes")]
 pub mod carrier;
-pub mod frame;
 pub mod page;
-pub mod picture;
-pub mod roster;
 #[cfg(feature = "lanes")]
 pub mod video;
-pub mod voice;
 pub mod wire;
+
+// The frames, the roster and the two object profiles are the live plane's,
+// which seals and opens the same way whichever carrier it runs on.
+pub use tilo_live::video as picture;
+pub use tilo_live::{frame, roster, voice};
 
 pub use audio::{Heard, Microphone, heard};
 #[cfg(feature = "lanes")]
