@@ -133,6 +133,7 @@ fn main() -> std::process::ExitCode {
         Ok(None) => {}
     }
     let identity = tilo_session::startup::identity();
+    tilo_startup_metrics::mark("identity-verified");
     match &identity {
         tilo_session::startup::Identity::Desk
         | tilo_session::startup::Identity::WaitForClock { .. } => {}
@@ -163,6 +164,19 @@ fn split_command(args: &[String]) -> (&[String], &[String]) {
         ),
         None => (args, &[][..]),
     }
+}
+
+/// Whether the renderer's pipelines are warmed as well (`TILO_STARTUP_WARM_VELLO`).
+/// Opt-in: warming them takes the process-wide render context the desk's own
+/// renderer builds against, and measured slower than not warming it.
+#[cfg(target_os = "linux")]
+fn warms_renderer() -> bool {
+    std::env::var("TILO_STARTUP_WARM_VELLO").is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "off" | "false" | "no"
+        )
+    })
 }
 
 /// The machine's first boot: setup runs and the process stops there, before
@@ -491,13 +505,29 @@ fn start(
         seed_apps,
     } = line;
     let buses = reach.buses.clone();
+    // A mark never waits for the disk from here on: the session is several
+    // threads already, and the file is written beside them.
+    tilo_startup_metrics::start_writer();
+    tilo_startup_metrics::mark("services-start");
     // Who sits here, read now and kept current by workers: nothing the loop
     // asks of the identity directory waits on the disk.
     tilo_session::identity::install();
+    tilo_startup_metrics::mark("identity-installed");
+    // The font system every renderer shares — and, when asked for, the
+    // renderer's pipelines — is built on a thread from here: the services,
+    // the desk build and the compositor's first frame run beside it, and what
+    // needs text finds it ready. Building it on this thread instead put font
+    // discovery and face mapping (the font index alone is a large read) in
+    // front of everything the session says to its first client.
+    // `TILO_STARTUP_WARM=off` measures what it is worth; the renderer stage
+    // stays opt-in (`TILO_STARTUP_WARM_VELLO=1`), as it holds the
+    // process-wide render context the desk's own renderer takes.
+    let _warmup = ui::warmup::spawn_warmup(!warms_renderer());
     let wake = tilo_service::LoopWake::default();
     // The person's settings, read once here: the power policy they resolve is
     // part of them.
     let config = tilo_session::SessionConfig::load();
+    tilo_startup_metrics::mark("settings-read");
     // The machine's power: that policy, applied by the session's loop and
     // acted on over logind by the service started beside the others. A
     // headless session has no lid, keys or person at a seat: it would act on
@@ -544,6 +574,7 @@ fn start(
     // eject the notice offers goes over the system bus the desktop services
     // already hold.
     let drives = drives(backend, desktop.as_ref(), &wake);
+    tilo_startup_metrics::mark("services-done");
     let mut options = Options {
         services,
         wake,
@@ -561,7 +592,7 @@ fn start(
         admit_repl,
         test_control,
         admin_control,
-        ..device_options(machine)
+        ..device_options(machine, config)
     };
     // A headless session has no input device: nothing the person does can
     // ever reset its idle timers, so they would only blank and lock it.
@@ -595,6 +626,7 @@ fn start(
     let agent_door = options.agent_door.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
+    tilo_startup_metrics::mark("session-open-start");
     let mut session = match start_session(backend, options, size, headless) {
         Ok(session) => session,
         Err(error) => {
@@ -687,6 +719,7 @@ fn run(
             return ExitCode::FAILURE;
         }
     };
+    tilo_startup_metrics::mark("display-bound");
     println!("WAYLAND_DISPLAY={socket}");
     // A session added to this machine's own login serves the installed folder
     // importer: whether identity setup is over, on the socket named for this
@@ -831,20 +864,23 @@ fn desktop_services(
     }
 }
 
-/// What the session reads of this device: its configuration, search, quick
-/// settings over its own backends and the players, its session actions and
-/// who unlocks it. A session in a window of another desktop
-/// ([`tilo_session::Machine::Window`]) reads no device of its own and
-/// carries out no session action: the window's machine is the host's.
+/// What the session reads of this device: the person's `config` as read once
+/// at startup, their search, quick settings over its own backends and the
+/// players, its session actions and who unlocks it. A session in a window of
+/// another desktop ([`tilo_session::Machine::Window`]) reads no device of its
+/// own and carries out no session action: the window's machine is the host's.
 #[cfg(target_os = "linux")]
-fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
+fn device_options(
+    machine: tilo_session::Machine,
+    config: tilo_session::SessionConfig,
+) -> tilo_session::Options {
     use tilo_session::{
-        ActionPlane, Options, SessionConfig, Vpn,
+        ActionPlane, Options, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
     Options {
-        config: SessionConfig::load(),
+        config,
         search: search_options(),
         // The apps this session starts reach its services over the socket the
         // launcher hands them; a session inside another desktop's window

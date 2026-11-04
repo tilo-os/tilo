@@ -940,9 +940,11 @@ impl Session {
         mut options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, Error> {
+        tilo_startup_metrics::mark("session-build-start");
         // The words a notice or a query resolves later, in the person's
         // language, are read now: the loop that shows them reads no file.
         i18n::ensure();
+        tilo_startup_metrics::mark("session-i18n-done");
         // Startup frees its scratch at no single moment: one trim collects it
         // once startup is over, and the log says where the heap stood at the
         // start.
@@ -1039,6 +1041,7 @@ impl Session {
         .map_err(|error| tracing::warn!(%error, "settings are not watched"))
         .ok();
         let presentation = (options.presentation)();
+        tilo_startup_metrics::mark("session-presentation-done");
         let overview = mount::overview::Overview::new(
             presentation.theme.motion(),
             presentation.theme.reduce_motion,
@@ -1062,6 +1065,7 @@ impl Session {
             options.search.lists.clone(),
             Some(options.wake.handle()),
         );
+        tilo_startup_metrics::mark("session-activity-done");
         // When each display's bar shows over the window covering it: the desk's
         // band, the chrome and the input that reaches for the bar read the one
         // model.
@@ -1069,9 +1073,6 @@ impl Session {
         // The desk a login shows is built before its first frame: this pair
         // is the phase between the compositor coming up and the frame that
         // draws it (tools/perf/startup_marks.py).
-        // The single-threaded start is over: the marks below are written by
-        // their own thread, never by the one that builds the desk.
-        tilo_startup_metrics::start_writer();
         tilo_startup_metrics::mark("desk-build-start");
         let (desktop, strips, asks) = desk::desk(
             &options,
@@ -1204,6 +1205,7 @@ impl Session {
         // windows the desk gives a tab as they appear, so one that names no
         // application directory is offered the first time it shows itself.
         downloaded::install(&mut options, &mut policy);
+        tilo_startup_metrics::mark("compositor-start");
         let mut compositor = start(policy.boxed())?;
         // The render context is up: every mark from here is the frame the
         // person waits for (tools/perf/startup_marks.py).
@@ -1655,6 +1657,7 @@ impl Session {
             tools: Some(tools),
             wake: options.wake.handle(),
         });
+        tilo_startup_metrics::mark("doors-done");
         // The control door `tilo-control` reaches: the development socket and
         // the device admin's, both answered over the broker this session's
         // plane starts. It exists whether or not a socket opens, because a
@@ -1666,6 +1669,7 @@ impl Session {
                 std::sync::Arc::clone(&session_doors),
             )),
         );
+        tilo_startup_metrics::mark("control-door-open");
         let door = agent_door::mount_named(
             &options,
             questions.clone(),
@@ -2097,6 +2101,7 @@ impl Session {
         if starts_locked {
             session.compositor.lock_now()?;
         }
+        tilo_startup_metrics::mark("session-build-done");
         Ok(session)
     }
 
