@@ -154,6 +154,10 @@ pub struct PlanContext<'a> {
     /// request ([`crate::Answer::Start`]): ask for the new one the way its
     /// entry declares, through its New Window action where it has one.
     pub new_window: bool,
+    /// The tab the window takes, when the desk holds one for it: the app is
+    /// told it as its window's instance, so what it reports about the window
+    /// is about that tab.
+    pub continuity_instance: Option<u64>,
 }
 
 impl PlanContext<'_> {
@@ -304,7 +308,12 @@ impl Planned {
             }
             None => {}
         }
-        let env = context.environment.variables();
+        let mut env = context.environment.variables();
+        if let Some(instance) = context.continuity_instance {
+            // The window's instance: the id of the tab it opens in, which
+            // its continuation reports are addressed by.
+            env.insert("TILO_CONTINUITY_INSTANCE".to_owned(), instance.to_string());
+        }
         // The launcher resolves a package's services against
         // `$XDG_RUNTIME_DIR/tilo/services`. A session that serves none asks
         // for a launch without them, so a package needing one warns instead
@@ -423,6 +432,7 @@ mod tests {
             authority: None,
             render_node: None,
             new_window: false,
+            continuity_instance: None,
         }
     }
 

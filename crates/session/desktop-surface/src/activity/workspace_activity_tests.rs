@@ -60,6 +60,7 @@ mod workspace_activity {
                     mine: &|id| id >> 48 == 7,
                     retained: &|_| true,
                     carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
+                    records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
                 },
             )
             .unwrap();

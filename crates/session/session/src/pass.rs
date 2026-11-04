@@ -125,6 +125,9 @@ impl Session {
         // under it (shell.md §1).
         let underway = self.compositor.underway();
         self.shared.underway.set(underway);
+        // What each window shows, as its app holds the record: the note this
+        // pass's desk, layout and arrangement are read from.
+        self.read_window_notes();
         self.shared.follow_arrangement(underway);
         self.follow_controllers()?;
         self.follow_displays()?;

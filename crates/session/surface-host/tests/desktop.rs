@@ -358,10 +358,16 @@ fn an_x11_window_is_a_tab_of_its_class_that_retitles_and_reopens() {
         ),
         "and holds the app that opens it again: {shown:?}"
     );
+    let asked = host.take_launches();
     assert_eq!(
-        host.take_launches(),
+        asked.iter().map(|ask| ask.app.as_str()).collect::<Vec<_>>(),
         ["Thunderbird"],
         "the app is asked for again, by the name its window announced"
+    );
+    assert_eq!(
+        asked[0].tab,
+        Some(reopened),
+        "and in the tab its window had, where the person left it"
     );
     assert!(
         host.take_launches().is_empty(),

@@ -485,6 +485,45 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     );
 }
 
+/// The app a saved window's tab opens again into is told which tab it is:
+/// the instance its window is, which what it reports of the window names.
+#[test]
+fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let instances = home.home().join("instances");
+    installed_probe_package(&mut home);
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             printf '%s\\n' \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{instances}'\n\
+             hold\n",
+            started = started.display(),
+            instances = instances.display(),
+        ),
+    )
+    .unwrap();
+    save_desk(&state_of(&home), &one_window(PROBE, "Probe"));
+
+    let mut session = session_keeping(
+        &state_of(&home),
+        Some(apps_at(&home, Some(launcher.path().to_owned()))),
+    );
+    until(&mut session, "the app is asked for its window", |_| {
+        instances.exists()
+            && fs::read_to_string(&instances).is_ok_and(|said| !said.trim().is_empty())
+    });
+    assert_eq!(
+        fs::read_to_string(&instances)
+            .expect("the launcher recorded its start")
+            .trim(),
+        "100",
+        "the app is told the tab its window takes"
+    );
+}
+
 /// How many times the launcher wrote a start down: one line per app the
 /// session started.
 fn starts(started: &Path) -> usize {

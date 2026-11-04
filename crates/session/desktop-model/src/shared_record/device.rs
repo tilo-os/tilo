@@ -131,11 +131,17 @@ pub struct Writer<'a> {
     /// ([`former_ids`]): what the first device to write the record still
     /// shows of it comes over, whoever made it.
     pub carried: &'a dyn Fn(u64) -> bool,
+    /// The record the window `id` running here shows: what this device notes
+    /// of its own windows, so the person's other devices hold which record
+    /// each window is on and can continue it there.
+    pub records: &'a dyn Fn(u64) -> Option<String>,
 }
 
 impl Writer<'_> {
     /// Nothing laid out before the record.
     pub const NOTHING_CARRIED: &'static dyn Fn(u64) -> bool = &|_| false;
+    /// No window noted as showing a record.
+    pub const NOTHING_NOTED: &'static dyn Fn(u64) -> Option<String> = &|_| None;
 }
 
 /// Write `workspace`, the layout of `workspace` as other devices are to see it,
@@ -245,10 +251,7 @@ pub fn write(
         }
     }
     authors.retain(|id, _| live.contains(id));
-    let records = held_records
-        .into_iter()
-        .filter(|(tab, _)| live.contains(tab))
-        .collect();
+    let records = noted_records(held_records, &live, writer.records);
     let desktop = SharedDesktop {
         tree: DesktopTree {
             active: shared.slot,
@@ -259,6 +262,27 @@ pub fn write(
         authors,
     };
     super::write(doc, &desktop)
+}
+
+/// The record each window the record `live` holds shows: what the record held
+/// of it, and what this device notes of its own windows now
+/// (`notes`). A window whose app reports what it shows is written as it says;
+/// one that reports nothing keeps what the record held.
+fn noted_records(
+    held: Vec<(u64, String)>,
+    live: &HashSet<u64>,
+    notes: &dyn Fn(u64) -> Option<String>,
+) -> Vec<(u64, String)> {
+    let mut records: BTreeMap<u64, String> = held
+        .into_iter()
+        .filter(|(tab, _)| live.contains(tab))
+        .collect();
+    for id in live {
+        if let Some(record) = notes(*id) {
+            records.insert(*id, record);
+        }
+    }
+    records.into_iter().collect()
 }
 
 /// Take the windows `take` names out of the record `doc`, and the groups and

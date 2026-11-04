@@ -18,7 +18,7 @@
 //! land: that is the workspace's, decided where the engine takes it in.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use automerge::ChangeHash;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
@@ -30,17 +30,26 @@ use tilo_action_broker::owner_commits::OwnerCustody as _;
 use crate::engine::Engine;
 use crate::sync::Client as Sync;
 
+/// What a workspace's record held when this device last wrote it: its heads,
+/// and what its windows showed then.
+type Written = (Vec<ChangeHash>, Vec<(u64, String)>);
+
 /// This session's reading of the workspaces' shared desktops: what each
 /// record held when the desk was last laid out from it, and what this device
 /// last wrote into it, so a record that did not move is not read or written
 /// again.
 #[derive(Default)]
 pub(crate) struct SharedDesktops {
+    /// What each of this device's windows shows, as its app reports it: the
+    /// record noted beside the window in the workspace's layout, so the
+    /// person's other devices hold it and can continue the window there.
+    notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The heads each workspace's record was folded in at, by workspace.
     folded: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
-    /// The heads each workspace's record had when this device last looked at
-    /// it to write: a look that finds them again writes nothing.
-    written: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
+    /// What each workspace's record held when this device last wrote it: its
+    /// heads and what its windows showed then. A look that finds the same
+    /// again writes nothing.
+    written: RefCell<HashMap<WorkspaceId, Written>>,
     /// The windows this device's desk shows that the workspace's record does
     /// not hold yet: what it opened since the last write, and what the next
     /// write adds.
@@ -56,6 +65,15 @@ pub(crate) struct SharedDesktops {
 }
 
 impl SharedDesktops {
+    /// This session's shared desktops, writing what its windows note of
+    /// themselves (`notes`).
+    pub(crate) fn new(notes: std::sync::Arc<crate::continuations::Continuations>) -> Self {
+        Self {
+            notes,
+            ..Self::default()
+        }
+    }
+
     /// Whether every workspace `tree` holds has had its record read here, and
     /// the engine at revision `revision` has not published since: nothing of
     /// the workspaces' desks can have moved, so no record is read again.
@@ -155,7 +173,8 @@ impl SharedDesktops {
         };
         let mut written = self.written.borrow_mut();
         let heads = held.get_heads();
-        if written.get(&room) == Some(&heads) {
+        let notes = self.notes.of_workspace(room);
+        if written.get(&room) == Some(&(heads.clone(), notes.clone())) {
             return false;
         }
         // Fold the record into this desk's workspace, and lay this device's
@@ -165,6 +184,8 @@ impl SharedDesktops {
         let mut laid_out = workspace.clone();
         device::fold(&held, &mut laid_out, "", &device::Kept::NOTHING);
         let mine = |id: u64| peer_salt_of(id) == local || self.is_unrecorded(id);
+        let by_tab: BTreeMap<u64, String> = notes.iter().cloned().collect();
+        let records = |id: u64| by_tab.get(&id).cloned();
         let mut candidate = held.clone();
         let wrote = device::write(
             &mut candidate,
@@ -175,11 +196,12 @@ impl SharedDesktops {
                 mine: &mine,
                 retained: &|_: u64| false,
                 carried: device::Writer::NOTHING_CARRIED,
+                records: &records,
             },
         );
         match wrote {
             Ok(false) => {
-                written.insert(room, heads);
+                written.insert(room, (heads, notes));
                 false
             }
             Err(error) => {
@@ -194,7 +216,7 @@ impl SharedDesktops {
             }
             Ok(true) => {
                 let changes = candidate.save_after(&heads);
-                written.insert(room, candidate.get_heads());
+                written.insert(room, (candidate.get_heads(), notes));
                 let key = engine.identity().device_signing_key.clone();
                 let committed = engine.owner().commit_document_with_current(
                     room,

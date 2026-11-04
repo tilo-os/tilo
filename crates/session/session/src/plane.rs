@@ -713,6 +713,9 @@ fn seams(
         file_clipboard,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
+    // What each window this session runs shows, kept with its launches: read
+    // by the seam a window's app speaks on, and by the session's own passes.
+    let window_notes = launches.notes();
     // The desk decides who may administer a workspace's identity, and the
     // fabric is where pairing reaches the person's other devices.
     let desk_authority = std::sync::Arc::clone(&desk);
@@ -833,12 +836,11 @@ fn seams(
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
         keyboard_shortcuts: Seam::served(crate::keyboard_shortcuts::servable()),
-        // What an app had open is its window's on the desk, restored where
-        // the desk shows it; the door keeps no continuation of its own.
-        continuations: Seam::unserved(
-            "an app's unfinished work stays with its window on the desk, and this session \
-             records no continuation for another app to pick up",
-        ),
+        // The continuation channel a window's app speaks on: its checkpoint
+        // and handoff reports are taken by the session that runs it rather
+        // than refused. What a window shows is read from the broker's record
+        // subscriptions instead ([`crate::continuations`]).
+        continuations: Seam::served(window_notes),
         // What an app publishes of its own content is found whether or not
         // it runs, once it is closed and after a restart.
         search_index: Seam::when(content.map(|content| {

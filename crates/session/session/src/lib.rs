@@ -54,6 +54,7 @@ mod chrome;
 mod clock_wait;
 mod config;
 mod content;
+mod continuations;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
@@ -439,6 +440,10 @@ struct Shared {
     /// device that shows a workspace puts on its own desk, and what this one
     /// writes back.
     desktops: shared_desktop::SharedDesktops,
+    /// What each window this session runs shows, read from the broker every
+    /// pass: the desk's reading of it, and the record noted beside the window
+    /// in its workspace's layout.
+    notes: std::sync::Arc<continuations::Continuations>,
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has
     /// passed since.
@@ -1126,15 +1131,20 @@ impl Session {
         };
         let marks = marks.unwrap_or_default();
         let kept_desk = handle.read(Clone::clone);
-        let records = std::collections::BTreeMap::new();
-        let arrangement = Rc::new(RefCell::new(arrangement::Arrangement::new(
+        // What each window shows, as its app's record is held here: the
+        // session's own, read from the broker every pass and noted beside the
+        // window in its workspace's layout.
+        let notes = options.launches.notes();
+        let mut arrangement = arrangement::Arrangement::new(
             &options.person,
             record,
             handle.clone(),
             &kept_desk,
-            &records,
+            &std::collections::BTreeMap::new(),
             &marks,
-        )));
+        );
+        arrangement.reads_records(std::sync::Arc::clone(&notes));
+        let arrangement = Rc::new(RefCell::new(arrangement));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
         // reads before it moves anything.
@@ -1189,6 +1199,13 @@ impl Session {
         ));
         let settling = Rc::clone(&window_doors);
         let mut policy = desk::DeskPolicy::for_shell(options.shell, &desktop, strips);
+        // What each window shows: the desk offers the windows a person may
+        // share from the note, and one whose app holds no record shows none.
+        desktop.with_policy(|policy| {
+            policy.reads_window_records(Rc::new(continuations::DeskNotes(std::sync::Arc::clone(
+                &notes,
+            ))));
+        });
         let wells = policy.wells();
         policy.set_window_mapped(Rc::new(move |pid| settling.window_mapped(pid)));
         if let Some(launch) = &options.launch {
@@ -1878,7 +1895,8 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
-            desktops: shared_desktop::SharedDesktops::default(),
+            desktops: shared_desktop::SharedDesktops::new(std::sync::Arc::clone(&notes)),
+            notes,
             membership_fed: Cell::new(None),
             _channels: channels,
             personal,
@@ -2695,6 +2713,19 @@ impl Session {
                 self.capture_studio.as_ref(),
             );
         }
+    }
+
+    /// Note what each window this session runs shows, as the broker knows the
+    /// record its app holds: read every pass, so a window that opens a record,
+    /// moves in it or closes is named by what it shows now.
+    fn read_window_notes(&self) {
+        let Some(plane) = &self.action_plane else {
+            return;
+        };
+        let Some(broker) = plane.action_broker() else {
+            return;
+        };
+        self.shared.notes.read(&broker.state().window_records());
     }
 
     /// Keep the workspaces this session takes part in current with the

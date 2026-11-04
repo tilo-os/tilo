@@ -1,27 +1,23 @@
-//! What a person's devices need to continue each other's work, kept in the
+//! What a person's devices need to find each other's work, kept in the
 //! layout record beside the windows it is about.
 //!
 //! Every workspace is on every one of a person's devices, and each device
-//! writes its own part of the layout. So "what my laptop has open here, and
-//! where it left off" is read from the laptop's part of the record, which
-//! every other device of the person already holds. Two things are kept:
+//! writes its own part of the layout. So where the person is on their laptop
+//! is read from the laptop's part of the record, which every other device of
+//! the person already holds:
 //!
-//! - A window's **continuation**: a small, path-free note of how to resume
-//!   it (the app's own resume state, the record it shows), written by the
-//!   device that last used it. Only the person who made a window writes its
-//!   continuation.
 //! - Each device's **focus**: the window it is on in this workspace, under
 //!   the device's id namespace (its salt), naming the person at the device.
-//!   Only that person writes or removes it.
+//!   Only that person writes or removes it ([`foreign_changes`]).
 //!
-//! The text of a continuation is the writer's own encoding; this record only
-//! keeps it and decides who may change it ([`foreign_changes`]).
+//! Which record each window shows is noted beside the window itself, and what
+//! a window's app resumes is reported by the app to the session that runs it
+//! (`ContinuationServices`); nothing of it is written here.
 //!
 //! Shape, beside the layout ([`super`]):
 //!
 //! ```text
-//! windows: { <id>: { …, continuation? } }
-//! focus:   { <salt>: { window: <id>, author } }
+//! focus: { <salt>: { window: <id>, author } }
 //! ```
 
 use std::collections::BTreeMap;
@@ -29,10 +25,9 @@ use std::collections::BTreeMap;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, ROOT, ReadDoc};
 
-use super::{AUTHOR, At, WINDOWS};
+use super::{AUTHOR, At};
 use crate::ids::TabId;
 
-const CONTINUATION: &str = "continuation";
 const FOCUS: &str = "focus";
 const WINDOW: &str = "window";
 
@@ -43,19 +38,6 @@ pub struct Focus {
     pub window: TabId,
     /// The person at the device.
     pub author: String,
-}
-
-/// The continuation of every window that has one, by window.
-#[must_use]
-pub fn windows(doc: &impl ReadDoc) -> BTreeMap<TabId, String> {
-    windows_at(&At { doc, heads: None })
-}
-
-fn windows_at<D: ReadDoc>(at: &At<'_, D>) -> BTreeMap<TabId, String> {
-    at.entries(WINDOWS)
-        .into_iter()
-        .filter_map(|(id, entry)| Some((id, at.text(&entry, CONTINUATION)?)))
-        .collect()
 }
 
 /// Every device's focus, by the device's salt.
@@ -88,37 +70,6 @@ fn focus_at<D: ReadDoc>(at: &At<'_, D>) -> BTreeMap<u16, Focus> {
         }
     }
     out
-}
-
-/// Set (`Some`) or remove (`None`) the continuation of `window`. A window
-/// the record does not hold has none. Returns whether it changed the record.
-///
-/// # Errors
-/// The document refused a write.
-pub fn write_window(
-    doc: &mut AutoCommit,
-    window: TabId,
-    continuation: Option<&str>,
-) -> Result<bool, automerge::AutomergeError> {
-    let at = At {
-        doc: &*doc,
-        heads: None,
-    };
-    let Some(entry) = at.entries(WINDOWS).remove(&window) else {
-        return Ok(false);
-    };
-    let held = at.text(&entry, CONTINUATION);
-    match continuation {
-        Some(text) if held.as_deref() != Some(text) => {
-            doc.put(&entry, CONTINUATION, text)?;
-            Ok(true)
-        }
-        None if held.is_some() => {
-            doc.delete(&entry, CONTINUATION)?;
-            Ok(true)
-        }
-        _ => Ok(false),
-    }
 }
 
 /// Set (`Some`) or remove (`None`) the focus of the device whose salt is
@@ -159,14 +110,12 @@ pub fn write_focus(
 }
 
 /// What a change (the record at `left`, written on the record at `seen`)
-/// did to continuations or focus that are not `writer`'s: a continuation of
-/// a window someone else made, or a focus naming someone else, before or
-/// after. The windows' makers are read from `seen` and `left`.
+/// did to a focus that is not `writer`'s: a focus naming someone else,
+/// before or after.
 pub(super) fn foreign_changes(
     doc: &AutoCommit,
     seen: &[ChangeHash],
     left: &[ChangeHash],
-    authors: &crate::ownership::Authors,
     writer: &str,
 ) -> Option<TabId> {
     let before = At {
@@ -177,16 +126,6 @@ pub(super) fn foreign_changes(
         doc,
         heads: Some(left),
     };
-    let (was, now) = (windows_at(&before), windows_at(&after));
-    let foreign = |id: &TabId| authors.get(id).is_some_and(|author| author != writer);
-    let changed_window = was
-        .keys()
-        .chain(now.keys())
-        .find(|id| was.get(*id) != now.get(*id) && foreign(id))
-        .copied();
-    if changed_window.is_some() {
-        return changed_window;
-    }
     let (was, now) = (focus_at(&before), focus_at(&after));
     was.iter()
         .chain(now.iter())
@@ -255,15 +194,13 @@ mod tests {
     }
 
     #[test]
-    fn continuations_and_focus_survive_layout_writes_and_stay_their_persons() {
+    fn a_focus_survives_layout_writes_and_stays_its_person() {
         let mut doc = AutoCommit::new();
         super::super::write(&mut doc, &desktop(&[(1, "ada"), (2, "bo")])).unwrap();
         doc.commit();
 
-        // Ada notes how to resume her window and where her device is.
+        // Ada says where her device is.
         let before = doc.get_heads();
-        assert!(write_window(&mut doc, 1, Some("resume-1")).unwrap());
-        assert!(!write_window(&mut doc, 1, Some("resume-1")).unwrap());
         let ada = Focus {
             window: 1,
             author: "ada".into(),
@@ -274,25 +211,17 @@ mod tests {
         assert!(judged(&doc, &before, "ada"));
         assert!(!judged(&doc, &before, "bo"));
 
-        // A layout write keeps both.
+        // A layout write keeps it.
         super::super::write(&mut doc, &desktop(&[(1, "ada"), (2, "bo"), (3, "ada")])).unwrap();
         doc.commit();
-        assert_eq!(windows(&doc).get(&1).map(String::as_str), Some("resume-1"));
         assert_eq!(focus(&doc).get(&7), Some(&ada));
 
-        // Bo may not resume Ada's window, nor move her focus.
-        let before = doc.get_heads();
-        write_window(&mut doc, 1, Some("hijack")).unwrap();
-        doc.commit();
-        assert!(!judged(&doc, &before, "bo"));
+        // Bo may not move Ada's focus.
         let mut doc_b = doc.fork();
         let before = doc_b.get_heads();
         write_focus(&mut doc_b, 7, None).unwrap();
         doc_b.commit();
         assert!(!judged(&doc_b, &before, "bo"));
         assert!(judged(&doc_b, &before, "ada"));
-
-        // A window without a record entry has nothing to resume.
-        assert!(!write_window(&mut doc, 99, Some("x")).unwrap());
     }
 }

@@ -1321,7 +1321,7 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
 /// A part on an output at `scale` draws its whole screen at that scale: a
 /// bar on a 2 display paints twice the pixels of a 1 display's, rather than
 /// one scale's worth stretched over twice the area (which is what made
-/// everything on a HiDPI panel grainy).
+/// everything on a `HiDPI` panel grainy).
 #[test]
 fn a_part_on_a_scaled_output_paints_at_that_scale() {
     let (mut plain, _link) = part_on(reading(), (1280, 800));

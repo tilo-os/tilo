@@ -327,6 +327,7 @@ mod admitted_history_tests {
                     mine: &|id| id >> 48 == 5,
                     retained: &|_| false,
                     carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
+                    records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
                 },
             )
             .unwrap();

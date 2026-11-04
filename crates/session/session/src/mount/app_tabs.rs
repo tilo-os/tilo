@@ -583,7 +583,7 @@ impl Answers<'_> {
         let held = self
             .desktop
             .with_policy(|policy| policy.hold_beside(app, anchor, background));
-        if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(workspace)) {
+        if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(workspace), None) {
             if held {
                 self.desktop.with_policy(|policy| policy.release_held(app));
             }

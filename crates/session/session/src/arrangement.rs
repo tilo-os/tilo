@@ -423,6 +423,14 @@ pub struct Arrangement {
     /// The desk's revision `seen` was read at: a desk that has not moved
     /// since costs nothing to look at again.
     seen_at: Cell<u64>,
+    /// The record each of this device's windows shows, as the desk was last
+    /// read with it: a window whose app holds a record is named by it in its
+    /// place from then on, and the places are read again when one is noted.
+    seen_records: RefCell<BTreeMap<u64, String>>,
+    /// What each window shows, as the broker knows it
+    /// ([`crate::continuations`]): the session that runs them says, and an
+    /// arrangement made without it names the records it was made with.
+    notes: Option<std::sync::Arc<crate::continuations::Continuations>>,
 }
 
 impl Arrangement {
@@ -522,6 +530,8 @@ impl Arrangement {
             waiting: RefCell::new(VecDeque::new()),
             seen: RefCell::new(None),
             seen_at: Cell::new(0),
+            seen_records: RefCell::new(records.clone()),
+            notes: None,
         }
     }
 
@@ -958,6 +968,17 @@ impl Arrangement {
             .unwrap_or_else(|| format!("arrange: {}", verb(action)))
     }
 
+    /// Read what each window shows from `notes`, the session's, from now on:
+    /// a window whose app holds a record is named by it in its place, and the
+    /// places are read again when one is noted.
+    pub(crate) fn reads_records(
+        &mut self,
+        notes: std::sync::Arc<crate::continuations::Continuations>,
+    ) {
+        *self.seen_records.borrow_mut() = notes.records();
+        self.notes = Some(notes);
+    }
+
     /// Take in what the desk did on its own since the last pass — a row or
     /// strip made, a window opened, a width dragged, a tab closed — as
     /// arranging actions of the person's: their own input goes through the
@@ -967,12 +988,16 @@ impl Arrangement {
         // A desk that has not moved since it was last read is the same desk:
         // there is nothing to take in.
         let at = self.handle.revision();
-        if at == self.seen_at.replace(at) {
+        let records = self.notes.as_ref().map_or_else(
+            || self.seen_records.borrow().clone(),
+            |notes| notes.records(),
+        );
+        let noted = *self.seen_records.borrow() != records;
+        if at == self.seen_at.replace(at) && !noted {
             return;
         }
-        let became = self
-            .handle
-            .read(|tree| Strips::from_tree(tree, &BTreeMap::new()));
+        *self.seen_records.borrow_mut() = records.clone();
+        let became = self.handle.read(|tree| Strips::from_tree(tree, &records));
         if self
             .seen
             .borrow()
@@ -2125,7 +2150,10 @@ fn same_places(one: &Strips, other: &Strips) -> bool {
         && one.strips.iter().zip(&other.strips).all(|(a, b)| {
             a.id == b.id
                 && a.places.len() == b.places.len()
-                && a.places.iter().zip(&b.places).all(|(a, b)| a.id == b.id)
+                && a.places
+                    .iter()
+                    .zip(&b.places)
+                    .all(|(a, b)| a.id == b.id && a.record == b.record)
         })
 }
 
@@ -2159,6 +2187,20 @@ fn adopt_structure(strips: &mut Strips, became: &Strips) -> bool {
     for strip in &became.strips {
         if !strips.strips.iter().any(|held| held.id == strip.id) {
             strips.strips.push(strip.clone());
+            continue;
+        }
+        let Some(held) = strips.strips.iter_mut().find(|held| held.id == strip.id) else {
+            continue;
+        };
+        // The record each of its windows shows, as the window's app holds it
+        // now: what a window shows is noted beside it, not arranged, so it is
+        // the desk's own change like a row's new name.
+        for place in &mut held.places {
+            if let Some(shown) = strip.places.iter().find(|shown| shown.id == place.id)
+                && !shown.record.is_empty()
+            {
+                place.record.clone_from(&shown.record);
+            }
         }
     }
     let live: std::collections::BTreeSet<u64> =

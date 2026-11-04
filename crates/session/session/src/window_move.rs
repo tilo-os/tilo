@@ -239,7 +239,7 @@ impl Moves {
                 app: app.clone(),
                 open: None,
             };
-            match apps.start_beside(&launch, &workspace) {
+            match apps.start_beside(&launch, &workspace, Some(tab)) {
                 Ok(()) => true,
                 Err(error) => {
                     tracing::warn!(

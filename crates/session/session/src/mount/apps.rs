@@ -259,7 +259,7 @@ impl Apps {
             let context = request.context.clone();
             let started = self.starting_tool(context.as_deref(), || {
                 if matches!(request.place, LaunchPlace::Beside { .. }) {
-                    self.start_beside(&request.launch, &workspace)
+                    self.start_beside(&request.launch, &workspace, None)
                 } else {
                     self.start(&request.launch, &workspace)
                 }
@@ -303,8 +303,8 @@ impl Apps {
             return;
         }
         for asked in asked {
-            let Some(launch) = Launch::parse(&asked) else {
-                tracing::warn!(%asked, "not a launch this session knows");
+            let Some(launch) = Launch::parse(&asked.app) else {
+                tracing::warn!(asked = %asked.app, "not a launch this session knows");
                 continue;
             };
             // A window is on its way to its own tab, and a notice starts
@@ -313,8 +313,18 @@ impl Apps {
                 continue;
             }
             let launch = as_this_machine_knows_it(launch);
-            if let Err(error) = self.open(&launch) {
-                tracing::warn!(%asked, %error, "an app did not start");
+            let workspace = self.active_workspace();
+            let started = self.start_at(&launch, &workspace, asked.tab);
+            // The desk held a tab for a window this launch opens: one that
+            // raised the window its app already shows, and one that did not
+            // start, leave no window to fill it.
+            if let Some(tab) = asked.tab
+                && !matches!(started, Ok(true))
+            {
+                desktop.with_policy(|policy| policy.release_tab(tab));
+            }
+            if let Err(error) = started {
+                tracing::warn!(asked = %asked.app, %error, "an app did not start");
             }
         }
     }
@@ -327,6 +337,21 @@ impl Apps {
     pub fn open(&self, launch: &Launch) -> Result<(), DoorError> {
         let workspace = self.active_workspace();
         self.start(launch, &workspace)
+    }
+
+    /// [`Self::open`] for a launch the desk held the tab `instance` for: the
+    /// window it opens is that tab. Whether a window is on its way to fill
+    /// it: one a running process of the app opens itself is.
+    fn start_at(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        instance: Option<u64>,
+    ) -> Result<bool, DoorError> {
+        let Some(new_window) = self.starting(launch, workspace) else {
+            return Ok(false);
+        };
+        self.start_window(launch, workspace, new_window, instance)
     }
 
     /// The apps that ended since the last pass: one that chose to end leaves
@@ -469,20 +494,26 @@ impl Apps {
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
     pub fn start(&self, launch: &Launch, workspace: &Workspace) -> Result<(), DoorError> {
-        let Some(new_window) = self.starting(launch, workspace) else {
-            return Ok(());
-        };
-        self.start_window(launch, workspace, new_window)
+        self.start_at(launch, workspace, None).map(|_| ())
     }
 
     /// Start `launch` as a window of its own, beside the tab its app already
     /// has: what the app's own ask for another window does. A window the app
     /// has is never raised instead, since this window is meant to be new.
+    /// `instance` is the tab the window takes, when the session already holds
+    /// one for it: the app is told it, so what it reports of the window is
+    /// about that tab.
     ///
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
-    pub fn start_beside(&self, launch: &Launch, workspace: &Workspace) -> Result<(), DoorError> {
-        self.start_window(launch, workspace, true)
+    pub fn start_beside(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        instance: Option<u64>,
+    ) -> Result<(), DoorError> {
+        self.start_window(launch, workspace, true, instance)
+            .map(|_| ())
     }
 
     /// `workspace` as this launch starts in it: when the launch opens a
@@ -514,12 +545,14 @@ impl Apps {
     /// Start `launch` in `workspace`: in the process the app already runs
     /// there when that one opens the app's windows, and otherwise in a process
     /// of its own, which holds the app's door for its workspace until it ends.
+    /// Whether a window comes for the tab held for this launch.
     fn start_window(
         &self,
         launch: &Launch,
         workspace: &Workspace,
         new_window: bool,
-    ) -> Result<(), DoorError> {
+        instance: Option<u64>,
+    ) -> Result<bool, DoorError> {
         let authored = self.authored(launch, workspace);
         let workspace = &authored;
         let planned = {
@@ -541,6 +574,7 @@ impl Apps {
                 authority: Some(&state.authority),
                 render_node: state.render_node.clone(),
                 new_window,
+                continuity_instance: instance,
             };
             Planned::of(launch, &context)
         };
@@ -557,7 +591,9 @@ impl Apps {
         }
         let asked = launch.id();
         let Some(doors) = self.state.borrow().doors.clone() else {
-            return self.spawn(&planned, &asked, &workspace.id, None);
+            return self
+                .spawn(&planned, &asked, &workspace.id, None)
+                .map(|()| true);
         };
         // The app's own window with nothing named to open is the one its
         // running process opens itself, as it opens any later one.
@@ -570,7 +606,7 @@ impl Apps {
             // starts.
             Err(Routed::Opened) => {
                 tracing::info!(app = %planned.app, "the app's running process opens the window");
-                return Ok(());
+                return Ok(true);
             }
             // No process of the app serves the workspace: this launch starts
             // one.
@@ -586,7 +622,7 @@ impl Apps {
             // spent, not given up.
             reservation.launched();
         }
-        started
+        started.map(|()| true)
     }
 
     /// How a window that must start a process of its own starts it: what a

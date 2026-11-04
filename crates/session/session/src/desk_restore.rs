@@ -170,7 +170,7 @@ impl Restore {
         if !desktop.with_policy(|policy| policy.adopt(&saved.app, saved.tab)) {
             return false;
         }
-        match apps.start_beside(&launch, &apps.workspace_named(&workspace)) {
+        match apps.start_beside(&launch, &apps.workspace_named(&workspace), Some(saved.tab)) {
             Ok(()) => {
                 self.opening = Some(Opening {
                     tab: saved.tab,

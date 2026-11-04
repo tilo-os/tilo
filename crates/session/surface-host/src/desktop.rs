@@ -406,8 +406,9 @@ impl DesktopHost {
     }
 
     /// What the desktop asked to open since the last call, oldest first:
-    /// the apps the session plans and starts.
-    pub fn take_launches(&self) -> Vec<String> {
+    /// the apps the session plans and starts, and the tab each window the
+    /// desk held for them will take.
+    pub fn take_launches(&self) -> Vec<tilo_desktop_policy::LaunchAsk> {
         self.with_policy(DesktopPolicy::take_launches)
     }
 
@@ -1059,7 +1060,7 @@ mod hidpi {
     use super::*;
 
     /// The desk draws at the scale of the display it covers: its strips and
-    /// the windows' bars paint the pixels a HiDPI panel shows, rather than
+    /// the windows' bars paint the pixels a `HiDPI` panel shows, rather than
     /// one scale's worth stretched over twice the area.
     #[test]
     fn the_desk_draws_at_its_displays_scale() {
