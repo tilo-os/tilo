@@ -50,6 +50,19 @@ struct Image {
     hotspot: Point<i32, Physical>,
 }
 
+impl Image {
+    /// The size the image is drawn at, in the logical pixels of an output
+    /// at `scale`: its own pixels are the output's, so a 48-pixel image at
+    /// 2 is 24 logical pixels wide and shows at those 48 pixels.
+    fn logical_size(&self, scale: f64) -> Size<i32, Logical> {
+        if scale.is_finite() && scale > 0.0 {
+            self.size.to_f64().to_logical(scale).to_i32_round()
+        } else {
+            Size::from((self.size.w, self.size.h))
+        }
+    }
+}
+
 /// What the pointer shows, the theme it is drawn from and the theme images
 /// loaded so far.
 pub(crate) struct Cursor {
@@ -296,16 +309,8 @@ impl State {
                 let pixels = cursor_pixels(self.cursor.size, scale);
                 let image = self.cursor.image(icon, pixels);
                 let origin = at - image.hotspot;
-                match MemoryRenderBufferRenderElement::from_buffer(
-                    renderer,
-                    origin.to_f64(),
-                    &image.buffer,
-                    None,
-                    None,
-                    None,
-                    Kind::Cursor,
-                ) {
-                    Ok(element) => vec![OutputRenderElement::Memory(element)],
+                match named_element(renderer, &image, origin, scale) {
+                    Ok(element) => vec![element],
                     Err(error) => {
                         tracing::warn!(?error, "cursor image not imported");
                         Vec::new()
@@ -314,6 +319,37 @@ impl State {
             }
         }
     }
+}
+
+/// The element a named pointer `image` draws as, with its top left at
+/// `origin` (physical pixels) on an output at `scale`.
+///
+/// The image's pixels are the output's, so it is drawn over its logical
+/// extent at that scale: at 2 a 48-pixel pointer image covers 24 logical
+/// pixels. Drawn at a logical size of its own pixels it would cover twice
+/// the size the person set, and a theme whose images stop at 32 would be
+/// stretched to hide it.
+fn named_element<R>(
+    renderer: &mut R,
+    image: &Image,
+    origin: Point<i32, Physical>,
+    scale: f64,
+) -> Result<OutputRenderElement<R>, R::Error>
+where
+    R: ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    Ok(OutputRenderElement::Memory(
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            origin.to_f64(),
+            &image.buffer,
+            None,
+            None,
+            Some(image.logical_size(scale)),
+            Kind::Cursor,
+        )?,
+    ))
 }
 
 /// The hotspot a client set for its cursor surface, logical.
@@ -346,6 +382,8 @@ fn cursor_pixels(size: u32, scale: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::backend::renderer::element::Element as _;
+    use smithay::backend::renderer::pixman::PixmanRenderer;
 
     #[test]
     fn cursors_grow_with_the_output_scale() {
@@ -354,6 +392,41 @@ mod tests {
         assert_eq!(cursor_pixels(24, 2.0), 48);
         assert_eq!(cursor_pixels(24, f64::NAN), 24);
         assert_eq!(cursor_pixels(24, 0.0), 24);
+    }
+
+    /// The box the pointer's element draws into, in the output's physical
+    /// pixels, from the elements [`State::cursor_elements_at`] makes for a
+    /// pointer at the top left of an output at `scale`.
+    fn drawn_box(scale: f64) -> (i32, i32) {
+        let mut compositor = crate::Compositor::headless(Box::new(crate::StackPolicy))
+            .expect("a headless compositor");
+        let state = &mut compositor.data.state;
+        state.cursor.set_size(24);
+        let mut renderer = PixmanRenderer::new().expect("pixman");
+        let elements: Vec<OutputRenderElement<PixmanRenderer>> =
+            state.cursor_elements_at(&mut renderer, Point::<i32, Physical>::from((0, 0)), scale);
+        let element = elements.first().expect("the pointer drew an element");
+        let geometry = element.geometry(Scale::from(scale));
+        (geometry.size.w, geometry.size.h)
+    }
+
+    /// The pointer covers the person's 24 logical pixels at every scale: at 2
+    /// it is drawn with twice the pixels of a 24-pixel pointer, not twice the
+    /// size. An image loaded at 24 times the scale and then given a logical
+    /// size of its own pixels would cover 48 logical pixels at 2.
+    #[test]
+    fn the_pointer_is_the_persons_size_in_logical_pixels_at_two() {
+        let (plain_w, plain_h) = drawn_box(1.0);
+        assert!(
+            (plain_w - 24).abs() <= 1 && (plain_h - 24).abs() <= 1,
+            "at 1 the pointer draws its 24 logical pixels: it drew {plain_w}x{plain_h}"
+        );
+        let (wide, tall) = drawn_box(2.0);
+        assert!(
+            (wide - 48).abs() <= 2 && (tall - 48).abs() <= 2,
+            "at 2 the pointer covers the same 24 logical pixels, drawn at 48: \
+             it drew {wide}x{tall}"
+        );
     }
 
     /// The person's theme is the one the pointer is drawn from, and the one
