@@ -6,16 +6,16 @@
 ///
 /// A window that lists resources: the header holds its owner's actions, the primary one as
 /// the Primary button; each item is a row whose actions are on its context menu and its swipe,
-/// a destructive one undone rather than confirmed, and both offer the commands that have a place
-/// on that row; a command the app marked `frequent` a row of its own, as it is in the header,
-/// never folded into a run; with no items it says `empty` and offers the primary action. The
-/// places in the sidebar are the item type's filters that are on or
-/// off (`filters(T)`), after all of the items, each with how many it holds; the one chosen is
-/// the window's query, as people type it in search (`is:done`), so everyone looking sees the
-/// same list; a window starts on `place` (all of the items when empty). The place of all of the
-/// items is called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view state is
-/// the header's sort menu. Items whose type has a window of
-/// their own open in the next column; the list follows which one is open.
+/// a destructive one undone rather than confirmed, and both offer the commands that have a
+/// place on that row; a command the app marked `frequent` a row of its own, as it is in the
+/// header, never folded into a run; with no items it says `empty` and offers the primary
+/// action. The places in the sidebar are the item type's filters that are on or off
+/// (`filters(T)`), after all of the items, each with how many it holds; the one chosen is the
+/// window's query, as people type it in search (`is:done`), so everyone looking sees the same
+/// list; a window starts on `place` (all of the items when empty). The place of all of the
+/// items is called `everything`, "All" and the item type's plural noun unless the app says. A
+/// `sort` view state is the header's sort menu. Items whose type has a window of their own
+/// open in the next column; the list follows which one is open.
 view list<R, T, S>(
     of: R,
     items: List<T>,
