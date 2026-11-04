@@ -6,15 +6,17 @@
 //!
 //! - **Valid by type.** A described component's node (`ui.ListRow`) names a component of the
 //!   toolkit's catalogue; each of its props is one the description declares (or a sizing
-//!   argument every node takes), holding a value of the declared type; each event and binding
-//!   is one it declares. A primitive of the language (`stack`, `list`) is one the host builds.
+//!   argument every node takes, or the companion of a prop it declares, such as `value:as`
+//!   saying which kind of text `value` holds), holding a value of the declared type; each event
+//!   and binding is one it declares. A primitive of the language (`stack`, `list`) is one the
+//!   host builds.
 //! - **Bounded.** Strings, keys, paths, props, depth and the rows of one message are limited,
 //!   and each window's trees together hold at most [`PatchLimits::nodes`] nodes (the host
 //!   counts them as it applies patches: one window's budget is its own).
 //! - **Only its own trees.** A connection is one window of one app; its patches name nodes by
 //!   key paths in the trees it sent, and a path that names no node is refused when applied.
 
-use tilo_ui_graph::component::{Catalogue, Description, Type};
+use tilo_ui_graph::component::{Catalogue, Description, Type, companion};
 
 use super::{Binding, Event, Node, Patch, ResourceRef, RowChange, ToApp, ToUi, Value, Words};
 
@@ -432,8 +434,9 @@ impl<'a> Validator<'a> {
                         return Err(Refused::invalid("a binding its component does not declare"));
                     }
                 }
-                // What kind of text a text prop holds (`value:as` is `date` or `time`).
-                None if name.strip_suffix(":as").is_some_and(|prop| {
+                // A companion of a prop the component declares: `value:as` says which kind of
+                // text `value` holds, and `meta:time` the time of day the day `meta` is due at.
+                None if companion(name).is_some_and(|(prop, _)| {
                     description.prop(prop).is_some() || description.state(prop).is_some()
                 }) => {}
                 None => {
@@ -860,6 +863,33 @@ mod tests {
             button,
         ];
         assert_eq!(validator().to_ui(&open(stack)), Ok(()));
+    }
+
+    /// A row's quiet fact is a day the person reads (`Today`, `Overdue`), and the time of day it
+    /// is due at reads with it (`Today 9:00 AM`): the day is the prop the row declares, and the
+    /// time its companion.
+    #[test]
+    fn a_day_reads_with_the_time_of_day_it_is_due_at() {
+        let row = component(
+            "ListRow",
+            "t",
+            &[
+                ("title", Value::text("Call the landlord")),
+                ("meta", Value::text("2026-11-03")),
+                ("meta:as", Value::text("date")),
+                ("meta:time", Value::text("2026-11-03T17:00:00Z")),
+            ],
+        );
+        assert_eq!(validator().to_ui(&open(row)), Ok(()));
+        let mistyped = component(
+            "ListRow",
+            "t",
+            &[("title", Value::text("x")), ("meta:tmie", Value::text("x"))],
+        );
+        assert!(
+            validator().to_ui(&open(mistyped)).is_err(),
+            "a companion is a name the component declares a prop for, spelled as the host reads it"
+        );
     }
 
     #[test]

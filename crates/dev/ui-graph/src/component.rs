@@ -199,6 +199,34 @@ pub fn first_line(doc: &str) -> &str {
     doc.lines().next().unwrap_or("").trim()
 }
 
+/// What a companion says of the prop it completes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Companion {
+    /// `<name>:as`: which kind of text the prop holds (`date`, `time`), for the UI host to
+    /// format it the person's way.
+    Kind,
+    /// `<name>:time`: the instant of the time of day the day the prop holds is due at, which
+    /// reads with the day as one fact (`Today 9:00 AM`).
+    Time,
+}
+
+/// The companion `name` is, and the prop it completes, when it is one: `value:as` says which
+/// kind of text `value` holds, and `meta:time` the time of day the day `meta` is due at.
+///
+/// A companion is the UI host's: it reads it beside the prop it completes, so a component
+/// declares the prop and never the companion. `None` for a name that is no companion; whether
+/// the component a node is of declares the prop is the description's to say.
+#[must_use]
+pub fn companion(name: &str) -> Option<(&str, Companion)> {
+    let (prop, said) = name.rsplit_once(':')?;
+    let companion = match said {
+        "as" => Companion::Kind,
+        "time" => Companion::Time,
+        _ => return None,
+    };
+    Some((prop, companion))
+}
+
 /// A typed value a component takes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

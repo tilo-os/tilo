@@ -909,11 +909,7 @@ impl Checker<'_> {
     pub(super) fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
         let v = match self.dated(v) {
             Ok((text, kind)) => {
-                self.emit(Stmt::Eval(Ex::host(
-                    Imp::UiPropH,
-                    vec![node.clone(), Ex::str(name), text],
-                    Ty::Unit,
-                )));
+                self.prop_text(node.clone(), name, text);
                 self.emit(Stmt::Eval(Ex::host(
                     Imp::UiPropH,
                     vec![node, Ex::str(&format!("{name}:as")), Ex::str(kind)],
@@ -947,6 +943,16 @@ impl Checker<'_> {
                 )));
             }
         }
+    }
+
+    /// Sets the prop `name` to the text `text`, and nothing of what the text is: a companion of
+    /// a prop (`meta:time`) is read beside the prop it completes, never formatted on its own.
+    pub(super) fn prop_text(&mut self, node: Ex, name: &str, text: Ex) {
+        self.emit(Stmt::Eval(Ex::host(
+            Imp::UiPropH,
+            vec![node, Ex::str(name), text],
+            Ty::Unit,
+        )));
     }
 
     /// `bind:` to a field or view state whose type is one of `allowed`; `titled` when the

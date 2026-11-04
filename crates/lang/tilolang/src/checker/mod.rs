@@ -31,6 +31,7 @@ mod outcomes;
 mod platform;
 mod pred;
 mod program;
+mod props;
 mod query;
 mod template;
 #[cfg(test)]
@@ -327,13 +328,19 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         }
         funcs.push(c.run_guard(action, &a.requires, &action.params));
     }
-    ir::Module {
+    let module = ir::Module {
         funcs,
         views,
         states: c.states,
         at_event,
         words: c.words,
+    };
+    // Every prop a view gives a described component is one that component declares: a name the
+    // catalogue does not know is refused by the window, so the compiler says it first.
+    if diags.is_empty() {
+        props::undeclared(&module, diags);
     }
+    module
 }
 
 /// Checks a block that is one expression.

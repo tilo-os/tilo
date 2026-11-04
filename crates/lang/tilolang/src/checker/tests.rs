@@ -287,11 +287,80 @@ row view task_row for Task\n\
 view task_row(t: Task) {\n    row(t.title, meta: t.due)\n}",
     );
     let row = ui_calls(func(&m, "task_row"));
-    assert!(has(&row, "prop meta:time"), "{row:#?}");
+    assert!(has(&row, "prop meta"), "the day the item is due: {row:#?}");
+    assert!(has(&row, "prop meta:as"), "{row:#?}");
     assert!(
-        !has(&row, "prop meta"),
-        "the day and its time read as one fact: {row:#?}"
+        has(&row, "prop meta:time"),
+        "the time of day it is due at: {row:#?}"
     );
+    assert!(
+        !has(&row, "prop meta:time:as"),
+        "a companion is read beside the prop it completes, and says nothing of its own kind: \
+         {row:#?}"
+    );
+    // A day its type pairs no time of day with is the whole fact.
+    let (m, _) = lower(
+        "type Task {\n    title: Text (title)\n    due: Option<Date> = .none\n}\n\
+row view task_row for Task\n\
+view task_row(t: Task) {\n    row(t.title, meta: t.due)\n}",
+    );
+    let row = ui_calls(func(&m, "task_row"));
+    assert!(has(&row, "prop meta"), "{row:#?}");
+    assert!(!has(&row, "prop meta:time"), "{row:#?}");
+}
+
+/// A prop the checker sets on a described component that the component does not declare is the
+/// compiler's own defect: the window refuses a batch that sets one, so the compile that would
+/// have sent it has to fail first.
+#[test]
+fn a_prop_a_component_does_not_declare_fails_the_compile() {
+    let module = |props: &[(&str, &str)]| {
+        let node = Expr::host(
+            Imp::UiNode,
+            vec![Expr::str("ui.ListRow"), Expr::str("row")],
+            crate::types::Ty::View,
+        );
+        let mut body = vec![Stmt::Set(0, node)];
+        for (name, value) in props {
+            body.push(Stmt::Eval(Expr::host(
+                Imp::UiPropH,
+                vec![
+                    Expr::local(0, crate::types::Ty::View),
+                    Expr::str(name),
+                    Expr::str(value),
+                ],
+                crate::types::Ty::Unit,
+            )));
+        }
+        Module {
+            funcs: vec![Func {
+                kind: crate::ir::FuncKind::View,
+                name: "task_row".into(),
+                export: "v_task_row".into(),
+                nparams: 0,
+                result: crate::types::Ty::View,
+                locals: vec![crate::types::Ty::View],
+                body,
+                facts: crate::ir::Facts::default(),
+            }],
+            ..Module::default()
+        }
+    };
+    let declared = [
+        ("title", "Buy oat milk"),
+        ("meta", "2026-11-03"),
+        ("meta:as", "date"),
+        ("meta:time", "2026-11-03T17:00:00Z"),
+        ("meta_tone", "warning"),
+    ];
+    let mut diags = Vec::new();
+    super::props::undeclared(&module(&declared), &mut diags);
+    assert!(diags.is_empty(), "{diags:#?}");
+    let mut diags = Vec::new();
+    super::props::undeclared(&module(&[("meta:tmie", "2026-11-03")]), &mut diags);
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert_eq!(diags[0].code, "E000");
+    assert!(diags[0].message.contains("meta:tmie"), "{diags:#?}");
 }
 
 #[test]

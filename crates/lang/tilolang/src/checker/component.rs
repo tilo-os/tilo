@@ -565,6 +565,23 @@ impl Checker<'_> {
         self.emit(Stmt::If(test, then, Vec::new()));
     }
 
+    /// Set the companion `name` to the time of day the `Option<Time>` `v` holds, and leave it
+    /// unset while it holds none: the instant (`2026-11-03T17:00:00Z`) that reads with the day
+    /// beside it as one fact. A companion says nothing of its own kind — the day it completes
+    /// does.
+    pub(super) fn set_time_when_some(&mut self, node: &Ex, name: &str, v: Ex) {
+        let ty = v.ty.clone();
+        let tmp = self.fresh(ty.clone());
+        self.emit(Stmt::Set(tmp, v));
+        let opt = Ex::local(tmp, ty);
+        let test = Ex::host(Imp::IsSome, vec![opt.clone()], Ty::Bool);
+        self.push_sink();
+        let inner = Self::unwrap_opt(opt, &Ty::Time).typed(Ty::Text);
+        self.prop_text(node.clone(), name, inner);
+        let then = self.pop_sink();
+        self.emit(Stmt::If(test, then, Vec::new()));
+    }
+
     /// `role: .title` or `role: if c { .title } else { .body }`: one of `cases`, held by the
     /// prop as its name.
     pub(super) fn case_value(

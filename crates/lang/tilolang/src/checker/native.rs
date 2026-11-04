@@ -591,19 +591,18 @@ impl Checker<'_> {
 
     /// A row's `meta:`: when it happened, or the day an item is due. A day its type pairs a
     /// time of day with (`at: Option<Time> (time of: due)`) reads with it as one fact
-    /// (`Today 09:00`), so the row is given both and the presenter joins them.
+    /// (`Today 9:00 AM`): the row is given the day, and beside it the time of day it is due at,
+    /// which the UI host joins as the one fact the presenter gives.
     fn meta_arg(&mut self, node: &Ex, value: &ast::Expr) {
+        self.text_arg(node, "meta", value);
         let ExprKind::Field { base, name } = &value.kind else {
-            self.text_arg(node, "meta", value);
             return;
         };
         if !matches!(base.kind, ExprKind::Ident(_) | ExprKind::Field { .. }) {
-            self.text_arg(node, "meta", value);
             return;
         }
         let b = self.expr(base, None);
         let Ty::Record(key) = b.ty.clone() else {
-            self.text_arg(node, "meta", value);
             return;
         };
         let env = self.env;
@@ -621,7 +620,6 @@ impl Checker<'_> {
             })
             .map(|field| field.name.clone())
         else {
-            self.text_arg(node, "meta", value);
             return;
         };
         let time = ast::Ident {
@@ -629,7 +627,7 @@ impl Checker<'_> {
             span: value.span,
         };
         let read = self.field_read(b, &time);
-        self.prop(node.clone(), "meta:time", read, value.span);
+        self.set_time_when_some(node, "meta:time", read);
     }
 
     /// A row's `mark:`: an icon (`mark: .pin`), the name of one (`mark: a.icon`), or an enum
