@@ -254,10 +254,12 @@ impl Publisher {
         true
     }
 
-    /// Whether the newest list handed over did not reach the daemon: nothing
-    /// of what the desk decided then is enforced until one does.
+    /// Whether the newest list handed over did not reach the daemon, and no
+    /// worker is still trying it: nothing of what the desk decided then is
+    /// enforced until one does.
     pub(crate) fn unpublished(&self) -> bool {
-        self.inner.state.lock_recover().last_error.is_some()
+        let state = self.inner.state.lock_recover();
+        state.last_error.is_some() && !state.running && state.pending.is_none()
     }
 
     /// Wait until every list handed over so far is in force or has failed,
@@ -681,6 +683,30 @@ mod tests {
     }
 
     #[test]
+    fn a_list_given_up_on_is_handed_over_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (script, _seen) = stand_in(dir.path());
+        let publisher = Publisher::at(
+            script,
+            dir.path().join("config/fs-capabilities.json"),
+            dir.path().join("sockets"),
+        );
+        // A worker that gave up: the list is not in force and nothing is trying it,
+        // so the next change of the desk hands it over again.
+        publisher.inner.state.lock_recover().last_error = Some("the daemon refused it".into());
+        assert!(
+            publisher.unpublished(),
+            "nothing is trying the list the daemon refused"
+        );
+        // A list being tried is the worker's, not the desk's to hand over again.
+        publisher.inner.state.lock_recover().running = true;
+        assert!(
+            !publisher.unpublished(),
+            "a worker is still trying the list"
+        );
+    }
+
+    #[test]
     fn a_daemon_that_is_not_serving_yet_is_tried_until_it_is() {
         let dir = tempfile::tempdir().unwrap();
         let (script, seen) = stand_in(dir.path());
@@ -714,10 +740,12 @@ mod tests {
         tilo_test_env::wait_until("the daemon refusing the first attempt", || {
             seen.join("refused").is_file()
         });
-        // Its refusal reaches the publisher a moment after the daemon said it.
-        tilo_test_env::wait_until("the publisher saying the list is not in force", || {
-            publisher.unpublished()
-        });
+        // Its refusal reaches the publisher a moment after the daemon said it, and
+        // the worker goes on trying the list: the desk leaves it to the worker.
+        assert!(
+            !publisher.unpublished(),
+            "a worker is still trying the list"
+        );
         std::fs::write(&gate, b"").unwrap();
         publisher
             .wait_until_idle(tilo_test_env::hang_bound())
