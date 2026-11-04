@@ -308,8 +308,6 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
         session.step(std::time::Duration::from_millis(1)).unwrap();
         received.try_recv().ok()
     });
-    let asked = Some(asked);
-    let asked = asked.expect("the app queued its asks");
 
     // Nothing was asked before: the runs are empty, and both asks started one.
     assert_eq!(

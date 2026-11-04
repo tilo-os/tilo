@@ -592,13 +592,6 @@ fn switched_off() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// How many frames a failing search is given before the test says so: a
-/// source is asked a frame at a time, and a slow one in a frame of its own,
-/// so a search over many of them takes as many frames. Any search here is
-/// over far fewer; reaching this is a search that never ends, and the
-/// failure says what was still missing.
-const SEARCH_FRAME_CAP: usize = 600;
-
 /// The open search, as the desk publishes it.
 fn open_search(session: &Session) -> Option<ResourceSpec> {
     find(&session.resources(), SEARCH_RESOURCE)

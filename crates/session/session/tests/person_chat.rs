@@ -381,23 +381,21 @@ fn until_the_apps_are_done<T>(
     enum Answer<T> {
         Done(T),
         Left,
-        Yet,
     }
     let answer = common::wait_for(session, "the apps to finish their calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
-        Some(match received.try_recv() {
-            Ok(done) => Answer::Done(done),
-            Err(TryRecvError::Disconnected) => Answer::Left,
-            Err(TryRecvError::Empty) => Answer::Yet,
-        })
+        match received.try_recv() {
+            Ok(done) => Some(Answer::Done(done)),
+            Err(TryRecvError::Disconnected) => Some(Answer::Left),
+            Err(TryRecvError::Empty) => None,
+        }
     });
     match answer {
         Answer::Done(done) => Some(done),
         Answer::Left => None,
-        Answer::Yet => unreachable!("the wait only answers once the apps did"),
     }
 }
 
