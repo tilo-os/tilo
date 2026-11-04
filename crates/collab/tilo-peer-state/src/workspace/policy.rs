@@ -134,7 +134,7 @@ mod tests {
 
     /// Rows a person's access rests on that do not read back are recorded, not
     /// only warned about: the member whose role does not decode, and a grant
-    /// that does not decode, which could have been theirs.
+    /// that does not decode, which could have been anyone's.
     #[test]
     fn rows_that_do_not_read_back_are_recorded() {
         let mut policy = empty();
@@ -143,21 +143,21 @@ mod tests {
             "a policy whose rows read back hides nothing"
         );
         policy
-            .grant(b"not a grant")
-            .expect("the projection is infallible");
-        assert_eq!(policy.damaged.grants, 1);
-        assert!(
-            policy.damaged.hides("them"),
-            "a grant that does not decode could be theirs"
-        );
-        policy
             .member("them", b"not a role")
             .expect("the projection is infallible");
         assert!(policy.damaged.members.contains("them"));
         assert!(policy.damaged.hides("them"), "their role did not read back");
         assert!(
             !policy.damaged.hides("someone else"),
-            "another person's rows read back"
+            "another person's row read back"
+        );
+        policy
+            .grant(b"not a grant")
+            .expect("the projection is infallible");
+        assert_eq!(policy.damaged.grants, 1);
+        assert!(
+            policy.damaged.hides("someone else"),
+            "a grant that does not decode could have been theirs"
         );
     }
 }

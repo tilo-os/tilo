@@ -11,6 +11,10 @@
 //! same resource any app's notification is read from, the person closes or
 //! acts on it as they would on any other, and nothing here draws.
 //!
+//! Two more say what this computer could not read of the person's own state —
+//! the list of their workspaces, and how far its last update got — so a list
+//! that starts empty or an update that does nothing is not unexplained.
+//!
 //! They are the whole machine's news, so they are shown on every display
 //! ([`Notification::machine_wide`]).
 //!
