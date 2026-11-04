@@ -17,6 +17,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::io::Read as _;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -383,14 +385,9 @@ fn press(session: &mut Session, keycode: u32) {
 /// given as long as any app gets on a busy machine.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "condition not reached");
-    }
+    common::wait_for(session, "what the test asked of the session", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// Step the session for `time`, letting what it waits on arrive.

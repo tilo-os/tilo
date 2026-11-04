@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::fs;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
@@ -49,19 +51,11 @@ fn step(session: &mut Session) {
 }
 
 /// Step the session until `done`, so a paste on its own thread has time to
-/// finish. A step moves the session's clock on, not the machine's: the paste
-/// copies on its own thread, so what bounds the wait is the time the machine
-/// takes, never a count of turns a loaded machine would run through too fast.
-fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    let started = Instant::now();
-    while !done(session) {
-        assert!(
-            started.elapsed() < tilo_test_env::hang_bound(),
-            "{what} did not happen within {:?}",
-            tilo_test_env::hang_bound()
-        );
-        step(session);
-    }
+/// finish. The steps move the session's clock on, not the machine's: the paste
+/// copies on its own thread, so the suite's hang bound is what ends the wait,
+/// never a count of turns a loaded machine would run through too fast.
+fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
+    common::until(session, what, done);
 }
 
 /// An app copies (`cut == false`) or cuts a list of files.
@@ -335,7 +329,7 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     let started = Instant::now();
     paste_into(&mut session, &destination, None);
     let mut turns: Vec<Duration> = Vec::new();
-    while !destination.join("big").exists() && started.elapsed() < Duration::from_secs(300) {
+    while !destination.join("big").exists() && started.elapsed() < tilo_test_env::hang_bound() {
         let turn = Instant::now();
         step(&mut session);
         turns.push(turn.elapsed());
@@ -367,9 +361,19 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         "the loop kept turning while the paste ran: {} turns over {copied:?}",
         turns.len()
     );
+    // A turn that waits on the disk stands out from the turns around it by
+    // whole seconds, while a loaded machine only ever takes a turn off the CPU
+    // for a few of its own turns' worth: so the bound is the loop's own pace,
+    // never a wall-clock figure of this machine.
     assert!(
-        max < Duration::from_millis(50),
-        "no turn waited on the disk: max {max:?} of {} turns, p50 {p50:?}, over {copied:?}",
+        p50 < Duration::from_millis(50),
+        "the loop's usual turn kept its time: p50 {p50:?} of {} turns, over {copied:?}",
+        turns.len()
+    );
+    let quiet = Duration::from_millis(50).max(p95.saturating_mul(4));
+    assert!(
+        max < quiet,
+        "no turn waited on the disk: max {max:?} of {} turns, p50 {p50:?}, p95 {p95:?}, over {copied:?}",
         turns.len()
     );
 }

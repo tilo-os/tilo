@@ -25,6 +25,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -395,14 +397,7 @@ fn ask_to_join(session: &mut Session, key: &str) {
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
     // What this waits for is other runtimes' work (the site's answer, the
     // record arriving), so the bound is the suite's, not a second count.
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.step(Duration::from_millis(10)).unwrap();
-        if done(session) {
-            return;
-        }
-        assert!(std::time::Instant::now() < deadline, "{what}");
-    }
+    common::until(session, what, |session| done(session));
 }
 
 /// Wait until the directory is done with the person: it closes once the join's

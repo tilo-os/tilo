@@ -17,6 +17,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -100,18 +102,10 @@ fn chord(session: &mut Session, keys: &[u32]) {
 /// thread, and a busy machine can take many steps' worth of time to get to
 /// it.
 #[track_caller]
-fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "condition not reached"
-        );
-    }
+fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
+    common::wait_for(session, "what the test asked of the session", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// The sheet's seat: whether it is up and what it shows.
@@ -228,7 +222,7 @@ fn super_p_opens_the_wireless_display_sheet() {
     assert!(!up(&session), "nothing is showing yet");
 
     chord(&mut session, &[KEY_LEFT_META, KEY_P]);
-    until(&mut session, up);
+    until(&mut session, |session| up(session));
     assert!(
         session
             .display_sheet()
@@ -273,7 +267,7 @@ fn a_chosen_receiver_is_asked_for_its_pin_and_projected_to() {
     let mut session = session(&docked(), Some(broker.socket.clone()));
 
     chord(&mut session, &[KEY_LEFT_META, KEY_P]);
-    until(&mut session, up);
+    until(&mut session, |session| up(session));
     // The sheet looks for receivers each time it opens.
     until(&mut session, |session| !shown(session).receivers.is_empty());
 
@@ -397,7 +391,7 @@ fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
     let mut session = session(&docked(), Some(broker.socket));
 
     chord(&mut session, &[KEY_LEFT_META, KEY_P]);
-    until(&mut session, up);
+    until(&mut session, |session| up(session));
     until(&mut session, |session| !shown(session).receivers.is_empty());
     let rows = shown(&session).layouts.len();
     for _ in 0..rows {

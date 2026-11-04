@@ -17,7 +17,7 @@
               outlives every call made into it"
 )]
 
-use std::time::Duration;
+mod common;
 
 use tilo_compositor::OutputConfig as CompositorOutput;
 use tilo_session::{Options, Session, SessionConfig};
@@ -43,17 +43,9 @@ fn session() -> Session {
 
 /// Step the session until `done`.
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "condition not reached"
-        );
-    }
+    common::wait_for(session, "what the test asked of the session", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// The person's sources as Settings keeps them: a layout, then Hangul.

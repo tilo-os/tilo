@@ -16,6 +16,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
@@ -115,17 +117,9 @@ fn scale(session: &mut Session, connector: &str) -> Option<f64> {
 /// to it.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "condition not reached"
-        );
-    }
+    common::wait_for(session, "what the test asked of the session", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// The question standing on the person's displays now, if one does.
