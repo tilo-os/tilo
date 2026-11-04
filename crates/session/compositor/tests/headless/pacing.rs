@@ -18,10 +18,12 @@ fn a_display_shows_one_frame_per_refresh() {
 
     // Marking an app private changes what the desk a picture stands on draws.
     compositor.protect_app("org.example.shared", true);
+    // The blank the change is shown at is ahead of now, whether the frame
+    // just drawn took most of the tenth of a second or almost none of it.
     let wait = compositor.next_wait().expect("the blank that shows it");
     assert!(
-        wait > Duration::from_millis(50),
-        "the blank a tenth of a second away, not now: {wait:?}"
+        wait > Duration::ZERO && wait <= Duration::from_millis(100),
+        "the blank ahead, on the display's tenth-of-a-second grid: {wait:?}"
     );
     compositor.render().expect("a turn");
     assert_eq!(
