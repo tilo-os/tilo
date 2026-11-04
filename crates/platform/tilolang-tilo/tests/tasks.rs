@@ -2030,11 +2030,11 @@ fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
         "new_task",
         vec![root.clone(), Value::text("Buy oat milk")],
     );
-    call(&ada, "file", vec![milk, project.clone()]);
+    call(&ada, "file", vec![milk, project]);
     let done = call(
         &ada,
         "new_task",
-        vec![root.clone(), Value::text("Take the bins out")],
+        vec![root, Value::text("Take the bins out")],
     );
     call(&ada, "check", vec![done]);
     ada.commit();
@@ -2102,11 +2102,7 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
         vec![root.clone(), Value::text("Buy oat milk")],
     );
     call(&ada, "file", vec![milk.clone(), project.clone()]);
-    call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Book a haircut")],
-    );
+    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
     ada.commit();
     let mut view = ada.view(APP);
     assert_eq!(home_list_rows(&mut view).len(), 1, "the inbox first");
@@ -2116,7 +2112,7 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
         .map(|(_, _, of, _)| of)
         .collect();
     assert_eq!(listed, vec![target(&milk).unwrap()], "the project's tasks");
-    let want = Value::text(&format!("project:{}", target(&project).unwrap()));
+    let want = Value::text(format!("project:{}", target(&project).unwrap()));
     let nav = key_of(&view, "ui.NavList", &|node| {
         node.props.get("selected") == Some(&want)
     });
@@ -2134,8 +2130,9 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
     let entry = key_of(&view, "ui.TextInput", &|node| {
         node.props.get("placeholder") == Some(&Value::text("New task in Groceries"))
     });
-    view.edit(&entry, &Value::text("Buy bread")).unwrap();
-    view.fire(&entry, "submit").unwrap();
+    // The entry holds what is typed until Enter: its submit carries the title.
+    view.fire_with(&entry, "submit", Some(&Value::text("Buy bread")))
+        .unwrap();
     view.poll_patches().unwrap();
     let bread = task(&ada, "Buy bread");
     assert_eq!(
@@ -2159,16 +2156,8 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
 fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
-    call(
-        &ada,
-        "rename",
-        vec![project.clone(), Value::text("Groceries")],
-    );
-    call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Book a haircut")],
-    );
+    call(&ada, "rename", vec![project, Value::text("Groceries")]);
+    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
     ada.commit();
     let mut view = ada.view(APP);
     let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();

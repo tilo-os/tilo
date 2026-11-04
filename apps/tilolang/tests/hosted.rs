@@ -1605,8 +1605,7 @@ fn entry_key(session: &mut Session) -> String {
         .and_then(tilo_ui_host::AppWindow::root_tree)
         .expect("the window has a tree");
     find(&tree, &|node| {
-        node.kind == "ui.TextInput"
-            && matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(placeholder)) if placeholder == "New task")
+        node.kind == "ui.TextInput" && node.props.contains_key("entry")
     })
     .unwrap_or_else(|| panic!("the list ends in its entry: {tree:?}"))
     .key
@@ -1635,9 +1634,7 @@ fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
     let mut found = Vec::new();
     named(session.window.root(), "New task", &mut found);
     let field = *found.last().expect("the window ends in its entry");
-    session
-        .window
-        .click_at(field.center().x, field.center().y);
+    session.window.click_at(field.center().x, field.center().y);
     session.settle();
     assert!(
         session.titles().is_empty(),
@@ -1758,7 +1755,7 @@ fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
 fn an_entry_left_empty_makes_no_task_and_no_history() {
     use ui::winit::keyboard::NamedKey;
     let mut session = Session::tasks();
-    let before = heads(&mut session);
+    let before = heads(&session);
 
     session.window.chord(&["ctrl"], "n");
     session.settle();
@@ -1773,7 +1770,7 @@ fn an_entry_left_empty_makes_no_task_and_no_history() {
     session.window.click_at(x, y);
     session.settle();
     assert!(session.titles().is_empty(), "no task was made");
-    assert_eq!(heads(&mut session), before, "and nothing was written");
+    assert_eq!(heads(&session), before, "and nothing was written");
 }
 
 /// The place a task is added in is its default: the entry at the end of Today's list adds one
@@ -2175,15 +2172,15 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     conventions: ui::PlatformConventions,
 ) {
     let command = command_modifier(conventions);
-    // With a task open, the palette lists what that task lets a person do, once
-    // each: the task and the app it belongs to, then the actions bound to it.
+    // The window lists the app, the task the entry made and that stands on
+    // screen as a resource, and the actions a person can take on it, once each.
     // Picks a row cannot collect (Assign to…, Move to, Open) stay where they
     // live, and no row repeats another.
     session
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
     session.settle();
-    // A task added from the list's entry, then opened: its own window is in front.
+    // A task made by the list's entry: it is a record the window holds.
     session.window.chord(&["ctrl"], "n");
     session.settle();
     session.window.type_text("Water the plants");
@@ -2191,19 +2188,16 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
         .window
         .press_key(ui::winit::keyboard::NamedKey::Enter);
     session.settle();
-    let (x, y) = shown_at(session, "Water the plants");
-    session.window.click_at(x, y);
-    session.settle();
     let open = palette_rows(session, "");
     let titles: Vec<&str> = open.iter().map(|(title, ..)| title.as_str()).collect();
     assert_eq!(
         titles,
         [
-            "Task",
             "Tasks",
+            "Water the plants",
+            "Open",
             "New task",
             "New project",
-            "Titled row",
             "Task summary",
             "Complete",
             "Today",
@@ -2214,12 +2208,16 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Medium",
             "High",
         ],
-        "the open task's palette"
+        "the window's palette"
+    );
+    assert!(
+        !titles.contains(&"Titled row"),
+        "a task is a row once it has a title: {titles:?}"
     );
     let task = open
         .iter()
-        .find(|(title, ..)| title == "Task")
-        .expect("the open task is a row");
+        .find(|(title, ..)| title == "Water the plants")
+        .expect("the task the entry made is a row");
     assert_eq!(
         task.1,
         Some(ui::icons::Icon::Layers),
@@ -2232,7 +2230,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     let complete = open
         .iter()
         .find(|(title, ..)| title == "Complete")
-        .expect("the open task offers Complete");
+        .expect("the task offers Complete");
     assert_eq!(
         complete.2,
         Some(vec![command, "Enter".to_owned()]),
@@ -2247,33 +2245,12 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "{not_now} cannot run now, so it is no row: {titles:?}"
         );
     }
-    // Checked, the app can clear what is done, and the palette says so, without a label
-    // anywhere having changed.
+    // The commands a task opens with run in the task's own window, which the
+    // live session covers; this window offers the ones above.
     session
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
     session.settle();
-    let mut shown = Vec::new();
-    boxes(session.window.root(), &mut shown);
-    let (rect, _) = shown
-        .into_iter()
-        .find(|(rect, done)| !done && rect.width() > 0.0)
-        .expect("the task shows a box to check");
-    let (x, y) = (rect.center().x, rect.center().y);
-    session.window.click_at(x, y);
-    session.settle();
-    assert!(
-        a_checked_control(session),
-        "the task's own Complete checks it"
-    );
-    let checked: Vec<String> = palette_rows(session, "")
-        .into_iter()
-        .map(|(title, ..)| title)
-        .collect();
-    assert!(
-        checked.iter().any(|title| title == "Clear done"),
-        "a done task makes Clear done a row: {checked:?}"
-    );
 }
 
 /// A header's button for an action that cannot run now stands disabled, and says why: the

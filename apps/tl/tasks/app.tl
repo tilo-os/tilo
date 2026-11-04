@@ -540,6 +540,10 @@ view home(t: Tasks) {
     // The window's primary action is the one whose key puts the keyboard in the entry at the
     // list's end, so it is handed to the rows the entry stands under.
     let primary = actions(t).find(a -> a.primary and a.available)
+    // The entry says where what is typed will go.
+    let entry_placeholder = if let p = project {
+        "New task in {p.name}"
+    } else if place == "is:today" { "New task for today" } else { "New task" }
     ui.NavShell(
         content_kind: .document,
         sidebar_title: "Tasks",
@@ -567,7 +571,7 @@ view home(t: Tasks) {
                 progress: x -> subtask_count(x),
                 all_done: if let c = chosen { c.count == 0 } else { false },
                 entry: text -> quick_add(t, text, project, place == "is:today"),
-                entry_placeholder: "New task",
+                entry_placeholder: entry_placeholder,
             ) { x ->
                 task_row(x, .day)
             }
