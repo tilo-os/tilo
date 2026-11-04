@@ -13,7 +13,7 @@ use ui::widget::controls::ActionControls as _;
 use ui::widget::{ItemRow, ListItemProps};
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::Answer;
@@ -853,7 +853,8 @@ fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
 
 #[test]
 fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
-    let mut workspace = Workspace::seeded("notes");
+    // A thread's menu keeps Delete on the row itself, outside the runs of commands it groups.
+    let mut workspace = Workspace::seeded("mail");
     let before = workspace.rows().len();
     let (key, _) = workspace.rows().remove(0);
     let list = workspace.list();
@@ -1195,8 +1196,8 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
 }
 
 /// A workspace of Today with the todo list and the notebook it points at, each with its scenario, and
-/// how many of the todos are finished: done, with nothing unfinished beneath them, so a cleanup
-/// takes no unfinished work with it.
+/// how many of the todos are finished: what a cleanup takes, read from the list's own index,
+/// which works out each task's branch as done with nothing open under it.
 fn today_workspace() -> (Workspace, usize) {
     let mut workspace = Workspace::new("today");
     workspace.seed("tasks");
@@ -1206,43 +1207,14 @@ fn today_workspace() -> (Workspace, usize) {
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
-    let mut done: HashMap<String, bool> = HashMap::new();
-    let mut over: HashMap<String, Option<String>> = HashMap::new();
-    for item in &items {
-        let RtValue::Ref(item) = item else {
-            continue;
-        };
-        let id = item.target.id_string();
-        let read = |field: &str| host.runtime().read(&item.target, field).ok();
-        done.insert(id.clone(), read("done") == Some(RtValue::Bool(true)));
-        over.insert(
-            id,
-            match read("parent") {
-                Some(RtValue::Opt(Some(held))) => match *held {
-                    RtValue::Ref(parent) => Some(parent.target.id_string()),
-                    _ => None,
-                },
-                _ => None,
-            },
-        );
-    }
-    // Every task over an unfinished one is not finished either.
-    let mut unfinished: HashSet<String> = HashSet::new();
-    for (id, held) in &done {
-        if *held {
-            continue;
-        }
-        let mut at = Some(id.clone());
-        while let Some(here) = at {
-            if !unfinished.insert(here.clone()) {
-                break;
-            }
-            at = over.get(&here).cloned().flatten();
-        }
-    }
-    let finished = done
+    let finished = items
         .iter()
-        .filter(|(id, held)| **held && !unfinished.contains(*id))
+        .filter(|item| match item {
+            RtValue::Ref(item) => {
+                host.runtime().read(&item.target, "finished").ok() == Some(RtValue::Bool(true))
+            }
+            _ => false,
+        })
         .count();
     assert!(finished > 0, "the saturday list has finished tasks");
     (workspace, finished)
@@ -1276,11 +1248,11 @@ fn todo_titles(workspace: &Workspace) -> Vec<String> {
         .collect()
 }
 
-/// The tasks `before` held that the list no longer does: named, they are the finished ones and
-/// nothing else. The week has a task done with a step still open under it — a check from before
-/// steps were tasks of their own, or made while someone else added that step — and clearing
-/// keeps the step, so that task stays too. A task done with an open task above it goes: the
-/// clear reads what stands under a task, never what it stands under.
+/// The tasks `before` held that the list no longer does: the finished branches and nothing
+/// else. A task with steps is finished once its steps are, so the inbox task nobody checked but
+/// whose one step is done goes with that step. The week also has a task done with a step still
+/// open under it — a check from before steps were tasks of their own, or made while someone
+/// else added that step — and clearing keeps the step, so that branch stays too.
 fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
     let after = todo_titles(workspace);
     let went: Vec<String> = before
@@ -1292,11 +1264,12 @@ fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
         went,
         [
             "Take the bins out",
+            "Buy oat milk and eggs",
             "Check what is in the fridge",
             "Pack the books",
             "Set up the redirects"
         ],
-        "the done tasks with nothing open under them went"
+        "the finished branches went"
     );
     for title in ["Outline", "Collect the beta quotes"] {
         assert!(
@@ -1561,7 +1534,7 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
         "the Done switch stands for Complete: {header:?}"
     );
     assert!(
-        header.iter().any(|label| label == "Remove"),
+        header.iter().any(|label| label == "Delete"),
         "the rest of the item's actions stay: {header:?}"
     );
     let menus: Vec<String> = workspace
@@ -2086,7 +2059,7 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
         .collect();
     assert_eq!(
         menu,
-        ["Mark read", "Remove"],
+        ["Remove", "Mark read"],
         "the book's actions and the shelf's on it"
     );
     let swipe = first.swipe.as_ref().expect("a swipe takes the book off");
@@ -2112,7 +2085,13 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
     assert!(list.list_mut().unwrap().reveal(first_key));
     let area = list.menu_area_mut().expect("the rows share one menu");
     assert!(area.open_at(ui::vello::kurbo::Point::ZERO, false));
-    area.choose(1);
+    let remove = area
+        .menu()
+        .items()
+        .iter()
+        .position(|item| item.label() == Some("Remove"))
+        .expect("the shelf's Remove is on the book's row");
+    area.choose(remove);
     workspace.settle();
     assert_eq!(workspace.rows().len(), 1);
     assert!(
