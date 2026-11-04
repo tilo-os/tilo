@@ -856,6 +856,41 @@ params = [
 ]
 
 [[resources]]
+kind = "shell-views"
+label = "Shell views"
+version = 1
+person = true
+fields = [
+  { path = "bindings", type = { map = { named = "Binding" } }, readonly = true },
+  { path = "on_device", type = { map = { map = { named = "Binding" } } }, readonly = true },
+]
+
+[[resources.verbs]]
+id = "bind"
+kind = "undoable"
+params = [
+  { name = "slot", type = "text", required = true, schema = { type = "string" } },
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "view", type = "text", required = true, schema = { type = "string" } },
+  { name = "on", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "reset"
+kind = "undoable"
+params = [
+  { name = "slot", type = "text", required = true, schema = { type = "string" } },
+  { name = "on", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.types]]
+name = "Binding"
+fields = [
+  { name = "app", type = "text" },
+  { name = "view", type = "text" },
+]
+
+[[resources]]
 kind = "settings.desktop-controls"
 label = "Desktop controls"
 version = 2
