@@ -120,9 +120,12 @@ struct FnState {
     /// What the code being checked was written as: a scenario or an agent's program
     /// allows what declared code does not.
     written: Written,
-    /// The fields the code being checked writes, by the type that declares them: what two
-    /// actions offered on one kind of item must not both do with a value they ask for.
+    /// The fields the code being checked writes from a parameter: a value it asks for, written
+    /// where the type keeps it. What two actions offered on one kind of item must not both do.
     writes: Vec<(String, String, Ty)>,
+    /// The locals bound to the parameters of what is being checked: a write is recorded only
+    /// when the value written is one of them, never a literal or a local of its own.
+    params: Vec<LocalId>,
     /// Whether the callable takes a resource: an outside effect is queued on the first one,
     /// so an action without one cannot hand any over.
     takes_resource: bool,
@@ -504,7 +507,8 @@ impl Checker<'_> {
             _ => false,
         });
         for p in params {
-            self.declare(&p.name, p.ty.clone());
+            let local = self.declare(&p.name, p.ty.clone());
+            self.st.params.push(local);
         }
     }
 
@@ -1133,9 +1137,19 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         }
-        self.st
-            .writes
-            .push((info.id.clone(), f.name.clone(), f.ty.clone()));
+        // A field set from a value the action asks for is what a second action asking the same
+        // value of the same type cannot also be for; a literal or a local of its own is not.
+        let from_a_parameter = match &value.kind {
+            ast::ExprKind::Ident(read) => self
+                .lookup(read)
+                .is_some_and(|(local, ty)| self.st.params.contains(&local) && ty.same(&f.ty)),
+            _ => false,
+        };
+        if from_a_parameter {
+            self.st
+                .writes
+                .push((info.id.clone(), f.name.clone(), f.ty.clone()));
+        }
         let fid = Ex::str(&f.id);
         match (op, f.merge) {
             (ast::AssignOp::Add | ast::AssignOp::Sub, MergeKind::Counter) => {
