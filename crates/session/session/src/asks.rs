@@ -15,7 +15,8 @@ use ui::shortcut_table::ShortcutAction;
 
 use crate::keys::Invocation;
 use crate::{
-    AppLists, Magnify, SessionCommand, Shared, identity, mount, workspace_settings, workspaces,
+    AppLists, Magnify, SessionCommand, Shared, identity, mount, people, workspace_settings,
+    workspaces,
 };
 
 impl Shared {
@@ -24,6 +25,14 @@ impl Shared {
         // A press on one of the person's devices is one of the session's own
         // verbs: the queue it lands in is carried out here, with the asks.
         self.carry_out_presses();
+        // What a person's card asked of the session: Chat's conversation
+        // with them.
+        let asked = self.people.borrow().take_asks();
+        for ask in asked {
+            match ask {
+                people::PeopleAsk::Message { key } => self.message_person(&key),
+            }
+        }
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {
             match ask {
@@ -106,6 +115,34 @@ impl Shared {
         }
         // What the session's own actions asked of it.
         self.follow_asks();
+    }
+
+    /// Open this person's conversation with the person `key` names, in Chat:
+    /// the app's own `open` of the record the two of them share, so Chat
+    /// starts when it is closed and the record's window comes up with its
+    /// composer ready, as the desk's Message did in the browser.
+    fn message_person(&self, key: &str) {
+        let action = tilo_desktop::launchpad::LaunchpadAppAction::message_person(key);
+        // A conversation belongs to a workspace: the one in front, where the
+        // person is talking to someone they see there.
+        let Some(workspace) = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }) else {
+            tracing::warn!("a Message from a card reached no workspace");
+            return;
+        };
+        let target = tilo_desktop_search::Target::Invoke(Box::new(
+            tilo_desktop_search::InvokeTarget::action(
+                action.app_id,
+                workspace.clone(),
+                action.resource,
+                action.action,
+            ),
+        ));
+        self.search.perform(&workspace, target, &mut |own| {
+            self.doors.invoke(&own.address, &own.arguments).map(drop)
+        });
     }
 
     /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,

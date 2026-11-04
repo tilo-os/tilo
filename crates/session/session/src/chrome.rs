@@ -205,12 +205,13 @@ pub(crate) struct ChromeWiring {
     pub(crate) feeds: BarFeeds,
 }
 
-/// What the snapshot revision was last bumped for: the tree's revision, the
-/// minute, the last wave heard, the ask on the person's avatar, the tray's
-/// revision, the displays a fullscreen window owns, who views the windows
-/// this session shares, the notification count and silence the bell shows,
-/// and the Identify request the chrome answers.
+/// What the snapshot revision was last bumped for: the tree's revision, who
+/// is here, the minute, the last wave heard, the ask on the person's avatar,
+/// the tray's revision, the displays a fullscreen window owns, who views the
+/// windows this session shares, the notification count and silence the bell
+/// shows, and the Identify request the chrome answers.
 type Seen = (
+    u64,
     u64,
     i64,
     Option<String>,
@@ -302,6 +303,7 @@ impl SessionChrome {
             identify,
             seen: RefCell::new((
                 u64::MAX,
+                u64::MAX,
                 0,
                 None,
                 u64::MAX,
@@ -339,6 +341,11 @@ impl DesktopChromeSource for SessionChrome {
         let identify = self.identify.borrow().clone();
         let seen = (
             self.handle.revision(),
+            // Who is here, the window they are in and the call they are in
+            // reach the bar as its faces and roster, and none of it moves
+            // the tree: without this the face of everyone who arrives after
+            // the first frame never draws.
+            self.sync.as_ref().map_or(0, |sync| sync.people_revision()),
             clock.unix_seconds.div_euclid(60),
             waved.as_ref().map(|notice| notice.from.clone()),
             self.handle.personal_ask_revision(),

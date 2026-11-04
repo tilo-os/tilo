@@ -761,12 +761,17 @@ const MAX_PUBLICATION_ALIAS: usize = 4096;
 pub(crate) struct BoundPublication {
     host: uuid::Uuid,
     owners: RefCell<HashMap<uuid::Uuid, CallbackBinding>>,
+    /// Bumped every time a component published a resource here: a host that
+    /// could not reach a destination yet watches it and asks again when it
+    /// moves, instead of asking again frame after frame.
+    published: Cell<u64>,
 }
 impl Default for BoundPublication {
     fn default() -> Self {
         Self {
             host: uuid::Uuid::new_v4(),
             owners: RefCell::new(HashMap::new()),
+            published: Cell::new(0),
         }
     }
 }
@@ -774,6 +779,13 @@ impl BoundPublication {
     pub(crate) fn clear(&self) {
         self.owners.borrow_mut().clear();
     }
+
+    /// How many resources the components here have published since this
+    /// frame started.
+    pub(crate) fn published(&self) -> u64 {
+        self.published.get()
+    }
+
     pub(crate) fn alias(
         &self,
         binding: &CallbackBinding,
@@ -807,6 +819,7 @@ impl BoundPublication {
         let mut alias = prefix;
         alias.push_str(&hex::encode(resource));
         owners.insert(binding.lifetime_id, binding.clone());
+        self.published.set(self.published.get().wrapping_add(1));
         Ok(alias)
     }
     pub(crate) fn target(

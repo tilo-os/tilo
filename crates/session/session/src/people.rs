@@ -31,6 +31,8 @@ use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RosterRow,
     collaborator_roster_rows_named,
 };
+use tilo_desktop::launchpad::LaunchpadAppAction;
+use tilo_desktop::profile_card::{OtherPerson, ProfileCard, ProfileChoice, ProfileModel};
 
 /// How long after the person pressed elsewhere a press on the faces does not
 /// reopen the roster: their press closed it.
@@ -39,6 +41,14 @@ const DISMISS_GRACE: Duration = Duration::from_millis(250);
 /// How long a wave this person sent shows on the row it went to.
 const WAVE_SHOWN: Duration = Duration::from_millis(2400);
 
+/// What the roster's card asks the session to do: what only it can.
+pub(crate) enum PeopleAsk {
+    /// Open the conversation this person has with `key`'s person in Chat,
+    /// its composer ready: the app is started when it is not up, and the
+    /// pair's record is shown either way.
+    Message { key: String },
+}
+
 /// What the panel shows and where it stands, kept at rest between frames.
 #[derive(Default)]
 struct Shown {
@@ -46,6 +56,9 @@ struct Shown {
     rows: Vec<RosterRow>,
     workspace: String,
     expanded: Option<String>,
+    /// Whose card the next frame opens, as the bar's face or the session
+    /// asked: read once the roster has drawn the row it opens under.
+    card_of: Option<String>,
     /// Whom the wave they sent goes to, and since when.
     waved: Option<(String, std::time::Instant)>,
     /// Where the pointer was over the desk: the panel opens under it.
@@ -68,6 +81,8 @@ pub(crate) struct People {
     open: Rc<Cell<bool>>,
     /// When the person last pressed elsewhere, closing the roster.
     dismissed: Cell<Option<std::time::Instant>>,
+    /// What the card asked of the session, carried out on its next pass.
+    asks: Rc<RefCell<Vec<PeopleAsk>>>,
 }
 
 impl People {
@@ -83,20 +98,27 @@ impl People {
             self.open.set(open);
             if !open {
                 self.shown.borrow_mut().expanded = None;
+                self.shown.borrow_mut().card_of = None;
             }
         }
         self.redraw();
     }
 
-    /// Open the roster at the person `person`, their recent changes open: a
-    /// press on them elsewhere (a wave in the bar, the launcher) lands here.
+    /// Open the roster at the person `person`, their card under their row: a
+    /// press on them elsewhere (a face in the bar, a wave, the launcher)
+    /// lands here.
     pub(crate) fn show_person(&self, person: &str) {
         // A row this roster has not read yet still opens: the next frame
-        // reads it and the row comes up expanded.
-        self.shown.borrow_mut().expanded = Some(person.to_owned());
+        // reads it and the card comes up under it.
+        self.shown.borrow_mut().card_of = Some(person.to_owned());
         self.open.set(true);
         self.dismissed.set(None);
         self.redraw();
+    }
+
+    /// What the card asked since the last pass.
+    pub(crate) fn take_asks(&self) -> Vec<PeopleAsk> {
+        std::mem::take(&mut *self.asks.borrow_mut())
     }
 
     /// Close the roster: the person pressed elsewhere.
@@ -104,6 +126,7 @@ impl People {
         let was_open = self.open.replace(false);
         if was_open {
             self.shown.borrow_mut().expanded = None;
+            self.shown.borrow_mut().card_of = None;
             self.dismissed.set(Some(std::time::Instant::now()));
             self.redraw();
         }
@@ -274,6 +297,7 @@ pub(crate) fn mount(
     sync: Option<Rc<crate::sync::Client>>,
 ) -> Rc<RefCell<People>> {
     let shown = Rc::new(RefCell::new(Shown::default()));
+    let asks: Rc<RefCell<Vec<PeopleAsk>>> = Rc::default();
     let open = Rc::new(Cell::new(false));
     let panel = Panel {
         shown: Rc::clone(&shown),
@@ -281,6 +305,9 @@ pub(crate) fn mount(
         handle: handle.clone(),
         drawn: Cell::new(0),
         sync,
+        asks: Rc::clone(&asks),
+        profile: ProfileCard::default(),
+        card_node: None,
     };
     let placement = Placement {
         origin: (0, 0),
@@ -299,6 +326,7 @@ pub(crate) fn mount(
         shown,
         open,
         dismissed: Cell::new(None),
+        asks,
     }));
     compositor.add_host(Box::new(Host(Rc::clone(&people))));
     doors.add(Rc::new(RefCell::new(Door(Rc::clone(&people)))));
@@ -390,6 +418,25 @@ impl Published for Door {
         self.0.borrow_mut().accessible_labels()
     }
 
+    /// The controls the open roster and its card show, where they stand: the
+    /// same tree assistive technology reads, so a person's card and its
+    /// Message are pressed by name and at the place the person sees.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        let people = self.0.borrow();
+        if !people.open.get() {
+            return Vec::new();
+        }
+        Published::controls(&mut *people.host.borrow_mut())
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        let people = self.0.borrow();
+        if !people.open.get() {
+            return Err(format!("no control named {name}"));
+        }
+        Published::press(&mut *people.host.borrow_mut(), name)
+    }
+
     fn revision(&self) -> Option<u64> {
         self.0.borrow().revision()
     }
@@ -422,9 +469,123 @@ struct Panel {
     /// asks for no frame.
     drawn: Cell<u64>,
     sync: Option<Rc<crate::sync::Client>>,
+    /// What the card asked of the session.
+    asks: Rc<RefCell<Vec<PeopleAsk>>>,
+    /// The one card of a person, as any host of it shows them.
+    profile: ProfileCard,
+    /// Where the card stands among this panel's children, while it is open.
+    card_node: Option<NodeId>,
 }
 
 impl Panel {
+    /// Open the card the bar's face, a wave or the launcher asked for under
+    /// the row the roster drew, and draw it: the person's card, as the web
+    /// desk shows it, from the same model.
+    fn draw_card(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+        shown: &mut Shown,
+    ) {
+        if let Some(who) = shown.card_of.take() {
+            let anchor = shown
+                .rows
+                .iter()
+                .position(|row| row.id == who)
+                .and_then(|index| shown.overlay.row_rect(index))
+                .unwrap_or_else(|| shown.overlay.panel_rect());
+            if let Some(model) = self.person_model(&who, &shown.rows) {
+                self.profile.close();
+                let _ = self.profile.take_choice();
+                self.profile.toggle(&model, anchor, shown.area);
+            }
+        }
+        if self.profile.is_open() {
+            self.profile
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+    }
+
+    /// The card of the person `who`, as this roster knows them: who they are,
+    /// what they are doing, and what this person can do with them. `None` for
+    /// someone the roster no longer lists.
+    fn person_model(&self, who: &str, rows: &[RosterRow]) -> Option<ProfileModel> {
+        let sync = self.sync.as_ref()?;
+        let row = rows.iter().find(|row| row.id == who)?;
+        let here = sync.here();
+        let here = here.borrow();
+        // Chat holds the conversation each pair of people shares, on the
+        // record that person's root key names; someone whose key is not
+        // known here (a guest, before the host's own line arrives) has none.
+        let key = here.user_of(&row.id).map(str::to_owned);
+        let linked = key
+            .as_deref()
+            .map(|key| here.linked_of(key).to_vec())
+            .unwrap_or_default();
+        // A conversation is Chat's, on the root key both people know: a
+        // guest this desk knows no key for, and a device without Chat, have
+        // none to open.
+        let can_message = !row.is_agent && key.is_some() && Self::chat_installed();
+        Some(ProfileModel {
+            name: row.label.clone(),
+            identity: row.id.clone(),
+            colour: Some(row.color),
+            key,
+            other: Some(OtherPerson {
+                id: row.id.clone(),
+                status: row.status.clone(),
+                place: row.activity.clone(),
+                following: sync.own().following.as_deref() == Some(row.id.as_str()),
+                can_follow: row.followable && !row.is_agent,
+                can_message,
+                linked,
+            }),
+            ..ProfileModel::default()
+        })
+    }
+
+    /// Whether this device has the app that holds a pair's conversation.
+    fn chat_installed() -> bool {
+        tilo_installed_apps::read_one_from_env(&LaunchpadAppAction::message_person("").app_id)
+            .is_ok_and(|installed| installed.is_some())
+    }
+
+    /// Carry out what the person chose in the card.
+    fn take_choice(&mut self) {
+        while let Some(choice) = self.profile.take_choice() {
+            match choice {
+                ProfileChoice::Follow(id) => {
+                    let Some(sync) = &self.sync else {
+                        continue;
+                    };
+                    let mut own = sync.own();
+                    own.following = (own.following.as_deref() != Some(id.as_str())).then_some(id);
+                    sync.set_own(own);
+                }
+                ProfileChoice::Message(key) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Message { key });
+                }
+                // The card of someone else offers nothing a session must
+                // carry out: their own card is the bar's, on this person.
+                ProfileChoice::Rename(_)
+                | ProfileChoice::Action(_)
+                | ProfileChoice::Link(_)
+                | ProfileChoice::Unlink(_)
+                | ProfileChoice::Accept(_)
+                | ProfileChoice::Decline(_)
+                | ProfileChoice::Availability(_)
+                | ProfileChoice::Status(_)
+                | ProfileChoice::Sharing(_)
+                | ProfileChoice::Colour(_)
+                | ProfileChoice::Visibility(_)
+                | ProfileChoice::ControlHints(_) => {}
+            }
+        }
+    }
+
     /// Read who is here, as the plane wrote them into the desk's
     /// collaborators this frame: the roster, and the workspace it is of.
     fn read_roster(&self) -> (Vec<RosterRow>, String) {
@@ -446,10 +607,12 @@ impl Panel {
     }
 
     /// Act on what a press or a key on the roster meant.
-    fn follow(&self, hit: CollaboratorsHit, shown: &mut Shown) {
+    fn follow(&mut self, hit: CollaboratorsHit, shown: &mut Shown) {
         match hit {
             CollaboratorsHit::Dismiss => {
                 shown.expanded = None;
+                shown.card_of = None;
+                self.profile.close();
                 self.open.set(false);
             }
             CollaboratorsHit::ToggleDetails(index) => {
@@ -528,10 +691,19 @@ impl Widget for Panel {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt;
+        // The card belongs to the roster: a roster that closed took it with
+        // it, and the card's place among these children with that.
+        if !self.open.get() {
+            self.profile.close();
+        }
+        self.card_node = self
+            .profile
+            .is_open()
+            .then(|| self.profile.build_layout(taffy, theme, map));
         let style = Style {
             position: ui::taffy::Position::Absolute,
             inset: ui::taffy::Rect {
@@ -542,15 +714,47 @@ impl Widget for Panel {
             },
             ..Style::default()
         };
-        taffy.widget_leaf(style, map, self)
+        match self.card_node {
+            Some(card) => taffy.widget_node(style, &[card], map, self),
+            None => taffy.widget_leaf(style, map, self),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.shown.borrow_mut().area = ui::widget::layout_rect(taffy, node, origin);
+        if let Some(card) = self.card_node {
+            self.profile.apply_layout(taffy, card, origin);
+        }
     }
 
     fn get_rect(&self) -> Rect {
         self.shown.borrow().area
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        match self.card_node {
+            Some(_) if self.profile.is_open() => vec![&self.profile],
+            _ => Vec::new(),
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match self.card_node {
+            Some(_) if self.profile.is_open() => vec![&mut self.profile],
+            _ => Vec::new(),
+        }
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.profile.traps_focus()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.profile.modal_capture()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.profile.wants_pointer_capture()
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -565,20 +769,32 @@ impl Widget for Panel {
         false
     }
 
+    /// The card opening or closing changes this panel's tree: the row it
+    /// stands under is laid out again, and a card that went away leaves no
+    /// node behind.
+    fn take_structure_dirty(&mut self) -> bool {
+        let open = self.profile.is_open();
+        let card = self.profile.take_structure_dirty();
+        card || open != self.card_node.is_some()
+    }
+
     fn draw(
         &mut self,
         scene: &mut ui::vello::Scene,
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        _presence: &ui::presence::PresenceCtx,
+        presence: &ui::presence::PresenceCtx,
     ) {
         let own_id = self
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
         let revision = self.presence_revision();
-        let mut shown = self.shown.borrow_mut();
+        // The card is this panel's own, beside the roster: what it shows is
+        // read here, while the roster's state is borrowed.
+        let roster = Rc::clone(&self.shown);
+        let mut shown = roster.borrow_mut();
         let open = self.open.get();
         // Where everyone else's pointer is now, from the plane: it names the
         // tabs their tiles hold it over.
@@ -660,6 +876,7 @@ impl Widget for Panel {
             shown
                 .overlay
                 .draw(scene, transform, text, theme, &model, cursor);
+            self.draw_card(scene, transform, text, theme, presence, &mut shown);
         }
         // Everyone else's pointer, over the tile of the tab they are on.
         let (cursors, places) = peer_cursors(&self.handle, &shown.rows, &over);
@@ -679,11 +896,41 @@ impl Widget for Panel {
         if !self.open.get() {
             return;
         }
-        let mut shown = self.shown.borrow_mut();
+        // The card, like the bar's menus, takes what it covers, the keyboard
+        // and the press that dismisses it before the roster under it.
+        if self.profile.is_open()
+            && let Some(node) = self.card_node
+        {
+            self.profile
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            // A press on one of the card's controls is the control's own
+            // verb, answered where the widget hosts it: the same drain a
+            // window's host runs for what its tree publishes.
+            let path = ctx.path;
+            ui::widget::controls::start_pending_control_invocations(
+                &mut self.profile,
+                &mut ctx.edits(),
+                path,
+            );
+            let modal = self.profile.modal_capture().is_some();
+            self.take_choice();
+            if *ctx.handled || modal {
+                *ctx.handled = true;
+                return;
+            }
+        }
+        // The roster's state is its own handle, so what a press does may
+        // change the card this panel hosts beside it.
+        let roster = Rc::clone(&self.shown);
+        let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;
         let Some(hit) = shown.overlay.handle_event(event, ctx, true, cursor) else {
             return;
         };
+        // A press away from the roster takes the card with it.
+        if matches!(hit, CollaboratorsHit::Dismiss) {
+            self.profile.close();
+        }
         self.follow(hit, &mut shown);
     }
 

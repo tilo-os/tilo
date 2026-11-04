@@ -20,12 +20,15 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
+use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_broker::services::LaunchPlace;
-use tilo_actions::DoorError;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, RemoteActionTarget, provider_workspace,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
+    RemoteActionTarget, provider_workspace,
 };
+use tilo_actions::{DoorError, InvocationId};
 use tilo_app_launch::routing;
 use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
@@ -100,6 +103,13 @@ struct State {
     /// being planned (`TILO_TOOL_CONTEXT`): set only while a launch a service
     /// asked for is being started, and read where it is planned.
     tool_context: Option<String>,
+    /// The session's action broker, once it starts one: what an action an
+    /// app publishes is delivered through, so a row or a card that names one
+    /// reaches the app whether it runs or has to start for it.
+    broker: Option<Arc<AppBrokerState>>,
+    /// What wakes the session's loop: a delivery completes on the broker's
+    /// own runtime, and the loop reads its answer on its next pass.
+    wake: Option<tilo_service::Wake>,
 }
 
 impl Apps {
@@ -126,7 +136,7 @@ impl Apps {
             state: RefCell::new(State {
                 environment,
                 x11: None,
-                spawner: Spawner::new(wake),
+                spawner: Spawner::new(wake.clone()),
                 running: BTreeMap::new(),
                 launcher,
                 identity: None,
@@ -140,6 +150,8 @@ impl Apps {
                 authorship: None,
                 held: BTreeMap::new(),
                 tool_context: None,
+                broker: None,
+                wake,
             }),
         }
     }
@@ -179,6 +191,66 @@ impl Apps {
     /// admitted for the launch that made it.
     pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
         self.state.borrow_mut().launches = Some(launches);
+    }
+
+    /// The session's action broker: from here on an action an app publishes
+    /// is delivered through it, so a row, a link or a card that names one
+    /// opens the app on it, starting the app when it is not up.
+    pub fn lend_broker(&self, broker: Option<Arc<AppBrokerState>>) {
+        self.state.borrow_mut().broker = broker;
+    }
+
+    /// Hand the app action `target` to the app that publishes it, as the
+    /// person at this seat: the broker starts the app when it is closed,
+    /// waits for it to publish the action and delivers the call, on its own
+    /// runtime. What the app shows for it — the window a `open` reveals —
+    /// arrives the way every app's window does.
+    fn deliver(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        workspace: &str,
+    ) -> Result<(), DoorError> {
+        let (broker, caller, wake) = {
+            let state = self.state.borrow();
+            let Some(broker) = &state.broker else {
+                return Err(no_action_host());
+            };
+            (
+                Arc::clone(broker),
+                Caller::local_person(state.person.clone())
+                    .in_new_execution()
+                    .in_workspace(workspace),
+                state.wake.clone(),
+            )
+        };
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target,
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        // The delivery outlives this pass: its answer runs on the thread that
+        // completed it, and wakes this loop, which reports what a person's own
+        // action could not do.
+        let resource = request.target.address.resource.clone();
+        let action = request.target.address.action.clone();
+        broker
+            .action_invoke_local_person(&caller, &request)
+            .then(move |answer| {
+                if let Some(Err(error)) = answer {
+                    tracing::warn!(%error, %resource, %action, "an app action was not delivered");
+                }
+                if let Some(wake) = &wake {
+                    wake();
+                }
+            });
+        Ok(())
     }
 
     /// The window doors the session keeps for the apps it starts: from here
@@ -704,10 +776,11 @@ impl AppActions for Apps {
         Vec::new()
     }
 
-    /// The one action this session carries out itself is the workspace's
-    /// `open` of an app — the app's own action on its own resource, which
-    /// starts it. Everything else is delivered to a running app, and there
-    /// is no action host here to deliver through.
+    /// The workspace's `open` of an app is the app's own action on its own
+    /// resource, which starts it, and is carried out here. Every other
+    /// action an app publishes is the app's to run: it goes to the session's
+    /// broker, which starts the app when it is closed, waits for it to
+    /// publish the action and delivers the call there.
     fn invoke(
         &self,
         target: RemoteActionTarget,
@@ -719,21 +792,18 @@ impl AppActions for Apps {
                 .address
                 .resource
                 .starts_with(APPLICATION_RESOURCE_PREFIX);
+        let workspace = provider_workspace(&target.provider).map(str::to_owned);
         let app = target
             .address
             .resource
-            .strip_prefix(APPLICATION_RESOURCE_PREFIX);
-        match (open, app, provider_workspace(&target.provider)) {
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            .map(str::to_owned);
+        match (open, app, workspace) {
             (true, Some(app), Some(workspace)) => {
-                let workspace = self.workspace_named(workspace);
-                self.start(
-                    &Launch::Package {
-                        app: app.to_owned(),
-                        open: None,
-                    },
-                    &workspace,
-                )
+                let workspace = self.workspace_named(&workspace);
+                self.start(&Launch::Package { app, open: None }, &workspace)
             }
+            (false, _, Some(workspace)) => self.deliver(target, arguments, &workspace),
             _ => Err(no_action_host()),
         }
     }

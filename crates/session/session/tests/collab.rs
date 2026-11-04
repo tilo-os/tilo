@@ -1,6 +1,7 @@
 //! Who is here: the bar's faces open the roster, which lists everyone in the
 //! workspace and where each of them is, and the roster reads its one feed
-//! from the collaboration plane.
+//! from the collaboration plane. A face opens the person's card, from which
+//! Message opens Chat on the record the two of them share.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -8,24 +9,32 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session \
+              outlives every call made into it"
 )]
 
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use collab_types::presence::{Payload, Presence};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
-use tilo_compositor::OutputConfig;
+use tilo_actions::DoorError;
+use tilo_actions::remote::RemoteActionTarget;
+use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId, WorkspaceSlot,
 };
+use tilo_desktop_search::providers::PublishedActions;
+use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_network_actor::{NetEvent, workspace_topic_id};
 use tilo_session::sync::{Client, OwnPresence};
-use tilo_session::{Options, Session};
+use tilo_session::{AppActions, Options, Session};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -173,10 +182,16 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
 
 /// A session taking part in the workspace through `sync`, showing `desk`.
 fn session(sync: &Rc<Client>) -> Session {
+    session_over(sync, None)
+}
+
+/// [`session`], with `apps` answering what an app asks or is asked to do.
+fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             sync: Some(Rc::clone(sync)),
+            apps,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -187,6 +202,39 @@ fn session(sync: &Rc<Client>) -> Session {
         session.step(Duration::from_millis(1)).expect("step");
     }
     session
+}
+
+/// An action host that keeps what it was asked to run, and starts nothing.
+#[derive(Default)]
+struct Host {
+    invoked: RefCell<Vec<(RemoteActionTarget, Arguments)>>,
+}
+
+impl AppActions for Host {
+    fn published(&self) -> Vec<PublishedActions> {
+        Vec::new()
+    }
+
+    fn jobs(&self) -> Vec<JobEntry> {
+        Vec::new()
+    }
+
+    fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), DoorError> {
+        self.invoked.borrow_mut().push((target, arguments));
+        Ok(())
+    }
+
+    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
+        Ok(())
+    }
+
+    fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
+        Ok(())
+    }
+
+    fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
+        Ok(())
+    }
 }
 
 fn press_faces(session: &mut Session) {
@@ -361,8 +409,14 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     let labels = session.accessible_labels();
     drop(session);
     assert!(
-        !labels.iter().any(|label| label.contains("Framework 16")),
+        !labels
+            .iter()
+            .any(|label| label == "Framework 16 is in Notes"),
         "the roster closed: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Framework 16"),
+        "their face still names them from the bar: {labels:?}"
     );
 }
 
@@ -463,5 +517,205 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     assert!(
         labels.iter().any(|label| label.contains("Standup")),
         "the call they are in: {labels:?}"
+    );
+}
+
+/// The app that holds each pair of people's conversation.
+const CHAT: &str = "so.tilo.chat";
+
+/// Install `app` in `store`, as the package landing there leaves it: the
+/// manifest an open reads and the registry row the catalogue lists it by.
+fn install(store: &Path, app: &str, name: &str) {
+    let payload = store.join("payload").join(app);
+    std::fs::create_dir_all(payload.join("bin")).expect("the package's own directory");
+    let manifest = payload.join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            "[package]\n\
+             id = \"{app}\"\n\
+             version = \"1.0.0\"\n\
+             kind = \"app\"\n\
+             name = \"{name}\"\n\
+             \n\
+             [publisher]\n\
+             identity = \"ed25519:{key}\"\n\
+             signature = \"\"\n\
+             \n\
+             [sandbox]\n\
+             namespaces = [\"user\"]\n\
+             seccomp = \"tilo-default\"\n\
+             landlock = \"strict\"\n\
+             \n\
+             [sandbox.net]\n\
+             mode = \"off\"\n\
+             \n\
+             [entrypoint]\n\
+             bin = \"bin/app\"\n\
+             type = \"gui\"\n",
+            key = "11".repeat(32),
+        ),
+    )
+    .expect("the package's manifest");
+    std::fs::write(
+        store.join("registry.toml"),
+        format!(
+            "[[entry]]\nid = \"{app}\"\nversion = \"1.0.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
+            payload = payload.display(),
+            manifest = manifest.display(),
+        ),
+    )
+    .expect("the store's registry");
+}
+
+/// One display's refresh: how often the session asks its clients for their
+/// next frame.
+const REFRESH: Duration = Duration::from_millis(16);
+
+/// `session`, stepped until `ready` says so, and no further.
+#[track_caller]
+fn until(session: &mut Session, what: &str, mut ready: impl FnMut(&Session) -> bool) {
+    for _ in 0..200 {
+        if ready(session) {
+            return;
+        }
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    panic!("{what}");
+}
+
+/// The control `names` names, where the session shows it: the bar's face of a
+/// person, a button of the roster or of a card.
+fn control(session: &Session, names: &[&str]) -> Option<(f64, f64, f64, f64)> {
+    session
+        .controls()
+        .into_iter()
+        .find(|(name, _)| names.iter().any(|wanted| name == wanted))
+        .map(|(_, rect)| rect)
+}
+
+/// A press at the centre of `rect`, through the compositor's own input.
+fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion {
+            x: x + width / 2.0,
+            y: y + height / 2.0,
+        })
+        .expect("the pointer");
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: 0x110,
+                pressed,
+            })
+            .expect("the button");
+        session.step(REFRESH).expect("a turn of the session");
+    }
+}
+
+/// Write what the session shows where a person can look at it, when the run
+/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+fn capture(session: &mut Session, name: &str) {
+    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    let frame = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a frame of the session");
+    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+        .expect("the frame's pixels fill it");
+    let mut png = Vec::new();
+    pixels
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("the shot");
+    std::fs::create_dir_all(&directory).expect("the directory for shots");
+    std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
+}
+
+/// A press on a person's face in the bar opens their card, and Message opens
+/// Chat on the record the two of them share: the same card the web desk shows,
+/// handed the app invocation that reveals the pair's conversation.
+#[test]
+fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_pair() {
+    let _settled = ui::motion::testing::settled();
+    let home = tempfile::tempdir().expect("a home for this test's app store");
+    let store = home.path().join("tilo-apps");
+    install(&store, CHAT, "Chat");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_APPS_DATA_DIR", &store);
+
+    let host = Rc::new(Host::default());
+    let mine = OwnPresence {
+        label: "Quinten".to_owned(),
+        user: Some(person(QUINTEN)),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), mine));
+    let mut session = session_over(&sync, Some(host.clone() as Rc<dyn AppActions>));
+
+    // Another person, at their own device, in the same workspace, working in
+    // Notes: their face stands in the bar.
+    sync.hear(hello_of(0xaa, 0xaa, "Framework 16"));
+    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Arrived);
+    pointer(&sync, 0xaa, 12.0, 34.0);
+    // The pointer comes up to the bar, as the person's does to press them:
+    // the bar draws who is here, and their face stands under it.
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
+        .expect("the pointer");
+    until(&mut session, "their face is in the bar", |session| {
+        control(session, &["Framework 16"]).is_some()
+    });
+
+    // A press on their face opens their card.
+    let face = control(&session, &["Framework 16"]).expect("the face the person has here");
+    press(&mut session, face);
+    until(&mut session, "the card opens", |session| {
+        control(session, &["profile-message", "Message"]).is_some()
+    });
+    let message = control(&session, &["profile-message", "Message"]);
+    assert!(
+        message.is_some(),
+        "the card offers Message: {:?}",
+        session.controls()
+    );
+    capture(&mut session, "people-card-message");
+    let message = message.expect("the card's Message");
+
+    // Message hands Chat the pair's record: the app's own
+    // `open-direct-conversation` on the resource their two root keys name.
+    press(&mut session, message);
+    until(&mut session, "Chat is handed the pair's record", |_| {
+        !host.invoked.borrow().is_empty()
+    });
+    let invoked = host.invoked.borrow();
+    let [(target, _)] = invoked.as_slice() else {
+        panic!("one invocation, not {invoked:?}");
+    };
+    assert!(
+        target.provider.ends_with(&format!(":{CHAT}")),
+        "the host reaches Chat: {target:?}"
+    );
+    assert_eq!(
+        target.address.resource.as_str(),
+        format!("chat.person:{}", ui::person_chat::person_key(&person(0xaa))),
+        "the record the two of them share"
+    );
+    assert_eq!(
+        target.address.action.as_str(),
+        "open-direct-conversation",
+        "Chat opens the conversation with them"
+    );
+
+    // The card closed behind the choice, and the roster is still here.
+    assert!(
+        control(&session, &["profile-message", "Message"]).is_none(),
+        "the card closed: {:?}",
+        session.controls()
     );
 }

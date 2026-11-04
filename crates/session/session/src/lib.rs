@@ -1610,6 +1610,12 @@ impl Session {
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
+        // An action an app publishes, named by a search row, a link or a
+        // person's card, is delivered through the broker: the app starts for
+        // it when it is closed, and the action reaches it wherever it runs.
+        if let Some(launch) = &options.launch {
+            launch.lend_broker(action_plane.as_ref().and_then(Plane::agent_broker));
+        }
         // What Files may read, and where a received file may land, is what
         // this session's workspaces grant it: read off the desk the broker
         // decides against.

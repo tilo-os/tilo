@@ -6733,6 +6733,14 @@ impl FrameHarness {
         self.drain_undo_requests();
     }
 
+    /// How many resources the components here have published since this
+    /// frame started: a host that could not reach a destination yet asks
+    /// again when it moves, rather than on every frame.
+    #[must_use]
+    pub fn published(&self) -> u64 {
+        self.bound_publication.published()
+    }
+
     /// Invoke one explicit component destination using its current captured owner.
     ///
     /// # Errors

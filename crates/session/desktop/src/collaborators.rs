@@ -1496,6 +1496,15 @@ impl CollaboratorsOverlay {
         self.shown_rows.get(index).and_then(|row| row.join.as_ref())
     }
 
+    /// Where a painted row's header stands, so a card about that person
+    /// opens under it.
+    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+        self.rows
+            .iter()
+            .find(|row| row.index == index)
+            .map(|row| row.rect)
+    }
+
     /// The stable person behind an openable row. The host toggles its
     /// expanded id with this, never with the row index.
     pub fn details_target(&self, index: usize) -> Option<&str> {
