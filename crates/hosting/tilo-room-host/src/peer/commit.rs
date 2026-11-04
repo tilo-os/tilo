@@ -157,8 +157,7 @@ async fn admit_commit(
     let Some(source) =
         authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish).await?
     else {
-        let reason = unpublished(&*ws.lock().await, peer);
-        return refused(reason);
+        return refused(unpublished());
     };
     let digest = *blake3::hash(&delta).as_bytes();
     let claiming = crate::timing::start();

@@ -216,8 +216,7 @@ pub struct GovernedAccess {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordReaders {
     /// Every device a record's channel admits where nothing withholds it from
-    /// the record: the workspace's member devices and its watching ones
-    /// ([`PeerGovernance::watching_devices`]).
+    /// the record: the workspace's member devices.
     pub readers: BTreeSet<[u8; 32]>,
     /// Each channel whose record the caller can name, and the devices that
     /// may not read that record (possibly none).
@@ -679,7 +678,6 @@ impl StatePeer {
             admission: None,
             admissions: vec![],
             delegate: None,
-            watching: false,
         };
         self.put_identity(doc, &identity, key, now)
     }
@@ -3940,6 +3938,3 @@ mod sharing_tests;
 #[cfg(test)]
 #[path = "state/superseded_checkpoint_tests.rs"]
 mod superseded_checkpoint_tests;
-#[cfg(test)]
-#[path = "state/watching_tests.rs"]
-mod watching_tests;

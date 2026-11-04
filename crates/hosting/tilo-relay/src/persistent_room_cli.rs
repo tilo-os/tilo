@@ -6,10 +6,11 @@
 //! the workspace is public anyway. Each guest is pre-admitted as their own
 //! person; the operator decides who may join.
 //!
-//! Visitors who only watch (a page embedding the workspace) are not members one
-//! by one: they all act as the workspace's one spectator person, a Viewer whose
-//! root this host also keeps, with short-lived device certificates that
-//! carry no capabilities.
+//! A page embedding the workspace (a visitor) is a member like any other, with
+//! the role its operator gives visitors (a Viewer unless they say otherwise).
+//! Its visitors are not members one by one: they all act as the workspace's one
+//! visitor person, whose root this host also keeps, each page carrying a
+//! short-lived device certificate of that person.
 
 #![allow(
     clippy::similar_names,
@@ -44,16 +45,43 @@ pub(crate) const SECRET_APP: &str = "so.tilo.relay";
 /// How long a pre-admitted invitation stays redeemable: a visitor who
 /// closes the tab leaves nothing redeemable behind for long.
 pub(crate) const PRE_ADMISSION_SECS: u64 = 600;
-/// How long a spectator's device certificate is valid. The embedding page
-/// asks again on its next load; nothing about a spectator is kept.
-pub(crate) const SPECTATOR_CERT_SECS: u64 = 3600;
-/// The member-list name of the spectator person.
-pub(crate) const SPECTATOR_NAME: &str = "Watching visitors";
+/// How long a visiting page's device certificate is valid. The embedding page
+/// asks again on its next load, and its device's governance row goes once the
+/// certificate has expired.
+pub(crate) const VISITOR_CERT_SECS: u64 = 3600;
+/// The member-list name of the visitor person, as the workspace first records
+/// it; a recorded name stays as it was recorded.
+pub(crate) const VISITOR_NAME: &str = "Watching visitors";
 const MINUTE_MS: u64 = 60 * 1000;
 /// Guests pruned in one governance change: the workspace is held while it
 /// commits, and each removal costs time in proportion to its members.
 const PRUNE_BATCH: usize = 100;
 const NS_PER_SEC: u64 = 1_000_000_000;
+
+/// The role a workspace's visitors hold there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum VisitorRole {
+    /// Reads, writes nothing.
+    #[default]
+    Viewer,
+    /// Reads and comments.
+    Commenter,
+    /// Reads and writes.
+    Editor,
+    /// Reads, writes and moderates.
+    Moderator,
+}
+
+impl VisitorRole {
+    const fn member(self) -> tilo_peer_state::join::MemberRole {
+        match self {
+            Self::Viewer => tilo_peer_state::join::MemberRole::Viewer,
+            Self::Commenter => tilo_peer_state::join::MemberRole::Commenter,
+            Self::Editor => tilo_peer_state::join::MemberRole::Editor,
+            Self::Moderator => tilo_peer_state::join::MemberRole::Moderator,
+        }
+    }
+}
 
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PersistentArgs {
@@ -118,11 +146,11 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
-    /// Visitors watching the workspace at once. Each watching page reads the
-    /// workspace as its spectator person and writes nothing; past this many the
-    /// relay refuses the next one's subscription.
-    #[arg(long = "max-spectators", default_value_t = 1000)]
-    pub max_spectators: usize,
+    /// The role a visitor to the workspace holds. A page embedding the
+    /// workspace acts as the visitor person, so this is what it may do there:
+    /// a viewer reads and writes nothing.
+    #[arg(long = "visitor-role", value_enum, default_value_t = VisitorRole::Viewer)]
+    pub visitor_role: VisitorRole,
     /// A person (user public key, hex) made an Owner of the workspace once they
     /// joined; repeatable. A key removed from the list loses the role.
     #[arg(long = "owner", value_name = "HEX")]
@@ -259,7 +287,7 @@ pub(crate) struct PersistentRoom {
     pub workspaces: Workspaces,
     pub workspace: String,
     pub root: SigningKey,
-    pub spectator: SigningKey,
+    pub visitor: SigningKey,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
     /// The Discord connector a bridge runs on, which a sign-in with Discord
@@ -318,36 +346,41 @@ pub(crate) fn check_stored_root(
     Ok(())
 }
 
-/// The spectator person's root: generated at the workspace's first start and
+/// The secret store item the visitor person's root is kept under. It keeps the
+/// name it was first stored under, so a workspace already serving visitors
+/// keeps the same person.
+const VISITOR_ROOT_ITEM: &str = "spectator-root";
+
+/// The visitor person's root: generated at the workspace's first start and
 /// kept beside the owner root, so every restart serves the same person.
-pub(crate) fn spectator_root(
+pub(crate) fn visitor_root(
     store: &tilo_secrets::SecretStore,
     workspace: &str,
 ) -> anyhow::Result<SigningKey> {
-    let item = store.item("spectator-root", workspace);
+    let item = store.item(VISITOR_ROOT_ITEM, workspace);
     if let Some(stored) = item
         .get_blocking()
-        .context("read the spectator root from the host's secret store")?
+        .context("read the visitor root from the host's secret store")?
     {
         let seed = <[u8; 32]>::try_from(stored.expose())
-            .map_err(|_| anyhow::anyhow!("the stored spectator root is corrupt"))?;
+            .map_err(|_| anyhow::anyhow!("the stored visitor root is corrupt"))?;
         return Ok(SigningKey::from_bytes(&seed));
     }
     let root = SigningKey::from_bytes(&rand::random());
     item.put_blocking(&root.to_bytes())
-        .context("keep the spectator root in the host's secret store")?;
+        .context("keep the visitor root in the host's secret store")?;
     Ok(root)
 }
 
 /// A certificate for one watching browser's in-memory device key: the
-/// spectator person, valid for [`SPECTATOR_CERT_SECS`], no capabilities.
-pub(crate) fn spectator_cert(
-    spectator: &SigningKey,
+/// visitor person, valid for [`VISITOR_CERT_SECS`], no capabilities.
+pub(crate) fn visitor_cert(
+    visitor: &SigningKey,
     device_public_key: [u8; 32],
     now_ns: u64,
 ) -> anyhow::Result<DeviceCert> {
     let mut cert = DeviceCert {
-        user_public_key: spectator.verifying_key().to_bytes(),
+        user_public_key: visitor.verifying_key().to_bytes(),
         device_public_key,
         device_label: "Watching visitor".into(),
         capabilities: DeviceCapabilities {
@@ -359,10 +392,10 @@ pub(crate) fn spectator_cert(
             can_administer_devices: false,
         },
         issued_at_ns: now_ns,
-        expires_at_ns: Some(now_ns.saturating_add(SPECTATOR_CERT_SECS * NS_PER_SEC)),
+        expires_at_ns: Some(now_ns.saturating_add(VISITOR_CERT_SECS * NS_PER_SEC)),
         signature: [0; 64],
     };
-    sign_device_cert(&mut cert, spectator).context("sign a spectator certificate")?;
+    sign_device_cert(&mut cert, visitor).context("sign a visitor certificate")?;
     Ok(cert)
 }
 
@@ -445,7 +478,7 @@ fn is_moderator(member: &tilo_peer_state::GovernedMember) -> bool {
     member.role == tilo_peer_state::join::MemberRole::Moderator
 }
 
-/// Guests (not declared, not an administrator, not the spectator person)
+/// Guests (not declared, not an administrator, not the visitor person)
 /// whose last session is older than `days`. A member with no record yet is
 /// recorded as seen now by the caller and never pruned on the same pass.
 pub(crate) fn idle_guests(
@@ -645,7 +678,7 @@ struct Admitter {
     host_cert: DeviceCert,
     root: SigningKey,
     workspace: String,
-    spectator: [u8; 32],
+    visitor: [u8; 32],
     removals: Removals,
     /// The door lets in only the workspace's members (`--members-only`).
     members_only: bool,
@@ -658,7 +691,7 @@ impl Admitter {
             host_cert: context.host_cert.clone(),
             root: context.root.clone(),
             workspace: context.workspace.clone(),
-            spectator: context.spectator.verifying_key().to_bytes(),
+            visitor: context.visitor.verifying_key().to_bytes(),
             removals,
             members_only,
         }
@@ -786,7 +819,7 @@ impl Removals {
 }
 
 /// Pre-admissions the workspace answers at once. The workspace service waits a few
-/// seconds for each answer before it turns the visitor into a spectator;
+/// seconds for each answer before it turns the visitor away;
 /// answered one at a time, a launch's crowd queued behind each other's
 /// writes, while side by side the relay writes everything staged meanwhile
 /// in one go. Past this many, the next commands wait their turn.
@@ -808,8 +841,8 @@ async fn answer_pre_admit(
     let (Some(user), Some(digest)) = (hex32(&user_public_key), hex32(&token_sha256)) else {
         return refused("the guest key and token digest must be 64 hex characters".into());
     };
-    if user == context.spectator {
-        return refused("the spectator person joins no other way".into());
+    if user == context.visitor {
+        return refused("the visitor person joins no other way".into());
     }
     let members = match context.workspaces.summary(&context.workspace).await {
         Ok(summary) => summary.members,
@@ -1092,36 +1125,45 @@ fn publish_invite_mail(asked: tilo_relay::workspaces::WaitListMail, mail_acks: &
     }
 }
 
-fn answer_spectate(context: &PersistentRoom, device_public_key: String) -> OperatorEvent {
-    let Some(device) = hex32(&device_public_key) else {
-        return OperatorEvent::SpectateRefused {
-            device_public_key,
-            reason: "the device key must be 64 hex characters".into(),
-        };
+/// Certify one visiting page's in-memory device as the visitor person's, and
+/// admit it to the workspace as that member's device, the way a member's second
+/// desktop is admitted. Its row goes once the certificate has expired.
+async fn answer_spectate(context: &PersistentRoom, device_public_key: String) -> OperatorEvent {
+    let refused = |reason: String| OperatorEvent::SpectateRefused {
+        device_public_key: device_public_key.clone(),
+        reason,
     };
-    match spectator_cert(&context.spectator, device, tilo_clock::unix_now_ns()) {
-        Ok(certificate) => OperatorEvent::SpectatorCertified {
-            device_public_key,
-            certificate,
-        },
-        Err(error) => OperatorEvent::SpectateRefused {
-            device_public_key,
-            reason: format!("{error:#}"),
-        },
+    let Some(device) = hex32(&device_public_key) else {
+        return refused("the device key must be 64 hex characters".into());
+    };
+    let certificate = match visitor_cert(&context.visitor, device, tilo_clock::unix_now_ns()) {
+        Ok(certificate) => certificate,
+        Err(error) => return refused(format!("{error:#}")),
+    };
+    if let Err(error) = context
+        .workspaces
+        .admit_member_device(&context.workspace, &certificate)
+        .await
+    {
+        return refused(format!("{error}"));
+    }
+    OperatorEvent::SpectatorCertified {
+        device_public_key,
+        certificate,
     }
 }
 
-/// Make the spectator person a Viewer member, through the same
-/// pre-admission and join steps a guest's browser takes, so it is an
-/// ordinary member of the workspace's list.
-async fn ensure_spectator_member(
+/// Make the visitor person a member, through the same pre-admission and join
+/// steps a guest's browser takes, so it is an ordinary member of the
+/// workspace's list; [`settle_visitor_role`] settles the role it holds there.
+async fn ensure_visitor_member(
     workspaces: &Workspaces,
     host_cert: &DeviceCert,
     root: &SigningKey,
     workspace: &str,
-    spectator: &SigningKey,
+    visitor: &SigningKey,
 ) -> anyhow::Result<()> {
-    let person = spectator.verifying_key().to_bytes();
+    let person = visitor.verifying_key().to_bytes();
     let summary = workspaces
         .summary(workspace)
         .await
@@ -1141,14 +1183,14 @@ async fn ensure_spectator_member(
         workspace,
         person,
         token_digest(&token),
-        SPECTATOR_NAME,
+        VISITOR_NAME,
         WorkspaceRole::Viewer,
     )
     .await
-    .context("pre-admit the spectator person")?;
+    .context("pre-admit the visitor person")?;
     let device = SigningKey::from_bytes(&rand::random());
-    let cert = spectator_cert(
-        spectator,
+    let cert = visitor_cert(
+        visitor,
         device.verifying_key().to_bytes(),
         tilo_clock::unix_now_ns(),
     )?;
@@ -1161,21 +1203,46 @@ async fn ensure_spectator_member(
         .await
     {
         JoinReply::Challenge { challenge } => challenge,
-        other => bail!("the spectator person's join was answered {other:?}"),
+        other => bail!("the visitor person's join was answered {other:?}"),
     };
     let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
     match workspaces
         .page_join(JoinStep::ProvePreAdmitted {
             challenge,
             signature,
-            name: SPECTATOR_NAME.into(),
+            name: VISITOR_NAME.into(),
             token: token.to_vec(),
         })
         .await
     {
         JoinReply::Admitted { .. } => Ok(()),
-        other => bail!("the spectator person was not admitted: {other:?}"),
+        other => bail!("the visitor person was not admitted: {other:?}"),
     }
+}
+
+/// Set the visitor person to the role the operator chose, as every start
+/// settles it: a role already held writes nothing.
+async fn settle_visitor_role(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host_cert: &DeviceCert,
+    visitor: &SigningKey,
+    role: VisitorRole,
+) -> anyhow::Result<()> {
+    let person = visitor.verifying_key().to_bytes();
+    workspaces
+        .set_member_role(
+            workspace,
+            host_cert,
+            SetMemberRoleRequest {
+                request_id: request_id(b"visitor", &person, tilo_clock::unix_now_ns()),
+                user_public_key: person,
+                role: role.member(),
+            },
+        )
+        .await
+        .map(drop)
+        .map_err(|error| anyhow::anyhow!("settle the visitor person's role: {error}"))
 }
 
 async fn apply_role_changes(
@@ -1559,27 +1626,16 @@ pub(crate) async fn run(
         .set_layout(&workspace, persistent.layout)
         .await
         .map_err(|error| anyhow::anyhow!("settle the workspace's layout scope: {error}"))?;
-    let spectator = spectator_root(&store, &workspace)?;
-    ensure_spectator_member(&workspaces, &host_cert, &root, &workspace, &spectator).await?;
-    let workspace_id = workspaces
-        .summary(&workspace)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?
-        .workspace_id;
-    hosted
-        .relay
-        .admit_spectators(
-            workspace_id,
-            tilo_relay::Spectators {
-                root: spectator.verifying_key().to_bytes(),
-                seats: persistent.max_spectators,
-                // Every visitor may join this workspace as a guest, and so read
-                // its channels: one who only watches may read them too.
-                public: true,
-            },
-        )
-        .await
-        .context("let visitors watch the workspace")?;
+    let visitor = visitor_root(&store, &workspace)?;
+    ensure_visitor_member(&workspaces, &host_cert, &root, &workspace, &visitor).await?;
+    settle_visitor_role(
+        &workspaces,
+        &workspace,
+        &host_cert,
+        &visitor,
+        persistent.visitor_role,
+    )
+    .await?;
     seed_apps(
         &workspaces,
         &workspace,
@@ -1711,7 +1767,7 @@ pub(crate) async fn run(
         workspaces,
         workspace,
         root,
-        spectator,
+        visitor,
         host_cert,
         web,
         discord,
@@ -1872,7 +1928,7 @@ async fn reconcile_roles(
 async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
-    spectator: [u8; 32],
+    visitor: [u8; 32],
     removals: &Removals,
     last_seen: &mut BTreeMap<[u8; 32], u64>,
 ) -> anyhow::Result<()> {
@@ -1883,7 +1939,7 @@ async fn prune_idle(
     }
     let (owners, moderators) = governance.current();
     let mut keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
-    keep.insert(spectator);
+    keep.insert(visitor);
     let idle = idle_guests(
         &members,
         last_seen,
@@ -1949,22 +2005,15 @@ impl OnlineWatch {
         &mut self,
         context: &PersistentRoom,
         governance: &Governance,
-        spectator: [u8; 32],
+        visitor: [u8; 32],
         last_seen: &mut BTreeMap<[u8; 32], u64>,
     ) -> anyhow::Result<()> {
         let sessions = context.web.online_users();
-        let people = sessions.keys().filter(|user| **user != spectator).count();
-        // Seated ones only: a page refused for want of a seat keeps
-        // its web session open while it waits, but watches nothing.
-        let spectators = context
-            .workspaces
-            .seated_spectators(&context.workspace)
-            .await
-            .unwrap_or(0);
+        let people = sessions.keys().filter(|user| **user != visitor).count();
         // Who of the members is here, for the site's directory.
         let here: std::collections::BTreeSet<[u8; 32]> = sessions
             .keys()
-            .filter(|user| **user != spectator)
+            .filter(|user| **user != visitor)
             .copied()
             .collect();
         let (faces, _, members) = context
@@ -1974,9 +2023,8 @@ impl OnlineWatch {
             .unwrap_or_default();
         let online = OperatorEvent::Online {
             people: u32::try_from(people).unwrap_or(u32::MAX),
-            spectators: u32::try_from(spectators).unwrap_or(u32::MAX),
             here: faces,
-            // The spectator person is a member nobody counts.
+            // The visitor person is a member nobody counts.
             members: members.saturating_sub(1),
             online: here.iter().map(hex::encode).collect(),
         };
@@ -2021,7 +2069,7 @@ async fn serve_operator(
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
-    let spectator = context.spectator.verifying_key().to_bytes();
+    let visitor = context.visitor.verifying_key().to_bytes();
     let removals = Removals::load(
         governance.removals_file(),
         &summary(context).await?.members,
@@ -2068,9 +2116,9 @@ async fn serve_operator(
                 }
             }
             _ = online_tick.tick() => {
-                presence.observe(context, governance, spectator, &mut last_seen).await?;
+                presence.observe(context, governance, visitor, &mut last_seen).await?;
             }
-            _ = prune_tick.tick() => prune_idle(context, governance, spectator, &removals, &mut last_seen).await?,
+            _ = prune_tick.tick() => prune_idle(context, governance, visitor, &removals, &mut last_seen).await?,
             changed = changes.recv() => {
                 match changed {
                     Ok(workspace) if workspace != context.workspace => continue,
@@ -2090,7 +2138,7 @@ async fn serve_operator(
                     admitting.spawn(answer_pre_admit(admitter.clone(), user_public_key, token_sha256, label, role));
                 }
                 Some(Ok(OperatorCommand::Spectate { device_public_key })) => {
-                    println!("{}", answer_spectate(context, device_public_key).to_line());
+                    println!("{}", answer_spectate(context, device_public_key).await.to_line());
                 }
                 Some(Ok(command @ (OperatorCommand::WaitList { .. }
                 | OperatorCommand::Unlist { .. }
@@ -2186,29 +2234,29 @@ mod tests {
     }
 
     #[test]
-    fn the_spectator_root_is_made_once_and_kept() {
+    fn the_visitor_root_is_made_once_and_kept() {
         let store = store();
-        let first = spectator_root(&store, "workspace-a").unwrap();
+        let first = visitor_root(&store, "workspace-a").unwrap();
         assert_eq!(
-            spectator_root(&store, "workspace-a").unwrap().to_bytes(),
+            visitor_root(&store, "workspace-a").unwrap().to_bytes(),
             first.to_bytes()
         );
         assert_ne!(
-            spectator_root(&store, "workspace-b").unwrap().to_bytes(),
+            visitor_root(&store, "workspace-b").unwrap().to_bytes(),
             first.to_bytes()
         );
     }
 
     #[test]
-    fn a_spectator_certificate_lasts_an_hour_and_carries_no_capabilities() {
-        let spectator = SigningKey::from_bytes(&[0x33; 32]);
-        let cert = spectator_cert(&spectator, [4; 32], 1_000).unwrap();
+    fn a_visitor_certificate_lasts_an_hour_and_carries_no_capabilities() {
+        let visitor = SigningKey::from_bytes(&[0x33; 32]);
+        let cert = visitor_cert(&visitor, [4; 32], 1_000).unwrap();
         tilo_user_identity::verify_device_cert_at(&cert, 1_000).unwrap();
-        assert_eq!(cert.user_public_key, spectator.verifying_key().to_bytes());
+        assert_eq!(cert.user_public_key, visitor.verifying_key().to_bytes());
         assert_eq!(cert.device_public_key, [4; 32]);
         assert_eq!(
             cert.expires_at_ns,
-            Some(1_000 + SPECTATOR_CERT_SECS * NS_PER_SEC)
+            Some(1_000 + VISITOR_CERT_SECS * NS_PER_SEC)
         );
         let caps = &cert.capabilities;
         assert!(
@@ -2221,7 +2269,7 @@ mod tests {
         assert!(
             tilo_user_identity::verify_device_cert_at(
                 &cert,
-                1_000 + SPECTATOR_CERT_SECS * NS_PER_SEC + 1
+                1_000 + VISITOR_CERT_SECS * NS_PER_SEC + 1
             )
             .is_err()
         );
@@ -2332,7 +2380,7 @@ mod tests {
             host_cert,
             root,
             workspace,
-            spectator: [9; 32],
+            visitor: [9; 32],
             removals,
             members_only: false,
         };

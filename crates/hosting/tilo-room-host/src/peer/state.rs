@@ -178,8 +178,7 @@ impl StateSource {
         self.authorized_for(runtime, WorkspaceOperation::State)
     }
     /// Whether this source may take a frame of its own into the workspace now,
-    /// on the plane `op`: a spectator holds the workspace's state, and never
-    /// publishes into it, though it does ask its records' channels for access.
+    /// on the plane `op`.
     fn publishes(
         &self,
         runtime: &crate::workspace::WorkspaceRuntime,
@@ -798,7 +797,7 @@ pub(super) fn refused_reason(
     match workspace_access::decide(runtime, trust, peer, op) {
         workspace_access::Decision::Deny(reason) => reason.reason(),
         workspace_access::Decision::Admit | workspace_access::Decision::AdmitAndEnrol => {
-            unpublished(runtime, peer)
+            unpublished()
         }
     }
 }
@@ -811,13 +810,6 @@ fn trace_all(envelopes: &[Envelope], step: &str) {
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace.
-pub(super) fn unpublished(
-    runtime: &crate::workspace::WorkspaceRuntime,
-    peer: &AuthenticatedPeer,
-) -> &'static str {
-    if workspace_access::watches_only(runtime, peer) {
-        workspace_access::DenyReason::WatchOnly.reason()
-    } else {
-        "workspace membership changed"
-    }
+pub(super) fn unpublished() -> &'static str {
+    "workspace membership changed"
 }

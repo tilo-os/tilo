@@ -202,7 +202,6 @@ impl StatePeer {
                     admission: None,
                     admissions: vec![],
                     delegate: Some(row),
-                    watching: false,
                 }
             }
             (None, None) => return Err("a new bot needs its device and delegation".into()),
@@ -324,7 +323,6 @@ impl StatePeer {
                     admission: None,
                     admissions: vec![],
                     delegate: Some(fresh),
-                    watching: false,
                 },
             ]
         };
@@ -721,7 +719,6 @@ impl StatePeer {
             admission: None,
             admissions: vec![],
             delegate: Some(fresh),
-            watching: false,
         };
         self.put_bot_change(
             &BotWrite {

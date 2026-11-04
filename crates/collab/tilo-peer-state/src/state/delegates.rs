@@ -278,7 +278,6 @@ impl PeerGovernanceMut<'_> {
                 admission: None,
                 admissions: vec![],
                 delegate: Some(row),
-                watching: false,
             },
             Some(prior) if prior.device_cert != cert => {
                 return Err("certificate conflict".into());

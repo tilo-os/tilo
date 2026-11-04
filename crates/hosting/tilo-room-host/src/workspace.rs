@@ -122,10 +122,6 @@ pub struct WorkspaceRuntime {
     /// `membership`, so an ungoverned sibling device under the same root
     /// does not join.
     pub governed_user_roots: HashSet<[u8; 32]>,
-    /// Who may watch this workspace read-only without being one of its members,
-    /// when its host lets visitors watch it. Read only through
-    /// [`crate::workspace_access::decide`].
-    pub spectators: Option<crate::workspace_access::Spectators>,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     pub outbound_leases: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
@@ -379,7 +375,6 @@ impl WorkspaceRuntime {
             loaded_generation: None,
             admission,
             governed_user_roots,
-            spectators: None,
             subscribers: HashMap::new(),
             attached_hosts: HashSet::new(),
             attach_sessions: HashMap::new(),

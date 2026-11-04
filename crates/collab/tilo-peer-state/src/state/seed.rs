@@ -99,7 +99,6 @@ pub fn seed_workspace(
             admission: None,
             admissions: vec![],
             delegate: None,
-            watching: false,
         };
         doc.put(
             &identities,

@@ -46,9 +46,6 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
         Decision::Deny(DenyReason::NotTheGovernor) => 's',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
-        Decision::Deny(DenyReason::WatchOnly) => 'W',
-        Decision::Deny(DenyReason::SpectatorsFull) => 'S',
-        Decision::Deny(DenyReason::SealedFromSpectators) => 'P',
     }
 }
 
@@ -56,8 +53,6 @@ struct Relay {
     owner_root: SigningKey,
     owner: [u8; 32],
     bob: [u8; 32],
-    /// The root of a public workspace's spectator person, a member of it.
-    spectator: [u8; 32],
     revocations: RwLock<RevocationList>,
     policy: RwLock<TrustPolicy>,
     agents: AgentRegistry,
@@ -68,18 +63,15 @@ impl Relay {
         let owner_root = SigningKey::from_bytes(&[1; 32]);
         let owner = owner_root.verifying_key().to_bytes();
         let bob = SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes();
-        let spectator = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
-        // The live handshake policy: the owner, and Bob and the spectator
-        // person, whose roots a governed workspace on this relay admits. Carol is
-        // trusted by nothing.
+        // The live handshake policy: the owner and Bob, whose roots a governed
+        // workspace on this relay admits. Carol is trusted by nothing.
         let policy = TrustPolicy::AllowList {
-            users: vec![hex::encode(owner), hex::encode(bob), hex::encode(spectator)],
+            users: vec![hex::encode(owner), hex::encode(bob)],
         };
         Self {
             owner_root,
             owner,
             bob,
-            spectator,
             revocations: RwLock::new(RevocationList::new()),
             policy: RwLock::new(policy),
             agents: Arc::default(),
@@ -178,27 +170,11 @@ struct Case {
 )]
 fn decide_matrix() {
     let relay = Relay::new();
-    let (owner, bob, carol, spectator) = (relay.owner, relay.bob, [3; 32], relay.spectator);
+    let (owner, bob, carol) = (relay.owner, relay.bob, [3; 32]);
     let listed = |device: [u8; 32]| -> Setup {
         Box::new(move |runtime, _| runtime.membership.devices.push(device))
     };
     let none = || -> Setup { Box::new(|_, _| {}) };
-    let watched = move |runtime: &mut WorkspaceRuntime| {
-        runtime.governed_user_roots.insert(spectator);
-        runtime.spectators = Some(Spectators {
-            root: spectator,
-            seats: 2,
-            public: false,
-        });
-    };
-    let public = move |runtime: &mut WorkspaceRuntime| {
-        runtime.governed_user_roots.insert(spectator);
-        runtime.spectators = Some(Spectators {
-            root: spectator,
-            seats: 2,
-            public: true,
-        });
-    };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
     // OwnChannelKeys, DelegateMembership, Publish, ChannelAccess
     let cases = vec![
@@ -339,84 +315,6 @@ fn decide_matrix() {
             expected: ["NNNNNNNNsdNN", "NNNNNNNNsdNN", "NNNNNNNNsdNN"],
         },
         Case {
-            name: "spectator device",
-            peer: peer(spectator, [80; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| watched(runtime)),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
-        },
-        Case {
-            name: "spectator device the room lists",
-            peer: peer(spectator, [81; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                watched(runtime);
-                runtime.membership.devices.push([81; 32]);
-            }),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
-        },
-        Case {
-            name: "spectator device whose certificate expired",
-            peer: peer(spectator, [82; 32], false, Some(NOW)),
-            setup: Box::new(move |runtime, _| watched(runtime)),
-            expected: ["xxxxxxxxxxxx", "xxxxxxxxxxxx", "xxxxxxxxxxxx"],
-        },
-        Case {
-            name: "spectator device of a public room, before it holds a seat",
-            peer: peer(spectator, [85; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| public(runtime)),
-            expected: ["AAAWWWWWsdWA", "AAAWWWWWsdWA", "AAAWWWWWsdWA"],
-        },
-        Case {
-            name: "seated spectator device of a public room",
-            peer: peer(spectator, [86; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                public(runtime);
-                runtime.state_sessions.insert(
-                    [86; 32],
-                    crate::peer::StateSession::for_test(peer(
-                        spectator,
-                        [86; 32],
-                        false,
-                        Some(NOW + 1),
-                    )),
-                );
-            }),
-            expected: ["AAAWWWWWsdWA", "AAAWWWWWsdWA", "AAAWWWWWsdWA"],
-        },
-        Case {
-            name: "seated spectator device of a room that is not public",
-            peer: peer(spectator, [87; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                watched(runtime);
-                runtime.state_sessions.insert(
-                    [87; 32],
-                    crate::peer::StateSession::for_test(peer(
-                        spectator,
-                        [87; 32],
-                        false,
-                        Some(NOW + 1),
-                    )),
-                );
-            }),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
-        },
-        Case {
-            name: "spectator device of a room that lets nobody watch",
-            peer: peer(spectator, [83; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                runtime.governed_user_roots.insert(spectator);
-            }),
-            expected: ["NNNNNNNNsdNN", "NNNNNNNNsdNN", "NNNNNNNNsdNN"],
-        },
-        Case {
-            name: "member device of a room others watch",
-            peer: peer(bob, [84; 32], false, None),
-            setup: Box::new(move |runtime, _| {
-                watched(runtime);
-                runtime.membership.devices.push([84; 32]);
-            }),
-            expected: ["AAAAAAAAsdAA", "AAAAAAAAsdAA", "AAAAAAAAsdAA"],
-        },
-        Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
@@ -448,7 +346,6 @@ fn decide_matrix() {
             runtime.governed_user_roots.clear();
             runtime.attached_hosts.clear();
             runtime.workspace_authority = None;
-            runtime.spectators = None;
             runtime.state_sessions.clear();
             runtime.admission = *mode;
             (case.setup)(&mut runtime, &relay);
@@ -473,90 +370,6 @@ fn decide_matrix() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-#[test]
-fn a_spectator_subscribes_only_while_a_seat_is_free_and_keeps_its_own() {
-    let relay = Relay::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    runtime.spectators = Some(Spectators {
-        root: relay.spectator,
-        seats: 2,
-        public: true,
-    });
-    let watching = |device: u8| peer(relay.spectator, [device; 32], false, Some(NOW + 1));
-    let decide = |runtime: &WorkspaceRuntime, device: u8, op: WorkspaceOperation| {
-        decide_in(
-            WorkspaceFacts::current(runtime),
-            &relay.trust(),
-            &watching(device),
-            op,
-            NOW,
-        )
-    };
-    let watch = |runtime: &mut WorkspaceRuntime, device: u8| {
-        runtime.state_sessions.insert(
-            [device; 32],
-            crate::peer::StateSession::for_test(watching(device)),
-        );
-    };
-    // A member's session takes no spectator seat.
-    let member = peer(relay.owner, [10; 32], false, None);
-    runtime.membership.devices.push([10; 32]);
-    runtime
-        .state_sessions
-        .insert([10; 32], crate::peer::StateSession::for_test(member));
-    assert_eq!(
-        decide(&runtime, 90, WorkspaceOperation::Subscribe),
-        Decision::Admit
-    );
-    watch(&mut runtime, 90);
-    watch(&mut runtime, 91);
-    // Both seats taken: a third spectator may not subscribe, yet the two
-    // seated keep theirs when their subscription is audited.
-    assert_eq!(
-        decide(&runtime, 92, WorkspaceOperation::Subscribe),
-        Decision::Deny(DenyReason::SpectatorsFull)
-    );
-    assert!(!seated(&runtime, &watching(92)));
-    // Watching counts the seated two, not the member or the refused page.
-    assert_eq!(seated_spectators(&runtime), 2);
-    for seated_device in [90, 91] {
-        assert_eq!(
-            decide(&runtime, seated_device, WorkspaceOperation::Subscribe),
-            Decision::Admit
-        );
-        assert!(seated(&runtime, &watching(seated_device)));
-    }
-    // A member is never held back by the spectators' seats.
-    assert!(seated(&runtime, &peer(relay.owner, [11; 32], false, None)));
-    // A seat freed is the next spectator's.
-    runtime.state_sessions.remove(&[90; 32]);
-    assert_eq!(
-        decide(&runtime, 92, WorkspaceOperation::Subscribe),
-        Decision::Admit
-    );
-}
-
-#[test]
-fn a_spectator_is_a_recipient_of_host_authored_state_and_never_of_anything_else() {
-    let relay = Relay::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    runtime.spectators = Some(Spectators {
-        root: relay.spectator,
-        seats: 1,
-        public: true,
-    });
-    let spectator = peer(relay.spectator, [93; 32], false, Some(NOW + 1));
-    for op in OPS {
-        assert_eq!(
-            listed(WorkspaceFacts::current(&runtime), &spectator, op),
-            op.reads(),
-            "{op:?}"
-        );
-    }
 }
 
 #[test]

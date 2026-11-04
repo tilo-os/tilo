@@ -4,7 +4,6 @@
 
 use super::{
     Arc, AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, WorkspaceOperation,
-    workspace_access,
 };
 
 /// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live
@@ -31,14 +30,10 @@ pub(super) async fn handle_live_join(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused(UNSUBSCRIBED);
     };
-    let members = {
-        let mut runtime = ws.lock().await;
-        // A spectator neither shows nor sends a cursor.
-        if workspace_access::watches_only(&runtime, peer) {
-            return refused(workspace_access::DenyReason::WatchOnly.reason());
-        }
-        runtime.live_join(peer.device_public_key, workspace_id)
-    };
+    let members = ws
+        .lock()
+        .await
+        .live_join(peer.device_public_key, workspace_id);
     let Some(members) = members else {
         return refused(UNSUBSCRIBED);
     };
@@ -79,14 +74,8 @@ async fn subscription_refusal(
 /// Where `peer`'s calls in `workspace_id` are held: by this relay's workspace
 /// authority when it governs the workspace, else by the workspace it carries (a
 /// person's own workspace, synced across their devices through this host).
-/// None unless they subscribed to it, and none for a spectator, who takes
-/// no part in the workspace's calls.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the registry guard only lives for the lookup and the workspace guard for the answer read from it"
-)]
+/// None unless they subscribed to it.
 async fn call_host(
-    peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     workspace_id: u64,
@@ -100,13 +89,7 @@ async fn call_host(
         .await
         .get(&workspace_id)
         .cloned()?;
-    let authority = {
-        let runtime = ws.lock().await;
-        if workspace_access::watches_only(&runtime, peer) {
-            return None;
-        }
-        runtime.workspace_authority.clone()
-    };
+    let authority = ws.lock().await.workspace_authority.clone();
     match authority {
         Some(authority) => Some((authority.workspaces()?, authority.workspace().to_owned())),
         None => Some((
@@ -133,7 +116,7 @@ pub(super) async fn handle_voice(
         | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
-    let host = call_host(peer, session, subscribed, workspace_id).await;
+    let host = call_host(session, subscribed, workspace_id).await;
     Ok(match env {
         Envelope::VoiceCall {
             request, operation, ..
@@ -321,24 +304,6 @@ pub(super) async fn handle_presence(
         if !attached {
             wr.request_checkpoint(&peer.device_public_key);
         }
-        // A spectator's presence asks for its baseline: nobody sees it. In
-        // a public workspace it reads what members read, so it may also ask the
-        // workspace for the content those records reference.
-        if workspace_access::watches_only(&wr, peer) {
-            let reads = wr.spectators.is_some_and(|spectators| spectators.public);
-            let authority = wr.workspace_authority.clone();
-            drop(wr);
-            if reads && let Some(body) = asks {
-                answer_content(
-                    &ws,
-                    authority.as_ref(),
-                    workspace_id,
-                    (*session.own_device_public_key, peer.device_public_key),
-                    body,
-                );
-            }
-            return Ok(None);
-        }
         wr.fanout_presence(&peer.device_public_key, &env);
         let authority = wr.workspace_authority.clone();
         drop(wr);
@@ -357,8 +322,7 @@ pub(super) async fn handle_presence(
 
 /// Handle `RecordContentWant`: fan a member's request for content out to the
 /// workspace's other members, as presence was fanned out, and answer it here
-/// from what the host keeps ([`answer_content`]). A spectator's request
-/// nobody sees, as its presence was not.
+/// from what the host keeps ([`answer_content`]).
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
@@ -393,24 +357,16 @@ pub(super) async fn handle_content_want(
         return Ok(None);
     };
     let mut wr = ws.lock().await;
-    let watching = workspace_access::watches_only(&wr, peer);
-    if !watching {
-        wr.fanout_presence(&peer.device_public_key, &env);
-    }
-    // In a public workspace a spectator reads what members read, so it may also
-    // ask the workspace for the content those records reference.
-    let reads = !watching || wr.spectators.is_some_and(|spectators| spectators.public);
+    wr.fanout_presence(&peer.device_public_key, &env);
     let authority = wr.workspace_authority.clone();
     drop(wr);
-    if reads {
-        answer_content(
-            &ws,
-            authority.as_ref(),
-            workspace_id,
-            (*session.own_device_public_key, peer.device_public_key),
-            frame,
-        );
-    }
+    answer_content(
+        &ws,
+        authority.as_ref(),
+        workspace_id,
+        (*session.own_device_public_key, peer.device_public_key),
+        frame,
+    );
     Ok(None)
 }
 
@@ -493,10 +449,6 @@ pub(super) async fn route_record_content(
         return;
     };
     let runtime = ws.lock().await;
-    // A spectator hands no member content.
-    if workspace_access::watches_only(&runtime, peer) {
-        return;
-    }
     // A piece answering the host's own request is the host's to keep.
     let host = if to == *session.own_device_public_key {
         runtime

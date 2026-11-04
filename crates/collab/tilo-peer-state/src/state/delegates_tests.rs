@@ -521,7 +521,6 @@ fn identities_without_an_agent_keep_their_bytes() {
         admission: None,
         admissions: vec![],
         delegate: None,
-        watching: false,
     };
     let bytes = serde_json::to_string(&identity).unwrap();
     assert!(

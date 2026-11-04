@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     /// What a member seals in a channel opens with the content keys the node
-    /// reads for a spectator, also from a node that only finds the channel
+    /// reads for that channel, also from a node that only finds the channel
     /// on disk; a channel never created stays missing.
     #[cfg(any(feature = "agents", feature = "web"))]
     #[test]

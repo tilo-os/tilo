@@ -70,10 +70,11 @@ pub enum OperatorCommand {
         label: String,
         role: WorkspaceRole,
     },
-    /// Certify an in-memory browser device as the persistent workspace's one
-    /// read-only spectator person, so a page embedding the workspace can watch it
-    /// without minting a member per visitor. The child answers
-    /// [`OperatorEvent::SpectatorCertified`] or [`OperatorEvent::SpectateRefused`].
+    /// Certify an in-memory browser device as a device of the persistent
+    /// workspace's visitor person, so a page embedding the workspace acts
+    /// there with the role that person holds, without a member per visitor. The
+    /// child answers [`OperatorEvent::SpectatorCertified`] or
+    /// [`OperatorEvent::SpectateRefused`].
     Spectate {
         /// The browser's device key (hex).
         device_public_key: String,
@@ -217,7 +218,8 @@ pub enum OperatorEvent {
         #[serde(default, skip_serializing_if = "is_false")]
         invite_only: bool,
     },
-    /// The certificate for a [`OperatorCommand::Spectate`].
+    /// The certificate for a [`OperatorCommand::Spectate`]: a device of the
+    /// workspace's visitor person, admitted to the workspace like any member's.
     SpectatorCertified {
         /// The certified device key (hex).
         device_public_key: String,
@@ -233,10 +235,8 @@ pub enum OperatorEvent {
     },
     /// Who has an open browser session now.
     Online {
-        /// Distinct people (user roots), the spectator person excluded.
+        /// Distinct people (user roots), the visitor person excluded.
         people: u32,
-        /// Open spectator sessions.
-        spectators: u32,
         /// Some of the members online, for the site's directory of public
         /// workspaces (at most [`crate::directory::MAX_FACES`]).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -547,7 +547,6 @@ mod tests {
             },
             OperatorEvent::Online {
                 people: 3,
-                spectators: 9,
                 here: vec![crate::directory::Face {
                     user_public_key: "cd".repeat(32),
                     name: "Ada".into(),
@@ -668,13 +667,12 @@ mod tests {
         assert_eq!(
             OperatorEvent::Online {
                 people: 7,
-                spectators: 2,
                 here: Vec::new(),
                 members: 0,
                 online: Vec::new(),
             }
             .to_line(),
-            "tilo-room-operator {\"event\":\"online\",\"people\":7,\"spectators\":2}"
+            "tilo-room-operator {\"event\":\"online\",\"people\":7}"
         );
     }
 

@@ -10,42 +10,16 @@
 //! 2. An agent device acts only inside its live delegation.
 //! 3. A host this workspace is attached to is admitted on the planes that carry
 //!    its changes (subscribe, state, publish, replay), listed or not.
-//! 4. A device the workspace's spectator root certified only watches: it is
-//!    admitted on the read planes ([`WorkspaceOperation::reads`]) and refused on
-//!    every other, even where the workspace lists it, and it subscribes only
-//!    while one of the workspace's spectator seats is free ([`Spectators`]).
-//!    Asking a record's channel for access ([`WorkspaceOperation::ChannelAccess`])
-//!    is that device joining a channel's group like any other: in a public
-//!    workspace ([`Spectators::public`]) it is admitted, and the channel's own
-//!    readers then decide each record — the device is one the workspace records
-//!    as watching it, so it is a reader of the records no grant covers and is
-//!    withheld from every other. In any other workspace the request is refused
-//!    by name ([`DenyReason::SealedFromSpectators`]).
-//! 5. An exact member device — within any pending replacement's ceiling — or
+//! 4. An exact member device — within any pending replacement's ceiling — or
 //!    a device of a user root the workspace's signed authority admits is admitted.
-//! 6. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
+//! 5. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
 //!    owner's own devices are admitted, and enrolled where the plane enrols.
-//! 7. Anything else is not a member.
+//! 6. Anything else is not a member.
 //!
-//! Spectators are the visitors of a public workspace who only watch it: a page
-//! embedding the workspace. They are not members one by one; they all act as one
-//! person, a member of the workspace whose root the host keeps and whose short-
-//! lived certificates carry no capabilities. Their devices come and go
-//! with page loads, so the workspace names the spectator root and a number of
-//! seats instead of each device. A spectator reads what any subscriber is
-//! sent: the workspace's retained state, its live plane and its presence. It
-//! never writes: no change, commit, presence, record content, compaction,
-//! live or voice frame and no action ([`WorkspaceOperation::Publish`] and every
-//! plane that is no read). In a public workspace a visitor that only watches
-//! reads the workspace's public records too, its sealed ones included: its
-//! device joins each channel as a watching device of the workspace, and the
-//! channel hands it the keys its group's process gives every member
-//! ([`tilo_peer_state::PeerGovernanceMut::admit_watching_device`]). What a grant
-//! keeps from some of the room stays sealed from it
-//! ([`tilo_peer_state::PeerGovernance::withheld_record_readers`]). In a workspace
-//! that is not public a key opens a channel only for the devices its record's
-//! readers name, so a visitor that only watches is told so by name
-//! ([`DenyReason::SealedFromSpectators`]) and is handed no key.
+//! A public workspace is no exception to the rule: whoever visits it is a
+//! member of it with the role its owner gave them, and every device certified
+//! by that member's root is that member's device, admitted to the channels its
+//! records take part in like any other.
 //!
 //! One plane is not a workspace membership at all:
 //! [`WorkspaceOperation::OwnChannelKeys`], the relay's own application
@@ -134,9 +108,7 @@ pub enum WorkspaceOperation {
     Live,
     /// A device asking one of the workspace's channels for access: the plane
     /// its own key package arrives on (see the module documentation). The
-    /// channel's group admits the devices its record's readers name; no
-    /// membership, enrolment or seat admits a device here beyond the one the
-    /// workspace records for a device that only watches a public one.
+    /// channel's group admits the devices its record's readers name.
     ChannelAccess,
     /// Discovering the workspace's content endpoints.
     ContentDiscovery,
@@ -173,12 +145,6 @@ impl WorkspaceOperation {
             self,
             Self::Subscribe | Self::State | Self::Publish | Self::Replay | Self::ChannelAccess
         )
-    }
-
-    /// Whether this plane only reads the workspace: the planes a spectator is
-    /// admitted on.
-    pub(crate) const fn reads(self) -> bool {
-        matches!(self, Self::Subscribe | Self::State | Self::Replay)
     }
 
     const fn owner_device(self) -> OwnerDevice {
@@ -233,13 +199,6 @@ pub enum DenyReason {
     AgentOutOfScope,
     /// Not a member of the workspace.
     NotAMember,
-    /// A spectator, who only reads the workspace, asked to write or act in it.
-    WatchOnly,
-    /// A spectator subscribing while every spectator seat is taken.
-    SpectatorsFull,
-    /// Channel access asked for by a device that only watches, in a workspace
-    /// that is not public: a key opens a channel for its record's readers alone.
-    SealedFromSpectators,
     /// Channel keys asked for by a device other than the one governing the
     /// workspace on this relay.
     NotTheGovernor,
@@ -261,11 +220,6 @@ impl DenyReason {
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
             Self::NotAMember => "device not in workspace membership",
-            Self::WatchOnly => "a spectator only watches this room",
-            Self::SpectatorsFull => "too many people are watching this room",
-            Self::SealedFromSpectators => {
-                "this workspace opens a record's channel only to the devices its readers name, not to those who only watch"
-            }
             Self::NotTheGovernor => {
                 "only the device that governs this room here holds its channels' keys"
             }
@@ -390,59 +344,6 @@ impl RelayTrust<'_> {
     }
 }
 
-/// Who may watch a workspace without being one of its members: every device the
-/// spectator root certified, up to `seats` subscribed at once. Set by the
-/// workspace's host for that workspace only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Spectators {
-    /// The spectator person's root: what signs each watching device's
-    /// certificate.
-    pub root: [u8; 32],
-    /// Spectator devices subscribed to the workspace at once.
-    pub seats: usize,
-    /// Anyone may join the workspace as a guest, and so be admitted to the
-    /// channels its membership reads; whoever only watches reads its public
-    /// records with the device the workspace records as watching it.
-    pub public: bool,
-}
-
-/// Whether `peer` only watches `runtime`'s workspace: its certificate is the
-/// workspace's spectator root's (rule step 5). A change or commit asks [`decide`]
-/// with [`WorkspaceOperation::Publish`], which refuses such a device. Frames that
-/// ride on a live subscription without a decision of their own (presence,
-/// record content, a compaction, joining the live plane, voice) ask this:
-/// a spectator's subscription carries none of its own.
-pub(crate) fn watches_only(runtime: &WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
-    runtime
-        .spectators
-        .is_some_and(|spectators| spectators.root == peer.user_public_key)
-}
-
-/// Whether `peer` may hold a spectator seat in `runtime`'s workspace: it is no
-/// spectator, it holds one already (a live subscription), or one is free.
-/// Asked again, under the workspace's lock, as the subscription is registered,
-/// so two spectators subscribing at once cannot both take the last seat.
-pub(crate) fn seated(runtime: &WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
-    let Some(spectators) = runtime.spectators.filter(|_| watches_only(runtime, peer)) else {
-        return true;
-    };
-    runtime.state_sessions.contains_key(&peer.device_public_key)
-        || seated_spectators(runtime) < spectators.seats
-}
-
-/// The spectators holding a seat in `runtime`'s workspace: their live
-/// subscriptions. A page refused for want of a seat holds none, so it is
-/// not counted as watching.
-pub(crate) fn seated_spectators(runtime: &WorkspaceRuntime) -> usize {
-    runtime.spectators.map_or(0, |spectators| {
-        runtime
-            .state_sessions
-            .values()
-            .filter(|session| session.peer.user_public_key == spectators.root)
-            .count()
-    })
-}
-
 /// The workspace facts [`decide`] reads.
 #[derive(Clone, Copy)]
 pub(crate) struct WorkspaceFacts<'a> {
@@ -513,9 +414,6 @@ pub(crate) fn listed(
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
 ) -> bool {
-    if watches_only(workspace.runtime, peer) {
-        return op.reads();
-    }
     (op.carries_changes() && workspace.runtime.attached(&peer.device_public_key))
         || workspace.lists(&peer.device_public_key)
 }
@@ -572,35 +470,6 @@ pub(crate) fn decide_in(
             Decision::Admit
         } else {
             Decision::Deny(DenyReason::NotADelegatedAgent)
-        };
-    }
-    if watches_only(workspace.runtime, peer) {
-        // Before membership: the device the spectator person joined with
-        // is listed, and must not write either. A watching page asks its
-        // records' channels for access like any device. In a public workspace
-        // it is answered by the channels themselves: the workspace admits its
-        // device as one that only watches (the governor writes the row), so a
-        // record no grant keeps from the workspace's members admits it and a
-        // record that is kept from some of them stays sealed from it. Anywhere
-        // else what members seal stays sealed from those who only watch, and it
-        // is told so by name.
-        if op == WorkspaceOperation::ChannelAccess {
-            return if workspace
-                .runtime
-                .spectators
-                .is_some_and(|spectators| spectators.public)
-            {
-                Decision::Admit
-            } else {
-                Decision::Deny(DenyReason::SealedFromSpectators)
-            };
-        }
-        return if !op.reads() {
-            Decision::Deny(DenyReason::WatchOnly)
-        } else if op == WorkspaceOperation::Subscribe && !seated(workspace.runtime, peer) {
-            Decision::Deny(DenyReason::SpectatorsFull)
-        } else {
-            Decision::Admit
         };
     }
     if listed(workspace, peer, op) {

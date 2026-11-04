@@ -916,12 +916,12 @@ async fn page_ask(
 }
 
 /// What the workspace's people see of one another through the private door once
-/// alice has a name: contacts without the spectator, a conversation listed
-/// only after a message, and the spectator refused. Returns the door.
+/// alice has a name: contacts, and a conversation listed only after a
+/// message. Returns the door.
 async fn people_keep_conversations(
     workspaces: &Workspaces,
     workspace: &str,
-    [alice, bob, watcher]: [&DeviceCert; 3],
+    [alice, bob]: [&DeviceCert; 2],
 ) -> PrivateProtocol {
     let door = PrivateProtocol::new(workspaces.clone());
     let ask = |cert: &DeviceCert, operation| {
@@ -940,16 +940,9 @@ async fn people_keep_conversations(
     let PrivateReply::Contacts(contacts) = ask(bob, PrivateOperation::Contacts).await else {
         panic!("contacts");
     };
-    let watcher_key_hex = hex::encode(watcher.user_public_key);
     assert!(contacts.iter().any(|contact| contact.public_key
         == hex::encode(alice.user_public_key)
         && contact.display_name.as_deref() == Some("Lucky Seal")));
-    assert!(
-        !contacts
-            .iter()
-            .any(|contact| contact.public_key == watcher_key_hex),
-        "the spectator is nobody's contact"
-    );
     let contact_of = |contacts: &[PrivateContact], cert: &DeviceCert| {
         contacts
             .iter()
@@ -1008,27 +1001,14 @@ async fn people_keep_conversations(
         contact_of(&of_bob, alice).conversation,
         "so does the one written to"
     );
-    let open_watcher = PrivateOperation::Open {
-        peer: watcher_key_hex,
-    };
-    assert!(matches!(
-        ask(bob, open_watcher).await,
-        PrivateReply::Refused
-    ));
-    assert!(matches!(
-        ask(watcher, PrivateOperation::Contacts).await,
-        PrivateReply::Refused
-    ));
     door
 }
 
 /// A person names themself in the workspace: governance holds the name, so
 /// every person list shows it, not their device's label, and naming them
-/// what they are called writes nothing. The workspace's spectator person, whom
-/// every watching page is certified as, is a member yet nobody: it names
-/// nobody, holds no conversations and is on no one's list.
+/// what they are called writes nothing.
 #[tokio::test]
-async fn people_name_themselves_and_the_spectator_is_nobody() {
+async fn people_name_themselves() {
     use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
     let directory = tempfile::tempdir().unwrap();
     let (governor_key, governor_cert) = tests::governor();
@@ -1037,13 +1017,8 @@ async fn people_name_themselves_and_the_spectator_is_nobody() {
     let created = workspaces.create("Who is who").await.unwrap();
     let (alice_key, alice) = identity(82, None);
     let (bob_key, bob) = identity(92, None);
-    let (watcher_key, watcher) = identity(112, None);
     let now = SystemTime::now();
-    for (key, cert) in [
-        (&alice_key, &alice),
-        (&bob_key, &bob),
-        (&watcher_key, &watcher),
-    ] {
+    for (key, cert) in [(&alice_key, &alice), (&bob_key, &bob)] {
         admit(
             &workspaces,
             &created.workspace,
@@ -1054,17 +1029,6 @@ async fn people_name_themselves_and_the_spectator_is_nobody() {
         )
         .await;
     }
-    relay
-        .admit_spectators(
-            created.workspace_id,
-            crate::workspace_access::Spectators {
-                root: watcher.user_public_key,
-                seats: 4,
-                public: true,
-            },
-        )
-        .await
-        .unwrap();
     let name = |cert: &DeviceCert, name: &str| {
         let (workspaces, cert, workspace) =
             (workspaces.clone(), cert.clone(), created.workspace.clone());
@@ -1094,14 +1058,9 @@ async fn people_name_themselves_and_the_spectator_is_nobody() {
         "the name they already go by writes nothing"
     );
 
-    let door =
-        people_keep_conversations(&workspaces, &created.workspace, [&alice, &bob, &watcher]).await;
+    let door = people_keep_conversations(&workspaces, &created.workspace, [&alice, &bob]).await;
     let (_, stranger) = identity(102, None);
-    for (cert, asked) in [
-        (&watcher, "Watching"),
-        (&stranger, "Someone"),
-        (&bob, "\u{7}"),
-    ] {
+    for (cert, asked) in [(&stranger, "Someone"), (&bob, "\u{7}")] {
         let refused = matches!(name(cert, asked).await, WorkspacesReply::Refused(_));
         assert!(refused, "{asked:?} names nobody");
     }

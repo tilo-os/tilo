@@ -128,9 +128,8 @@ pub struct WebHandle {
 impl WebHandle {
     /// Open browser sessions per person (user root) now, for a public
     /// host's presence count and idle-guest pruning. One person on two
-    /// devices is one entry; a shared spectator person is one entry whose
-    /// count is its sessions, seated or still waiting for a seat (how many
-    /// watch is [`crate::workspaces::Workspaces::seated_spectators`]).
+    /// devices is one entry; the workspace's visitor person is one entry whose
+    /// count is its open pages.
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         self.sessions.online_users()

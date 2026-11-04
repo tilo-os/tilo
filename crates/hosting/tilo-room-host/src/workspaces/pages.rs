@@ -108,16 +108,14 @@ const fn room_role(role: MemberRole) -> WorkspaceRole {
     }
 }
 
-/// `workspace` as a page sees it. Its `spectator` person, whom every page
-/// that only watches is certified as, is nobody on its member list.
-fn page_room(workspace: &GovernedWorkspace, spectator: Option<[u8; 32]>) -> Workspace {
+/// `workspace` as a page sees it.
+fn page_room(workspace: &GovernedWorkspace) -> Workspace {
     let summary = workspace.summary();
     let certificates = workspace.peer().certificates();
     let owner = workspace.peer().owner();
     let mut members: Vec<_> = summary
         .members
         .into_iter()
-        .filter(|member| Some(member.user_public_key) != spectator)
         .map(|member| WorkspaceMember {
             name: member.display_name.clone().or_else(|| {
                 certificates
@@ -378,8 +376,7 @@ impl Workspaces {
 
     /// Name `device`'s person `name` in `workspace`: the name the workspace shows for
     /// them from now on. Only a person names themself, on a device the
-    /// workspace admitted as theirs; the workspace's spectator person is nobody to
-    /// name. A name they already go by writes nothing.
+    /// workspace admitted as theirs. A name they already go by writes nothing.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked from the check until the name is committed"
@@ -394,11 +391,6 @@ impl Workspaces {
         let name = valid_name(name)?;
         let state = self.workspace(workspace).await?;
         let mut workspace = state.lock().await;
-        if self.watches_only(workspace.workspace_id(), device).await {
-            return Err(CollaborationError::new(
-                "a page that only watches names nobody",
-            ));
-        }
         let at = system_time(now);
         let member = workspace.peer().permissions(device.device_public_key, at)?;
         if member.foreign
@@ -440,35 +432,10 @@ impl Workspaces {
         if node.workspace_id() != Some(governed.workspace()) {
             return Err(CollaborationError::new("the node is not in this room"));
         }
-        let workspace_id = governed.workspace_id();
         let now = system_time(tilo_clock::unix_now_ns());
-        // The workspace's spectator person only watches: the relay takes no
-        // change from it anywhere. Its devices come and go with page loads
-        // and are on no roster, so they are answered as that person.
-        if self.watches_only(workspace_id, device).await {
-            return Ok(false);
-        }
         let member = governed.peer().permissions(device.device_public_key, now)?;
         drop(governed);
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
-    }
-
-    /// Whether `device` is of the spectator person of the workspace hosted as
-    /// `workspace_id`.
-    pub(super) async fn watches_only(&self, workspace_id: u64, device: &DeviceCert) -> bool {
-        self.spectator_person(workspace_id).await == Some(device.user_public_key)
-    }
-
-    /// The spectator person of the workspace hosted as `workspace_id`, when it
-    /// lets pages watch: the one person every watching page is certified
-    /// as. A member of the workspace, so it may watch, yet nobody: no person
-    /// list shows it.
-    pub(crate) async fn spectator_person(&self, workspace_id: u64) -> Option<[u8; 32]> {
-        let workspaces = self.inner.host.workspaces.lock().await;
-        let workspace = workspaces.get(&workspace_id).cloned();
-        drop(workspaces);
-        let spectators = workspace?.lock().await.spectators;
-        spectators.map(|spectators| spectators.root)
     }
 
     /// A page's change to who is in a workspace and with which role.
@@ -715,9 +682,7 @@ impl Workspaces {
             .collect::<Vec<_>>();
         let mut listed = Vec::with_capacity(workspaces.len());
         for workspace in workspaces {
-            let workspace_id = workspace.lock().await.workspace_id();
-            let spectator = self.spectator_person(workspace_id).await;
-            listed.push(page_room(&*workspace.lock().await, spectator));
+            listed.push(page_room(&*workspace.lock().await));
         }
         Ok(WorkspacesReply::Workspaces(listed))
     }
@@ -770,11 +735,8 @@ impl Workspaces {
 
     async fn page_room(&self, workspace: &str) -> Result<WorkspacesReply, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
-        let workspace_id = workspace.lock().await.workspace_id();
-        let spectator = self.spectator_person(workspace_id).await;
         Ok(WorkspacesReply::Workspace(page_room(
             &*workspace.lock().await,
-            spectator,
         )))
     }
 

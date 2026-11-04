@@ -150,8 +150,6 @@ pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
-#[cfg(not(target_arch = "wasm32"))]
-pub use workspace_access::Spectators;
 
 /// Semantic version emitted by `tilo-relay --version`. Tied to the
 /// crate version.

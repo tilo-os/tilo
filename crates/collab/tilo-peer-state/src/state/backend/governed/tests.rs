@@ -117,7 +117,6 @@ fn row(cert: DeviceCert) -> GovernedIdentity {
         admission: None,
         admissions: vec![],
         delegate: None,
-        watching: false,
     }
 }
 
