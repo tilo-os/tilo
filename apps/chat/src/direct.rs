@@ -132,6 +132,11 @@ impl ChatApp {
         self.focus = Focus::Main;
         self.scroll = 0.0;
         self.sync_person_draft();
+        // What is on screen is read: opening a conversation marks it read
+        // here and now, not on the next frame of a quiet workspace.
+        if let Some(direct) = &self.direct {
+            direct.mark_read(public_key);
+        }
         let channel = self.active_channel.clone();
         self.restore_attached_agent_surface(&channel);
         self.request_relayout();
