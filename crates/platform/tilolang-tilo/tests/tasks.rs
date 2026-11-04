@@ -1,7 +1,7 @@
 //! The Tasks app (`apps/tl/tasks`) on two replicas of one workspace: a task made, filed and
-//! checked off; Inbox, Today and Upcoming as the filters of those names, read when they are
-//! asked; a quick add that adds what was typed and nothing for an empty entry; and two people
-//! changing one task at once.
+//! checked off; Inbox, Today, Upcoming and Done as the places their roles make, read when they
+//! are asked; a quick add that adds what was typed and nothing for an empty entry; and two
+//! people changing one task at once.
 
 use automerge::AutoCommit;
 use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
@@ -67,14 +67,24 @@ fn items(r: &Replica) -> Vec<Value> {
     }
 }
 
-/// The sidebar's places as the window shows them: label and count.
-fn places(view: &ViewInstance) -> Vec<(String, i64)> {
-    fn walk(node: &UiNode, out: &mut Vec<(String, i64)>) {
+/// A place as the sidebar draws it: its label, and the count it draws when its role makes one a
+/// count people read (the inbox's and the agenda's).
+type ShownPlace = (String, Option<i64>);
+
+/// A heading of the sidebar with the places under it, in the order they stand.
+type ShownSection = (String, Vec<ShownPlace>);
+
+/// The sidebar's places as the window shows them.
+fn places(view: &ViewInstance) -> Vec<ShownPlace> {
+    fn walk(node: &UiNode, out: &mut Vec<ShownPlace>) {
         if node.kind == "ui.NavItem"
-            && let (Some(Value::Text(label)), Some(Value::Int(count))) =
-                (node.props.get("label"), node.props.get("count"))
+            && let Some(Value::Text(label)) = node.props.get("label")
         {
-            out.push((label.clone(), *count));
+            let count = match node.props.get("count") {
+                Some(Value::Int(count)) => Some(*count),
+                _ => None,
+            };
+            out.push((label.clone(), count));
         }
         for child in &node.children {
             walk(child, out);
@@ -85,7 +95,8 @@ fn places(view: &ViewInstance) -> Vec<(String, i64)> {
     out
 }
 
-fn count(view: &ViewInstance, place: &str) -> i64 {
+/// What the sidebar counts at `place`: a count only where the place's role makes one people read.
+fn count(view: &ViewInstance, place: &str) -> Option<i64> {
     places(view)
         .into_iter()
         .find(|(label, _)| label == place)
@@ -219,10 +230,29 @@ fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
         ],
         "Friday is today in Tokyo, so `fri` is the next one"
     );
-    // Today is Tokyo's Friday, though it is still Thursday in UTC.
-    let view = ada.view(APP);
-    assert_eq!(count(&view, "Today"), 1, "{:?}", places(&view));
-    assert_eq!(count(&view, "Upcoming"), 4, "{:?}", places(&view));
+    // Today is Tokyo's Friday, though it is still Thursday in UTC: what is due today is the
+    // day's place, what is due later stands in its own under the days it is due on, and neither
+    // the plants nor it is counted beyond the count of what waits.
+    let mut view = ada.view(APP);
+    assert_eq!(count(&view, "Inbox"), Some(1), "{:?}", places(&view));
+    assert_eq!(count(&view, "Today"), Some(1), "{:?}", places(&view));
+    assert_eq!(
+        count(&view, "Upcoming"),
+        None,
+        "a place of what is due later counts nothing: {:?}",
+        places(&view)
+    );
+    go_to(&mut view, "Upcoming");
+    assert_eq!(
+        home_list_titles(&ada, &mut view),
+        [
+            "Call the landlord",
+            "Plan the trip",
+            "Renew the passport",
+            "Pay rent"
+        ],
+        "every dated entry after today, soonest first"
+    );
 }
 
 #[test]
@@ -234,6 +264,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     let late = dated("Pay the electricity bill");
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
+    dated("Water the plants");
     let filed = dated("Pack the books");
     let done = dated("Take the bins out");
     ada.commit();
@@ -252,28 +283,67 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     call(&ada, "file", vec![filed, project]);
     call(&ada, "check", vec![done]);
     ada.commit();
-    let view = ada.view(APP);
+    let mut view = ada.view(APP);
     assert_eq!(
         count(&view, "Inbox"),
-        3,
-        "all but the filed one, counting what is still open: {:?}",
+        Some(1),
+        "the one nobody sorted: not the filed task, not the dated ones, not what is done: {:?}",
         places(&view)
     );
-    assert_eq!(count(&view, "Today"), 2, "late and today, not what is done");
-    assert_eq!(count(&view, "Upcoming"), 1);
+    assert_eq!(
+        count(&view, "Today"),
+        Some(2),
+        "late and today, not what is done"
+    );
+    assert_eq!(
+        count(&view, "Upcoming"),
+        None,
+        "what is due later counts nothing"
+    );
     assert_eq!(
         count(&view, "Done"),
-        0,
-        "the place of what is done with leaves nothing open: {:?}",
+        None,
+        "a logbook counts nothing: {:?}",
         places(&view)
+    );
+    // Each place holds what its role makes of the tasks, read when it is asked.
+    go_to(&mut view, "Inbox");
+    assert_eq!(home_list_titles(&ada, &mut view), ["Water the plants"]);
+    go_to(&mut view, "Today");
+    assert_eq!(
+        home_list_titles(&ada, &mut view),
+        ["Pay the electricity bill", "Buy oat milk"],
+        "the day gone by first, then today, what is due soonest first"
+    );
+    go_to(&mut view, "Upcoming");
+    assert_eq!(home_list_titles(&ada, &mut view), ["Order a present"]);
+    go_to(&mut view, "Done");
+    assert_eq!(
+        home_list_titles(&ada, &mut view),
+        ["Take the bins out"],
+        "the logbook holds what is done with"
     );
     // A day later, what was upcoming is today's: the window opened then asks for that day.
     ada.host
         .runtime()
         .set_clock(|| "2026-10-30T10:00:00Z".to_owned());
-    let view = ada.view(APP);
-    assert_eq!(count(&view, "Today"), 3, "{:?}", places(&view));
-    assert_eq!(count(&view, "Upcoming"), 0);
+    let mut view = ada.view(APP);
+    assert_eq!(count(&view, "Today"), Some(3), "{:?}", places(&view));
+    go_to(&mut view, "Today");
+    assert_eq!(
+        home_list_titles(&ada, &mut view),
+        [
+            "Pay the electricity bill",
+            "Buy oat milk",
+            "Order a present"
+        ],
+        "the day the window woke on is the day's place"
+    );
+    go_to(&mut view, "Upcoming");
+    assert!(
+        home_list_titles(&ada, &mut view).is_empty(),
+        "nothing is left for later"
+    );
 }
 
 /// The count the tasks window shows over its list.
@@ -299,21 +369,13 @@ fn overview_count(view: &ViewInstance) -> Option<i64> {
 #[test]
 fn the_home_list_counts_the_inbox_that_was_just_written() {
     let (mut ada, root) = workspace();
-    let dated = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Buy oat milk and eggs")],
-    );
-    call(
-        &ada,
-        "schedule",
-        vec![dated, Value::some(Value::text("2026-10-30"))],
-    );
-    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    for title in ["Buy oat milk and eggs", "Book a haircut"] {
+        call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+    }
     assert_eq!(
         overview_count(&ada.view(APP)),
         Some(2),
-        "both inbox tasks count before they are indexed"
+        "both unsorted tasks count before they are indexed"
     );
     ada.commit();
     assert_eq!(overview_count(&ada.view(APP)), Some(2), "and after");
@@ -335,12 +397,19 @@ fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changin
     }
     ada.commit();
     let mut view = ada.view(APP);
-    assert_eq!(count(&view, "Today"), 1, "{:?}", places(&view));
-    assert_eq!(count(&view, "Upcoming"), 1, "{:?}", places(&view));
+    assert_eq!(count(&view, "Today"), Some(1), "{:?}", places(&view));
+    assert_eq!(
+        count(&view, "Upcoming"),
+        None,
+        "the place of what is due later counts nothing: {:?}",
+        places(&view)
+    );
     assert!(
         view.wakes_at().is_some(),
         "the view read the day it is: it asks to be run again when that reads differently"
     );
+    go_to(&mut view, "Upcoming");
+    assert_eq!(home_list_titles(&ada, &mut view), ["Order a present"]);
     // The record did not change; the clock did. The same window runs again and lists the day
     // it is now.
     ada.host
@@ -350,8 +419,12 @@ fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changin
         !view.poll_patches().unwrap().is_empty(),
         "the window woke for the time it read"
     );
-    assert_eq!(count(&view, "Today"), 2, "{:?}", places(&view));
-    assert_eq!(count(&view, "Upcoming"), 0, "{:?}", places(&view));
+    assert_eq!(count(&view, "Today"), Some(2), "{:?}", places(&view));
+    assert!(
+        home_list_titles(&ada, &mut view).is_empty(),
+        "the day's place took the task that was due later: {:?}",
+        places(&view)
+    );
 }
 
 #[test]
@@ -937,14 +1010,15 @@ fn checking_a_task_off_checks_every_task_under_it() {
 }
 
 /// Every row of the home list, in the order it stands: its place, the key of the row the host
-/// draws, the task it presents, and whether its box is drawn checked.
+/// draws, the task it presents, and whether its box is drawn checked. A place that holds nothing
+/// draws no list, and no rows.
 fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)> {
     view.poll_patches().unwrap();
-    let list = all(view.tree(), "ui.VirtualList")
-        .first()
-        .expect("the home list")
-        .key
-        .clone();
+    let lists = all(view.tree(), "ui.VirtualList");
+    let Some(list) = lists.first() else {
+        return Vec::new();
+    };
+    let list = list.key.clone();
     let mut out = Vec::new();
     for index in 0..view.list_len(&list).unwrap_or(0) {
         let Some(row) = view.row(&list, index).unwrap().cloned() else {
@@ -967,6 +1041,28 @@ fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)>
         out.push((index, drawn.key.clone(), at.target.id_string(), checked));
     }
     out
+}
+
+/// The titles of the tasks the home list shows, in the order it shows them.
+fn home_list_titles(r: &Replica, view: &mut ViewInstance) -> Vec<String> {
+    let titles: std::collections::HashMap<String, String> = items(r)
+        .iter()
+        .filter_map(|task| {
+            let Value::Text(title) = read(r, task, "title") else {
+                return None;
+            };
+            Some((target(task)?, title))
+        })
+        .collect();
+    home_list_rows(view)
+        .into_iter()
+        .map(|(_, _, of, _)| {
+            titles
+                .get(&of)
+                .cloned()
+                .unwrap_or_else(|| panic!("the title of {of}"))
+        })
+        .collect()
 }
 
 /// The home list's row that presents `item`: its place, its key, and what its box draws.
@@ -1387,11 +1483,20 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
 #[test]
 fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     let (mut ada, root) = workspace();
+    // In a project, whose list folds what is done with under the list: the place where a
+    // finished branch stands in the Done tail.
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Website launch")],
+    );
     let post = call(
         &ada,
         "new_task",
         vec![root.clone(), Value::text("Write the launch post")],
     );
+    call(&ada, "file", vec![post.clone(), project]);
     ada.commit();
     for title in ["Outline", "Screenshots"] {
         call(
@@ -1430,6 +1535,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     );
     // The list the person sees says the same: the finished task stands in the Done tail.
     let mut view = ada.view(APP);
+    go_to(&mut view, "Website launch");
     let rows = home_rows(&mut view);
     let of = |item: &Value| target(item).expect("a task");
     let at = |rows: &[(String, Option<String>, Option<String>, bool)], item: &Value| {
@@ -1700,11 +1806,21 @@ fn the_home_list_nests_a_tasks_subtasks_under_its_row() {
 #[test]
 fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
     let (mut ada, root) = workspace();
+    // The task is in a project, whose list is where a step done with under an open task stands
+    // under it: a place of a role holds only what belongs in it, and what is done is the
+    // logbook's.
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Website launch")],
+    );
     let post = call(
         &ada,
         "new_task",
         vec![root.clone(), Value::text("Write the launch post")],
     );
+    call(&ada, "file", vec![post.clone(), project]);
     ada.commit();
     call(
         &ada,
@@ -1725,6 +1841,7 @@ fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
     ada.commit();
 
     let mut view = ada.view(APP);
+    go_to(&mut view, "Website launch");
     let rows = home_rows(&mut view);
     let of = |item: &Value| target(item).expect("a task");
     let at = |item: &Value| {
@@ -2032,6 +2149,8 @@ fn only_an_action_that_shows_a_state_is_drawn_as_a_toggle() {
 #[test]
 fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     let (mut ada, root) = workspace();
+    // What is overdue and what is due today, in the day's place: the list shows the day gone
+    // by first, and the time before today stands over today's tasks in the store.
     let van = call(
         &ada,
         "new_task",
@@ -2045,9 +2164,9 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     let tank = call(&ada, "new_task", vec![root, Value::text("Fill the tank")]);
     ada.commit();
     for (task, day) in [
-        (&van, "2026-10-30"),
+        (&van, "2026-10-27"),
         (&tent, "2026-10-29"),
-        (&tank, "2026-10-30"),
+        (&tank, "2026-10-29"),
     ] {
         call(
             &ada,
@@ -2058,6 +2177,7 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     ada.commit();
 
     let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
     let offered = |view: &mut ViewInstance, task: &Value| {
         labels(&row_commands(view, task))
             .into_iter()
@@ -2103,10 +2223,11 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     ada.commit();
     assert_eq!(
         target(&read(&ada, &tank, "parent")),
-        target(&van),
+        target(&tent),
         "under the task the list shows over it, never one of another day"
     );
     let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
     assert!(
         offered(&mut view, &tank).contains(&"Outdent".to_owned()),
         "and now it has a parent to move out of: {:?}",
@@ -2276,21 +2397,23 @@ fn the_offered_actions_are_the_person_facing_ones() {
     }
 }
 
-/// The places under each heading of the sidebar, in order: a group's title and its places as
-/// label and count.
-fn sections(view: &ViewInstance) -> Vec<(String, Vec<(String, i64)>)> {
-    fn places_in(node: &UiNode, out: &mut Vec<(String, i64)>) {
+/// The places under each heading of the sidebar, in order.
+fn sections(view: &ViewInstance) -> Vec<ShownSection> {
+    fn places_in(node: &UiNode, out: &mut Vec<ShownPlace>) {
         if node.kind == "ui.NavItem"
-            && let (Some(Value::Text(label)), Some(Value::Int(count))) =
-                (node.props.get("label"), node.props.get("count"))
+            && let Some(Value::Text(label)) = node.props.get("label")
         {
-            out.push((label.clone(), *count));
+            let count = match node.props.get("count") {
+                Some(Value::Int(count)) => Some(*count),
+                _ => None,
+            };
+            out.push((label.clone(), count));
         }
         for child in &node.children {
             places_in(child, out);
         }
     }
-    fn walk(node: &UiNode, out: &mut Vec<(String, Vec<(String, i64)>)>) {
+    fn walk(node: &UiNode, out: &mut Vec<ShownSection>) {
         if node.kind == "ui.NavSection" {
             let title = match node.props.get("title") {
                 Some(Value::Text(title)) => title.clone(),
@@ -2309,8 +2432,8 @@ fn sections(view: &ViewInstance) -> Vec<(String, Vec<(String, i64)>)> {
     out
 }
 
-/// The sidebar the schema draws: the type's own switch places in its order, what is done with
-/// folded under the list rather than offered as a place, and a group per type the root holds a
+/// The sidebar the schema draws: the type's own switch places in its order, counted where the
+/// role of a place makes its count one people read, and a group per type the root holds a
 /// collection of, its heading adding one of them.
 #[test]
 fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
@@ -2347,21 +2470,33 @@ fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
     );
     assert_eq!(
         count(&view, "Inbox"),
-        0,
-        "the inbox's own task: {:?}",
+        Some(0),
+        "what waits to be sorted counts: {:?}",
+        places(&view)
+    );
+    assert_eq!(
+        count(&view, "Today"),
+        Some(0),
+        "and what is due does: {:?}",
+        places(&view)
+    );
+    assert_eq!(
+        count(&view, "Upcoming"),
+        None,
+        "what is due later counts nothing: {:?}",
         places(&view)
     );
     assert_eq!(
         count(&view, "Done"),
-        0,
-        "what is done with leaves nothing open: {:?}",
+        None,
+        "and a logbook counts nothing: {:?}",
         places(&view)
     );
     let groups = sections(&view);
     assert_eq!(
         groups,
-        vec![("Projects".to_owned(), vec![("Groceries".to_owned(), 1)]),],
-        "the root's projects, each its own place"
+        vec![("Projects".to_owned(), vec![("Groceries".to_owned(), None)]),],
+        "the root's projects, each its own place, none of them counted"
     );
     // The heading's add is the action that makes another project on the root.
     let section = key_of(&view, "ui.NavSection", &|node| {
@@ -2476,14 +2611,23 @@ fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
     }
 }
 
-/// With every task in the place done, its count is nothing and the list says so calmly, over
-/// the foot that folds what is done away.
+/// With every task in the place done, the place says so calmly, over the foot that folds what is
+/// done away, and the places that count count nothing: what is done with leaves nothing open.
 #[test]
 fn a_place_whose_tasks_are_all_done_says_so() {
     let (mut ada, root) = workspace();
+    // A project, the place that folds what is done with under its list: the places of a role
+    // hold only what belongs in them, so theirs is empty of it.
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Groceries")],
+    );
     let mut made = Vec::new();
     for title in ["Buy oat milk", "Take the bins out", "Book a haircut"] {
         let task = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        call(&ada, "file", vec![task.clone(), project.clone()]);
         made.push(task);
     }
     ada.commit();
@@ -2494,10 +2638,16 @@ fn a_place_whose_tasks_are_all_done_says_so() {
     let mut view = ada.view(APP);
     assert_eq!(
         count(&view, "Inbox"),
-        0,
+        Some(0),
         "nothing is open: {:?}",
         places(&view)
     );
+    assert_eq!(
+        count(&view, "Today"),
+        Some(0),
+        "and the day's place counts nothing open either"
+    );
+    go_to(&mut view, "Groceries");
     let inline: Vec<&UiNode> = all(view.tree(), "ui.EmptyState")
         .into_iter()
         .filter(|node| {
@@ -2521,10 +2671,5 @@ fn a_place_whose_tasks_are_all_done_says_so() {
         home_list_rows(&mut view).len(),
         3,
         "and what is done with folds under it"
-    );
-    assert_eq!(
-        count(&view, "Today"),
-        0,
-        "and the day's place counts nothing open either"
     );
 }
