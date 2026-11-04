@@ -878,6 +878,9 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionHos
         MembershipError::NoMembership => ActionHostError::Refused {
             reason: "the person is not a member of this workspace".into(),
         },
+        MembershipError::UnreadableAccess => ActionHostError::Refused {
+            reason: "your access to this workspace could not be read".into(),
+        },
         MembershipError::Delegate(_) => ActionHostError::Refused {
             reason: "the device's delegation is expired or withdrawn".into(),
         },
@@ -1463,4 +1466,23 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>, String> {
         .await
         .map_err(|error| error.to_string())?;
     Ok(Some(bytes))
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::refusal_of;
+    use crate::MembershipError;
+    use tilo_actions::remote::ActionHostError;
+
+    /// A person whose access rows do not read back reads that on the action
+    /// they took, instead of being told they are no member.
+    #[test]
+    fn an_unreadable_access_row_is_refused_with_that_reason() {
+        assert_eq!(
+            refusal_of(&MembershipError::UnreadableAccess),
+            ActionHostError::Refused {
+                reason: "your access to this workspace could not be read".into(),
+            }
+        );
+    }
 }

@@ -73,6 +73,9 @@ pub(crate) struct Finish {
     /// What the person asked of the update's notice, from the notifications
     /// service's taps, which run wherever it publishes.
     taken: Receiver<()>,
+    /// Whether the person was already told that the published update state
+    /// does not read back: it is said once, not on every look.
+    unreadable_told: bool,
 }
 
 impl Finish {
@@ -112,7 +115,14 @@ impl Finish {
             was_updating: false,
             asked,
             taken: answers,
+            unreadable_told: false,
         }
+    }
+
+    /// Tell the person, once, that the published update state does not read
+    /// back: `true` the first time a look meets it, `false` after.
+    pub(crate) fn note_unreadable(&mut self) -> bool {
+        !std::mem::replace(&mut self.unreadable_told, true)
     }
 
     /// When the session next looks with no event in between, once it has
@@ -259,6 +269,15 @@ impl Session {
                     %error,
                     "the published update state does not read back; this pass reads it as no update"
                 );
+                // A state the person can see nothing of is not acted on, so
+                // it is theirs to know about: told once, and the warning
+                // above stays for operators.
+                if self.update_finish.note_unreadable() {
+                    self.shared
+                        .notifications
+                        .borrow()
+                        .tell(crate::notices::update_state_notice());
+                }
                 Update::default()
             }
             None => Update::default(),
@@ -331,6 +350,15 @@ mod tests {
             desktop_pending: true,
             ..Update::default()
         }
+    }
+
+    /// An update state that does not read back is nothing the clock acts on,
+    /// so it is the person's to know: once, not on every look.
+    #[test]
+    fn an_unreadable_update_state_is_told_once() {
+        let mut finish = a_finish(Instant::now(), None);
+        assert!(finish.note_unreadable(), "the person is told");
+        assert!(!finish.note_unreadable(), "and only once");
     }
 
     #[test]

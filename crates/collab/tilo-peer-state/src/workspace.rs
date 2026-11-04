@@ -3,7 +3,6 @@ mod admit;
 mod adopt;
 pub mod base;
 pub mod direct_pair;
-pub(crate) mod key_hex;
 pub mod media;
 pub mod membership;
 pub(crate) mod policy;

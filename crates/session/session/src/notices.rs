@@ -593,6 +593,41 @@ pub(crate) fn update_notice() -> Notice {
     }
 }
 
+/// The notice that the update state the services last published does not read
+/// back: this machine cannot tell how far its last update got, so it acts on
+/// nothing it could not read and says so once. Raised by the update's own
+/// clock ([`crate::update_finish`]), which keeps the warning for operators.
+pub(crate) fn update_state_notice() -> Notice {
+    Notice {
+        app: t("system-update-app-name"),
+        urgency: 1,
+        title: t("update-state-unreadable-title"),
+        body: t("update-state-unreadable-body"),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The notice that the workspaces this computer remembered do not read back:
+/// the list starts empty, so it says why rather than letting an empty list
+/// look like workspaces that are gone. Raised once, by the pass that opens the
+/// list ([`crate::workspaces::Personal::open`]), which keeps the warning for
+/// operators.
+pub(crate) fn workspaces_notice() -> Notice {
+    Notice {
+        app: t("workspaces-app-name"),
+        urgency: 1,
+        title: t("workspaces-unreadable-title"),
+        body: t("workspaces-unreadable-body"),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
 /// Tell the person what the crash records in `dir` say happened before this
 /// start: a session that stopped responding, one that panicked, a computer
 /// that stopped. The records decide it, so nothing is said twice.
@@ -1140,6 +1175,45 @@ mod tests {
         let notice = news_notice(&news, news.at.date().succ_opt().unwrap());
         assert_eq!(notice.title, "The computer restarted");
         assert!(notice.body.contains("stays on this computer"));
+    }
+
+    /// What this computer could not read of the person's workspaces and of its
+    /// own update reaches them as ordinary notifications: what did not read,
+    /// and what is still true for them.
+    #[test]
+    fn what_this_computer_could_not_read_reaches_the_person() {
+        let notifications = Notifications::new();
+        workspaces_notice().tell(&notifications);
+        update_state_notice().tell(&notifications);
+
+        let live = notifications.live();
+        assert_eq!(live.len(), 2, "each failure is its own notice");
+
+        let workspaces = live
+            .iter()
+            .find(|notification| notification.summary == "Your workspaces could not be read")
+            .expect("the workspaces notice");
+        assert_eq!(workspaces.app_name, "Workspaces");
+        assert!(
+            workspaces.body.contains("Nothing was removed"),
+            "an empty list is not lost workspaces: {}",
+            workspaces.body
+        );
+        assert!(
+            workspaces.machine_wide,
+            "the person's list is their news on every display"
+        );
+
+        let update = live
+            .iter()
+            .find(|notification| notification.summary == "The update state could not be read")
+            .expect("the update notice");
+        assert_eq!(update.app_name, "Updates");
+        assert!(
+            update.body.contains("did not act on it"),
+            "the person learns nothing was done on a state it could not read: {}",
+            update.body
+        );
     }
 
     #[test]

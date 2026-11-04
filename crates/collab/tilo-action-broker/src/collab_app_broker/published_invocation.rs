@@ -934,20 +934,7 @@ impl OriginalInvocation {
         let agent = self
             .agent_id()
             .ok_or("original invocation caller unavailable")?;
-        let actor = super::BrokerActor::agent(format!("agent:{agent}"));
-        // An agent a person delegated acts for them, never beyond them.
-        let actor = match self.certificate() {
-            Ok(certificate) => {
-                actor.for_person(super::principal_id_for_root(certificate.user_public_key))
-            }
-            Err(error) => {
-                // Without the certificate the agent cannot be tied to the
-                // person who delegated it, so the work it asks for is checked
-                // against the agent alone, and this says why.
-                tracing::warn!(%error, "the original invocation's certificate could not be read; its agent asks without its person");
-                actor
-            }
-        };
+        let actor = agent_actor(agent, self.certificate())?;
         if !actor.reads_in(workspace, seconds) {
             return Err("original agent membership expired".into());
         }
@@ -1079,6 +1066,24 @@ impl AppBrokerState {
         });
         Ok((stream, authorize))
     }
+}
+
+/// The actor an agent's request runs as: the agent, tied to the person whose
+/// certificate it presented.
+///
+/// An agent a person delegated acts for them, never beyond them. An agent
+/// whose certificate cannot be read cannot be tied to its person at all, so
+/// its work is refused for that reason rather than checked against the agent
+/// alone, where the refusal would read as a lack of rights instead of a
+/// broken certificate: [`agent_actor`] is where that reason is made.
+fn agent_actor(
+    agent: &str,
+    certificate: Result<&tilo_user_identity::DeviceCert, String>,
+) -> Result<super::BrokerActor, String> {
+    let certificate = certificate
+        .map_err(|error| format!("the agent's person could not be verified: {error}"))?;
+    Ok(super::BrokerActor::agent(format!("agent:{agent}"))
+        .for_person(super::principal_id_for_root(certificate.user_public_key)))
 }
 
 fn selected_open_v2_action_matches(
@@ -1320,5 +1325,55 @@ mod selected_open_v2_tests {
             &request.request.app_id,
             request.request.access
         ));
+    }
+}
+
+#[cfg(test)]
+mod agent_actor_tests {
+    use super::super::{BrokerActor, principal_id_for_root};
+    use super::agent_actor;
+
+    /// A certificate issued by a person to a device of theirs.
+    fn certificate(user: u8, device: u8) -> tilo_user_identity::DeviceCert {
+        let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
+        let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: this.verifying_key().to_bytes(),
+            device_label: "an agent".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 0,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+        cert
+    }
+
+    /// An agent whose certificate reads is tied to the person who delegated
+    /// it: it acts for them, never on its own.
+    #[test]
+    fn an_agents_request_acts_for_its_person() {
+        let cert = certificate(1, 2);
+        let actor = agent_actor("one", Ok(&cert)).expect("the agent's person is verified");
+        assert_eq!(
+            actor,
+            BrokerActor::agent("agent:one").for_person(principal_id_for_root(cert.user_public_key))
+        );
+    }
+
+    /// An agent whose certificate does not read is refused for that reason,
+    /// which is what the person reads on the action they took.
+    #[test]
+    fn an_agent_without_its_persons_certificate_is_refused_for_that_reason() {
+        let refusal = agent_actor(
+            "one",
+            Err("original invocation certificate unavailable".into()),
+        )
+        .expect_err("an agent nobody can verify is refused");
+        assert_eq!(
+            refusal,
+            "the agent's person could not be verified: original invocation certificate unavailable"
+        );
     }
 }

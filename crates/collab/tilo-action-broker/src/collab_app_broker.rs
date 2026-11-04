@@ -9588,26 +9588,28 @@ fn handle_authorized_signed_op_send(
 }
 
 /// Read a page of scrollback ops for `artifact`, each encoded as postcard
-/// bytes as the wire carries them.
+/// bytes as the wire carries them, with the oldest sequence in it: where the
+/// channel's other devices are asked to go on from.
 fn read_scrollback(
     broker_channels: &Arc<Mutex<BrokerChannels>>,
     artifact: ArtifactId,
     before_seq: u64,
     max: u32,
-) -> (Vec<Vec<u8>>, bool) {
+) -> (Vec<Vec<u8>>, Option<u64>, bool) {
     let Ok(mut ch) = broker_channels.lock() else {
-        return (Vec::new(), true);
+        return (Vec::new(), None, true);
     };
     // `max` is a peer-supplied page size; clamp rather than wrap so an
     // oversized request degrades to "as many as the u16 cap allows"
     // instead of silently truncating to an unrelated smaller number.
     let capped_max = u16::try_from(max).unwrap_or(u16::MAX);
     let (ops, exhausted) = ch.scrollback_page(artifact, before_seq, capped_max);
+    let oldest = ops.iter().map(|op| op.seq).min();
     let encoded: Vec<Vec<u8>> = ops
         .into_iter()
         .filter_map(|op| postcard::to_stdvec(&op).ok())
         .collect();
-    (encoded, exhausted)
+    (encoded, oldest, exhausted)
 }
 
 // Presence handle + streams

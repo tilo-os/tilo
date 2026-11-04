@@ -45,6 +45,17 @@ system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 power-restart = Neu starten
 
+## Was dieser Computer vom eigenen Update nicht lesen konnte und deshalb nicht
+## ausgeführt hat. Der nächste Blick liest es erneut.
+update-state-unreadable-title = Der Update-Stand ließ sich nicht lesen
+update-state-unreadable-body = Dieser Computer konnte nicht lesen, wie weit das letzte Update gekommen ist, und hat daher nichts unternommen. Er schaut von selbst wieder nach; unter Einstellungen, Updates steht, was er weiß.
+
+## Die Liste der eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat,
+## ließ sich nicht lesen: er beginnt die Liste neu, statt nichts zu zeigen.
+workspaces-app-name = Arbeitsbereiche
+workspaces-unreadable-title = Deine Arbeitsbereiche ließen sich nicht lesen
+workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat, ließ sich nicht lesen, deshalb beginnt er die Liste neu. Nichts wurde entfernt: deine Arbeitsbereiche sind weiterhin auf diesem Computer und auf deinen anderen Geräten.
+
 ## Der gespeicherte Schreibtisch dieses Geräts ließ sich nicht öffnen: der
 ## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
 ## leer, damit nichts darüber geschrieben wird.

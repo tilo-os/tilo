@@ -928,14 +928,10 @@ impl JoinedChannel {
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         let broker_channels = &self.state.broker_channels;
-        let (ops, mut exhausted) = read_scrollback(broker_channels, artifact, before_seq, max);
+        let (ops, oldest, mut exhausted) =
+            read_scrollback(broker_channels, artifact, before_seq, max);
         if exhausted {
-            let peer_bound = ops
-                .iter()
-                .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // ignored-failure: read_scrollback encoded these from typed ops just now
-                .map(|op| op.seq)
-                .min()
-                .unwrap_or(before_seq);
+            let peer_bound = oldest.unwrap_or(before_seq);
             let ask = broker_channels
                 .lock()
                 .is_ok_and(|mut ch| ch.request_peer_history(artifact, peer_bound));

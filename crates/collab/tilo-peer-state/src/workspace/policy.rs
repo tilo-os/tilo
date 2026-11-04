@@ -27,6 +27,27 @@ pub(crate) fn project<R: WorkspaceRead, D: Destination>(
         GovernanceEntry::Peer { .. } | GovernanceEntry::Sandbox { .. } => Ok(()),
     })
 }
+/// Rows of a workspace's governance that did not decode: their grants and
+/// roles are missing from the policy projected beside them, so a person whose
+/// access rests on one is told their access could not be read rather than that
+/// they are a stranger.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Damaged {
+    /// Grant rows that did not decode, whichever node they were for: a grant
+    /// the workspace was given is missing from this policy.
+    pub grants: usize,
+    /// People whose member row did not decode: they hold no role here.
+    pub members: std::collections::BTreeSet<String>,
+}
+
+impl Damaged {
+    /// Whether a person with no role may owe that to a row that did not read
+    /// back, rather than to holding none.
+    pub(crate) fn hides(&self, person: &str) -> bool {
+        self.grants > 0 || self.members.contains(person)
+    }
+}
+
 impl Destination for PolicyData {
     type Error = std::convert::Infallible;
     fn owner(&mut self, value: &str) -> Result<(), Self::Error> {
@@ -39,6 +60,7 @@ impl Destination for PolicyData {
             // A row that does not read back grants nobody, so the person who
             // was given it finds the workspace shut and this says why.
             Err(error) => {
+                self.damaged.grants = self.damaged.grants.saturating_add(1);
                 tracing::warn!(%error, "a workspace grant row does not decode; it grants nobody");
             }
         }
@@ -50,8 +72,10 @@ impl Destination for PolicyData {
                 self.members.insert(key.to_owned(), role);
             }
             // A member whose role does not read back holds none; their writes
-            // are refused without another word, so this is the account of it.
+            // are refused with this recorded, so they learn their access could
+            // not be read instead of that they are no member.
             Err(error) => {
+                self.damaged.members.insert(key.to_owned());
                 tracing::warn!(%error, %key, "a member row does not decode; the person holds no role");
             }
         }
@@ -82,6 +106,7 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
         joined: std::collections::BTreeMap::new(),
         grants: Vec::new(),
         identities: std::collections::BTreeMap::new(),
+        damaged: Damaged::default(),
     };
     // This concrete legacy adapter has neither resource failures nor fallible
     // destination operations. Malformed native lookups retain the historical
@@ -89,4 +114,50 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     // ignored-failure: the legacy adapter's destination operations are infallible
     let _ = project(&read::LegacyRead(document), &mut value);
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Damaged, Destination};
+    use crate::cached_document::PolicyData;
+
+    fn empty() -> PolicyData {
+        PolicyData {
+            owner: None,
+            members: std::collections::BTreeMap::new(),
+            joined: std::collections::BTreeMap::new(),
+            grants: Vec::new(),
+            identities: std::collections::BTreeMap::new(),
+            damaged: Damaged::default(),
+        }
+    }
+
+    /// Rows a person's access rests on that do not read back are recorded, not
+    /// only warned about: the member whose role does not decode, and a grant
+    /// that does not decode, which could have been theirs.
+    #[test]
+    fn rows_that_do_not_read_back_are_recorded() {
+        let mut policy = empty();
+        assert!(
+            !policy.damaged.hides("them"),
+            "a policy whose rows read back hides nothing"
+        );
+        policy
+            .grant(b"not a grant")
+            .expect("the projection is infallible");
+        assert_eq!(policy.damaged.grants, 1);
+        assert!(
+            policy.damaged.hides("them"),
+            "a grant that does not decode could be theirs"
+        );
+        policy
+            .member("them", b"not a role")
+            .expect("the projection is infallible");
+        assert!(policy.damaged.members.contains("them"));
+        assert!(policy.damaged.hides("them"), "their role did not read back");
+        assert!(
+            !policy.damaged.hides("someone else"),
+            "another person's rows read back"
+        );
+    }
 }

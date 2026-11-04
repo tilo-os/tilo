@@ -366,6 +366,9 @@ pub(crate) struct Personal {
     /// neither the list nor `agreed` moved since, running it again would
     /// write nothing, so it is skipped.
     published: Option<PublishInputs>,
+    /// Whether the list this computer kept could not be read, until the
+    /// person is told: the list starts empty for it.
+    unreadable: bool,
 }
 
 /// The parts of a desk [`Personal::publish_local`] reads.
@@ -476,6 +479,7 @@ impl Personal {
             untold: false,
             store,
             published: None,
+            unreadable: false,
         };
         let read = personal
             .store
@@ -489,37 +493,53 @@ impl Personal {
                         path = %path.display(),
                         "the remembered workspaces could not be read"
                     );
+                    personal.unreadable = true;
                     None
                 }
             })
-            .and_then(|bytes| {
-                postcard::from_bytes::<Stored>(&bytes)
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, "the remembered workspaces do not read back");
-                    })
-                    .ok()
+            .and_then(|bytes| match postcard::from_bytes::<Stored>(&bytes) {
+                Ok(stored) => Some(stored),
+                Err(error) => {
+                    tracing::warn!(%error, "the remembered workspaces do not read back");
+                    personal.unreadable = true;
+                    None
+                }
             });
-        if let Some(stored) = read
-            && let Ok(directory) = WorkspaceDirectory::load(user, device, &stored.directory)
-        {
-            personal.directory = directory;
-            personal.agreed = stored
-                .agreed
-                .into_iter()
-                .filter_map(|(workspace, listed)| Some((WorkspaceId::parse(&workspace)?, listed)))
-                .collect();
-            personal.agreed_order = stored
-                .agreed_order
-                .iter()
-                .filter_map(|workspace| WorkspaceId::parse(workspace))
-                .collect();
-            personal.borrowed = stored
-                .borrowed
-                .iter()
-                .filter_map(|workspace| WorkspaceId::parse(workspace))
-                .collect();
+        if let Some(stored) = read {
+            match WorkspaceDirectory::load(user, device, &stored.directory) {
+                Ok(directory) => {
+                    personal.directory = directory;
+                    personal.agreed = stored
+                        .agreed
+                        .into_iter()
+                        .filter_map(|(workspace, listed)| {
+                            Some((WorkspaceId::parse(&workspace)?, listed))
+                        })
+                        .collect();
+                    personal.agreed_order = stored
+                        .agreed_order
+                        .iter()
+                        .filter_map(|workspace| WorkspaceId::parse(workspace))
+                        .collect();
+                    personal.borrowed = stored
+                        .borrowed
+                        .iter()
+                        .filter_map(|workspace| WorkspaceId::parse(workspace))
+                        .collect();
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the remembered workspaces' list does not read back");
+                    personal.unreadable = true;
+                }
+            }
         }
         personal
+    }
+
+    /// Whether the list this computer kept could not be read, once: the person
+    /// is told so an empty list is not taken for workspaces that are gone.
+    pub(crate) fn take_unreadable(&mut self) -> bool {
+        std::mem::take(&mut self.unreadable)
     }
 
     /// `workspace` arrived from a door: it is the workspace of whoever let the
@@ -1002,6 +1022,15 @@ impl crate::Shared {
     /// workspace's own governance here names is what the desk shows, so a
     /// change another member's device made shows on this desk.
     pub(crate) fn own_workspaces(&self) {
+        // A list this computer kept but could not read starts empty here, so
+        // the person is told why instead of finding their workspaces gone.
+        if let Some(personal) = &self.personal
+            && personal.borrow_mut().take_unreadable()
+        {
+            self.notifications
+                .borrow()
+                .tell(crate::notices::workspaces_notice());
+        }
         let borrowed = self
             .personal
             .as_ref()
@@ -1354,10 +1383,39 @@ mod tests {
         );
         assert_eq!(mode & 0o777, 0o600, "the person's list is theirs alone");
         let mut reopened = open(identity, Some(state.path()));
+        assert!(
+            !reopened.take_unreadable(),
+            "a list that reads back says nothing"
+        );
         assert!(!reopened.publish_local(&desk), "nothing changed since");
         assert_eq!(
             reopened.agreed, personal.agreed,
             "the list survives the session"
+        );
+    }
+
+    /// A list this computer kept but cannot read does not leave the person
+    /// with an empty list and no word: they are told once, and what this
+    /// computer kept is not written over.
+    #[test]
+    fn a_list_that_cannot_be_read_is_told_to_the_person() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let kept = state.path().join("tilo").join(FILE);
+        std::fs::create_dir_all(kept.parent().expect("the state's tilo directory"))
+            .expect("the state directory");
+        std::fs::write(&kept, b"not a workspace list").expect("a file this build cannot read");
+
+        let mut personal = open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
+        assert!(
+            personal.take_unreadable(),
+            "the person is told their list could not be read"
+        );
+        assert!(!personal.take_unreadable(), "and told once");
+        assert!(personal.agreed.is_empty(), "the list starts empty");
+        assert_eq!(
+            std::fs::read(&kept).expect("the list is still there"),
+            b"not a workspace list",
+            "what this computer kept is not written over before the list is rebuilt"
         );
     }
 
