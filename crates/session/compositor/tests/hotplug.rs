@@ -25,6 +25,7 @@ use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 
 /// The scene's background, as a frame read back shows it: what a lit output
 /// draws where nothing else is.
+
 const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
 /// Each output and the monitor on it, and the primary monitor, as the
@@ -129,6 +130,18 @@ impl Client {
     }
 }
 
+/// Draw the frame the display owes: waits for the blank that shows it, as the
+/// session's own loop waits, then draws it.
+fn draw(compositor: &mut Compositor) {
+    while let Some(due) = compositor.frame_deadline() {
+        let wait = due.saturating_duration_since(std::time::Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        compositor.dispatch(wait).expect("the blank");
+    }
+    compositor.render().expect("a frame");
+}
 fn pump(compositor: &mut Compositor, client: &mut Client, mut done: impl FnMut(&Registry) -> bool) {
     for _ in 0..500 {
         client.exchange();
@@ -150,7 +163,7 @@ fn one_output(told: &Rc<RefCell<Told>>) -> Compositor {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    compositor.render().expect("render");
+    draw(&mut compositor);
     compositor
 }
 
@@ -230,7 +243,7 @@ fn an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to
     assert_eq!(client.outputs(), 2, "clients see the new output");
 
     // It draws, rather than sitting dark until something else does.
-    compositor.render().expect("render");
+    draw(&mut compositor);
     let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
     assert_eq!(shot.pixel(1279, 719), Some(BACKGROUND));
 }

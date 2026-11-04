@@ -5,8 +5,16 @@
 //! [`Compositor::input`](crate::Compositor::input). Frames are drawn when
 //! asked ([`Compositor::render`](crate::Compositor::render)), each drawing
 //! only what changed since the last.
+//!
+//! The simulated display shows a frame once per refresh, as a real one does:
+//! a change that arrives between two vertical blanks waits for the blank that
+//! shows it, and the blank after a frame is one refresh on, so a session on
+//! this backend draws at its mode's rate and no faster (a test that wants a
+//! frame after one it just drew waits the same way the session's loop does,
+//! [`Compositor::next_wait`](crate::Compositor::next_wait)).
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::damage::OutputDamageTracker;
@@ -23,7 +31,7 @@ use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrLayerRecording};
 
 use super::{Backend, BackendError, Screenshot, failed};
 use crate::capture::{CaptureError, render_to_memory};
-use crate::output::{OutputChange, OutputConfig, apply_placement};
+use crate::output::{OutputChange, OutputConfig, apply_placement, refresh_interval};
 use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
 
@@ -37,6 +45,9 @@ struct HeadlessOutput {
     /// Whether the target holds the previous frame (the damage tracker's
     /// buffer age is then 1, else 0).
     drawn: bool,
+    /// The vertical blank the simulated display next shows a frame at: the
+    /// grid its mode's refresh sets. What changed before it waits for it.
+    next_blank: Instant,
     /// Switched off: nothing is drawn, the image goes black.
     dark: bool,
     /// The gamma ramp the simulated display engine applies to what it
@@ -45,6 +56,29 @@ struct HeadlessOutput {
     /// What the panel is configured to show, as a real sink's EDID and
     /// signal would say.
     colour: tilo_color_pipeline::hdr_display::DisplayCapabilities,
+}
+
+/// The vertical blank after `blank` that is still ahead of `drawn`: one
+/// refresh on, or the first one after a frame that took longer than a
+/// refresh missed its blanks instead of bursting to catch up on them.
+fn blank_after(blank: Instant, interval: Duration, drawn: Instant) -> Instant {
+    let mut next = blank.checked_add(interval).unwrap_or(drawn);
+    while next <= drawn {
+        match next.checked_add(interval) {
+            Some(later) => next = later,
+            None => return drawn,
+        }
+    }
+    next
+}
+
+impl HeadlessOutput {
+    /// This display showed the frame just drawn: the next blank is one
+    /// refresh on, on the grid its mode keeps.
+    fn showed(&mut self) {
+        let interval = refresh_interval(self.output.current_mode().map_or(0, |mode| mode.refresh));
+        self.next_blank = blank_after(self.next_blank, interval, Instant::now());
+    }
 }
 
 /// The ramp size headless outputs carry, as many display engines do.
@@ -260,6 +294,7 @@ impl Backend for HeadlessBackend {
             damage,
             target,
             drawn: false,
+            next_blank: Instant::now(),
             dark: false,
             gamma: None,
             colour: config.colour,
@@ -314,6 +349,8 @@ impl Backend for HeadlessBackend {
                     .change_current_state(Some(mode), None, None, None);
                 output.output.add_mode(mode);
                 output.drawn = false;
+                // A new mode is a new blank grid: what changed shows at once.
+                output.next_blank = Instant::now();
             }
             apply_placement(state, &output.output, change);
             if change.position.is_some() {
@@ -333,6 +370,11 @@ impl Backend for HeadlessBackend {
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         for output in &mut self.outputs {
             if output.dark {
+                continue;
+            }
+            // The display shows one frame per refresh: what changed waits for
+            // the blank that shows it, so the frame it owes is still owed.
+            if Instant::now() < output.next_blank {
                 continue;
             }
             // Nothing new to show: an idle output draws nothing.
@@ -377,6 +419,7 @@ impl Backend for HeadlessBackend {
                     .map_err(|error| failed("render output", error))?;
                 output.drawn = true;
                 state.frame_shown(&output.output);
+                output.showed();
                 continue;
             }
             let mut framebuffer = self
@@ -396,8 +439,17 @@ impl Backend for HeadlessBackend {
                 .map_err(|error| failed("render output", error))?;
             output.drawn = true;
             state.frame_shown(&output.output);
+            output.showed();
         }
         Ok(())
+    }
+
+    fn next_deadline(&self, state: &State) -> Option<Instant> {
+        self.outputs
+            .iter()
+            .filter(|output| !output.dark && state.redraw_owed(&output.output))
+            .map(|output| output.next_blank)
+            .min()
     }
 
     fn set_power(&mut self, _state: &mut State, name: &str, on: bool) -> Result<(), BackendError> {
@@ -435,6 +487,8 @@ impl Backend for HeadlessBackend {
         output.dark = !on;
         // The image no longer holds the last frame.
         output.drawn = false;
+        // A switched-on panel shows what changed at once.
+        output.next_blank = Instant::now();
         output.damage = OutputDamageTracker::from_output(&output.output);
         Ok(())
     }

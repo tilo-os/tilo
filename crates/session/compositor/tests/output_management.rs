@@ -32,6 +32,7 @@ use wayland_protocols_wlr::output_power_management::v1::client::{
 };
 
 #[derive(Default, Debug)]
+
 struct Head {
     object: Option<ZwlrOutputHeadV1>,
     name: String,
@@ -89,6 +90,18 @@ impl Client {
     }
 }
 
+/// Draw the frame the display owes: waits for the blank that shows it, as the
+/// session's own loop waits, then draws it.
+fn draw(compositor: &mut Compositor) {
+    while let Some(due) = compositor.frame_deadline() {
+        let wait = due.saturating_duration_since(std::time::Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        compositor.dispatch(wait).expect("the blank");
+    }
+    compositor.render().expect("a frame");
+}
 fn pump(compositor: &mut Compositor, client: &mut Client, mut done: impl FnMut(&Tool) -> bool) {
     for _ in 0..500 {
         client.exchange();
@@ -240,7 +253,7 @@ fn a_display_tool_turns_an_output_off_and_on_again() {
             .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(true))
     });
     assert!(compositor.output_lit("HEADLESS-2"));
-    compositor.render().expect("render");
+    draw(&mut compositor);
     let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
     assert_ne!(
         shot.pixel(10, 10),
@@ -307,7 +320,7 @@ fn ordinary_clients_cannot_switch_panels_off() {
 #[test]
 fn idle_blanking_darkens_every_panel_and_input_lights_them() {
     let mut compositor = two_outputs();
-    compositor.render().expect("render");
+    draw(&mut compositor);
     compositor.blank_now().expect("blank");
     assert!(!compositor.output_lit("HEADLESS-1"));
     assert!(!compositor.output_lit("HEADLESS-2"));

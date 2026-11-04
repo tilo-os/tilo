@@ -505,12 +505,20 @@ impl Compositor {
         Ok(self.owes_frame())
     }
 
+    /// When the displays next show a frame: the blank an output that owes
+    /// one is waiting for. `None` while every output shows what it owes now
+    /// (the next [`Compositor::render`] draws it), or owes nothing.
+    #[must_use]
+    pub fn frame_deadline(&self) -> Option<Instant> {
+        self.data.backend.next_deadline(&self.data.state)
+    }
+
     /// How long a loop may wait for clients, devices and its own work before
     /// the next frame is due; `None` when nothing is due, and it waits for an
     /// event.
     pub fn next_wait(&self) -> Option<Duration> {
         let now = std::time::Instant::now();
-        let backend = self.data.backend.next_deadline(&self.data.state);
+        let backend = self.frame_deadline();
         // A running visual alert fades frame by frame.
         let alert = a11y::flashing(&self.data.state, now)
             .then(|| now.checked_add(a11y::FLASH_STEP).unwrap_or(now));
@@ -2144,6 +2152,7 @@ impl Compositor {
     /// while the person's own display keeps showing them as they are.
     pub fn protect_app(&mut self, app_id: &str, private: bool) {
         self.data.state.capture.protection.app(app_id, private);
+        self.data.state.mark_redraw_all();
     }
 
     /// The processes whose clients disconnected since the last look: the
