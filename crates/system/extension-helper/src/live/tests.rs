@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::fmt;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -677,6 +678,48 @@ fn a_composefs_image_is_checked_by_its_own_digest_algorithm() {
     );
 }
 
+/// The fixture as the machine has it, read when a wait gives up: what the
+/// wrapper runs, which children it has and what they run, so a failure names
+/// what stood in the compositor's place rather than only that it never came.
+struct Fixture(u32);
+
+impl fmt::Display for Fixture {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            out,
+            "the fixture's compositor starts (the wrapper {} runs {}, and is {}; its children:",
+            self.0,
+            process(self.0),
+            if zombie(self.0) { "gone" } else { "running" }
+        )?;
+        let children = fs::read_to_string(format!("/proc/{}/task/{}/children", self.0, self.0))
+            .unwrap_or_default();
+        let mut seen = false;
+        for pid in children
+            .split_whitespace()
+            .filter_map(|pid| pid.parse::<u32>().ok())
+        {
+            seen = true;
+            write!(
+                out,
+                " {pid} runs {}{},",
+                process(pid),
+                if zombie(pid) { " (a zombie)" } else { "" }
+            )?;
+        }
+        write!(out, "{})", if seen { "" } else { " none" })
+    }
+}
+
+/// What `pid` runs: its name and the binary behind it.
+fn process(pid: u32) -> String {
+    let binary = fs::read_link(format!("/proc/{pid}/exe")).map_or_else(
+        |_| "nothing readable".to_owned(),
+        |exe| exe.display().to_string(),
+    );
+    format!("{:?} from {binary:?}", comm(pid))
+}
+
 /// The compositor and the login wrapper share a process name, because the
 /// wrapper that runs the compositor is a script of the same name: what each
 /// process runs is what tells them apart, so the update restarts a desktop
@@ -700,7 +743,11 @@ fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let mut login = std::process::Command::new(&wrapper).spawn_locked().unwrap();
     let wrapper_pid = login.id();
-    let compositor_pid = tilo_test_env::wait_for("the fixture's compositor starts", || {
+    let compositor_pid = tilo_test_env::wait_for(Fixture(wrapper_pid), || {
+        // A wrapper that ended started no compositor, and never will.
+        if let Some(status) = login.try_wait().unwrap() {
+            panic!("the wrapper ended ({status}) before its compositor started");
+        }
         compositor_of(wrapper_pid)
     });
 
