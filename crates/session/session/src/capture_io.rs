@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use tilo_capture_studio::{Frame, Recorder};
+use tilo_capture_studio::{Frame, Recorder, Settings};
 use tilo_service::Wake;
 
 /// Frames the encoder may hold before the loop keeps one back. One frame is
@@ -51,6 +51,7 @@ pub(crate) enum Note {
     /// The recording's file was finished, or why it was not, and how many
     /// frames the encoder was too far behind to take.
     Stopped {
+        run: u64,
         result: Result<Option<PathBuf>, String>,
         dropped: u64,
     },
@@ -66,14 +67,18 @@ pub(crate) struct Written {
 
 /// One piece of capture work.
 enum Job {
-    /// Take `first` into `recorder`, writing its file to `file` when there is
-    /// one: a recording, or only the replay buffer. It is run number `run`,
-    /// which every note about it carries.
+    /// Start run number `run`, which every note about it carries: its file
+    /// goes to `file` when there is one — a recording, or only the replay
+    /// buffer — and its sound is `audio`, the recorder's track names.
+    ///
+    /// The encoder is not built here: it waits for the first frame, which
+    /// arrives on the recording's own cadence, so starting a recording
+    /// stalls neither the loop that asked for it nor the work queued before
+    /// it.
     Open {
         run: u64,
-        recorder: Box<Recorder>,
         file: Option<PathBuf>,
-        first: Frame,
+        audio: Vec<String>,
     },
     /// One frame of what is being recorded, and the sound that came with it.
     Feed {
@@ -124,6 +129,10 @@ pub(crate) struct CaptureIo {
     buffered: Arc<AtomicUsize>,
     /// Frames this recording dropped because the encoder was behind.
     dropped: Cell<u64>,
+    /// The number of the recorder the worker was last told to start: a stop
+    /// is about that one, so a recording started after it is not confused
+    /// with the file it left.
+    run: Cell<u64>,
     wake: Wake,
 }
 
@@ -140,23 +149,21 @@ impl CaptureIo {
                 depth: Arc::new(AtomicUsize::new(0)),
                 buffered: Arc::new(AtomicUsize::new(0)),
                 dropped: Cell::new(0),
+                run: Cell::new(0),
                 wake,
             }),
             said,
         )
     }
 
-    /// Start the recording numbered `run` in `recorder`, writing its file to
-    /// `file` when there is one, from `first`: a recording, or only the
-    /// replay buffer. Whether it started is said as [`Note::Opened`].
-    pub(crate) fn open(&self, run: u64, recorder: Recorder, file: Option<PathBuf>, first: Frame) {
+    /// Start the recording numbered `run`, writing its file to `file` when
+    /// there is one, with its sound named by `audio`: a recording, or only
+    /// the replay buffer. The encoder is built from the first frame the
+    /// worker takes, and whether it started is said as [`Note::Opened`].
+    pub(crate) fn open(&self, run: u64, file: Option<PathBuf>, audio: Vec<String>) {
         self.dropped.set(0);
-        if !self.submit(Job::Open {
-            run,
-            recorder: Box::new(recorder),
-            file,
-            first,
-        }) {
+        self.run.set(run);
+        if !self.submit(Job::Open { run, file, audio }) {
             let _ = self.notes.send(Note::Opened {
                 run,
                 result: Err(NO_WORKER.to_owned()),
@@ -206,6 +213,7 @@ impl CaptureIo {
         let dropped = self.dropped.get();
         if !self.submit(Job::Stop { dropped }) {
             let _ = self.notes.send(Note::Stopped {
+                run: self.run.get(),
                 result: Err(NO_WORKER.to_owned()),
                 dropped,
             });
@@ -298,6 +306,7 @@ impl CaptureIo {
                         buffered,
                         wake,
                         recorder: None,
+                        opening: None,
                         run: 0,
                     }
                     .run();
@@ -329,8 +338,21 @@ struct Worker {
     wake: Wake,
     /// The recorder that runs now, if one does.
     recorder: Option<Box<Recorder>>,
+    /// A recording whose encoder waits for its first frame.
+    opening: Option<Opening>,
     /// The number of that recorder, which the notes about it carry.
     run: u64,
+}
+
+/// A recording that was started but whose encoder is not built yet: it takes
+/// its size from the first frame, so nothing expensive runs before there is
+/// one.
+struct Opening {
+    run: u64,
+    file: Option<PathBuf>,
+    audio: Vec<String>,
+    /// Whether a pause came in before the encoder was built.
+    paused: bool,
 }
 
 impl Worker {
@@ -350,25 +372,27 @@ impl Worker {
     /// One piece of work, in the order it was handed over.
     fn take(&mut self, job: Job) {
         match job {
-            Job::Open {
-                run,
-                recorder,
-                file,
-                first,
-            } => self.open(run, recorder, file.as_deref(), &first),
-            Job::Feed { frame, sound } => self.feed(frame.as_ref(), sound),
+            Job::Open { run, file, audio } => self.open(run, file, audio),
+            Job::Feed { frame, sound } => self.feed(frame, sound),
             Job::Pause => {
+                if let Some(opening) = &mut self.opening {
+                    opening.paused = true;
+                }
                 if let Some(open) = self.recorder.as_mut() {
                     open.pause();
                 }
             }
             Job::Resume => {
+                if let Some(opening) = &mut self.opening {
+                    opening.paused = false;
+                }
                 if let Some(open) = self.recorder.as_mut() {
                     open.resume();
                 }
             }
             Job::Stop { dropped } => self.stop(dropped),
             Job::Close => {
+                self.opening = None;
                 self.recorder = None;
                 self.buffered.store(0, Ordering::Release);
             }
@@ -396,40 +420,73 @@ impl Worker {
         }
     }
 
-    /// Start `recorder` as run `run`, writing its file to `file` when there is
-    /// one, from `first`.
-    fn open(&mut self, run: u64, mut recorder: Box<Recorder>, file: Option<&Path>, first: &Frame) {
-        let result = match file {
-            Some(path) => in_folder(path).and_then(|()| recorder.start(path.to_path_buf())),
-            None => Ok(()),
-        }
-        .and_then(|()| recorder.frame(first));
+    /// Start run `run`: its file goes to `file` when there is one, and its
+    /// sound is `audio`. Nothing is built until its first frame is here, so
+    /// the folder it writes into is checked then too.
+    fn open(&mut self, run: u64, file: Option<PathBuf>, audio: Vec<String>) {
         // The frames the recorder before this one left in flight are counted
         // out as they are taken; what it held is not this recording's to show.
         self.buffered.store(0, Ordering::Release);
-        if result.is_ok() {
+        self.opening = Some(Opening {
+            run,
+            file,
+            audio,
+            paused: false,
+        });
+    }
+
+    /// Build the encoder of the opening recording at the size of its first
+    /// frame, then take that frame into it.
+    fn begin(&mut self, opening: Opening, first: &Frame) {
+        let Opening {
+            run,
+            file,
+            audio,
+            paused,
+        } = opening;
+        let result = Recorder::with_audio(Settings::for_size(first.width, first.height), audio)
+            .and_then(|mut recorder| {
+                if let Some(path) = &file {
+                    in_folder(path)?;
+                    recorder.start(path.clone())?;
+                }
+                if paused {
+                    recorder.pause();
+                }
+                recorder.frame(first)?;
+                Ok(recorder)
+            });
+        let result = result.map(|recorder| {
             self.run = run;
             self.buffered.store(recorder.buffered(), Ordering::Release);
-            self.recorder = Some(recorder);
-        }
+            self.recorder = Some(Box::new(recorder));
+        });
         let _ = self.notes.send(Note::Opened { run, result });
         self.wake();
     }
 
     /// One frame of what is being recorded, and the sound that came with it.
-    fn feed(&mut self, frame: Option<&Frame>, sound: Sound) {
-        let Some(open) = self.recorder.as_mut() else {
-            if frame.is_some() {
-                self.depth.fetch_sub(1, Ordering::AcqRel);
-            }
-            return;
-        };
+    fn feed(&mut self, frame: Option<Frame>, sound: Sound) {
         if frame.is_some() {
             self.depth.fetch_sub(1, Ordering::AcqRel);
         }
+        let mut taken = false;
+        if let Some(opening) = self.opening.take() {
+            match &frame {
+                Some(first) => {
+                    self.begin(opening, first);
+                    taken = true;
+                }
+                // Nothing has run yet, so there is nowhere for sound to go.
+                None => self.opening = Some(opening),
+            }
+        }
+        let Some(open) = self.recorder.as_mut() else {
+            return;
+        };
         let mut lost = false;
-        if let Some(frame) = frame
-            && let Err(error) = open.frame(frame)
+        if let Some(frame) = frame.filter(|_| !taken)
+            && let Err(error) = open.frame(&frame)
         {
             let _ = self.notes.send(Note::Frame {
                 run: self.run,
@@ -455,12 +512,19 @@ impl Worker {
 
     /// Finish the file of the recorder that runs, and end it.
     fn stop(&mut self, dropped: u64) {
+        // A recording whose encoder was never built wrote nothing: its first
+        // frame never came.
+        self.opening = None;
         let result = match self.recorder.take() {
             Some(mut open) => open.stop(),
             None => Ok(None),
         };
         self.buffered.store(0, Ordering::Release);
-        let _ = self.notes.send(Note::Stopped { result, dropped });
+        let _ = self.notes.send(Note::Stopped {
+            run: self.run,
+            result,
+            dropped,
+        });
         self.wake();
     }
 }
@@ -529,25 +593,26 @@ mod tests {
         path
     }
 
-    /// A writer that waits holds neither a frame nor the loop that hands it
-    /// over: frames are dropped, and counted, rather than waited on.
-    #[test]
-    fn a_slow_writer_never_delays_a_frame() {
-        let folder = tempfile::tempdir().expect("a folder");
-        let (io, notes) = CaptureIo::new(Arc::new(|| {}));
-        // The worker runs, and takes what it was handed in order: the frame
-        // handed over before the pipe is written before it, and the pipe's
-        // read is where it waits.
-        let ahead = io.read(folder.path().join("nothing.txt"));
+    /// The worker, inside a read of a pipe nothing could finish without a
+    /// writer: every job handed over after it waits for that writer, and the
+    /// answer of the blocked read comes back with it.
+    fn hold_the_worker(
+        folder: &Path,
+        io: &CaptureIo,
+    ) -> (Receiver<Result<Vec<u8>, String>>, std::fs::File) {
+        // The worker runs, and takes what it was handed in order: what was
+        // handed over before the pipe is taken before it, and the pipe's read
+        // is where it waits.
+        let ahead = io.read(folder.join("nothing.txt"));
         assert!(
             ahead.recv_timeout(Duration::from_secs(10)).is_ok(),
             "the worker reads what it is handed"
         );
 
-        let blocked = pipe(folder.path());
+        let blocked = pipe(folder);
         let waiting = io.read(blocked.clone());
         // Opening the pipe for writing waits for the reader: once it opens,
-        // the worker is inside the read and holds every frame behind it. The
+        // the worker is inside the read and holds every job behind it. The
         // test thread waits for that with a bound, so a worker that never
         // gets there fails the test rather than hanging it.
         let (opened, ready) = channel();
@@ -555,10 +620,20 @@ mod tests {
             let writer = std::fs::OpenOptions::new().write(true).open(&blocked);
             let _ = opened.send(writer);
         });
-        let mut writer = ready
+        let writer = ready
             .recv_timeout(Duration::from_secs(10))
             .expect("the worker is inside the read")
             .expect("the worker reads the pipe");
+        (waiting, writer)
+    }
+
+    /// A writer that waits holds neither a frame nor the loop that hands it
+    /// over: frames are dropped, and counted, rather than waited on.
+    #[test]
+    fn a_slow_writer_never_delays_a_frame() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let (io, notes) = CaptureIo::new(Arc::new(|| {}));
+        let (waiting, mut writer) = hold_the_worker(folder.path(), &io);
 
         let started = Instant::now();
         for taken in 0..DEPTH {
@@ -591,5 +666,85 @@ mod tests {
             notes.try_recv().is_err(),
             "nothing of the recorder was said: no recording ran"
         );
+
+        // The next recording counts its own frames: what this one dropped is
+        // its own.
+        io.open(2, None, Vec::new());
+        assert_eq!(io.dropped(), 0, "a new recording counts from zero");
+    }
+
+    /// Starting a recording hands the work over: the encoder is built on the
+    /// worker, from the first frame, so the loop that started it never waits
+    /// for it.
+    #[test]
+    fn starting_a_recording_builds_its_encoder_off_the_loop() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let (io, notes) = CaptureIo::new(Arc::new(|| {}));
+        let (waiting, mut writer) = hold_the_worker(folder.path(), &io);
+        let path = folder.path().join("recording.mp4");
+
+        let started = Instant::now();
+        io.open(1, Some(path.clone()), Vec::new());
+        assert!(
+            io.feed(frame(1280, 800), Vec::new()),
+            "the first frame is taken"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "starting took {:?}: the loop waited for the encoder",
+            started.elapsed()
+        );
+        assert!(
+            notes.try_recv().is_err(),
+            "the encoder is built on the worker, not on the loop that started it"
+        );
+
+        // The worker gets to it: the encoder is built there, at the first
+        // frame's size, and the recording's file is finished there.
+        writer.write_all(b"a picture").expect("the pipe is written");
+        drop(writer);
+        assert_eq!(
+            waiting.recv_timeout(Duration::from_secs(10)),
+            Ok(Ok(b"a picture".to_vec())),
+            "the read finishes once its writer does"
+        );
+        let opened = notes
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the start is said");
+        let Note::Opened { run, result } = opened else {
+            panic!("the worker says what became of the recording before anything else");
+        };
+        assert_eq!(run, 1, "the note is about the recording that was started");
+        if let Err(error) = result {
+            // No encoder on this machine takes the frame: that is said, and
+            // there is no file to check.
+            assert!(!error.is_empty(), "a failure says why");
+            return;
+        }
+
+        // A second frame lands in the file, and stopping finishes it.
+        assert!(io.feed(frame(1280, 800), Vec::new()));
+        assert!(io.feed(frame(1280, 800), Vec::new()));
+        io.stop();
+        let stopped = notes
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the stop is said");
+        let Note::Stopped {
+            run,
+            result,
+            dropped,
+        } = stopped
+        else {
+            panic!("the drained recording is said when it stops");
+        };
+        assert_eq!(run, 1);
+        assert_eq!(dropped, 0, "nothing was dropped");
+        assert_eq!(
+            result,
+            Ok(Some(path.clone())),
+            "the file was finished where it was started"
+        );
+        let bytes = std::fs::read(&path).expect("the recording is on disk");
+        assert!(!bytes.is_empty(), "the file is written");
     }
 }

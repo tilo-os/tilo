@@ -1,3 +1,4 @@
+use super::bar::skipped_sentence;
 use super::*;
 
 const SCREEN: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
@@ -475,4 +476,54 @@ fn every_screenshot_target_holds_the_windows_and_recording_stays_live() {
         !s.is_choosing_screenshot(),
         "a picture in picture stays live"
     );
+}
+
+#[test]
+fn a_recording_that_skipped_frames_says_so_while_it_runs_and_after() {
+    let mut s = studio();
+    s.set_recording_active(true);
+    assert!(
+        !s.shows_skipped(),
+        "a recording that lost nothing says nothing about it"
+    );
+    let stop = s.bar_item(BarItem::Shutter);
+
+    s.set_recording_skipped(12);
+    assert!(s.shows_skipped());
+    assert!(
+        names(&s).contains(&"capture.recording-skipped".to_owned()),
+        "the chip is on the bar: {:?}",
+        names(&s)
+    );
+    assert_eq!(
+        s.bar_item(BarItem::Shutter).center(),
+        stop.center(),
+        "the stop button keeps its place when the chip appears"
+    );
+    let chip = s.bar_item(BarItem::Skipped);
+    assert!(
+        chip.x0 >= s.bar_item(BarItem::Time).x1 && chip.x1 <= s.bar_item(BarItem::Shutter).x0,
+        "the chip stands between the time and the shutter: {chip:?}"
+    );
+
+    // What it says: the count, and why the frames are missing.
+    s.cursor = chip.center();
+    let (_, tip) = s.bar_tip().expect("the chip says what happened");
+    assert_eq!(tip, skipped_sentence(12));
+    assert!(tip.contains("12"), "{tip}");
+
+    // The finished recording keeps saying it.
+    s.set_recording_finished(12);
+    assert!(!s.shows_status(), "the bar gives way to the receipt");
+    assert_eq!(s.recording_status(), skipped_sentence(12));
+    assert!(
+        names(&s).contains(&"capture.play-recording".to_owned()),
+        "the receipt plays the file: {:?}",
+        names(&s)
+    );
+
+    // A recording that lost nothing says only that it was saved.
+    s.set_recording_active(true);
+    s.set_recording_finished(0);
+    assert_eq!(s.recording_status(), studio_text("widget-recording-saved"));
 }

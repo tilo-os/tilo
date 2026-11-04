@@ -52,6 +52,13 @@ impl Frame {
     }
 }
 
+/// The file extension a recording is written with, from whether it carries
+/// sound: MOV when it does, which MP4 cannot hold losslessly.
+#[must_use]
+pub fn extension(sound: bool) -> &'static str {
+    Mp4Recording::extension(sound)
+}
+
 /// What a recording is encoded as, and how much of the past is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
@@ -310,7 +317,7 @@ impl Recorder {
     /// sound, which MP4 cannot hold losslessly.
     #[must_use]
     pub fn extension(&self) -> &'static str {
-        Mp4Recording::extension(!self.audio_tracks.is_empty())
+        extension(!self.audio_tracks.is_empty())
     }
 
     /// Encode one frame: into the file while recording, into the replay

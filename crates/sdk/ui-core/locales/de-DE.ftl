@@ -811,6 +811,10 @@ widget-capture-stop = Aufnahme beenden
 widget-capture-create-pip = Bild im Bild erstellen
 widget-capture-remove-selection = Diese Auswahl entfernen
 widget-recording-saved = Aufnahme gespeichert
+widget-recording-skipped = { $count ->
+    [one] 1 Bild wurde übersprungen: die Festplatte war zu langsam
+   *[other] { $count } Bilder wurden übersprungen: die Festplatte war zu langsam
+}
 widget-recording-play = Abspielen
 widget-replay-save = Letzte 30 s speichern
 widget-replay-stop = Letzte 30 s nicht mehr behalten

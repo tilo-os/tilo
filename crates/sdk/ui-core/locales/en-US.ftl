@@ -817,6 +817,10 @@ widget-capture-stop = Stop recording
 widget-capture-create-pip = Create picture in picture
 widget-capture-remove-selection = Remove this selection
 widget-recording-saved = Recording saved
+widget-recording-skipped = { $count ->
+    [one] 1 frame was skipped: the disk was too slow
+   *[other] { $count } frames were skipped: the disk was too slow
+}
 widget-recording-play = Play
 widget-replay-save = Save last 30 s
 widget-replay-stop = Stop keeping the last 30 s

@@ -8,9 +8,10 @@
     reason = "receipt geometry is bounded logical-pixel arithmetic over a tiny fixed set of actions"
 )]
 
+use super::bar::{studio_text, ui_count};
 use super::{
     CapturePreview, CaptureStudio, RECORDING_RECEIPT_DURATION, SCREENSHOT_RECEIPT_DURATION,
-    ScreenshotKept, ScreenshotReceipt, leaving_opacity, studio_progress, studio_text, ui_count,
+    ScreenshotKept, ScreenshotReceipt, leaving_opacity, studio_progress,
 };
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
@@ -491,11 +492,11 @@ impl CaptureStudio {
             return;
         };
         if crate::time::now().saturating_duration_since(finished_at) >= RECORDING_RECEIPT_DURATION {
-            self.recording_finished_at = None;
+            self.end_recording_receipt();
             self.open = self.shows_status();
             return;
         }
-        let status = studio_text("widget-recording-saved");
+        let status = self.recording_status();
         self.measure_receipt(&status, tr, theme);
         let alpha = if theme.reduce_motion {
             1.0

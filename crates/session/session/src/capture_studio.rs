@@ -7,9 +7,8 @@
 //! stream and the portal's screenshots take, so what is captured is what the
 //! desktop shows, private windows blanked — written to the person's
 //! Screenshots folder and, when asked, put on the clipboard. A recording
-//! feeds the same read-back into the recorder ([`Recorder`]) at the replay
-//! buffer's rate, which writes the file and keeps the last half minute
-//! encoded.
+//! feeds the same read-back into the recorder at the replay buffer's rate,
+//! which writes the file and keeps the last half minute encoded.
 //!
 //! What came of each capture goes back to the studio as its scene
 //! ([`tilo_capture_studio::Scene`]).
@@ -35,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use tilo_capture_studio::audio::{Availability, Track as AudioTrack};
 use tilo_capture_studio::{
-    Ask, Frame, Kept, REPLAY_FPS, Recorder, Recording, Refusal, Scene, Selection, Sent, Settings,
-    Studio, Take,
+    Ask, Finished, Frame, Kept, REPLAY_FPS, Recording, Refusal, Scene, Selection, Sent, Studio,
+    Take,
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
@@ -105,6 +104,8 @@ pub(crate) struct CaptureStudio {
     audio: Cell<Option<Availability>>,
     /// The recording that runs, as the studio shows it.
     recording: Option<Recording>,
+    /// The recording that ended, while its receipt says what it made of it.
+    finished: Option<Finished>,
     /// Seconds of the last half minute ready to clip.
     replay: Option<u8>,
     /// How many clips the replay buffer gave.
@@ -203,6 +204,7 @@ pub(crate) fn mount(
                 run: 0,
                 audio: Cell::new(None),
                 recording: None,
+                finished: None,
                 replay: None,
                 replay_saves: 0,
             })
@@ -271,6 +273,7 @@ impl CaptureStudio {
                 Note::Opened { run, .. }
                 | Note::Frame { run, .. }
                 | Note::SoundLost { run, .. }
+                | Note::Stopped { run, .. }
                     if run != self.run => {}
                 Note::Opened { result: Ok(()), .. } => {}
                 Note::Opened {
@@ -291,12 +294,17 @@ impl CaptureStudio {
                         feeding.audio.retain(|audio| audio.mux() != track);
                     }
                 }
-                Note::Stopped { result, dropped } => match result {
-                    Ok(Some(path)) => tracing::info!(
-                        path = %path.display(),
-                        dropped,
-                        "a recording was finished"
-                    ),
+                Note::Stopped {
+                    result, dropped, ..
+                } => match result {
+                    Ok(Some(path)) => {
+                        tracing::info!(path = %path.display(), dropped, "a recording was finished");
+                        // The receipt says what the file is missing.
+                        self.finished = Some(Finished {
+                            path,
+                            skipped: dropped,
+                        });
+                    }
                     Ok(None) => {}
                     Err(error) => tracing::warn!(%error, dropped, "a recording was not finished"),
                 },
@@ -459,11 +467,11 @@ impl CaptureStudio {
     fn answer(&mut self, ask: Ask, compositor: &mut Compositor) {
         match ask {
             Ask::Screenshot(take) => self.screenshot_asked(&take, compositor),
-            Ask::StartRecording(take) => self.start(take, compositor),
+            Ask::StartRecording(take) => self.start(take),
             Ask::PauseRecording => self.paused(true),
             Ask::ResumeRecording => self.paused(false),
             Ask::StopRecording => self.stop(),
-            Ask::StartReplay(take) => self.start_replay(take, compositor),
+            Ask::StartReplay(take) => self.start_replay(take),
             Ask::SaveReplay => self.save_replay(),
             Ask::StopReplay => {
                 if self
@@ -476,8 +484,8 @@ impl CaptureStudio {
                 }
                 self.replay = None;
             }
-            Ask::OpenLast => self.open(false),
-            Ask::RevealLast => self.open(true),
+            Ask::Open(path) => Self::open(&path, false),
+            Ask::Reveal(path) => Self::open(&path, true),
             Ask::CopyLast => {
                 if let Some(kept) = &self.last {
                     let read = self.io.read(kept.path.clone());
@@ -530,7 +538,7 @@ impl CaptureStudio {
         self.sent = self.sends.send_to_workspace(kept.path.clone());
     }
 
-    fn start(&mut self, take: Take, compositor: &mut Compositor) {
+    fn start(&mut self, take: Take) {
         let audio = match AudioTrack::start(take.audio) {
             Ok(audio) => audio,
             Err(error) => {
@@ -538,40 +546,33 @@ impl CaptureStudio {
                 return;
             }
         };
-        let frame = match grab(compositor, &take, self.presentation().place()) {
-            Ok(frame) => frame,
-            Err(error) => {
-                tracing::warn!(%error, "a recording was not started");
-                return;
-            }
-        };
-        let recorder = match Recorder::with_audio(
-            Settings::for_size(frame.width, frame.height),
-            audio.iter().map(|track| track.name().to_owned()).collect(),
-        ) {
-            Ok(recorder) => recorder,
-            Err(error) => {
-                tracing::warn!(%error, "no encoder takes this screen's size");
-                return;
-            }
-        };
-        let path = crate::capture::unique(&self.directory, "recording", recorder.extension());
+        // The first frame and the encoder are the worker's: building an
+        // encoder stalls one pass of the loop, and this one has a desk to
+        // keep drawing.
+        let path = crate::capture::unique(
+            &self.directory,
+            "recording",
+            tilo_capture_studio::extension(!audio.is_empty()),
+        );
         // The file is opened by the frame the worker encodes: a folder that
         // cannot be written is said rather than shown as a recording.
         self.run = self.run.wrapping_add(1);
         let run = self.run;
-        self.io.open(run, recorder, Some(path.clone()), frame);
+        let names = audio.iter().map(|track| track.name().to_owned()).collect();
+        self.io.open(run, Some(path.clone()), names);
         self.feeding = Some(Feeding {
             take,
             audio,
             path: Some(path.clone()),
-            last: Some(Instant::now()),
+            last: None,
             paused: false,
         });
         self.recording = Some(Recording {
             path,
             paused: false,
+            skipped: 0,
         });
+        self.finished = None;
     }
 
     fn stop(&mut self) {
@@ -592,18 +593,11 @@ impl CaptureStudio {
         self.recording = None;
     }
 
-    fn start_replay(&mut self, take: Take, compositor: &mut Compositor) {
+    fn start_replay(&mut self, take: Take) {
         if self.feeding.is_some() {
             // One encode feeds a recording and the replay buffer together.
             return;
         }
-        let frame = match grab(compositor, &take, self.presentation().place()) {
-            Ok(frame) => frame,
-            Err(error) => {
-                tracing::warn!(%error, "the replay buffer was not armed");
-                return;
-            }
-        };
         let audio = match AudioTrack::start(take.audio) {
             Ok(audio) => audio,
             Err(error) => {
@@ -611,26 +605,18 @@ impl CaptureStudio {
                 return;
             }
         };
-        let recorder = match Recorder::with_audio(
-            Settings::for_size(frame.width, frame.height),
-            audio.iter().map(|track| track.name().to_owned()).collect(),
-        ) {
-            Ok(recorder) => recorder,
-            Err(error) => {
-                tracing::warn!(%error, "no encoder takes this screen's size");
-                return;
-            }
-        };
         self.run = self.run.wrapping_add(1);
         let run = self.run;
-        self.io.open(run, recorder, None, frame);
+        let names = audio.iter().map(|track| track.name().to_owned()).collect();
+        self.io.open(run, None, names);
         self.feeding = Some(Feeding {
             take,
             audio,
             path: None,
-            last: Some(Instant::now()),
+            last: None,
             paused: false,
         });
+        self.finished = None;
         self.replay = Some(0);
     }
 
@@ -763,19 +749,16 @@ impl CaptureStudio {
         });
     }
 
-    /// Open the last screenshot in the person's image app, or show it in
+    /// Open the capture at `path` in the person's app for it, or show it in
     /// Files.
-    fn open(&self, reveal: bool) {
-        let Some(kept) = &self.last else {
-            return;
-        };
+    fn open(path: &Path, reveal: bool) {
         let path = if reveal {
-            kept.path.parent().unwrap_or_else(|| Path::new("."))
+            path.parent().unwrap_or_else(|| Path::new("."))
         } else {
-            kept.path.as_path()
+            path
         };
         if let Err(error) = std::process::Command::new("xdg-open").arg(path).spawn() {
-            tracing::warn!(%error, path = %path.display(), "a screenshot was not opened");
+            tracing::warn!(%error, path = %path.display(), "a capture was not opened");
         }
     }
 
@@ -816,7 +799,13 @@ impl CaptureStudio {
             kept: self.last.clone(),
             devices,
             sent: self.sent.clone(),
-            recording: self.recording.clone(),
+            // Frames the encoder was too far behind to take so far: the
+            // studio says them while the recording runs and on its receipt.
+            recording: self.recording.as_ref().map(|recording| Recording {
+                skipped: self.io.dropped(),
+                ..recording.clone()
+            }),
+            finished: self.finished.clone(),
             replay: self.replay,
             replay_audio: self.replay_audio(),
             replay_saves: self.replay_saves,

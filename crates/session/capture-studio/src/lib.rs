@@ -28,13 +28,16 @@ mod recorder;
 
 pub use recorder::{
     Frame, REPLAY_BYTES, REPLAY_FPS, REPLAY_FRAMES, REPLAY_SECONDS, Recorder, Settings, State,
+    extension,
 };
 
 pub mod link;
 pub mod resource;
 pub mod surface;
 
-pub use link::{Ask, Kept, Link, Recording, Refusal, Scene, Selection, Sent, Studio, Take};
+pub use link::{
+    Ask, Finished, Kept, Link, Recording, Refusal, Scene, Selection, Sent, Studio, Take,
+};
 pub use resource::{Capture, CaptureEffect, CaptureStudioApp};
 pub use surface::StudioSurface;
 
@@ -58,7 +61,7 @@ mod tests {
     use ui::vello::kurbo::Rect;
     use ui::widget::{CapturePreview, ScreenshotKept, ScreenshotSendDevice, Widget};
 
-    use crate::link::{Ask, Kept, Scene, Sent, Studio};
+    use crate::link::{Ask, Finished, Kept, Recording, Scene, Sent, Studio};
     use crate::surface::StudioSurface;
 
     /// The screenshot the studio wrote, with the receipt that shows it.
@@ -83,6 +86,15 @@ mod tests {
             Some((_, rect)) => rect,
             None => panic!("nothing named {name} is on screen"),
         }
+    }
+
+    /// Whether the studio drew `name` at `at`.
+    fn has(frame: &ui::headless::FrameHarness, at: ui::time::Instant, name: &str) -> bool {
+        tilo_clock::testing::with_monotonic_time(at, || {
+            Widget::test_rects(frame.root::<StudioSurface>())
+                .into_iter()
+                .any(|(target, _)| target == name)
+        })
     }
 
     /// Where the studio drew `name` at `at`.
@@ -229,6 +241,134 @@ mod tests {
         assert!(
             rect_at(&frame, step(7), "capture.send-status").area() > 0.0,
             "the studio names the file it was saved as"
+        );
+    }
+
+    /// A recording that skipped frames says how many while it runs, and its
+    /// receipt says what the file is missing and plays that file, never a
+    /// screenshot taken since.
+    #[test]
+    fn a_recording_that_skipped_frames_says_so_and_plays_its_own_file() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let recording = folder.path().join("Recording 1.mp4");
+        std::fs::write(&recording, b"the recording").expect("a recording");
+        let seat = Studio::new();
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            StudioSurface::new(Some(seat.clone())),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        );
+        let start = ui::time::now();
+        let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
+        seat.presentation().open(false);
+        poll_at(&mut frame, step(1), "the bar comes up");
+        seat.link().publish(Scene {
+            recording: Some(Recording {
+                path: recording.clone(),
+                paused: false,
+                skipped: 12,
+            }),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(2), "the recording shows");
+        assert!(
+            has(&frame, step(2), "capture.recording-skipped"),
+            "the bar says how many frames the recording skipped"
+        );
+        assert!(seat.link().take_asks().is_empty(), "nothing is asked yet");
+
+        // The recording is finished: the bar gives way to a receipt that
+        // says what the file is missing and plays it.
+        seat.link().publish(Scene {
+            finished: Some(Finished {
+                path: recording.clone(),
+                skipped: 12,
+            }),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(3), "the receipt shows");
+        assert!(
+            !has(&frame, step(3), "capture.stop"),
+            "the bar is down once the recording is finished"
+        );
+        press(&mut frame, step(4), "capture.play-recording");
+        assert_eq!(
+            seat.link().take_asks(),
+            [Ask::Open(recording)],
+            "the receipt plays the recording it is about"
+        );
+    }
+
+    /// The bar goes down with the take, and the file comes only after the
+    /// encoder finished it: what became of the recording is still said. A
+    /// studio the shell took down stays down.
+    #[test]
+    fn a_finished_recording_comes_back_up_after_the_bar_put_itself_away() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let recording = folder.path().join("Recording 1.mp4");
+        std::fs::write(&recording, b"the recording").expect("a recording");
+        let seat = Studio::new();
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            StudioSurface::new(Some(seat.clone())),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        );
+        let start = ui::time::now();
+        let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
+        seat.presentation().open(false);
+        poll_at(&mut frame, step(1), "the bar comes up");
+        seat.link().publish(Scene {
+            recording: Some(Recording {
+                path: recording.clone(),
+                paused: false,
+                skipped: 3,
+            }),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(2), "the recording shows");
+        assert!(
+            has(&frame, step(2), "capture.stop"),
+            "the bar shows the recording that runs"
+        );
+
+        // The person stops: the take is down at once, the encoder still has
+        // the file to finish.
+        seat.link().publish(Scene::default());
+        poll_at(&mut frame, step(3), "the take is down");
+        poll_at(&mut frame, step(4), "the bar put itself away");
+        assert!(
+            !seat.presentation().is_drawn(),
+            "the studio is down while the file is finished"
+        );
+
+        // What the file is missing is still said: the receipt comes back up.
+        seat.link().publish(Scene {
+            finished: Some(Finished {
+                path: recording,
+                skipped: 3,
+            }),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(5), "the receipt comes back");
+        poll_at(&mut frame, step(6), "the receipt stays");
+        assert!(
+            seat.presentation().is_open(),
+            "the shell shows the studio again"
+        );
+        assert!(
+            has(&frame, step(6), "capture.play-recording"),
+            "the receipt plays the recording it is about"
+        );
+
+        // The shell takes the studio down itself: that stays down.
+        seat.presentation().close();
+        poll_at(&mut frame, step(7), "the shell takes the studio down");
+        poll_at(&mut frame, step(8), "the studio stays down");
+        assert!(
+            !has(&frame, step(8), "capture.play-recording"),
+            "a studio the shell took down stays down"
         );
     }
 }
