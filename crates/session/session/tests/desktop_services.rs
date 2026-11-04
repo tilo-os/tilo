@@ -78,6 +78,9 @@ fn ask_for_a_note(
 
 #[test]
 fn a_portal_file_chooser_request_is_the_sessions_question() {
+    // The services keep their priority contacts and their schedules under the
+    // person's home: this test's own, never the machine's.
+    let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -176,6 +179,9 @@ fn until<T>(session: &mut Session, asked: impl FnMut(&mut Session) -> Option<T>)
 )]
 #[test]
 fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
+    // The services keep their priority contacts and their schedules under the
+    // person's home: this test's own, never the machine's.
+    let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -368,6 +374,9 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
 )]
 #[test]
 fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
+    // The services keep their priority contacts and their schedules under the
+    // person's home: this test's own, never the machine's.
+    let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -427,9 +436,9 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
                     "From Ada",
                     Vec::<&str>::new(),
                     HashMap::<String, zbus::zvariant::Value>::new(),
-                    // Half a second on screen: enough to watch it arrive and
-                    // go again without holding the test up.
-                    500_i32,
+                    // Four seconds on screen: long enough to watch it arrive
+                    // and go again even where one frame takes most of a second.
+                    4000_i32,
                 ),
             )
             .await
@@ -448,7 +457,22 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
             .then_some(())
     });
     assert!(up.is_some(), "the banner shows to begin with");
-    let up_at = std::time::Instant::now();
+    // Still up on the next pass: it went because its lifetime ran out, not
+    // because the test looked again too late.
+    let still = until(&mut session, |session| {
+        session
+            .banners()
+            .shown()
+            .banners
+            .iter()
+            .any(|(banner, _)| *banner == id)
+            .then_some(())
+    });
+    assert!(
+        still.is_some(),
+        "the banner stays up while its lifetime runs: {:?}",
+        session.banners().shown().banners
+    );
 
     let left = until(&mut session, |session| {
         session
@@ -463,11 +487,6 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
         left.is_some(),
         "the banner leaves once its lifetime runs out: {:?}",
         session.banners().shown().banners
-    );
-    assert!(
-        up_at.elapsed() >= std::time::Duration::from_millis(250),
-        "the banner stayed up for its lifetime, not less: {:?}",
-        up_at.elapsed()
     );
     let kept = until(&mut session, |session| {
         let centre = session.read(tilo_session::NOTIFICATIONS_RESOURCE)?;

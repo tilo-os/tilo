@@ -20,6 +20,7 @@
 
 mod common;
 
+use common::press;
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -148,42 +149,6 @@ fn band_colours(shot: &tilo_compositor::Screenshot) -> usize {
         .filter_map(|x| shot.pixel(x, 16))
         .collect::<std::collections::BTreeSet<_>>()
         .len()
-}
-
-/// Press the bar's control named `name` with the pointer.
-fn press(session: &mut Session, name: &str) {
-    // The click lands where the control is drawn: the shell's views run while
-    // the person's press comes, and a surface still arriving moves its
-    // controls from one frame to the next. So the place the press uses is one
-    // that stood still across the frames before it.
-    let (x, y, w, h) = common::wait_for(session, format!("the bar's {name}"), |session| {
-        let mut place = session.shell_control(name)?;
-        for _ in 0..2 {
-            session.step(Duration::from_millis(16)).expect("step");
-            let next = session.shell_control(name)?;
-            if next != place {
-                return None;
-            }
-            place = next;
-        }
-        Some(place)
-    });
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    let compositor = session.compositor();
-    compositor
-        .input(InputEvent::PointerMotion { x, y })
-        .unwrap();
-    session.step(Duration::from_millis(1)).unwrap();
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::PointerButton {
-                button: BTN_LEFT,
-                pressed,
-            })
-            .unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
 }
 
 #[test]
@@ -2519,7 +2484,16 @@ fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     // group and nothing before it — not the clock, the tabs or the launcher.
     let (_, _, _, band) = bar_band(&taking);
     let from = people.0.min(plain_people.0);
-    let allowed = [(from, 0.0, f64::from(charging.width) - from, band)];
+    // The two frames are of two sessions, kept seconds apart: the clock may
+    // turn its minute between them, and its digits are not the charge.
+    let clock = bar_control(&taking, &desk(&taking).clock).expect("the time");
+    let plain_clock = bar_control(&draining, &desk(&draining).clock).expect("the time, draining");
+    let left = clock.0.min(plain_clock.0);
+    let right = (clock.0 + clock.2).max(plain_clock.0 + plain_clock.2);
+    let allowed = [
+        (from, 0.0, f64::from(charging.width) - from, band),
+        (left, 0.0, right - left, band),
+    ];
     let (glyph, outside) = changed_near(&charging, &plain, pack, &allowed);
     assert!(
         glyph > 20,

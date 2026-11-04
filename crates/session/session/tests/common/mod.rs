@@ -218,8 +218,26 @@ pub fn press(session: &mut Session, name: &str) {
 /// Press the shell's control named `name` on a display `width` by `height` with the pointer, as
 /// the person does.
 pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
-    let (x, y, w, h) = on_screen_at(session, name, width, height)
-        .unwrap_or_else(|| panic!("the shell shows {name}: {:?}", session.accessible_labels()));
+    // The press lands where the control is drawn once it stood still across
+    // two frames. A surface still arriving moves its controls from one frame
+    // to the next, and a press aimed at a place a control has left misses it:
+    // the person waits for the menu to be there, and so does the test.
+    let (x, y, w, h) = wait_for(
+        session,
+        format!("the shell's {name} to stand still"),
+        |session| {
+            let mut place = on_screen_at(session, name, width, height)?;
+            for _ in 0..2 {
+                session.step(Duration::from_millis(16)).expect("step");
+                let next = on_screen_at(session, name, width, height)?;
+                if next != place {
+                    return None;
+                }
+                place = next;
+            }
+            Some(place)
+        },
+    );
     let (x, y) = (x + w / 2.0, y + h / 2.0);
     session
         .compositor()
@@ -286,6 +304,12 @@ pub fn show_preset(session: &mut Session, preset: &str) {
         on_screen(session, preset).is_some()
     });
     press(session, preset);
+    let shown = format!("Showing {preset}");
+    until(
+        session,
+        &format!("the desk to show the {preset} preset"),
+        |session| preset_menu(session).as_deref() == Some(shown.as_str()),
+    );
 }
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,

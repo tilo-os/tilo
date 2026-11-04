@@ -1549,18 +1549,15 @@ fn wait_until_desk(
     want: &[(String, Vec<String>)],
     what: &str,
 ) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.step(Duration::from_millis(10)).unwrap();
-        let shown = desk_layout(session, workspace);
-        if shown == want {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{what}: the desk shows {shown:?}, the site holds {want:?}"
-        );
-    }
+    let shown = common::wait_maybe(session, |session| {
+        (desk_layout(session, workspace) == want).then_some(())
+    });
+    assert!(
+        shown.is_some(),
+        "{what}: the desk shows {:?}, the site holds {want:?}; the shell's refusals: {:?}",
+        desk_layout(session, workspace),
+        session.shell_refusals()
+    );
 }
 
 /// The desktop as another member leaves it: a window they open beside one
@@ -1741,29 +1738,26 @@ fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
 fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
     // The join is the site's door, the workspace's keys and its roster arriving
     // from other runtimes, so the bound is the suite's, not a second count.
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.step(Duration::from_millis(10)).unwrap();
+    let here = common::wait_maybe(session, |session| {
         let held = session.held_workspaces();
         let people = session.people(&lounge.workspace);
-        if held.iter().any(|workspace| workspace == &lounge.workspace)
+        (held.iter().any(|workspace| workspace == &lounge.workspace)
             && people.as_ref().is_ok_and(|people| {
                 people
                     .iter()
                     .any(|member| member.person == hex::encode(lounge.person))
-            })
-        {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the lounge's workspace is held here: held {held:?}, people {people:?}, \
-             directory {:?}",
-            session
-                .workspace_directory()
-                .map(tilo_sheets::directory::DirectorySeat::directory)
-        );
-    }
+            }))
+        .then_some(())
+    });
+    assert!(
+        here.is_some(),
+        "the lounge's workspace is held here: held {:?}, people {:?}, directory {:?}",
+        session.held_workspaces(),
+        session.people(&lounge.workspace),
+        session
+            .workspace_directory()
+            .map(tilo_sheets::directory::DirectorySeat::directory)
+    );
 }
 
 /// The line the lounge's chat holds here, as the person reads it: `None`

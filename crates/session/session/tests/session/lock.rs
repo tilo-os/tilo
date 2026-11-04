@@ -1196,19 +1196,21 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
         "Speakers, Muted",
         "the locked session answers the device key, naming the output"
     );
-    // The frame the answer is drawn in, over the lock's own: step until it
-    // is drawn, rather than counting the turns it takes.
+    // The frame the answer is drawn in, over the lock's own: step until a
+    // frame differs from the lock's and the next one is the same, so what is
+    // measured is the readout at rest rather than a frame of its arrival.
+    let mut last: Option<tilo_compositor::Screenshot> = None;
     pump(&mut session, &mut [], |session, _| {
-        let after = session
+        let now = session
             .compositor()
             .screenshot(DISPLAY)
             .expect("screenshot");
-        changed(&before, &after).is_some()
+        let drawn = changed(&before, &now).is_some();
+        let settled = last.as_ref().is_some_and(|last| last.rgba == now.rgba);
+        last = Some(now);
+        drawn && settled
     });
-    let after = session
-        .compositor()
-        .screenshot(DISPLAY)
-        .expect("screenshot");
+    let after = last.expect("the readout's frame");
     assert!(
         !asked.borrow().is_empty(),
         "the key reached the sound service while locked"
@@ -1217,8 +1219,11 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     // across the middle of the display's foot.
     let (left, top, right, bottom) =
         changed(&before, &after).expect("the readout paints over the lock");
+    // The readout stands on the middle of the screen, as one band: its frame
+    // is what the system settings draw, so what is held is that it is centred
+    // and of the readout's size, never the width of a frame of its arrival.
     assert!(
-        (500..=780).contains(&left) && (500..=780).contains(&right),
+        left.midpoint(right).abs_diff(WIDTH as usize / 2) <= 24 && right - left <= 500,
         "the readout is across the middle of the screen: {left}..{right}"
     );
     assert!(

@@ -325,6 +325,18 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     let paths = tree(&source.join("big"), 12000);
 
     let mut session = session();
+    // What a turn costs on this machine before the paste starts: a loaded one
+    // takes every turn slowly, and the test is about the paste being spread
+    // over turns, not about the machine being idle.
+    let mut before: Vec<Duration> = (0..5)
+        .map(|_| {
+            let turn = Instant::now();
+            step(&mut session);
+            turn.elapsed()
+        })
+        .collect();
+    before.sort_unstable();
+    let pace = before.get(before.len() / 2).copied().unwrap_or_default();
     copy(&mut session, &[source.join("big")], false);
     let started = Instant::now();
     paste_into(&mut session, &destination, None);
@@ -366,11 +378,14 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     // for a few of its own turns' worth: so the bound is the loop's own pace,
     // never a wall-clock figure of this machine.
     assert!(
-        p50 < Duration::from_millis(50),
-        "the loop's usual turn kept its time: p50 {p50:?} of {} turns, over {copied:?}",
+        p50 < pace.max(Duration::from_millis(50)),
+        "the loop's usual turn kept its time: p50 {p50:?} of {} turns, over {copied:?}, \
+         against {pace:?} a turn before the paste",
         turns.len()
     );
-    let quiet = Duration::from_millis(50).max(p95.saturating_mul(4));
+    let quiet = pace
+        .max(Duration::from_millis(50))
+        .max(p95.saturating_mul(4));
     assert!(
         max < quiet,
         "no turn waited on the disk: max {max:?} of {} turns, p50 {p50:?}, p95 {p95:?}, over {copied:?}",
