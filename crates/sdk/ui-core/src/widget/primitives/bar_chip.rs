@@ -35,7 +35,7 @@ pub struct BarChipFace<'a> {
     faces: &'a [Face<'a>],
     /// How many people stand past the shown faces, counted by the overflow badge.
     overflow: usize,
-    icon: Option<Icon>,
+    icons: &'a [Icon],
     trailing: Option<Icon>,
     tone: Option<Color>,
     open: bool,
@@ -68,7 +68,7 @@ impl<'a> BarChipFace<'a> {
             label: "",
             faces,
             overflow: 0,
-            icon: None,
+            icons: &[],
             trailing: None,
             tone: None,
             open: false,
@@ -94,10 +94,12 @@ impl<'a> BarChipFace<'a> {
         self
     }
 
-    /// A glyph before the faces (a watch, an invite).
+    /// The glyphs before the faces: a watch, an invitation, or a media
+    /// pill's microphone and camera. A chip with none starts its faces at
+    /// its inset.
     #[must_use]
-    pub fn icon(mut self, icon: Icon) -> Self {
-        self.icon = Some(icon);
+    pub fn icons(mut self, icons: &'a [Icon]) -> Self {
+        self.icons = icons;
         self
     }
 
@@ -186,9 +188,7 @@ impl<'a> BarChipFace<'a> {
         let gap = Self::gap(theme);
         let icon = Self::icon_size(theme);
         let mut w = 2.0 * Self::pad(theme);
-        if self.icon.is_some() {
-            w += icon + gap;
-        }
+        w += f64::from(u32::try_from(self.icons.len()).unwrap_or(u32::MAX)) * (icon + gap);
         let stack = self.stack_width(theme);
         if stack > 0.0 {
             w += stack;
@@ -263,7 +263,7 @@ impl<'a> BarChipFace<'a> {
             chip: rect,
             ..BarChipLayout::default()
         };
-        if let Some(glyph) = self.icon {
+        for glyph in self.icons {
             glyph.draw_with_stroke(
                 ctx.scene,
                 ctx.transform,

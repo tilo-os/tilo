@@ -240,6 +240,31 @@ impl<'a> BarControlFace<'a> {
         }
     }
 
+    /// Paint only the control's lift in `rect` on `ground`: the fill
+    /// [`Self::paint`] lays under its content, for a bar control that draws
+    /// its content itself (an application's tray icon, a mark). The caller
+    /// draws what stands on it.
+    pub fn paint_lift(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        rect: Rect,
+        theme: &Theme,
+        ground: Color,
+    ) {
+        let Some(fill) = self.fill(theme, ground) else {
+            return;
+        };
+        let radius = f64::from(theme.tokens.radii.control).min(rect.height() / 2.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            fill,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+    }
+
     pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Button)

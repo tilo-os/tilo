@@ -20,7 +20,7 @@ use crate::paint::PaintCtx;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::primitives::FloatingPanelFace;
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, FloatingPanelLayout};
+use crate::widget::{Button, ButtonFace, ButtonRole, FloatingPanelLayout};
 
 /// The reading an agenda popover shows: a title, the time, and its state.
 #[derive(Clone, Debug, PartialEq)]
@@ -141,6 +141,14 @@ impl<'a> AgendaPopoverFace<'a> {
         self
     }
 
+    /// The height of the popover's two wide actions: the input's minimum for
+    /// adjacent controls (44 for a finger), since the floating timer is
+    /// commonly used directly on a touch screen rather than at a desk.
+    #[must_use]
+    pub fn action_height(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.metrics.min_pointer_target).max(44.0)
+    }
+
     /// The smallest the panel is: its headline, its reading and its controls.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
@@ -153,7 +161,7 @@ impl<'a> AgendaPopoverFace<'a> {
                 .with_weight(crate::text_render::TextWeight::Bold)
                 .line_height_px(),
         );
-        let controls = ButtonFace::height(ControlSize::Regular, theme);
+        let controls = Self::action_height(theme);
         let inset = f64::from(theme.tokens.spacing.rhythm.section);
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         (grip + 2.0 * inset + title + reading + gap + controls).ceil()
@@ -220,11 +228,12 @@ impl<'a> AgendaPopoverFace<'a> {
             &reading_style,
         );
         let mut controls = self.control_row(panel, theme);
+        let target = Self::action_height(theme);
         let close = Rect::new(
-            panel.x1 - inset - f64::from(theme.tokens.metrics.min_pointer_target),
+            panel.x1 - inset - target,
             panel.y0 + inset / 2.0,
             panel.x1 - inset,
-            panel.y0 + inset / 2.0 + f64::from(theme.tokens.metrics.min_pointer_target),
+            panel.y0 + inset / 2.0 + target,
         );
         controls.close = close;
         // The pause is the primary action; the add and the close stand beside it.
@@ -280,7 +289,7 @@ impl<'a> AgendaPopoverFace<'a> {
     fn control_row(&self, panel: Rect, theme: &Theme) -> AgendaPopoverLayout {
         let inset = f64::from(theme.tokens.spacing.rhythm.section);
         let gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let height = Self::action_height(theme);
         let left = panel.x0 + inset;
         let right = panel.x1 - inset;
         let width = ((right - left) - gap) / 2.0;
@@ -322,6 +331,7 @@ impl<'a> AgendaPopoverFace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text_render::{TextRenderer, TextStyle};
     use vello::kurbo::Affine;
 
     fn entry() -> AgendaEntry {
@@ -335,13 +345,19 @@ mod tests {
     #[test]
     fn a_popover_is_as_tall_as_its_headline_reading_and_controls() {
         let theme = Theme::dark();
-        let panel = Rect::from_origin_size(Point::ZERO, (252.0, AgendaPopoverFace::height(&theme)));
+        // A panel the host sized to the popover's own preference: the
+        // floating timer's established 150 px, clamped to what the window
+        // gives it.
+        let preferred = AgendaPopoverFace::height(&theme).max(150.0);
+        let panel = Rect::from_origin_size(Point::ZERO, (252.0, preferred));
         let mut scene = vello::Scene::new();
         let mut text = TextRenderer::new();
         let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let face = AgendaPopoverFace::new(&entry(), &labels());
+        let entry = entry();
+        let labels = labels();
+        let face = AgendaPopoverFace::new(&entry, &labels);
         let (layout, _) = face.paint(&mut ctx, panel);
-        assert!(layout.panel.height() >= 140.0);
+        assert!(layout.panel.height() >= preferred - 1.0);
         assert!(layout.toggle.width() > 0.0 && layout.add.width() > 0.0);
         assert!(layout.close.width() > 0.0);
         // The controls stand inside the panel, and apart.
@@ -369,7 +385,9 @@ mod tests {
         let mut scene = vello::Scene::new();
         let mut text = TextRenderer::new();
         let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let face = AgendaPopoverFace::new(&entry(), &labels());
+        let entry = entry();
+        let labels = labels();
+        let face = AgendaPopoverFace::new(&entry, &labels);
         let (layout, _) = face.paint(&mut ctx, panel);
         assert_eq!(
             AgendaPopoverFace::control_at(&layout, layout.toggle.center()),
@@ -393,7 +411,9 @@ mod tests {
     fn the_panel_drags_by_its_header() {
         let theme = Theme::dark();
         let panel = Rect::from_origin_size(Point::new(100.0, 80.0), (252.0, 140.0));
-        let face = AgendaPopoverFace::new(&entry(), &labels());
+        let entry = entry();
+        let labels = labels();
+        let face = AgendaPopoverFace::new(&entry, &labels);
         let header = face.header(panel, &theme);
         assert!(
             header.contains(Point::new(220.0, 90.0)),

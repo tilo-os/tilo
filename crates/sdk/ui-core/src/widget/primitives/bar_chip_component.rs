@@ -66,6 +66,8 @@ impl BarChipProps {
 /// A bar chip as a retained widget: the [`BarChipFace`]'s content with its own press.
 pub struct BarChip {
     props: BarChipProps,
+    /// The glyphs before the faces, in a run the painted face borrows.
+    icon_run: Vec<Icon>,
     /// What a press runs: the view intent or the exported action the props named.
     press: Option<Box<dyn FnMut()>>,
     rect: Rect,
@@ -86,8 +88,10 @@ impl BarChip {
         if let Some(label) = &self.props.label {
             chip = chip.label(label);
         }
-        if let Some(icon) = self.props.icon {
-            chip = chip.icon(icon);
+        if !self.icon_run.is_empty() {
+            // The glyphs the props name, in the run the face borrows: the
+            // face reads glyphs, never a single field.
+            chip = chip.icons(&self.icon_run);
         }
         if let Some(trailing) = self.props.trailing {
             chip = chip.trailing(trailing);
@@ -292,6 +296,7 @@ impl Described for BarChip {
         // action runs through its emitter. Either way the chip's `press` is
         // what a person's press reaches.
         Self {
+            icon_run: props.icon.into_iter().collect(),
             props,
             press,
             rect: Rect::ZERO,
@@ -304,6 +309,7 @@ impl Described for BarChip {
     fn set_props(&mut self, mut props: BarChipProps) -> bool {
         let press = std::mem::replace(&mut props.press, Event::None);
         self.press = press.handler();
+        self.icon_run = props.icon.into_iter().collect();
         self.props = props;
         true
     }

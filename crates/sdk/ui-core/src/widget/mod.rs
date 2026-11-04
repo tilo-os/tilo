@@ -3302,15 +3302,19 @@ pub use context_menu::{
     shift_held, shift_skips_confirmation,
 };
 mod row_menu;
+pub use chrome_body::paint_bar_body;
 pub use primitives::{
     AgendaControl, AgendaEntry, AgendaLabels, AgendaPopoverFace, AgendaPopoverLayout, BarChip,
     BarChipFace, BarChipLayout, BarChipProps, BarControlFace, DeclaredModal, DeclaredPanel,
     DeclaredPopover, DeclaredPopoverButton, DensityRegion, DisclosureGroup, DisclosureRow,
     DisclosureRowProps, DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps,
     FloatingPanel, FloatingPanelFace, FloatingPanelLayout, FloatingPanelProps, IconButton, KeyHint,
-    KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps, ModalProps, PopoverButtonProps,
-    PopoverProps, Surface, SurfaceLevel, TextStack, TextStackFace, TextStackProps,
-    paint_see_through, paint_surface,
+    KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps, LinkReading, MAX_SLOTS, ModalProps,
+    NotificationListControl, NotificationListLayout, NotificationListRow, NotificationListView,
+    NotificationRowControls, PopoverProps, StatusCluster, StatusClusterFace, StatusClusterLayout,
+    StatusSlot, Surface, SurfaceLevel, TextBlockFace, TextLineAlign, TextLineFace, TextStack,
+    TextStackFace, TextStackProps, badge_label, badge_size, control_fill, control_radius,
+    paint_control_row, paint_see_through, paint_severity_rail, paint_surface, paint_unread_badge,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;

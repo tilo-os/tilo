@@ -589,12 +589,14 @@ mod tests {
     fn paint(slots: &[StatusSlot], status: StatusCluster) -> (StatusClusterLayout, usize) {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let mut scene = vello::Scene::new();
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
         let face = StatusClusterFace::new(slots, status);
         let width = face.width(&mut text, &theme);
         let rect = Rect::new(0.0, 0.0, width, StatusClusterFace::height(&theme));
-        let layout = face.paint(&mut ctx, rect, theme.tokens.colors.surfaces.base);
+        let mut scene = vello::Scene::new();
+        let layout = {
+            let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            face.paint(&mut ctx, rect, theme.tokens.colors.surfaces.base)
+        };
         (layout, scene.encoding().draw_tags.len())
     }
 
