@@ -1096,8 +1096,10 @@ impl Live {
             // are checked even when their holder runs again.
             let check = !self.dirty.contains(&holder) || self.lists.contains_key(&rows.parent);
             if check && !self.rows_fit(core, holder, &rows) {
+                // The rows the host holds are the ones the list built, unchanged: the holder
+                // runs again and gives the host the steps between them and the listing as it
+                // is now, so its rows move rather than being read anew.
                 self.dirty.insert(holder);
-                self.lose_rows(&rows.parent);
             }
         }
         self.release(core);
