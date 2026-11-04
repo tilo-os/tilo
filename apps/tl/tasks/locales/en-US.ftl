@@ -127,13 +127,6 @@ d-u4wzi4k4 = The day it is grouped under, as a list of a day is
 d-ifftrju4 = Its project, as a project's list is of one
     .doc = Its project, as a project's list is of one.
 
-d-vwgro4iv = Complete
-    .doc = Checks an item off with every item under it, or opens it again with the items it is under.
-
-d-fykojijd = Add subtask
-    .doc = Adds a subtask under an item: an item of its own, at the end of the items it holds, under the title given, keeping what it inherits of the one it stands under.
-    .did = added a subtask
-
 d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
@@ -145,6 +138,13 @@ d-rs3ubifz = New task
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
+
+d-vwgro4iv = Complete
+    .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
+
+d-fykojijd = Add subtask
+    .doc = Adds a subtask under a task: a task of its own, in its project and section, under the title given.
+    .did = added a subtask
 
 d-tmwdrpev = Today
     .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
@@ -185,6 +185,21 @@ d-dshqxolf = Inbox
 d-c6y4cxdd = Assign
     .doc = Gives a task to someone, or to nobody.
 
+d-berwb3de = Move to
+    .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
+
+d-he6qkhh4 = Indent
+    .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does: the row over it names the task of its own level it ends up under.
+
+d-khy6tj7s = Outdent
+    .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
+
+d-23y3zdgu = Duplicate
+    .doc = Copies a task, with every task under it, just after the one it copies.
+
+d-ojzyzzxu = Delete
+    .doc = Deletes a task and its subtasks.
+
 d-rjpcv6es = Delete finished tasks
     .doc = Deletes every finished task, and answers how many went: a task is finished when everything under it is done too, so deleting takes whole finished branches and never unfinished work with it, and a task done with a step still open under it stays.
 
@@ -209,23 +224,8 @@ d-scjlkb6d = Place
 d-kjbukd2o = Rename
     .doc = Renames a project.
 
-d-berwb3de = Move to
-    .doc = Moves an item to a place in the outline: at the end of `parent`'s items (the top level for none), where `before` stands when it is given, or at the end of the top level.
-
-d-he6qkhh4 = Indent
-    .doc = Moves an item under the item the view shows just over it in its group, as `Ctrl+]` does: the row over it names the item of its own level it ends up under.
-
-d-khy6tj7s = Outdent
-    .doc = Moves an item out from under its parent, just after it, as `Ctrl+[` does in an outline.
-
-d-23y3zdgu = Duplicate
-    .doc = Copies an item, with every item under it, just after the one it copies.
-
-d-ojzyzzxu = Delete
-    .doc = Deletes an item and the items under it.
-
 d-m2xarbfd = Copy below
-    .doc = Copies the items under `t` under `copy`, each in its place, so a copy reads as the item it copies did; answers the last item the copies end with.
+    .doc = Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it copies did; answers the last task the copies end with.
 
 d-qwizihx4 = Check~present
 
@@ -248,6 +248,8 @@ d-g4wmwcnr = Set priority high~present
 d-lvbdxuzj = Set priority urgent~present
 
 d-day53wfn = Unfile~present
+
+d-mg3c777a = Move to~present
 
 d-tpvjqy5m = Clear done~present
 
@@ -274,5 +276,3 @@ d-mtmufg3w = Task page
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask
     .w-inbox = Inbox
-
-d-mg3c777a = Move to~present

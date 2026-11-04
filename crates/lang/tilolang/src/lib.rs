@@ -57,7 +57,6 @@ pub mod messages;
 pub mod meta;
 pub mod natural;
 pub mod origin;
-mod outline;
 mod package;
 pub mod parser;
 pub mod pred;

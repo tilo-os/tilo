@@ -225,29 +225,6 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   because someone checked its last step elsewhere is redrawn there, though the change named
   only the step.
 
-## Outline actions from field roles
-
-- **A type's fields say which tree operations it needs.** A type whose items nest (`(parent)`),
-  that can be finished (`(done)`), is named (`(title)`) and is held by a named root's
-  `Collection<T>` gets the outline's actions without writing them: `check` (checks an item off
-  with everything under it, and opens the items it is under), `add_subtask`, `move_to` with
-  `indent` and `outdent` over it, `duplicate` with the items under it, and a destructive
-  `remove` that takes them with it. They are derived from the type in its own words before ids
-  are locked, so they are the app's actions: menus, palette, keys, history and translation
-  treat them as declarations. An app declaring one of the names declares it instead.
-- **`(inherit)` marks what a subtask keeps of the one it stands under.** A subtask is another
-  item of the same type, and which of its fields repeat the parent's is the app's own model:
-  `project: Option<Project> (inherit)` keeps a subtask in its task's project, while an assignee
-  or a due day is the subtask's own. Inheriting every reference field but the parent would
-  carry what the person set for one item onto every item under it.
-- **One type of a package has them:** the first declared that meets the rules, because the
-  actions are named for the outline the person sees, not for a type. A package with a second
-  nested type declares that one's actions itself.
-- **`std.outline` names the actions, and its view writes no lambda.** Its drop and check
-  handlers are `std.move(moved, parent, before)` and `std.check(x)`, which find the handed
-  type's `move_to` and `check`; a type without the roles has an outline that moves and checks
-  nothing.
-
 ## Packages of several files
 
 - **A package is a directory.** Every `.tl` file directly in it is part of the one module

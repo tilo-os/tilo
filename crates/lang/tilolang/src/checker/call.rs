@@ -24,12 +24,6 @@ impl Checker<'_> {
                     if name.name == "complete" {
                         return self.builtin_complete(args, span);
                     }
-                    if name.name == "move" {
-                        return self.builtin_outline_move(args, span);
-                    }
-                    if name.name == "check" {
-                        return self.builtin_outline_check(args, span);
-                    }
                     if let Some(held) =
                         crate::resolve::std_text_ty(&[crate::stdlib::NS, name.name.as_str()])
                     {
@@ -1327,74 +1321,6 @@ impl Checker<'_> {
             Ek::Seq(stmts, Box::new(Ex::local(again, Ty::Bool))),
             Ty::Bool,
         )
-    }
-
-    /// `std.move(moved, parent, before)`: the outline's move — `(moved, .none, .none)` to the end
-    /// of the top level, `(moved, .some(x), .none)` to the end of `x`'s items, `(moved, .none,
-    /// .some(x))` where `x` stands — applied to the item type's own `move_to`, which the type's
-    /// `(parent)` field derives ([`crate::outline`]). The root holding the items fills the
-    /// action's holder; a type with no such action, or an item of another type, applies nothing,
-    /// so an outline of it has no move.
-    fn builtin_outline_move(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let [moved, parent, before] = args else {
-            return Ex::error();
-        };
-        if args.iter().any(|a| a.name.is_some()) {
-            return Ex::error();
-        }
-        let moved = self.expr(&moved.value, None);
-        let Ty::Record(key) = moved.ty.clone() else {
-            return Ex::error();
-        };
-        let Some(c) = self.env.own_callable("move_to").cloned() else {
-            return Ex::error();
-        };
-        let [holder, item, at, place] = c.params.as_slice() else {
-            return Ex::error();
-        };
-        if item.ty != Ty::Record(key) {
-            return Ex::error();
-        }
-        let Ty::Record(holder_key) = holder.ty.clone() else {
-            return Ex::error();
-        };
-        let Some(info) = self.env.type_info(&holder_key) else {
-            return Ex::error();
-        };
-        if !self.env.roots.contains(&holder_key) {
-            return Ex::error();
-        }
-        let holder = Self::root_ref(&info.key.app, &info.id, &info.key);
-        let parent = self.expr_as(&parent.value, &at.ty);
-        let before = self.expr_as(&before.value, &place.ty);
-        let bound = vec![Some(holder), Some(moved), Some(parent), Some(before)];
-        let bound = self.applied_args(&c, bound, span);
-        self.action_value(&c, bound)
-    }
-
-    /// `std.check(item)`: checking an item off, or opening it again, through the item type's own
-    /// `check`, which its `(done)` field derives ([`crate::outline`]); whether it is done now is
-    /// the action's default, so the runtime works it out over the item as it stands. An item of
-    /// a type with no such action is checked by nothing.
-    fn builtin_outline_check(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let [item] = args else {
-            return Ex::error();
-        };
-        if item.name.is_some() {
-            return Ex::error();
-        }
-        let value = self.expr(&item.value, None);
-        let Ty::Record(key) = value.ty.clone() else {
-            return Ex::error();
-        };
-        let Some(c) = self.env.own_callable("check").cloned() else {
-            return Ex::error();
-        };
-        if c.params.first().map(|p| &p.ty) != Some(&Ty::Record(key)) {
-            return Ex::error();
-        }
-        let bound = self.applied_args(&c, vec![Some(value)], span);
-        self.action_value(&c, bound)
     }
 
     /// The action that sets the view state `state` to `v`.
