@@ -685,7 +685,13 @@ mod tests {
         );
         // A relative path is refused before the client sees it.
         let relative = app.call("open-repository", serde_json::json!({"path": "repository"}));
-        assert!(relative.unwrap_err().to_string().contains("absolute"));
+        assert!(
+            relative
+                .unwrap_err()
+                .to_string()
+                .contains("the path must be absolute"),
+            "a relative path is refused with the reason"
+        );
         app.effect(&GitClientEffect::OpenRepository {
             path: ui::tilo_resource::AbsolutePath::new(&path).unwrap(),
         })
