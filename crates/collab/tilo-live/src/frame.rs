@@ -79,21 +79,22 @@ pub enum Refusal {
     Primitive,
 }
 
-/// Which of a call's two lanes a frame travels on.
+/// Which lane of a call a frame travels on.
+///
+/// Voice travels on the workspace's live plane, not on a lane; the place its
+/// variant held is kept so a hello written before still reads.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub enum Lane {
-    /// Voice. Frames are 20 ms Opus pictures carried as datagrams, dropped
-    /// rather than delayed.
-    Audio,
+    /// The lane voice was carried on, retired.
+    RetiredAudio,
     /// Pictures, on unidirectional streams, one per source, layer and group
     /// of pictures.
     Video,
 }
 
-/// One media stream of a call: what its frames carry, and the lane they
-/// travel on.
+/// One media stream of a call: what its frames carry.
 ///
 /// The tags are keys: one derived key per tag, so a stream's frames are never
 /// another's. New streams are appended; an existing tag is never reused.
@@ -117,22 +118,8 @@ pub enum Stream {
 }
 
 impl Stream {
-    /// The lane this stream travels on.
-    #[must_use]
-    pub const fn lane(self) -> Lane {
-        match self {
-            Self::Microphone => Lane::Audio,
-            Self::Camera
-            | Self::Screen
-            | Self::Window
-            | Self::Presence
-            | Self::Input
-            | Self::Activity => Lane::Video,
-        }
-    }
-
-    /// The two bytes a media key is derived for: the lane, then the source
-    /// within it. A key is never one another stream's.
+    /// The two bytes a media key is derived for: the kind of media, then the
+    /// stream within it. A key is never one another stream's.
     #[must_use]
     pub const fn tag(self) -> [u8; MEDIA_STREAM_TAG_LEN] {
         const AUDIO: u8 = 0;

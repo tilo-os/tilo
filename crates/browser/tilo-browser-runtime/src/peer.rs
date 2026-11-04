@@ -1389,6 +1389,15 @@ enum JsVoiceEvent {
         call: String,
         reason: String,
     },
+    /// One frame of a call's voice, as the device `from` published it on the
+    /// workspace's plane: the page's app plays it.
+    Heard {
+        room: String,
+        from: String,
+        sequence: u64,
+        timestamp48k: u64,
+        opus: String,
+    },
 }
 
 fn workspace_of(
@@ -2269,8 +2278,9 @@ impl WasmPeer {
 
     /// Call events since the last call, as a JSON array of `{kind: 'calls',
     /// room, calls | error}`, `{kind: 'callResult', room, request, call |
-    /// error}`, `{kind: 'granted', room, grant}` and `{kind: 'ended', room,
-    /// call, reason}`.
+    /// error}`, `{kind: 'granted', room, grant}`, `{kind: 'ended', room,
+    /// call, reason}` and `{kind: 'heard', room, from, sequence,
+    /// timestamp48k, opus}` (`opus` in hex), which the app plays.
     #[wasm_bindgen(js_name = takeVoiceEvents)]
     pub fn take_voice_events(&self) -> String {
         let out: Vec<JsVoiceEvent> = self
@@ -2279,10 +2289,53 @@ impl WasmPeer {
             .into_iter()
             .filter_map(|event| match event {
                 PeerEvent::Voice(event) => Some(voice_event(event, &self.voice_workspaces)),
+                PeerEvent::CallAudio {
+                    workspace_id,
+                    from,
+                    sequence,
+                    timestamp_48k,
+                    opus,
+                } => Some(JsVoiceEvent::Heard {
+                    room: workspace_of(workspace_id, &self.voice_workspaces),
+                    from: hex::encode(from),
+                    sequence,
+                    timestamp48k: timestamp_48k,
+                    opus: hex::encode(opus),
+                }),
                 _ => None,
             })
             .collect();
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Publish `frames` (JSON array of `{timestamp48k, opus}`, `opus` in hex)
+    /// on `workspace`'s live plane as this page's voice, in the order given:
+    /// one voice object per frame, heard by every device in the call.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace or frames, or a closed session.
+    #[wasm_bindgen(js_name = callAudio)]
+    pub fn call_audio(&self, workspace: &str, frames: &str) -> Result<(), JsError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Frame {
+            timestamp48k: u64,
+            opus: String,
+        }
+        let frames: Vec<Frame> = serde_json::from_str(frames).map_err(js_error)?;
+        let frames: Vec<tilo_browser_peer::CallFrame> = frames
+            .into_iter()
+            .filter_map(|frame| {
+                Some(tilo_browser_peer::CallFrame {
+                    timestamp_48k: frame.timestamp48k,
+                    opus: hex::decode(frame.opus).ok()?,
+                })
+            })
+            .collect();
+        self.handle
+            .publish_call_audio(workspace_number(workspace)?, frames)
+            .map_err(js_error)
     }
 
     /// Take one turn of `workspace`'s call: `turn` is a `LaneTurn` as JSON

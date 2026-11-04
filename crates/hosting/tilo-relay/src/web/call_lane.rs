@@ -230,10 +230,11 @@ mod tests {
         endpoint
     }
 
-    /// A page's turn reaches the call's lane, and what the call's device sends
-    /// comes back on the next one.
+    /// A page's turn reaches the call and opens its lane to the call's
+    /// device: the turn after the lane is up names the device the page's
+    /// pictures go to and come from.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_turn_reaches_the_calls_lanes_and_brings_back_what_they_carry() {
+    async fn a_turn_opens_the_calls_lane_to_its_device() {
         let lookup = iroh::address_lookup::memory::MemoryLookup::new();
         let host = bound(0x71, &lookup).await;
         let phone = bound(0x72, &lookup).await;
@@ -244,33 +245,23 @@ mod tests {
 
         // The call's other device, as a native one takes part: it answers the
         // lanes the host opens under the call's protocol.
-        let (calls, accepted) = Calls::new(
+        let (calls, mut accepted) = Calls::new(
             Hello {
                 workspace: WORKSPACE.to_owned(),
                 channel,
                 call: CALL.to_owned(),
-                lane: Lane::Audio,
+                lane: Lane::Video,
             },
             roster.clone(),
         );
         let answering = iroh::protocol::Router::builder(phone.clone())
             .accept(tilo_call_lane::ALPN, calls)
             .spawn();
-        let (heard, mut carried) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let sent = vec![9_u8; 4];
-        let wired = sent.clone();
+        let (seen, mut lanes) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
-            let mut accepted = accepted;
-            while let Some(incoming) = accepted.recv().await {
-                if incoming.lane() == Lane::Audio {
-                    let _ = incoming.send(wired.clone());
-                }
-                let heard = heard.clone();
-                tokio::spawn(async move {
-                    while let Ok(datagram) = incoming.received().await {
-                        let _ = heard.send(datagram.to_vec());
-                    }
-                });
+            if let Some(incoming) = accepted.recv().await {
+                let _ = seen.send(incoming.lane());
+                incoming.ended().await;
             }
         });
 
@@ -279,38 +270,30 @@ mod tests {
             workspace: WORKSPACE.to_owned(),
             call: CALL.to_owned(),
             channel,
-            audio: vec![vec![1, 2, 3]],
             ..Up::default()
         };
-
-        // Lanes open on the first turn: the page's frames reach the call,
-        // and what the call's device sent comes back for the page, named by
-        // the device that sent it. A turn takes what arrived since the last
-        // one, so both directions are read off the turns as they come.
-        let (heard_page, heard_phone) = tokio::time::timeout(Duration::from_secs(20), async {
-            let (mut heard_page, mut heard_phone) = (false, false);
-            loop {
-                let down = lane
-                    .turn(vec![host_device, phone_device], page_turn())
-                    .await
-                    .expect("the host carries the page's call");
-                if !heard_page && let Ok(played) = carried.try_recv() {
-                    assert_eq!(played, vec![1, 2, 3]);
-                    heard_page = true;
-                }
-                heard_phone |= down
-                    .audio
-                    .iter()
-                    .any(|carried| carried.from == phone_device && carried.datagram == sent);
-                if heard_page && heard_phone {
-                    break (heard_page, heard_phone);
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let down = lane
+                .turn(vec![host_device, phone_device], page_turn())
+                .await
+                .expect("the host carries the page's call");
+            if down.devices.contains(&phone_device) {
+                break;
             }
-        })
-        .await
-        .expect("the page and the call hear each other");
-        assert!(heard_page && heard_phone);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the host opens the call's lane to its device"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            lanes
+                .try_recv()
+                .expect("the call's device answers the host's lane"),
+            Lane::Video,
+            "the host's lane is the call's picture lane"
+        );
         let _ = answering.shutdown().await;
     }
 }

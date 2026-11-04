@@ -16,7 +16,6 @@ mod call;
 mod support;
 tilo_automerge_isolate::test_worker!();
 
-use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -26,14 +25,12 @@ use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::scope::Scope;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
-use opus::{Application, Channels, Decoder, Encoder};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
 use tilo_call_lane::picture::VideoObject;
 use tilo_call_lane::{
-    ALPN, CAMERA_FPS, CAMERA_SIZE, Calls, Hello, Lane, Layer, Microphone, Opener, Peer, Picture,
-    Roster, Source, Video, heard,
+    ALPN, CAMERA_FPS, CAMERA_SIZE, Calls, Hello, Lane, Layer, Peer, Picture, Roster, Source, Video,
 };
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
@@ -55,49 +52,6 @@ fn channel_keys(channel: collab_types::ChannelId) -> ChannelContentKeys {
         .unwrap()
 }
 
-/// `frames` 20 ms Opus frames (48 kHz mono) of a sine at `hz`: a real tone,
-/// as a call's microphone sends it.
-fn tone(hz: f32, frames: usize) -> Vec<Vec<u8>> {
-    const RATE: f32 = 48_000.0;
-    const SAMPLES: usize = 960;
-    const AMPLITUDE: f32 = 0.3;
-    let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Audio).unwrap();
-    let step = hz / RATE * std::f32::consts::TAU;
-    let mut phase = 0.0_f32;
-    let mut pcm = [0.0_f32; SAMPLES];
-    (0..frames)
-        .map(|_| {
-            for sample in &mut pcm {
-                *sample = phase.sin() * AMPLITUDE;
-                phase = (phase + step) % std::f32::consts::TAU;
-            }
-            encoder.encode_vec_float(&pcm, 1275).unwrap()
-        })
-        .collect()
-}
-
-/// What one Opus packet decodes to, or nothing when it is not one.
-fn decode(decoder: &mut Decoder, opus: &[u8]) -> Vec<f32> {
-    let mut samples = vec![0.0_f32; 960];
-    match decoder.decode_float(opus, &mut samples, false) {
-        Ok(count) => {
-            samples.truncate(count);
-            samples
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
-/// The loudness of a decoded frame: above the call's speaking level means the
-/// page's microphone carried a tone, not only packets.
-fn rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
-}
-
-/// One camera frame, as a call's capture hands it to its encoder.
 fn camera_frame(fill: u8) -> tilo_call_lane::Frame {
     let (width, height) = (640, 480);
     debug_assert!(width <= CAMERA_SIZE.0 && height <= CAMERA_SIZE.1);
@@ -180,31 +134,18 @@ impl Page {
 }
 
 /// The device at the other end of the page's call: a real lane member, as a
-/// native session is one. It answers the lanes the page's host opens, speaks a
-/// tone of its own, hears what the page's microphone sends, shows a camera and
-/// collects the page's pictures. Nothing of it goes through the host: the
-/// frames are sealed with the channel's keys, and the host only copies them.
+/// native session is one. It answers the lane the page's host opens, shows a
+/// camera and collects the page's pictures. Nothing of it goes through the
+/// host: the frames are sealed with the channel's keys, and the host only
+/// copies them. The call's voice is not this device's lane: both devices
+/// publish it on the workspace's live plane.
 struct Native {
     _endpoint: Endpoint,
     _lanes: Router,
     arrivals: tokio::sync::mpsc::UnboundedReceiver<Peer>,
-    received_at: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    received: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
-    voices: Vec<Peer>,
     device: [u8; 32],
     /// The device the page's frames name: the host that bridges it.
     bridge: [u8; 32],
-    ear: Opener,
-    /// The call's scope: the channel its frames are sealed in.
-    scope: Scope,
-    mouth: Microphone,
-    decoder: Decoder,
-    tone: Vec<Vec<u8>>,
-    timestamp: u64,
-    /// The page's frames this device heard, each counted once.
-    sequences: BTreeSet<u64>,
-    /// How many of them decoded loud enough to be the page's tone.
-    loud: usize,
     video: Arc<Video>,
     sending: Arc<tilo_call_lane::Sending>,
     pictures: Vec<Picture>,
@@ -245,7 +186,7 @@ impl Native {
                 workspace: governed.cluster_id.clone(),
                 channel,
                 call: hex::encode(governed.call.call),
-                lane: Lane::Audio,
+                lane: Lane::Video,
             },
             roster.clone(),
         );
@@ -254,31 +195,19 @@ impl Native {
             .spawn();
         let video = Video::new(device);
         let scope = Scope::channel(governed.cluster_id.clone(), channel);
-        video.set_keys(keys, roster.clone(), &scope);
+        video.set_keys(keys, roster, &scope);
         // The page's camera is shown here: what makes it encode, and at which
         // layer.
         video.show(bridge, &[Layer::Low], &[]);
         let sending = video
             .start(Source::Camera, CAMERA_FPS)
             .expect("a camera encoder thread");
-        let (received_at, received) = tokio::sync::mpsc::unbounded_channel();
         Self {
             _endpoint: endpoint,
             _lanes: lanes,
             arrivals,
-            received_at,
-            received,
-            voices: Vec::new(),
             device,
             bridge,
-            ear: Opener::new(keys.clone(), roster),
-            mouth: Microphone::new(keys, device, &scope, 2).unwrap(),
-            scope,
-            decoder: Decoder::new(48_000, Channels::Mono).unwrap(),
-            tone: tone(440.0, 50),
-            timestamp: 0,
-            sequences: BTreeSet::new(),
-            loud: 0,
             video,
             sending,
             pictures: Vec::new(),
@@ -287,28 +216,15 @@ impl Native {
         }
     }
 
-    /// Take the lanes the page's host opened since the last tick.
+    /// Take the lane the page's host opened since the last tick.
     fn arrived(&mut self) {
         while let Ok(peer) = self.arrivals.try_recv() {
-            if peer.lane() == Lane::Video {
-                self.video.add(peer);
-                continue;
-            }
-            let sending = self.received_at.clone();
-            let reading = peer.clone();
-            tokio::spawn(async move {
-                while let Ok(datagram) = reading.received().await {
-                    if sending.send(datagram.to_vec()).is_err() {
-                        return;
-                    }
-                }
-            });
-            self.voices.push(peer);
+            self.video.add(peer);
         }
     }
 
     /// One tick: join the call again when the participation lapses, send a
-    /// tone frame and a camera picture, and take what the page sent.
+    /// camera picture, and take what the page sent.
     fn step(
         &mut self,
         client: &tilo_relay::RelayClient,
@@ -329,27 +245,6 @@ impl Native {
         if self.ticks.is_multiple_of(3) {
             self.sending.publish(camera_frame(0x40));
         }
-        if !self.voices.is_empty() {
-            let opus = &self.tone[self.timestamp as usize / 960 % self.tone.len().max(1)];
-            if let Ok(Some(datagram)) = self.mouth.frame(self.timestamp, opus) {
-                for voice in &self.voices {
-                    let _ = voice.send(datagram.clone());
-                }
-                self.timestamp = self.timestamp.wrapping_add(960);
-            }
-        }
-        while let Ok(datagram) = self.received.try_recv() {
-            for frame in heard(&self.ear, self.bridge, &self.scope, &datagram)
-                .expect("the page's frames open")
-            {
-                if !self.sequences.insert(frame.sequence) {
-                    continue;
-                }
-                if rms(&decode(&mut self.decoder, &frame.opus)) > 0.02 {
-                    self.loud = self.loud.checked_add(1).unwrap();
-                }
-            }
-        }
         let (taken, cursor) = self.video.take(self.cursor, usize::MAX);
         self.pictures.extend(taken);
         self.cursor = cursor;
@@ -361,7 +256,7 @@ impl Native {
     reason = "the fixture is consumed by shutdown after the final assertion; dropping its guard at Clippy's suggested location uses a moved value"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_and_a_native_device_exchange_microphone_audio_and_pictures_in_a_governed_call() {
+async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     let governed = call::GovernedCall::start().await;
     let (_, bob_device) = governed.invite("bob-browser").await;
     let page = Arc::new(Page {
@@ -437,7 +332,7 @@ async fn a_page_and_a_native_device_exchange_microphone_audio_and_pictures_in_a_
             return text(channel_id.clone());
         }
         // The device this page's frames name (its host's), and the device of
-        // the native participant the page's tone and picture come from.
+        // the native participant the page's picture comes from.
         if path == "/api/host" {
             return text(host_device.clone());
         }
@@ -561,21 +456,8 @@ async fn a_page_and_a_native_device_exchange_microphone_audio_and_pictures_in_a_
     let marks = marks.lock().unwrap().clone();
     assert!(marks.iter().any(|mark| mark == "done"));
 
-    // The page's microphone reached the native device: real Opus frames,
-    // opened with the channel's keys, and loud enough to be the tone the
-    // browser's fake microphone makes.
-    assert!(
-        native.sequences.len() > 100,
-        "the native device heard too few of the page's microphone frames: {}",
-        native.sequences.len()
-    );
-    assert!(
-        native.loud > 20,
-        "the native device decoded too few loud frames of the page's tone: {}",
-        native.loud
-    );
-    // And the page's camera reached it too, in a stream that starts at a
-    // keyframe a decoder can begin at.
+    // The page's camera reached the native device, in a stream that starts at
+    // a keyframe a decoder can begin at.
     assert!(
         native.pictures.iter().any(|picture| {
             picture.from == native.bridge
@@ -589,12 +471,7 @@ async fn a_page_and_a_native_device_exchange_microphone_audio_and_pictures_in_a_
             .map(|picture| (hex::encode(picture.from), picture.object.len()))
             .collect::<Vec<_>>()
     );
-    println!(
-        "native heard {} frames ({} loud), {} pictures",
-        native.sequences.len(),
-        native.loud,
-        native.pictures.len()
-    );
+    println!("native took {} pictures", native.pictures.len());
     native.video.close();
     page.peer.close();
     drop(server);

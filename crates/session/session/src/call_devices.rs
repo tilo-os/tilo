@@ -501,9 +501,10 @@ mod inner {
                 .map_err(|_| Issue::TransportFailed)
         }
 
-        /// Forget what was heard from `sender`: a lane that ended, or a stream
-        /// that starts over on a fresh one, is heard at its own place from its
-        /// first frame on, rather than behind where the one before it got.
+        /// Forget what was heard from `sender`: its stream starts over — it
+        /// left the call and came back, or its page reloaded — so it is heard
+        /// at its own place from its first frame on, rather than behind where
+        /// the one before it got.
         pub(crate) fn forget(&mut self, sender: [u8; 32]) {
             self.0.audio().remove_publisher(&publisher(sender));
         }

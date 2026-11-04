@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT, TURN_MS, base64OfDecoded} from './voice.mjs';
+import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT, TURN_MS} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 
 const CALL = 'c'.repeat(64);
@@ -30,14 +30,16 @@ function fixture() {
   const shows = [];
   const turns = [];
   let listener;
-  let answer = {devices: [], audio: [], pictures: [], shows: [], keyframes: []};
+  let answer = {devices: [], pictures: [], shows: [], keyframes: []};
   let failure;
+  const published = [];
   const signalling = {
     join: call => sent.push(['join', call]),
     leave: () => sent.push(['leave']),
     end: () => sent.push(['end']),
     reachable: () => sent.push(['reachable']),
     show: (...flags) => shows.push(flags),
+    audio: frames => published.push(...frames),
     turn(json) {
       turns.push(JSON.parse(json));
       return failure ? Promise.reject(failure) : Promise.resolve(JSON.stringify(answer));
@@ -73,7 +75,7 @@ function fixture() {
   const environment = new EventTarget();
   const call = createVoiceCall({signalling, device: HOST, audio, environment, clock});
   const event = value => listener?.(value);
-  return {sent, shows, turns, audio, timers, clock, environment, call, event, answer: value => { answer = value; }, fail: error => { failure = error; }};
+  return {sent, shows, turns, published, audio, timers, clock, environment, call, event, answer: value => { answer = value; }, fail: error => { failure = error; }};
 }
 
 /** Run the next turn the page scheduled, as its timer would. */
@@ -99,7 +101,7 @@ function runDeadline({timers, clock}) {
 
 const frame = n => ({timestamp: BigInt(n * 960), duration: 960, payload: Uint8Array.of(n)});
 
-test('a joined call turns with the host: the microphone goes out sealed by the host device, and what it sends is played', async () => {
+test('a joined call publishes its microphone on the plane and plays what the call publishes there', async () => {
   const f = fixture();
   const states = [];
   f.call.subscribe(state => { if (states.at(-1) !== state.phase) states.push(state.phase); });
@@ -118,13 +120,12 @@ test('a joined call turns with the host: the microphone goes out sealed by the h
   assert.equal(f.turns[0].record, '');
   assert.deepEqual(f.call.state.participants.map(participant => participant.self), [true, false]);
 
-  f.audio.onFrame(frame(1));
-  await nextTurn(f);
-  assert.deepEqual(f.turns[1].audio, [{timestamp48k: 960, opus: btoa('\u0001')}]);
-  assert.deepEqual(f.turns[1].audio.length && [...base64OfDecoded(f.turns[1].audio[0].opus)], [1]);
+  assert.equal(f.turns[0].audio, undefined, 'a turn carries the page\'s pictures, not its voice');
 
-  f.answer({devices: [BOB], audio: [{from: BOB, timestamp48k: 960, opus: btoa('\u0002\u0003')}], pictures: [], shows: [], keyframes: []});
-  await nextTurn(f);
+  f.audio.onFrame(frame(1));
+  assert.deepEqual(f.published, [{timestamp48k: 960, opus: '01'}], 'a frame is published as it is made, not queued behind a turn');
+
+  f.event({kind: 'heard', from: BOB, sequence: 3, timestamp48k: 960, opus: '0203'});
   assert.equal(f.audio.played.length, 1);
   assert.equal(f.audio.played[0].publisherId, BOB);
   assert.equal(f.audio.played[0].timestamp, 960n, 'a frame names its place in its sender\'s 48 kHz timeline');
@@ -133,23 +134,32 @@ test('a joined call turns with the host: the microphone goes out sealed by the h
   assert.deepEqual(states, ['joining', 'connecting', 'live']);
 });
 
-test('a datagram that repeats the frames before its newest one plays each frame once', async () => {
+test('a frame a plane announces again plays once, and a stream that started over plays', async () => {
   const f = fixture();
   f.call.join(CALL);
   await drain();
   f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  const heard = sequence => ({from: BOB, sequence, timestamp48k: sequence * 960, opus: btoa(String.fromCharCode(sequence))});
+  const heard = sequence => ({kind: 'heard', from: BOB, sequence, timestamp48k: sequence * 960, opus: sequence.toString(16).padStart(2, '0')});
   const played = () => f.audio.played.map(frame => [...frame.payload][0]);
-  f.answer({devices: [BOB], audio: [heard(5), heard(6), heard(7)], pictures: [], shows: [], keyframes: []});
-  await nextTurn(f);
+  for (const sequence of [5, 6, 7]) f.event(heard(sequence));
   assert.deepEqual(played(), [5, 6, 7]);
-  f.answer({devices: [BOB], audio: [heard(7), heard(8), heard(9)], pictures: [], shows: [], keyframes: []});
-  await nextTurn(f);
-  assert.deepEqual(played(), [5, 6, 7, 8, 9], 'the frames a datagram carries again play once');
-  f.answer({devices: [BOB], audio: [heard(0), heard(1)], pictures: [], shows: [], keyframes: []});
-  await nextTurn(f);
-  assert.deepEqual(played(), [5, 6, 7, 8, 9, 0, 1], 'a sender whose stream started over plays');
+  f.event(heard(7));
+  assert.deepEqual(played(), [5, 6, 7], 'a plane joined again announces its stream\'s current object once more');
+  f.event(heard(0));
+  f.event(heard(1));
+  assert.deepEqual(played(), [5, 6, 7, 0, 1], 'a sender whose stream started over plays');
+});
+
+test('a deafened page hears nothing of what the plane publishes', async () => {
+  const f = fixture();
+  f.call.join(CALL);
+  await drain();
+  f.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  await f.call.setDeafened(true);
+  f.event({kind: 'heard', from: BOB, sequence: 1, timestamp48k: 960, opus: '01'});
+  assert.equal(f.audio.played.length, 0);
 });
 
 test('muting stops what the microphone hands the turns; a call that may not publish mutes and says so', async () => {
@@ -160,13 +170,11 @@ test('muting stops what the microphone hands the turns; a call that may not publ
   await drain();
   await f.call.setMuted(true);
   f.audio.onFrame(frame(1));
-  await nextTurn(f);
-  assert.deepEqual(f.turns.at(-1).audio, [], 'a muted microphone sends nothing');
+  assert.deepEqual(f.published, [], 'a muted microphone publishes nothing');
   assert.equal(f.audio.captureActive, false);
   await f.call.setMuted(false);
   f.audio.onFrame(frame(2));
-  await nextTurn(f);
-  assert.equal(f.turns.at(-1).audio.length, 1);
+  assert.deepEqual(f.published, [{timestamp48k: 1920, opus: '02'}]);
 
   f.event({kind: 'granted', grant: grantFor({publish: false})});
   await drain();
@@ -190,7 +198,7 @@ test('a call the host refuses waits for its next grant, and one that never comes
   f.event({kind: 'granted', grant: grantFor()});
   await drain();
   assert.equal(f.call.state.phase, 'live', 'the fresh grant takes turns again');
-  assert.equal(f.turns.at(-1).audio.length, 1);
+  assert.deepEqual(f.published.at(-1), {timestamp48k: 1920, opus: '02'}, 'the microphone publishes again');
 
   f.fail(new Error('the host refused the turn: not admitted to this workspace'));
   await nextTurn(f);
@@ -332,8 +340,7 @@ test('a participant plays at the volume set for them', async () => {
   await drain();
   f.call.setVolume(BOB, 0.25);
   f.call.setVolume('not a person', 2);
-  f.answer({devices: [BOB], audio: [{from: BOB, timestamp48k: 0, opus: btoa('\u0001')}], pictures: [], shows: [], keyframes: []});
-  await nextTurn(f);
+  f.event({kind: 'heard', from: BOB, sequence: 1, timestamp48k: 0, opus: '01'});
   assert.equal(f.audio.played[0].gain, 0.25);
   assert.equal(f.call.state.phase, 'live');
 });
@@ -358,7 +365,7 @@ test('what the app shows of the call\'s devices is what the page asks them for, 
   await nextTurn(f);
   assert.deepEqual(f.turns.at(-1).shows, [{device: BOB, camera: [1], screen: []}]);
   assert.deepEqual(f.turns.at(-1).keyframes, [{device: BOB, source: 0}], 'nothing before a keyframe decodes');
-  f.answer({devices: [BOB], audio: [], pictures: [
+  f.answer({devices: [BOB], pictures: [
     {from: BOB, source: 0, keyframe: true, object: btoa('¥\u0000')},
   ], shows: [], keyframes: []});
   await nextTurn(f);
@@ -371,19 +378,23 @@ test('what the app shows of the call\'s devices is what the page asks them for, 
 });
 
 test('peer.voice takes the page\'s turns through the wasm peer and lists its calls', async () => {
+  const played = [];
+  let onFrame;
   const wasm = {
     joined: [],
     turns: [],
     ended: [],
+    published: [],
     voiceJoin: (workspace, call) => wasm.joined.push([workspace, call]),
     voiceLeave: () => {},
     voiceCalls: () => {},
     voiceShow: (workspace, camera, screen, muted, deafened) => wasm.shown = [camera, screen, muted, deafened],
-    callLaneTurn(workspace, json) { wasm.turns.push([workspace, JSON.parse(json)]); return Promise.resolve(JSON.stringify({devices: [], audio: [], pictures: [], shows: [], keyframes: []})); },
+    callAudio: (workspace, json) => wasm.published.push([workspace, JSON.parse(json)]),
+    callLaneTurn(workspace, json) { wasm.turns.push([workspace, JSON.parse(json)]); return Promise.resolve(JSON.stringify({devices: [], pictures: [], shows: [], keyframes: []})); },
     callLaneLeave: workspace => wasm.ended.push(workspace),
   };
   const voice = createPeerVoice({peer: () => wasm, workspace: 'the-workspace', device: HOST, audio: {
-    start: async () => ({play() {}, setMuted: async () => {}, stop: async () => {}, get captureActive() { return false; }}),
+    start: async capture => { onFrame = capture.onFrame; return {play: frame => played.push(frame), setMuted: async () => {}, stop: async () => {}, get captureActive() { return false; }}; },
   }});
   voice.call.join(CALL, {app: 'so.tilo.chat', record: ''});
   await drain();
@@ -397,6 +408,13 @@ test('peer.voice takes the page\'s turns through the wasm peer and lists its cal
   assert.equal(wasm.turns[0][0], 'the-workspace');
   assert.equal(wasm.turns[0][1].call, CALL);
   assert.equal(voice.call.state.phase, 'live');
+  // The microphone's frames go out as the wasm peer's `callAudio`, and what
+  // the plane publishes for the call is played as its `heard` events arrive.
+  await voice.call.setMuted(false);
+  onFrame({timestamp: 960n, duration: 960, payload: Uint8Array.of(1)});
+  assert.deepEqual(wasm.published, [['the-workspace', [{timestamp48k: 960, opus: '01'}]]]);
+  voice.pump(JSON.stringify([{room: 'the-workspace', kind: 'heard', from: BOB, sequence: 1, timestamp48k: 960, opus: '02'}]));
+  assert.deepEqual(played.map(frame => [...frame.payload]), [[2]]);
   voice.call.leave();
   assert.deepEqual(wasm.ended, ['the-workspace']);
   assert.equal(voice.call.state.phase, 'idle');

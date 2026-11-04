@@ -1,6 +1,8 @@
-//! A page's side of a call: sealing what its microphone and camera make as
-//! the device that bridges it, opening what the call's other devices send,
-//! and the exchange the two sides make on every turn.
+//! A page's side of a call: sealing what its camera makes as the device that
+//! bridges it, opening what the call's other devices send, and the exchange
+//! the two sides make on every turn. The page's voice is sealed by the same
+//! keys, but it goes on the workspace's live plane, which the page reaches
+//! itself.
 //!
 //! A page is a member of its channel and holds its content keys, so it seals
 //! and opens its call's media itself, exactly as a native device does: what
@@ -27,7 +29,6 @@ use crate::picture::{Codec, Layer, Source, VideoObject};
 use channel_crypto::ChannelContentKeys;
 use collab_types::scope::Scope;
 
-use crate::audio::{self, Heard, Microphone};
 use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
 use crate::roster::Roster;
 use crate::wire::{layer_of_wire, layer_wire, source_of_wire, stream_of};
@@ -35,12 +36,8 @@ use crate::wire::{layer_of_wire, layer_wire, source_of_wire, stream_of};
 /// The route a page posts its turns to, below the host's API prefix.
 pub const PATH: &str = "/call/lane";
 
-/// The microphones a page's frames repeat, so one lost datagram costs no
-/// silence: the call's own count.
-pub const REPEATS: usize = 2;
-
-/// The view of a page's call: what it seals its microphone and pictures with,
-/// and what opens what the call sends.
+/// The view of a page's call: what it seals its pictures with, and what opens
+/// what the call sends.
 ///
 /// The page's app owns the capture, the encoder, the decoder and the playout;
 /// this seals what it made and opens what arrived, which is all a page needs
@@ -54,7 +51,6 @@ pub struct Page {
     /// and who the lane's other devices see them come from.
     bridge: [u8; 32],
     opener: Opener,
-    microphone: Microphone,
     /// What seals the page's pictures, and the next frame of each source: its
     /// layers are sealed under the one key.
     pictures: BTreeMap<Source, (Sealer, u32)>,
@@ -64,7 +60,7 @@ impl std::fmt::Debug for Page {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Page")
             .field("call", &self.call)
-            .field("epoch", &self.microphone.epoch())
+            .field("epoch", &self.epoch())
             .finish_non_exhaustive()
     }
 }
@@ -87,7 +83,6 @@ impl Page {
     ) -> Result<Self, Refusal> {
         let scope = Scope::channel(workspace, channel);
         let mut page = Self {
-            microphone: Microphone::new(keys, bridge, &scope, REPEATS)?,
             opener: Opener::new(keys.clone(), roster),
             scope,
             call,
@@ -105,7 +100,6 @@ impl Page {
     ///
     /// As [`Self::new`].
     pub fn set_keys(&mut self, keys: &ChannelContentKeys, roster: Roster) -> Result<(), Refusal> {
-        self.microphone.rekey(keys, self.bridge, &self.scope)?;
         let opener = Opener::new(keys.clone(), roster);
         self.seal_pictures(keys)?;
         self.opener = opener;
@@ -115,8 +109,8 @@ impl Page {
     /// Who may send to this page from now on, under the same keys.
     ///
     /// A call's roster follows the workspace's membership turn by turn; the
-    /// page keeps its microphone's and pictures' places while it does, as it
-    /// does across an epoch's keys.
+    /// page keeps its pictures' places while it does, as it does across an
+    /// epoch's keys.
     pub fn set_roster(&mut self, roster: Roster) {
         self.opener.set_roster(roster);
     }
@@ -161,19 +155,11 @@ impl Page {
 
     /// The epoch the page seals under.
     #[must_use]
-    pub const fn epoch(&self) -> u64 {
-        self.microphone.epoch()
-    }
-
-    /// The datagram carrying `opus` as the microphone's next frame, whose
-    /// first sample is at `timestamp_48k`. `None` when the frame has no
-    /// datagram to go in: the page drops it and sends the next.
-    ///
-    /// # Errors
-    ///
-    /// [`Refusal::NoKey`] and [`Refusal::Primitive`], as [`Sealer::seal`].
-    pub fn audio(&mut self, timestamp_48k: u64, opus: &[u8]) -> Result<Option<Vec<u8>>, Refusal> {
-        self.microphone.frame(timestamp_48k, opus)
+    pub fn epoch(&self) -> u64 {
+        self.pictures
+            .values()
+            .next()
+            .map_or(0, |(sealer, _)| sealer.epoch())
     }
 
     /// `picture` as the sealed tilo-video/1 frame the bridge writes on the
@@ -207,19 +193,9 @@ impl Page {
         sealer.seal(sequence, &object)
     }
 
-    /// The frames of `datagram`, which `from` sent: the page's playout drops
-    /// the ones it has played.
-    ///
-    /// # Errors
-    ///
-    /// As [`audio::heard`].
-    pub fn heard(&self, from: [u8; 32], datagram: &[u8]) -> Result<Vec<Heard>, Refusal> {
-        audio::heard(&self.opener, from, &self.scope, datagram)
-    }
-
     /// The turn this page's next exchange carries, for the call it is in: its
-    /// app fills in what its microphone and pictures sealed, and what it shows
-    /// of the call's devices.
+    /// app fills in what its pictures sealed, and what it shows of the call's
+    /// devices.
     #[must_use]
     pub fn up(&self) -> Up {
         Up {
@@ -279,9 +255,6 @@ pub struct Up {
     /// The channel whose content keys seal the frames: what the host's lanes
     /// handshake with, so they join the call the page is in and no other.
     pub channel: collab_types::ChannelId,
-    /// Sealed tilo-voice/1 datagrams: the page's microphone frames, oldest
-    /// first.
-    pub audio: Vec<Vec<u8>>,
     /// Sealed pictures of the page's camera or its screen.
     pub pictures: Vec<Sealed>,
     /// What the page shows of each device: the layers of its camera and of
@@ -351,22 +324,12 @@ impl Asked {
 pub struct Down {
     /// The devices the bridge has a lane to: the call as the lane knows it.
     pub devices: Vec<[u8; 32]>,
-    /// The audio datagrams the devices sent, each with the device that sent
-    /// it, oldest first.
-    pub audio: Vec<Carried>,
     /// The pictures the devices sent, sealed as they came off the lane.
     pub pictures: Vec<CarriedPicture>,
     /// What each device says it shows of the page: the layers to encode for.
     pub shows: Vec<Showing>,
     /// Sources a device asks the page to start over at a keyframe.
     pub keyframes: Vec<Asked>,
-}
-
-/// One sealed audio datagram, with the device whose lane it came off.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Carried {
-    pub from: [u8; 32],
-    pub datagram: Vec<u8>,
 }
 
 /// One sealed picture, with the device whose lane it came off.

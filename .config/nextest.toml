@@ -124,17 +124,6 @@ success-output = "final"
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
-# A call's lane paces 50 Opus frames a second for real and holds each received
-# frame 200 ms (the voice receive budget) before it counts as late. Beside the
-# parallel suite a host stall longer than that budget costs the playout every
-# frame it was holding (42 of 60 played, 19 late in one run), which measures
-# the runner, not the lane; its delivery, tone and latency assertions stay as
-# they are and it runs with the pool to itself.
-[[profile.default.overrides]]
-filter = 'package(tilo-call-lane) and binary(tone)'
-threads-required = "num-cpus"
-priority = 100
-
 # Every app's every view laid out at every window size, display scale and text
 # size: each window is laid out on a core of its own, so the sweep takes the
 # runner's CPUs rather than sharing them with the tests beside it.

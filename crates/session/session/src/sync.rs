@@ -45,6 +45,7 @@ use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_live::live::Track;
+use tilo_live::plane::Heard;
 use tilo_live::presence;
 use tilo_network_actor::{
     HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RecordContentDelivery, RosterDevice,
@@ -700,6 +701,10 @@ pub struct Client {
     /// The window streams that reached this device: their frames, starts,
     /// ends and control, which the shares take ([`Self::take_surfaces`]).
     surfaces: RefCell<Vec<ReceivedSurface>>,
+    /// The call audio the workspaces' live planes heard since the last call,
+    /// each with the workspace it was heard in: what the calls playing it take
+    /// ([`Self::take_call_audio`]).
+    call_audio: RefCell<Vec<(String, Heard)>>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
     /// This device's workspaces, which a join enrolls into: `None` when the
@@ -910,6 +915,7 @@ impl Client {
             outgoing,
             arrived,
             surfaces: RefCell::new(Vec::new()),
+            call_audio: RefCell::new(Vec::new()),
             enrolled,
             engine,
             link,
@@ -1169,9 +1175,17 @@ impl Client {
         let mut heard = false;
         for (ws, workspace) in topics {
             while let Some(object) = live.try_recv(ws) {
+                if object.track == Track::Audio {
+                    // A call's voice, already opened: the call of that
+                    // workspace plays it.
+                    self.call_audio
+                        .borrow_mut()
+                        .push((workspace.clone(), object));
+                    continue;
+                }
                 if object.track != Track::Presence {
-                    // Calls and camera media run on their own tracks and their
-                    // own lanes; nothing here draws them.
+                    // Pictures run on their own lanes; nothing here draws
+                    // them.
                     continue;
                 }
                 let Some(frame) = presence::decode(&object.body) else {
@@ -1456,6 +1470,14 @@ impl Client {
     #[must_use]
     pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
         std::mem::take(&mut *self.surfaces.borrow_mut())
+    }
+
+    /// Take the call audio the workspaces' live planes heard since the last
+    /// call, each with the workspace it was heard in and already opened. A
+    /// call plays the frames of the devices its channel says are in it.
+    #[must_use]
+    pub(crate) fn take_call_audio(&self) -> Vec<(String, Heard)> {
+        std::mem::take(&mut *self.call_audio.borrow_mut())
     }
 
     /// Send one message of `surface`'s stream on the topic of the workspace it is
@@ -2095,6 +2117,7 @@ impl Client {
                 outgoing,
                 arrived,
                 surfaces: RefCell::new(Vec::new()),
+                call_audio: RefCell::new(Vec::new()),
                 enrolled: {
                     let (_landed, enrolled) = std::sync::mpsc::channel();
                     enrolled

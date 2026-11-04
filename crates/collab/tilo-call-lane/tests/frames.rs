@@ -14,7 +14,7 @@
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 use collab_types::scope::Scope;
-use tilo_call_lane::{Lane, OVERHEAD, Opener, Refusal, Roster, Sealer, Stream, TrackName};
+use tilo_call_lane::{OVERHEAD, Opener, Refusal, Roster, Sealer, Stream, TrackName};
 
 const WORKSPACE: &str = "w1";
 const ALICE: [u8; 32] = [1; 32];
@@ -121,7 +121,6 @@ fn a_frame_seals_and_opens() {
     let body = b"an opus frame of twenty milliseconds";
     let sealing = sealer(&alice, ALICE, Stream::Microphone);
     assert_eq!(sealing.epoch(), alice.epoch());
-    assert_eq!(Stream::Microphone.lane(), Lane::Audio);
     // Every stream's tag is its own: a key is never one another stream's.
     let mut tags = std::collections::BTreeSet::new();
     for stream in [

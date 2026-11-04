@@ -22,6 +22,9 @@ const certified = {
   voiceLeave: () => {void api('leave', 'POST');},
   voiceCalls: () => {void api('calls', 'POST');},
   voiceCall: (_, operation, request) => {void fetch(`/api/${who}/call/${request}`, {method: 'POST', body: operation, cache: 'no-store'});},
+  // The microphone's frames, which the page publishes on its workspace's live
+  // plane: this fixture holds no plane, so it counts them instead.
+  callAudio: (_, frames) => {window.publishedFrames = (window.publishedFrames ?? 0) + JSON.parse(frames).length;},
   callLaneTurn: async (_, turn) => (await fetch(`/api/${who}/turn`, {method: 'POST', body: turn, cache: 'no-store'})).text(),
   callLaneLeave: () => {void api('end', 'POST');},
 };

@@ -721,6 +721,18 @@ impl Live {
             .and_then(|joined| joined.plane.try_recv())
     }
 
+    /// The planes this device is in, by workspace: what a call's audio is
+    /// published into, and who it hears there.
+    #[must_use]
+    pub fn planes(&self) -> Vec<(WorkspaceId, Arc<Plane>)> {
+        self.shared
+            .planes
+            .lock_recover()
+            .iter()
+            .map(|(workspace, joined)| (*workspace, Arc::clone(&joined.plane)))
+            .collect()
+    }
+
     /// The device relaying `workspace`, while this session has a plane there.
     #[must_use]
     pub fn relay(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {

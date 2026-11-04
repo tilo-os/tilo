@@ -1,9 +1,11 @@
 //! A page in a call, over the bridge its host carries: the turns the page and
 //! the bridge take with each other.
 //!
-//! The page seals what its microphone and camera make and opens what the call's
+//! The page seals what its camera makes and opens the pictures the call's
 //! devices send ([`tilo_call_lane::Page`]), and this hands those frames to the
-//! device bridging it and takes back what the call sent ([`LaneCall`]). One
+//! device bridging it and takes back what the call sent ([`LaneCall`]). The
+//! page's voice is not here: it publishes on the workspace's live plane
+//! ([`crate::session::plane`]). One
 //! turn is one `POST` of a sealed [`Up`](tilo_call_lane::page::Up) and its
 //! [`Down`](tilo_call_lane::page::Down) answer, on the session's own host: no
 //! key of the call leaves the page, because what travels is already sealed and
@@ -13,7 +15,7 @@ use std::sync::Arc;
 
 use tilo_call_lane::page::{self, Down, Picture, Sealed, Up};
 use tilo_call_lane::wire::{layer_of_wire, source_of_wire};
-use tilo_call_lane::{Heard, Page, Roster, Source};
+use tilo_call_lane::{Page, Roster, Source};
 use tilo_relay_protocol::web::API_PREFIX;
 
 use crate::{HttpClient, LinkError};
@@ -133,13 +135,6 @@ pub fn opened(page: &mut Page, down: &Down) -> Opened {
         keyframes: down.keyframes.clone(),
         ..Opened::default()
     };
-    for carried in &down.audio {
-        if let Ok(heard) = page.heard(carried.from, &carried.datagram) {
-            opened
-                .audio
-                .extend(heard.into_iter().map(|frame| (carried.from, frame)));
-        }
-    }
     for carried in &down.pictures {
         let Some(source) = source_of_wire(carried.source) else {
             continue;
@@ -163,9 +158,6 @@ pub fn opened(page: &mut Page, down: &Down) -> Opened {
 pub struct Opened {
     /// The devices in the call, as the bridge has a lane to them.
     pub devices: Vec<[u8; 32]>,
-    /// What the call's devices said, oldest first, each with the device it
-    /// came from: play it.
-    pub audio: Vec<([u8; 32], Heard)>,
     /// The pictures the page is sent, in the order they came: decode each in
     /// the source's own sequence.
     pub pictures: Vec<OpenedPicture>,
@@ -187,9 +179,9 @@ pub struct OpenedPicture {
 }
 
 /// What a page hands its bridge on one turn, as the page's own app says it
-/// (`web/voice.mjs`): the frames its microphone and encoders made, what it
-/// shows of the devices in the call, and which of them it asks to start over
-/// at a keyframe. Ids are hex and every payload is base64, so the page holds
+/// (`web/voice.mjs`): the pictures its encoders made, what it shows of the
+/// devices in the call, and which of them it asks to start over at a
+/// keyframe. Ids are hex and every payload is base64, so the page holds
 /// no binary in its JSON.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -200,8 +192,6 @@ pub struct LaneTurn {
     /// and opened under are that channel's, from the group the page joined.
     pub app: String,
     pub record: String,
-    /// The page's microphone frames, oldest first, in the order it made them.
-    pub audio: Vec<MicFrame>,
     /// The encoded pictures of the page's camera or screen, as its encoder
     /// numbers them.
     pub pictures: Vec<PictureFrame>,
@@ -209,16 +199,6 @@ pub struct LaneTurn {
     pub shows: Vec<Showing>,
     /// Sources the page asks a device to start over at a keyframe.
     pub keyframes: Vec<Asked>,
-}
-
-/// One Opus frame of the page's microphone.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct MicFrame {
-    /// The first sample's place in the page's 48 kHz timeline.
-    pub timestamp_48k: u64,
-    #[serde(with = "base64_bytes")]
-    pub opus: Vec<u8>,
 }
 
 /// One encoded picture of the page's, before the call seals it.
@@ -267,31 +247,12 @@ pub struct Asked {
 pub struct LaneAnswer {
     /// The devices the bridge has a lane to, as hex.
     pub devices: Vec<String>,
-    /// The frames the call's devices sent, opened, each with the device it
-    /// came from: play them.
-    pub audio: Vec<HeardFrame>,
     /// The pictures the call's devices sent, opened.
     pub pictures: Vec<SeenFrame>,
     /// What each device shows of the page: the layers to encode for.
     pub shows: Vec<Showing>,
     /// What each device asks the page to start over at a keyframe.
     pub keyframes: Vec<Asked>,
-}
-
-/// One frame of the page's microphone, opened, with the device that sent it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HeardFrame {
-    /// The device, as hex.
-    pub from: String,
-    /// The frame's place in the sender's stream: a datagram carries the
-    /// frames just before its newest one too, so the page plays only a
-    /// sequence it has not played.
-    pub sequence: u64,
-    /// The first sample's place in the sender's 48 kHz timeline.
-    pub timestamp_48k: u64,
-    #[serde(with = "base64_bytes")]
-    pub opus: Vec<u8>,
 }
 
 /// One picture of the page's, opened, with the device that sent it: a
@@ -316,18 +277,12 @@ impl LaneTurn {
         collab_types::document_channel_id(&self.app, workspace, &self.record)
     }
 
-    /// The turn `page` hands its bridge: its microphone's and pictures' frames
-    /// sealed as the bridge's device, and what it shows and asks of the call's
-    /// devices. A frame the call cannot carry (a picture source or layer no
-    /// code names, a microphone frame the seal refuses) is dropped here, as
-    /// the page drops what it cannot send.
+    /// The turn `page` hands its bridge: its pictures sealed as the bridge's
+    /// device, and what it shows and asks of the call's devices. A picture the
+    /// call cannot carry (a source or layer no code names) is dropped here,
+    /// as the page drops what it cannot send.
     pub fn up(&self, page: &mut Page) -> Up {
         let mut up = page.up();
-        for frame in &self.audio {
-            if let Ok(Some(sealed)) = page.audio(frame.timestamp_48k, &frame.opus) {
-                up.audio.push(sealed);
-            }
-        }
         for picture in &self.pictures {
             let (Some(source), Some(layer)) =
                 (source_of_wire(picture.source), layer_of_wire(picture.layer))
@@ -388,16 +343,6 @@ impl LaneAnswer {
     pub fn of(opened: Opened) -> Self {
         Self {
             devices: opened.devices.iter().map(hex::encode).collect(),
-            audio: opened
-                .audio
-                .into_iter()
-                .map(|(from, heard)| HeardFrame {
-                    from: hex::encode(from),
-                    sequence: heard.sequence,
-                    timestamp_48k: heard.timestamp_48k,
-                    opus: heard.opus,
-                })
-                .collect(),
             pictures: opened
                 .pictures
                 .into_iter()
@@ -430,7 +375,7 @@ impl LaneAnswer {
 }
 
 /// Bytes in a page's JSON as base64, which is what its app carries pictures
-/// and its audio in.
+/// in.
 mod base64_bytes {
     use base64::Engine as _;
     use serde::{Deserialize, Deserializer, Serializer};

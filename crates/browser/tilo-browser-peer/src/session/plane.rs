@@ -68,6 +68,10 @@ pub(crate) struct Joined {
     pub(crate) presence_seq: u32,
     /// The last live-preview object this page said on the plane.
     pub(crate) activity_seq: u32,
+    /// The last voice object this page published on the plane: one stream per
+    /// page across its calls and its mute, so a call that starts again is
+    /// heard at once.
+    pub(crate) audio_seq: u32,
 }
 
 /// Why this page is not in a workspace's plane, and since when.
@@ -550,6 +554,7 @@ impl Task {
                         epoch,
                         presence_seq: 0,
                         activity_seq: 0,
+                        audio_seq: 0,
                     },
                 );
             }
@@ -578,6 +583,33 @@ impl Task {
         }
     }
 
+    /// Publish `frames` on `workspace_id`'s plane as this page's voice, in
+    /// the order given: one Opus frame per voice object, numbered on from the
+    /// last this page published.
+    pub(super) fn publish_call_audio(&mut self, workspace_id: u64, frames: Vec<crate::CallFrame>) {
+        use tilo_live::live::Track;
+        for frame in frames {
+            let Some(joined) = self.planes.joined_mut(workspace_id) else {
+                return;
+            };
+            let sequence = joined.audio_seq;
+            joined.audio_seq = sequence.wrapping_add(1);
+            let object = tilo_live::voice::VoiceObject {
+                sequence: u64::from(sequence),
+                timestamp: frame.timestamp_48k,
+                duration: tilo_live::voice::FRAME_SAMPLES,
+                payload: frame.opus,
+            };
+            let Ok(body) = object.encode() else {
+                continue;
+            };
+            if joined.plane.publish(Track::Audio, sequence, &body).is_err() {
+                // The plane ended: its next join carries what follows.
+                return;
+            }
+        }
+    }
+
     /// Take what `workspace_id`'s plane heard since the last call: each
     /// member's track object, already opened with the scope's keys, as
     /// [`PeerEvent::LivePlane`].
@@ -588,6 +620,20 @@ impl Task {
             None => return,
         };
         for heard in heard {
+            // A call's voice: one Opus frame of the device that published it,
+            // as the page's app plays it.
+            if heard.track == Track::Audio {
+                if let Ok(object) = tilo_live::voice::VoiceObject::decode(&heard.body) {
+                    self.emit(&PeerEvent::CallAudio {
+                        workspace_id,
+                        from: heard.sender,
+                        sequence: object.sequence,
+                        timestamp_48k: object.timestamp,
+                        opus: object.payload,
+                    });
+                }
+                continue;
+            }
             // A record's preview frame is still sealed with that record's
             // keys inside the plane's own layer: it opens into the canonical
             // frame the page's live layer reads ([`PeerEvent::Live`]).

@@ -402,6 +402,21 @@ pub enum PeerEvent {
         /// The opened body.
         body: Vec<u8>,
     },
+    /// A call's voice heard on `workspace_id`'s plane
+    /// ([`crate::live`]): one Opus frame, opened with the scope's keys, as
+    /// the device `from` published it.
+    CallAudio {
+        /// The workspace id.
+        workspace_id: u64,
+        /// The device whose voice it is.
+        from: [u8; 32],
+        /// The frame's place in that device's voice stream.
+        sequence: u64,
+        /// The first sample's place in the sender's 48 kHz timeline.
+        timestamp_48k: u64,
+        /// The Opus frame.
+        opus: Vec<u8>,
+    },
     /// The host holds a long sealed history of `route` it cannot read and
     /// asks this device for a snapshot. Answer with
     /// [`PeerHandle::compact`] after applying every [`PeerEvent::Document`]
@@ -481,6 +496,15 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
     }
 }
 
+/// One Opus frame of a page's microphone, as its call publishes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallFrame {
+    /// The first sample's place in the page's 48 kHz timeline.
+    pub timestamp_48k: u64,
+    /// The Opus frame.
+    pub opus: Vec<u8>,
+}
+
 enum Command {
     Join(u64),
     /// Join the workspace (its UUID) of this device's person, named as given,
@@ -514,6 +538,9 @@ enum Command {
     Barrier(Completion),
     /// Presence frames for the workspace's plane, said as this device.
     Presence(u64, Vec<collab_types::presence::Presence>),
+    /// The page's microphone frames, published on the workspace's plane as
+    /// this device's voice.
+    CallAudio(u64, Vec<CallFrame>),
     VoiceCalls(u64),
     VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
     VoiceJoin(u64, [u8; 32]),
@@ -961,6 +988,17 @@ impl PeerHandle {
         frame: Vec<u8>,
     ) -> Result<(), String> {
         self.send(Command::SendContent(workspace_id, to, frame))
+    }
+
+    /// Publish the page's microphone `frames` on `workspace_id`'s plane as
+    /// this device's voice, in the order given. Dropped where this page holds
+    /// no plane for the workspace: a call's voice is current, never replayed.
+    pub fn publish_call_audio(
+        &self,
+        workspace_id: u64,
+        frames: Vec<CallFrame>,
+    ) -> Result<(), String> {
+        self.send(Command::CallAudio(workspace_id, frames))
     }
 
     /// Say `frames` on `workspace_id`'s presence track, the way every other
@@ -2001,6 +2039,10 @@ impl Task {
                 self.publish_presence(workspace_id, frames);
                 true
             }
+            Command::CallAudio(workspace_id, frames) => {
+                self.publish_call_audio(workspace_id, frames);
+                true
+            }
             Command::Here(request, done) => Self::request_here(request, done, client),
             Command::Private(request, done) => Self::request_private(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
@@ -2133,6 +2175,7 @@ impl Task {
             // workspace none of its own.
             Command::Live(..)
             | Command::Presence(..)
+            | Command::CallAudio(..)
             | Command::Publish(..)
             | Command::Compact(..)
             | Command::SendContent(..)

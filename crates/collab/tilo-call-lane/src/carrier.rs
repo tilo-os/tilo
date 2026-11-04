@@ -1,12 +1,11 @@
-//! The lane's connections: one QUIC connection per pair of devices per lane,
-//! on the session's own endpoint.
+//! The lane's connections: one QUIC connection per pair of devices, on the
+//! session's own endpoint.
 //!
-//! A call is a mesh: each device dials every other device its presence names
-//! in the same call and accepts the return dial, so one connection carries one
-//! device's voice to one other device. A voice is datagrams, which never wait
-//! and are never retransmitted: a lost one costs its frames and nothing
-//! behind it. A lane carries one kind of media, so a screen share's stream
-//! gets a connection of its own and never queues a call's audio behind it.
+//! Each device dials every other device its presence names in the same call
+//! and accepts the return dial. The lane carries the call's pictures: a
+//! camera and a screen, each on its own stream, so a screen share never
+//! queues a camera behind it. A call's voice is not a lane's: it travels on
+//! the workspace's live plane.
 //!
 //! Every connection starts with a [`Hello`] on a bi-stream, both ways: what
 //! workspace, channel and call the two devices think they are in, and which
@@ -15,18 +14,16 @@
 //! not name is refused and the connection closed with a reason before a frame
 //! is read.
 //!
-//! Nothing here touches media: a caller seals with [`crate::Microphone`] and
-//! hands [`Peer::send`] the datagram, and opens what [`Peer::received`]
-//! returns.
+//! Nothing here touches media: a caller seals its pictures and writes them on
+//! the streams [`Peer::open_pictures`] opens.
 
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use bytes::Bytes;
 use iroh::endpoint::{
     ConnectOptions, ConnectingError, Connection, ConnectionError, QuicTransportConfig, ReadError,
-    ReadToEndError, SendDatagramError, SendStream, VarInt, WriteError,
+    ReadToEndError, SendStream, VarInt, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
@@ -48,10 +45,6 @@ const MAX_HELLO_BYTES: usize = 1024;
 /// The application close code of a connection this device refused.
 const REFUSED: u32 = 1;
 
-/// Bytes of a call's datagrams this device holds: the playout of a stalled
-/// audio thread, not a call's backlog.
-const RECEIVE_BUFFER: usize = 256 * 1024;
-
 /// A lane's connection ends after this long without a packet from the peer:
 /// the session endpoint's own idle timeout, so a call does not outlive the
 /// rest of the session's links.
@@ -64,14 +57,12 @@ const MAX_UNI_STREAMS: u32 = 64;
 const MAX_BI_STREAMS: u32 = 8;
 
 /// The QUIC transport a lane's connections use: the session's idle timeout,
-/// a receive buffer sized for a call's datagrams, and room for the picture
-/// streams of a call.
+/// and room for the picture streams of a call.
 #[must_use]
 pub fn transport_config() -> QuicTransportConfig {
     let idle = u32::try_from(IDLE_TIMEOUT.as_millis()).unwrap_or(u32::MAX);
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(VarInt::from_u32(idle).into()))
-        .datagram_receive_buffer_size(Some(RECEIVE_BUFFER))
         .max_concurrent_uni_streams(VarInt::from_u32(MAX_UNI_STREAMS))
         .max_concurrent_bidi_streams(VarInt::from_u32(MAX_BI_STREAMS))
         .build()
@@ -337,42 +328,10 @@ impl Peer {
         Some(send)
     }
 
-    /// Send one datagram.
-    ///
-    /// A datagram is sent at once or not at all: it is never queued behind
-    /// another, and the transport drops the oldest one when its buffer is
-    /// full. A failure means this frame was not sent, which a call counts and
-    /// drops rather than waits on.
-    ///
-    /// # Errors
-    ///
-    /// [`SendDatagramError::TooLarge`] when the datagram does not fit a QUIC
-    /// packet, and the connection's end when it went away.
-    pub fn send(&self, datagram: impl Into<Bytes>) -> Result<(), SendDatagramError> {
-        self.connection.send_datagram(datagram.into())
-    }
-
-    /// The next datagram the other device sent.
-    ///
-    /// # Errors
-    ///
-    /// The connection's end: the device closed the call, or went away.
-    pub async fn received(&self) -> Result<Bytes, ConnectionError> {
-        self.connection.read_datagram().await
-    }
-
     /// Ends when this lane does: a device whose lane went away opens another
     /// one on the same path it opened this one.
     pub async fn ended(&self) {
         self.connection.closed().await;
-    }
-
-    /// The frames this peer's transport lost, and the packets it sent, as the
-    /// connection counts them: what a sender sizes its repeats from.
-    #[must_use]
-    pub fn packets(&self) -> (u64, u64) {
-        let stats = self.connection.stats();
-        (stats.udp_tx.datagrams, stats.lost_packets)
     }
 
     /// End the call this connection carries, telling the other device so.

@@ -1,24 +1,26 @@
-//! The lane member that carries a page into a call.
+//! The lane member that carries a page's pictures into a call.
 //!
 //! A page speaks a call in sealed frames but has no endpoint to carry them
 //! on. Its own device has one, and it is that device whose key the page's
 //! frames name and whose membership the workspace's roster admits, so this is
-//! the software that takes part in the call for the page: it joins both of the
-//! call's lanes as that device, dials the call's other devices and answers the
-//! ones that dial it, and copies frames between them and the page.
+//! the software that takes part in the call for the page: it joins the call's
+//! picture lane as that device, dials the call's other devices and answers the
+//! ones that dial it, and copies pictures between them and the page. The
+//! page's voice is not here: it publishes on the workspace's live plane,
+//! which a page reaches over WebTransport itself.
 //!
 //! Nothing here touches a key: the frames the page hands over are sealed, the
 //! frames that arrive are copied back exactly as they came off the lane, and
 //! the page opens and seals them itself. A call the page is bridged into is
 //! therefore as end-to-end encrypted as one between two devices, and this
-//! member never sees a sample of it.
+//! member never sees a picture of it.
 //!
 //! A bridge is one turn at a time ([`Bridge::exchange`]): the page's host
 //! hands it what the page sent, and gets back what the call's devices sent
 //! since. That is the shape a page's session carries, so a bridge holds
 //! nothing longer than a turn's worth of media.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -27,16 +29,13 @@ use tilo_lock::MutexRecover as _;
 
 use crate::carrier::{Calls, Failed, Hello, Peer};
 use crate::frame::Lane;
-use crate::page::{self, Asked, Carried, CarriedPicture, Down, Showing, Up};
+use crate::page::{self, Asked, CarriedPicture, Down, Showing, Up};
 use crate::roster::Roster;
 use crate::video::{Control, PicturePeer};
 use crate::wire::source_wire;
 
-/// What a bridge holds for a page that has not come for it yet: a few turns of
-/// voice and of pictures. Past it the oldest goes, as a call drops what it can
-/// no longer play.
-const MAX_CARRIED: usize = 64;
-/// Pictures held for a page that has not come for them yet.
+/// Pictures held for a page that has not come for them yet. Past it the oldest
+/// goes, as a call drops what it can no longer play.
 const MAX_FRAMES: usize = 64;
 
 /// Why a turn did not go through.
@@ -50,17 +49,15 @@ pub enum Refused {
     Closed,
 }
 
-/// A device's call, carrying a page: what the page sends, whose lanes it goes
-/// on, and what came back for it.
+/// A device's call, carrying a page's pictures: what the page sends, the lane
+/// it goes on, and what came back for it.
 pub struct Bridge {
     workspace: String,
     call: String,
     /// The device the page's frames name, and that this bridge takes part as.
     device: [u8; 32],
-    /// The lane the page's voice goes on, and the handler the endpoint answers
-    /// the call's connections with.
-    audio: Calls,
-    /// The lane the page's pictures go on.
+    /// The lane the page's pictures go on, and the handler the endpoint
+    /// answers the call's connections with.
     video: Calls,
     held: Mutex<Held>,
     closed: AtomicBool,
@@ -69,14 +66,11 @@ pub struct Bridge {
 /// What a bridge holds of the call between two turns.
 #[derive(Default)]
 struct Held {
-    /// The devices with a lane to this bridge, by lane.
-    voices: BTreeMap<[u8; 32], Peer>,
     pictures: BTreeMap<[u8; 32], PicturePeer>,
     /// What each device says it shows of the page, as its control stream last
     /// said: the layers the page encodes for.
     showing: BTreeMap<[u8; 32], Showing>,
     /// What the devices sent for the page to open, oldest first.
-    carried: VecDeque<Carried>,
     frames: VecDeque<CarriedPicture>,
     /// Sources a device asked the page to start over at a keyframe.
     asked: Vec<Asked>,
@@ -87,7 +81,7 @@ impl std::fmt::Debug for Bridge {
         f.debug_struct("Bridge")
             .field("call", &self.call)
             .field("device", &self.device)
-            .field("lanes", &self.held.lock_recover().voices.len())
+            .field("pictures", &self.held.lock_recover().pictures.len())
             .finish_non_exhaustive()
     }
 }
@@ -112,20 +106,12 @@ impl Bridge {
         device: [u8; 32],
         roster: Roster,
     ) -> Arc<Self> {
-        let hello = Hello {
-            workspace: workspace.clone(),
-            channel,
-            call: call.clone(),
-            lane: Lane::Audio,
-        };
-        let (audio, accepted) = Calls::new(hello.clone(), roster.clone());
-        // The picture lane's calls are only ever dialled from here: the
-        // endpoint's handler answers whichever lane was dialled, so its inbox
-        // has no one to serve.
-        let (video, _dialled_only) = Calls::new(
+        let (video, accepted) = Calls::new(
             Hello {
+                workspace: workspace.clone(),
+                channel,
+                call: call.clone(),
                 lane: Lane::Video,
-                ..hello
             },
             roster,
         );
@@ -133,7 +119,6 @@ impl Bridge {
             workspace,
             call,
             device,
-            audio,
             video,
             held: Mutex::new(Held::default()),
             closed: AtomicBool::new(false),
@@ -150,18 +135,16 @@ impl Bridge {
                     peer.close();
                     return;
                 }
-                let lane = peer.lane();
-                bridge.take_lane(peer, lane);
+                bridge.watch(peer);
             }
         });
         bridge
     }
 
-    /// The handler an endpoint's router answers the call's connections with:
-    /// whichever of the call's lanes was dialled.
+    /// The handler an endpoint's router answers the call's connections with.
     #[must_use]
     pub fn handler(&self) -> Calls {
-        self.audio.clone()
+        self.video.clone()
     }
 
     /// The device this bridge takes part as: the one the page's frames name.
@@ -179,12 +162,10 @@ impl Bridge {
     /// Who may send to this bridge from now on, as the workspace's governance
     /// moves it. Lanes already open are the caller's to close.
     pub fn set_roster(&self, roster: Roster) {
-        self.audio.set_roster(roster.clone());
         self.video.set_roster(roster);
     }
 
-    /// Open the call's two lanes to `device`, and take what it sends from now
-    /// on.
+    /// Open the call's lane to `device`, and take what it sends from now on.
     ///
     /// # Errors
     ///
@@ -194,15 +175,12 @@ impl Bridge {
         endpoint: &Endpoint,
         addr: impl Into<EndpointAddr>,
     ) -> Result<(), Failed> {
-        let addr = addr.into();
-        for (calls, lane) in [(&self.audio, Lane::Audio), (&self.video, Lane::Video)] {
-            let peer = calls.dial(endpoint, addr.clone()).await?;
-            if self.closed.load(Ordering::Acquire) {
-                peer.close();
-                return Err(Failed::Ended("the bridge closed".to_owned()));
-            }
-            self.take_lane(peer, lane);
+        let peer = self.video.dial(endpoint, addr.into()).await?;
+        if self.closed.load(Ordering::Acquire) {
+            peer.close();
+            return Err(Failed::Ended("the bridge closed".to_owned()));
         }
+        self.watch(peer);
         Ok(())
     }
 
@@ -220,20 +198,13 @@ impl Bridge {
         if self.closed.load(Ordering::Acquire) {
             return Err(Refused::Closed);
         }
-        let (voices, pictures) = {
-            let held = self.held.lock_recover();
-            (
-                held.voices.values().cloned().collect::<Vec<_>>(),
-                held.pictures.values().cloned().collect::<Vec<_>>(),
-            )
-        };
-        // The page's voice goes to every device of the call, which drops what
-        // its own transport cannot carry rather than holding the next.
-        for datagram in &up.audio {
-            for voice in &voices {
-                let _ = voice.send(datagram.clone());
-            }
-        }
+        let pictures = self
+            .held
+            .lock_recover()
+            .pictures
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         // What the page shows of a device is what that device sends it, so the
         // device is told before the layers it is sent start arriving.
         for showing in &up.shows {
@@ -261,15 +232,8 @@ impl Bridge {
             }
         }
         let mut held = self.held.lock_recover();
-        let devices: BTreeSet<[u8; 32]> = held
-            .voices
-            .keys()
-            .chain(held.pictures.keys())
-            .copied()
-            .collect();
         Ok(Down {
-            devices: devices.into_iter().collect(),
-            audio: held.carried.drain(..).collect(),
+            devices: held.pictures.keys().copied().collect(),
             pictures: held.frames.drain(..).collect(),
             shows: held.showing.values().cloned().collect(),
             keyframes: std::mem::take(&mut held.asked),
@@ -282,51 +246,11 @@ impl Bridge {
             return;
         }
         let mut held = self.held.lock_recover();
-        for voice in held.voices.values() {
-            voice.close();
-        }
         for peer in held.pictures.values() {
             peer.close();
         }
-        held.voices.clear();
         held.pictures.clear();
-        held.carried.clear();
         held.frames.clear();
-    }
-
-    /// Take what `peer`'s lane carries from now on: a voice lane's datagrams,
-    /// or a picture lane's streams, both waiting for the page's next turn.
-    fn take_lane(self: &Arc<Self>, peer: Peer, lane: Lane) {
-        match lane {
-            Lane::Audio => self.hear(peer),
-            Lane::Video => self.watch(peer),
-        }
-    }
-
-    /// Hear what the device on `peer`'s voice lane sends, until the lane ends.
-    fn hear(self: &Arc<Self>, peer: Peer) {
-        let from = peer.remote();
-        let replaced = { self.held.lock_recover().voices.insert(from, peer.clone()) };
-        if let Some(old) = replaced {
-            old.close();
-        }
-        let bridge = Arc::downgrade(self);
-        tokio::spawn(async move {
-            while let Ok(datagram) = peer.received().await {
-                let Some(bridge) = bridge.upgrade() else {
-                    return;
-                };
-                let mut held = bridge.held.lock_recover();
-                held.carried.push_back(Carried {
-                    from,
-                    datagram: datagram.to_vec(),
-                });
-                while held.carried.len() > MAX_CARRIED {
-                    held.carried.pop_front();
-                }
-                drop(held);
-            }
-        });
     }
 
     /// Take what the device on `peer`'s picture lane sends, until the lane

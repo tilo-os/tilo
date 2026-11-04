@@ -42,8 +42,7 @@ pub mod transport;
 pub mod voice;
 
 pub use call_media::{
-    Asked, HeardFrame, LaneAnswer, LaneCall, LaneTurn, MicFrame, Opened, OpenedPicture,
-    PictureFrame, SeenFrame, Showing,
+    Asked, LaneAnswer, LaneCall, LaneTurn, Opened, OpenedPicture, PictureFrame, SeenFrame, Showing,
 };
 pub use channel_crypto::ChannelContentKeys;
 pub use channels::document_admission;
@@ -54,9 +53,9 @@ pub use custody::{
 pub use health::{PeerSnapshot, SessionHealth};
 pub use previews::{LiveChange, LiveState, RemoteMember};
 pub use session::{
-    Completion, Failure, FailureSubject, Host, LaneCompletion, LocalState, NodeCompletion,
-    PAGE_FAILURE_CODES, PairsCompletion, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus,
-    RoomsCompletion, TransportPhase,
+    CallFrame, Completion, Failure, FailureSubject, Host, LaneCompletion, LocalState,
+    NodeCompletion, PAGE_FAILURE_CODES, PairsCompletion, PeerConfig, PeerEvent, PeerEvents,
+    PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
 pub use tilo_live::live::Track;
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, HttpsLink, LinkError, host_info};

@@ -746,7 +746,6 @@ async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answer
             workspace: workspace.into(),
             call: "the call".into(),
             channel: collab_types::ChannelId::default(),
-            audio: vec![],
             pictures: vec![],
             shows: vec![],
             keyframes: vec![],
@@ -757,7 +756,6 @@ async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answer
     let (code, body) = post(addr, tilo_call_lane::page::PATH, Some(token), turn(CALLER)).await;
     assert_eq!(code, 200);
     let down: tilo_call_lane::page::Down = postcard::from_bytes(&body).unwrap();
-    assert!(down.audio.is_empty());
     assert!(down.pictures.is_empty());
 
     assert_eq!(

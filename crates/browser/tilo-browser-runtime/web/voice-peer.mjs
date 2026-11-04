@@ -4,10 +4,12 @@
  * The wasm peer carries the call's presence and its media:
  * `WasmPeer.voiceCalls`, `voiceCall`, `voiceJoin`, `voiceLeave` and
  * `takeVoiceEvents` keep this page's participation alive in the call and say
- * who is in it, and `callLaneTurn` takes one turn of the page's sealed media
- * with the host's call lane. This adapts both to the signalling
- * web/voice.mjs follows, and lists and governs the workspace's calls for the
- * desktop.
+ * who is in it, `callAudio` publishes the microphone's frames on the
+ * workspace's live plane and `takeVoiceEvents` carries the frames the call's
+ * devices published there, and `callLaneTurn` takes one turn of the page's
+ * sealed pictures with the host's call lane. This adapts all of it to the
+ * signalling web/voice.mjs follows, and lists and governs the workspace's
+ * calls for the desktop.
  */
 import {createVoiceCall} from './voice.mjs';
 
@@ -33,8 +35,11 @@ export function createPeerVoice({peer, workspace, device = null, createCall = cr
     // can now, and brings the fresh grant the call waits for.
     reachable: () => { try { peer().retryNow?.(); } catch {} },
     show: (camera, screen, muted, deafened) => { try { peer().voiceShow(workspace, camera, screen, muted, deafened); } catch {} },
-    // One turn of the call's sealed media: the host copies it onto the call's
-    // lane and answers with what its devices sent.
+    // The microphone's frames, as they are made: published on the
+    // workspace's plane as this page's voice.
+    audio: frames => { try { peer().callAudio(workspace, JSON.stringify(frames)); } catch {} },
+    // One turn of the call's sealed pictures: the host copies them onto the
+    // call's lane and answers with what its devices sent.
     turn: turn => peer().callLaneTurn(workspace, turn),
     // The host's bridge forgets this page's call: its next turn starts afresh.
     end: () => { try { peer().callLaneLeave(workspace); } catch {} },

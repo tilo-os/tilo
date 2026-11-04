@@ -8,25 +8,24 @@
 //! page all seal, open and read the same objects. This crate re-exports them
 //! and adds only what is a lane's own.
 //!
-//! Voice frames travel as the datagrams of a tilo-voice/1 bundle
-//! ([`audio::Microphone`], [`audio::heard`]) on the connections two devices
-//! open for one call ([`carrier`]): the endpoint those connections run on,
-//! and what a call does with a datagram it opens, are the caller's.
+//! A call's voice does not travel here: it is a sealed track of the
+//! workspace's live plane ([`tilo_live::plane`]), carried by the session's
+//! own plane and not by a connection per pair.
 //!
-//! Pictures travel the same connections' streams: one camera and one screen
-//! per device, encoded once per layer a device in the call shows
-//! ([`video::Video`]), each tilo-video/1 object sealed under its stream's
-//! key and read back into the app's [`video::Inbox`].
+//! Pictures travel the connections two devices open for a call
+//! ([`carrier`]): one camera and one screen per device, encoded once per layer
+//! a device in the call shows ([`video::Video`]), each tilo-video/1 object
+//! sealed under its stream's key and read back into the app's
+//! [`video::Inbox`].
 //!
-//! A page has no endpoint to open a lane on, so it reaches the call through
-//! its own device: [`page`] is the page's side, sealing its media as the
+//! A page has no endpoint to open a lane on, so its pictures reach the call
+//! through its own device: [`page`] is the page's side, sealing them as the
 //! device that bridges it and opening what the call sends, and [`bridge`] is
 //! that device's side, carrying the sealed frames on the lane without ever
 //! holding a key of the call. Both speak the frames' codes ([`wire`]) and
 //! neither needs the lane's transport; [`page`] builds in a page, and the
 //! lane ([`carrier`], [`video`]) is behind the `lanes` feature.
 
-pub mod audio;
 #[cfg(feature = "lanes")]
 pub mod bridge;
 #[cfg(feature = "lanes")]
@@ -41,7 +40,6 @@ pub mod wire;
 pub use tilo_live::video as picture;
 pub use tilo_live::{frame, roster, voice};
 
-pub use audio::{Heard, Microphone, heard};
 #[cfg(feature = "lanes")]
 pub use bridge::Bridge;
 #[cfg(feature = "lanes")]

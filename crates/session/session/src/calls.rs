@@ -14,12 +14,14 @@
 //! names the channel and what it is called, and a roster says who is in a
 //! channel, with no workspace beside it.
 //!
-//! What a call carries is the lane of [`tilo_call_lane`] on this session's
-//! own endpoint: the channel's keys seal its audio, the workspace's admitted
-//! devices are the ones it admits, and the people the workspace says are in
-//! the channel are the ones this device opens a lane to.
+//! What a call carries is the workspace's live plane ([`tilo_live::plane`]):
+//! its voice is one more sealed track of the session's plane in that
+//! workspace, which every device in the workspace already carries, and the
+//! people the workspace says are in the channel are the ones this device
+//! plays. Pictures keep their own lane of [`tilo_call_lane`] on this
+//! session's own endpoint.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,6 +33,9 @@ use runtime_collab::native_media::{
 };
 use tilo_call_lane::video as pictures;
 use tilo_desktop_model::WorkspaceId;
+use tilo_live::live::Track;
+use tilo_live::plane::{Heard, Plane};
+use tilo_live::voice::{self, VoiceObject};
 use tilo_lock::MutexRecover as _;
 use tilo_native_media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters, ScreenShare};
 
@@ -42,8 +47,9 @@ use crate::sync::{self, LiveCall};
 const PUMP: Duration = Duration::from_millis(10);
 /// How long a device waits before trying a lane to a peer of the call again.
 const REDIAL: Duration = Duration::from_millis(500);
-/// Frames each audio datagram repeats, so one lost packet costs no silence.
-const REPEATS: usize = 2;
+/// Voice objects one workspace's plane may have heard before a call plays
+/// them: a call that starts late plays the newest of them, never a backlog.
+const HEARD: usize = 256;
 /// What the person's answer covers when an app turns a camera on, by the
 /// name every app's device capabilities use.
 const CAMERA: &str = "camera";
@@ -74,6 +80,16 @@ pub(crate) struct Calls {
     said: Mutex<String>,
     /// Woken whenever a workspace's calls may have changed.
     changed: Arc<tokio::sync::Notify>,
+    /// This session's live plane in each workspace, as it stands: what a
+    /// call's voice is published into and heard from.
+    planes: Mutex<BTreeMap<String, Arc<Plane>>>,
+    /// What each workspace's plane heard since the last call, newest last:
+    /// the calls of that workspace play it.
+    heard: Mutex<BTreeMap<String, VecDeque<Heard>>>,
+    /// The next voice object each workspace publishes. One counter for the
+    /// session, so a stream keeps its place across a call that ends and comes
+    /// back, and across the microphone being muted.
+    audio: Mutex<BTreeMap<String, u32>>,
 }
 
 impl Calls {
@@ -84,6 +100,9 @@ impl Calls {
             rosters: Mutex::new(Vec::new()),
             said: Mutex::new(String::new()),
             changed: Arc::new(tokio::sync::Notify::new()),
+            planes: Mutex::new(BTreeMap::new()),
+            heard: Mutex::new(BTreeMap::new()),
+            audio: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -159,9 +178,70 @@ impl Calls {
         };
         *self.rosters.lock_recover() = rosters;
         *self.live.lock_recover() = live;
+        // The planes this session is in now: a call's voice runs on the one
+        // its workspace is in, and is no longer carried once this device
+        // leaves the workspace.
+        let planes: BTreeMap<String, Arc<Plane>> = sync
+            .live()
+            .map(|live| {
+                live.planes()
+                    .into_iter()
+                    .map(|(workspace, plane)| (workspace.to_string(), plane))
+                    .collect()
+            })
+            .unwrap_or_default();
+        {
+            let mut held = self.planes.lock_recover();
+            if held.len() != planes.len() || held.keys().ne(planes.keys()) {
+                *held = planes;
+            }
+        }
+        // What the planes heard since the last pass, each workspace's own:
+        // the calls playing it take it.
+        for (workspace, heard) in sync.take_call_audio() {
+            self.hear(&workspace, heard);
+        }
         if moved {
             self.changed.notify_waiters();
         }
+    }
+
+    /// The plane `workspace`'s call's voice runs on, while this session is in
+    /// the workspace's plane.
+    pub(crate) fn plane(&self, workspace: &str) -> Option<Arc<Plane>> {
+        self.planes.lock_recover().get(workspace).cloned()
+    }
+
+    /// Put one object `workspace`'s plane heard where the calls playing that
+    /// workspace take it.
+    fn hear(&self, workspace: &str, heard: Heard) {
+        let mut buckets = self.heard.lock_recover();
+        let bucket = buckets.entry(workspace.to_owned()).or_default();
+        bucket.push_back(heard);
+        while bucket.len() > HEARD {
+            bucket.pop_front();
+        }
+        drop(buckets);
+    }
+
+    /// What `workspace`'s plane heard since the last call, oldest first.
+    fn took(&self, workspace: &str) -> Vec<Heard> {
+        self.heard
+            .lock_recover()
+            .get_mut(workspace)
+            .map(|bucket| bucket.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    /// The sequence of the next voice object this device publishes in
+    /// `workspace`.
+    fn next_audio(&self, workspace: &str) -> u32 {
+        let mut audio = self.audio.lock_recover();
+        let next = audio.entry(workspace.to_owned()).or_insert(0);
+        let sequence = *next;
+        *next = next.wrapping_add(1);
+        drop(audio);
+        sequence
     }
 
     /// What `channel` is called, as the people in it say; empty when nobody
@@ -418,9 +498,8 @@ async fn open(
     let (access, keys) = call_keys(sources, workspace_id, channel)?;
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
-    let (calls, accepted) = lane_calls(&target, channel, tilo_call_lane::Lane::Audio, &roster);
-    // The call's pictures run on their own lane, sealed with the same keys:
-    // a camera or a screen never waits behind a microphone's datagrams.
+    // The call's pictures run on their own lane, sealed with the channel's
+    // keys: a camera or a screen never waits behind a microphone's datagrams.
     let (video_calls, video_accepted) =
         lane_calls(&target, channel, tilo_call_lane::Lane::Video, &roster);
     let video = tilo_call_lane::Video::new(own);
@@ -428,24 +507,17 @@ async fn open(
         video.set_keys(keys, roster.clone(), &scope);
     }
     let (voice, microphones, offered) = opened_microphones(sources.audio).await?;
-    let microphone = keys
-        .as_ref()
-        .and_then(|keys| tilo_call_lane::Microphone::new(keys, own, &scope, REPEATS).ok());
     let live = keys.is_some();
     let (lost, lost_lanes) = tokio::sync::mpsc::unbounded_channel();
-    let current = keys.map(|keys| Current {
-        opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
-        keys,
-        roster,
-    });
+    let current = keys.map(|keys| Current { keys, roster });
     let shared = Arc::new(Shared {
         lane,
         endpoint,
-        calls: calls.clone(),
         video,
         video_calls,
         screen: Arc::clone(screen_share()),
         showing: Mutex::new(Vec::new()),
+        streams: Mutex::new(BTreeMap::new()),
         person: sources.person.clone(),
         presence: Arc::clone(&sources.calls),
         camera: sources.camera,
@@ -459,11 +531,9 @@ async fn open(
         current: Mutex::new(current),
         side: Mutex::new(Side {
             voice,
-            microphone,
             camera: None,
             screen: None,
         }),
-        peers: Mutex::new(Vec::new()),
         lanes: Mutex::new(BTreeMap::new()),
         next_lane: AtomicU64::new(0),
         lost,
@@ -494,7 +564,6 @@ async fn open(
         Arc::clone(&shared),
         dialled,
         lost_lanes,
-        accepted,
         video_accepted,
     ));
     Ok(Box::new(Call {
@@ -660,7 +729,6 @@ impl MediaSession for Call {
 struct Current {
     keys: channel_crypto::ChannelContentKeys,
     roster: tilo_call_lane::Roster,
-    opener: tilo_call_lane::Opener,
 }
 
 /// This call's own side: what it plays, the microphone it seals frames with
@@ -668,7 +736,6 @@ struct Current {
 /// shown.
 struct Side {
     voice: Voice,
-    microphone: Option<tilo_call_lane::Microphone>,
     /// This device's camera, while the person has it on in the call.
     camera: Option<CameraSend>,
     /// The screen share's encoder, while the person shares their screen.
@@ -687,8 +754,7 @@ struct CameraSend {
 struct Shared {
     lane: LaneSlot,
     endpoint: iroh::Endpoint,
-    calls: tilo_call_lane::Calls,
-    /// This device's key: who its frames say they are from.
+    /// This device's key: whose pictures the app's are.
     own: [u8; 32],
     /// Where the channel's keys come from when its membership moves.
     access: tilo_action_broker::channel_encryption::ChannelKeyAccess,
@@ -704,8 +770,6 @@ struct Shared {
     /// is up from then, and joining until.
     current: Mutex<Option<Current>>,
     side: Mutex<Side>,
-    /// The lanes this device opened or took, one per device in the call.
-    peers: Mutex<Vec<tilo_call_lane::Peer>>,
     /// Which of this device's lanes is the call's lane to each device, by
     /// lane: a lane that ends is only a lane lost while it is still the one
     /// the call holds.
@@ -734,6 +798,9 @@ struct Shared {
     presence: Arc<Calls>,
     /// What this device's camera captures from.
     camera: tilo_call_lane::Camera,
+    /// The timestamp each device's voice stream was last heard at, in this
+    /// call: a stream that starts over is recognised by its own bytes.
+    streams: Mutex<BTreeMap<[u8; 32], u64>>,
     caller: tilo_portal::PortalCaller,
     call: String,
     consents: Option<tilo_portal::consent::Consents>,
@@ -787,39 +854,18 @@ impl Shared {
             });
             return Err(Issue::PermissionDenied);
         }
-        let keys = {
-            let current = self.current.lock_recover();
-            current.as_ref().map(|current| current.keys.clone())
-        };
-        let Some(keys) = keys else {
-            // Nothing to seal a microphone with: the channel's keys are not
-            // here yet.
+        if !self.live.load(Ordering::Acquire) {
+            // The channel's keys are not here yet: the call is still joining.
             return Err(Issue::Unavailable);
-        };
+        }
         let still_current = {
             let call = Arc::downgrade(self);
             Arc::new(move || call.upgrade().is_some_and(|call| !call.closed()))
         };
-        let mut side = self.side.lock_recover();
-        let started = side.voice.start(&source, still_current);
-        started?;
-        // Muting stops this device's capture, not its place in the call's
-        // stream: the frames sealed after it unmutes carry the sequence after
-        // the ones the others already heard, so they go on hearing it.
-        if side.microphone.is_none() {
-            match tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS) {
-                Ok(microphone) => side.microphone = Some(microphone),
-                Err(error) => {
-                    // The lane opened but this device cannot capture: the
-                    // person is refused rather than left unheard.
-                    tracing::warn!(%error, "this device's microphone could not be opened");
-                    side.voice.stop();
-                    side.microphone = None;
-                    return Err(Issue::Unavailable);
-                }
-            }
-        }
-        drop(side);
+        self.side
+            .lock_recover()
+            .voice
+            .start(&source, still_current)?;
         Ok(())
     }
 
@@ -1013,12 +1059,8 @@ impl Shared {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.lane.clear_if(&self.calls);
-        for peer in self.peers.lock_recover().drain(..) {
-            peer.close();
-        }
+        self.lane.clear_if(&self.video_calls);
         let mut side = self.side.lock_recover();
-        side.microphone = None;
         side.camera = None;
         side.screen = None;
         side.voice.close();
@@ -1031,15 +1073,6 @@ impl Shared {
 
     fn closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
-    }
-
-    /// Take `peer`'s lane: the microphone's lane is heard, the pictures'
-    /// lane is drawn.
-    fn join_peer(self: &Arc<Self>, peer: tilo_call_lane::Peer) {
-        match peer.lane() {
-            tilo_call_lane::Lane::Audio => self.join(peer),
-            tilo_call_lane::Lane::Video => self.join_video(peer),
-        }
     }
 
     /// Take `peer`'s picture lane: from now on this device sends it what the
@@ -1067,59 +1100,6 @@ impl Shared {
         self.video.show(device, &camera, &screen);
     }
 
-    /// Take `peer`'s lane: from now on the call hears what it sends, until
-    /// it ends.
-    fn join(self: &Arc<Self>, peer: tilo_call_lane::Peer) {
-        if self.closed() {
-            peer.close();
-            return;
-        }
-        let remote = peer.remote();
-        // This is the call's lane to that device from now on: what the lane
-        // before it carried is forgotten, so the stream on this one starts at
-        // its own place and is heard at once, and the lane it replaced goes.
-        self.forget(remote);
-        let generation = self.lane_up(tilo_call_lane::Lane::Audio, remote);
-        {
-            let mut peers = self.peers.lock_recover();
-            let mut kept = Vec::with_capacity(peers.len().saturating_add(1));
-            for old in peers.drain(..) {
-                if old.remote() == remote {
-                    old.close();
-                } else {
-                    kept.push(old);
-                }
-            }
-            kept.push(peer.clone());
-            *peers = kept;
-        }
-        let hearing = Arc::downgrade(self);
-        let receiver = peer;
-        tokio::spawn(async move {
-            while let Ok(datagram) = receiver.received().await {
-                let Some(shared) = hearing.upgrade() else {
-                    return;
-                };
-                if shared.closed() {
-                    return;
-                }
-                shared.hear(remote, &datagram);
-            }
-            // The lane ended: what it carried is forgotten, and the device is
-            // dialled again.
-            if let Some(shared) = hearing.upgrade() {
-                shared.lane_ended(tilo_call_lane::Lane::Audio, remote, generation);
-            }
-        });
-    }
-
-    /// Forget what was heard from `device`: a lane that ended, or a stream
-    /// that starts over on a fresh one, is a new voice with its own place and
-    /// its own decoder, not a continuation of the one before it.
-    fn forget(&self, device: [u8; 32]) {
-        self.side.lock_recover().voice.forget(device);
-    }
-
     /// Make `lane` to `device` the call's lane from now on, and say which
     /// generation it is: a lane whose end is reported is only lost while it
     /// is still the one the call holds.
@@ -1139,9 +1119,6 @@ impl Shared {
             }
             lanes.remove(&(lane, device));
         }
-        if lane == tilo_call_lane::Lane::Audio {
-            self.forget(device);
-        }
         let _ = self.lost.send((lane, device));
     }
 
@@ -1151,40 +1128,64 @@ impl Shared {
         self.own < device
     }
 
-    /// Play what `sender` sent in `datagram`, unless the person is deafened:
-    /// a deafened call drops the frames rather than holding them.
-    fn hear(&self, sender: [u8; 32], datagram: &[u8]) {
-        if self.deafened.load(Ordering::Acquire) {
-            return;
-        }
-        let heard = {
-            let held = self.current.lock_recover();
-            let heard = held.as_ref().map(|current| {
-                tilo_call_lane::heard(&current.opener, sender, &self.scope, datagram)
-            });
-            drop(held);
-            heard
-        };
-        let Some(Ok(frames)) = heard else {
-            return;
-        };
-        let now = Instant::now();
-        let mut side = self.side.lock_recover();
-        for frame in frames {
-            if side
-                .voice
-                .receive(sender, frame.sequence, frame.timestamp_48k, frame.opus, now)
-                .is_err()
-            {
-                break;
-            }
-        }
-    }
-
-    /// Move the call's audio once: send what the microphone captured, and
-    /// play what arrived.
+    /// Move the call's audio once: publish what the microphone captured on
+    /// the workspace's plane, and play what the call's devices published
+    /// there.
+    ///
+    /// The plane carries one voice track per device per workspace, so what it
+    /// heard is played only from the devices this call's channel says are in
+    /// it. A deafened call drops the frames rather than holding them.
     fn pump(&self) {
         let now = Instant::now();
+        let deafened = self.deafened.load(Ordering::Acquire);
+        let heard = if deafened {
+            Vec::new()
+        } else {
+            self.presence.took(&self.workspace)
+        };
+        if !heard.is_empty() {
+            let callers: BTreeSet<[u8; 32]> =
+                self.presence.callers(&self.call).into_iter().collect();
+            let mut side = self.side.lock_recover();
+            for heard in heard {
+                let sender = heard.sender;
+                if !callers.contains(&sender) {
+                    continue;
+                }
+                let Ok(object) = VoiceObject::decode(&heard.body) else {
+                    continue;
+                };
+                // A stream that starts over — the device left the call and
+                // came back, or its page reloaded — is a new stream: what was
+                // heard from it before says nothing about this frame's place,
+                // so the playout starts over with it rather than holding it
+                // behind where the last one got.
+                let restarted = {
+                    let mut streams = self.streams.lock_recover();
+                    let restarted = streams
+                        .get(&sender)
+                        .is_some_and(|last| object.timestamp < *last);
+                    streams.insert(sender, object.timestamp);
+                    restarted
+                };
+                if restarted {
+                    side.voice.forget(sender);
+                }
+                if side
+                    .voice
+                    .receive(
+                        sender,
+                        object.sequence,
+                        object.timestamp,
+                        object.payload,
+                        now,
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
         let mut side = self.side.lock_recover();
         let captured = match side.voice.pump(now) {
             Ok(captured) => captured,
@@ -1196,15 +1197,24 @@ impl Shared {
                 return;
             }
         };
-        let mut sent = Vec::with_capacity(captured.len());
-        for frame in captured {
-            let Some(microphone) = &mut side.microphone else {
-                break;
-            };
-            match microphone.frame(frame.timestamp_48k, &frame.payload) {
-                Ok(Some(datagram)) => sent.push(datagram),
-                Ok(None) => {}
-                Err(_) => break,
+        let plane = self.presence.plane(&self.workspace);
+        if let Some(plane) = plane {
+            for frame in captured {
+                let sequence = self.presence.next_audio(&self.workspace);
+                let Ok(body) = (VoiceObject {
+                    sequence: u64::from(sequence),
+                    timestamp: frame.timestamp_48k,
+                    duration: voice::FRAME_SAMPLES,
+                    payload: frame.payload,
+                })
+                .encode() else {
+                    continue;
+                };
+                if plane.publish(Track::Audio, sequence, &body).is_err() {
+                    // The plane ended: what follows is published when this
+                    // session's pass joins it again.
+                    break;
+                }
             }
         }
         if let Err(issue) = side.voice.playout(now) {
@@ -1219,20 +1229,6 @@ impl Shared {
             }
         }
         drop(side);
-        if sent.is_empty() {
-            return;
-        }
-        let mut peers = self.peers.lock_recover();
-        for datagram in &sent {
-            for peer in std::mem::take(&mut *peers) {
-                if peer.send(datagram.clone()).is_ok() {
-                    peers.push(peer);
-                } else {
-                    peer.close();
-                }
-            }
-        }
-        drop(peers);
     }
 
     /// Re-read what the workspace admits and what the channel's keys are: a
@@ -1260,67 +1256,40 @@ impl Shared {
                 return;
             }
         };
-        let mut rekeyed = false;
         {
             let mut held = self.current.lock_recover();
             match (held.as_mut(), keys) {
                 (Some(current), Some(keys)) if keys.epoch() != current.keys.epoch() => {
                     current.keys = keys;
                     if let Some(roster) = roster {
-                        self.calls.set_roster(roster.clone());
+                        self.video_calls.set_roster(roster.clone());
                         current.roster = roster;
                     }
-                    current.opener =
-                        tilo_call_lane::Opener::new(current.keys.clone(), current.roster.clone());
-                    // The pictures seal with the epoch's keys as the audio
-                    // does, from this epoch on.
+                    // The pictures seal with the epoch's keys from this
+                    // epoch on.
                     self.video
                         .set_keys(&current.keys, current.roster.clone(), &self.scope);
-                    rekeyed = true;
                 }
                 (Some(current), _) => {
                     if let Some(roster) =
                         roster.filter(|roster| roster.devices().ne(current.roster.devices()))
                     {
-                        self.calls.set_roster(roster.clone());
+                        self.video_calls.set_roster(roster.clone());
                         current.roster = roster;
-                        current.opener = tilo_call_lane::Opener::new(
-                            current.keys.clone(),
-                            current.roster.clone(),
-                        );
                         self.video
                             .set_keys(&current.keys, current.roster.clone(), &self.scope);
                     }
                 }
                 (None, Some(keys)) => {
                     let roster = roster.unwrap_or_default();
-                    self.calls.set_roster(roster.clone());
+                    self.video_calls.set_roster(roster.clone());
                     self.video.set_keys(&keys, roster.clone(), &self.scope);
-                    *held = Some(Current {
-                        opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
-                        keys,
-                        roster,
-                    });
+                    *held = Some(Current { keys, roster });
                     self.live.store(true, Ordering::Release);
                 }
                 (None, None) => {}
             }
             drop(held);
-        }
-        if rekeyed {
-            let keys = self
-                .current
-                .lock_recover()
-                .as_ref()
-                .map(|current| current.keys.clone());
-            let mut side = self.side.lock_recover();
-            if let (Some(microphone), Some(keys)) = (side.microphone.as_mut(), keys) {
-                // The epoch's keys, not the stream's place: what this device
-                // seals from now on follows what the others already heard.
-                if microphone.rekey(&keys, self.own, &self.scope).is_err() {
-                    side.microphone = None;
-                }
-            }
         }
     }
 }
@@ -1333,29 +1302,21 @@ async fn run(
     dialled: Vec<[u8; 32]>,
     mut lost: tokio::sync::mpsc::UnboundedReceiver<(tilo_call_lane::Lane, [u8; 32])>,
     mut accepted: tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
-    mut accepted_video: tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
 ) {
-    shared.lane.install(shared.calls.clone());
+    // The endpoint answers the call's picture lane with this call's calls:
+    // a lane that was dialled here and one that dialled in are both taken.
+    shared.lane.install(shared.video_calls.clone());
     // Whether the call is live is the channel's keys to say, not this task's
     // starting: a call whose keys are still on their way joins the channel and
     // says so until `refresh` brings it up, whether or not the lane is already
     // dialling.
     let (joined, mut arrived) = tokio::sync::mpsc::unbounded_channel();
-    let (video_joined, mut video_arrived) = tokio::sync::mpsc::unbounded_channel();
     // The lanes this call is opening: one dial at a time per lane, so a lane
     // that ended goes back to the one path that dials it without a second
     // lane to the same device.
     let mut opening: BTreeSet<(tilo_call_lane::Lane, [u8; 32])> = BTreeSet::new();
     for device in dialled {
-        for lane in [tilo_call_lane::Lane::Audio, tilo_call_lane::Lane::Video] {
-            dial_lane(
-                &shared,
-                &mut opening,
-                lane,
-                device,
-                (&joined, &video_joined),
-            );
-        }
+        dial_lane(&shared, &mut opening, device, &joined);
     }
     let mut beat = tokio::time::interval(PUMP);
     beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1366,16 +1327,8 @@ async fn run(
         }
         tokio::select! {
             Some(peer) = accepted.recv() => lane_joined(&shared, &mut opening, peer),
-            Some(peer) = accepted_video.recv() => lane_joined(&shared, &mut opening, peer),
             Some(peer) = arrived.recv() => lane_joined(&shared, &mut opening, peer),
-            Some(peer) = video_arrived.recv() => lane_joined(&shared, &mut opening, peer),
-            Some((lane, device)) = lost.recv() => dial_lane(
-                &shared,
-                &mut opening,
-                lane,
-                device,
-                (&joined, &video_joined),
-            ),
+            Some((_, device)) = lost.recv() => dial_lane(&shared, &mut opening, device, &joined),
             _ = beat.tick() => {}
         }
         shared.pump();
@@ -1388,27 +1341,21 @@ async fn run(
     shared.close();
 }
 
-/// Dial `lane` to `device`, unless this device does not dial the pair or is
-/// already dialling that lane: the one path a lane is opened by, whether the
-/// call is starting or a lane that ended is coming back.
+/// Dial the call's picture lane to `device`, unless this device does not dial
+/// the pair or is already dialling it: the one path a lane is opened by,
+/// whether the call is starting or a lane that ended is coming back.
 fn dial_lane(
     shared: &Arc<Shared>,
     opening: &mut BTreeSet<(tilo_call_lane::Lane, [u8; 32])>,
-    lane: tilo_call_lane::Lane,
     device: [u8; 32],
-    joined: (
-        &tokio::sync::mpsc::UnboundedSender<tilo_call_lane::Peer>,
-        &tokio::sync::mpsc::UnboundedSender<tilo_call_lane::Peer>,
-    ),
+    joined: &tokio::sync::mpsc::UnboundedSender<tilo_call_lane::Peer>,
 ) {
+    let lane = tilo_call_lane::Lane::Video;
     if !shared.dials(device) || !opening.insert((lane, device)) {
         return;
     }
-    let (audio_joined, video_joined) = joined;
-    let (calls, joined) = match lane {
-        tilo_call_lane::Lane::Audio => (shared.calls.clone(), audio_joined.clone()),
-        tilo_call_lane::Lane::Video => (shared.video_calls.clone(), video_joined.clone()),
-    };
+    let calls = shared.video_calls.clone();
+    let joined = joined.clone();
     let endpoint = shared.endpoint.clone();
     let call = Arc::downgrade(shared);
     tokio::spawn(async move {
@@ -1445,7 +1392,7 @@ fn lane_joined(
     peer: tilo_call_lane::Peer,
 ) {
     opening.remove(&(peer.lane(), peer.remote()));
-    shared.join_peer(peer);
+    shared.join_video(peer);
 }
 
 /// The desktop this session shares: the pass that draws it hands it the
@@ -1556,7 +1503,7 @@ mod tests {
     //! workspace hear each other; and a session with no transport ends the
     //! call it cannot carry, saying why.
     //!
-    //! The audio here is the call's own: the same encoder, lane, sealing and
+    //! The audio here is the call's own: the same encoder, plane, sealing and
     //! playout a device's call runs, ending in memory instead of a speaker,
     //! and a tone instead of a microphone.
 
@@ -1565,7 +1512,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::fabric::Continuity;
-    use channel_crypto::VaultKey;
+    use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
     use collab_types::presence::{Availability, Payload, Presence};
     use collab_types::{ChannelRoute, Ed25519PublicKey};
     use iroh::EndpointId;
@@ -1588,6 +1535,10 @@ mod tests {
     use tilo_action_broker::channel_encryption::ChannelAccess;
     use tilo_browser_peer::{HttpClient, HttpFuture, LaneCall};
     use tilo_call_lane::page::{Picture, Sealed, Up};
+    use tilo_live::plane::Join;
+    use tilo_live::relay::{Denied, Peer, Relay, RelayAuthority, SessionAuthorization};
+    use tilo_live::roster::Roster as LiveRoster;
+    use tilo_live::scope::Scope;
 
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     const CHANNEL: &str = "c_standup";
@@ -1931,6 +1882,9 @@ mod tests {
         calls: Arc<Calls>,
         factory: Factory,
         probe: Arc<Mutex<Vec<f32>>>,
+        /// What carries the workspace's plane's objects to the calls, while a
+        /// plane is attached.
+        _heard: Option<tokio::task::JoinHandle<()>>,
     }
 
     /// Wait until `client`'s endpoint has bound: a call runs on it.
@@ -1948,7 +1902,60 @@ mod tests {
         }
     }
 
-    fn carrier(client: &Client, keys: &ChannelKeyProvider) -> Carrier {
+    /// The relay the test's planes meet on: in-process, with no one to admit,
+    /// since a local plane is its own relay's participant.
+    fn relay() -> Arc<Relay> {
+        struct Nobody;
+        impl RelayAuthority for Nobody {
+            fn admit(
+                &self,
+                _peer: Peer,
+                _proof: &[u8],
+            ) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+                Err(Denied)
+            }
+        }
+        Arc::new(Relay::new(Arc::new(Nobody)))
+    }
+
+    /// The workspace scope's content keys, as its own channel hands them to
+    /// its members.
+    fn workspace_keys() -> channel_crypto::ChannelContentKeys {
+        let channel = Scope::workspace(WORKSPACE.to_owned()).channel_id();
+        ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
+            .expect("the workspace's channel")
+            .content_keys()
+            .expect("the workspace's keys")
+    }
+
+    /// `device`'s plane in the test workspace, on `relay`, hearing and heard
+    /// by `devices`.
+    fn plane(
+        relay: &Relay,
+        device: [u8; 32],
+        devices: &[[u8; 32]],
+        keys: &channel_crypto::ChannelContentKeys,
+    ) -> Arc<Plane> {
+        Arc::new(
+            Plane::local(
+                relay,
+                &Join {
+                    scope: Scope::workspace(WORKSPACE.to_owned()),
+                    device,
+                    keys: keys.clone(),
+                    roster: LiveRoster::new(devices.iter().copied()),
+                    publish: true,
+                },
+            )
+            .expect("a local plane"),
+        )
+    }
+
+    fn carrier(
+        client: &Client,
+        keys: &ChannelKeyProvider,
+        heard_on: Option<Arc<Plane>>,
+    ) -> Carrier {
         let calls = Calls::new();
         calls.follow(client, None);
         let probe = Arc::new(Mutex::new(Vec::new()));
@@ -1965,10 +1972,30 @@ mod tests {
             camera: tilo_call_lane::Camera::TestPattern,
             played: Some(Arc::clone(&probe)),
         });
+        // What the session's own pass does with a plane's objects: hand them
+        // to the calls playing that workspace.
+        let draining = heard_on.map(|plane| {
+            calls
+                .planes
+                .lock_recover()
+                .insert(WORKSPACE.to_owned(), Arc::clone(&plane));
+            let calls = Arc::clone(&calls);
+            tokio::spawn(async move {
+                loop {
+                    while let Some(heard) = plane.try_recv() {
+                        if heard.track == Track::Audio {
+                            calls.hear(WORKSPACE, heard);
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            })
+        });
         Carrier {
             calls,
             factory,
             probe,
+            _heard: draining,
         }
     }
 
@@ -2005,8 +2032,21 @@ mod tests {
         bound(laptop).await;
         bound(desk).await;
         let (keys, kept) = keys(0x11, 0x11, &[0x11, 0x22]);
-        let left = carrier(laptop, &keys);
-        let right = carrier(desk, &keys);
+        // Voice runs on the workspace's plane: both devices publish and hear
+        // on their own plane in one scope, as they do in a workspace's relay.
+        let relay = relay();
+        let workspace = workspace_keys();
+        let devices = [*public(0x11).as_bytes(), *public(0x22).as_bytes()];
+        let left = carrier(
+            laptop,
+            &keys,
+            Some(plane(&relay, devices[0], &devices, &workspace)),
+        );
+        let right = carrier(
+            desk,
+            &keys,
+            Some(plane(&relay, devices[1], &devices, &workspace)),
+        );
         let mut here = left
             .factory
             .prepare(target())
@@ -2257,8 +2297,8 @@ mod tests {
         bound(&ana).await;
         bound(&ben).await;
         let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
-        let left = carrier(&ana, &keys);
-        let right = carrier(&ben, &keys);
+        let left = carrier(&ana, &keys, None);
+        let right = carrier(&ben, &keys, None);
         assert_eq!(
             left.calls.persons(CHANNEL).get(public(0x22).as_bytes()),
             Some(&person(0x22)),
@@ -2380,7 +2420,7 @@ mod tests {
         availability(&laptop, 0x11, Some(call_presence()));
         bound(&laptop).await;
         let (keys, _kept) = keys(0x22, 0x11, &[0x11, 0x22]);
-        let left = carrier(&laptop, &keys);
+        let left = carrier(&laptop, &keys, None);
         let mut here = left
             .factory
             .prepare(target())
@@ -2620,10 +2660,10 @@ mod tests {
         content
     }
 
-    /// A page and a native device in one call: the page seals its media as its
-    /// own device, a bridge carries those frames over the call's lane without
-    /// ever opening them, and the call shows the service its frames pass
-    /// through.
+    /// A page and a native device in one call: each publishes its microphone
+    /// on the workspace's plane and hears the other there, the page sealing
+    /// as its own device, while the call's lane carries only the page's
+    /// pictures, which the call shows the service.
     #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_page_in_a_call_is_heard_and_hears() {
@@ -2678,7 +2718,18 @@ mod tests {
         availability(&laptop, 0x22, Some(call_presence()));
         bound(&laptop).await;
         let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
-        let left = carrier(&laptop, &keys);
+        // Voice runs on the workspace's plane: the page publishes its
+        // microphone there as its own device and hears the laptop there,
+        // while the lane carries only pictures.
+        let relay = relay();
+        let workspace = workspace_keys();
+        let devices = [laptop_device, page_device];
+        let left = carrier(
+            &laptop,
+            &keys,
+            Some(plane(&relay, laptop_device, &devices, &workspace)),
+        );
+        let page_plane = plane(&relay, page_device, &devices, &workspace);
 
         // The call shows the page's person in it.
         let rosters = left.calls.rosters();
@@ -2740,6 +2791,7 @@ mod tests {
                 .expect("the test's tone");
             let mut lane = lane;
             let mut sequence = 0_u64;
+            let mut published = 0_u32;
             let mut beat = tokio::time::interval(Duration::from_millis(20));
             loop {
                 beat.tick().await;
@@ -2747,12 +2799,35 @@ mod tests {
                 let mut up = lane.page().up();
                 if let Ok(frames) = voice.pump(now) {
                     for frame in frames {
-                        if let Ok(Some(sealed)) =
-                            lane.page_mut().audio(frame.timestamp_48k, &frame.payload)
-                        {
-                            up.audio.push(sealed);
+                        let Ok(body) = (VoiceObject {
+                            sequence: u64::from(published),
+                            timestamp: frame.timestamp_48k,
+                            duration: voice::FRAME_SAMPLES,
+                            payload: frame.payload,
+                        })
+                        .encode() else {
+                            continue;
+                        };
+                        if page_plane.publish(Track::Audio, published, &body).is_err() {
+                            break;
                         }
+                        published = published.wrapping_add(1);
                     }
+                }
+                while let Some(heard) = page_plane.try_recv() {
+                    if heard.track != Track::Audio {
+                        continue;
+                    }
+                    let Ok(object) = VoiceObject::decode(&heard.body) else {
+                        continue;
+                    };
+                    let _ = voice.receive(
+                        heard.sender,
+                        object.sequence,
+                        object.timestamp,
+                        object.payload,
+                        now,
+                    );
                 }
                 // One picture of the page's camera the first turn, a keyframe,
                 // and the ones behind it.
@@ -2780,11 +2855,7 @@ mod tests {
                 let Ok(down) = lane.turn(up).await else {
                     continue;
                 };
-                let opened = lane.opened(&down);
-                for (from, frame) in opened.audio {
-                    let _ =
-                        voice.receive(from, frame.sequence, frame.timestamp_48k, frame.opus, now);
-                }
+                let _ = lane.opened(&down);
                 let _ = voice.playout(now);
                 if let Ok(mut played) = played.lock() {
                     played.extend(voice.played());

@@ -40,6 +40,9 @@ pub const TRACKS: [Track; 3] = [Track::Presence, Track::Audio, Track::Activity];
 const QUEUE: usize = 256;
 /// Join budget: the transport, the admission preface and the setup.
 const JOINT: Duration = Duration::from_secs(10);
+/// How long a reader waits before asking again for a peer's broadcast whose
+/// read ended with nothing in it.
+const REJOIN: Duration = Duration::from_millis(100);
 /// Bytes one plane's own publication may cache at its ingress.
 const INGRESS: u64 = 2 * 1024 * 1024;
 /// Bytes a plane caches of what it hears.
@@ -490,39 +493,82 @@ fn track_info(track: Track) -> moq_net::track::Info {
 }
 
 /// Read `track` of `device`'s broadcast for as long as the plane lives.
+///
+/// A device's broadcast ends when its plane does — it left the workspace and
+/// came back, or a page reloaded — and is announced again under the same
+/// namespace by the session that took its place. This reader waits for that
+/// announcement and reads the track again, so the device is heard here
+/// without this plane joining again; what it said before is not played twice.
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
-    let Ok(broadcast) = shared
-        .incoming
-        .consume()
-        .routed_broadcast(address.as_str())
-        .await
-    else {
-        return;
-    };
     let name = live::track(track);
-    let Ok(producer) = broadcast.track(name.as_str()) else {
-        return;
-    };
-    // A reader that attaches late starts at the newest group the track holds:
-    // the presence a peer said before it joined is what it draws, instead of
-    // waiting out the heartbeat.
-    let newest = producer.latest();
-    let Ok(mut subscriber) = producer
-        .subscribe(
-            moq_net::track::Subscription::default()
-                .with_max_age(retain(track))
-                .with_start(newest.map(moq_net::track::Position::group)),
+    loop {
+        if shared.ended() || !shared.admits(device) {
+            return;
+        }
+        let Ok(broadcast) = shared
+            .incoming
+            .consume()
+            .routed_broadcast(address.as_str())
+            .await
+        else {
+            return;
+        };
+        let Ok(producer) = broadcast.track(name.as_str()) else {
+            return;
+        };
+        // A reader that attaches late starts at the newest group the track
+        // holds: the presence a peer said before it joined is what it draws,
+        // instead of waiting out the heartbeat.
+        let newest = producer.latest();
+        let Ok(mut subscriber) = producer
+            .subscribe(
+                moq_net::track::Subscription::default()
+                    .with_max_age(retain(track))
+                    .with_start(newest.map(moq_net::track::Position::group)),
+            )
+            .await
+        else {
+            return;
+        };
+        // The newest audio object played: a bundle carries earlier objects
+        // again, and one already played is not played twice.
+        let mut played: Option<u64> = None;
+        // Whether the read delivered anything before it ended: a track that
+        // is announced but already finished ends at once, and asking for it
+        // again in a spin would starve the plane's other reads.
+        let mut heard_any = false;
+        if !read(
+            &shared,
+            device,
+            track,
+            &mut subscriber,
+            &mut played,
+            &mut heard_any,
         )
         .await
-    else {
-        return;
-    };
-    // The newest audio object played: a bundle carries earlier objects again,
-    // and one already played is not played twice.
-    let mut played: Option<u64> = None;
+        {
+            return;
+        }
+        if !heard_any {
+            n0_future::time::sleep(REJOIN).await;
+        }
+    }
+}
+
+/// Read one subscription of `track` to its end: `false` when the plane is
+/// over or the track may no longer be opened here, `true` when the peer's
+/// broadcast ended and may come back.
+async fn read(
+    shared: &Shared,
+    device: [u8; 32],
+    track: Track,
+    subscriber: &mut moq_net::track::Subscriber,
+    played: &mut Option<u64>,
+    heard_any: &mut bool,
+) -> bool {
     loop {
-        match next(&mut subscriber).await {
+        match next(subscriber).await {
             Next::Datagram(datagram) => {
                 // Only audio travels as datagrams: one bundle of voice
                 // objects, newest first, each with its payload sealed.
@@ -540,49 +586,54 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
                         continue;
                     }
                     if shared.ended() || !shared.admits(device) {
-                        return;
+                        return false;
                     }
-                    if !hear_voice(&shared, device, &object) {
-                        return;
+                    if !hear_voice(shared, device, &object) {
+                        return false;
                     }
-                    played = Some(object.sequence);
+                    *heard_any = true;
+                    *played = Some(object.sequence);
                 }
             }
             Next::Group(mut group) => {
                 let sequence = u32::try_from(group.sequence).unwrap_or(u32::MAX);
                 while let Ok(Some(frame)) = group.read_frame().await {
                     if shared.ended() || !shared.admits(device) {
-                        return;
+                        return false;
                     }
                     if track == Track::Audio {
                         // Group lanes carry one voice object per frame: the
                         // same object the datagram lane carries.
                         let Ok(object) = VoiceObject::decode(&frame.payload) else {
-                            return;
+                            return false;
                         };
                         if played.is_some_and(|seen| object.sequence <= seen) {
                             continue;
                         }
-                        if !hear_voice(&shared, device, &object) {
-                            return;
+                        if !hear_voice(shared, device, &object) {
+                            return false;
                         }
-                        played = Some(object.sequence);
+                        *heard_any = true;
+                        *played = Some(object.sequence);
                         continue;
                     }
                     match shared.open(device, track, &frame.payload) {
-                        Ok(body) => shared.deliver(Heard {
-                            sender: device,
-                            track,
-                            sequence,
-                            body,
-                        }),
+                        Ok(body) => {
+                            *heard_any = true;
+                            shared.deliver(Heard {
+                                sender: device,
+                                track,
+                                sequence,
+                                body,
+                            });
+                        }
                         // A frame this device may not open is not one to keep
                         // reading the track for: the epoch or the roster moved.
-                        Err(_) => return,
+                        Err(_) => return false,
                     }
                 }
             }
-            Next::End => return,
+            Next::End => return true,
         }
     }
 }

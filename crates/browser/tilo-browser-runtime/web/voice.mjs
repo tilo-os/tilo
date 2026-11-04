@@ -1,22 +1,25 @@
 /**
- * A browser participant in a call its host carries on the call lane
- * (`tilo-call-lane` `page`, `tilo-browser-peer` `call_media`).
+ * A browser participant in a call: its voice on the workspace's live plane,
+ * its pictures on the host's call lane (`tilo-call-lane` `page`,
+ * `tilo-browser-peer` `call_media`).
  *
  * The page is a member of the call's channel and holds its content keys, so
  * it seals what its microphone and camera make itself and opens what the
- * call's devices send: the host only copies sealed bytes between the page and
- * the lane (`POST {API_PREFIX}/call/lane`, `signalling.turn`). This module is
- * the app around that exchange:
+ * call's devices send. Its voice is published frame by frame on the
+ * workspace's plane (`signalling.audio`), which every device in the call
+ * already carries; the host only copies the sealed pictures between the page
+ * and the lane (`POST {API_PREFIX}/call/lane`, `signalling.turn`). This
+ * module is the app around that:
  *
  * - the microphone and playback (web/voice-audio.mjs): a call starts muted
  *   and asks the browser for nothing; the first unmute asks for the
  *   microphone, and a refusal keeps the person in the call, muted, with the
- *   reason in `micIssue`; muting stops the microphone;
- * - one turn every `TURN_MS`, one at a time: the microphone frames since the
- *   last turn, the pictures the encoders made, what the page shows of each
- *   device, and the keyframes it asks for; the answer is played, admitted to
- *   the picture inbox, and says which layers of the page's pictures each
- *   device shows and which it wants started over;
+ *   reason in `micIssue`; muting stops the microphone; what the call
+ *   publishes is played as it arrives (`heard` events);
+ * - one turn every `TURN_MS`, one at a time: the pictures the encoders made,
+ *   what the page shows of each device, and the keyframes it asks for; the
+ *   answer is admitted to the picture inbox, and says which layers of the
+ *   page's pictures each device shows and which it wants started over;
  * - the camera and a shared screen (web/voice-video.mjs), encoded in the
  *   layers the call's devices show, and told to the host
  *   (`signalling.show`), so everyone in the call sees who shows what;
@@ -29,11 +32,13 @@
  *   show whenever it changes; a deafened person hears nothing of the call and
  *   is muted.
  *
- * `signalling` is the session side: `{join(call), leave(), end(), turn(json),
- * show(camera, screen, muted, deafened), reachable(), onEvent(listener)}`
- * where events are `{kind: 'granted', grant}` and `{kind: 'ended', call,
- * reason}`, and `device` is the device the host bridges this page as: the
- * sender its frames carry (peer.voice in peer.mjs adapts the wasm peer).
+ * `signalling` is the session side: `{join(call), leave(), end(), audio(json),
+ * turn(json), show(camera, screen, muted, deafened), reachable(),
+ * onEvent(listener)}` where events are `{kind: 'granted', grant}`,
+ * `{kind: 'ended', call, reason}` and `{kind: 'heard', from, sequence,
+ * timestamp48k, opus}` (`opus` in hex), and `device` is the device the host
+ * bridges this page as: the sender its frames carry (peer.voice in peer.mjs
+ * adapts the wasm peer).
  */
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {LAYER_CODES, SOURCE_CODES, createPictureEncoder, createPictureInbox, layerOfCode, openSource, pictureObject, sourceOfCode} from './voice-video.mjs';
@@ -47,14 +52,6 @@ const RECONNECT_MS = [250, 1000, 3000, 10_000];
  * before the page gives up on it and asks again. */
 export const TURN_MS = 20;
 export const TURN_DEADLINE_MS = 5_000;
-/** Microphone frames kept for the next turn: a page that stood still sends
- * the newest `MAX_TURN_AUDIO` and drops the rest, as the call plays only what
- * is current. */
-const MAX_TURN_AUDIO = 20;
-/** How far behind its newest frame a datagram reaches back with repeats
- * ([`tilo_call_lane::voice::MAX_BUNDLE_OBJECTS`]): a frame within that reach
- * that was already played is a repeat, not a stream that started over. */
-const REPEAT_REACH = 3;
 /** Pictures kept for the next turn: encoded layers of a loaded page. */
 const MAX_TURN_PICTURES = 256;
 /** How long a join waits for the host's grant before it gives up: a host
@@ -146,11 +143,10 @@ export function createVoiceCall({
   const speaking = new Map();
   /** How loud each participant plays here, by id (`callIdOf`). */
   const volumes = new Map();
-  /** The microphone frames and encoded pictures the next turn carries. */
-  let microphone = [];
+  /** The encoded pictures the next turn carries. */
   let pictures = [];
-  /** The newest frame played from each device, by hex: a call's datagrams
-   * repeat the frames before their newest one, which play once. */
+  /** The newest frame played from each device, by hex: a plane that is joined
+   * again announces its stream's first object again, which plays once. */
   const heardUpTo = new Map();
   /** Whether a turn is with the host, and when the last one was answered. */
   let turning = false;
@@ -172,7 +168,7 @@ export function createVoiceCall({
    * the keyframe arrives. */
   const asking = new Map();
   const inbox = createPictureInbox();
-  const turns = {sent: 0, refused: 0, unreachable: 0, audio: 0, pictures: 0};
+  const turns = {sent: 0, refused: 0, unreachable: 0, published: 0, audio: 0, pictures: 0};
 
   function idle() {
     return {phase: 'idle', call: null, app: '', record: '', admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
@@ -232,10 +228,33 @@ export function createVoiceCall({
     return (person && volumes.get(person)) ?? 1;
   }
 
+  /** One frame of the microphone, published as it is made: a call's voice is
+   * current, never queued behind a turn. */
   function onFrame(frame) {
     if (!inCall() || state.muted) return;
-    microphone.push({timestamp48k: Number(frame.timestamp), opus: base64OfBytes(frame.payload)});
-    if (microphone.length > MAX_TURN_AUDIO) microphone = microphone.slice(-MAX_TURN_AUDIO);
+    try {
+      signalling.audio?.([{timestamp48k: Number(frame.timestamp), opus: hexOfBytes(frame.payload)}]);
+      turns.published += 1;
+    } catch (error) {
+      report({type: 'voice-signalling-error', error});
+    }
+  }
+
+  /** One frame of the call's voice, as a device published it: play it unless
+   * it was already played. */
+  function heard(frame) {
+    if (!inCall() || state.deafened) return;
+    turns.audio += 1;
+    const played = heardUpTo.get(frame.from);
+    // A plane joined again announces the first object of its stream again,
+    // and a stream that started over numbers its frames from the start.
+    if (played !== undefined && frame.sequence <= played && frame.sequence !== 0) return;
+    heardUpTo.set(frame.from, frame.sequence);
+    try {
+      audioSession?.play({publisherId: frame.from, timestamp: BigInt(frame.timestamp48k), duration: 960, payload: bytesOfHex(frame.opus), gain: gainOf(frame.from)});
+    } catch (error) {
+      report({type: 'voice-play-error', error});
+    }
   }
 
   function startAudio() {
@@ -422,15 +441,12 @@ export function createVoiceCall({
   function pump() {
     turnTimerHandle = undefined;
     if (!inCall() || turning || state.phase === 'joining') return;
-    const frames = microphone;
     const encoded = pictures;
-    microphone = [];
     pictures = [];
     const turn = {
       call: state.call,
       app,
       record,
-      audio: frames,
       pictures: encoded.map(picture => ({
         source: SOURCE_CODES[picture.source],
         layer: LAYER_CODES[picture.layer],
@@ -481,25 +497,9 @@ export function createVoiceCall({
     });
   }
 
-  /** What the answer brings: play what the call said, queue the pictures,
-   * and follow what its devices show and ask of the page. */
+  /** What the answer brings: queue the pictures, and follow what its devices
+   * show and ask of the page. */
   function apply(answer) {
-    for (const frame of answer.audio ?? []) {
-      turns.audio += 1;
-      const played = heardUpTo.get(frame.from);
-      if (played !== undefined && frame.sequence <= played) {
-        // A datagram carries the frames just before its newest one, and a
-        // device whose stream started over numbers them from the start
-        // again: past the repeats' reach, this is that.
-        if (played - frame.sequence < REPEAT_REACH) continue;
-      }
-      heardUpTo.set(frame.from, frame.sequence);
-      try {
-        audioSession?.play({publisherId: frame.from, timestamp: BigInt(frame.timestamp48k), duration: 960, payload: base64OfDecoded(frame.opus), gain: gainOf(frame.from)});
-      } catch (error) {
-        report({type: 'voice-play-error', error});
-      }
-    }
     for (const picture of answer.pictures ?? []) {
       turns.pictures += 1;
       const person = grant?.participants.find(participant => participant.device === picture.from)?.user;
@@ -533,7 +533,6 @@ export function createVoiceCall({
     if (retryTimer !== undefined) clearTimer(retryTimer);
     retryTimer = undefined;
     turning = false;
-    microphone = [];
     pictures = [];
   }
 
@@ -661,6 +660,7 @@ export function createVoiceCall({
 
   const unsubscribe = signalling.onEvent(event => {
     if (event.kind === 'granted') granted(event.grant);
+    else if (event.kind === 'heard') heard(event);
     else if (event.kind === 'ended') ended(event.call, event.reason);
   });
   const online = () => networkChanged();
@@ -802,5 +802,19 @@ export function base64OfDecoded(text) {
   const binary = atob(text);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+/** `bytes` in hex, as the plane's voice events carry an Opus frame. */
+export function hexOfBytes(bytes) {
+  let text = '';
+  for (const byte of bytes) text += byte.toString(16).padStart(2, '0');
+  return text;
+}
+
+/** Bytes from hex, as the plane's voice events carry an Opus frame. */
+export function bytesOfHex(text) {
+  const bytes = new Uint8Array(text.length >> 1);
+  for (let index = 0; index < bytes.length; index++) bytes[index] = parseInt(text.slice(index * 2, index * 2 + 2), 16);
   return bytes;
 }
