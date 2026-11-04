@@ -32,6 +32,7 @@ exclude = [
     "vendor/librespot-core",
     "vendor/hyper-proxy2",
     "vendor/cosmic-text",
+    "vendor/taffy",
     "vendor/alacritty_terminal",
     "vendor/twilight-http-ratelimiting",
     "vendor/iroh",

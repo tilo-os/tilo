@@ -4201,12 +4201,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dtoa"
-version = "1.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
-
-[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10582,20 +10576,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
-dependencies = [
- "num-bigint 0.4.6",
- "num-complex",
- "num-integer",
- "num-iter",
- "num-rational",
- "num-traits",
-]
-
-[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12676,34 +12656,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
-name = "pprof-alloc"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "369923102862bdc5493697885f78575fae27b20103f301e9390e21adfe48f0cd"
-dependencies = [
- "ahash",
- "anyhow",
- "backtrace",
- "dashmap",
- "errno",
- "flate2",
- "itertools 0.15.0",
- "lazy_static",
- "libc",
- "num",
- "once_cell",
- "paste",
- "prometheus-client",
- "prost",
- "quick-xml 0.41.0",
- "regex",
- "serde",
- "smallvec",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12898,29 +12850,6 @@ checksum = "52717f9a02b6965224f95ca2a81e2e0c5c43baacd28ca057577988930b6c3d5b"
 dependencies = [
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "prometheus-client"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1784dc11a05f5a8f57c4a62915686be140f24f70301290b997e317241fa9ffc2"
-dependencies = [
- "dtoa",
- "itoa",
- "parking_lot",
- "prometheus-client-derive-encode",
-]
-
-[[package]]
-name = "prometheus-client-derive-encode"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01e34894696ff94f64a20c2c373a6440903e9c2789a303d68ec6e6f953f890e4"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.9",
 ]
 
 [[package]]
@@ -26848,6 +26777,7 @@ dependencies = [
  "approx 0.4.0",
  "approx 0.5.1",
  "ar_archive_writer",
+ "arbitrary",
  "arc-swap",
  "argon2",
  "arrayref",
@@ -27027,6 +26957,19 @@ dependencies = [
  "cpubits",
  "cpufeatures 0.2.17",
  "cpufeatures 0.3.0",
+ "cranelift-assembler-x64",
+ "cranelift-assembler-x64-meta",
+ "cranelift-bforest",
+ "cranelift-bitset",
+ "cranelift-codegen",
+ "cranelift-codegen-meta",
+ "cranelift-codegen-shared",
+ "cranelift-control",
+ "cranelift-entity",
+ "cranelift-frontend",
+ "cranelift-isle",
+ "cranelift-native",
+ "cranelift-srcgen",
  "crc32fast",
  "critical-section",
  "crossbeam-channel",
@@ -27102,7 +27045,6 @@ dependencies = [
  "drm-ffi",
  "drm-fourcc",
  "drm-sys",
- "dtoa",
  "durable-store",
  "dyn-clone",
  "ebook",
@@ -27233,6 +27175,7 @@ dependencies = [
  "ghash 0.6.0",
  "gif",
  "gimli 0.32.3",
+ "gimli 0.33.0",
  "gio-sys",
  "git-client",
  "git2",
@@ -27411,6 +27354,7 @@ dependencies = [
  "kem",
  "khronos-egl",
  "khronos_api",
+ "kio 0.5.9",
  "kio 0.6.0",
  "krilla",
  "krilla-svg",
@@ -27425,6 +27369,7 @@ dependencies = [
  "leb128fmt",
  "legacy-agent",
  "legacy-agent-protocol",
+ "legacy-vm",
  "lettre",
  "leveldb-sys",
  "levenshtein_automata",
@@ -27488,6 +27433,7 @@ dependencies = [
  "measure_time",
  "mediatype",
  "memchr",
+ "memfd",
  "memmap2",
  "memoffset",
  "messages",
@@ -27504,6 +27450,8 @@ dependencies = [
  "module-lattice",
  "moka",
  "monitor",
+ "moq-net",
+ "moq-pattern",
  "moxcms",
  "muldiv",
  "murmurhash32",
@@ -27535,7 +27483,6 @@ dependencies = [
  "noq-udp",
  "notes",
  "nu-ansi-term",
- "num",
  "num-bigint 0.4.6",
  "num-bigint 0.5.1",
  "num-bigint-dig",
@@ -27553,6 +27500,7 @@ dependencies = [
  "oauth2",
  "object 0.37.3",
  "object 0.39.1",
+ "object 0.40.0",
  "oid-registry",
  "onboarding-walk",
  "once_cell",
@@ -27664,7 +27612,6 @@ dependencies = [
  "postgres-types",
  "potential_utf",
  "powerfmt",
- "pprof-alloc",
  "ppv-lite86",
  "precomputed-hash",
  "prefix-trie",
@@ -27684,8 +27631,6 @@ dependencies = [
  "proc-macro2",
  "profiling",
  "profiling-procmacros",
- "prometheus-client",
- "prometheus-client-derive-encode",
  "proptest",
  "prost",
  "prost-derive",
@@ -27700,6 +27645,8 @@ dependencies = [
  "psm",
  "publisher",
  "pulldown-cmark",
+ "pulley-interpreter",
+ "pulley-macros",
  "pxfm",
  "qcms",
  "qrcode",
@@ -27736,6 +27683,7 @@ dependencies = [
  "ref-cast",
  "ref-cast-impl",
  "reflink-copy",
+ "regalloc2",
  "regex",
  "regex-automata",
  "regex-lite",
@@ -27979,6 +27927,7 @@ dependencies = [
  "tasks-model",
  "tempfile",
  "tendril",
+ "termcolor",
  "terminal",
  "test-http",
  "themes",
@@ -27998,10 +27947,12 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-agent-models",
  "tilo-agent-participant",
+ "tilo-agent-runs",
  "tilo-ai-bench",
  "tilo-app",
  "tilo-app-cli",
  "tilo-app-launch",
+ "tilo-app-module",
  "tilo-app-package",
  "tilo-app-state",
  "tilo-app-template-smoke",
@@ -28060,6 +28011,7 @@ dependencies = [
  "tilo-device-fabric",
  "tilo-device-vpn",
  "tilo-dialogs",
+ "tilo-dictation",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-doc-pdf",
@@ -28090,6 +28042,7 @@ dependencies = [
  "tilo-history",
  "tilo-host",
  "tilo-host-search",
+ "tilo-identity-authority",
  "tilo-identity-ceremony",
  "tilo-identity-client",
  "tilo-identity-host",
@@ -28101,6 +28054,7 @@ dependencies = [
  "tilo-installed-apps",
  "tilo-keyboard-map",
  "tilo-libvirt-domain",
+ "tilo-live",
  "tilo-liveness",
  "tilo-locale",
  "tilo-location",
@@ -28113,7 +28067,9 @@ dependencies = [
  "tilo-mime",
  "tilo-model-client",
  "tilo-model-gateway",
+ "tilo-model-host",
  "tilo-moderation",
+ "tilo-native-media",
  "tilo-nearby-service",
  "tilo-net",
  "tilo-net-answers",
@@ -28148,6 +28104,7 @@ dependencies = [
  "tilo-projector",
  "tilo-pycompat",
  "tilo-quick-settings",
+ "tilo-recurrence",
  "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",
@@ -28156,6 +28113,7 @@ dependencies = [
  "tilo-relay-shell",
  "tilo-relay-store",
  "tilo-render-protocol",
+ "tilo-render-service",
  "tilo-resource",
  "tilo-resource-macros",
  "tilo-rich-text",
@@ -28188,12 +28146,16 @@ dependencies = [
  "tilo-spotify",
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
+ "tilo-store-link",
+ "tilo-store-node",
  "tilo-subject",
  "tilo-surface-host",
  "tilo-system-info",
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",
+ "tilo-theme-bauhaus",
+ "tilo-theme-sdk",
  "tilo-thumbnail",
  "tilo-topbar",
  "tilo-tray-host",
@@ -28222,6 +28184,7 @@ dependencies = [
  "tilo-web-desktop",
  "tilo-web-search",
  "tilo-wet-media",
+ "tilo-window-menu",
  "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
@@ -28373,12 +28336,24 @@ dependencies = [
  "want",
  "waproto",
  "wasm-encoder 0.252.0",
+ "wasm-encoder 0.261.0",
  "wasmi",
  "wasmi_collections",
  "wasmi_core",
  "wasmi_ir",
  "wasmparser 0.239.0",
  "wasmparser 0.252.0",
+ "wasmparser 0.261.0",
+ "wasmprinter",
+ "wasmtime",
+ "wasmtime-environ",
+ "wasmtime-internal-component-util",
+ "wasmtime-internal-core",
+ "wasmtime-internal-cranelift",
+ "wasmtime-internal-jit-icache-coherence",
+ "wasmtime-internal-unwinder",
+ "wasmtime-internal-versioned-export-macros",
+ "wasmtime-internal-winch",
  "wast",
  "wat",
  "wayland-backend",
@@ -28413,6 +28388,7 @@ dependencies = [
  "whatsapp-rust",
  "which",
  "whoami",
+ "winch-codegen",
  "windows-app",
  "windows-vm",
  "winnow 0.7.14",
