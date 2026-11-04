@@ -131,7 +131,7 @@ pub type PresenceColour = Option<String>;
 /// show a class it does not know as something it is not: the reason travels
 /// as this enum and the device's own words travel beside it
 /// ([`WriteRefusal::detail`]), shown only where they are the person's own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum RefusalReason {
     /// The person revoked the writing device, so nothing it writes is kept.
     Revoked,

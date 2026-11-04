@@ -34,7 +34,6 @@
     reason = "test fixtures: a failed step is the assertion, and a device lives until its session ends"
 )]
 
-use automerge::ReadDoc as _;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -298,8 +297,8 @@ impl Site {
     }
 
     /// The workspace's shared desktop as the site keeps it, described for a
-    /// step that waited for it: how many bytes and changes it holds, and what
-    /// reading a desk out of it made.
+    /// step that waited for it: how many bytes and changes it holds, and how
+    /// many windows read out of it.
     pub fn desk_report(&self) -> String {
         let Some(bytes) = self.record(
             tilo_desktop_model::ownership::DESKTOP_APP,
@@ -307,7 +306,7 @@ impl Site {
         ) else {
             return "the site keeps no desk record".to_owned();
         };
-        let Ok(mut document) = automerge::AutoCommit::load(&bytes) else {
+        let Ok(document) = automerge::AutoCommit::load(&bytes) else {
             return format!("{} bytes that do not load", bytes.len());
         };
         let changes = document.get_changes(&[]).len();
@@ -324,22 +323,7 @@ impl Site {
                 format!("{windows} windows in it")
             },
         );
-        let entries = ["workspaces", "strips", "groups", "windows"]
-            .into_iter()
-            .map(|entry| match document.get(automerge::ROOT, entry) {
-                Ok(Some((value, id))) => {
-                    let read = tilo_automerge::json::read_value(&document, &value, &id)
-                        .map_or_else(|error| format!("unread: {error}"), |json| json.to_string());
-                    format!("{entry}: {read}")
-                }
-                _ => format!("{entry}: none"),
-            })
-            .collect::<Vec<String>>()
-            .join("\n");
-        format!(
-            "{} bytes, {changes} changes, {read}\n{entries}",
-            bytes.len()
-        )
+        format!("{} bytes, {changes} changes, {read}", bytes.len())
     }
 }
 

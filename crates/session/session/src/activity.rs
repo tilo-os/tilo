@@ -66,10 +66,11 @@ pub(crate) fn now_seconds() -> i64 {
         })
 }
 
-/// One lasting refusal the person has been told about: the change it refuses
-/// — the workspace, the app and the record it writes, and its sequence — and
-/// the device that refused it.
-type ToldRefusal = (String, String, String, u64, [u8; 32]);
+/// What the person has been told about one device's lasting refusals: the
+/// workspace it refuses in, the device, and the class of its reason. A device
+/// that refuses a person's next change for the same reason adds another row
+/// to the history, not another notification.
+type ToldRefusal = (String, [u8; 32], neighbour_wire::RefusalReason);
 
 /// A workspace's activity, as this session serves it: to the desk's own
 /// model, and to the apps that ask through the broker.
@@ -111,8 +112,9 @@ struct Inner {
     /// The revision the model last served its reads at, as the apps
     /// following them were last told.
     served: Cell<Option<u64>>,
-    /// The lasting refusals of this device's writes it has already told the
-    /// person about: one notice per verdict, never one per pass.
+    /// What this device has already told the person about its lasting
+    /// refusals: one notice per device and reason, never one per write or per
+    /// pass.
     told_refusals: RefCell<BTreeSet<ToldRefusal>>,
     /// What the desk's history says its changes were, as a model answered it.
     describer: RefCell<Describer>,
@@ -188,20 +190,17 @@ impl Activity {
 
     /// Tell the person about the refusals of this device's writes that waiting
     /// cannot change, once each: a device that will not take the write says
-    /// why, because the change is not arriving there.
+    /// why, because the change is not arriving there. A verdict that is gone
+    /// is forgotten, so a device that refuses again later is heard again.
     fn tell_refusals(&self, notifications: &crate::notifications::SessionNotifications) {
         let Some(engine) = self.0.host.engine.borrow().as_ref().map(Arc::clone) else {
             return;
         };
         let mut told = self.0.told_refusals.borrow_mut();
+        let mut lasting = Vec::new();
         for (workspace, refusal) in engine.lasting_refusals() {
-            let key = (
-                workspace.clone(),
-                refusal.app.clone(),
-                refusal.record.clone(),
-                refusal.seq,
-                refusal.by,
-            );
+            let key = (workspace.clone(), refusal.by, refusal.reason);
+            lasting.push(key.clone());
             if !told.insert(key) {
                 continue;
             }
@@ -216,6 +215,7 @@ impl Activity {
                 refusal.reason.describe(),
             ));
         }
+        told.retain(|key| lasting.contains(key));
     }
 
     /// Open this device's workspaces and show them in the activity: what

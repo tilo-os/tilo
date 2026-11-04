@@ -217,9 +217,11 @@ fn the_workspace_keeps_the_desk_its_device_writes() {
 }
 
 #[test]
-#[ignore = "a workspace's app records do not reach a member's device yet: it can \
-            neither read the desk its workspace's device holds, nor found one of \
-            its own, so there is no write of a member's for the workspace to refuse"]
+#[ignore = "a member's device cannot write its workspace's app records yet: the \
+            record a workspace's device holds does not reach the member's, and \
+            local app publication founds none (`local app publication cannot \
+            create a record owner`), so no write of a member's reaches the \
+            workspace to be refused"]
 fn a_member_reads_where_their_refused_change_is_not() {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
@@ -243,21 +245,15 @@ fn a_member_reads_where_their_refused_change_is_not() {
     // apps' windows are written into.
     show(&bob_laptop, &site);
 
-    // Bob opens an app on the shared desk: does the site take it, or does it
-    // tell him why not?
+    // Bob opens an app on the shared desk, whose window is a change of the
+    // workspace's record.
     let _bob_note = open(&bob_laptop, "Notes");
     waited(
-        "the site to take Bob's window or to refuse it",
+        "Bob's window on the workspace's desk",
         &site,
         &[&bob_laptop],
-        || windows(&site) >= 1 || !refusals(&bob_laptop).is_empty(),
+        || windows(&site) >= 1,
     );
-    if windows(&site) == 0 {
-        panic!(
-            "the site took nothing and filed: {:?}",
-            refusals(&bob_laptop)
-        );
-    }
 
     // And a second one, while he may write: what the site holds is his desk,
     // and what he writes next is refused against it.
