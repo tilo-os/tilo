@@ -45,6 +45,7 @@ mod boot_join;
 mod calls;
 pub mod capture;
 mod capture_grants;
+mod capture_io;
 mod capture_send;
 mod capture_studio;
 mod certification;
@@ -784,6 +785,9 @@ pub struct Session {
     update_finish: update_finish::Finish,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
+    /// The one worker that encodes a recording and writes every capture's
+    /// file, off the loop.
+    capture_io: Rc<capture_io::CaptureIo>,
     /// The capture studio the session shows, and answers the asks of.
     capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
@@ -1487,9 +1491,18 @@ impl Session {
             lock_view,
         } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
 
+        // The one worker that encodes a recording and writes every capture's
+        // file, and what it makes of the recorder's work.
+        let (capture_io, capture_notes) = capture_io::CaptureIo::new(options.wake.handle());
         // The capture studio, over everything it captures.
-        let capture_studio =
-            capture_studio::mount(&mut compositor, &mut doors, &options, nearby.as_ref());
+        let capture_studio = capture_studio::mount(
+            &mut compositor,
+            &mut doors,
+            &options,
+            nearby.as_ref(),
+            Rc::clone(&capture_io),
+            capture_notes,
+        );
 
         // One table for the keys the session answers and the guide that
         // explains them: a chord that works is a chord the guide shows.
@@ -2014,6 +2027,7 @@ impl Session {
             recovery: options.recovery.take(),
             update_finish: update_finish::Finish::for_session(options.desktop.as_deref()),
             captures: options.captures,
+            capture_io,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             warmth,
@@ -2691,139 +2705,6 @@ impl Session {
                 self.capture_studio.as_ref(),
             );
         }
-    }
-
-    /// Carry out everything asked since the last look: the desktop's asks,
-    /// the gestures it took, the actions keys asked for, and what those
-    /// asked in turn.
-    fn settle(&mut self) -> Result<(), Error> {
-        // What the history wrote back reaches the desk before anything reads
-        // it, and what the person opened from it starts from here.
-        self.shared.serve_activity();
-        self.follow_collaboration();
-        self.follow_automation();
-        self.shared.follow_records();
-        // Who each workspace on the desk is whose, after the workspaces this
-        // pass brought: the person's own are theirs, and one joined keeps its
-        // host's owner.
-        self.shared.own_workspaces();
-        self.follow_power()?;
-        if let Some(comforts) = &mut self.comforts {
-            comforts.observe();
-        }
-        self.follow_owner_session()?;
-        self.follow_lock()?;
-        self.follow_keyboard();
-        // The engine of the active source, after the on-screen keyboard gave
-        // up the seat: one input method owns it.
-        self.follow_input_method();
-        // Quick settings runs while the stack has its slot up, where the
-        // stack placed it.
-        self.follow_quick_settings();
-        if let Some(captures) = &self.captures {
-            captures.serve(&mut self.compositor, self.capture_studio.as_mut());
-        }
-        if let Some(studio) = &mut self.capture_studio {
-            studio.serve(&mut self.compositor);
-        }
-        if let Some(portal) = &mut self.portal {
-            let documents_served = self
-                .desktop
-                .as_ref()
-                .is_some_and(|desktop| desktop.documents_served());
-            portal.serve(
-                &mut self.compositor,
-                &self.shared.handle,
-                &self.launches,
-                documents_served,
-            );
-        }
-        self.feed_portal();
-        self.feed_capabilities();
-        self.feed_window_artwork();
-        // What Files copied goes on the desktop's clipboard, as a file
-        // manager's copy does: the person pastes it into any app.
-        if let Some(plane) = &self.action_plane {
-            for files in plane.file_clipboard.take_published() {
-                crate::mount::clipboard::offer_files(&mut self.compositor, &files);
-            }
-        }
-        // What the apps copied since the last pass joins the history; a copy
-        // chosen in it is pasted once the panel let the keyboard go.
-        self.shared.clipboard.follow(&mut self.compositor);
-        // The question about a display change, before the sheets are placed:
-        // one that just opened stands on this pass's displays.
-        if let Some(confirm) = self.shared.display_confirm.as_ref() {
-            self.confirmation.follow(
-                &mut self.compositor,
-                confirm,
-                &self.displays,
-                &self.shared.notices,
-            );
-        }
-        self.display_sheet.follow(
-            &self.compositor.outputs(),
-            self.displays.awaiting_confirmation().is_some(),
-            &self.shared.invocations,
-        );
-        self.place_sheets();
-        self.settle_asks()?;
-        // Which apps stopped answering reaches the desk, and the person's
-        // Wait or Force quit reaches the compositor.
-        self.follow_app_liveness();
-        // The menu the reading says is up has its view over the desk, and
-        // the view goes when the menu does.
-        self.follow_window_menu();
-        // Each open window takes the temperature of the workspace it is in, as this pass left it.
-        self.follow_window_warmth();
-        self.shared.clipboard.serve_asks(&mut self.compositor);
-        // A paste of files runs on its own thread; the loop only asks
-        // whether it is over and tells the person how it went.
-        for notice in self.shared.clipboard.step_files() {
-            self.shared.notifications.borrow().tell(notice);
-        }
-        // What was copied here reaches the person's other devices, and what
-        // they copied there joins the clipboard here.
-        if let Some(fabric) = &self.shared.fabric {
-            let media_enabled = fabric.require_media().is_ok();
-            self.shared.clipboard.sync_fabric(fabric.as_ref());
-            // What the person's devices sent this one, before this pass's
-            // pumps: a route they asked for starts on the same pass it was
-            // asked for on.
-            if let Some(sync) = &self.shared.sync {
-                for envelope in sync.fabric_actions() {
-                    self.route_fabric_action(fabric, &envelope);
-                }
-            }
-            // The person's speaker groups, remote audio and the view Settings
-            // asks of them move on the same fabric, on the same pass: a
-            // device arriving, a group being created or a calibration
-            // progressing is what the next snapshot shows.
-            tilo_speaker_service::remote_audio::pump(fabric.as_ref(), media_enabled, None);
-            tilo_speaker_service::groups::pump(fabric.as_ref(), media_enabled);
-            tilo_speaker_service::settings::observe(fabric.as_ref());
-            // A device another of the person's devices found asks here to be
-            // them: its answer leaves, and a new ask is put to the person
-            // from their own top bar, where they decide it.
-            crate::certification::pump(fabric.as_ref());
-            self.shared.follow_device_asks();
-            // The person's settings follow them between their devices on the
-            // same fabric: what they set here is offered to it, and what
-            // they set there reaches the document this session reads.
-            self.shared.settings.sync(fabric.as_ref());
-            // A Bluetooth accessory the person moved to another of their
-            // devices, and what came of the moves under way.
-            self.shared.bluetooth.pump(&self.shared, fabric);
-            // The person's sleeping devices, and the probes that follow them.
-            self.shared.waking.follow(&self.shared);
-            self.shared.follow_device_vpn(fabric);
-            // What this pass offered the clipboard, and what the pumps just
-            // changed, is this device's next word to its other devices.
-            if let Some(sync) = &self.shared.sync {
-                sync.announce_fabric();
-            }
-        }
-        Ok(())
     }
 
     /// Keep the workspaces this session takes part in current with the

@@ -15,15 +15,18 @@
 //! A colour pick is answered on that same pass, from the same picture: the
 //! pixel under the pointer where the screenshot of every display puts it.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use tilo_compositor::Compositor;
 use tilo_portal::{Capture, CaptureError, CaptureTarget, Pending};
 use tilo_service::Wake;
 
+use crate::capture_io::{CaptureIo, NO_WORKER, Written};
 use crate::capture_studio::CaptureStudio;
 
 /// What the portal asks for: what to capture, where its answer goes, and
@@ -64,6 +67,9 @@ pub struct Captures {
     requests: Receiver<Asked>,
     directory: PathBuf,
     selector: Arc<AtomicBool>,
+    /// The screenshots being written off the loop, in the order they were
+    /// asked for, each with the app waiting for its file.
+    writes: VecDeque<(Receiver<Result<Written, String>>, Reply)>,
 }
 
 /// A portal side and the session side that answers it, the screenshots
@@ -83,6 +89,7 @@ pub fn channel_to(directory: PathBuf, wake: Wake) -> (ScreenCapture, Captures) {
             requests: asked,
             directory,
             selector,
+            writes: VecDeque::new(),
         },
     )
 }
@@ -170,19 +177,26 @@ impl Capture for ScreenCapture {
 impl Captures {
     /// Answer every screenshot and pick asked for since the last pass: what
     /// the session captures itself, and what the person takes in `studio`'s
-    /// selector.
-    pub(crate) fn serve(&self, compositor: &mut Compositor, studio: Option<&mut CaptureStudio>) {
+    /// selector. The picture is read back here and written on `io`, whose
+    /// answer is taken up on a later pass.
+    pub(crate) fn serve(
+        &mut self,
+        compositor: &mut Compositor,
+        studio: Option<&mut CaptureStudio>,
+        io: &Rc<CaptureIo>,
+    ) {
         let mut studio = studio;
         if studio.is_some() {
             // From here on there is a selector to ask the person in, so
             // apps may ask for what only they can name.
             self.selector.store(true, Ordering::Release);
         }
+        self.take_writes();
         while let Ok(asked) = self.requests.try_recv() {
             match asked {
                 Asked::Screenshot { id, target, reply } => match target {
                     CaptureTarget::Screen | CaptureTarget::ActiveWindow => {
-                        let _ = reply.send(self.take(compositor, target));
+                        self.take(compositor, target, reply, io);
                     }
                     CaptureTarget::Window | CaptureTarget::Area => {
                         let Some(selector) = studio.as_mut() else {
@@ -204,35 +218,63 @@ impl Captures {
                 }
             }
         }
+        self.take_writes();
     }
 
+    /// Hand the picture asked for to the worker, which writes it off the
+    /// loop: the app is answered on a later pass, once the file is there.
     fn take(
-        &self,
+        &mut self,
         compositor: &mut Compositor,
         target: CaptureTarget,
-    ) -> Result<PathBuf, CaptureError> {
+        reply: Reply,
+        io: &Rc<CaptureIo>,
+    ) {
         let picture = match target {
             CaptureTarget::Screen => picture(compositor),
             CaptureTarget::ActiveWindow => focused(compositor),
             CaptureTarget::Window | CaptureTarget::Area => {
-                return Err(CaptureError::Failed(format!(
+                let _ = reply.send(Err(CaptureError::Failed(format!(
                     "a {target:?} is taken by the person, not here"
-                )));
+                ))));
+                return;
             }
-        }
-        .map_err(CaptureError::Failed)?;
-        keep(&self.directory, &picture).map_err(CaptureError::Failed)
+        };
+        let picture = match picture {
+            Ok(picture) => picture,
+            Err(error) => {
+                let _ = reply.send(Err(CaptureError::Failed(error)));
+                return;
+            }
+        };
+        let write = io.write(picture, self.directory.clone(), false);
+        self.writes.push_back((write, reply));
     }
-}
 
-/// Write `picture` as a PNG under `directory`, named fresh; its path.
-pub(crate) fn keep(directory: &Path, picture: &image::RgbaImage) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let path = unique(directory, "screenshot", "png");
-    picture
-        .save_with_format(&path, image::ImageFormat::Png)
-        .map_err(|error| error.to_string())?;
-    Ok(path)
+    /// Answer the apps whose screenshots the worker wrote since the last
+    /// pass, in the order they asked.
+    fn take_writes(&mut self) {
+        loop {
+            let Some((write, _)) = self.writes.front() else {
+                return;
+            };
+            let answer = match write.try_recv() {
+                Ok(answer) => answer,
+                // Not written yet: it and every ask behind it wait for their
+                // turn on the one worker.
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err(NO_WORKER.to_owned()),
+            };
+            let Some((_, reply)) = self.writes.pop_front() else {
+                return;
+            };
+            let _ = reply.send(
+                answer
+                    .map(|written| written.path)
+                    .map_err(CaptureError::Failed),
+            );
+        }
+    }
 }
 
 /// The window with the keyboard's focus, as the compositor draws it.
