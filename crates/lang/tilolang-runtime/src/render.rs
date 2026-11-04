@@ -58,6 +58,8 @@ const ROW_KEY: &str = "$key";
 pub struct ViewTarget {
     pub module: ModuleHash,
     pub export: String,
+    /// The id of the view it renders, `""` for a block's view, which no type offers.
+    pub view: String,
     pub params: Vec<ParamMeta>,
 }
 
@@ -234,6 +236,7 @@ impl Core {
         Ok(ViewTarget {
             module: pkg.hash.clone(),
             export: format!("v_{view}"),
+            view: view.to_owned(),
             params: meta.params.clone(),
         })
     }
@@ -302,7 +305,7 @@ impl Core {
         // The host's surfaces are read while the view's frame still stands: the actions they
         // show are the declarations of what it rendered, presented as the view presents them.
         let surfaced = match &root {
-            Ok(Value::Node(root)) => self.surfaces(*root, args, &target.export),
+            Ok(Value::Node(root)) => self.surfaces(*root, args, &target.view),
             _ => Ok(()),
         };
         let frame = self.frames.borrow_mut().pop();
@@ -884,7 +887,7 @@ impl Core {
         let chosen = if let Some(Value::Int(index)) = held
             && let Ok(index) = usize::try_from(index)
             && let Some((id, _)) = views.get(index)
-            && *id != target.export
+            && *id != target.view
         {
             self.view_target(id).ok()
         } else {

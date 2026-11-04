@@ -183,6 +183,7 @@ impl Core {
                 let target = crate::render::ViewTarget {
                     module: block.pkg.hash.clone(),
                     export: "b_main".to_owned(),
+                    view: String::new(),
                     params: Vec::new(),
                 };
                 let window = crate::view_instance::default_window(&target, &[]);

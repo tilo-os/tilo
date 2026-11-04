@@ -248,6 +248,7 @@ impl Core {
                 let target = ViewTarget {
                     module: block.pkg.hash.clone(),
                     export: "b_main".to_owned(),
+                    view: String::new(),
                     params: Vec::new(),
                 };
                 let nested = self.render_at(&target, &[], cx.offer.deeper(), Some(&identity))?;
