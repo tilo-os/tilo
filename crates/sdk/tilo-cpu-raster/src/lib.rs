@@ -180,6 +180,54 @@ pub struct SceneChanges {
     pub not_a_motion: Option<String>,
 }
 
+impl SceneChanges {
+    /// What a host holding the pixels of the scene before does with this
+    /// change, in `tile`-pixel tiles of a `width` x `height` target: the
+    /// pixels to [`move_pixels`], and the regions to draw afterwards. Moving
+    /// those and drawing those leaves the target showing the new scene, and
+    /// both cover every pixel that changed.
+    #[must_use]
+    pub fn work(&self, width: u32, height: u32, tile: u32) -> ChangeWork {
+        let tile = tile.max(1);
+        let Some(motion) = &self.motion else {
+            return ChangeWork {
+                moved: Vec::new(),
+                drawn: self.regions.clone(),
+            };
+        };
+        let moved = motion.movable(width, height, tile);
+        if moved.is_empty() {
+            return ChangeWork {
+                moved,
+                drawn: self.regions.clone(),
+            };
+        }
+        // What the move does not make itself is drawn: every tile the change
+        // touches, less the ones the move covers whole.
+        let mut marks = vec![false; tile_count(width, height, tile)];
+        for region in &self.regions {
+            mark_tiles(&mut marks, region, width, height, tile, Cover::Any, true);
+        }
+        for region in &moved {
+            mark_tiles(&mut marks, region, width, height, tile, Cover::Whole, false);
+        }
+        ChangeWork {
+            moved,
+            drawn: tile_runs(&marks, width, height, tile),
+        }
+    }
+}
+
+/// The work a change leaves a host that has the pixels before it: see
+/// [`SceneChanges::work`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangeWork {
+    /// Pixels to [`move_pixels`] by the change's `(dx, dy)`.
+    pub moved: Vec<Region>,
+    /// Regions to draw after the move.
+    pub drawn: Vec<Region>,
+}
+
 /// Pixels the new scene shows where the old one showed them `(dx, dy)`
 /// earlier: a pixel `p` inside `opaque` and, at both `p` and `p - (dx, dy)`,
 /// outside every obstacle equals the old pixel at `p - (dx, dy)`.
@@ -199,77 +247,132 @@ impl PixelMotion {
     /// along tile rows. Partial tiles at the target's edge count whole.
     pub fn movable(&self, width: u32, height: u32, tile: u32) -> Vec<Region> {
         let tile = tile.max(1);
-        let (tiles_x, tiles_y) = (width.div_ceil(tile), height.div_ceil(tile));
-        let mut ok = vec![false; tiles_x as usize * tiles_y as usize];
-        let tile_rect = |tx: u32, ty: u32| {
-            let x = tx * tile;
-            let y = ty * tile;
-            (x, y, (x + tile).min(width), (y + tile).min(height))
-        };
+        let mut ok = vec![false; tile_count(width, height, tile)];
         for region in &self.opaque {
-            let (rx1, ry1) = (region.x + region.width, region.y + region.height);
-            for ty in region.y / tile..ry1.div_ceil(tile).min(tiles_y) {
-                for tx in region.x / tile..rx1.div_ceil(tile).min(tiles_x) {
-                    let (x0, y0, x1, y1) = tile_rect(tx, ty);
-                    if x0 >= region.x && y0 >= region.y && x1 <= rx1 && y1 <= ry1 {
-                        ok[(ty * tiles_x + tx) as usize] = true;
-                    }
-                }
-            }
+            mark_tiles(&mut ok, region, width, height, tile, Cover::Whole, true);
         }
         let (dx, dy) = (i64::from(self.dx), i64::from(self.dy));
         for region in &self.obstacles {
             // The obstacle itself, and every pixel whose source it covers.
             for (ox, oy) in [(0, 0), (dx, dy)] {
-                let x0 = (i64::from(region.x) + ox).clamp(0, i64::from(width));
-                let y0 = (i64::from(region.y) + oy).clamp(0, i64::from(height));
-                let x1 = (i64::from(region.x + region.width) + ox).clamp(0, i64::from(width));
-                let y1 = (i64::from(region.y + region.height) + oy).clamp(0, i64::from(height));
+                let x0 = (i64::from(region.x) + ox).clamp(0, i64::from(width)) as u32;
+                let y0 = (i64::from(region.y) + oy).clamp(0, i64::from(height)) as u32;
+                let x1 =
+                    (i64::from(region.x + region.width) + ox).clamp(0, i64::from(width)) as u32;
+                let y1 =
+                    (i64::from(region.y + region.height) + oy).clamp(0, i64::from(height)) as u32;
                 if x1 <= x0 || y1 <= y0 {
                     continue;
                 }
-                let tile = i64::from(tile);
-                for ty in y0 / tile..(y1 + tile - 1) / tile {
-                    for tx in x0 / tile..(x1 + tile - 1) / tile {
-                        if let Some(cell) = ok.get_mut((ty * i64::from(tiles_x) + tx) as usize) {
-                            *cell = false;
-                        }
-                    }
-                }
+                let touched = Region::new(x0, y0, x1 - x0, y1 - y0);
+                mark_tiles(&mut ok, &touched, width, height, tile, Cover::Any, false);
             }
         }
         // The source of every moved pixel must lie inside the target.
-        for ty in 0..tiles_y {
-            for tx in 0..tiles_x {
-                let (x0, y0, x1, y1) = tile_rect(tx, ty);
+        for ty in 0..height.div_ceil(tile) {
+            for tx in 0..width.div_ceil(tile) {
+                let (x0, y0) = (tx * tile, ty * tile);
+                let (x1, y1) = ((x0 + tile).min(width), (y0 + tile).min(height));
                 let inside = i64::from(x0) - dx >= 0
                     && i64::from(y0) - dy >= 0
                     && i64::from(x1) - dx <= i64::from(width)
                     && i64::from(y1) - dy <= i64::from(height);
-                if !inside {
-                    ok[(ty * tiles_x + tx) as usize] = false;
+                if !inside && let Some(cell) = ok.get_mut(tile_index(tx, ty, width, tile)) {
+                    *cell = false;
                 }
             }
         }
-        let mut out = Vec::new();
-        for ty in 0..tiles_y {
-            let mut tx = 0;
-            while tx < tiles_x {
-                if !ok[(ty * tiles_x + tx) as usize] {
-                    tx += 1;
+        tile_runs(&ok, width, height, tile)
+    }
+}
+
+/// Whether [`mark_tiles`] marks the tiles a region touches, or only those it
+/// covers whole.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cover {
+    Any,
+    Whole,
+}
+
+/// How many tiles a `width` x `height` target has, `tile` pixels square.
+fn tile_count(width: u32, height: u32, tile: u32) -> usize {
+    width.div_ceil(tile) as usize * height.div_ceil(tile) as usize
+}
+
+/// The index of tile `(tx, ty)` in a `width`-wide grid, `tile` pixels square.
+fn tile_index(tx: u32, ty: u32, width: u32, tile: u32) -> usize {
+    (ty * width.div_ceil(tile) + tx) as usize
+}
+
+/// Sets the tiles of a `width` x `height` target, `tile` pixels square, that
+/// `region` touches (or only those it covers whole) to `value`, clipped to the
+/// target.
+fn mark_tiles(
+    marks: &mut [bool],
+    region: &Region,
+    width: u32,
+    height: u32,
+    tile: u32,
+    cover: Cover,
+    value: bool,
+) {
+    let tile = tile.max(1);
+    let (x1, y1) = (
+        (region.x + region.width).min(width),
+        (region.y + region.height).min(height),
+    );
+    for ty in region.y / tile..y1.div_ceil(tile) {
+        for tx in region.x / tile..x1.div_ceil(tile) {
+            if cover == Cover::Whole {
+                let (x, y) = (tx * tile, ty * tile);
+                let (right, bottom) = ((x + tile).min(width), (y + tile).min(height));
+                if x < region.x || y < region.y || right > x1 || bottom > y1 {
                     continue;
                 }
-                let start = tx;
-                while tx < tiles_x && ok[(ty * tiles_x + tx) as usize] {
-                    tx += 1;
-                }
-                let (x0, y0, _, y1) = tile_rect(start, ty);
-                let (_, _, x1, _) = tile_rect(tx - 1, ty);
-                out.push(Region::new(x0, y0, x1 - x0, y1 - y0));
+            }
+            if let Some(cell) = marks.get_mut(tile_index(tx, ty, width, tile)) {
+                *cell = value;
             }
         }
-        out
     }
+}
+
+/// The runs of marked tiles of a `width` x `height` target, `tile` pixels
+/// square, as regions along tile rows.
+fn tile_runs(marks: &[bool], width: u32, height: u32, tile: u32) -> Vec<Region> {
+    let tile = tile.max(1);
+    let mut out = Vec::new();
+    for ty in 0..height.div_ceil(tile) {
+        let mut tx = 0;
+        while tx < width.div_ceil(tile) {
+            if !marks
+                .get(tile_index(tx, ty, width, tile))
+                .copied()
+                .unwrap_or(false)
+            {
+                tx += 1;
+                continue;
+            }
+            let start = tx;
+            while tx < width.div_ceil(tile)
+                && marks
+                    .get(tile_index(tx, ty, width, tile))
+                    .copied()
+                    .unwrap_or(false)
+            {
+                tx += 1;
+            }
+            let x0 = start * tile;
+            let y0 = ty * tile;
+            out.push(Region::new(
+                x0,
+                y0,
+                (tx * tile).min(width) - x0,
+                (y0 + tile).min(height) - y0,
+            ));
+        }
+    }
+    out
 }
 
 /// Move the pixels of `regions` (destinations) from `(dx, dy)` earlier in

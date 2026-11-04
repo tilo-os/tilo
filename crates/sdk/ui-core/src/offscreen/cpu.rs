@@ -107,13 +107,14 @@ impl CpuSurface {
     /// pixels. Returns the regions drawn, or `None` where no pixel changed.
     ///
     /// The regions drawn are the ones this rasterizer saw its prepared
-    /// scenes differ in ([`tilo_cpu_raster::CpuRasterizer::changed_regions`]):
-    /// the pixels are its own and it keeps the frame before, so it proves
-    /// what a caller cannot, more finely than `damage` says and for nothing
-    /// when nothing changed. `damage` is what the caller knows of the
-    /// change, drawn where that proof is too large to list, and a change
-    /// listed in more places than [`MAX_REGIONS`] is drawn in the region
-    /// they cover.
+    /// scenes differ in ([`tilo_cpu_raster::CpuRasterizer::changes`]): the
+    /// pixels are its own and it keeps the frame before, so it proves what a
+    /// caller cannot, more finely than `damage` says and for nothing when
+    /// nothing changed. Pixels that only moved, as they do in a strip that
+    /// slides, are moved rather than drawn. `damage` is what the caller knows
+    /// of the change, drawn where that proof is too large to list, and a
+    /// change listed in more places than [`MAX_REGIONS`] is drawn in the
+    /// region they cover.
     pub fn draw(
         &mut self,
         scene: &vello::Scene,
@@ -129,17 +130,22 @@ impl CpuSurface {
             let h = h.min(height.saturating_sub(y));
             (w > 0 && h > 0).then(|| tilo_cpu_raster::Region::new(x, y, w, h))
         };
+        let mut moved = Vec::new();
+        let mut shift = None;
         let drawn: Vec<tilo_cpu_raster::Region> = if !self.valid {
             vec![whole]
-        } else if let Some(changed) = self.rasterizer.changed_regions(width, height) {
-            changed
+        } else if let Some(changes) = self.rasterizer.changes(width, height) {
+            let work = changes.work(width, height, MOVED_TILE);
+            moved = work.moved;
+            shift = changes.motion.map(|motion| (motion.dx, motion.dy));
+            work.drawn
         } else {
             match damage {
                 Some(regions) => regions.iter().filter_map(inside).collect(),
                 None => vec![whole],
             }
         };
-        if drawn.is_empty() {
+        if drawn.is_empty() && moved.is_empty() {
             return None;
         }
         // The rasterizer walks its scene once per region, so a frame that
@@ -154,22 +160,33 @@ impl CpuSurface {
         let stride = (width as usize).saturating_mul(4);
         let mut target =
             tilo_cpu_raster::Target::new(&mut self.pixels, width, height, stride).ok()?;
+        if let Some((dx, dy)) = shift.filter(|_| !moved.is_empty()) {
+            tilo_cpu_raster::move_pixels(&mut target, &moved, dx, dy);
+        }
         // Where the app draws nothing the surface stays transparent, so the
         // desktop shows through.
-        self.rasterizer.render_prepared(
-            &mut target,
-            Some(&drawn),
-            tilo_cpu_raster::color::AlphaColor::new([0.0, 0.0, 0.0, 0.0]),
-        );
+        if !drawn.is_empty() {
+            self.rasterizer.render_prepared(
+                &mut target,
+                Some(&drawn),
+                tilo_cpu_raster::color::AlphaColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }
         self.valid = true;
+        let mut changed = drawn;
+        changed.extend(moved);
         Some(
-            drawn
+            changed
                 .into_iter()
                 .map(|region| (region.x, region.y, region.width, region.height))
                 .collect(),
         )
     }
 }
+
+/// Tiles a change's motion is proven in, and the regions around it are drawn
+/// in: fine enough that little is redrawn beside what moved.
+const MOVED_TILE: u32 = 16;
 
 /// Regions a frame is drawn in before it is drawn in their bounds: each one
 /// walks the prepared scene, and past this many that walk costs more than
@@ -342,6 +359,60 @@ mod tests {
         assert!(
             surface.draw(&chip(40.0), None).is_none(),
             "an unchanged frame draws nothing"
+        );
+    }
+
+    /// A frame that only moved, as a strip that slides does, is moved rather
+    /// than drawn again, and what it leaves behind is a full render all the
+    /// same: the pixels it left and the pixels it reached.
+    #[test]
+    fn a_frame_that_only_moves_leaves_a_full_render_behind() {
+        let (width, height) = (200, 120);
+        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+        let block = |x: f64| {
+            let mut scene = Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(0x20, 0x60, 0xc0),
+                None,
+                &Rect::new(x, 10.0, x + 120.0, 100.0),
+            );
+            scene
+        };
+        let first = surface
+            .draw(&block(10.0), None)
+            .expect("the first frame covers the surface");
+        assert_eq!(first, vec![(0, 0, width, height)]);
+
+        surface
+            .draw(&block(50.0), Some(&[]))
+            .expect("the block moved");
+        let full = render_on_cpu(&block(50.0), width, height, Color::TRANSPARENT).expect("drawn");
+        let differing: Vec<(u32, u32)> = surface
+            .pixels()
+            .chunks_exact(4)
+            .zip(full.chunks_exact(4))
+            .enumerate()
+            .filter(|(_, (moved, drawn))| {
+                moved
+                    .iter()
+                    .zip(drawn.iter())
+                    .any(|(a, b)| a.abs_diff(*b) > 1)
+            })
+            .map(|(at, _)| {
+                let at = at as u32;
+                (at % width, at / width)
+            })
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "moved and drawn pixels equal a whole render: {differing:?}"
+        );
+        assert_eq!(
+            pixel(surface.pixels(), width, 11, 12),
+            [0, 0, 0, 0],
+            "the surface kept nothing of where the block was"
         );
     }
 
