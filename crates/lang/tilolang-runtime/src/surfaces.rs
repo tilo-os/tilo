@@ -775,6 +775,7 @@ impl Core {
     /// fill in.
     fn action_button(&self, action: &Value, key: &str, entry: Option<&str>) -> NodeBuild {
         let primary = flag(action, PRIMARY);
+        let destructive = flag(action, DESTRUCTIVE);
         let frequent = flag(action, FREQUENT);
         let icon = opt_text(action, ICON).map(str::to_owned);
         let mut name = self.action_name(action);
@@ -786,9 +787,16 @@ impl Core {
         if let Some(icon) = &icon {
             node.props.insert("icon".to_owned(), Value::text(icon));
         }
-        if primary {
+        // What a button takes of its action is the role the action declares: the window's
+        // primary action is the primary button, and one that destroys what it names is drawn
+        // as the destructive button it is wherever it stands, its own primary among them.
+        if destructive {
+            node.props
+                .insert("role".to_owned(), Value::text("destructive"));
+        } else if primary {
             node.props.insert("role".to_owned(), Value::text("primary"));
-        } else if frequent && icon.is_some() {
+        }
+        if !primary && frequent && icon.is_some() {
             node.props.insert("icon_only".to_owned(), on_off(true));
         }
         if !primary && !frequent {

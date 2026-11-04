@@ -35,9 +35,8 @@ const COMPACT_WIDTH: f64 = 600.0;
 /// The words a screen's copy starts an add control with.
 const ADD_VERBS: [&str; 3] = ["add ", "new ", "create "];
 
-/// The words a screen's copy starts a destructive control with, other than the one verb every
-/// screen destroys with.
-const OTHER_DELETE_VERBS: [&str; 6] = ["remove ", "erase ", "discard ", "purge ", "wipe ", "drop "];
+/// The words a screen's copy destroys with, other than the one verb every screen destroys with.
+const OTHER_DELETE_VERBS: [&str; 6] = ["remove", "erase", "discard", "purge", "wipe", "drop"];
 
 /// The one verb a destructive control says its action with.
 pub const DELETE_VERB: &str = "Delete";
@@ -509,9 +508,7 @@ fn verbs(
             .as_deref()
             .is_some_and(|key| declared.destroys(key))
         && let Some(name) = semantics_name(node)
-        && let Some(other) = OTHER_DELETE_VERBS
-            .iter()
-            .find(|verb| name.to_lowercase().starts_with(**verb))
+        && let Some(other) = other_delete_verb(name)
     {
         push(
             out,
@@ -530,6 +527,22 @@ fn verbs(
     if pushed {
         keys.pop();
     }
+}
+
+/// The word `name` destroys with, where it is one of [`OTHER_DELETE_VERBS`]: read as a whole
+/// word, so a control that says only "Discard" is held to the verb as one that says "Discard
+/// view" is.
+fn other_delete_verb(name: &str) -> Option<&'static str> {
+    let lower = name.to_lowercase();
+    let first = lower
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .split(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or_default();
+    OTHER_DELETE_VERBS
+        .iter()
+        .copied()
+        .find(|verb| *verb == first)
 }
 
 // --- a surface inside a surface ------------------------------------------------------------------
@@ -988,6 +1001,31 @@ mod tests {
         );
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].detail.contains("Delete"), "{problems:?}");
+
+        // One word is the whole label: a control that says only "Discard" destroys with as
+        // plain a verb as one that says "Discard view".
+        for bare in [
+            "Remove",
+            "Discard",
+            "Erase",
+            "Purge",
+            "Wipe",
+            "Drop",
+            "discard…",
+        ] {
+            let problems = found_as(Kind::UnsharedVerb, &say(bare), (1280, 800), &destroys);
+            assert_eq!(problems.len(), 1, "{bare}: {problems:?}");
+        }
+        assert!(
+            found_as(
+                Kind::UnsharedVerb,
+                &say("Discarded"),
+                (1280, 800),
+                &destroys
+            )
+            .is_empty(),
+            "a word that only starts with a verb does not destroy with it"
+        );
 
         // A field's own button clears the value the field holds: the view declares nothing of
         // it, so the word it says is its own.

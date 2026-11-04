@@ -257,7 +257,7 @@ d-trjwm3gb = Mark as unread
 d-7zk6ua6p = Send from
     .doc = Sends the message from another of the person's accounts.
 
-d-qrcwx7a6 = Discard
+d-qrcwx7a6 = Delete draft
     .doc = Throws a message being written away.
 
 d-qcfc2rhb = Send

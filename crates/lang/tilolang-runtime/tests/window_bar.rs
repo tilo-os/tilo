@@ -199,6 +199,50 @@ mod cases {
         );
     }
 
+    /// An action that destroys what it names is drawn as the destructive button the action
+    /// declares, wherever the bar places it: its role is the one its declaration gives it, not
+    /// one the bar picks.
+    #[test]
+    fn a_destructive_action_in_the_bar_is_a_destructive_button() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        w.task(&root, "milk");
+        let window = w.window("home", &root);
+        let tree = window.tree();
+        let clear = nodes_with(tree, "ui.Button", "label", "Clear done");
+        assert_eq!(
+            clear.len(),
+            1,
+            "the bar holds the action once:\n{}",
+            dump(tree)
+        );
+        assert_eq!(
+            clear[0].props.get("role"),
+            Some(&Value::text("destructive")),
+            "a destructive action's button carries its role:\n{}",
+            dump(tree)
+        );
+        // The primary action keeps the primary role, and nothing else claims to be destructive.
+        let new_task = nodes_with(tree, "ui.Button", "label", "New task");
+        assert_eq!(
+            new_task[0].props.get("role"),
+            Some(&Value::text("primary")),
+            "the primary is the primary button:\n{}",
+            dump(tree)
+        );
+        let destructive = of_kind(tree, "ui.Button")
+            .into_iter()
+            .filter(|node| node.props.get("role") == Some(&Value::text("destructive")))
+            .map(|node| text_of(node, "label"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            destructive,
+            ["Clear done"],
+            "only the actions declared destructive are drawn so:\n{}",
+            dump(tree)
+        );
+    }
+
     /// A task's page edits its title, and what can be done with the task stands behind the "…"
     /// beside that title: the page has no bar of its own, and no button of the task's actions.
     #[test]

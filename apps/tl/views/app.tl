@@ -104,7 +104,7 @@ action keep(v: WrittenView) (icon: .bookmark, label: "Keep") {
 }
 
 /// Throws a view away, and with it how a type showed through it.
-destructive action discard(all: Views, v: WrittenView) (icon: .trash, label: "Discard") {
+destructive action discard(all: Views, v: WrittenView) (icon: .trash, label: "Delete view") {
     for d in all.defaults.filter(d -> d.chosen == v) {
         all.defaults.remove(d)
     }

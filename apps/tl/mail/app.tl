@@ -514,7 +514,7 @@ action send_from(d: Draft, a: Account) (icon: .user) {
 }
 
 /// Throws a message being written away.
-destructive action discard(m: Mail, d: Draft) (icon: .trash) {
+destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draft") {
     m.drafts.remove(d)
 }
 
