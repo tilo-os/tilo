@@ -13,6 +13,12 @@
 //! person is asked for a restart of the machine at the same pace. Nothing
 //! here decides when: [`desktop_restart_due`], [`ask_due`] and
 //! [`host_restart_due`] say whether, and the session's loop asks them.
+//!
+//! A deployment that did not start leaves the machine on the previous one
+//! before any session runs (`tilo-deployment fallback`), and writes what it
+//! found under [`BOOT_FALLBACK_DIR`]. Those reports are facts of this
+//! machine, read here ([`fallbacks`]) and carried in the resource's reading
+//! ([`Update::fell_back`]) for the session to tell the person, once each.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -23,6 +29,10 @@ use serde::{Deserialize, Serialize};
 pub const LIVE_STATE: &str = "/run/tilo/live-update/state.json";
 /// Where ostree records the deployment staged for the next boot.
 const OSTREE_STAGED: &str = "/run/ostree/staged-deployment";
+/// Where a deployment that did not start leaves its report: one directory per
+/// fallback, `<when>-<composefs>`, holding `report`, `summary.txt` and what
+/// the failed tries left behind (os/usr/libexec/tilo-deployment).
+pub const BOOT_FALLBACK_DIR: &str = "/var/lib/tilo/boot-fallback";
 /// The unit that fetches and stages the newest image now, which the person
 /// at the machine may start (os/etc/polkit-1/rules.d/49-tilo-updates.rules).
 pub const UPDATE_UNIT: &str = "tilo-deployment-update.service";
@@ -129,6 +139,27 @@ pub struct LiveState {
     pub reboot_required: bool,
 }
 
+/// A deployment this machine went back from: it did not start within its
+/// tries, so the boot loader started the previous one and the machine settled
+/// on it. What the boot-time settling recorded of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Fallback {
+    /// The report's directory name, `<when>-<composefs>`, which names the
+    /// fallback once per machine: the session tells each of them once.
+    pub id: String,
+    /// The image that did not start.
+    pub image: Option<String>,
+    /// Its version, where the image has one.
+    pub version: Option<String>,
+    /// How many times it was tried.
+    pub tries: Option<usize>,
+    /// The version the machine runs instead.
+    pub running: Option<String>,
+    /// The report a person reads of what the failed tries left behind.
+    pub summary: String,
+}
+
 /// The `system-update` resource.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -145,6 +176,8 @@ pub struct Update {
     pub problem: Option<String>,
     /// Firmware updates `fwupd` offers; `None` where it is not installed.
     pub firmware: Option<usize>,
+    /// The deployments this machine went back from, oldest first.
+    pub fell_back: Vec<Fallback>,
 }
 
 impl Update {
@@ -178,6 +211,52 @@ pub fn live_state() -> Option<LiveState> {
 
 fn live_state_in(json: &str) -> Option<LiveState> {
     serde_json::from_str(json).ok()
+}
+
+/// The deployments this machine went back from, oldest first, as the
+/// boot-time settling recorded them.
+#[must_use]
+pub fn fallbacks() -> Vec<Fallback> {
+    fallbacks_in(Path::new(BOOT_FALLBACK_DIR))
+}
+
+/// The reports under `dir`, oldest first; none where the machine never went
+/// back or they cannot be read.
+#[must_use]
+pub fn fallbacks_in(dir: &Path) -> Vec<Fallback> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut reports: Vec<Fallback> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let id = entry.file_name().into_string().ok()?;
+            fallback_at(&entry.path(), id)
+        })
+        .collect();
+    reports.sort_by(|left, right| left.id.cmp(&right.id));
+    reports
+}
+
+/// The fallback `dir` recorded under the name `id`, where it has a report.
+fn fallback_at(dir: &Path, id: String) -> Option<Fallback> {
+    let report = std::fs::read_to_string(dir.join("report")).ok()?;
+    let field = |key: &str| {
+        report
+            .lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty())
+    };
+    Some(Fallback {
+        image: field("image"),
+        version: field("version"),
+        tries: field("tries").and_then(|tries| tries.parse().ok()),
+        running: field("running_version"),
+        summary: dir.join("summary.txt").display().to_string(),
+        id,
+    })
 }
 
 /// Whether an image waits for the next restart.
@@ -412,5 +491,82 @@ mod tests {
         assert!(!host_restart_due(true, Some(working)));
         assert!(!host_restart_due(true, None), "presence not yet known");
         assert!(!host_restart_due(false, Some(away)), "nothing staged");
+    }
+
+    /// A deployment the machine went back from left a report: what did not
+    /// start, how many tries it spent, and what runs instead, read from the
+    /// files the boot-time settling wrote.
+    #[test]
+    fn a_deployment_the_machine_went_back_from_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let reports = dir.path();
+        std::fs::create_dir(reports.join("20261025T101010Z-0a1b2c3d4e5f6a7b")).unwrap();
+        std::fs::write(
+            reports.join("20261025T101010Z-0a1b2c3d4e5f6a7b/report"),
+            "image=registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n\
+             version=44.20261023.0\n\
+             built=2026-10-23T21:40:00Z\n\
+             composefs=0a1b2c3d4e5f6a7b\n\
+             tries=3\n\
+             logged=1\n\
+             running_image=registry.tilo.so/tilo/tilo-vm:main-0f0e0d0\n\
+             running_version=44.20261022.0\n\
+             settled=yes\n",
+        )
+        .unwrap();
+        std::fs::write(
+            reports.join("20261025T101010Z-0a1b2c3d4e5f6a7b/summary.txt"),
+            "Tilo went back to the version that worked before.\n",
+        )
+        .unwrap();
+        // A directory without a report is nothing the machine went back from.
+        std::fs::create_dir(reports.join("not-a-fallback")).unwrap();
+
+        let fallbacks = fallbacks_in(reports);
+        assert_eq!(fallbacks.len(), 1);
+        let fallback = &fallbacks[0];
+        assert_eq!(fallback.id, "20261025T101010Z-0a1b2c3d4e5f6a7b");
+        assert_eq!(
+            fallback.image.as_deref(),
+            Some("registry.tilo.so/tilo/tilo-vm:main-1a2b3c4")
+        );
+        assert_eq!(fallback.version.as_deref(), Some("44.20261023.0"));
+        assert_eq!(fallback.tries, Some(3));
+        assert_eq!(fallback.running.as_deref(), Some("44.20261022.0"));
+        assert_eq!(
+            fallback.summary,
+            reports
+                .join("20261025T101010Z-0a1b2c3d4e5f6a7b/summary.txt")
+                .display()
+                .to_string()
+        );
+        assert!(
+            fallbacks_in(&reports.join("absent")).is_empty(),
+            "no reports is nothing to say"
+        );
+    }
+
+    /// The resource's reading carries the reports, and one published by a
+    /// machine that never went back carries none.
+    #[test]
+    fn the_reading_carries_the_fallbacks() {
+        let update = Update {
+            fell_back: vec![Fallback {
+                id: "20261025T101010Z-0a1b2c3d4e5f6a7b".into(),
+                ..Fallback::default()
+            }],
+            ..Update::default()
+        };
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains("\"fell-back\""), "{json}");
+        assert_eq!(serde_json::from_str::<Update>(&json).unwrap(), update);
+        assert!(Update::default().fell_back.is_empty());
+        assert!(
+            serde_json::from_str::<Update>(r#"{"staged":"x"}"#)
+                .unwrap()
+                .fell_back
+                .is_empty(),
+            "a reading from before this field says nothing fell back"
+        );
     }
 }

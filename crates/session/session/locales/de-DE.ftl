@@ -50,6 +50,16 @@ power-restart = Neu starten
 update-state-unreadable-title = Der Update-Stand ließ sich nicht lesen
 update-state-unreadable-body = Dieser Computer konnte nicht lesen, wie weit das letzte Update gekommen ist, und hat daher nichts unternommen. Er schaut von selbst wieder nach; unter Einstellungen, Updates steht, was er weiß.
 
+## Eine Version, die dieser Computer versucht hat, startete innerhalb ihrer
+## Versuche nicht, und der Bootloader ging auf die Version zurück, die zuvor
+## lief: einmal gesagt, mit dem Ort, an dem die fehlgeschlagenen Versuche
+## hinterlassen haben, was sie fanden.
+system-update-went-back-title = Zurück auf die vorherige Version
+system-update-went-back-body = { $what } startete nach { $tries } Versuchen nicht, deshalb ist dieser Computer auf { $running } zurückgegangen. Was die fehlgeschlagenen Versuche hinterlassen haben: { $summary }, und tilo status.
+system-update-went-back-unnamed = Die neue Version
+system-update-went-back-several-tries = mehreren
+system-update-went-back-runs-before = die vorherige Version
+
 ## Die Liste der eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat,
 ## ließ sich nicht lesen: er beginnt die Liste neu, statt nichts zu zeigen.
 workspaces-app-name = Arbeitsbereiche

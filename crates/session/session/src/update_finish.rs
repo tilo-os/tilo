@@ -25,6 +25,13 @@
 //! newer protocol version) has the session fetch the update
 //! ([`tilo_system_service::update::UPDATE_NOW`]); what applied live is
 //! finished at the next moment the person is away, whatever the last restart.
+//!
+//! How an update ended is told here too. One the machine could not finish
+//! because a deployment did not start was settled before any session ran
+//! (`tilo-deployment fallback`), which left its report on the machine; the
+//! reports reach the session in the update's reading and the person is told
+//! of each once ([`Finish::tell_went_back`]), the ids they heard of recorded
+//! beside the restart record so no later session says it again.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -32,7 +39,7 @@ use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use tilo_notifications_service::{Notifications, Taken};
-use tilo_system_service::update::{self, Presence, Update};
+use tilo_system_service::update::{self, Fallback, Presence, Update};
 
 use crate::Session;
 use crate::notices::RESTART_ACTION;
@@ -70,6 +77,12 @@ pub(crate) struct Finish {
     /// When the person was last asked to restart, or the desktop or machine
     /// last restarted, as recorded at `asked`.
     asked: Option<PathBuf>,
+    /// Where the ids of the deployment fallbacks the person was told about are
+    /// recorded; `None` where there is nowhere to keep them.
+    heard: Option<PathBuf>,
+    /// The fallbacks the person was told about, as the record names them;
+    /// `None` until the record at `heard` is read.
+    told: Option<Vec<String>>,
     /// What the person asked of the update's notice, from the notifications
     /// service's taps, which run wherever it publishes.
     taken: Receiver<()>,
@@ -80,11 +93,13 @@ pub(crate) struct Finish {
 
 impl Finish {
     /// The clock this session finishes its updates on, recording what it
-    /// asks where a restart of the desktop keeps it.
+    /// asks, and which fallbacks the person heard of, where a restart of the
+    /// desktop keeps them.
     pub(crate) fn for_session(desktop: Option<&crate::desktop_services::DesktopServices>) -> Self {
         Self::new(
             Instant::now(),
             asked_path(),
+            heard_path(),
             desktop.map(crate::desktop_services::DesktopServices::notifications),
         )
     }
@@ -92,10 +107,13 @@ impl Finish {
     /// A clock that first looks when the desk has settled, recording what it
     /// asks at `asked`, which survives a restart of the desktop; the
     /// person's answers to the update's notice come back through
-    /// `notifications`, when this session tells the person through one.
+    /// `notifications`, when this session tells the person through one, and
+    /// which fallbacks they already heard of is read from and written to
+    /// `heard`.
     pub(crate) fn new(
         now: Instant,
         asked: Option<PathBuf>,
+        heard: Option<PathBuf>,
         notifications: Option<&Notifications>,
     ) -> Self {
         let (taken, answers) = mpsc::channel();
@@ -114,6 +132,8 @@ impl Finish {
             urgent: false,
             was_updating: false,
             asked,
+            heard,
+            told: None,
             taken: answers,
             unreadable_told: false,
         }
@@ -193,6 +213,37 @@ impl Finish {
         None
     }
 
+    /// Tell the person, once, of each deployment this machine went back from
+    /// that they have not heard of yet: a report the boot-time settling left
+    /// ([`tilo_system_service::update::Fallback`]) reaches the session in the
+    /// update's reading, and the ids it told are recorded beside the restart
+    /// record, so a later session says nothing of the same fallback. Called
+    /// with every reading, so it is cheap when there is nothing to say and
+    /// says the fallback of this boot as soon as the reading carries it.
+    pub(crate) fn tell_went_back(
+        &mut self,
+        fell_back: &[Fallback],
+        mut tell: impl FnMut(crate::notices::Notice),
+    ) {
+        if fell_back.is_empty() {
+            return;
+        }
+        // Nothing is told that could not be recorded: it would be said at
+        // every sign-in instead of once.
+        let Some(heard) = self.heard.clone() else {
+            return;
+        };
+        let told = self.told.get_or_insert_with(|| heard_ids(&heard));
+        for fallback in fell_back {
+            if told.contains(&fallback.id) {
+                continue;
+            }
+            tell(crate::notices::went_back_notice(fallback));
+            told.push(fallback.id.clone());
+            record_heard(&heard, told);
+        }
+    }
+
     /// When the person was last asked, or the desktop or machine last
     /// restarted.
     fn last_asked(&self) -> Option<SystemTime> {
@@ -231,6 +282,41 @@ fn record_asked_at(path: &Path, now: SystemTime) {
 #[must_use]
 pub(crate) fn asked_path() -> Option<PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo/update-restart-asked"))
+}
+
+/// Where the session records which deployment fallbacks the person was
+/// already told about: one report's directory name per line.
+#[must_use]
+pub(crate) fn heard_path() -> Option<PathBuf> {
+    tilo_paths::state_dir().map(|root| root.join("tilo/boot-fallback-seen"))
+}
+
+/// The fallbacks the person was told about, as recorded at `path`.
+fn heard_ids(path: &Path) -> Vec<String> {
+    let record = match std::fs::read_to_string(path) {
+        Ok(record) => record,
+        // No record yet is the ordinary case: no fallback was told.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            tracing::warn!(%error, "the fallbacks the person was told about do not read back");
+            String::new()
+        }
+    };
+    record
+        .lines()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Record the fallbacks the person was told about at `path`, one per line.
+fn record_heard(path: &Path, ids: &[String]) {
+    let mut text = ids.join("\n");
+    text.push('\n');
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, text.as_bytes()) {
+        tracing::warn!(%error, "could not record which fallbacks the person was told about");
+    }
 }
 
 /// Whether this machine is an always-on host: a board or a host image with
@@ -282,6 +368,14 @@ impl Session {
             }
             None => Update::default(),
         };
+        // How the update this computer tried ended is the person's to know
+        // before anything else waits: a deployment that did not start was
+        // settled before this session ran, and its report is in the reading.
+        let shared = &self.shared;
+        self.update_finish
+            .tell_went_back(&update.fell_back, |notice| {
+                shared.notifications.borrow().tell(notice);
+            });
         let Some(due) =
             self.update_finish
                 .step(now, SystemTime::now(), presence, &update, host(), wanted)
@@ -327,7 +421,7 @@ mod tests {
     }
 
     fn a_finish(now: Instant, asked: Option<PathBuf>) -> Finish {
-        Finish::new(now, asked, None)
+        Finish::new(now, asked, None, None)
     }
 
     fn away() -> Presence {
@@ -552,7 +646,7 @@ mod tests {
         let now = Instant::now();
         let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         let notifications = Notifications::new();
-        let mut finish = Finish::new(now, None, Some(&notifications));
+        let mut finish = Finish::new(now, None, None, Some(&notifications));
         let id = notifications.alloc_id();
         notifications.push(tilo_notifications_service::Notification {
             actions: vec![(RESTART_ACTION.to_owned(), "Restart".to_owned())],
@@ -574,5 +668,115 @@ mod tests {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         record_asked_at(&path, at);
         assert_eq!(last_asked_at(&path), Some(at));
+    }
+
+    /// A deployment the machine went back from is what the person hears
+    /// after the reboot: the session tells them once, records that it did, and
+    /// a session that starts later says nothing of it.
+    #[test]
+    fn a_deployment_the_machine_went_back_from_is_told_once_and_recorded_once() {
+        let dir = tempdir();
+        let heard = dir.path().join("tilo/boot-fallback-seen");
+        let notifications = Notifications::new();
+        let id = "20261025T101010Z-0a1b2c3d4e5f6a7b";
+        let fallback = update::Fallback {
+            id: id.into(),
+            image: Some("registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into()),
+            version: Some("44.20261023.0".into()),
+            tries: Some(3),
+            running: Some("44.20261022.0".into()),
+            summary: "/var/lib/tilo/boot-fallback/20261025T101010Z-0a1b2c3d4e5f6a7b/summary.txt"
+                .into(),
+        };
+        let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+        assert!(
+            notifications.live().is_empty(),
+            "nothing fell back before the reading says so"
+        );
+        finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
+            notice.tell(&notifications);
+        });
+
+        let live = notifications.live();
+        assert_eq!(live.len(), 1, "one fallback, one notice");
+        let notice = &live[0];
+        assert_eq!(notice.summary, "Went back to the version before");
+        assert_eq!(notice.app_name, "Updates");
+        assert_eq!(notice.urgency, 2, "an update that failed is not a shrug");
+        assert_eq!(
+            notice.expire_timeout, -1,
+            "it stays until the person dismisses it"
+        );
+        assert!(notice.machine_wide, "the whole machine went back");
+        assert!(notice.body.contains("44.20261023.0"), "{}", notice.body);
+        assert!(notice.body.contains("after 3 tries"), "{}", notice.body);
+        assert!(
+            notice.body.contains("back to 44.20261022.0"),
+            "{}",
+            notice.body
+        );
+        assert!(notice.body.contains("summary.txt"), "{}", notice.body);
+        assert_eq!(
+            heard_ids(&heard),
+            [id.to_owned()],
+            "told once is recorded once"
+        );
+
+        // The reading keeps carrying the report of every earlier fallback:
+        // this session says nothing more of it.
+        finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
+            notice.tell(&notifications);
+        });
+        assert_eq!(notifications.live().len(), 1, "said once per session");
+
+        // A later session reads the record and says nothing at all: the
+        // person hears of one fallback once, however many sign-ins follow.
+        let mut later = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+        later.tell_went_back(std::slice::from_ref(&fallback), |notice| {
+            notice.tell(&notifications);
+        });
+        assert_eq!(notifications.live().len(), 1, "said once per person");
+        assert_eq!(heard_ids(&heard), [id.to_owned()], "and recorded once");
+    }
+
+    /// A second deployment that did not start is news of its own, and a
+    /// machine with nowhere to record what was told says nothing rather than
+    /// saying it at every sign-in.
+    #[test]
+    fn a_later_fallback_is_told_and_nothing_is_told_that_cannot_be_recorded() {
+        let dir = tempdir();
+        let heard = dir.path().join("tilo/boot-fallback-seen");
+        let notifications = Notifications::new();
+        let fallback = |id: &str| update::Fallback {
+            id: id.into(),
+            summary: format!("/var/lib/tilo/boot-fallback/{id}/summary.txt"),
+            ..update::Fallback::default()
+        };
+        let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+        finish.tell_went_back(&[fallback("20261025T101010Z-aaaa")], |notice| {
+            notice.tell(&notifications);
+        });
+        finish.tell_went_back(
+            &[
+                fallback("20261025T101010Z-aaaa"),
+                fallback("20261102T090000Z-bbbb"),
+            ],
+            |notice| notice.tell(&notifications),
+        );
+        assert_eq!(
+            notifications.live().len(),
+            2,
+            "each fallback is its own news"
+        );
+        assert_eq!(
+            heard_ids(&heard),
+            ["20261025T101010Z-aaaa", "20261102T090000Z-bbbb"]
+        );
+
+        let mut nowhere = Finish::new(Instant::now(), None, None, None);
+        nowhere.tell_went_back(&[fallback("20261103T090000Z-cccc")], |notice| {
+            notice.tell(&notifications);
+        });
+        assert_eq!(notifications.live().len(), 2, "nothing repeats");
     }
 }

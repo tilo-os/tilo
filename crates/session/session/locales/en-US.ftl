@@ -51,6 +51,15 @@ power-restart = Restart
 update-state-unreadable-title = The update state could not be read
 update-state-unreadable-body = This computer could not read how far its last update got, so it did not act on it. It looks again by itself; Settings, Updates shows what it knows.
 
+## A deployment this computer tried did not start within its tries and the
+## boot loader went back to the version that worked before: said once, with
+## where the failed tries left what they found.
+system-update-went-back-title = Went back to the version before
+system-update-went-back-body = { $what } did not start after { $tries } tries, so this computer went back to { $running }. What the failed tries left behind: { $summary }, and tilo status.
+system-update-went-back-unnamed = The new version
+system-update-went-back-several-tries = several
+system-update-went-back-runs-before = the version before
+
 ## The list of the person's own workspaces that this computer kept could not
 ## be read: it starts the list again instead of showing nothing.
 workspaces-app-name = Workspaces

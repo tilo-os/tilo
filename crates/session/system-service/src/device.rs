@@ -79,6 +79,7 @@ impl System for OsSystem {
             firmware: os_actions::get_firmware_updates()
                 .ok()
                 .map(|offered| offered.len()),
+            fell_back: crate::update::fallbacks(),
             ..Update::of(staged, live.as_ref())
         }
     }

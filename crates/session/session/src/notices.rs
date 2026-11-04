@@ -1,15 +1,16 @@
 //! What the session itself tells the person, through their notifications.
 //!
-//! Seven things the desktop knows and the person should: that storage is
+//! Eight things the desktop knows and the person should: that storage is
 //! running out, that the battery is too, that the media codecs they asked for
 //! finished or failed, that the session or the computer stopped and started
-//! again, that an update waits for a restart, that the machine's graphics
-//! stopped and every frame is drawn in software from now on, and that a drive
-//! they plugged in is ready to open or eject. Each becomes an ordinary
-//! notification ([`tilo_notifications_service::Notification`]) published by
-//! the notifications service: the banners and the centre read it from the
-//! same resource any app's notification is read from, the person closes or
-//! acts on it as they would on any other, and nothing here draws.
+//! again, that an update waits for a restart, that a deployment it tried did
+//! not start and this computer went back to the one that worked, that the
+//! machine's graphics stopped and every frame is drawn in software from now
+//! on, and that a drive they plugged in is ready to open or eject. Each
+//! becomes an ordinary notification ([`tilo_notifications_service::Notification`])
+//! published by the notifications service: the banners and the centre read it
+//! from the same resource any app's notification is read from, the person
+//! closes or acts on it as they would on any other, and nothing here draws.
 //!
 //! Two more say what this computer could not read of the person's own state —
 //! the list of their workspaces, and how far its last update got — so a list
@@ -31,8 +32,8 @@
 //! watch on the helper's status file, the crash records are read once at
 //! start, and the graphics fallback is a read of what the renderers recorded,
 //! once per pass of the session's loop. The one about an update waiting for a
-//! restart is raised by the clock that finishes the update
-//! ([`crate::update_finish`]).
+//! restart, and the one about a deployment the machine went back from, are
+//! raised by the clock that finishes the update ([`crate::update_finish`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -611,6 +612,43 @@ pub(crate) fn update_state_notice() -> Notice {
         urgency: 1,
         title: t("update-state-unreadable-title"),
         body: t("update-state-unreadable-body"),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The notice of a deployment this machine went back from: what did not
+/// start, how many tries it spent, what runs instead, and where the failed
+/// tries left what they found. Raised once per fallback by the update's own
+/// clock ([`crate::update_finish`]), and it stays until the person dismisses
+/// it: a computer that went back from an update is not news to lose.
+pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {
+    let what = fallback
+        .version
+        .clone()
+        .or_else(|| fallback.image.clone())
+        .unwrap_or_else(|| t("system-update-went-back-unnamed"));
+    let tries = fallback.tries.map_or_else(
+        || t("system-update-went-back-several-tries"),
+        |tries| tries.to_string(),
+    );
+    let running = fallback
+        .running
+        .clone()
+        .unwrap_or_else(|| t("system-update-went-back-runs-before"));
+    let args = [
+        ("what", what.into()),
+        ("tries", tries.into()),
+        ("running", running.into()),
+        ("summary", fallback.summary.as_str().into()),
+    ];
+    Notice {
+        app: t("system-update-app-name"),
+        urgency: 2,
+        title: t("system-update-went-back-title"),
+        body: t_args("system-update-went-back-body", &args),
         actions: Vec::new(),
         expires_after: None,
         machine_wide: true,
