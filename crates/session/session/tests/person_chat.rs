@@ -225,6 +225,7 @@ fn hold_workspace(state: &Path, keys: &Keys, old_conversation: bool) {
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
+                None,
                 std::time::SystemTime::now(),
             )
             .expect("the host admits the workspace's people");

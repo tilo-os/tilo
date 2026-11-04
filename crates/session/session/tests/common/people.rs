@@ -34,6 +34,7 @@
     reason = "test fixtures: a failed step is the assertion, and a device lives until its session ends"
 )]
 
+use automerge::ReadDoc as _;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -283,6 +284,62 @@ impl Site {
                     .record_document(&self.workspace, app, record),
             )
             .expect("the site's records")
+    }
+
+    /// The workspace's shared desktop as the site keeps it now: its strips and
+    /// windows, or nothing while the workspace holds no desk of its own.
+    pub fn desktop(&self) -> Option<tilo_desktop_model::DesktopTree> {
+        let bytes = self.record(
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::ownership::DESKTOP_RECORD,
+        )?;
+        let document = automerge::AutoCommit::load(&bytes).ok()?;
+        tilo_desktop_model::shared_record::read(&document, None).map(|desk| desk.tree)
+    }
+
+    /// The workspace's shared desktop as the site keeps it, described for a
+    /// step that waited for it: how many bytes and changes it holds, and what
+    /// reading a desk out of it made.
+    pub fn desk_report(&self) -> String {
+        let Some(bytes) = self.record(
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::ownership::DESKTOP_RECORD,
+        ) else {
+            return "the site keeps no desk record".to_owned();
+        };
+        let Ok(mut document) = automerge::AutoCommit::load(&bytes) else {
+            return format!("{} bytes that do not load", bytes.len());
+        };
+        let changes = document.get_changes(&[]).len();
+        let read = tilo_desktop_model::shared_record::read(&document, None).map_or_else(
+            || "no desk reads out of it".to_owned(),
+            |desk| {
+                let windows = desk
+                    .tree
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .map(|strip| strip.window_groups.len())
+                    .sum::<usize>();
+                format!("{windows} windows in it")
+            },
+        );
+        let entries = ["workspaces", "strips", "groups", "windows"]
+            .into_iter()
+            .map(|entry| match document.get(automerge::ROOT, entry) {
+                Ok(Some((value, id))) => {
+                    let read = tilo_automerge::json::read_value(&document, &value, &id)
+                        .map_or_else(|error| format!("unread: {error}"), |json| json.to_string());
+                    format!("{entry}: {read}")
+                }
+                _ => format!("{entry}: none"),
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+        format!(
+            "{} bytes, {changes} changes, {read}\n{entries}",
+            bytes.len()
+        )
     }
 }
 
@@ -693,8 +750,13 @@ impl Device {
         BufReader::new(stream)
             .read_line(&mut line)
             .expect("an answer");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|error| panic!("{}'s answer {line:?}: {error}", self.label))
+        serde_json::from_str(&line).unwrap_or_else(|error| {
+            panic!(
+                "{}'s answer {line:?}: {error}\n{}",
+                self.label,
+                self.read_line_of_log()
+            )
+        })
     }
 
     /// The desk as this device shows it now: the tree, the workspaces its
@@ -743,15 +805,11 @@ impl Device {
         self.ask(&json!({"op": "actions_enumerate"}))
     }
 
-    /// Open the app `app` on this device, as its person opening it does.
-    pub fn open(&self, app: &str) {
-        let answer = self.act("applications", app, &json!({}));
-        assert!(
-            answer.get("err").is_none(),
-            "{} opens {app}: {answer}\n{}",
-            self.label,
-            self.read_line_of_log()
-        );
+    /// Map a window of `app` called `title` on this device's desk, as an app
+    /// starting its own window does: a window of the workspace it shows, kept
+    /// up while the returned value lives.
+    pub fn window(&self, app: &str, title: &str) -> super::window::Window {
+        super::window::Window::open(self.directory(), app, title)
     }
 
     /// Invoke `id` of `provider` on this device, as a program of the person's

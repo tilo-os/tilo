@@ -18,6 +18,7 @@
 )]
 
 pub mod people;
+pub mod window;
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
