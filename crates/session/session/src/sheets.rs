@@ -26,7 +26,7 @@ pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
     seat: S,
     /// The displays as the compositor last said they are.
-    outputs: Vec<(i32, i32, i32, i32)>,
+    outputs: Vec<tilo_compositor::HostedOutput>,
     /// The app answers its actions and draws while the sheet is down too: a
     /// command surface, whose key takes a screenshot without the bar up.
     always_serving: bool,
@@ -131,14 +131,15 @@ impl<S: Seat> Sheet<S> {
             let displays = self
                 .outputs
                 .iter()
+                .map(|output| output.rect)
                 .filter(|(_, _, w, h)| *w > 0 && *h > 0)
                 .map(|(dx, dy, dw, dh)| {
                     let (dx, dy) = (dx.saturating_sub(x), dy.saturating_sub(y));
                     Rect::new(
                         f64::from(dx),
                         f64::from(dy),
-                        f64::from(dx.saturating_add(*dw)),
-                        f64::from(dy.saturating_add(*dh)),
+                        f64::from(dx.saturating_add(dw)),
+                        f64::from(dy.saturating_add(dh)),
                     )
                 })
                 .collect();
@@ -155,13 +156,13 @@ impl<S: Seat> Sheet<S> {
 /// `every` display at once covers the rectangle all of them make.
 fn covering(
     named: Option<Place>,
-    outputs: &[(i32, i32, i32, i32)],
+    outputs: &[tilo_compositor::HostedOutput],
     every: bool,
 ) -> Option<(i32, i32, i32, i32)> {
     let shown = || {
         outputs
             .iter()
-            .copied()
+            .map(|output| output.rect)
             .filter(|(_, _, w, h)| *w > 0 && *h > 0)
     };
     if every {
@@ -186,7 +187,7 @@ fn covering(
         Some((x, y, w, h))
     });
     named
-        .filter(|place| outputs.contains(place))
+        .filter(|place| outputs.iter().any(|output| output.rect == *place))
         .or_else(|| shown().min_by_key(|(x, y, _, _)| (*x, *y)))
 }
 
@@ -356,7 +357,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.outputs = outputs.to_vec();
         self.follow_place();
     }
@@ -437,14 +438,22 @@ mod tests {
     use super::{Place, covering};
 
     const RIGHT: Place = (1000, 0, 1000, 700);
-    const LEFT_SHOWN: (i32, i32, i32, i32) = (0, 0, 1000, 700);
-    const RIGHT_SHOWN: (i32, i32, i32, i32) = (1000, 0, 1000, 700);
+    const LEFT_SHOWN: tilo_compositor::HostedOutput = tilo_compositor::HostedOutput {
+        rect: (0, 0, 1000, 700),
+        scale: 1.0,
+    };
+    const RIGHT_SHOWN: tilo_compositor::HostedOutput = tilo_compositor::HostedOutput {
+        rect: (1000, 0, 1000, 700),
+        scale: 1.0,
+    };
+    const LEFT: (i32, i32, i32, i32) = (0, 0, 1000, 700);
+    const RIGHT_RECT: (i32, i32, i32, i32) = (1000, 0, 1000, 700);
 
     #[test]
     fn a_sheet_covers_the_display_it_was_given() {
         assert_eq!(
             covering(Some(RIGHT), &[LEFT_SHOWN, RIGHT_SHOWN], false),
-            Some(RIGHT_SHOWN)
+            Some(RIGHT_RECT)
         );
     }
 
@@ -456,7 +465,7 @@ mod tests {
         let unplugged: Place = (2000, 0, 1000, 700);
         assert_eq!(
             covering(Some(unplugged), &[RIGHT_SHOWN, LEFT_SHOWN], false),
-            Some(LEFT_SHOWN)
+            Some(LEFT)
         );
     }
 
@@ -464,7 +473,7 @@ mod tests {
     fn a_sheet_covers_the_first_display_in_reading_order_when_none_was_given() {
         assert_eq!(
             covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], false),
-            Some(LEFT_SHOWN)
+            Some(LEFT)
         );
         assert_eq!(covering(None, &[], false), None);
     }
@@ -476,9 +485,16 @@ mod tests {
             Some((0, 0, 2000, 700))
         );
         // One display above the other, and one that shows nothing at all.
-        let above = (0, -800, 1000, 800);
+        let above = tilo_compositor::HostedOutput {
+            rect: (0, -800, 1000, 800),
+            scale: 2.0,
+        };
+        let blank = tilo_compositor::HostedOutput {
+            rect: (0, 0, 0, 0),
+            scale: 1.0,
+        };
         assert_eq!(
-            covering(None, &[LEFT_SHOWN, above, (0, 0, 0, 0)], true),
+            covering(None, &[LEFT_SHOWN, above, blank], true),
             Some((0, -800, 1000, 1500))
         );
         assert_eq!(covering(None, &[], true), None);

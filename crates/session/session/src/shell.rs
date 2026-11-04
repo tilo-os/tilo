@@ -85,7 +85,6 @@ pub(crate) struct Shell {
     packages: Vec<tilolang_tilo::tilolang::Compiled>,
     app: String,
     person: String,
-    scale: f64,
     /// The height of the bar's band, logical pixels: a window reaching into the top band
     /// covers a bar there.
     band: u32,
@@ -107,7 +106,6 @@ impl Shell {
         compositor: &mut Compositor,
         doors: &mut Doors,
         desk: Desk,
-        scale: f64,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
     ) -> Result<Self, String> {
@@ -131,7 +129,6 @@ impl Shell {
             packages,
             app,
             person: String::new(),
-            scale,
             band: band(),
             wells,
             services_seen: None,
@@ -160,18 +157,19 @@ impl Shell {
     fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
         let outputs = outputs_of(compositor);
         for (name, part) in &self.parts {
-            if !outputs.iter().any(|(shown, _)| shown == name) {
-                part.borrow_mut().set_display(None);
+            if !outputs.iter().any(|(shown, ..)| shown == name) {
+                part.borrow_mut().set_display(None, 1.0);
             }
         }
         let fullscreen = compositor.fullscreen_outputs();
-        for (name, rect) in &outputs {
+        for (name, rect, scale) in &outputs {
             if let Some((_, part)) = self.parts.iter().find(|(shown, _)| shown == name) {
-                part.borrow_mut().set_display(Some((name.clone(), *rect)));
+                part.borrow_mut()
+                    .set_display(Some((name.clone(), *rect)), *scale);
                 part.borrow_mut().set_fullscreen(fullscreen.clone());
                 continue;
             }
-            self.mount_part(compositor, doors, name, *rect, &fullscreen);
+            self.mount_part(compositor, doors, name, *rect, *scale, &fullscreen);
         }
     }
 
@@ -183,6 +181,7 @@ impl Shell {
         doors: &mut Doors,
         output: &str,
         rect: (i32, i32, u32, u32),
+        scale: f64,
         fullscreen: &[String],
     ) {
         let wake = compositor.waker();
@@ -197,12 +196,12 @@ impl Shell {
                 // other display's part draws the one the shell already has.
                 seed: self.parts.is_empty(),
             },
-            self.scale,
+            scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
             self.wells.clone(),
         );
         part.set_theme(self.theme.clone());
-        part.set_display(Some((output.to_owned(), rect)));
+        part.set_display(Some((output.to_owned(), rect)), scale);
         part.set_fullscreen(fullscreen.to_vec());
         // The windows the views picture, each display's own: the reading's window keys stand
         // for the tabs of the workspace in front, and a window whose app holds secrets is left
@@ -608,6 +607,7 @@ impl Shell {
                 Some(PartPlace {
                     output: name.clone(),
                     rect,
+                    scale: part.part_scale(),
                     aside: part.aside(),
                 })
             })
@@ -616,27 +616,30 @@ impl Shell {
 }
 
 /// A display's part of the shell, as it stands now: the output it is on, where it stands in the
-/// logical layout, and whether it stepped aside for a fullscreen window there.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// logical layout, the scale it draws at, and whether it stepped aside for a fullscreen window
+/// there.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PartPlace {
     /// The output's connector name (`HEADLESS-1`).
     pub output: String,
     /// Where the part stands, logical `(x, y, w, h)`.
     pub rect: (i32, i32, u32, u32),
+    /// The scale the part draws at: its display's, so what it paints is as crisp as the panel.
+    pub scale: f64,
     /// A fullscreen window owns the output, so the part draws nothing there.
     pub aside: bool,
 }
 
-/// Every output `compositor` shows, by connector name and logical rectangle `(x, y, w, h)`:
-/// one part stands on each, its whole screen, and none spans them all.
-fn outputs_of(compositor: &Compositor) -> Vec<(String, (i32, i32, u32, u32))> {
+/// Every output `compositor` shows, by connector name, logical rectangle `(x, y, w, h)` and the
+/// scale it draws at: one part stands on each, its whole screen, and none spans them all.
+fn outputs_of(compositor: &Compositor) -> Vec<(String, (i32, i32, u32, u32), f64)> {
     compositor
         .outputs()
         .into_iter()
         .filter_map(|output| {
             output.rect.map(|(x, y, w, h)| {
                 let side = |side: i32| u32::try_from(side.max(1)).unwrap_or(1);
-                (output.name.clone(), (x, y, side(w), side(h)))
+                (output.name.clone(), (x, y, side(w), side(h)), output.scale)
             })
         })
         .collect()
@@ -990,7 +993,7 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 
     fn key(&mut self, _key: &HostKey) {}
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.0.outputs_changed(outputs);
     }
 
@@ -1297,7 +1300,7 @@ mod tests {
             self.keys = self.keys.saturating_add(1);
         }
 
-        fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {
+        fn outputs_changed(&mut self, _outputs: &[tilo_compositor::HostedOutput]) {
             self.outputs = self.outputs.saturating_add(1);
         }
 
@@ -1334,7 +1337,10 @@ mod tests {
         assert_eq!(aside.0.keys, 0, "no key reached the desk behind it");
         assert!(aside.layers().is_empty(), "it draws nothing");
         assert!(!aside.accepts_pointer(1.0, 1.0), "it takes no pointer");
-        aside.outputs_changed(&[(0, 0, 1280, 800)]);
+        aside.outputs_changed(&[tilo_compositor::HostedOutput {
+            rect: (0, 0, 1280, 800),
+            scale: 1.0,
+        }]);
         assert_eq!(aside.0.outputs, 1, "it follows the displays");
     }
 

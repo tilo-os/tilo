@@ -30,7 +30,7 @@ fn reading() -> DeskReading {
     }
 }
 
-use crate::shell_part::tests_support::part_with;
+use crate::shell_part::tests_support::{part_on, part_with};
 
 fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
@@ -642,7 +642,7 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
 fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     let (mut part, _link) = part();
     let display = part.placement().expect("the part stands on its display");
-    part.set_display(None);
+    part.set_display(None, 1.0);
     assert!(part.layers().is_empty(), "nothing of it is drawn");
     assert!(!part.accepts_pointer(100.0, 10.0), "it takes no pointer");
     assert!(
@@ -650,10 +650,13 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
         "the door reaches the bars still standing, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
-    part.outputs_changed(&[(1280, 0, 1280, 800)]);
+    part.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (1280, 0, 1280, 800),
+        scale: 1.0,
+    }]);
     assert_eq!(part.placement(), None, "it stays off the other display");
     // The display comes back: the part stands on it again.
-    part.set_display(Some(display.clone()));
+    part.set_display(Some(display.clone()), 1.0);
     assert_eq!(part.placement(), Some(display));
     assert!(crate::Published::offered(&part));
     assert_eq!(
@@ -1029,8 +1032,11 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
         part.prepare_frame();
     }
     assert!(!part.due(), "the part settled");
-    part.outputs_changed(&[(0, 0, 1280, 800)]);
-    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
+    part.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (0, 0, 1280, 800),
+        scale: 1.0,
+    }]);
+    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))), 1.0);
     for _ in 0..4 {
         part.prepare_frame();
     }
@@ -1298,5 +1304,45 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
     assert!(
         width(7) >= width(8),
         "the wider window takes the wider room: {pictures:?}"
+    );
+}
+
+/// A part on an output at `scale` draws its whole screen at that scale: a
+/// bar on a 2 display paints twice the pixels of a 1 display's, rather than
+/// one scale's worth stretched over twice the area (which is what made
+/// everything on a HiDPI panel grainy).
+#[test]
+fn a_part_on_a_scaled_output_paints_at_that_scale() {
+    let (mut plain, _link) = part_on(reading(), (1280, 800));
+    plain.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (0, 0, 1280, 800),
+        scale: 1.0,
+    }]);
+    plain.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))), 1.0);
+    plain.prepare_frame();
+    let one = plain.widgets_mut().placement();
+
+    let (mut twice, _link) = part_on(reading(), (1280, 800));
+    twice.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (0, 0, 1280, 800),
+        scale: 2.0,
+    }]);
+    twice.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))), 2.0);
+    twice.prepare_frame();
+    let two = twice.widgets_mut().placement();
+
+    assert_eq!(one.size, two.size, "the same screen in logical pixels");
+    assert!(
+        (one.scale - 1.0).abs() < f64::EPSILON && (two.scale - 2.0).abs() < f64::EPSILON,
+        "each part draws at its own output's scale: {one:?} then {two:?}"
+    );
+    // The layer is the frame the tree paints: at 2 it is twice as wide.
+    let width = |part: &mut ShellPart| part.layers()[0].frame.size().0;
+    let plain_width = width(&mut plain);
+    let wide_width = width(&mut twice);
+    assert_eq!(
+        wide_width,
+        plain_width * 2,
+        "a 2 display's part paints the pixels it shows, not half of them: {plain_width} then {wide_width}"
     );
 }

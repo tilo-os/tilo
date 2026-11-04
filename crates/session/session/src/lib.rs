@@ -1435,7 +1435,6 @@ impl Session {
                     &mut compositor,
                     &mut doors,
                     desk(),
-                    options.scale,
                     wells,
                     presentation.theme.clone(),
                 )

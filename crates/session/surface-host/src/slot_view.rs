@@ -698,10 +698,13 @@ impl SurfaceHost for SlotView {
         }
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
-            .map(|&(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
+            .map(|output| {
+                let (x, y, w, h) = output.rect;
+                (x, y, x.saturating_add(w), y.saturating_add(h))
+            })
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
         else {
             return;
@@ -713,6 +716,13 @@ impl SurfaceHost for SlotView {
             return;
         };
         self.outputs = Some((x0, y0, width, height));
+        self.scale = tilo_compositor::HostedOutput::scale_at(
+            outputs,
+            (
+                f64::from(x0) + f64::from(width) / 2.0,
+                f64::from(y0) + f64::from(height) / 2.0,
+            ),
+        );
         self.place();
     }
 

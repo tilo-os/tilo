@@ -612,6 +612,21 @@ impl SurfaceHost for DesktopHost {
         self.desk.borrow_mut().host.set_frame_interval(interval);
     }
 
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+        // The desk draws at the scale of the first display there is, the one
+        // it covers: its strips and the windows' bars paint the pixels that
+        // display shows, rather than one scale's worth stretched over a
+        // denser panel (which is what made everything grainy on a HiDPI
+        // laptop). A desk spanning displays of different scales draws at the
+        // first's, as its layout is the bounding box of all of them.
+        let scale = outputs.first().map_or(1.0, |output| output.scale);
+        let mut desk = self.desk.borrow_mut();
+        let placement = desk.host.placement();
+        if (placement.scale - scale).abs() > f64::EPSILON {
+            desk.host.set_placement(Placement { scale, ..placement });
+        }
+    }
+
     fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
         self.desk.borrow().host.window_pictures()
     }
@@ -987,7 +1002,13 @@ mod tests {
         use ui::window_targets::{TargetAction, WindowTarget};
 
         let (mut desk, mut policy) = desktop(7, 1.0);
-        SurfaceHost::outputs_changed(&mut desk, &[(0, 0, 1280, 800)]);
+        SurfaceHost::outputs_changed(
+            &mut desk,
+            &[tilo_compositor::HostedOutput {
+                rect: (0, 0, 1280, 800),
+                scale: 1.0,
+            }],
+        );
         policy.map(&window(1, "so.tilo.file-explorer", Some(4242)), &[output()]);
         for _ in 0..8 {
             SurfaceHost::prepare_frame(&mut desk);
@@ -1029,6 +1050,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Documents"],
             "the frame after the declaration carries the window's controls"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hidpi {
+    use super::*;
+
+    /// The desk draws at the scale of the display it covers: its strips and
+    /// the windows' bars paint the pixels a HiDPI panel shows, rather than
+    /// one scale's worth stretched over twice the area.
+    #[test]
+    fn the_desk_draws_at_its_displays_scale() {
+        let (mut desk, _policy) = desktop(7, 1.0);
+        SurfaceHost::outputs_changed(
+            &mut desk,
+            &[tilo_compositor::HostedOutput {
+                rect: (0, 0, 1472, 920),
+                scale: 2.0,
+            }],
+        );
+        let scale = desk.with_widgets(|widgets| widgets.placement().scale);
+        assert!(
+            (scale - 2.0).abs() < f64::EPSILON,
+            "the desk on a 2 display draws at 2: it drew at {scale}"
         );
     }
 }

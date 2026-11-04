@@ -42,7 +42,7 @@ pub(crate) struct Banners {
     desk: tilo_desktop_surface::DesktopHandle,
     /// The outputs the compositor last said it has: the first is the one in
     /// use, the rest repeat what is about the whole machine.
-    outputs: Vec<(i32, i32, i32, i32)>,
+    outputs: Vec<tilo_compositor::HostedOutput>,
 }
 
 impl Banners {
@@ -66,10 +66,11 @@ impl Banners {
     /// banners are mounted before any output is lit, and they move with the
     /// layout from then on.
     fn place(&mut self) {
-        let Some(&(x, y, width, height)) = self.outputs.first() else {
+        let Some(first) = self.outputs.first().copied() else {
             return;
         };
-        let scale = self.host.placement().scale;
+        let (x, y, width, height) = first.rect;
+        let scale = first.scale;
         let place = placement(x, y, width, height, scale);
         if self.host.placement() != place {
             self.host.set_placement(place);
@@ -95,9 +96,9 @@ impl Banners {
                 .outputs
                 .iter()
                 .skip(1)
-                .map(|&output| tilo_notification_banners::OtherDisplay {
-                    display: local(output),
-                    viewport: under_bar(output),
+                .map(|output| tilo_notification_banners::OtherDisplay {
+                    display: local(output.rect),
+                    viewport: under_bar(output.rect),
                 })
                 .collect(),
             ..tilo_notification_banners::Placement::default()
@@ -201,7 +202,7 @@ impl SurfaceHost for Banners {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         outputs.clone_into(&mut self.outputs);
         self.place();
     }
@@ -214,8 +215,8 @@ impl SurfaceHost for Banners {
 pub(crate) struct ReadoutPlace {
     /// The focused text field's caret, in desk coordinates.
     caret: Option<Rect>,
-    /// Each display's connector, and its rectangle.
-    displays: Vec<(String, (i32, i32, i32, i32))>,
+    /// Each display's connector, its rectangle and the scale it draws at.
+    displays: Vec<(String, (i32, i32, i32, i32), f64)>,
 }
 
 /// The session's hold of [`ReadoutPlace`], shared with the readout.
@@ -228,7 +229,7 @@ impl ReadoutPlace {
         self.displays = outputs
             .iter()
             .filter(|output| output.enabled)
-            .filter_map(|output| Some((output.name.clone(), output.rect?)))
+            .filter_map(|output| Some((output.name.clone(), output.rect?, output.scale)))
             .collect();
         self.caret = caret;
     }
@@ -240,15 +241,18 @@ impl ReadoutPlace {
 
     /// Where the display `display` stands, or the first one when none is
     /// named or it is not shown.
-    fn output(&self, display: Option<&str>) -> Option<(i32, i32, i32, i32)> {
-        display
-            .and_then(|display| {
-                self.displays
-                    .iter()
-                    .find(|(connector, _)| connector == display)
-                    .map(|(_, rect)| *rect)
-            })
-            .or_else(|| self.displays.first().map(|(_, rect)| *rect))
+    fn output(&self, display: Option<&str>) -> Option<((i32, i32, i32, i32), f64)> {
+        let named = display.and_then(|display| {
+            self.displays
+                .iter()
+                .find(|(connector, ..)| connector == display)
+                .map(|(_, rect, scale)| (*rect, *scale))
+        });
+        named.or_else(|| {
+            self.displays
+                .first()
+                .map(|(_, rect, scale)| (*rect, *scale))
+        })
     }
 }
 
@@ -299,8 +303,8 @@ impl Readout {
             return;
         };
         let caret = self.places.borrow().caret();
+        let (output, scale) = output;
         let side = tilo_desktop::osd::clear_of_caret(caret, output);
-        let scale = self.host.placement().scale;
         let (x, y, w, h) = tilo_desktop::osd::place(output, side);
         self.host.set_placement(placement(x, y, w, h, scale));
     }
@@ -400,7 +404,7 @@ impl SurfaceHost for Readout {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, _outputs: &[tilo_compositor::HostedOutput]) {
         // Where the displays stand comes with the session's own reading of
         // them (connectors, not just rectangles): the readout stands on the
         // display it answers for again.
@@ -492,7 +496,7 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().set_frame_interval(interval);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.0.borrow_mut().outputs_changed(outputs);
     }
 

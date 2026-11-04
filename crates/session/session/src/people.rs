@@ -185,7 +185,7 @@ impl SurfaceHost for People {
         self.host.borrow_mut().set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.host.borrow_mut().outputs_changed(outputs);
     }
 }
@@ -365,7 +365,7 @@ impl SurfaceHost for Host {
         self.0.borrow_mut().set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.0.borrow_mut().outputs_changed(outputs);
     }
 }

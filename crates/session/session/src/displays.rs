@@ -796,6 +796,7 @@ mod tests {
             label: name.into(),
             enabled: true,
             rect: Some((x, 0, 1280, 800)),
+            scale: 1.0,
             description: None,
             colour: DisplayCapabilities::sdr_default(),
         }

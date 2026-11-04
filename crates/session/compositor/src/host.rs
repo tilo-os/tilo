@@ -361,10 +361,12 @@ pub trait SurfaceHost {
     /// many frames as they run at and not one per turn of the loop.
     fn set_frame_interval(&mut self, _interval: std::time::Duration) {}
 
-    /// The outputs' logical rectangles `(x, y, w, h)`, now and whenever
-    /// one is added, removed or moved: a surface covering the desktop
-    /// (the top bar, the chrome above the windows) follows them.
-    fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {}
+    /// The outputs as they stand, now and whenever one is added, removed,
+    /// moved or scaled: each one's logical rectangle and the scale it draws
+    /// at. A surface covering the desktop (the top bar, the chrome above the
+    /// windows) follows them, and draws at the scale of the output it is on
+    /// so what it paints is as crisp as the display allows.
+    fn outputs_changed(&mut self, _outputs: &[crate::output::HostedOutput]) {}
 
     /// The pointer shape while the pointer is over the surface (a text
     /// beam over a field, a hand over a link).
