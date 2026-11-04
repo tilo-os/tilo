@@ -333,13 +333,28 @@ pub fn observe() -> Result<Observed, String> {
 /// observation of the device graph.
 pub struct Voice(inner::Inner);
 
-#[cfg(all(feature = "voice", unix, not(target_arch = "wasm32")))]
+/// A call's audio needs something to run it on: this device's `PipeWire`
+/// streams on Linux, or the software pipeline tests use. A host with neither
+/// has no call to open ([`CallError::Unavailable`]).
+#[cfg(all(
+    feature = "voice",
+    unix,
+    not(target_arch = "wasm32"),
+    any(
+        all(target_os = "linux", feature = "pipewire"),
+        feature = "test-support"
+    )
+))]
 mod inner {
     use std::sync::Arc;
     use std::time::Instant;
 
-    use super::{Audio, CallError, Frame, Observed, Source};
-    use crate::voice::gst::{CaptureSource, ObservedOutput, VoiceAudio};
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    use super::Observed;
+    use super::{Audio, CallError, Frame, Source};
+    use crate::voice::gst::VoiceAudio;
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    use crate::voice::gst::{CaptureSource, ObservedOutput};
     use crate::voice::{PublicationId, ReceivedOpus};
 
     pub(super) struct Inner {
@@ -348,10 +363,12 @@ mod inner {
         sources: Vec<Source>,
         /// The graph this call's streams were opened from: the connection its
         /// microphone and output run on.
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
         observed: Option<Observed>,
     }
 
     enum Backing {
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
         Devices(VoiceAudio),
         #[cfg(feature = "test-support")]
         Software(crate::voice::gst::software::SoftwareOutput),
@@ -360,6 +377,7 @@ mod inner {
     impl Inner {
         fn audio(&mut self) -> &mut VoiceAudio {
             match &mut self.audio {
+                #[cfg(all(target_os = "linux", feature = "pipewire"))]
                 Backing::Devices(audio) => audio,
                 #[cfg(feature = "test-support")]
                 Backing::Software(output) => output.audio(),
@@ -408,6 +426,7 @@ mod inner {
                             node: 0,
                             serial: 0,
                         }],
+                        #[cfg(all(target_os = "linux", feature = "pipewire"))]
                         observed: None,
                     }))
                 }
@@ -420,10 +439,18 @@ mod inner {
 
         pub fn start(
             &mut self,
+            #[cfg_attr(
+                not(all(target_os = "linux", feature = "pipewire")),
+                allow(
+                    unused_variables,
+                    reason = "only the device capture picks the microphone a call sends"
+                )
+            )]
             source: &Source,
             still_current: Arc<dyn Fn() -> bool + Send + Sync>,
         ) -> Result<(), CallError> {
             match &mut self.0.audio {
+                #[cfg(all(target_os = "linux", feature = "pipewire"))]
                 Backing::Devices(audio) => {
                     let observed = self.0.observed.as_ref().ok_or(CallError::Unavailable)?;
                     audio
@@ -516,6 +543,7 @@ mod inner {
         #[cfg(feature = "test-support")]
         pub fn played(&mut self) -> Vec<f32> {
             match &mut self.0.audio {
+                #[cfg(all(target_os = "linux", feature = "pipewire"))]
                 Backing::Devices(_) => Vec::new(),
                 #[cfg(feature = "test-support")]
                 Backing::Software(output) => output.played(),
@@ -566,7 +594,15 @@ mod inner {
     }
 }
 
-#[cfg(not(all(feature = "voice", unix, not(target_arch = "wasm32"))))]
+#[cfg(not(all(
+    feature = "voice",
+    unix,
+    not(target_arch = "wasm32"),
+    any(
+        all(target_os = "linux", feature = "pipewire"),
+        feature = "test-support"
+    )
+)))]
 mod inner {
     use std::sync::Arc;
     use std::time::Instant;
@@ -575,9 +611,22 @@ mod inner {
 
     pub(super) struct Inner;
 
+    /// Why no call opens here: a host the voice pipeline is compiled for but
+    /// with nothing to run it on has no audio graph; anywhere else the
+    /// platform has no voice audio at all.
+    #[cfg(all(feature = "voice", unix, not(target_arch = "wasm32")))]
+    fn no_backing() -> CallError {
+        CallError::Unavailable
+    }
+
+    #[cfg(not(all(feature = "voice", unix, not(target_arch = "wasm32"))))]
+    fn no_backing() -> CallError {
+        CallError::Unsupported
+    }
+
     impl super::Voice {
         pub fn open(_audio: Audio) -> Result<Self, CallError> {
-            Err(CallError::Unsupported)
+            Err(no_backing())
         }
         pub fn sources(&self) -> Vec<Source> {
             Vec::new()
