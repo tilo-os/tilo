@@ -2033,6 +2033,53 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     );
 }
 
+/// A name in the code, as a control's binding spells it: lowercase words joined by underscores,
+/// or one lowercase word (`draft`, `step`). A person hears it read out as though the app's code
+/// were the word for what they are typing in.
+fn identifier_shaped(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A control that takes typing is announced by what the view says it is for — its placeholder —
+/// never by the name in the code it binds: the list's entry says "New task", the entry over a
+/// task's subtasks "Add a subtask". A control left without a placeholder is announced by the
+/// binding's own name, so every one of them says what it is for.
+#[test]
+fn a_typing_control_is_named_by_a_word_a_person_says() {
+    let (mut ada, root) = workspace();
+    let task = call(&ada, "new_task", vec![root, Value::text("Book the van")]);
+    ada.commit();
+    let mut home = ada.view(APP);
+    let mut page = task_page(&ada, &task);
+    let mut said: Vec<String> = Vec::new();
+    for (where_, view) in [("the list", &mut home), ("a task", &mut page)] {
+        for field in all(view.tree(), "ui.TextInput") {
+            let placeholder = text_of(field, "placeholder").unwrap_or_default();
+            assert!(
+                !placeholder.is_empty(),
+                "the field in {where_} says what it takes typing for: {field:?}"
+            );
+            assert!(
+                !identifier_shaped(&placeholder),
+                "the field in {where_} is named `{placeholder}`, which is a name in the code \
+                 rather than a word a person says: {field:?}"
+            );
+            said.push(placeholder);
+        }
+    }
+    assert!(
+        said.contains(&"New task".to_owned()),
+        "the list's entry says what it adds: {said:?}"
+    );
+    assert!(
+        said.contains(&"Add a subtask".to_owned()),
+        "and a task's entry says what it adds: {said:?}"
+    );
+}
+
 /// The page a task opens offers the same commands, in the same order, with the same keys and the
 /// same reasons: one list of what a person can do to a task, drawn wherever it is asked for.
 #[test]
