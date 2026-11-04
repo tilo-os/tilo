@@ -666,9 +666,13 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
             .any(|held| held.id() == workspace),
         "the joined workspace is a workspace of this profile"
     );
+    // The profile's record is an index and one file per workspace, not the one file a build
+    // before the split wrote: read it as the profile does.
+    let profile = tilo_peer_state::owner::open_file(&directory.path().join(JOINED_WORKSPACES))
+        .expect("the profile's own record opens");
     assert!(
-        std::fs::read(directory.path().join(JOINED_WORKSPACES)).is_ok(),
-        "the enrollment is kept in the profile's own file"
+        profile.workspaces().contains(&workspace),
+        "the enrollment is kept in the profile's own record"
     );
 
     // The governor publishes the workspace's history through its host; the
