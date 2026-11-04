@@ -24,6 +24,7 @@ pub mod grants;
 pub mod history;
 pub mod ids;
 pub mod layout;
+pub mod merge;
 pub mod own_arrangement;
 pub mod ownership;
 pub mod partition;

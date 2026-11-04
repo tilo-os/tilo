@@ -66,6 +66,11 @@ pub(crate) fn now_seconds() -> i64 {
         })
 }
 
+/// One lasting refusal the person has been told about: the change it refuses
+/// — the workspace, the app and the record it writes, and its sequence — and
+/// the device that refused it.
+type ToldRefusal = (String, String, String, u64, [u8; 32]);
+
 /// A workspace's activity, as this session serves it: to the desk's own
 /// model, and to the apps that ask through the broker.
 #[derive(Clone)]
@@ -108,7 +113,7 @@ struct Inner {
     served: Cell<Option<u64>>,
     /// The lasting refusals of this device's writes it has already told the
     /// person about: one notice per verdict, never one per pass.
-    told_refusals: RefCell<BTreeSet<(String, String, String, u64, [u8; 32])>>,
+    told_refusals: RefCell<BTreeSet<ToldRefusal>>,
     /// What the desk's history says its changes were, as a model answered it.
     describer: RefCell<Describer>,
     /// Answers the model gave, waiting for the desk's thread to write them.

@@ -213,11 +213,12 @@ impl SharedDesktops {
         // over it. A workspace whose record nobody wrote yet starts from the
         // empty record, and this device's desk is what founds it.
         let mut held = self.base(room, reached);
-        let mut written = self.written.borrow_mut();
         let heads = held.get_heads();
         let own = tree.external_revision;
         let notes = self.notes.of_workspace(room);
-        if written.get(&room) == Some(&(heads.clone(), own, notes.clone())) {
+        let unchanged =
+            self.written.borrow().get(&room) == Some(&(heads.clone(), own, notes.clone()));
+        if unchanged {
             return false;
         }
         // The record is every member's: what this device writes into it goes
@@ -255,13 +256,13 @@ impl SharedDesktops {
         );
         match wrote {
             Ok(false) => {
-                written.insert(room, (heads, own, notes));
+                self.written.borrow_mut().insert(room, (heads, own, notes));
                 false
             }
             Err(error) => {
                 // What the record refused is not written, and the look that
                 // found it is not one that wrote it: the next look tries again.
-                written.remove(&room);
+                self.written.borrow_mut().remove(&room);
                 if !self.warned.replace(true) {
                     tracing::warn!(
                         %error,
@@ -271,69 +272,83 @@ impl SharedDesktops {
                 }
                 false
             }
-            Ok(true) => {
-                // Every change a device signs says what it is and who made
-                // it: the edit of the record this person just made here.
-                candidate.commit_with(
-                    automerge::transaction::CommitOptions::default()
-                        .with_message(shared_record::change_message(Some(&person))),
-                );
-                let changes = candidate.save_after(&heads);
-                let key = engine.identity().device_signing_key.clone();
-                let committed = engine.owner().commit_document_with_current(
-                    room,
-                    |view| {
-                        let message = view.peer().clone().publication_mut().publish_incremental(
-                            DESKTOP_APP,
-                            DESKTOP_RECORD,
-                            changes.clone(),
-                            &key,
-                            std::time::SystemTime::now(),
-                        )?;
-                        let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message
-                        else {
-                            return Err("a desktop write is not a document write".to_owned());
-                        };
-                        Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            workspace: room.to_string(),
-                            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                                app: DESKTOP_APP.to_owned(),
-                                record: DESKTOP_RECORD.to_owned(),
-                                envelope,
-                            },
-                        })
-                    },
+            Ok(true) => self.publish(engine, room, &person, candidate, &heads, own),
+        }
+    }
+
+    /// Publish the record this device just wrote to the workspace, as the
+    /// workspace's own copy of it: what the workspace takes is the record
+    /// the next look writes on, and what it refuses is dropped, so the next
+    /// look writes it again on what the workspace holds.
+    fn publish(
+        &self,
+        engine: &Engine,
+        room: WorkspaceId,
+        person: &str,
+        mut candidate: automerge::AutoCommit,
+        heads: &[ChangeHash],
+        own: u64,
+    ) -> bool {
+        // Every change a device signs says what it is and who made
+        // it: the edit of the record this person just made here.
+        candidate.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(shared_record::change_message(Some(person))),
+        );
+        let changes = candidate.save_after(heads);
+        let key = engine.identity().device_signing_key.clone();
+        let committed = engine.owner().commit_document_with_current(
+            room,
+            |view| {
+                let message = view.peer().clone().publication_mut().publish_incremental(
+                    DESKTOP_APP,
+                    DESKTOP_RECORD,
+                    changes.clone(),
+                    &key,
                     std::time::SystemTime::now(),
-                );
-                match committed {
-                    Ok(_receipt) => {
-                        // What the workspace took is the record this device
-                        // wrote: the next look at the heads it now holds, and
-                        // this desk where it stands, writes nothing.
-                        written.insert(room, (candidate.get_heads(), own, notes));
-                        self.kept.borrow_mut().insert(room, candidate);
-                        // What was just committed is this device's outgoing
-                        // custody: the workspace's other devices read it as
-                        // any member's change.
-                        engine.schedule_publication(room);
-                        true
-                    }
-                    Err(error) => {
-                        // The record is not the workspace's until it takes
-                        // it: the next look writes it again, on what the
-                        // workspace holds and not on the write it refused.
-                        written.remove(&room);
-                        self.kept.borrow_mut().remove(&room);
-                        if !self.warned.replace(true) {
-                            tracing::warn!(
-                                %error,
-                                %room,
-                                "the workspace's shared desktop was not published"
-                            );
-                        }
-                        false
-                    }
+                )?;
+                let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
+                    return Err("a desktop write is not a document write".to_owned());
+                };
+                Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    workspace: room.to_string(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                        app: DESKTOP_APP.to_owned(),
+                        record: DESKTOP_RECORD.to_owned(),
+                        envelope,
+                    },
+                })
+            },
+            std::time::SystemTime::now(),
+        );
+        match committed {
+            Ok(_receipt) => {
+                // What the workspace took is the record this device wrote:
+                // the next look at the heads it now holds, this desk where it
+                // stands, and these notes, writes nothing.
+                self.written
+                    .borrow_mut()
+                    .insert(room, (candidate.get_heads(), own, notes));
+                self.kept.borrow_mut().insert(room, candidate);
+                // What was just committed is this device's outgoing custody:
+                // the workspace's other devices read it as any member's change.
+                engine.schedule_publication(room);
+                true
+            }
+            Err(error) => {
+                // The record is not the workspace's until it takes it: the
+                // next look writes it again, on what the workspace holds and
+                // not on the write it refused.
+                self.written.borrow_mut().remove(&room);
+                self.kept.borrow_mut().remove(&room);
+                if !self.warned.replace(true) {
+                    tracing::warn!(
+                        %error,
+                        %room,
+                        "the workspace's shared desktop was not published"
+                    );
                 }
+                false
             }
         }
     }
@@ -352,8 +367,8 @@ impl SharedDesktops {
         let Some(mut base) = kept else {
             return reached.unwrap_or_default();
         };
-        if let Some(mut reached) = reached
-            && let Err(error) = base.merge(&mut reached)
+        if let Some(reached) = reached
+            && let Err(error) = tilo_desktop_model::merge::merge_into(&mut base, &reached)
         {
             // What the workspace holds cannot be laid over our own write:
             // start from it, and say so once.
