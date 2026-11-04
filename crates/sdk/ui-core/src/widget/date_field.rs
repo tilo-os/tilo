@@ -4,9 +4,8 @@
 //! ([`crate::format::day_fact_today`]: "Overdue since Jun 29", "Today", "Tomorrow", "Thursday",
 //! with the time of day it is due at when it has one — "Today 9:00 AM"), in the tone the fact
 //! stands in, or "Add date" in the quieter ink while it holds none, and the chevron every
-//! choice control wears. Pressing it
-//! opens a [`DatePicker`] in a popover anchored to the chip; picking a day sets the date and
-//! closes it. A field whose date may be empty adds "Clear date" under the calendar.
+//! choice control wears. Pressing it opens a [`DatePicker`] in a popover anchored to the chip;
+//! picking a day sets the date and closes it. A field whose date may be empty adds "Clear date" under the calendar.
 //!
 //! The time of day the day is due at is picked in the same popover, in the field's `time` slot:
 //! the type pairs one with the day (`at: Option<Time> (time of: due)`), so the two are one fact

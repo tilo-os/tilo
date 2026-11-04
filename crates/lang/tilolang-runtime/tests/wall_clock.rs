@@ -59,7 +59,7 @@ view shown(t: Task) {
                     vec![Value::resource(&self.task)],
                 )
                 .unwrap();
-            texts(&view.tree())
+            texts(view.tree())
         }
     }
 
