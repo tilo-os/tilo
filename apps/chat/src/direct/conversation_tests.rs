@@ -193,6 +193,52 @@ fn read_conversation(
         .collect()
 }
 
+/// The record the two people's conversation is in `workspace`: its name, and
+/// the part its messages are in.
+fn the_pairs_record(workspace: &str, ada: &str, bob: &str) -> (String, ui::record::RecordId) {
+    let pair = ui::person_chat::direct_pair_id(workspace, ada, bob).expect("a pair");
+    let record = format!("direct/{pair}");
+    let part = ui::record::RecordId::parse(&record)
+        .expect("a record id")
+        .part(0);
+    (record, part)
+}
+
+/// What `window` sends `peer`, which the pair's record accepts.
+fn send(window: &mut ui::framework::testing::TestApp<crate::ChatShell>, peer: &str, text: &str) {
+    use crate::effects::ChatEffect;
+
+    let sent = window
+        .effect(&ChatEffect::SendDirectMessage {
+            public_key: peer.into(),
+            text: text.into(),
+        })
+        .expect("the window sends");
+    assert_eq!(
+        sent.value
+            .as_ref()
+            .and_then(|value| value["accepted"].as_bool()),
+        Some(true),
+        "the pair's record accepts {text:?}: {:?}",
+        sent.value
+    );
+}
+
+/// Hand `from`'s copy of the conversation's part to `to`, and read what `to`
+/// says of its conversation with `peer`.
+fn deliver_and_read(
+    from: &mut ui::framework::testing::TestApp<crate::ChatShell>,
+    to: &mut ui::framework::testing::TestApp<crate::ChatShell>,
+    part: &ui::record::RecordId,
+    peer: &str,
+) -> Vec<(String, String)> {
+    assert!(
+        from.deliver_record_to(to, part).expect("the part arrives"),
+        "the conversation changed when the part arrived"
+    );
+    read_conversation(to, peer)
+}
+
 /// Two people, a window each in one workspace, talk through the ordinary
 /// record their pair shares: what one's window sends, the other's window
 /// reads, and the conversation is the record `direct/<pair>` every app of
@@ -215,12 +261,62 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
 
     // The conversation is an ordinary record of the workspace, named by the
     // two people in it: the same record Messages' Tilo lane opens.
-    let pair = ui::person_chat::direct_pair_id(WORKSPACE, &ada, &bob).expect("a pair");
-    let record = format!("direct/{pair}");
-    let part = ui::record::RecordId::parse(&record)
-        .expect("a record id")
-        .part(0);
+    let (record, part) = the_pairs_record(WORKSPACE, &ada, &bob);
+    bob_window
+        .effect(&ChatEffect::OpenDirectConversation {
+            public_key: ada_key.clone(),
+        })
+        .expect("Bob opens the conversation with Ada");
+    send(&mut ada_window, &bob_key, "hello from Ada");
+    assert!(
+        ada_window
+            .shared_record::<ui::direct::DirectConversation>(ui::direct::OWNER, &record)
+            .is_some(),
+        "the conversation is the ordinary record {record}"
+    );
+    assert!(
+        bob_window
+            .shared_record::<ui::direct::parts::DirectPart>(ui::direct::OWNER, part.as_str())
+            .is_some(),
+        "Bob's window holds the conversation's part"
+    );
+    let messages = deliver_and_read(&mut ada_window, &mut bob_window, &part, &ada_key);
+    assert_eq!(messages.len(), 1, "Bob reads what Ada sent");
+    assert_eq!(messages[0].0, "hello from Ada");
+    assert_eq!(messages[0].1, ada_key, "the message says Ada wrote it");
 
+    // Bob answers, and Ada reads the answer in the same record.
+    send(&mut bob_window, &ada_key, "hello from Bob");
+    assert!(
+        ada_window
+            .shared_record::<ui::direct::parts::DirectPart>(ui::direct::OWNER, part.as_str())
+            .is_some(),
+        "Ada's window holds the conversation's part"
+    );
+    let said: Vec<String> = deliver_and_read(&mut bob_window, &mut ada_window, &part, &bob_key)
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
+    assert_eq!(
+        said,
+        ["hello from Ada", "hello from Bob"],
+        "both people's messages are in the one conversation"
+    );
+}
+
+/// What a person's card asks of Chat when they press Message: the action the
+/// window publishes on the row naming their conversation, which opens it with
+/// the composer ready — one Chat answers it, no second composer.
+#[test]
+fn a_persons_card_opens_the_conversation_chat_keeps() {
+    use crate::effects::ChatEffect;
+    use crate::testing::MountedChat;
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let ada_key = ui::person_chat::person_key(&ada);
+    let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
     bob_window
         .effect(&ChatEffect::OpenDirectConversation {
             public_key: ada_key.clone(),
@@ -232,9 +328,6 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
             "the conversation opens with its composer ready"
         );
     });
-    // What a person's card asks of Chat when they press Message: the action
-    // Chat publishes on the row naming their conversation, so the desktop's
-    // ask is one Chat answers.
     bob_window.with_chat(|chat| {
         let row = chat
             .person_conversation_rows()
@@ -253,79 +346,4 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
             resource.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
         );
     });
-    let sent = ada_window
-        .effect(&ChatEffect::SendDirectMessage {
-            public_key: bob_key.clone(),
-            text: "hello from Ada".into(),
-        })
-        .expect("Ada's window sends");
-    assert_eq!(
-        sent.value
-            .as_ref()
-            .and_then(|value| value["accepted"].as_bool()),
-        Some(true),
-        "the pair's record accepts Ada's message: {:?}",
-        sent.value
-    );
-    assert!(
-        ada_window
-            .shared_record::<ui::direct::DirectConversation>(ui::direct::OWNER, &record)
-            .is_some(),
-        "the conversation is the ordinary record {record}"
-    );
-
-    // Bob's device opens the conversation, and the workspace hands it the
-    // part the messages are in.
-    assert!(
-        bob_window
-            .shared_record::<ui::direct::parts::DirectPart>(ui::direct::OWNER, part.as_str())
-            .is_some(),
-        "Bob's window holds the conversation's part"
-    );
-    assert!(
-        ada_window
-            .deliver_record_to(&mut bob_window, &part)
-            .expect("Bob takes the part in"),
-        "Bob's conversation changed when the part arrived"
-    );
-    let messages = read_conversation(&mut bob_window, &ada_key);
-    assert_eq!(messages.len(), 1, "Bob reads what Ada sent");
-    assert_eq!(messages[0].0, "hello from Ada");
-    assert_eq!(messages[0].1, ada_key, "the message says Ada wrote it");
-
-    // Bob answers, and Ada reads the answer in the same record.
-    let replied = bob_window
-        .effect(&ChatEffect::SendDirectMessage {
-            public_key: ada_key.clone(),
-            text: "hello from Bob".into(),
-        })
-        .expect("Bob's window sends");
-    assert_eq!(
-        replied
-            .value
-            .as_ref()
-            .and_then(|value| value["accepted"].as_bool()),
-        Some(true)
-    );
-    assert!(
-        ada_window
-            .shared_record::<ui::direct::parts::DirectPart>(ui::direct::OWNER, part.as_str())
-            .is_some(),
-        "Ada's window holds the conversation's part"
-    );
-    assert!(
-        bob_window
-            .deliver_record_to(&mut ada_window, &part)
-            .expect("Ada takes the part in"),
-        "Ada's conversation changed when the part arrived"
-    );
-    let said: Vec<String> = read_conversation(&mut ada_window, &bob_key)
-        .into_iter()
-        .map(|(text, _)| text)
-        .collect();
-    assert_eq!(
-        said,
-        ["hello from Ada", "hello from Bob"],
-        "both people's messages are in the one conversation"
-    );
 }
