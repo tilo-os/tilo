@@ -27,7 +27,6 @@ uuid.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
