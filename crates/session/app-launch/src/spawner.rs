@@ -225,6 +225,20 @@ impl Spawner {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // Where an app's own diagnostics go when the session's desk names a
+        // directory for them (`TILO_APP_STDERR_DIR`): a headless acceptance
+        // drives the app itself, so what it says is the only account of a
+        // step that failed inside it. Without one the app's stderr is dropped,
+        // as a desktop's is.
+        if let Some(dir) = std::env::var_os("TILO_APP_STDERR_DIR") {
+            let path = std::path::Path::new(&dir).join(format!("{}.log", planned.app));
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(file) = std::fs::File::create(&path) {
+                command.stderr(Stdio::from(file));
+            }
+        }
         let gate = match door {
             Some(_) => match launcher::registration_gate::install(&mut command) {
                 Ok(gate) => Some(gate),

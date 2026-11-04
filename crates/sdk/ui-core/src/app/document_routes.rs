@@ -245,6 +245,7 @@ impl App {
     fn restore_primary_publication_obligations(&mut self) {
         self.state.advance_outbound(Vec::new());
         self.actions.bound_record_sync = None;
+        self.document_routes.primary_whole = false;
         for owner in &mut self.document_routes.owners {
             owner.sent = crate::state::DocumentFrontier::default();
             owner.needs_snapshot = true;
