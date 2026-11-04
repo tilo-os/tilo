@@ -30,12 +30,19 @@ const OFFSTAGE: i32 = -(1 << 20);
 
 /// What a touchpad gesture the desktop took asks of it, once the gesture
 /// has said what it means: the same steps the desktop's chords take.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeskGesture {
     /// Three fingers across: the window `steps` on along the strip.
     StepWindow(i32),
     /// Three fingers up or down: the strip `steps` on.
     StepStrip(i32),
+    /// Three fingers landed on the deck: it follows them from here. `travel`
+    /// is their signed travel in pixels since they landed, positive toward
+    /// the strips below.
+    StripDeckDrag { travel: f64 },
+    /// Those fingers lifted, having carried the deck `travel`: the strip
+    /// `steps` on from it, or none when they came back.
+    StepStripFrom { travel: f64, steps: i32 },
     /// Four fingers up or down: the workspace `delta` on.
     SwitchWorkspace(i32),
     /// A pinch in opens the overview (`true`), out closes it.
@@ -43,7 +50,7 @@ pub enum DeskGesture {
 }
 
 /// What reading one touchpad event came to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Reading {
     /// Not the desk's: the client under the pointer keeps it.
     Clients,
@@ -104,10 +111,17 @@ impl GestureReader {
             }
         };
         let asked = match action {
-            Some(
-                GestureAction::StripPanUpdate { travel, .. }
-                | GestureAction::StripDeckUpdate { travel, .. },
-            ) => {
+            // A vertical deck drag hands its travel to the desk on every
+            // update, so the strips are under the fingers; the horizontal
+            // one is only asked for at its end.
+            Some(GestureAction::StripDeckUpdate { travel, began }) => {
+                self.travel = travel;
+                if began {
+                    return Reading::Asked(DeskGesture::StripDeckDrag { travel });
+                }
+                Some(DeskGesture::StripDeckDrag { travel })
+            }
+            Some(GestureAction::StripPanUpdate { travel, .. }) => {
                 self.travel = travel;
                 None
             }
@@ -115,16 +129,25 @@ impl GestureReader {
                 step(self.travel).map(DeskGesture::StepWindow)
             }
             Some(GestureAction::StripDeckEnd { cancelled: false }) => {
-                step(self.travel).map(DeskGesture::StepStrip)
+                Some(DeskGesture::StepStripFrom {
+                    travel: self.travel,
+                    steps: step(self.travel).unwrap_or(0),
+                })
             }
             Some(GestureAction::SwitchWorkspace(delta)) => {
                 Some(DeskGesture::SwitchWorkspace(delta))
             }
             Some(GestureAction::ShowOverview) => Some(DeskGesture::Overview(true)),
             Some(GestureAction::HideOverview) => Some(DeskGesture::Overview(false)),
-            Some(GestureAction::StripPanEnd { .. } | GestureAction::StripDeckEnd { .. }) | None => {
-                None
+            // A cancelled deck drag is the hand coming back: the strip
+            // returns the way it went.
+            Some(GestureAction::StripDeckEnd { cancelled: true }) => {
+                Some(DeskGesture::StepStripFrom {
+                    travel: self.travel,
+                    steps: 0,
+                })
             }
+            Some(GestureAction::StripPanEnd { cancelled: true }) | None => None,
         };
         match asked {
             Some(asked) => Reading::Asked(asked),

@@ -20,6 +20,8 @@ use winit::keyboard::ModifiersState;
 
 use crate::frames::Frames;
 use crate::{Placement, ime_event, key_event, modifiers_state, mouse_input};
+use tilo_desktop_surface::DesktopSurface;
+use ui::widget::Widget;
 
 /// The colour a widget tree draws on: nothing, so the desktop shows through
 /// wherever it painted nothing.
@@ -138,6 +140,9 @@ pub struct WidgetHost {
     /// The display's grid: what the tree moves through is drawn once per
     /// display frame, so the screens show as many frames as they run at.
     cadence: Cadence,
+    /// Fingers are carrying the desk's strips: the surface draws them
+    /// following the hand until it lets go.
+    hand_on_deck: bool,
 }
 
 impl WidgetHost {
@@ -184,6 +189,7 @@ impl WidgetHost {
             name: None,
             asked: Rc::new(std::cell::Cell::new(false)),
             cadence: Cadence::new(),
+            hand_on_deck: false,
         }
     }
 
@@ -265,6 +271,54 @@ impl WidgetHost {
     #[must_use]
     pub const fn host(&self) -> &FrameHarness {
         &self.host
+    }
+
+    /// Whether the desk's fingers are already carrying its strips: the travel
+    /// that opened a gesture then moves the deck it landed on instead of
+    /// opening another.
+    #[must_use]
+    pub const fn wants_hand_on_deck(&self) -> bool {
+        self.hand_on_deck
+    }
+
+    /// Fingers landed on the deck, `travel` pixels into the gesture.
+    pub fn begin_strip_deck(&mut self, travel: f64) {
+        self.hand_on_deck = true;
+        self.deck_drag(travel, true);
+    }
+
+    /// The fingers have carried the deck `travel` pixels since they landed.
+    pub fn drag_strip_deck(&mut self, travel: f64) {
+        self.deck_drag(travel, false);
+    }
+
+    /// The fingers lifted after carrying the deck `travel` pixels.
+    pub fn end_strip_deck(&mut self, travel: f64) {
+        self.hand_on_deck = false;
+        self.deck_drag(travel, false);
+    }
+
+    /// Draw the desk's strips following the fingers.
+    fn deck_drag(&mut self, travel: f64, began: bool) {
+        self.with_reports(|host| {
+            let mut walk: Vec<&mut dyn Widget> = vec![host.root_widget_mut()];
+            while let Some(next) = walk.pop() {
+                if let Some(surface) = next
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<DesktopSurface>())
+                {
+                    let shown = surface.shown_strip_id();
+                    let slides = surface.slides_mut();
+                    if began {
+                        slides.begin_lift(shown);
+                    }
+                    slides.lift_to(travel);
+                    return;
+                }
+                walk.extend(next.children_mut());
+            }
+        });
+        self.owe();
     }
 
     /// Where what the tree publishes stands: it may have changed only when

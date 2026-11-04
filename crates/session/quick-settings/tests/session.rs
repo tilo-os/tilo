@@ -536,6 +536,59 @@ fn the_night_light_tile_warms_the_screen() {
     session.stop_surface("quick-settings");
 }
 
+/// The panel on the person's 2x laptop panel: it draws at the panel's own
+/// density, twice the logical size its controls lay out at, inside the
+/// output it stands in.
+#[test]
+fn the_panel_draws_at_scale_2() {
+    // The laptop's own panel: 2944x1840 physical, 1472x920 logical at 2x.
+    const PIXELS: (i32, i32) = (2944, 1840);
+    const SCALE: f64 = 2.0;
+    let logical = (PIXELS.0 / 2, PIXELS.1 / 2);
+    let surface = panel_on_an_output(logical);
+    let mut laptop = session_of_device_at_scale(&[surface], Machine::Owned, PIXELS, SCALE);
+    let session = &mut laptop.session;
+    let desk = at_rest(session);
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    let frame = drawn_on(session, &desk, PIXELS.0);
+    save(&frame, "session-quick-settings-scale-2");
+
+    // The panel covers twice the logical width it lays out at on the 2x
+    // panel, along the output's trailing edge.
+    let mut drawn = Vec::new();
+    for x in (0..PIXELS.0).step_by(4) {
+        if (0..PIXELS.1)
+            .step_by(8)
+            .any(|y| pixel(&frame, x, y) != pixel(&desk, x, y))
+        {
+            drawn.push(x);
+        }
+    }
+    let (first, last) = (
+        *drawn.first().expect("the panel drew"),
+        *drawn.last().expect("drew"),
+    );
+    // The session places the panel 380 logical pixels wide (the popover's
+    // width), which a 2x panel draws as 760 physical ones.
+    let painted = last - first + 4;
+    let expected = 380 * 2;
+    assert!(
+        (painted - expected).abs() <= 8,
+        "the panel paints {painted} pixels, its 380 logical ones at 2x: \
+         {first}..={last}"
+    );
+    // And it keeps to the output: the bar along its top edge is untouched.
+    for x in (first..=last).step_by(16) {
+        assert_eq!(
+            pixel(&frame, x, 0),
+            pixel(&desk, x, 0),
+            "the panel keeps off the output's top edge at {x}"
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
 #[test]
 fn a_press_outside_the_panel_closes_it() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
@@ -582,13 +635,18 @@ fn the_panel_opens_the_same_way_in_a_windowed_session() {
 
 /// The frame once the panel has drawn into it.
 fn drawn(session: &mut Session, desk: &Screenshot) -> Screenshot {
+    drawn_on(session, desk, WIDTH)
+}
+
+/// [`drawn`] on an output `output_width` physical pixels across: the panel's
+/// place is measured from that edge, whatever the display's density.
+fn drawn_on(session: &mut Session, desk: &Screenshot, output_width: i32) -> Screenshot {
     let deadline = Instant::now() + OPENING;
-    let panel = pixel(desk, WIDTH - width() / 2, 200);
+    let panel = panel_pixel(desk, output_width);
     loop {
         pump(session);
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        let inside = pixel(&frame, WIDTH - width() / 2, 200);
-        if inside != panel {
+        if panel_pixel(&frame, output_width) != panel {
             return frame;
         }
         assert!(
@@ -596,6 +654,22 @@ fn drawn(session: &mut Session, desk: &Screenshot) -> Screenshot {
             "the panel shows nothing here (headless session without a renderer?)"
         );
     }
+}
+
+/// A pixel inside the panel, standing against an output `output_width`
+/// physical pixels across: half a panel width in from its trailing edge.
+fn panel_pixel(frame: &Screenshot, output_width: i32) -> [u8; 4] {
+    let physical = i32::try_from(frame.width).unwrap_or(output_width);
+    let scale = if output_width == 0 {
+        1
+    } else {
+        physical / output_width.max(1)
+    };
+    pixel(
+        frame,
+        physical - width() * scale.max(1) / 2,
+        frame.height as i32 / 4,
+    )
 }
 
 /// The width the panel is placed at.
@@ -936,6 +1010,16 @@ fn session_of_device_prepared(
     output: (i32, i32),
     prepare: impl FnOnce(&mut Options, &std::path::Path),
 ) -> Laptop {
+    session_of_device_prepared_with(surfaces, machine, output, 1.0, prepare)
+}
+
+fn session_of_device_prepared_with(
+    surfaces: &[Surface],
+    machine: Machine,
+    output: (i32, i32),
+    scale: f64,
+    prepare: impl FnOnce(&mut Options, &std::path::Path),
+) -> Laptop {
     let radios = Arc::new(Radios::default());
     {
         let mut readings = radios.readings.lock().expect("the radios");
@@ -982,7 +1066,7 @@ fn session_of_device_prepared(
     prepare(&mut options, root.path());
     let session = Session::headless(
         options,
-        &[OutputConfig::new("HEADLESS-1", output.0, output.1)],
+        &[OutputConfig::new("HEADLESS-1", output.0, output.1).with_scale(scale)],
     )
     .expect("session");
     Laptop {
@@ -990,6 +1074,33 @@ fn session_of_device_prepared(
         pack,
         _root: root,
     }
+}
+
+/// A session with a device's services on an output of `output` physical
+/// pixels at `scale`, as the person's 2x laptop panel is.
+/// The panel placed as the session places it on an `output` of `logical`
+/// pixels: under the bar, against the trailing edge, keeping off the
+/// bottom edge.
+fn panel_on_an_output(logical: (i32, i32)) -> Surface {
+    const BAR: i32 = 32;
+    const MARGIN: i32 = 8;
+    let height = u32::try_from(logical.1 - BAR - MARGIN).unwrap();
+    Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
+        .layer(Layer::Top)
+        .namespace("tilo-quick-settings")
+        .anchor(Anchor::TOP | Anchor::RIGHT)
+        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .margin((BAR, MARGIN, MARGIN, 0))
+        .keyboard(Keyboard::OnDemand)
+}
+
+fn session_of_device_at_scale(
+    surfaces: &[Surface],
+    machine: Machine,
+    output: (i32, i32),
+    scale: f64,
+) -> Laptop {
+    session_of_device_prepared_with(surfaces, machine, output, scale, |_options, _root| {})
 }
 
 /// The frame once the desk and the panel show nothing new: the same picture

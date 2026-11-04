@@ -189,4 +189,30 @@ What differs is the host around it.
 
 ## 9. What this branch changed
 
-<!-- filled in as the fixes land -->
+**The strip and workspace slide (§1).** `desktop-surface` now draws the
+change a person makes with a hand: `surface/slide.rs` holds the strip shown
+before at its last laid-out place and poses it away on `Snap` (a strip step)
+or `Drill::WORKSPACE` (a workspace step) while the strip chosen is already the
+one laid out and taking input. A pointer and a finger slide; a key and an
+action move within `fast`, as the design note says, and a change nobody made
+still lands. Three fingers carry the deck: `surface-host`'s gesture reader
+used to keep only the total and step once at release, and now hands every
+update to the surface. Tests: `surface/slide_tests.rs` (a click slides across
+frames and never cuts, a key's slide is over within `fast`, a finger moves the
+strips one to one with its travel, a second change carries on from where the
+first is drawn, a workspace switch travels the shared axis' 28 px).
+
+**Quick Settings at scale (§3).** `quick-settings/tests/scale.rs` lays the
+panel out at 2× and drives every tile, the volume mute, every slider and
+every section through the targets the layout put them at, asserting the
+effect that changes the device. `tests/session.rs` draws the panel on a
+2944×1840 output at 2× and proves it paints its 380 logical pixels as 760
+physical ones, inside the output. What the scale work found and this branch
+did **not** change: the panel draws at the right density already (the
+compositor hands a layer surface its logical rect and the client's buffer is
+2×), so no compositor change was needed.
+
+Still open, in the order the person meets them: the entrance motion above
+(the panel still appears at once), a Quick Settings section replacing the page
+rather than unrolling under its tile, the now-playing card, per-display strip
+lanes, the horizontal strip pan following the fingers, and focus framing.

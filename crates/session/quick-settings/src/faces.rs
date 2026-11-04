@@ -162,7 +162,7 @@ pub fn visible_controls(
 /// Whether this machine has what `control` controls. Powered off and
 /// unavailable are different: an absent adapter shows no tile, a radio
 /// that is off shows one that is off.
-pub(crate) fn available(control: QuickSettingsControl, state: &QuickSettingsState) -> bool {
+pub fn available(control: QuickSettingsControl, state: &QuickSettingsState) -> bool {
     match control {
         // `Wifi` is the durable identifier of the required recovery slot.
         // It renders as Wi-Fi when a radio exists and as a wired-network

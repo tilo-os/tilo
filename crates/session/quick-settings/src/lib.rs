@@ -40,7 +40,7 @@ mod verbs;
 mod view;
 
 pub use effect::QsEffect;
-pub use faces::subline;
+pub use faces::{available as control_available, subline};
 pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying};
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
 

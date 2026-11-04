@@ -70,6 +70,9 @@ mod search;
 mod seed;
 mod shared;
 mod shown;
+pub mod slide;
+#[cfg(test)]
+mod slide_tests;
 mod splice;
 mod strip;
 mod tab_beside;
@@ -842,6 +845,13 @@ pub struct DesktopSurface {
     reveal_on_release: Option<(StripId, GroupId)>,
     /// The windows shared live, and the views windows embed of them.
     live_shares: live_shares::LiveShares,
+    /// The strip or workspace change the frame draws as a slide, and where
+    /// each strip stood when it was last drawn.
+    pub(crate) slides: std::cell::RefCell<slide::Slides>,
+    /// The theme's motion tokens, as the last frame laid out with them.
+    motion: ui::tokens::EffectiveMotion,
+    /// What asked for the change the frame shows, until it is shown.
+    navigation_source: Option<ui::tokens::MotionSource>,
 }
 
 /// One horizontally dominant wheel gesture, from its first event until
@@ -961,6 +971,9 @@ impl DesktopSurface {
             activation: None,
             reveal_on_release: None,
             live_shares: live_shares::LiveShares::default(),
+            slides: std::cell::RefCell::new(slide::Slides::default()),
+            motion: ui::tokens::EffectiveMotion::default(),
+            navigation_source: None,
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
@@ -1201,6 +1214,7 @@ impl DesktopSurface {
 
     /// Build (once) and show the active workspace's active strip.
     fn show_active_strip(&mut self) {
+        let shown_before = self.shown;
         let shared = self.shared.borrow();
         let tree = &shared.tree;
         let Some(workspace) = tree.active_workspace() else {
@@ -1233,9 +1247,15 @@ impl DesktopSurface {
                 .extend(deferred.into_iter().map(|tab| (strip_id, tab)));
             self.rows.insert(strip_id, row);
         }
-        if self.shown != strip_id {
-            self.shown = strip_id;
-            self.structure_dirty = true;
+        let changed = self.shown != strip_id;
+        let tree = if changed {
+            Some(shared.tree.clone())
+        } else {
+            None
+        };
+        drop(shared);
+        if let Some(tree) = tree {
+            self.show_strip_changed(shown_before, strip_id, &tree);
         }
     }
 
@@ -2496,6 +2516,7 @@ impl Widget for DesktopSurface {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.present();
+        self.motion = ui::tokens::EffectiveMotion::new(theme.tokens.motion, theme.reduce_motion);
         let row: Option<NodeId> = self.shown_row().map(|row| {
             let node = row.build_layout(taffy, theme, node_map);
             let style = strip_style(row, taffy.style(node).cloned().unwrap_or_default());
@@ -2571,6 +2592,12 @@ impl Widget for DesktopSurface {
             }
         }
         self.reveal = pending;
+        self.note_laid_strip();
+        if self.slides.borrow().is_moving(ui::motion::frame_now()) {
+            // A slide moves drawings, not places: the next frame lays out
+            // again to draw what it left behind at its pose.
+            ui::widget::note_layout_moved();
+        }
         let search_area = self
             .search
             .borrow()
@@ -2627,6 +2654,7 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        self.draw_leaving_strip(scene, transform, text, theme, presence);
         let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
             row.hint_places()
@@ -2816,6 +2844,7 @@ impl Widget for DesktopSurface {
     fn needs_animation_frame(&self) -> bool {
         let shown = self.shown;
         self.activity_loading
+            || self.slides.borrow().is_moving(ui::motion::frame_now())
             || self.embeds_animate()
             || self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
             || self
@@ -2874,12 +2903,14 @@ impl Widget for DesktopSurface {
         // work left draws the frames that do it, so it ends with every
         // source's rows rather than stalling part-way.
         work || self.search.borrow().filling_in()
+            || self.slides.borrow().is_moving(ui::motion::frame_now())
             || self.children().into_iter().any(Widget::needs_redraw)
     }
 
     fn has_pending_visual_work(&self) -> bool {
         let shown = self.shown;
         self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
+            || self.slides.borrow().is_moving(ui::motion::frame_now())
             || !self.shared.borrow().queue.is_empty()
             || self.shared.borrow().replaced
             || !self.shared.borrow().rebuild.is_empty()
