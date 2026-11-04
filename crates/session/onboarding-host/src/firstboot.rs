@@ -141,58 +141,76 @@ pub fn keep_device_certificates_renewed(identity_dir: &Path) {
 
 /// Renew this device's certificates now when one is due, before something
 /// presents it to a host: a device that slept past the time it was due
-/// presents the renewal, not the certificate the host would refuse. Does
-/// nothing before [`keep_device_certificates_renewed`] started.
+/// presents the renewal, not the certificate the host would refuse.
+///
+/// This device's identity is the one its environment names — the session's
+/// own (`TILO_IDENTITY_ROOT`, `XDG_CONFIG_HOME`), not whichever identity
+/// started the renewal loop: a test binary keeps several devices' identities
+/// side by side, and each joins as its own. A renewal runs with the loop's
+/// lock held, so two never reissue one certificate at once.
 ///
 /// # Errors
 ///
 /// As the provisioning that renews them.
 pub fn renew_due_device_certificates() -> std::io::Result<()> {
     use tilo_startup_metrics::JOIN_FLOW_TARGET;
-    let renewing = RENEWING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(identity_dir) = renewing.as_deref() else {
+    let Some(identity_dir) = this_device_identity_dir() else {
         tracing::debug!(
             target: JOIN_FLOW_TARGET,
-            "renewal: no renewal loop runs, so nothing was renewed before this device is presented"
+            "renewal: this session names no identity of its own, so nothing is renewed before it is presented"
         );
         return Ok(());
     };
     let paths = collaboration_identity_paths();
     let due =
-        tilo_identity_host::provisioning::next_device_certificate_renewal(identity_dir, &paths);
+        tilo_identity_host::provisioning::next_device_certificate_renewal(&identity_dir, &paths);
     let now = tilo_clock::unix_now_ns();
-    let renewed = if due.is_some_and(|due| due <= now) {
-        tracing::info!(
+    if due.is_none_or(|due| due > now) {
+        return Ok(());
+    }
+    tracing::info!(
+        target: JOIN_FLOW_TARGET,
+        identity = %identity_dir.display(),
+        due_ns = due,
+        now_ns = now,
+        "renewal: a certificate is due; renewing it now, before this device is presented"
+    );
+    let renewing = RENEWING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let renewed = renew_device_certificates(&identity_dir, &paths);
+    drop(renewing);
+    match &renewed {
+        Ok(()) => tracing::info!(
             target: JOIN_FLOW_TARGET,
             identity = %identity_dir.display(),
-            due_ns = due,
-            now_ns = now,
-            "renewal: a certificate is due; renewing it now, before this device is presented"
-        );
-        let renewed = renew_device_certificates(identity_dir, &paths);
-        match &renewed {
-            Ok(()) => tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                identity = %identity_dir.display(),
-                outcome = "renewed",
-                "renewal: this device's certificate was renewed"
-            ),
-            Err(error) => tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                identity = %identity_dir.display(),
-                %error,
-                outcome = "failed",
-                "renewal: this device's certificate could not be renewed"
-            ),
-        }
-        renewed
-    } else {
-        Ok(())
-    };
-    drop(renewing);
+            outcome = "renewed",
+            "renewal: this device's certificate was renewed"
+        ),
+        Err(error) => tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            identity = %identity_dir.display(),
+            %error,
+            outcome = "failed",
+            "renewal: this device's certificate could not be renewed"
+        ),
+    }
     renewed
+}
+
+/// The directory this session's identity is kept in, as its environment
+/// names it: what [`crate::identity_provisioning::DiskIdentityStore::from_env`]
+/// resolves, else the environment's identity root.
+fn this_device_identity_dir() -> Option<std::path::PathBuf> {
+    if let Ok(store) = crate::identity_provisioning::DiskIdentityStore::from_env()
+        && let Some(dir) = store.path().parent()
+    {
+        return Some(dir.to_path_buf());
+    }
+    // A test session may keep its identity's keys under TILO_IDENTITY_ROOT
+    // and its record under XDG_CONFIG_HOME: the record's directory is the
+    // session's.
+    runtime_identity::identity_dir_from_env().ok()
 }
 
 /// Reissue what is due of this device's certificates for the identity in
