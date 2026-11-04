@@ -150,11 +150,7 @@ async fn start_host(
         })
         .await
         .unwrap();
-    TestHost {
-        relay,
-        web,
-        lookup: iroh::address_lookup::memory::MemoryLookup::new(),
-    }
+    TestHost { relay, web }
 }
 
 /// The laptop approves the one pending request as an agent device: a
