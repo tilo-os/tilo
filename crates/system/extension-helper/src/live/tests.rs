@@ -713,13 +713,37 @@ impl fmt::Display for Fixture {
     }
 }
 
-/// What `pid` runs: its name and the binary behind it.
+/// What `pid` runs, what it was told to run, and where it waits: its name,
+/// its binary, its arguments, its state and the kernel function it sleeps in.
 fn process(pid: u32) -> String {
-    let binary = fs::read_link(format!("/proc/{pid}/exe")).map_or_else(
-        |_| "nothing readable".to_owned(),
-        |exe| exe.display().to_string(),
+    let binary = fs::read_link(format!("/proc/{pid}/exe"))
+        .map_or_else(|_| "unreadable".to_owned(), |exe| exe.display().to_string());
+    let args = fs::read(format!("/proc/{pid}/cmdline")).map_or_else(
+        |_| "unreadable".to_owned(),
+        |args| {
+            String::from_utf8_lossy(&args)
+                .replace('\0', " ")
+                .trim()
+                .to_owned()
+        },
     );
-    format!("{:?} from {binary:?}", comm(pid))
+    let state = fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            // The state follows the name, which is parenthesised and may hold
+            // spaces of its own.
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
+        })
+        .unwrap_or_else(|| "unreadable".to_owned());
+    let waiting = fs::read_to_string(format!("/proc/{pid}/wchan")).map_or_else(
+        |_| "unreadable".to_owned(),
+        |waiting| waiting.trim().to_owned(),
+    );
+    format!(
+        "{:?} from {binary:?} (`{args}`, state {state}, waiting in {waiting:?})",
+        comm(pid)
+    )
 }
 
 /// The compositor and the login wrapper share a process name, because the
