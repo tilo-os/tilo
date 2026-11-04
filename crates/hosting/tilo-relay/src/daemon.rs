@@ -160,6 +160,10 @@ pub struct Relay {
     web: Box<WebContext>,
     /// The workspaces this relay governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
+    /// This device's part in the channels of the workspaces it governs:
+    /// absent when its certificate does not let it own workspaces, and so it
+    /// holds no channel keys.
+    _channels: Option<Arc<crate::channels::Channels>>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -473,6 +477,19 @@ impl Relay {
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
+        // A relay whose device may own workspaces takes part in every channel of
+        // the workspaces it governs, as one participant beside their members; a
+        // relay whose device may not keeps no channel keys at all.
+        let channels = (governs_rooms
+            && identity
+                .device_cert
+                .capabilities
+                .takes_part_in_workspace_channels())
+        .then(|| {
+            crate::channels::Channels::open(&cfg.state_root, identity.device_signing_key.clone())
+        })
+        .transpose()?
+        .map(Arc::new);
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
@@ -486,11 +503,14 @@ impl Relay {
             identity.clone(),
             endpoint.clone(),
             governs_rooms,
-            None,
+            channels.as_ref().map(|channels| channels.device()),
             |_workspaces, rest| rest,
         )
         .await?;
         let governed = governed.map(|governed| governed.workspaces);
+        if let (Some(channels), Some(governed)) = (&channels, &governed) {
+            channels.attach(governed);
+        }
         let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
@@ -572,6 +592,7 @@ impl Relay {
             full_replica: full_replica.clone(),
             web,
             workspaces: governed,
+            _channels: channels,
         })
     }
 

@@ -21,20 +21,6 @@
 //! by that member's root is that member's device, admitted to the channels its
 //! records take part in like any other.
 //!
-//! One plane is not a workspace membership at all:
-//! [`WorkspaceOperation::OwnChannelKeys`], the relay's own application
-//! endpoint (its workspace actions) taking the content keys of the channels the
-//! relay takes part in. The relay's device takes part in every channel of a
-//! workspace it governs: it is already a member of each channel's group and holds
-//! its keys. Its workspace actions are an application endpoint of that same device
-//! and key, so they cannot be admitted as a second member of the group; the
-//! device hands them the keys it holds, the way a device's session service
-//! hands its apps their keys ([`channel_crypto::ChannelContentKeys`]). The
-//! rule, after steps 1 and 3: the keys go to the device that governs this
-//! workspace on this relay, in a workspace whose admission governance owns, and to no
-//! other device, ever. Every other device is admitted to a channel by a
-//! participant over the channel itself.
-//!
 //! And one plane admits a device to a workspace's governance itself:
 //! [`WorkspaceOperation::DelegateMembership`], a delegated agent of this relay's own
 //! user joining, as a governed member, a workspace this relay governs. Agents are
@@ -117,10 +103,6 @@ pub enum WorkspaceOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
-    /// The device that governs and takes part in the workspace here (the host's own
-    /// session or the relay's own workspace actions) taking the content keys of
-    /// a channel it takes part in (see the module documentation).
-    OwnChannelKeys,
     /// A delegated agent of this relay's user becoming a governed member of
     /// a workspace this relay governs (see the module documentation).
     #[cfg(any(test, feature = "agents"))]
@@ -155,8 +137,7 @@ impl WorkspaceOperation {
             | Self::Publish
             | Self::Replay
             | Self::RemoteAction
-            | Self::ChannelAccess
-            | Self::OwnChannelKeys => OwnerDevice::Refuse,
+            | Self::ChannelAccess => OwnerDevice::Refuse,
             #[cfg(any(test, feature = "agents"))]
             Self::DelegateMembership => OwnerDevice::Refuse,
         }
@@ -199,9 +180,6 @@ pub enum DenyReason {
     AgentOutOfScope,
     /// Not a member of the workspace.
     NotAMember,
-    /// Channel keys asked for by a device other than the one governing the
-    /// workspace on this relay.
-    NotTheGovernor,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a workspace this relay does
     /// not govern.
@@ -220,9 +198,6 @@ impl DenyReason {
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
             Self::NotAMember => "device not in workspace membership",
-            Self::NotTheGovernor => {
-                "only the device that governs this room here holds its channels' keys"
-            }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
                 "only a delegated agent of this relay's user joins a room it governs as an agent"
@@ -376,18 +351,6 @@ impl<'a> WorkspaceFacts<'a> {
             .is_none_or(|ceiling| ceiling.contains(device))
     }
 
-    /// Whether `device` governs this workspace on this relay, and so takes part in
-    /// its channels: governance owns the workspace's admission and the relay's workspace
-    /// authority, bound to this workspace, names `device` as its governor.
-    fn governed_by(&self, device: &[u8; 32]) -> bool {
-        self.runtime.admission == AdmissionMode::Governed
-            && self
-                .runtime
-                .workspace_authority
-                .as_ref()
-                .is_some_and(|authority| authority.governor() == device)
-    }
-
     /// Whether governance owns this workspace's admission and this relay's own
     /// workspace authority governs it.
     #[cfg(any(test, feature = "agents"))]
@@ -446,14 +409,6 @@ pub(crate) fn decide_in(
         return Decision::Deny(reason);
     }
     let own_user = &peer.user_public_key == trust.own_user;
-    if op == WorkspaceOperation::OwnChannelKeys {
-        // Never by membership, enrolment or attachment: only the governor.
-        return if workspace.governed_by(&peer.device_public_key) {
-            Decision::Admit
-        } else {
-            Decision::Deny(DenyReason::NotTheGovernor)
-        };
-    }
     #[cfg(any(test, feature = "agents"))]
     if op == WorkspaceOperation::DelegateMembership {
         // Never by membership, enrolment or attachment: only this relay's

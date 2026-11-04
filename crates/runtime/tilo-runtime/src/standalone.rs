@@ -983,7 +983,7 @@ fn place_own_workspace(
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             joined.endpoint(),
-            Some(channels::DeviceChannelKeys::handle(keys.clone())),
+            Some(channels::DeviceChannelKeys::device(keys.clone(), joined)),
         ))
         .map_err(io::Error::other)?;
     let apps = Arc::clone(apps);

@@ -67,6 +67,7 @@
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
+mod channels;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]

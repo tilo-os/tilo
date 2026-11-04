@@ -361,24 +361,13 @@ impl Rosters {
     }
 }
 
-/// The workspace's access policy as this device's own workspaces hold it: who
-/// governs each workspace's channels, and which devices the workspace lets
-/// read one.
+/// The workspace's access policy as this device's own workspaces hold it:
+/// which devices the workspace lets read each channel.
 struct Directory {
     engine: Arc<Engine>,
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, workspace: ModelWorkspaceId) -> Option<Ed25519PublicKey> {
-        self.engine
-            .owner()
-            .with_current(workspace, |view| {
-                Ok(view.workspace_host().device_public_key)
-            })
-            .ok()
-            .map(Ed25519PublicKey::from_bytes)
-    }
-
     /// The member devices the workspace's governance lets read `channel` at
     /// `now` (Unix seconds): the same projection the workspace's doors apply to
     /// the record, so a person's device is in a channel exactly when it may

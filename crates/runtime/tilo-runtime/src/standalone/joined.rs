@@ -14,7 +14,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tilo_action_broker::{
-    channel_encryption::{ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance},
+    channel_encryption::{
+        ChannelKeyProvider, GovernancePark, GovernanceTransport, InboundChannelGovernance,
+    },
     collab_broker::FanoutState,
     collab_core::BrokerChannels,
     collab_inbound::{self, RemoteDocument},
@@ -66,7 +68,7 @@ pub(super) struct Joined {
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundChannelGovernance>>,
     /// Wakes the channel service's pump when governance arrives.
-    governance_wake: Arc<super::channels::PumpWake>,
+    governance_wake: Arc<GovernancePark>,
     /// This device's channel keys, once the channel service runs: the only
     /// renewer of its sealed writes that expire in custody.
     keys: ChannelKeyProvider,
@@ -357,23 +359,8 @@ impl Joined {
 
     /// What the sessions poke when governance arrives for the channel
     /// service, whose pump otherwise sleeps while no channel is live.
-    pub(super) fn governance_wake(&self) -> Arc<super::channels::PumpWake> {
+    pub(super) fn governance_wake(&self) -> Arc<GovernancePark> {
         Arc::clone(&self.governance_wake)
-    }
-
-    /// The device key of `workspace`'s governor, a participant of every channel
-    /// of the workspace.
-    pub(super) fn governor_of(
-        &self,
-        workspace: WorkspaceId,
-    ) -> Option<collab_types::Ed25519PublicKey> {
-        self.owner
-            .with_current(workspace, |view| {
-                Ok(collab_types::Ed25519PublicKey::from_bytes(
-                    view.workspace_host().device_public_key,
-                ))
-            })
-            .ok()
     }
 
     /// The member devices `workspace`'s governance lets read `channel` at `now`
@@ -555,6 +542,15 @@ impl Joined {
                     .map(|s| s.members.iter().copied().collect())
             })
             .unwrap_or_default()
+    }
+
+    /// Hand the channel governance a workspace host running on this device
+    /// took in to this device's channel service, which settles the groups from
+    /// it as it does from what its own sessions hear.
+    pub(super) fn take_channel_governance(&self, messages: Vec<NeighbourMsg>) {
+        for message in messages {
+            self.receive_governance(message);
+        }
     }
 
     /// The device key of the host `workspace`'s session is connected to.

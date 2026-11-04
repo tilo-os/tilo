@@ -59,10 +59,12 @@ mod publisher;
 mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
+pub use device_keys::{
+    ChannelKeys, ChannelKeysAnswer, ChannelKeysAnswerFuture, ChannelSink, DeviceChannels,
+    DeviceKeys,
+};
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_records::fixtures as sealed_fixtures;
-mod participation;
-pub use device_keys::{ChannelKeys, DeviceKeys};
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -168,59 +170,6 @@ enum Change {
     Other,
 }
 
-/// The devices governance lets read a workspace's channels: the workspace's governed
-/// member devices (`access`, as `peer` derived it at `now`), each record's
-/// channel less the devices a Read Deny on that record, its app or a pattern
-/// over it withholds. The record of a channel is named by a grant or by one
-/// of the routes `participant` keeps; a channel whose record is neither may
-/// be anyone's own record and is withheld from every member until it is
-/// named.
-fn readers(
-    peer: &StatePeer,
-    participant: Option<&participation::Participant>,
-    now: SystemTime,
-) -> Result<participation::Readers, String> {
-    let key = |device: [u8; 32]| collab_types::Ed25519PublicKey::from_bytes(device);
-    let routes = participant
-        .map(participation::Participant::routes)
-        .unwrap_or_default();
-    let record_readers = peer.governance().withheld_record_readers(now, &routes)?;
-    let withheld = record_readers
-        .withheld
-        .into_iter()
-        .map(|(channel, devices)| (channel, devices.into_iter().map(key).collect()))
-        .collect();
-    Ok(participation::Readers::new(
-        record_readers.readers.into_iter().map(key).collect(),
-        withheld,
-        record_readers.unrouted.into_iter().map(key).collect(),
-    ))
-}
-
-/// This host's part in `workspace`'s channels, under `dir`, when `authority`
-/// (this host, a relay or a person's device) takes part in the channels of
-/// the workspaces it governs
-/// ([`tilo_user_identity::DeviceCapabilities::takes_part_in_room_channels`])
-/// and runs no channel service beside the host: a host told of its device's
-/// channel service ([`DeviceKeys`]) is not that device's peer.
-fn participation(
-    dir: &Path,
-    workspace: &str,
-    authority: &DeviceCert,
-    key: &SigningKey,
-    device: Option<&DeviceKeys>,
-) -> Option<Arc<participation::Participant>> {
-    (device.is_none() && authority.capabilities.takes_part_in_room_channels()).then(|| {
-        Arc::new(participation::Participant::new(
-            participation::Participation::new(
-                workspace,
-                dir.join(format!("{workspace}.channels")),
-                key,
-            ),
-        ))
-    })
-}
-
 /// What taking a member's write into the governor's copy did.
 #[derive(Clone, Copy, Debug, Default)]
 struct Followed {
@@ -238,14 +187,9 @@ struct GovernedWorkspace {
     path: PathBuf,
     /// The files of `record.peer`'s large parts.
     parts: peer_parts::PeerParts,
-    /// Its part in the workspace's channels, when this host is its device's
-    /// channel peer ([`participation`]). Locked apart from the workspace: admitting
-    /// a crowd's devices to the channels held the workspace for an MLS change
-    /// and its writes per batch, and every join queued behind them. Taken
-    /// after the workspace by whoever holds both.
-    participation: Option<Arc<participation::Participant>>,
-    /// The channel keys of the device this host runs on
-    /// ([`DeviceKeys`]), asked for the records of the workspaces it holds.
+    /// The channel keys of the device this host runs on, asked for the
+    /// records of this workspace: `None` when that device keeps no channel
+    /// keys, and the workspace's records are then held in the clear.
     device: Option<DeviceKeys>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
@@ -314,7 +258,7 @@ impl GovernedWorkspace {
     /// keys of: from the moment the device this host runs on takes part in
     /// the workspace's channels.
     fn seals(&self) -> bool {
-        self.participation.is_some() || self.device.is_some()
+        self.device.is_some()
     }
 
     fn create(
@@ -364,9 +308,8 @@ impl GovernedWorkspace {
             now,
         )?;
         select_exact_admission(&mut peer)?;
-        let participation = participation(dir, &workspace, authority, key, device);
         let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name)?;
-        if participation.is_some() || device.is_some() {
+        if device.is_some() {
             // The workspace's records are sealed channels this node opens on
             // first use: a seed record would go out in the clear before its
             // channel exists, and every member who joins after the channel
@@ -403,7 +346,6 @@ impl GovernedWorkspace {
             wait_list: wait_list::WaitList::open(&path)?,
             parts,
             path,
-            participation,
             device: device.cloned(),
             record,
             peer,
@@ -425,7 +367,6 @@ impl GovernedWorkspace {
     fn open(
         path: PathBuf,
         authority: &DeviceCert,
-        key: &SigningKey,
         device: Option<&DeviceKeys>,
     ) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
@@ -459,9 +400,6 @@ impl GovernedWorkspace {
         }
         // Parts an interrupted write left behind.
         parts.collect(&record.peer);
-        let participation = path
-            .parent()
-            .and_then(|dir| participation(dir, &record.workspace, authority, key, device));
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
@@ -469,7 +407,6 @@ impl GovernedWorkspace {
             peer,
             parts,
             path,
-            participation,
             device: device.cloned(),
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
@@ -891,10 +828,10 @@ pub(crate) struct WorkspaceServices {
     /// Pre-admissions each workspace keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
     /// The live handshake trust policy, for [`crate::workspace_access::decide`],
-    /// which a host with app surfaces or bots of its own decides with.
+    /// which a host with agents of its own decides with.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
-        expect(dead_code, reason = "only such a host asks for its own keys")
+        not(feature = "agents"),
+        expect(dead_code, reason = "only a host with agents of its own decides")
     )]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
@@ -906,11 +843,10 @@ pub(crate) struct WorkspaceServices {
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
     pub(crate) arrivals: crate::attach::Arrivals,
-    /// The channel keys of the device this host runs on, when the embedder
-    /// runs that device's channel service beside it: the host seals and
-    /// opens the records of the workspaces it governs with them and admits
-    /// nobody. `None` makes the host its device's own channel peer.
-    pub(crate) keys: Option<DeviceKeys>,
+    /// The channel service of the device this host runs on, when the
+    /// embedder runs one: the host seals and opens the records of the
+    /// workspaces it governs with its keys and admits nobody.
+    pub(crate) channels: Option<DeviceChannels>,
 }
 
 /// The workspaces this relay governs.
@@ -953,9 +889,9 @@ struct WorkspacesInner {
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
     /// What members asking for content are answered from.
     content: content::ContentSlot,
-    /// Channel access requests and frames waiting for this node's part in
-    /// their workspace's channels, by workspace.
-    channel_notices: std::sync::Mutex<HashMap<String, Vec<ChannelNotice>>>,
+    /// Channel access requests and commits of members waiting for the device's
+    /// channel service, by workspace.
+    channel_notices: std::sync::Mutex<HashMap<String, Vec<neighbour_wire::NeighbourMsg>>>,
     /// Pre-admitted redemptions waiting for their workspace's next admission
     /// pass, by workspace.
     queued_admissions: std::sync::Mutex<HashMap<String, Vec<pages::QueuedAdmission>>>,
@@ -983,31 +919,10 @@ struct WorkspacesInner {
     /// Where invitations to mail to wait-list addresses go, once whoever
     /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
     wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
-    /// The channel keys of the device this host runs on: handed over by an
-    /// embedder that runs the device's channel service beside the host, or
-    /// the host's own participation when it is its device's one peer.
-    device: std::sync::OnceLock<DeviceKeys>,
-    /// Whether this host is that peer ([`Workspaces::holds_channels`]).
-    holds_channels: std::sync::atomic::AtomicBool,
 }
 
-/// What a member sent a workspace's channels.
-enum ChannelNoticeKind {
-    /// An access request, with the route of the channel's record when the
-    /// device sent it.
-    Request(
-        Box<collab_types::MlsAccessRequestV1>,
-        Option<Box<collab_types::ChannelRoute>>,
-    ),
-    /// A commit the member wrote.
-    Frame(Box<collab_types::MlsGovernanceFrame>),
-}
-
-/// A channel notice and the authenticated device that sent it.
-type ChannelNotice = ([u8; 32], ChannelNoticeKind);
-
-/// Notices one workspace holds for this node; a device asks again when its
-/// request is dropped.
+/// Notices one workspace hands its channel service at once; a device asks
+/// again when its request is dropped.
 const MAX_QUEUED_CHANNEL_NOTICES: usize = 16_384;
 
 /// One person's place in a governed workspace, as installed bots compare it
@@ -1040,9 +955,6 @@ pub struct RecordWrite {
 pub struct WorkspaceAuthority {
     workspaces: std::sync::Weak<WorkspacesInner>,
     workspace: String,
-    /// The device governing the workspace: this relay's own, which also takes
-    /// part in the workspace's channels.
-    governor: [u8; 32],
 }
 
 impl WorkspaceAuthority {
@@ -1056,18 +968,12 @@ impl WorkspaceAuthority {
         &self.workspace
     }
 
-    /// The device governing the workspace, which takes part in its channels.
-    pub(crate) const fn governor(&self) -> &[u8; 32] {
-        &self.governor
-    }
-
-    /// An authority governed by `governor`, for a test of the decision.
+    /// An authority over `workspace`, for a test of the decision.
     #[cfg(test)]
-    pub(crate) fn governed_by(workspace: &str, governor: [u8; 32]) -> Self {
+    pub(crate) fn governed_by(workspace: &str) -> Self {
         Self {
             workspaces: std::sync::Weak::new(),
             workspace: workspace.to_owned(),
-            governor,
         }
     }
 }
@@ -1081,53 +987,16 @@ impl std::fmt::Debug for Workspaces {
 }
 
 impl Workspaces {
-    /// The channel keys of the device this host runs on, when it takes part
-    /// in the workspaces' channels: the handle its embedder handed it at open, or
-    /// its own participation when the host is that device's one peer.
+    /// The channel keys of the device this host runs on, when its embedder
+    /// runs that device's channel service beside it: the host asks it for the
+    /// records of the workspaces it holds and keeps no keys of its own.
     #[must_use]
     pub fn device_keys(&self) -> Option<DeviceKeys> {
-        self.inner.device.get().cloned()
-    }
-
-    /// Take the device's channel keys: `WorkspaceServices::keys` when the
-    /// embedder runs the device's channel service beside this host, else
-    /// this host's participation when its certificate takes part in the
-    /// workspaces' channels and its device runs no other service.
-    fn install_device_keys(&self) {
-        if let Some(keys) = self.inner.host.keys.clone() {
-            let _ = self.inner.device.set(keys);
-        } else if self
-            .inner
-            .host
-            .cert
-            .capabilities
-            .takes_part_in_room_channels()
-        {
-            self.inner
-                .holds_channels
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            let _ = self
-                .inner
-                .device
-                .set(participation::Custody::of(&self.inner));
-        }
-    }
-
-    /// The channel keys an embedder handed over because it runs the device's
-    /// channel service beside this host: then the workspaces keep no
-    /// participation, asking the device for keys instead.
-    fn injected_keys(&self) -> Option<DeviceKeys> {
-        self.inner.host.keys.clone()
-    }
-
-    /// Whether this host is its device's own channel peer, holding the
-    /// leaf in its participation: then it admits the members who ask and
-    /// commits the channels itself. A host told of its device's channel
-    /// service keeps no channels of its own.
-    fn holds_channels(&self) -> bool {
         self.inner
-            .holds_channels
-            .load(std::sync::atomic::Ordering::Relaxed)
+            .host
+            .channels
+            .as_ref()
+            .map(|channels| Arc::clone(&channels.keys))
     }
 
     /// These workspaces, held without keeping them alive.
@@ -1166,14 +1035,11 @@ impl Workspaces {
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
-                device: std::sync::OnceLock::new(),
-                holds_channels: std::sync::atomic::AtomicBool::new(false),
                 host,
                 wait_list_mail: std::sync::OnceLock::new(),
             }),
         };
-        this.install_device_keys();
-        let device = this.injected_keys();
+        let device = this.device_keys();
         let mut workspaces = BTreeMap::new();
         let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
         for entry in entries {
@@ -1185,13 +1051,9 @@ impl Workspaces {
             if path.with_extension(RELEASED).exists() {
                 continue;
             }
-            let workspace = GovernedWorkspace::open(
-                path.clone(),
-                &this.inner.host.cert,
-                &this.inner.host.key,
-                device.as_ref(),
-            )
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+            let workspace =
+                GovernedWorkspace::open(path.clone(), &this.inner.host.cert, device.as_ref())
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
             workspaces.insert(
                 workspace.workspace().to_owned(),
                 Arc::new(AsyncMutex::new(workspace)),
@@ -1279,7 +1141,7 @@ impl Workspaces {
                 return Err("this host has that room already".into());
             }
         }
-        let device = self.injected_keys();
+        let device = self.device_keys();
         let workspace = match workspace {
             Some(workspace) => GovernedWorkspace::create_in(
                 &self.inner.dir,
@@ -1560,6 +1422,14 @@ impl Workspaces {
         Ok(routes)
     }
 
+    /// The state of `workspace` as this host holds it now: what a channel
+    /// service reads who may read the workspace's channels from.
+    pub async fn state(&self, workspace: &str) -> Option<StatePeer> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let state = governed.lock().await.peer().clone();
+        Some(state)
+    }
+
     /// `workspace` as governance records it now.
     ///
     /// # Errors
@@ -1743,7 +1613,6 @@ impl Workspaces {
         runtime.workspace_authority = Some(WorkspaceAuthority {
             workspaces: Arc::downgrade(&self.inner),
             workspace: workspace.clone(),
-            governor: host.cert.device_public_key,
         });
         // A workspace whose layout is personal shares no member's layout: what
         // members wrote of it before is replayed to nobody.
@@ -1832,68 +1701,12 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
-        if matches!(
-            message,
-            neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
-                | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { .. }
-                | neighbour_wire::NeighbourMsg::MlsGovernance { .. }
-        ) && !self.holds_channels()
-        {
-            if self.device_keys().is_some() {
-                // The device's own channel service takes these in from its
-                // own sessions; this host keeps no channels of its own.
-                return Ok(None);
-            }
-            // A host that is no device's peer keeps what the workspace's channels
-            // are made of like any other governance, for whoever takes part:
-            // what a governed member device sent, and only that.
-            let state = self
-                .workspace(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-            let (workspace_id, member) = {
-                let governed = state.lock().await;
-                (
-                    governed.workspace_id(),
-                    governed
-                        .peer()
-                        .governance()
-                        .governed_access(SystemTime::now())
-                        .is_ok_and(|access| access.member_devices.contains(&author)),
-                )
-            };
-            if !member {
-                return Ok(None);
-            }
-            self.publish_channel_governance(workspace_id, vec![message])
+        if channel_workspace(&message).is_some() {
+            self.take_channel_governance(workspace, author, message)
                 .await?;
             return Ok(None);
         }
         match message {
-            neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                workspace: named,
-                request,
-                ..
-            } if named == workspace => self.channel_notice(
-                workspace,
-                (author, ChannelNoticeKind::Request(request, None)),
-            ),
-            neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-                room: named,
-                request,
-                route,
-                ..
-            } if named == workspace => self.channel_notice(
-                workspace,
-                (author, ChannelNoticeKind::Request(request, Some(route))),
-            ),
-            neighbour_wire::NeighbourMsg::MlsGovernance {
-                workspace: named,
-                frame,
-                ..
-            } if named == workspace => {
-                self.channel_notice(workspace, (author, ChannelNoticeKind::Frame(frame)))
-            }
             // The transport authenticated the author, but the entries are
             // the roots' own signatures: who carries them does not matter.
             neighbour_wire::NeighbourMsg::IdentityHello { revocations, .. } => {
@@ -2098,9 +1911,14 @@ impl Workspaces {
         self.settle(&mut workspace).await
     }
 
-    /// Queue `notice` for `workspace`'s channels. True when it is the first since
-    /// they were last taken, so its sender must hand them over.
-    fn queue_channel_notice(&self, workspace: &str, notice: ChannelNotice) -> Result<bool, String> {
+    /// Queue `message`, a member's channel governance, for `workspace`'s
+    /// channel service. True when it is the first since they were last handed
+    /// over, so its sender must start the hand-over.
+    fn queue_channel_notice(
+        &self,
+        workspace: &str,
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Result<bool, String> {
         let mut queued = self
             .inner
             .channel_notices
@@ -2108,7 +1926,7 @@ impl Workspaces {
             .map_err(|_| "channel notices poisoned")?;
         let waiting = queued.entry(workspace.to_owned()).or_default();
         let first = waiting.len() < MAX_QUEUED_CHANNEL_NOTICES && {
-            waiting.push(notice);
+            waiting.push(message);
             waiting.len() == 1
         };
         drop(queued);
@@ -2117,12 +1935,61 @@ impl Workspaces {
 
     /// Take in `author`'s access request or commit for a channel of `workspace`.
     ///
-    /// A workspace follows its members' writes one at a time, and a crowd joining
-    /// sends a request each. So notices only queue here; the first since
-    /// they were last taken starts a task that takes the workspace once for all
-    /// of them.
-    fn channel_notice(&self, workspace: &str, notice: ChannelNotice) -> Result<(), String> {
-        if self.queue_channel_notice(workspace, notice)? {
+    /// This host holds no channel keys of its own. One whose device's channel
+    /// service it runs queues what members send for that service, which settles
+    /// the groups; one that is no device's peer keeps what the channels are
+    /// made of like any other governance, for whoever takes part; and one
+    /// beside a channel service running on the device itself keeps nothing,
+    /// since that service hears these on its own sessions.
+    async fn take_channel_governance(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Result<(), String> {
+        if channel_workspace(&message).is_none_or(|named| named != workspace) {
+            return Ok(());
+        }
+        let Some(channels) = &self.inner.host.channels else {
+            // What a governed member device sent, and only that.
+            let state = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let (workspace_id, member) = {
+                let governed = state.lock().await;
+                (
+                    governed.workspace_id(),
+                    governed
+                        .peer()
+                        .governance()
+                        .governed_access(SystemTime::now())
+                        .is_ok_and(|access| access.member_devices.contains(&author)),
+                )
+            };
+            if !member {
+                return Ok(());
+            }
+            return self
+                .retain_channel_governance(workspace_id, vec![message])
+                .await;
+        };
+        if channels.sink.is_some() {
+            self.channel_notice(workspace, message)?;
+        }
+        Ok(())
+    }
+
+    /// Start handing `workspace`'s queued channel governance over. A crowd
+    /// joining sends a request each, so notices only queue here; the first
+    /// since they were last taken starts a task that hands all of them over
+    /// at once.
+    fn channel_notice(
+        &self,
+        workspace: &str,
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Result<(), String> {
+        if self.queue_channel_notice(workspace, message)? {
             let workspaces = self.clone();
             let workspace = workspace.to_owned();
             tokio::spawn(async move {
@@ -2134,113 +2001,45 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Hand `workspace`'s channels every queued notice: apply the commits, then
-    /// admit every device asking in one change per channel, and hold the
-    /// channels until that change is durable.
-    ///
-    /// Each change is an epoch every member applies before it reads what
-    /// was written after it, and a member that joined from an admission
-    /// the host replaced before it arrived asks again only after seconds.
-    /// While one change is written, the requests that arrive wait for the
-    /// next one, which admits all of them: a crowd joins in a few changes,
-    /// not one per pass.
+    /// Hand `workspace`'s channel service every queued notice: the workspace's
+    /// own governance is retained before the channel governance a service
+    /// built on it decides them with.
     async fn take_channel_notices(&self, workspace: &str) -> Result<(), String> {
+        let sink = self
+            .inner
+            .host
+            .channels
+            .as_ref()
+            .and_then(|channels| channels.sink.clone());
+        let Some(sink) = sink else {
+            self.inner
+                .channel_notices
+                .lock()
+                .map_err(|_| "channel notices poisoned")?
+                .remove(workspace);
+            return Ok(());
+        };
         let governed = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let (workspace_id, generation, readers, participant, publisher) = {
+        let publisher = {
             let governed = governed.lock().await;
-            let Some(participant) = governed.participation.clone() else {
-                self.inner
-                    .channel_notices
-                    .lock()
-                    .map_err(|_| "channel notices poisoned")?
-                    .remove(workspace);
-                return Ok(());
-            };
-            let now = SystemTime::now();
-            let access = governed.peer().governance().governed_access(now)?;
-            self.learn_queued_routes(workspace, &participant, &access)?;
-            let room_readers = readers(governed.peer(), Some(&*participant), now)?;
-            let taken = (
-                governed.workspace_id(),
-                governed.record.generation,
-                room_readers,
-                participant,
-                Arc::clone(&governed.publisher),
-            );
-            drop(governed);
-            taken
+            Arc::clone(&governed.publisher)
         };
-        {
-            let participation = Arc::clone(&participant.channels).lock_owned().await;
-            // Taken under the channels: notices that queue while they work
-            // start the next pass, which takes all of them at once.
-            let waiting = self
-                .inner
-                .channel_notices
-                .lock()
-                .map_err(|_| "channel notices poisoned")?
-                .remove(workspace)
-                .unwrap_or_default();
-            let readers = participant.readers(generation, readers);
-            let passing = crate::timing::start();
-            let named = workspace.to_owned();
-            // Verifying requests and the MLS changes admitting them run on a
-            // blocking worker: a crowd's took seconds, and held a runtime
-            // worker (and every task queued on it) the whole time.
-            let (participation, admitted) = tokio::task::spawn_blocking(move || {
-                let mut participation = participation;
-                let admitted = take_notices(&mut participation, &named, waiting, &readers, passing);
-                (participation, admitted)
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-            let Some((messages, requests)) = admitted? else {
-                return Ok(());
-            };
-            // After the channel changes a settle handed over.
-            publisher.flushed().await;
-            let admissions = self
-                .enqueue_channel_governance(workspace_id, messages)
-                .await?;
-            for admission in admissions {
-                admission.durable().await?;
-            }
-            crate::timing::event("channels.pass", passing, requests);
-            drop(participation);
-        }
-        Ok(())
-    }
-
-    /// Keep the route of every routed access request queued for `workspace`'s
-    /// `participant` whose author is a governed member device (`access`) and
-    /// whose request is its own: the readers the queued requests are decided
-    /// with then decide each named record itself. A route that does not prove
-    /// its channel is not kept
-    /// ([`participation::Participant::learn_route`]), and the request carrying
-    /// it is refused when it is taken.
-    fn learn_queued_routes(
-        &self,
-        workspace: &str,
-        participant: &participation::Participant,
-        access: &GovernedAccess,
-    ) -> Result<(), String> {
-        let queued = self
+        // Whatever settle handed over is retained before the channel
+        // governance a service derives from it.
+        publisher.flushed().await;
+        // Taken under the service: notices that queue while it works start the
+        // next hand-over, which takes all of them at once.
+        let waiting = self
             .inner
             .channel_notices
             .lock()
-            .map_err(|_| "channel notices poisoned")?;
-        for (author, notice) in queued.get(workspace).into_iter().flatten() {
-            if let ChannelNoticeKind::Request(request, Some(route)) = notice
-                && request.device.as_bytes() == author
-                && access.member_devices.contains(author)
-            {
-                participant.learn_route(request.channel, route);
-            }
-        }
-        drop(queued);
+            .map_err(|_| "channel notices poisoned")?
+            .remove(workspace)
+            .unwrap_or_default();
+        sink.take(waiting);
         Ok(())
     }
 
@@ -2303,8 +2102,35 @@ impl Workspaces {
         Ok(true)
     }
 
+    /// Retain channel governance messages as this relay's own, once what the
+    /// workspace's governance already handed its store is durable: a channel's
+    /// group is built on it.
+    ///
+    /// # Errors
+    ///
+    /// The messages could not be retained, or this host holds no such
+    /// workspace.
+    pub async fn publish_channel_governance(
+        &self,
+        workspace: &str,
+        messages: Vec<neighbour_wire::NeighbourMsg>,
+    ) -> Result<(), String> {
+        let governed = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (workspace_id, publisher) = {
+            let governed = governed.lock().await;
+            (governed.workspace_id(), Arc::clone(&governed.publisher))
+        };
+        self.retain_channel_governance(workspace_id, messages)
+            .await?;
+        publisher.flushed().await;
+        Ok(())
+    }
+
     /// Retain channel governance messages as this relay's own.
-    async fn publish_channel_governance(
+    async fn retain_channel_governance(
         &self,
         workspace_id: u64,
         messages: Vec<neighbour_wire::NeighbourMsg>,
@@ -2493,7 +2319,6 @@ impl Workspaces {
         }
         let now = SystemTime::now();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
-        let readers = readers(workspace.peer(), workspace.participation.as_deref(), now)?;
         host.access
             .replace(workspace.workspace_id(), true, access)
             .await
@@ -2517,7 +2342,7 @@ impl Workspaces {
         }
         let epoch = publisher.reconcile(&mut workspace.record.published);
         let workspace_id = workspace.workspace_id();
-        let (mut publications, unreadable) = workspace.unpublished(&host.records);
+        let (publications, unreadable) = workspace.unpublished(&host.records);
         if let Err(error) = unreadable {
             // What precedes it is still published, in order.
             publisher.push(
@@ -2529,52 +2354,13 @@ impl Workspaces {
             );
             return Err(error);
         }
-        match workspace.participation.clone() {
-            // A join only lets a device in, which moves no channel: the
-            // workspace does not wait for an admission in progress.
-            Some(participant) if participant.moves_channels(&readers) => {
-                let mut channels = participant.channels.lock().await;
-                let commits = channels.reconcile_all(&readers).and_then(|messages| {
-                    participant.hand_over(workspace.record.generation, &readers);
-                    messages
-                        .iter()
-                        .map(channel_commit)
-                        .collect::<Result<Vec<_>, _>>()
-                });
-                // Handed over under the channels' lock, which orders their
-                // changes: whoever admits one next waits for these first.
-                // The workspace's own changes go first either way.
-                for commit in commits.iter().flatten().cloned() {
-                    publications.push(publisher::Publication::new(
-                        &host.records,
-                        workspace_id,
-                        None,
-                        commit,
-                    ));
-                }
-                publisher.push(
-                    &host.records,
-                    workspace.workspace(),
-                    workspace_id,
-                    epoch,
-                    publications,
-                );
-                drop(channels);
-                commits?;
-            }
-            participant => {
-                if let Some(participant) = participant {
-                    participant.hand_over(workspace.record.generation, &readers);
-                }
-                publisher.push(
-                    &host.records,
-                    workspace.workspace(),
-                    workspace_id,
-                    epoch,
-                    publications,
-                );
-            }
-        }
+        publisher.push(
+            &host.records,
+            workspace.workspace(),
+            workspace_id,
+            epoch,
+            publications,
+        );
         self.observe_calls(workspace);
         // Watchers (a persistent workspace's operator) learn that this workspace's
         // governance moved; nobody listening is fine.
@@ -2636,48 +2422,14 @@ impl Workspaces {
     }
 }
 
-/// Hand `workspace`'s `participation` the notices `waiting` for it: apply each
-/// commit and take each request, then admit every device asking. Synchronous
-/// MLS work, for a blocking worker. The governance messages to publish and
-/// how many requests they answer; `None` when nobody asked.
-fn take_notices(
-    participation: &mut participation::Participation,
-    workspace: &str,
-    waiting: Vec<ChannelNotice>,
-    readers: &participation::Readers,
-    passing: Option<std::time::Instant>,
-) -> Result<Option<(Vec<neighbour_wire::NeighbourMsg>, u64)>, String> {
-    #[cfg(test)]
-    tests::channels_pass_hook(workspace);
-    let mut asked = false;
-    let mut requests = 0u64;
-    for (author, notice) in waiting {
-        match notice {
-            ChannelNoticeKind::Frame(frame) => {
-                // A commit may leave the group short of the readers: the
-                // admission below then catches up.
-                asked = true;
-                if let Err(error) = participation.frame(*frame, readers) {
-                    tracing::debug!(workspace, %error, "channel commit refused");
-                }
-            }
-            ChannelNoticeKind::Request(request, route) => {
-                asked = true;
-                requests = requests.saturating_add(1);
-                if let Err(error) =
-                    participation.request(author, *request, route.as_deref(), readers)
-                {
-                    tracing::debug!(workspace, %error, "channel access request refused");
-                }
-            }
-        }
+/// The workspace a channel governance message names.
+fn channel_workspace(message: &neighbour_wire::NeighbourMsg) -> Option<&str> {
+    match message {
+        neighbour_wire::NeighbourMsg::MlsGovernance { workspace, .. }
+        | neighbour_wire::NeighbourMsg::MlsAccessRequest { workspace, .. } => Some(workspace),
+        neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room),
+        _ => None,
     }
-    if !asked {
-        return Ok(None);
-    }
-    let messages = participation.admit_pending(readers)?;
-    crate::timing::event("channels.admit", passing, requests);
-    Ok(Some((messages, requests)))
 }
 
 /// A channel governance message, retained as this relay's own.

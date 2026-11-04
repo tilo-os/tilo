@@ -266,10 +266,6 @@ the model but instead of it:
   the separate governance document with its receipts, custody and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
-- **Channel creation by the governor.** Only the governing device creates
-  a channel's group; any participant admits and removes devices
-  (`channel_crypto::ChannelPeer`). The browser follows and checks commits
-  but writes none, since it does not hold record-level Read grants.
 - **Per-person spaces.** The person's relay workspace
   (`personal_continuity_workspace_id`), derived from the root key under its
   own domain string. It is left only to the person's hosts: they keep the

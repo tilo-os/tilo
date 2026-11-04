@@ -219,9 +219,11 @@ tilo-fs = { path = "../../system/fs" }
 runtime-fs = { path = "../../runtime/runtime-fs" }
 # The workspace-join exchange every governor answers, over this relay's rooms.
 collab-types = { path = "../../collab/collab-types" }
-# A node takes part in the encrypted channels of the rooms it governs.
+# A node takes part in the encrypted channels of the rooms it governs, through
+# the one channel service every device runs.
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The seam the core asks about opaque co-edit bodies, which the desktop's
 # adapter injects at `Relay::start`.
 tilo-relay-shell = { path = "../tilo-relay-shell" }

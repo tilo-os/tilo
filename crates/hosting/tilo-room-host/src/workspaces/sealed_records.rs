@@ -68,17 +68,10 @@ impl GovernedWorkspace {
     /// The content keys of `route`'s channel as the device this host runs on
     /// holds them, without opening a channel it has none of: `None` when
     /// this host runs on a device that takes part in no channel of the workspace.
-    /// A host that is its device's one peer reads its own participation,
-    /// under the workspace's lock its callers hold.
     pub(super) async fn route_keys(
         &self,
         route: &collab_types::ChannelRoute,
     ) -> Option<Result<ChannelContentKeys, String>> {
-        if let Some(participant) = &self.participation {
-            let channel = route.channel(self.workspace());
-            participant.learn_route(channel, route);
-            return Some(participant.channels.lock().await.existing_keys(channel));
-        }
         let device = self.device.as_ref()?;
         device.channel_keys(self.workspace(), route, false).await
     }
@@ -482,26 +475,15 @@ impl Workspaces {
         }
         let name = workspace.workspace();
         let route = collab_types::ChannelRoute::new(app, record);
-        let channel = route.channel(name);
-        let keys = if let Some(participant) = &workspace.participation {
-            let mut participation = participant.channels.lock().await;
-            if participation.existing_keys(channel).is_err() {
-                participant.learn_route(channel, &route);
-                self.open_record_channel(workspace, participant, &mut participation, channel)
-                    .await?;
-            }
-            participation.existing_keys(channel)?
-        } else {
-            // The device's own channel service opens the record's channel
-            // when it has none yet, as the workspace's writes ask it to.
-            let Some(device) = &workspace.device else {
-                return workspace.record_keys(app, record).await;
-            };
-            device
-                .channel_keys(name, &route, true)
-                .await
-                .ok_or("the record is sealed and this host takes part in no channel")??
+        // The device's channel service opens the record's channel when it has
+        // none yet, as the workspace's writes ask it to.
+        let Some(device) = &workspace.device else {
+            return workspace.record_keys(app, record).await;
         };
+        let keys = device
+            .channel_keys(name, &route, true)
+            .await
+            .ok_or("the record is sealed and this host takes part in no channel")??;
         Ok(Some(RecordKeys {
             keys,
             artifact: collab_types::document_artifact_id(app, name, record),

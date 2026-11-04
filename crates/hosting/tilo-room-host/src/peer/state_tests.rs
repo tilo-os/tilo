@@ -2276,9 +2276,8 @@ async fn access_requests_reach_every_member() {
     for governed in [false, true] {
         let mut fixture = Fixture::new();
         if governed {
-            fixture.workspace.lock().await.workspace_authority = Some(
-                crate::workspaces::WorkspaceAuthority::governed_by("room", [9; 32]),
-            );
+            fixture.workspace.lock().await.workspace_authority =
+                Some(crate::workspaces::WorkspaceAuthority::governed_by("room"));
         }
         enqueue_state(
             &fixture.workspace,

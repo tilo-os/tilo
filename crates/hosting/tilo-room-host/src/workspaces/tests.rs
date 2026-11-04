@@ -500,7 +500,7 @@ fn a_created_room_restores_with_its_governance_and_publication() {
             .unwrap();
     assert!(!created.record.outgoing.is_empty());
     assert!(created.record.outgoing.iter().all(|entry| entry.checkpoint));
-    let restored = GovernedWorkspace::open(created.path.clone(), &cert, &key, None).unwrap();
+    let restored = GovernedWorkspace::open(created.path.clone(), &cert, None).unwrap();
     assert_eq!(restored.record.workspace, created.record.workspace);
     assert_eq!(restored.record.generation, 1);
     assert_eq!(restored.summary().name, "Team");
@@ -584,7 +584,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     assert_ne!(second, first);
     assert_eq!(workspace.parts.files(), 1, "the replaced part is removed");
 
-    let restored = GovernedWorkspace::open(workspace.path.clone(), &cert, &key, None).unwrap();
+    let restored = GovernedWorkspace::open(workspace.path.clone(), &cert, None).unwrap();
     assert_eq!(
         restored.peer().document("notes", "plan"),
         workspace.peer().document("notes", "plan")
@@ -602,7 +602,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[0] ^= 1;
     std::fs::write(&path, bytes).unwrap();
-    assert!(GovernedWorkspace::open(workspace.path.clone(), &cert, &key, None).is_err());
+    assert!(GovernedWorkspace::open(workspace.path.clone(), &cert, None).is_err());
 }
 
 #[test]
@@ -614,7 +614,7 @@ fn a_room_is_only_restored_by_its_governor() {
             .unwrap();
     let mut other = cert;
     other.device_label = "someone else".into();
-    assert!(GovernedWorkspace::open(created.path, &other, &key, None).is_err());
+    assert!(GovernedWorkspace::open(created.path, &other, None).is_err());
 }
 
 #[test]
@@ -1221,7 +1221,7 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
     };
     drop(workspaces);
     relay.shutdown().await;
-    let restored = GovernedWorkspace::open(path, &cert, &key, None).unwrap();
+    let restored = GovernedWorkspace::open(path, &cert, None).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
     assert_eq!(
         restored.peer().governance().workspace_name().as_deref(),
@@ -1337,17 +1337,14 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
     relay.shutdown().await;
 }
 
-/// A member device of a workspace governed by a relay certified with some
-/// capabilities, which has asked the workspace's governor for one record's
-/// channel key.
+/// A relay certified with `capabilities`, a workspace it governs, and one of
+/// the workspace's member devices, with the channel route that member asks for.
 struct AskedForAChannel {
-    /// The relay's state and the member's channel records.
+    /// The relay's state.
     state: tempfile::TempDir,
     relay: crate::workspaces::fixtures::TestHost,
     workspaces: Workspaces,
     workspace: String,
-    governor: collab_types::Ed25519PublicKey,
-    member: collab_types::Ed25519PublicKey,
     channel: collab_types::ChannelId,
 }
 
@@ -1356,7 +1353,6 @@ struct AskedForAChannel {
 /// access request for a fresh record channel, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
-    let takes_part = capabilities.takes_part_in_room_channels();
     let (key, cert) = governor_with(capabilities);
     let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
@@ -1367,8 +1363,6 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
-    let governor = collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key);
-    let device = collab_types::Ed25519PublicKey::from_bytes(member.device_public_key);
     // The device names the record it asks for: a channel nobody named may
     // be anyone's own record and admits no one.
     let route = collab_types::ChannelRoute::new("so.tilo.notes", "tab:0000000000000001");
@@ -1397,44 +1391,16 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
         .absorb(&created.workspace, member.device_public_key, &body)
         .await
         .unwrap();
-    let asked = AskedForAChannel {
+    AskedForAChannel {
         state: dir,
         relay,
         workspaces,
         workspace: created.workspace,
-        governor,
-        member: device,
         channel,
-    };
-    if takes_part {
-        // Nothing yielded since: the channels pass `absorb` spawned has not run.
-        assert!(
-            asked.waiting(),
-            "the room queued the member's request for its channels"
-        );
-    } else {
-        // A host that is no device's peer keeps the request for whoever takes
-        // part in the workspace's channels.
-        let retained = asked.retains_the_request().await;
-        assert!(
-            retained,
-            "the room retained the member's request for its channels"
-        );
     }
-    asked
 }
 
 impl AskedForAChannel {
-    /// Whether the member's request still waits for the workspace's channels pass.
-    fn waiting(&self) -> bool {
-        self.workspaces
-            .inner
-            .channel_notices
-            .lock()
-            .unwrap()
-            .contains_key(&self.workspace)
-    }
-
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
     async fn retains_the_request(&self) -> bool {
@@ -1461,26 +1427,6 @@ impl AskedForAChannel {
             })
     }
 
-    /// The governor's part in the workspace's channels.
-    async fn participation(&self) -> Option<Arc<participation::Participant>> {
-        self.workspaces
-            .workspace(&self.workspace)
-            .await
-            .unwrap()
-            .lock()
-            .await
-            .participation
-            .clone()
-    }
-
-    /// Where the governor would seal the workspace's channel state.
-    fn channels_dir(&self) -> PathBuf {
-        self.workspaces
-            .inner
-            .dir
-            .join(format!("{}.channels", self.workspace))
-    }
-
     /// Shut the relay down, then remove its state.
     async fn shut_down(self) {
         let Self {
@@ -1495,128 +1441,21 @@ impl AskedForAChannel {
     }
 }
 
-/// security.md, "What a workspace host reads and originates": a host
-/// certified only to host workspaces governs them without taking part in their
-/// channels and holds no channel key. A member's request for a record's key
-/// reaches the workspace's channels pass and finds no participant: no MLS group,
-/// no channel state on disk, nothing to lend.
+/// security.md, "What a workspace host reads and originates": a host that runs
+/// no channel service takes part in no channel and holds no channel key, and
+/// keeps what the workspace's channels are made of like any other governance,
+/// for whoever takes part.
 #[tokio::test]
-async fn a_plain_host_governs_a_room_without_taking_part_in_its_channels() {
+async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
     let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
     assert!(
-        asked.participation().await.is_none(),
-        "a plain host certificate must never take part in a governed room's channels"
+        asked.workspaces.device_keys().is_none(),
+        "a host runs no channel service and holds no channel keys"
     );
     assert!(
-        !asked.channels_dir().exists(),
-        "a plain host keeps no channel state for the room"
+        asked.retains_the_request().await,
+        "the room retained the member's request for its channels"
     );
-    asked.shut_down().await;
-}
-
-/// The other half of the same claim, so the plain host's test observes its
-/// subject: a node certified to own workspaces takes part in the channel of
-/// every record in the workspaces it governs, is a member of each group beside the
-/// member devices governance lets read it, and seals its state on disk.
-#[tokio::test]
-async fn an_owner_capable_node_takes_part_in_the_channels_of_the_rooms_it_governs() {
-    let asked =
-        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
-            .await;
-    let participant = asked
-        .participation()
-        .await
-        .expect("a node that may own workspaces takes part in its rooms' channels");
-    let members = tilo_test_env::within("the node admits the member to the channel", async {
-        loop {
-            let members = participant.channels.lock().await.members(asked.channel);
-            if let Some(members) = members.filter(|members| members.contains(&asked.member)) {
-                break members;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    assert!(
-        members.contains(&asked.governor),
-        "the node is a member of the group, so it holds the channel's keys"
-    );
-    assert!(asked.channels_dir().exists());
-    drop(participant);
-    asked.shut_down().await;
-}
-
-/// What a test runs inside a workspace's channels pass, by workspace.
-type PassHooks = std::sync::Mutex<HashMap<String, Arc<dyn Fn() + Send + Sync>>>;
-
-fn pass_hooks() -> &'static PassHooks {
-    static HOOKS: std::sync::OnceLock<PassHooks> = std::sync::OnceLock::new();
-    HOOKS.get_or_init(PassHooks::default)
-}
-
-/// Run the hook a test installed for `workspace`'s channels pass, where the pass
-/// does its MLS work.
-pub(crate) fn channels_pass_hook(workspace: &str) {
-    let hook = pass_hooks().lock().unwrap().get(workspace).cloned();
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-
-/// A channels pass's MLS work holds no runtime worker. The pass stalls in
-/// its MLS work until the test, on a runtime with a single worker, lets it
-/// go: run on that worker, the pass would stall the test with it, and give
-/// up waiting unreleased.
-#[tokio::test]
-async fn a_channels_pass_does_its_mls_work_off_the_runtime_workers() {
-    let asked =
-        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
-            .await;
-    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
-    let (release, released_rx) = std::sync::mpsc::channel::<()>();
-    let entered_tx = std::sync::Mutex::new(entered_tx);
-    let released_rx = std::sync::Mutex::new(released_rx);
-    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let observed = Arc::clone(&released);
-    pass_hooks().lock().unwrap().insert(
-        asked.workspace.clone(),
-        Arc::new(move || {
-            let _ = entered_tx.lock().unwrap().send(());
-            let in_time = released_rx
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(10))
-                .is_ok();
-            observed.store(in_time, std::sync::atomic::Ordering::SeqCst);
-        }),
-    );
-    tilo_test_env::within("the channels pass starts its MLS work", async {
-        while entered.try_recv().is_err() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    // Only this runtime's one worker can get here while the pass stalls.
-    release.send(()).unwrap();
-    let participant = asked.participation().await.expect("the node takes part");
-    tilo_test_env::within("the node admits the member to the channel", async {
-        while !participant
-            .channels
-            .lock()
-            .await
-            .members(asked.channel)
-            .is_some_and(|members| members.contains(&asked.member))
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    pass_hooks().lock().unwrap().remove(&asked.workspace);
-    assert!(
-        released.load(std::sync::atomic::Ordering::SeqCst),
-        "the runtime's worker was free while the pass did its MLS work"
-    );
-    drop(participant);
     asked.shut_down().await;
 }
 

@@ -19,7 +19,7 @@ use iroh::EndpointId;
 use runtime_collab::native_media::{Command, Request, State};
 use tilo_action_broker::channel_encryption::{
     ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-    ChannelKeyProvider,
+    ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance,
 };
 use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
@@ -146,17 +146,13 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
     .expect("a loopback endpoint binds")
 }
 
-/// The workspace as this device knows its governance: one device governs
-/// it and both of a call's devices may read its channels.
+/// The workspace as this device knows its governance: both of a call's
+/// devices may read its channels.
 struct Directory {
-    governor: Ed25519PublicKey,
     admitted: std::collections::BTreeSet<Ed25519PublicKey>,
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, _workspace: WorkspaceId) -> Option<Ed25519PublicKey> {
-        Some(self.governor)
-    }
     fn allowed_devices(
         &self,
         _workspace: WorkspaceId,
@@ -168,20 +164,19 @@ impl ChannelDirectory for Directory {
     }
 }
 
-/// One channel's keys, as the device `device` of the workspace `governor`
-/// runs holds them: ready at once under the workspace's own device, and
-/// still on their way under any other.
-fn keys(device: u8, governor: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
+/// One channel's keys, as the device `device` of the workspace whose vault
+/// key is `vault` runs holds them: the same service every device runs, with
+/// the channel's keys still on their way until someone founds them.
+fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("a directory to keep channel state in");
     let broker = Arc::new(Mutex::new(BrokerChannels::default()));
     let encryption = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: directory.path().join("channels"),
-            vault: VaultKey::new([governor; 32]),
+            vault: VaultKey::new([vault; 32]),
             device_key: ed25519_dalek::SigningKey::from_bytes(&[device; 32]),
         },
         Box::new(Directory {
-            governor: key(governor),
             admitted: admitted.iter().copied().map(key).collect(),
         }),
         broker,
@@ -190,6 +185,48 @@ fn keys(device: u8, governor: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempf
     let provider = ChannelKeyProvider::default();
     provider.set(Some(ChannelKeyAccess::new(encryption)));
     (provider, directory)
+}
+
+/// The channel a call on `target` runs on: the workspace's record of it.
+fn call_channel() -> collab_types::ChannelId {
+    collab_types::document_channel_id(APP, WORKSPACE, RECORD)
+}
+
+/// Found the call's channel, as the pass a session runs does: the first
+/// device that takes part creates the group once its wait is due, and the
+/// test's workspace has no other participant to ask.
+#[allow(
+    clippy::future_not_send,
+    reason = "the channel service is driven from the test's own thread, and the test runtime does not need it to be Send"
+)]
+async fn founded(keys: &ChannelKeyProvider) {
+    struct Nowhere;
+    impl GovernanceTransport for Nowhere {
+        fn publish(&self, _message: neighbour_wire::NeighbourMsg) -> bool {
+            false
+        }
+        fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
+            Vec::new()
+        }
+    }
+    let access = keys.get().expect("this device's channel service");
+    // Reading first is what makes the device take part, as a call does.
+    access.access(workspace_id(), call_channel());
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        access.pump(&Nowhere);
+        if matches!(
+            access.access(workspace_id(), call_channel()).0,
+            ChannelAccess::Ready(_)
+        ) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the call's channel is founded once a device's wait is due"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// A session taking part in the workspace through `sync`, showing the
@@ -517,6 +554,7 @@ async fn one_call(laptop: &Client, desk: &Client) -> Pair {
     bound(laptop).await;
     bound(desk).await;
     let (keys, kept) = keys(0x11, 0x11, &[0x11, 0x22]);
+    founded(&keys).await;
     // Voice runs on the workspace's plane: both devices publish and hear
     // on their own plane in one scope, as they do in a workspace's relay.
     let relay = relay();
@@ -766,6 +804,7 @@ async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     bound(&ana).await;
     bound(&ben).await;
     let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
+    founded(&keys).await;
     let relay = relay();
     let workspace = workspace_keys();
     let devices = [*public(0x11).as_bytes(), *public(0x22).as_bytes()];
@@ -885,6 +924,7 @@ async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
     bound(&ana).await;
     bound(&ben).await;
     let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
+    founded(&keys).await;
     let relay = relay();
     let workspace = workspace_keys();
     let devices = [*public(0x11).as_bytes(), *public(0x22).as_bytes()];
@@ -1320,6 +1360,7 @@ async fn a_page_in_a_call_is_heard_and_hears() {
     availability(&laptop, 0x22, Some(call_presence()));
     bound(&laptop).await;
     let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
+    founded(&keys).await;
     // Voice runs on the workspace's plane: the page publishes its
     // microphone there as its own device and hears the laptop there,
     // while the lane carries only pictures.

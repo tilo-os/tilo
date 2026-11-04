@@ -485,7 +485,11 @@ impl ChannelPeer {
             MemberRecord::Waiting(_) | MemberRecord::Removed => self.seen_epoch,
         };
         ChannelGate {
-            encryption_required: self.genesis.is_some(),
+            // A device that knows the channel has a group (it saw its
+            // genesis or a commit of it, or is in it) must never take the
+            // record for plaintext, whether or not it ever saw the genesis
+            // itself: a member admitted later only ever sees a Welcome.
+            encryption_required: self.knows_group(),
             head_epoch,
         }
     }

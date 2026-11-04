@@ -350,7 +350,7 @@ impl Policy {
     /// other replica keeps such a Chat as ciphertext and fails closed.
     fn read(workspace: &GovernedWorkspace) -> Result<Self, String> {
         let peer = workspace.peer();
-        let calls = if workspace.participation.is_some() {
+        let calls = if workspace.seals() {
             peer.media().keyed_media_policy()?
         } else {
             peer.validated_media_policy()?

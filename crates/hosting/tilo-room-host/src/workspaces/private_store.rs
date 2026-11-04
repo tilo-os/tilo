@@ -725,8 +725,7 @@ mod tests {
         assert_eq!(public_peer, workspace.peer.durable().unwrap());
         assert_eq!(public_record, std::fs::read(&workspace.path).unwrap());
         // Custody loads from disk, not a hidden in-memory native owner.
-        let reopened =
-            GovernedWorkspace::open(workspace.path.clone(), &governor, &key, None).unwrap();
+        let reopened = GovernedWorkspace::open(workspace.path.clone(), &governor, None).unwrap();
         assert_restored_conversation(&reopened, &alice, &bob, &conversation);
     }
 
@@ -816,8 +815,7 @@ mod tests {
         workspace.store_peer().unwrap();
         workspace.persist().unwrap();
         let before = std::fs::read(workspace.private_path()).unwrap();
-        let reopened =
-            GovernedWorkspace::open(workspace.path.clone(), &governor, &key, None).unwrap();
+        let reopened = GovernedWorkspace::open(workspace.path.clone(), &governor, None).unwrap();
         let peer = hex::encode(bob.user_public_key);
         for operation in [
             PrivateOperation::Contacts,

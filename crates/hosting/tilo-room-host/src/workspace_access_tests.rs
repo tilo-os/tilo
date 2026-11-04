@@ -17,7 +17,7 @@ const MODES: [AdmissionMode; 3] = [
     AdmissionMode::SameOwner,
     AdmissionMode::Governed,
 ];
-const OPS: [WorkspaceOperation; 12] = [
+const OPS: [WorkspaceOperation; 11] = [
     WorkspaceOperation::Subscribe,
     WorkspaceOperation::State,
     WorkspaceOperation::Replay,
@@ -26,7 +26,6 @@ const OPS: [WorkspaceOperation; 12] = [
     WorkspaceOperation::Compute,
     WorkspaceOperation::Environment,
     WorkspaceOperation::RemoteAction,
-    WorkspaceOperation::OwnChannelKeys,
     WorkspaceOperation::DelegateMembership,
     WorkspaceOperation::Publish,
     WorkspaceOperation::ChannelAccess,
@@ -44,7 +43,6 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentWithdrawn) => 'w',
         Decision::Deny(DenyReason::AgentExpired) => 'e',
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
-        Decision::Deny(DenyReason::NotTheGovernor) => 's',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
     }
 }
@@ -176,19 +174,19 @@ fn decide_matrix() {
     };
     let none = || -> Setup { Box::new(|_, _| {}) };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // OwnChannelKeys, DelegateMembership, Publish, ChannelAccess
+    // DelegateMembership, Publish, ChannelAccess
     let cases = vec![
         Case {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: ["AAAAAAAAsdAA", "AAAAAAAAsdAA", "AAAAAAAAsdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: ["NNNNNNNNsdNN", "ENNAAEANsdNN", "NNNNNNNNsdNN"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "owner's device a pending replacement removed",
@@ -197,7 +195,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([12; 32]);
                 runtime.membership_ceiling = Some(HashSet::new());
             }),
-            expected: ["NNNNNNNNsdNN", "NNNNNNNNsdNN", "NNNNNNNNsdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             // Failure scenario 1: trusted relay-wide because another workspace's
@@ -207,13 +205,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(bob);
             }),
-            expected: ["NNNNNNNNsdNN", "NNNNNNNNsdNN", "NNNNNNNNsdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: ["AAAAAAAAsdAA", "AAAAAAAAsdAA", "AAAAAAAAsdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "same-user host this room is attached to",
@@ -221,19 +219,19 @@ fn decide_matrix() {
             setup: Box::new(|runtime, _| {
                 runtime.attached_hosts.insert([30; 32]);
             }),
-            expected: ["AAANNNNNsdAA", "AAAAAEANsdAA", "AAANNNNNsdAA"],
+            expected: ["AAANNNNNdAA", "AAAAAEANdAA", "AAANNNNNdAA"],
         },
         Case {
             name: "same-user host this room is not attached to",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: ["NNNNNNNNsdNN", "ENNAAEANsdNN", "NNNNNNNNsdNN"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "cross-user host certificate, listed as a member",
             peer: peer(bob, [32; 32], true, None),
             setup: listed([32; 32]),
-            expected: ["AAAAAAAAsdAA", "AAAAAAAAsdAA", "AAAAAAAAsdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent delegated this room",
@@ -242,7 +240,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([40; 32]);
                 relay.delegate([40; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["AAAAAAAAsdAA", "AAAAAAAAsdAA", "AAAAAAAAsdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent whose delegation expired",
@@ -251,7 +249,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([41; 32]);
                 relay.delegate([41; 32], Some((NOW, ROOM)));
             }),
-            expected: ["eeeeeeeeeeee", "eeeeeeeeeeee", "eeeeeeeeeeee"],
+            expected: ["eeeeeeeeeee", "eeeeeeeeeee", "eeeeeeeeeee"],
         },
         Case {
             name: "withdrawn agent",
@@ -260,7 +258,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([42; 32]);
                 relay.delegate([42; 32], None);
             }),
-            expected: ["wwwwwwwwwwww", "wwwwwwwwwwww", "wwwwwwwwwwww"],
+            expected: ["wwwwwwwwwww", "wwwwwwwwwww", "wwwwwwwwwww"],
         },
         Case {
             name: "agent delegated another room",
@@ -269,56 +267,52 @@ fn decide_matrix() {
                 runtime.membership.devices.push([43; 32]);
                 relay.delegate([43; 32], Some((NOW + 1, OTHER_ROOM)));
             }),
-            expected: ["oooooooooooo", "oooooooooooo", "oooooooooooo"],
+            expected: ["ooooooooooo", "ooooooooooo", "ooooooooooo"],
         },
         Case {
             name: "the device governing this room on this relay",
             peer: peer(owner, [70; 32], true, None),
             setup: Box::new(|runtime, _| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
             }),
-            expected: ["NNNNNNNNsdNN", "ENNAAEANsdNN", "NNNNNNNNAdNN"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "another listed device of the owner, while this relay governs",
             peer: peer(owner, [71; 32], false, None),
             setup: Box::new(|runtime, _| {
                 runtime.membership.devices.push([71; 32]);
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
             }),
-            expected: ["AAAAAAAAsdAA", "AAAAAAAAsdAA", "AAAAAAAAsdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent delegated this room, in a room this relay governs",
             peer: peer(owner, [44; 32], false, None),
             setup: Box::new(|runtime, relay| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
                 relay.delegate([44; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsdNN", "ENNAAEANsdNN", "NNNNNNNNsANN"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNANN"],
         },
         Case {
             name: "another user's agent, in a room this relay governs",
             peer: peer(bob, [45; 32], false, None),
             setup: Box::new(|runtime, relay| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
                 relay.delegate([45; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsdNN", "NNNNNNNNsdNN", "NNNNNNNNsdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: ["xxxxxxxxxxxx", "xxxxxxxxxxxx", "xxxxxxxxxxxx"],
+            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx", "xxxxxxxxxxx"],
         },
         Case {
             name: "revoked member device",
@@ -327,13 +321,13 @@ fn decide_matrix() {
                 runtime.membership.devices.push([51; 32]);
                 relay.revoke([51; 32]);
             }),
-            expected: ["rrrrrrrrrrrr", "rrrrrrrrrrrr", "rrrrrrrrrrrr"],
+            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr", "rrrrrrrrrrr"],
         },
         Case {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: ["tttttttttttt", "tttttttttttt", "tttttttttttt"],
+            expected: ["ttttttttttt", "ttttttttttt", "ttttttttttt"],
         },
     ];
     let tmp = tempfile::tempdir().unwrap();
@@ -404,61 +398,12 @@ fn replay_reads_listed_devices_within_the_ceiling() {
 }
 
 #[test]
-fn only_the_current_governor_takes_its_own_channel_keys() {
-    let relay = Relay::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    let governor = peer(relay.owner, [80; 32], true, None);
-    let decide = |runtime: &WorkspaceRuntime, peer: &AuthenticatedPeer| {
-        decide_in(
-            WorkspaceFacts::current(runtime),
-            &relay.trust(),
-            peer,
-            WorkspaceOperation::OwnChannelKeys,
-            NOW,
-        )
-    };
-    // A workspace no authority of this relay governs hands its keys to no one.
-    runtime.admission = AdmissionMode::Governed;
-    assert_eq!(
-        decide(&runtime, &governor),
-        Decision::Deny(DenyReason::NotTheGovernor)
-    );
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        ROOM, [80; 32],
-    ));
-    assert_eq!(decide(&runtime, &governor), Decision::Admit);
-    // Not the same device: another host of the owner, even a listed member
-    // or a host this workspace is attached to.
-    let other = peer(relay.owner, [81; 32], true, None);
-    runtime.membership.devices.push([81; 32]);
-    runtime.attached_hosts.insert([81; 32]);
-    assert_eq!(
-        decide(&runtime, &other),
-        Decision::Deny(DenyReason::NotTheGovernor)
-    );
-    // The governor's certificate must still be current.
-    let expired = peer(relay.owner, [80; 32], true, Some(NOW));
-    assert_eq!(
-        decide(&runtime, &expired),
-        Decision::Deny(DenyReason::CertExpired)
-    );
-    relay.revoke([80; 32]);
-    assert_eq!(
-        decide(&runtime, &governor),
-        Decision::Deny(DenyReason::Revoked)
-    );
-}
-
-#[test]
 fn an_agent_joins_governance_only_inside_its_live_delegation() {
     let relay = Relay::new();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = workspace(tmp.path());
     runtime.admission = AdmissionMode::Governed;
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        ROOM, [70; 32],
-    ));
+    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
     let agent = peer(relay.owner, [90; 32], false, None);
     let decide = |runtime: &WorkspaceRuntime, now: u64| {
         decide_in(
@@ -494,9 +439,7 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
         Decision::Deny(DenyReason::NotADelegatedAgent)
     );
     // Its certificate must still be current.
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        ROOM, [70; 32],
-    ));
+    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
     relay.revoke([90; 32]);
     assert_eq!(decide(&runtime, NOW), Decision::Deny(DenyReason::Revoked));
 }
