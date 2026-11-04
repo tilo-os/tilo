@@ -117,10 +117,10 @@ pub fn start(app: &str) {
     }
 }
 
-/// Take the latest later build of `app` now, as the watch does when one is published: code that
-/// starts a window in this process after taking a rebuild — the reload in place of
-/// `tilolang dev` — shows the build the running window showed, not the one the process started
-/// on. Then [`start`] following the directory takes the builds after it.
+/// Take the build of `app` the directory publishes now, as the watch does when one is
+/// published: code that starts a window in this process after taking a rebuild — the reload in
+/// place of `tilolang dev` — shows the build the running window showed, not the one the process
+/// was started on. Then [`start`] following the directory takes the builds after it.
 pub fn catch_up(app: &str) {
     let Some(dir) = updates_dir() else {
         return;
@@ -128,8 +128,7 @@ pub fn catch_up(app: &str) {
     let Ok(Some(generation)) = tilo_app_module::current(&dir) else {
         return;
     };
-    // The build the process started on is the one it runs already.
-    if started_generation(&dir) == Some(generation) || lock().taken == Some(generation) {
+    if lock().taken == Some(generation) {
         return;
     }
     take(&dir, generation, app);

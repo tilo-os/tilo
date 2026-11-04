@@ -66,6 +66,10 @@ const RUNTIME_DYLIB: &str = "runtime_dylib";
 /// own runtime bundle carries.
 const RUNTIME_SCRIPT: &str = "dist/dev/tilolang-runtime-build.sh";
 
+/// What a change of the runtime's sources cannot swap into a running window: the startup code
+/// the process ran once, and the manifest of what the binary links.
+const RUNTIME_STARTUP: [&str; 2] = ["apps/tilolang/src/main.rs", "apps/tilolang/Cargo.toml"];
+
 /// The features a locally built runtime is built with: `thin` links the toolkit and `libstd`
 /// from one shared library, which the process that owns the window maps and keeps while the
 /// app's own code is linked again beside it.
@@ -312,7 +316,7 @@ impl Local {
             .env("TILO_DEV_SESSION", &self.session)
             .env("TILO_RUNTIME_STANDALONE", "1")
             .stdin(Stdio::null());
-        attach_loader_path(&mut command, runtime, loaders);
+        attach_loader_path(&mut command, runtime, loaders)?;
         bounded_command::without_console_window(&mut command);
         // The window ends with the loop: a signal to the tool must not leave it running, on the
         // store the next run opens.
@@ -342,7 +346,7 @@ impl Local {
     /// the process stays, so the window, its size and its place do. Answers where it staged
     /// the library, and when it did.
     #[cfg(unix)]
-    fn reload(&mut self, library: &Path) -> Result<(PathBuf, std::time::SystemTime), String> {
+    fn reload(&self, library: &Path) -> Result<(PathBuf, std::time::SystemTime), String> {
         let staged = stage_reload_library(&self.session, library)?;
         let ready = std::time::SystemTime::now();
         let child = self
@@ -381,12 +385,16 @@ impl Local {
     }
 }
 
-/// Where a dynamically linked program finds the toolkit it shares with the process that maps
-/// it, and `libstd`: the program's own directory, the dependencies beside it, and the checkout's
-/// compiler libraries.
-fn attach_loader_path(command: &mut Command, program: &Path, loaders: &[PathBuf]) {
+/// Point `command` at where a dynamically linked program finds the toolkit it shares with the
+/// process that maps it, and `libstd`: the program's own directory, the dependencies beside it,
+/// the checkout's compiler libraries, and what the developer's own shell already named.
+fn attach_loader_path(
+    command: &mut Command,
+    program: &Path,
+    loaders: &[PathBuf],
+) -> Result<(), String> {
     if loaders.is_empty() {
-        return;
+        return Ok(());
     }
     let mut dirs: Vec<PathBuf> = program
         .parent()
@@ -397,11 +405,23 @@ fn attach_loader_path(command: &mut Command, program: &Path, loaders: &[PathBuf]
         dirs.push(parent.join("deps"));
     }
     dirs.extend(loaders.iter().cloned());
-    if let Some(existing) = std::env::var_os(loader_path_variable()) {
-        dirs.push(PathBuf::from(existing));
+    let mut value = std::env::join_paths(&dirs)
+        .map_err(|error| format!("the search path of the runtime's shared libraries: {error}"))?;
+    // What the shell named is read as one value, not as another path of ours to join: it may
+    // name several directories already.
+    if let Some(existing) =
+        std::env::var_os(loader_path_variable()).filter(|value| !value.is_empty())
+    {
+        value.push(path_separator());
+        value.push(existing);
     }
-    let joined = std::env::join_paths(&dirs).unwrap_or_default();
-    command.env(loader_path_variable(), joined);
+    command.env(loader_path_variable(), value);
+    Ok(())
+}
+
+/// The separator between the directories of a search path on this platform.
+const fn path_separator() -> &'static str {
+    if cfg!(windows) { ";" } else { ":" }
 }
 
 /// The variable the platform's loader reads its search path from.
@@ -730,10 +750,14 @@ impl Dev {
     }
 
     /// The runtime binary changed (or the tool just started on it): take it to the app.
-    fn runtime_changed(&mut self) {
+    fn runtime_changed(&mut self, restart: bool) {
         let started = Instant::now();
         let result = if self.is_local() {
-            self.changed_here(started)
+            if restart {
+                self.restart_here(started)
+            } else {
+                self.changed_here(started)
+            }
         } else {
             self.install_runtime()
                 .and_then(|()| self.build_and_deliver(started))
@@ -760,28 +784,40 @@ impl Dev {
         };
         let reloads_in_place = runtime.reloads_in_place;
         let built_here = runtime.built_in.clone().filter(|_| reloads_in_place);
-        let binary = runtime.binary.clone();
-        let loaders = runtime.loaders.clone();
         let Some(repo) = built_here else {
-            let binary = binary.ok_or_else(|| "no runtime binary to run the app on".to_owned())?;
-            let local = self
-                .local_mut()
-                .ok_or_else(|| "the app is not run here".to_owned())?;
-            local.restart(&binary, &loaders)?;
-            eprintln!(
-                "==> the app runs on the new runtime, {} ms after it changed",
-                started.elapsed().as_millis()
-            );
-            return Ok(());
+            return self.restart_here(started);
         };
         let library = build_local_library(&repo)?;
         let built = started.elapsed().as_millis();
         let local = self
-            .local_mut()
+            .local()
             .ok_or_else(|| "the app is not run here".to_owned())?;
         let (staged, ready) = local.reload(&library)?;
         eprintln!("==> the runtime's new code is built in {built} ms; the window takes it");
         self.reload_pending = Some((staged, ready));
+        Ok(())
+    }
+
+    /// Start the app's window again on the runtime as it is now: the process ran its startup
+    /// code already, or the runtime is a binary the tool did not build and cannot swap into it.
+    /// The app flushes its state on the way out, and its next window opens on it.
+    fn restart_here(&mut self, started: Instant) -> Result<(), String> {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return Ok(());
+        };
+        let binary = runtime
+            .binary
+            .clone()
+            .ok_or_else(|| "no runtime binary to run the app on".to_owned())?;
+        let loaders = runtime.loaders.clone();
+        let local = self
+            .local_mut()
+            .ok_or_else(|| "the app is not run here".to_owned())?;
+        local.restart(&binary, &loaders)?;
+        eprintln!(
+            "==> the app runs on the new runtime, {} ms after it changed",
+            started.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -846,8 +882,8 @@ impl Dev {
 
     /// Build the runtime in its checkout. A session's is thin, and a thin binary runs only on
     /// the runtime library of its build graph, so the library it was built with must be the one
-    /// the session runs. The desktop's window takes a rebuild in place: the tool builds the
-    /// runtime thin too, and keeps the library a rebuild is handed to the running process as.
+    /// the session runs. The desktop's runtime is thin too, so a change of its sources is
+    /// linked as the library the window's own process maps (see [`Self::changed_here`]).
     fn build_runtime(&mut self) -> Result<(), String> {
         let Some(repo) = self.runtime.as_ref().and_then(|r| r.built_in.clone()) else {
             return Ok(());
@@ -1002,28 +1038,50 @@ impl Dev {
         let mut source = false;
         let mut runtime = false;
         let mut runtime_source = false;
+        let mut startup = false;
         for event in events {
             source |= is_source_edit(event);
             runtime |= self.is_runtime_change(event);
             runtime_source |= self.is_runtime_source_edit(event);
+            startup |= self.is_runtime_startup_edit(event);
             self.report_reload(event);
         }
         if !source && !runtime && !runtime_source {
             return;
         }
-        if runtime_source {
+        if runtime_source && (startup || !self.reloads_in_place()) {
             match self.build_runtime() {
-                Ok(()) => self.runtime_changed(),
+                Ok(()) => self.runtime_changed(true),
                 Err(error) => {
                     eprintln!("{error}");
                     eprintln!("==> the app keeps running on the last good runtime");
                 }
             }
-        } else if runtime {
-            self.runtime_changed();
+        } else if runtime_source || runtime {
+            self.runtime_changed(false);
         } else {
             self.rebuild();
         }
+    }
+
+    /// Whether a rebuild of the runtime's sources reaches the running window in place: the
+    /// library alone is linked again, and the process that owns the window keeps it.
+    fn reloads_in_place(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.reloads_in_place && runtime.built_in.is_some())
+    }
+
+    /// An edit of what the runtime process runs before any window exists: a running window
+    /// cannot take it, so the process starts again on it.
+    fn is_runtime_startup_edit(&self, event: &WatchEvent) -> bool {
+        let Some(repo) = self.runtime.as_ref().and_then(DevRuntime::built_in) else {
+            return false;
+        };
+        event.kind != ChangeKind::Rescan
+            && RUNTIME_STARTUP
+                .iter()
+                .any(|path| event.path == repo.join(path))
     }
 
     /// Say how long the window took to draw the rebuild of the runtime it was handed, once it
@@ -1206,12 +1264,11 @@ struct LocalBuild {
 fn build_local_runtime(repo: &Path) -> Result<LocalBuild, String> {
     #[cfg(unix)]
     {
-        return build_thin_runtime(repo);
+        build_thin_runtime(repo)
     }
     #[cfg(not(unix))]
     {
-        let binary = build_local_runtime_binary(repo)?;
-        Ok(LocalBuild {
+        build_local_runtime_binary(repo).map(|binary| LocalBuild {
             binary,
             reloads_in_place: false,
             loaders: Vec::new(),
@@ -1323,13 +1380,12 @@ fn thin_build(repo: &Path, target: &[&str], what: &str) -> Result<ThinArtifacts,
             messages
                 .iter()
                 .find(|message| target_name(message) == Some(RUNTIME_LIBRARY_TARGET))
-                .map(|message| {
+                .and_then(|message| {
                     filenames(message).into_iter().find(|path| {
                         path.extension()
                             .is_some_and(|extension| extension == dylib_extension())
                     })
                 })
-                .flatten()
         });
     let artifact =
         artifact.ok_or_else(|| format!("the build of {what} made nothing to run or to map"))?;
