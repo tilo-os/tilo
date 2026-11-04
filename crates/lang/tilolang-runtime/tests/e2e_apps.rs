@@ -14,7 +14,7 @@ mod cases {
     use tilolang::IdsLock;
     use tilolang_runtime::{
         AmStore, EditOutcome, FlowOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
-        Principal, Resolution, ResourceRef, Runtime, RuntimeError, Space, UiNode, Value,
+        Principal, Resolution, ResourceRef, Runtime, RuntimeError, Space, UiNode, Value, ViewEvent,
         ViewInstance,
     };
 
@@ -1566,8 +1566,29 @@ mod cases {
         }
     }
 
+    /// Whether the control's flag `name` is on: a view sets it `true`, and what an action's own
+    /// state gives the tree arrives as the number its offer carries.
+    fn on(node: &UiNode, name: &str) -> bool {
+        match node.props.get(name) {
+            Some(Value::Bool(on)) => *on,
+            Some(Value::Int(on)) => *on != 0,
+            _ => false,
+        }
+    }
+
+    /// The row the window's header offers for the action named `label`.
+    fn header_row<'a>(tree: &'a UiNode, label: &str) -> &'a UiNode {
+        of_kind(tree, "ui.Button")
+            .into_iter()
+            .find(|b| matches!(b.props.get("label"), Some(Value::Text(l)) if l.starts_with(label)))
+            .unwrap_or_else(|| panic!("no header row `{label}` in\n{}", dump(tree)))
+    }
+
+    /// The list ends in its entry, and that is how a task is added: the window's primary action
+    /// keeps its key on the entry instead of making a task nobody typed, what is typed and
+    /// committed there is the one task, and an entry left empty makes nothing and writes nothing.
     #[test]
-    fn the_new_item_action_adds_an_item_that_opens_in_its_editor() {
+    fn the_new_task_key_goes_to_the_lists_entry_and_what_is_typed_there_makes_the_task() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
@@ -1576,24 +1597,102 @@ mod cases {
             text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
             "No tasks here"
         );
-        let item = returned_ref(w.call(&apps.todo, "new_task", vec![res(&list)]));
-        v.poll_patches().unwrap();
-        // A task added without a title stands as the field its title is typed in, until it has
-        // one: the row is where the person says what the task is.
-        let made = of_kind(v.tree(), "ui.ListItem");
-        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
-        assert_eq!(
-            of_kind(made[0], "ui.TextInput").len(),
-            1,
-            "{}",
+        // The window draws no button that would make a task: the header keeps the primary
+        // action's row in its menu, where it asks for the title, and the key it declares is the
+        // entry's.
+        let new_task = header_row(v.tree(), "New task");
+        assert!(
+            on(new_task, "in_menu"),
+            "the primary action is a row of the header's menu, not a button of its row: {}",
             dump(v.tree())
         );
-        let editor = w.rt.open_resource(&me(), &item, None).unwrap();
+        let entry = of_kind(v.tree(), "ui.TextInput")[0];
+        assert_eq!(text_prop(entry, "placeholder"), "New task");
+        assert_eq!(
+            entry.props.get("key"),
+            new_task.props.get("key"),
+            "the primary action's key puts the keyboard in the entry: {}",
+            dump(v.tree())
+        );
+        assert_eq!(
+            text_prop(entry, "key"),
+            "Ctrl+n",
+            "as the keyboard spells the key the app declares"
+        );
+        assert!(
+            on(entry, "entry"),
+            "the entry is the list's add, not a field of a record: {}",
+            dump(v.tree())
+        );
+        let entry = entry.key.clone();
+
+        // The action itself still needs the title it makes the task under, so a program or an
+        // agent can add one and nobody can leave a task unnamed.
+        let refused =
+            w.rt.invoke_action(
+                &me(),
+                (apps.todo.action("new_task").as_str(), vec![res(&list)]),
+            )
+            .expect_err("new_task without a title is refused");
+        assert!(refused.to_string().contains("title"), "{refused}");
+
+        // An entry committed empty makes no task, and writes nothing at all.
+        let before = w.rt.history(&list.doc).unwrap().len();
+        v.fire_with(&entry, "submit", Some(&Value::text("")))
+            .unwrap();
+        v.poll_patches().unwrap();
+        assert!(
+            items(&w, &list, "items").is_empty(),
+            "nothing typed, nothing made: {}",
+            dump(v.tree())
+        );
+        assert_eq!(
+            w.rt.history(&list.doc).unwrap().len(),
+            before,
+            "and nothing written"
+        );
+
+        // What is typed and committed is the one task, named, and its row is that record.
+        v.fire_with(&entry, "submit", Some(&Value::text("bread")))
+            .unwrap();
+        v.poll_patches().unwrap();
+        let made = items(&w, &list, "items");
+        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
+        assert_eq!(text_of(&w, &made[0], "title"), "bread");
+        assert_eq!(row_titles(v.tree()), ["bread"]);
+        assert_eq!(
+            item_titled(v.tree(), "bread"),
+            made[0],
+            "the row stands for the task it made"
+        );
+        assert_eq!(
+            w.rt.history(&list.doc).unwrap().len(),
+            before + 1,
+            "the commit is one change, and the entry's draft was none"
+        );
+        // It joins the list where it was typed: no window opens over it.
+        assert!(
+            v.poll_events().is_empty(),
+            "adding shows the row; it opens nothing"
+        );
+
+        // A person who activates the row goes to its page, where its title is the field it was
+        // named in: what they change there is the row.
+        let rows = of_kind(v.tree(), "ui.VirtualList")[0].key.clone();
+        v.fire_with(&rows, "activate", Some(&res(&made[0])))
+            .unwrap();
+        match v.poll_events().as_slice() {
+            [ViewEvent::Open { target, .. }] => {
+                assert_eq!(target, &made[0], "the row opens the task it stands for");
+            }
+            other => panic!("activating the row opens its page, not {other:?}"),
+        }
+        let editor = w.rt.open_resource(&me(), &made[0], None).unwrap();
         assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
         let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
-        editor.edit(&title, &Value::text("bread")).unwrap();
+        editor.edit(&title, &Value::text("sourdough")).unwrap();
         v.poll_patches().unwrap();
-        assert_eq!(row_titles(v.tree()), ["bread"]);
+        assert_eq!(row_titles(v.tree()), ["sourdough"]);
     }
 
     /// An action whose requirement its subject does not meet is offered all the same, its
