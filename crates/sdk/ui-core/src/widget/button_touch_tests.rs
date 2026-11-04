@@ -2,6 +2,31 @@
 
 use super::*;
 
+/// A button in a window bar is drawn at the bar's control height although a finger reaches
+/// it: the finger's target stands in its hit rect, beyond the shape it draws.
+#[test]
+fn a_bar_control_keeps_the_bars_height_and_reaches_a_finger_from_its_hit_rect() {
+    use crate::interaction::InteractionEnvironment;
+    let theme = crate::theme::Theme::light();
+    let mut button = Button::icon_only("new", crate::icons::Icon::Plus, "New");
+    button.set_interaction_environment(InteractionEnvironment::TOUCH);
+    let grown = button.face_height();
+    assert!(
+        grown >= f64::from(InteractionEnvironment::TOUCH.minimum_target()),
+        "a control outside a bar grows to the finger's target: {grown}"
+    );
+    button.set_window_bar_control(true);
+    let bar = button.face_height();
+    assert_eq!(bar, ControlSize::Regular.height(&theme));
+    assert!(bar < grown, "the bar keeps its control height: {bar}");
+    button.rect = vello::kurbo::Rect::new(10.0, 4.0, 10.0 + bar, 4.0 + bar);
+    assert_eq!(
+        button.hit_rect().height(),
+        grown,
+        "the finger's target stays in the hit rect"
+    );
+}
+
 /// A button laid out for a mouse, told afterwards that a finger reaches it (a header's
 /// toggle made before the window told it), is the finger's target tall the next time it
 /// is laid out, with no node built anew.

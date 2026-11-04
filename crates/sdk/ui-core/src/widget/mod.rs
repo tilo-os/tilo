@@ -1495,6 +1495,13 @@ pub trait Widget {
         defaults::set_interaction_environment(self.children_mut(), environment);
     }
 
+    /// Tell this widget whether it stands in a window bar. A bar's controls are drawn
+    /// at the bar's control height whatever the pointer; the target a finger needs
+    /// reaches beyond the drawn shape, invisibly. The default propagates to children.
+    fn set_window_bar_control(&mut self, in_bar: bool) {
+        defaults::set_window_bar_control(self.children_mut(), in_bar);
+    }
+
     /// Pull model state into this widget before layout. The default syncs the
     /// children [`Widget::children_mut`] returns; a widget overrides it only to
     /// read state of its own, or to sync children it does not expose there.

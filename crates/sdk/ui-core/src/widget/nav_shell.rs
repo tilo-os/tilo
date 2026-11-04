@@ -972,9 +972,16 @@ impl NavGeometry {
     }
 
     /// The trailing end of `column`'s actions: before the shell's trailing
-    /// buttons in it, one inset in.
+    /// buttons in it, one inset in, or a content gutter in where the column's
+    /// row reaches the window's edge — the same gutter its title starts at.
     fn trail_start(&self, column: Column, m: &Metrics) -> f64 {
-        self.actions_band(column).x1 - m.inset
+        let band = self.actions_band(column);
+        let edge = if column == Column::Sidebar || band.x1 < self.header(column).x1 - 0.5 {
+            m.inset
+        } else {
+            m.row.gutter
+        };
+        band.x1 - edge
     }
 
     /// The run of a header the app's actions may take: from the header's
@@ -1500,6 +1507,15 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             header
         }
     };
+    // How far into `row` its trailing shell buttons stand: the gutter the column's title
+    // starts at where the row reaches the window's edge, one inset beside another control.
+    let trailing_edge = |column: Column, row: Rect| -> f64 {
+        if column == Column::Sidebar || row.x1 < w - 0.5 {
+            m.inset
+        } else {
+            m.row.gutter
+        }
+    };
     // History stands in the window's top-trailing corner: the trailing edge
     // of the column that reaches the window's trailing edge (never a drawer).
     if inputs.history.is_some()
@@ -1519,7 +1535,8 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         })
     {
         g.history_column = Some(column);
-        g.history = m.row.trailing_chip(trailing_row(&g, g.header(column)), 0);
+        let row = trailing_row(&g, g.header(column));
+        g.history = m.row.trailing_chip_from(row, 0, trailing_edge(column, row));
     }
     if inputs.has_inspector && hh > 0.0 {
         // Docked and open, the toggle heads the inspector; otherwise it
@@ -1535,7 +1552,10 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         if row != Rect::ZERO && g.column(column).width() > 0.0 {
             g.inspector_toggle_column = Some(column);
             let slot = usize::from(g.history_column == Some(column));
-            g.inspector_toggle = m.row.trailing_chip(trailing_row(&g, row), slot);
+            let chip_row = trailing_row(&g, row);
+            g.inspector_toggle =
+                m.row
+                    .trailing_chip_from(chip_row, slot, trailing_edge(column, chip_row));
         }
     }
     // Content is fully hidden by a pushed screen: no buttons on it.
@@ -3949,6 +3969,7 @@ impl Widget for NavShell {
         };
         self.follow_sidebar_width(sidebar_width);
         self.update_toggle_names();
+        self.apply_bar_controls(&parts);
         let mut nodes = Vec::with_capacity(parts.len());
         for part in &parts {
             if let Some(widget) = self.part_mut(*part) {

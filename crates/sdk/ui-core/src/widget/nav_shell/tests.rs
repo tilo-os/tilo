@@ -1112,8 +1112,12 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
             .set_history_control(Some(HistoryControl::Closed));
         settle(&mut h, 1280, 800);
         let g = geometry(&h);
+        let m = Metrics::resolve(&Theme::dark());
         assert!(g.history.width() > 0.0);
-        assert!(g.history.x1 > 1280.0 - 24.0 && g.history.x1 <= 1280.0);
+        assert!(
+            (g.history.x1 - (1280.0 - m.row.gutter)).abs() < 1e-9,
+            "the history chip keeps the gutter the title starts at"
+        );
         assert!(g.history.y1 <= g.header_height);
         let button = h
             .root::<NavShell>()
@@ -1168,8 +1172,9 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
             .set_history_control(Some(HistoryControl::Closed));
         settle(&mut h, 1024, 700);
         let g = geometry(&h);
+        let m = Metrics::resolve(&Theme::dark());
         assert!(g.header_height > 0.0);
-        assert!(g.history.x1 > 1024.0 - 24.0);
+        assert!((g.history.x1 - (1024.0 - m.row.gutter)).abs() < 1e-9);
     }
 
     // Case `a_narrow_push_stack_keeps_it_on_the_front_screen`.
@@ -1891,7 +1896,10 @@ fn the_window_bar_merges_into_the_header_row() {
     settle(&mut h, 1280, 800);
     let g = geometry(&h);
     assert_eq!(g.window_controls, Rect::ZERO);
-    assert!(g.history.x1 > 1280.0 - 24.0);
+    assert!(
+        (g.history.x1 - (1280.0 - m.row.gutter)).abs() < 1e-9,
+        "the history chip keeps the gutter the title starts at"
+    );
     assert!(h.root::<NavShell>().window_bar_slot().is_none());
 }
 

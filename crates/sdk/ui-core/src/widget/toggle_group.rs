@@ -433,6 +433,9 @@ pub struct ToggleGroup {
     /// How the window is used: a strip a finger chooses from stands as tall as the finger's
     /// target, as a button's face does.
     interaction: crate::interaction::InteractionEnvironment,
+    /// It stands in a window bar: its segments keep the bar's control height whatever
+    /// the pointer, with a finger's target in the strip's hit rect.
+    in_window_bar: bool,
 }
 
 impl ToggleGroup {
@@ -502,6 +505,7 @@ impl ToggleGroup {
             folded: false,
             menu: Self::fold_menu(),
             interaction: crate::interaction::InteractionEnvironment::default(),
+            in_window_bar: false,
             viewport: None,
         }
     }
@@ -1042,15 +1046,30 @@ impl ToggleGroup {
     }
 
     /// One segment's height: its size's, and a finger's target where the window is used by one,
-    /// as a button's face grows to its target.
+    /// as a button's face grows to its target — except in a window bar, which keeps its
+    /// control height and leaves the grown target to the hit rect.
     fn face_height(&self) -> f64 {
-        if self.interaction.supports_hover() {
+        if self.in_window_bar || self.interaction.supports_hover() {
             self.metrics.height
         } else {
             self.metrics
                 .height
                 .max(f64::from(self.interaction.minimum_target()))
         }
+    }
+
+    /// The target a press reaches for `rect`, a segment or the strip: as wide as it draws,
+    /// and at least as high as the pointer needs — a strip in a window bar keeps its control
+    /// height and reaches the finger's target beyond it, as a bar's button does.
+    fn target_rect(&self, rect: Rect) -> Rect {
+        let side = f64::from(self.interaction.minimum_target());
+        let h = rect.height().max(side);
+        Rect::new(
+            rect.x0,
+            rect.center().y - h / 2.0,
+            rect.x1,
+            rect.center().y + h / 2.0,
+        )
     }
 }
 
@@ -2026,7 +2045,7 @@ impl ToggleGroup {
                 touch.location.x / scale_factor,
                 touch.location.y / scale_factor,
             );
-            if self.rect.contains(at) {
+            if self.target_rect(self.rect).contains(at) {
                 *handled = true;
                 if touch.phase == winit::event::TouchPhase::Ended {
                     self.pressed_into_focus |= !self.is_focused;
@@ -2036,7 +2055,14 @@ impl ToggleGroup {
             }
             return;
         }
-        let group = SegmentedTouchGroup::new(0, &self.segment_rects, self.selected);
+        // A press reaches each segment across the target its pointer needs, which may stand
+        // beyond the height the strip draws at.
+        let targets: Vec<Rect> = self
+            .segment_rects
+            .iter()
+            .map(|rect| self.target_rect(*rect))
+            .collect();
+        let group = SegmentedTouchGroup::new(0, &targets, self.selected);
         let group = if self.orientation == Orientation::Horizontal && self.chosen.is_none() {
             group
         } else {
@@ -2214,6 +2240,14 @@ impl Widget for ToggleGroup {
         if self.interaction != environment {
             self.interaction = environment;
             // Speaking of a finger instead of a mouse changes the strip's height.
+            self.layout_dirty = true;
+            self.cache_dirty = true;
+        }
+    }
+
+    fn set_window_bar_control(&mut self, in_bar: bool) {
+        if self.in_window_bar != in_bar {
+            self.in_window_bar = in_bar;
             self.layout_dirty = true;
             self.cache_dirty = true;
         }
@@ -2585,7 +2619,7 @@ impl Widget for ToggleGroup {
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {
-        self.rect.contains(point)
+        self.target_rect(self.rect).contains(point)
     }
 
     fn get_rect(&self) -> Rect {
@@ -2660,9 +2694,10 @@ impl Widget for ToggleGroup {
                             .disabled(!self.is_enabled() || s.disabled),
                     )
                     .with_position(i.saturating_add(1), count);
-                // Where the segment is drawn, so pointing at it lands on it.
+                // Where the segment is drawn, so pointing at it lands on it: grown to the
+                // target the person's pointer needs.
                 match self.segment_rects.get(i) {
-                    Some(rect) => node.with_bounds(*rect),
+                    Some(rect) => node.with_bounds(self.target_rect(*rect)),
                     None => node,
                 }
             })

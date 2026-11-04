@@ -135,6 +135,9 @@ pub struct Button {
     solver_placed: bool,
     i18n_revision: u64,
     interaction: crate::interaction::InteractionEnvironment,
+    /// It stands in a window bar: drawn at the bar's control height whatever the
+    /// pointer, with a finger's target in its hit rect.
+    in_window_bar: bool,
     /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
     /// The theme roles the cached face was painted from, so a theme change
@@ -240,6 +243,7 @@ impl Button {
             solver_placed: false,
             i18n_revision: crate::i18n::I18nManager::revision(),
             interaction: crate::interaction::InteractionEnvironment::default(),
+            in_window_bar: false,
             last_state: (false, false, false, true),
             last_theme: None,
             motion: crate::part_paint::PartMotion::new(crate::part_paint::States::REST),
@@ -2020,10 +2024,12 @@ impl Button {
 
     /// The face height in the current theme. A fine pointer keeps the
     /// size's height and reaches the minimum target through the hit rect
-    /// ([`Self::hit_rect`]); a coarse pointer grows the face to it.
+    /// ([`Self::hit_rect`]); a coarse pointer grows the face to it — except
+    /// in a window bar, which keeps its control height and leaves the
+    /// grown target to the hit rect.
     fn face_height(&self) -> f64 {
         let height = self.transport.map_or(self.metrics.height, |(_, side)| side);
-        if self.interaction.supports_hover() {
+        if self.in_window_bar || self.interaction.supports_hover() {
             height
         } else {
             height.max(f64::from(self.interaction.minimum_target()))
@@ -2167,6 +2173,15 @@ impl Widget for Button {
             self.interaction = environment;
             self.is_hovered &= environment.supports_hover();
             // An icon's square and a label's padding follow the face's height.
+            self.measured_width = None;
+            self.layout_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    fn set_window_bar_control(&mut self, in_bar: bool) {
+        if self.in_window_bar != in_bar {
+            self.in_window_bar = in_bar;
             self.measured_width = None;
             self.layout_dirty = true;
             self.dirty = true;
@@ -2658,10 +2673,17 @@ impl Widget for Button {
         };
         let node = AccessNode::new(role)
             .with_semantic_key(&self.id)
-            // A painted button is spoken where it is drawn.
-            .with_bounds(self.painted_hit.as_ref().map_or(self.rect, |hit| {
-                vello::kurbo::Shape::bounding_box(hit) + self.rect.origin().to_vec2()
-            }))
+            // A button is spoken where a press reaches it: the shape it draws, grown to the
+            // target the person's pointer needs — in a window bar the finger's target stands
+            // beyond the drawn face, and assistive technology touches the same target.
+            .with_bounds(self.painted_hit.as_ref().map_or_else(
+                || self.hit_rect(),
+                |hit| {
+                    self.interaction.minimum_target_rect(
+                        vello::kurbo::Shape::bounding_box(hit) + self.rect.origin().to_vec2(),
+                    )
+                },
+            ))
             .with_optional_name(name)
             .with_interface_name(interface)
             .with_state(AccessState {

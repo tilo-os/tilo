@@ -80,6 +80,12 @@ pub(super) fn set_interaction_environment(
     }
 }
 
+pub(super) fn set_window_bar_control(children: ChildrenMut<'_>, in_bar: bool) {
+    for child in children {
+        child.set_window_bar_control(in_bar);
+    }
+}
+
 pub(super) fn sync(children: ChildrenMut<'_>, state: &AppModel, path: &ModelPath) {
     for child in children {
         child.sync(state, path);

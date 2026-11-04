@@ -560,6 +560,7 @@ decorator_trait! {
         ) -> Result<(), crate::bound_dispatch::BoundDispatchError>;
         fn set_platform_conventions(conventions: crate::platform::PlatformConventions);
         fn set_interaction_environment(environment: crate::interaction::InteractionEnvironment);
+        fn set_window_bar_control(in_bar: bool);
         fn sync(state: &AppModel, path: &ModelPath);
         fn update(state: &AppModel, path: &ModelPath) -> bool;
         fn serve_deadline(now: Instant) -> bool;
