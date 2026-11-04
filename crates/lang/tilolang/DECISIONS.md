@@ -403,6 +403,15 @@ search.md, "What a type declares" and "Types, references and paths".
   `and`, `or`, comparisons, `.len()` and `.is_empty()`. search.md's
   `attachments.count > 0` is written `not attachments.is_empty()` or
   `attachments.len() > 0`: `count` is the counting method that takes a predicate.
+- **A filter may declare a place role instead of its predicate.** `filter "Today" =
+  agenda(day: due)`, `filter "Done" = logbook`: the role (`inbox`, `agenda`, `upcoming`,
+  `logbook`) reads the fields it names and derives the members as a predicate of the same
+  vocabulary, so `matching("is:today")` and a place's count answer it as any filter's do. It
+  adds what the predicate cannot say: the order the place's list comes in (the agenda's and
+  what is due later's by day, soonest first; the logbook's by the change that finished an item,
+  newest first) and whether its count is one to show (the inbox's and the agenda's).
+  `std.rows(role:, place:)` groups by the day each item stands at in the place, which
+  `placed_day(x, p.key)` reads. A field named like a role word is a field, as before.
 - **`std.Identifier` is a built-in value type**, held as its URI text like `Date` and `Time`
   are ISO text, with `.scheme` and `.value` (`ident_part`). search.md has services' types
   (`MailAddress`, `DiscordUser`) implement `std.Identifier`; declaring that a type implements an
@@ -428,7 +437,9 @@ search.md, "What a type declares" and "Types, references and paths".
   view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
   (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
-  the place a window starts on, the state's default (Letters starts on `is:drafts`), each counted by `items.matching(p.query).len()`. The `filter:` and `count:`
+  the place a window starts on, the state's default (Letters starts on `is:drafts`). A place shows a
+  count only where its role makes that a count people read (`inbox`, `agenda`: `items.matching(p.query).len()`),
+  never the all place, what is due later, what is done or a project. The `filter:` and `count:`
   parameters are gone.
 - **Reflection reads the log, and may not have it.** `created(r)` and `updated(r)` are
   `Option<host.Version>` (`who`, `at`, `what`): a resource whose changes the device has not
