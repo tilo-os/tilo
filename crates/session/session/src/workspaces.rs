@@ -225,10 +225,6 @@ pub(crate) fn follow_directory(
                 directory.ask(None);
                 seat.show(directory::view(directory, handle));
             }
-            DirectoryEffect::ClearNote => {
-                directory.set_note(None);
-                seat.show(directory::view(directory, handle));
-            }
             DirectoryEffect::Done => {
                 seat.presentation().close();
             }
