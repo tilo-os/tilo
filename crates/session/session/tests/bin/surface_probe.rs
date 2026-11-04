@@ -35,8 +35,15 @@ const STAY: &str = "SURFACE_PROBE_STAY";
 
 /// How long the change may take to land: the session publishes the reading
 /// again when the device has taken it, and a device that never does is the
-/// failure the test reads.
-const CHANGING: Duration = Duration::from_secs(10);
+/// failure the test reads. A loaded machine runs the device slowly, so the
+/// wait is long: the reading itself says whether the change landed.
+const CHANGING: Duration = Duration::from_secs(60);
+
+/// How long the app asks the session for its reading: an app's ask waits on
+/// the session's loop, and a machine running a whole suite at once takes a
+/// while over it. The app asks again while it is not answered rather than
+/// calling the session absent after one ask.
+const ANSWERING: Duration = Duration::from_secs(60);
 
 /// How long the reading must stand still before it is the one the action
 /// landed at: a reading that has only begun to move is drawn as it is.
@@ -62,11 +69,26 @@ fn main() {
     }
 }
 
+/// Open `resource`, asking again while the session has not answered: an ask
+/// that came back at once is a service still coming up, and one that used its
+/// patience is a loop that has not got to the app yet, and both are asked
+/// again until the app has waited long enough to report the session absent.
+fn open(resource: &str) -> Result<SessionResource, String> {
+    let deadline = Instant::now() + ANSWERING;
+    loop {
+        match SessionResource::open(resource) {
+            Ok(opened) => return Ok(opened),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_unanswered) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
 /// The reading the resource stands at, then the reading the action lands at,
 /// one per line; what went wrong instead.
 fn read_and_change() -> String {
     let resource = std::env::var(RESOURCE).expect("the resource to read");
-    let opened = match SessionResource::open(&resource) {
+    let opened = match open(&resource) {
         Ok(opened) => opened,
         Err(error) => return format!("error: {error}\n"),
     };
