@@ -348,6 +348,10 @@ impl Core {
                     .collect();
                 self.ret_h(Value::List(kept))
             }
+            Imp::Abort => {
+                let msg = self.text(a.h(0)?)?;
+                trap(format!("abort: {msg}"))
+            }
             _ => trap("not a program import"),
         }
     }

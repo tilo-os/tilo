@@ -312,7 +312,7 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, CallFn, ChangeView,
+            ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, CallFn, ChangeView,
             CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove,
             CollWhere, CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs,
             EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen,
@@ -406,8 +406,8 @@ impl Core {
             | Imp::Single
             | Imp::Me
             | Imp::ForeignRef
-            | Imp::MatchGroup => self.program_import(imp, a),
-            Abort => trap(format!("abort: {}", self.text(a.h(0)?)?)),
+            | Imp::MatchGroup
+            | Imp::Abort => self.program_import(imp, a),
         }
     }
 }
