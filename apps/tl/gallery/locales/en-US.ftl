@@ -482,7 +482,6 @@ d-irl4ws35 = Places
     .w-tasks = Tasks
     .w-another-beside-it = Another, beside it.
     .w-window = Window
-    .w-a-window = A window
     .w-close = Close
     .w-a-window-on-the-desk-its = A window on the desk: its bar, its controls, what it shows.
 
