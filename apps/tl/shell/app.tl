@@ -326,7 +326,7 @@ view bar_part(d: Desk, part: BarPart) {
     } else if part.slot == .clock {
         clock(d)
     } else if part.slot == .menu {
-        row(gap: .tight, align: .center) {
+        row(gap: .related, align: .center) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
                 on press: session.tilo_menu()
             }
@@ -343,13 +343,13 @@ view bar_part(d: Desk, part: BarPart) {
             ui.Button(d.strip, icon: .chevron_right, role: .bar)
         }
     } else if part.slot == .tasks {
-        row(gap: .tight, align: .center) {
+        row(gap: .related, align: .center) {
             for t in d.tasks {
                 ui.Button(t.title, icon: .bot, role: .bar)
             }
         }
     } else if part.slot == .people {
-        row(gap: .tight, align: .center) {
+        row(gap: .related, align: .center) {
             if not space.compact {
                 people_button(d)
             }
@@ -365,9 +365,9 @@ view bar_part(d: Desk, part: BarPart) {
             agent_chip(d, a)
         }
     } else if part.slot == .status {
-        row(gap: if bar_is_narrow(space.width) { .tight } else { .sibling }, align: .center) {
+        row(gap: if bar_is_narrow(space.width) { .related } else { .sibling }, align: .center) {
             if not space.compact and not d.tray.is_empty() {
-                row(gap: .tight, align: .center) {
+                row(gap: .related, align: .center) {
                     for item in d.tray {
                         ui.Button(item.title, role: .bar)
                     }
@@ -416,7 +416,10 @@ view workspace_menu(d: Desk) {
 /// bar and the panel show one fact, never a copy — and each press opens the quick settings,
 /// the one place a person changes them. A device that publishes none of them shows none.
 view status_icons() {
-    row(gap: .tight, align: .center) {
+    // A bar control's press target is wider than its face (a finger's target), so two of
+    // them stand a control's target apart: at the tightest gap a press between two would
+    // reach whichever is drawn last.
+    row(gap: .related, align: .center) {
         // A compact bar keeps the connection and the charge, what a glance looks for; the sound
         // is a key away and a press on the others opens it (`volume_status`).
         if not space.compact {
