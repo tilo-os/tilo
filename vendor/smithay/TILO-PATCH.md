@@ -208,3 +208,43 @@ backend only creates atomic surfaces; the legacy surface keeps
 
 Remove this once upstream queues its state commits and tracks them, or reports
 which commit is still in flight.
+
+## An X11 display that outlives its server (`XWaylandListener`)
+
+One display number serves one workspace, and a workspace runs an X server
+only while one of its apps does: the compositor binds the workspace's display
+at its first launch, hands `DISPLAY` to the apps it starts there, and starts
+Xwayland when one of them actually connects. `spawn` cannot express that,
+because it binds the display's sockets and the server in one call, so a
+server exists from the moment the display does.
+
+- `src/xwayland/xserver.rs`: `XWaylandListener` — the sockets and lock of a
+  display, listening, with no server on them (`prepare`, `display_number`,
+  `sockets`); clients that connect queue until a server accepts them.
+  `XWayland::spawn_on` spawns on a listener's sockets, which stay the
+  caller's, so the display serves the next server after this one stops.
+  `spawn` is `prepare_x11_sockets` + `spawn_on_sockets`, the shared body, and
+  `Instance` holds `Option<X11Lock>` and its display number instead of the
+  lock's.
+- `src/xwayland/mod.rs`: exports `XWaylandListener`.
+
+The listening sockets need a backlog that holds the clients a display queues
+before its server runs, and the readiness pipe must read as the server going
+away when it closes it:
+
+- `src/xwayland/x11_sockets.rs`: `listen(&fd, 128)` instead of the default
+  backlog, which a burst of apps opening a display outran.
+- `src/xwayland/xserver.rs`: the displayfd's `Ok(0)` (the pipe closed) is an
+  `UnexpectedEof` error like any read error, instead of polling it forever.
+
+A server whose Wayland connection closes keeps running: Xwayland prints
+`failed to read Wayland events: Broken pipe` and stays in its event loop, so
+a display that stopped serving would leave an idle Xwayland behind for as
+long as the session lives.
+
+- `src/xwayland/xserver.rs`: `Drop for XWayland` kills its process (the
+  thread that waits on it reaps it) before it disconnects the Wayland client.
+
+Remove these once upstream separates binding a display from spawning its
+server, with a backlog deep enough for the clients waiting on one, and ends
+its server when the Wayland connection does.

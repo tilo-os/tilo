@@ -361,7 +361,7 @@ where
         let at = location.to_f64() - window.geometry().loc.to_f64() - origin;
         let hdr = crate::hdr::pieces(
             renderer,
-            &state.hdr,
+            state,
             window,
             at.to_physical_precise_round(scale),
             scale,
@@ -414,6 +414,7 @@ where
         images: &state.frame_images,
         snapshots: &state.snapshots,
         hdr: &state.hdr,
+        state,
     };
     // The frame the window last drew, kept before its surface went: the
     // desktop animates that away.
@@ -449,10 +450,10 @@ where
     let scale = Scale::from(output_scale);
     let bounds = Rectangle::from_size(geometry.size.to_physical_precise_round(output_scale));
     let window_of = |id: u64| {
-        state.space.elements().find(|window| {
-            crate::state::describe(&state.display, &state.icons, window)
-                .is_some_and(|info| info.id == id)
-        })
+        state
+            .space
+            .elements()
+            .find(|window| crate::state::describe(state, window).is_some_and(|info| info.id == id))
     };
     let locked = state.locked();
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();

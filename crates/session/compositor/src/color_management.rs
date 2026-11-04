@@ -68,8 +68,7 @@ impl State {
     /// `wp_color_management_surface_v1`, or `None` when it attached none.
     pub(crate) fn window_color(&self, id: u64) -> Option<(Colorimetry, Option<Hdr10Metadata>)> {
         let window = self.space.elements().find(|window| {
-            crate::state::describe(&self.display, &self.icons, window)
-                .is_some_and(|info| info.id == id)
+            crate::state::describe(self, window).is_some_and(|info| info.id == id)
         })?;
         colorimetry_of(window.toplevel()?.wl_surface())
     }

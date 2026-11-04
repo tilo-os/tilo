@@ -5,11 +5,11 @@
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
 //! [--admit-repl PATH]... [--test-control PATH] [--admin-control PATH]
 //! [--headless-owner-control] [--seed-apps]
-//! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
-//! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
-//! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
-//! takes) and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to
-//! them; with a command, the session lasts as long as it does. `--shell
+//! [-- command args...]`. Listens on a fresh `wayland-N` socket, serves X11
+//! clients one display per workspace (unless `--no-x11`), prints the socket
+//! and the agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl
+//! --door` takes) and starts `command` with `WAYLAND_DISPLAY` set to it; with
+//! a command, the session lasts as long as it does. `--shell
 //! screen` shows the tilolang shell (`apps/tl/shell`): the whole screen, its
 //! bar, dock and the person's arrangement as their preset shows it, every
 //! window in its place's well. The desktop services serve
@@ -598,30 +598,27 @@ fn run(
             admin.display()
         );
     }
-    let x11_display = if ours.iter().any(|arg| arg == "--no-x11") {
-        None
-    } else {
-        start_x11(session.compositor())
-    };
-    // X11 apps on this display compose through the input method's XIM: the
-    // engine opens the display once it runs, as the session's own Xwayland
-    // accepts this login's X clients.
-    session.set_x11_display(x11_display.clone());
-    // The apps opened from now on connect where the person's windows are.
-    // X11 needs the authority file Xwayland was started with as well, which
-    // the compositor does not hand out yet.
+    // X11 is served per workspace: each gets a display when an app is launched
+    // into it, and its server starts when that app connects. `--no-x11` serves
+    // none of them.
+    let x11 = session.compositor().x11_displays();
+    match &x11 {
+        Some(displays) if ours.iter().any(|arg| arg == "--no-x11") => displays.disable(),
+        Some(_) => {}
+        None => tracing::warn!("the compositor serves no X11 display: no X11 apps"),
+    }
+    // The apps opened from now on connect where the person's windows are, and
+    // each is told the display of the workspace it is launched into.
     if let Some(launch) = launch {
         launch.set_displays(
             tilo_paths::xdg::runtime_dir_or_default().join(&socket),
-            x11_display.clone().map(|display| (display, None)),
+            x11,
             session_bus.map(str::to_owned),
         );
         launch.set_render_node(session.compositor().render_node());
     }
     let environment = SessionEnvironment {
         wayland_display: socket,
-        x11_display,
-        x11_authority: None,
     };
     if export_displays {
         environment.clone().export();
@@ -813,24 +810,6 @@ fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
     ]
 }
 
-/// Xwayland for X11 clients, its display printed. They connect as soon as
-/// its sockets are there, which they are once it is started; without it
-/// only Wayland is named.
-#[cfg(target_os = "linux")]
-fn start_x11(compositor: &mut tilo_compositor::Compositor) -> Option<String> {
-    match compositor.start_xwayland() {
-        Ok(display) => {
-            let display = format!(":{display}");
-            println!("DISPLAY={display}");
-            Some(display)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "Xwayland did not start: no X11 clients");
-            None
-        }
-    }
-}
-
 /// `program` started with `rest` on `environment`'s displays and, when a
 /// flag named the session bus, on that bus rather than the one it inherits.
 #[cfg(target_os = "linux")]
@@ -844,10 +823,9 @@ fn start_command(
     started
         .args(rest)
         .env("WAYLAND_DISPLAY", &environment.wayland_display);
-    match &environment.x11_display {
-        Some(display) => started.env("DISPLAY", display),
-        None => started.env_remove("DISPLAY"),
-    };
+    // A display belongs to a workspace: an app started with the session is in
+    // none, and gets the display of the workspace it is launched into later.
+    started.env_remove("DISPLAY");
     if let Some(address) = session_bus {
         started.env("DBUS_SESSION_BUS_ADDRESS", address);
     }

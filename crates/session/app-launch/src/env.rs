@@ -7,7 +7,7 @@
 //!
 //! - the compositor's socket, as `WAYLAND_DISPLAY` plus the `XDG_RUNTIME_DIR`
 //!   it resolves against, so a window arrives on the display that started it;
-//! - the rootless Xwayland display and its authority, for X11 clients;
+//! - the display of the workspace the app is launched into, for X11 clients;
 //! - the person's session bus, so the portal and notifications an app reaches
 //!   are the session's own;
 //! - the person's own variables: their id, workspace roots, apps data
@@ -77,10 +77,9 @@ const FORWARDED: &[&str] = &[
 pub struct SessionEnvironment {
     /// The compositor's Wayland socket, as an absolute path.
     pub wayland_socket: Option<PathBuf>,
-    /// The rootless Xwayland display this session runs, as `:N`.
+    /// The display of the workspace this launch belongs to, as `:N`: each
+    /// workspace has its own, and only apps started in it are told it.
     pub x11_display: Option<String>,
-    /// The MIT-MAGIC-COOKIE file for [`Self::x11_display`].
-    pub x11_authority: Option<PathBuf>,
     /// The person's session bus, when the session serves one of its own.
     pub session_bus: Option<String>,
     /// The variables the session was started with that a package is handed.
@@ -117,7 +116,6 @@ impl SessionEnvironment {
         LaunchEnv {
             wayland_socket: self.wayland_socket.clone(),
             x11_display: self.x11_display.clone(),
-            x11_authority: self.x11_authority.clone(),
             ..LaunchEnv::default()
         }
     }
@@ -148,17 +146,15 @@ impl SessionEnvironment {
         } else if let Some(directory) = self.forwarded.get("XDG_RUNTIME_DIR") {
             variables.insert("XDG_RUNTIME_DIR".to_owned(), directory.clone());
         }
-        if let (Some(display), Some(authority)) = (&self.x11_display, &self.x11_authority) {
+        // A workspace's display authenticates no one — the session binds its
+        // sockets itself — so there is no cookie file to hand on. A stale
+        // `DISPLAY` or `XAUTHORITY` from the session's own environment is
+        // worse than none: both are left out when no display is named.
+        variables.remove("XAUTHORITY");
+        if let Some(display) = &self.x11_display {
             variables.insert("DISPLAY".to_owned(), display.clone());
-            variables.insert(
-                "XAUTHORITY".to_owned(),
-                authority.to_string_lossy().into_owned(),
-            );
         } else {
-            // An X11 display without its cookie is unusable and a stale
-            // `DISPLAY` is worse than none: both are left out together.
             variables.remove("DISPLAY");
-            variables.remove("XAUTHORITY");
         }
         if let Some(address) = &self.session_bus {
             variables.insert("DBUS_SESSION_BUS_ADDRESS".to_owned(), address.clone());
@@ -200,7 +196,6 @@ mod tests {
         let mut session = environment();
         session.wayland_socket = Some(PathBuf::from("/run/user/1000/wayland-2"));
         session.x11_display = Some(":7".into());
-        session.x11_authority = Some(PathBuf::from("/run/user/1000/tilo/Xauthority"));
         session.session_bus = Some("unix:path=/run/user/1000/tilo/bus".into());
         let variables = session.variables();
         for (name, value) in [
@@ -216,7 +211,6 @@ mod tests {
             ("WAYLAND_DISPLAY", "wayland-2"),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
             ("DISPLAY", ":7"),
-            ("XAUTHORITY", "/run/user/1000/tilo/Xauthority"),
             (
                 "DBUS_SESSION_BUS_ADDRESS",
                 "unix:path=/run/user/1000/tilo/bus",
@@ -237,21 +231,20 @@ mod tests {
     }
 
     #[test]
-    fn an_x11_display_and_its_cookie_are_handed_over_together_or_not_at_all() {
+    fn the_workspace_display_is_handed_on_and_no_cookie_is() {
         let mut session = environment();
         session.x11_display = Some(":7".into());
         let variables = session.variables();
-        assert!(!variables.contains_key("DISPLAY"));
-        assert!(!variables.contains_key("XAUTHORITY"));
-
-        let mut session = environment();
-        session.x11_authority = Some("/run/user/1000/tilo/Xauthority".into());
-        let variables = session.variables();
-        assert!(!variables.contains_key("DISPLAY"));
+        assert_eq!(variables.get("DISPLAY").map(String::as_str), Some(":7"));
         assert!(
             !variables.contains_key("XAUTHORITY"),
-            "a cookie for no display is as stale as the display it belonged to"
+            "a workspace display authenticates no one"
         );
+
+        let session = environment();
+        let variables = session.variables();
+        assert!(!variables.contains_key("DISPLAY"));
+        assert!(!variables.contains_key("XAUTHORITY"));
     }
 
     #[test]
@@ -259,7 +252,6 @@ mod tests {
         let session = SessionEnvironment {
             wayland_socket: Some("/run/user/1000/wayland-3".into()),
             x11_display: Some(":9".into()),
-            x11_authority: Some("/run/user/1000/tilo/Xauthority".into()),
             ..SessionEnvironment::default()
         };
         let env = session.host_launch_env();

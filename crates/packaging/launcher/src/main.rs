@@ -64,6 +64,11 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a command line parsed once per launch: boxing a variant would need \
+              clap support for boxed subcommands it does not have"
+)]
 enum Cmd {
     /// Run a package directly from an unpacked payload + manifest.
     Run {
@@ -354,13 +359,10 @@ struct RunHostArgs {
     /// `XDG_RUNTIME_DIR` are both derived from it.
     #[arg(long)]
     wayland_socket: Option<PathBuf>,
-    /// Rootless Xwayland display supplied by the compositor for legacy
-    /// X11 applications.
-    #[arg(long, requires = "x11_authority")]
+    /// The X11 display of the workspace this app is launched into, supplied
+    /// by the compositor for legacy X11 applications.
+    #[arg(long)]
     x11_display: Option<String>,
-    /// Xauthority file paired with `--x11-display`.
-    #[arg(long, requires = "x11_display")]
-    x11_authority: Option<PathBuf>,
     /// A file to open. Expands the entry's `%f`/`%F` field codes (and
     /// `%u`/`%U` as a `file://` URL).
     #[arg(long)]
@@ -1430,7 +1432,6 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         program,
         wayland_socket,
         x11_display,
-        x11_authority,
         open,
         open_url,
         dry_run,
@@ -1439,7 +1440,6 @@ fn run_host(args: RunHostArgs) -> ExitCode {
     let env = LaunchEnv {
         wayland_socket,
         x11_display,
-        x11_authority,
         activation_token: std::env::var("TILO_HOST_ACTIVATION_TOKEN").ok(),
         files: open
             .as_deref()

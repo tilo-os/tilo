@@ -54,6 +54,9 @@ type Authorship = Rc<dyn Fn(&str, &str)>;
 /// What starting an app needs besides the launch itself.
 struct State {
     environment: SessionEnvironment,
+    /// The compositor's X11 displays, by workspace: the display a launch into
+    /// `workspace` starts its app on.
+    x11: Option<tilo_compositor::X11Displays>,
     spawner: Spawner,
     /// The launches running now, by the id the spawner gave each: what a
     /// crash notice's Reopen asks for again.
@@ -122,6 +125,7 @@ impl Apps {
             desktop: RefCell::new(None),
             state: RefCell::new(State {
                 environment,
+                x11: None,
                 spawner: Spawner::new(wake),
                 running: BTreeMap::new(),
                 launcher,
@@ -140,19 +144,19 @@ impl Apps {
         }
     }
 
-    /// The compositor bound its Wayland socket `socket` and, when Xwayland
-    /// started, the X11 display `x11`: apps started from now on connect to
-    /// these, whatever the session itself was started with.
+    /// The compositor bound its Wayland socket `socket` and its X11 displays
+    /// `x11`: apps started from now on connect to these, whatever the session
+    /// itself was started with. A display is asked for per workspace, when an
+    /// app is launched into it.
     pub fn set_displays(
         &self,
         socket: PathBuf,
-        x11: Option<(String, Option<PathBuf>)>,
+        x11: Option<tilo_compositor::X11Displays>,
         session_bus: Option<String>,
     ) {
         let mut state = self.state.borrow_mut();
         state.environment.wayland_socket = Some(socket);
-        state.environment.x11_display = x11.as_ref().map(|(display, _)| display.clone());
-        state.environment.x11_authority = x11.and_then(|(_, authority)| authority);
+        state.x11 = x11;
         state.environment.session_bus = session_bus;
     }
 
@@ -520,8 +524,17 @@ impl Apps {
         let workspace = &authored;
         let planned = {
             let state = self.state.borrow();
+            // The workspace's own X11 display: an app started there connects
+            // to a server no other workspace's apps share.
+            let mut environment = state.environment.clone();
+            environment.x11_display = state
+                .x11
+                .as_ref()
+                .filter(|_| workspace.is_workspace())
+                .and_then(|x11| x11.display_for(&workspace.id))
+                .map(|number| format!(":{number}"));
             let context = PlanContext {
-                environment: &state.environment,
+                environment: &environment,
                 workspace,
                 launcher: state.launcher.clone(),
                 identity: state.identity.clone(),

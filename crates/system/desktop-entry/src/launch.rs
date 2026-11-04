@@ -78,10 +78,13 @@ const INHERITED_ENV: &[&str] = &[
     "SDL_IM_MODULE",
 ];
 
-/// Variables that are always cleared, whatever the parent had. `DISPLAY` and
-/// `XAUTHORITY` are accepted only as the explicit, matched rootless-Xwayland
-/// pair in [`LaunchEnv`]; stale values from the preceding desktop can point at
-/// another session. `TILO_*` describe confinement this process does not have.
+/// Variables that are always cleared, whatever the parent had. `DISPLAY` is
+/// accepted only as the explicit workspace display in [`LaunchEnv`]; a stale
+/// value from the preceding desktop can point at another session's X server,
+/// or at the display of a workspace this app is not in. `XAUTHORITY` is never
+/// handed on: a workspace's display authenticates no one, and a stale cookie
+/// file names a server that is not there. `TILO_*` describe confinement this
+/// process does not have.
 const CLEARED_ENV: &[&str] = &[
     "DISPLAY",
     "XAUTHORITY",
@@ -177,13 +180,12 @@ pub struct LaunchEnv {
     /// host app connects to the compositor that launched it rather than whatever the launcher's
     /// own environment pointed at.
     pub wayland_socket: Option<PathBuf>,
-    /// The rootless Xwayland display of the workspace this app opens in. It
-    /// is never shared across workspaces, because X11 does not isolate its
-    /// clients from each other. Native Wayland clients still receive both
-    /// and choose Wayland normally; X11-only applications use this fallback.
+    /// The X11 display of the workspace this app opens in: its own
+    /// compositor-bound sockets, whose server starts when the app connects.
+    /// A display is never shared across workspaces, because X11 does not
+    /// isolate its clients from each other. Native Wayland clients still
+    /// receive it and choose Wayland normally; X11-only applications use it.
     pub x11_display: Option<String>,
-    /// MIT-MAGIC-COOKIE authority file for [`Self::x11_display`].
-    pub x11_authority: Option<PathBuf>,
     /// A compositor-minted, single-use activation token for this user
     /// initiated launch. It selects/focuses the first toplevel only; it is
     /// not a sandbox capability or Tilo authority.
@@ -253,11 +255,7 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
 /// matching Xauthority) that `build_env` names.
 fn grant_flatpak_x11(program: &std::path::Path, args: &mut Vec<String>, env: &LaunchEnv) {
     let is_flatpak = program.file_name().is_some_and(|name| name == "flatpak");
-    if is_flatpak
-        && env.x11_display.is_some()
-        && env.x11_authority.is_some()
-        && args.first().is_some_and(|arg| arg == "run")
-    {
+    if is_flatpak && env.x11_display.is_some() && args.first().is_some_and(|arg| arg == "run") {
         args.insert(1, "--socket=x11".to_string());
     }
 }
@@ -392,12 +390,8 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     {
         env.insert("XDG_ACTIVATION_TOKEN".to_string(), token.to_string());
     }
-    if let (Some(display), Some(authority)) = (&env_spec.x11_display, &env_spec.x11_authority) {
+    if let Some(display) = &env_spec.x11_display {
         env.insert("DISPLAY".to_string(), display.clone());
-        env.insert(
-            "XAUTHORITY".to_string(),
-            authority.to_string_lossy().to_string(),
-        );
         env.insert("_JAVA_AWT_WM_NONREPARENTING".to_string(), "1".to_string());
         // The session's composing input method serves each workspace display
         // over XIM; X11 toolkits find it through this name.
@@ -548,7 +542,6 @@ mod tests {
         let bridged = LaunchEnv {
             wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
             x11_display: Some(":13625".into()),
-            x11_authority: Some(PathBuf::from("/run/user/1000/tilo-session/Xauthority")),
             ..Default::default()
         };
         let launch = plan(&spotify(), &bridged).expect("plans");
@@ -703,7 +696,6 @@ mod tests {
                 &LaunchEnv {
                     activation_token: Some("one-shot-token".into()),
                     x11_display: Some(":42".into()),
-                    x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
                     ..Default::default()
                 },
             )
@@ -726,16 +718,11 @@ mod tests {
                 &LaunchEnv {
                     wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
                     x11_display: Some(":1234".into()),
-                    x11_authority: Some(PathBuf::from("/run/user/1000/tilo-session/Xauthority")),
                     ..Default::default()
                 },
             )
             .expect("plans");
             assert_eq!(launch.env.get("DISPLAY").map(String::as_str), Some(":1234"));
-            assert_eq!(
-                launch.env.get("XAUTHORITY").map(String::as_str),
-                Some("/run/user/1000/tilo-session/Xauthority")
-            );
             assert_eq!(
                 launch
                     .env
@@ -789,7 +776,6 @@ mod tests {
                 &LaunchEnv {
                     wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-tilo")),
                     x11_display: Some(":71".into()),
-                    x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
                     ..Default::default()
                 },
             )

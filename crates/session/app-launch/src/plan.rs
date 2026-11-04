@@ -430,7 +430,6 @@ mod tests {
         SessionEnvironment {
             wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-4")),
             x11_display: Some(":11".into()),
-            x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
             session_bus: Some("unix:path=/run/user/1000/tilo/bus".into()),
             forwarded: BTreeMap::from([("TILO_USER_ID".to_owned(), "person-3".to_owned())]),
         }

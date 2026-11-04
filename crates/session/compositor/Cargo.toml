@@ -63,8 +63,10 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 # `wp_color_management_v1`'s objects, which `tilo-wayland-ext` dispatches.
 wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 # Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;
-# smithay's window manager speaks selections but not XDND.
-x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
+# smithay's window manager speaks selections but not XDND. The resource
+# extension counts a display's clients, which tells whether any app is left
+# on it.
+x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
 # Named pointer shapes from the XCursor theme.
 xcursor = "0.3"
 # A kept copy is known by its bytes.

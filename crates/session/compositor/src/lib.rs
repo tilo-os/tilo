@@ -75,6 +75,7 @@ mod toplevel_icon;
 mod touch;
 mod typing;
 mod window_frame;
+mod x11;
 mod x11_windows;
 mod xdnd;
 mod xdnd_bridge;
@@ -90,6 +91,7 @@ use std::time::{Duration, Instant};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::{Display, ListeningSocket};
+use smithay::xwayland::xwm::{X11Window, XwmId};
 
 use crate::backend::drm::access_keys::AccessKeys;
 use crate::output_management::Pending;
@@ -154,6 +156,7 @@ pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
 pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
+pub use x11::X11Displays;
 pub use x11_windows::{Identity as X11Identity, X11Icon};
 
 /// Why the compositor could not start or keep running.
@@ -283,9 +286,6 @@ pub struct LoopData {
     pub state: State,
     /// The backend that created the sources.
     pub backend: Box<dyn Backend>,
-    /// The session's own X11 connection and what it learned about each X11
-    /// window, once Xwayland runs.
-    pub(crate) x11_windows: Option<x11_windows::X11Windows>,
 }
 
 /// What the loop tells of each turn of its wait.
@@ -352,16 +352,13 @@ impl Compositor {
             )
             .map_err(io)?;
         state.loop_handle = Some(event_loop.handle());
+        state.x11 = Some(X11Displays::new(event_loop.handle(), display.handle()));
         let backend = make_backend(&event_loop.handle(), &mut state)?;
         host::composes_on_cpu(backend.composes_on_cpu());
         let mut compositor = Self {
             event_loop,
             display,
-            data: LoopData {
-                state,
-                backend,
-                x11_windows: None,
-            },
+            data: LoopData { state, backend },
             hosted: false,
             displays: settings_bridge::Published::default(),
             turns: None,
@@ -528,6 +525,13 @@ impl Compositor {
             )
             .chain(self.keys.next_deadline())
             .chain(self.data.state.app_liveness_deadline())
+            .chain(
+                self.data
+                    .state
+                    .x11
+                    .as_ref()
+                    .and_then(X11Displays::next_check),
+            )
             .chain(alert)
             .min()
             .map(|at| at.saturating_duration_since(now))
@@ -602,10 +606,12 @@ impl Compositor {
         Ok(theirs)
     }
 
-    /// Start Xwayland for X11 clients and return its display number (they
-    /// connect with `DISPLAY=:N`, at once).
-    pub fn start_xwayland(&mut self) -> Result<u32, Error> {
-        xwayland::start(&self.event_loop.handle(), &self.data.state)
+    /// The session's X11 displays, by workspace: the app launcher asks one for
+    /// the display it starts an app with. `None` only when the compositor was
+    /// built without its loop.
+    #[must_use]
+    pub fn x11_displays(&self) -> Option<X11Displays> {
+        self.data.state.x11.clone()
     }
 
     /// The GPU clients import their dma-bufs on, as the render node a
@@ -824,17 +830,15 @@ impl Compositor {
         self.display.dispatch_clients(&mut self.data.state)?;
         self.sync_text_input();
         self.data.state.refresh();
+        if let Some(x11) = self.data.state.x11.clone() {
+            x11.tick(&mut self.data, Instant::now());
+        }
         // A constraint or an inhibitor takes effect for what is focused and
         // under the pointer now, so it is settled once the clients' requests
         // and this turn's focus changes were handled.
         self.data.state.sync_pointer_constraint();
         self.data.state.sync_shortcut_inhibit();
-        if let Some(x11) = self.data.x11_windows.as_mut() {
-            // The X server's own focus follows the session's, and X clients
-            // hear how dense the display is and which pointer to draw.
-            x11.follow_keyboard(&self.data.state);
-            x11.publish_x_hints(&mut self.data.state);
-        }
+        self.sync_x11();
         self.configure_from_clients();
         // What answered in this turn is answered; what stayed silent past its
         // time is not responding.
@@ -891,13 +895,57 @@ impl Compositor {
         }
         self.a11y = a11y;
         self.seed_visuals();
-        if let Some(x11) = self.data.x11_windows.as_mut() {
-            // X clients draw their own pointers: they hear the theme at once.
-            x11.publish_x_hints(&mut self.data.state);
-        }
+        // X clients draw their own pointers: they hear the theme at once.
+        self.sync_x11();
         self.data.state.mark_redraw_all();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Tell every running X server what the session holds for it: which X11
+    /// window has the keyboard (Xwayland leaves the X input focus to the
+    /// window manager), how dense the display is and which pointer to draw.
+    fn sync_x11(&mut self) {
+        let scale = x11_windows::display_scale(&self.data.state);
+        let theme = self.data.state.cursor.theme_name().to_owned();
+        // The X11 window each display's keyboard focus is on, resolved before
+        // the servers are borrowed.
+        let focus = self
+            .data
+            .state
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        let focused: Vec<(XwmId, X11Window)> = match &focus {
+            Some(focus) => self
+                .data
+                .state
+                .space
+                .elements()
+                .filter_map(|window| {
+                    let surface = window.x11_surface()?;
+                    surface
+                        .wl_surface()
+                        .is_some_and(|wl| &wl == focus)
+                        .then(|| Some((surface.xwm_id()?, surface.window_id())))
+                })
+                .flatten()
+                .collect(),
+            None => Vec::new(),
+        };
+        for server in &mut self.data.state.xwms {
+            let xwm = server.id();
+            let target = focused
+                .iter()
+                .find(|(of, _)| *of == xwm)
+                .map(|(_, window)| *window);
+            let state::X11Server { wm, windows, .. } = server;
+            let Some(windows) = windows.as_mut() else {
+                continue;
+            };
+            windows.follow_keyboard(target);
+            windows.publish_x_hints(scale, &theme, wm);
+        }
     }
 
     /// Bring every output's visuals in line with the settings, outputs a
@@ -1642,8 +1690,10 @@ impl Compositor {
         self.data.state.keyboard = Some(layout.clone());
         // X11 clients type in the seat's layout too, and everything that
         // asks which layout is in force hears the same.
-        if let Some(x11) = self.data.x11_windows.as_mut() {
-            x11.publish_keyboard(layout);
+        for server in &mut self.data.state.xwms {
+            if let Some(windows) = server.windows.as_mut() {
+                windows.publish_keyboard(layout);
+            }
         }
         let LoopData { state, .. } = &mut self.data;
         let Some(keyboard) = state.seat.get_keyboard() else {
@@ -2146,12 +2196,12 @@ impl Compositor {
     /// What the X11 window `id` says about its program: its process, class,
     /// desktop start-up and icon. `None` for a Wayland window.
     pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {
-        let x11 = self.data.x11_windows.as_ref()?;
         let window = self.data.state.space.elements().find(|window| {
-            state::describe(&self.data.state.display, &self.data.state.icons, window)
-                .is_some_and(|info| info.id == id)
+            state::describe(&self.data.state, window).is_some_and(|info| info.id == id)
         })?;
-        x11.identity(window.x11_surface()?.window_id())
+        let surface = window.x11_surface()?;
+        let server = self.data.state.x11_server(surface.xwm_id()?)?;
+        server.windows.as_ref()?.identity(surface.window_id())
     }
 
     /// Ask the window with `id` to close, as its own close button would: the

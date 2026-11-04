@@ -762,7 +762,7 @@ type SceneElements<R> = (Vec<RelocateRenderElement<OutputRenderElement<R>>>, [f3
 /// Whether `window` is one a capture may not show (see [`protect`]), and
 /// so one a picture of it may not show either.
 pub(crate) fn protected(state: &State, window: &smithay::desktop::Window) -> bool {
-    crate::state::describe(&state.display, &state.icons, window)
+    crate::state::describe(state, window)
         .is_some_and(|info| state.capture.protection.covers(info.app_id.as_deref()))
 }
 
