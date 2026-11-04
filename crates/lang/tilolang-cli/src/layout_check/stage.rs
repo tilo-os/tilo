@@ -94,7 +94,7 @@ impl Platform for Packages {
     /// The person's zone, as a window knows it: a seed's wall-clock time and every day the
     /// window shows are read in it, so the layout is the one a person in their zone sees.
     fn zone(&self) -> i64 {
-        ui::clock::local_now().offset().local_minus_utc()
+        i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
     fn zone_name(&self) -> Option<String> {
