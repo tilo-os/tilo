@@ -586,3 +586,221 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     );
     drop(b);
 }
+
+/// One camera picture of `layer`, sealed and sent through `plane`.
+fn picture(
+    layer: tilo_live::video::Layer,
+    source: tilo_live::video::Source,
+    sequence: u64,
+    keyframe: bool,
+) -> tilo_live::video::VideoObject {
+    let (width, height) = layer.size(source);
+    tilo_live::video::VideoObject {
+        keyframe,
+        codec: tilo_live::video::Codec::H264,
+        layer,
+        sequence,
+        timestamp_us: sequence.saturating_mul(33_333),
+        width,
+        height,
+        payload: vec![0, 0, 0, 1, if keyframe { 0x65 } else { 0x41 }],
+    }
+}
+
+/// Everything `plane` received on `track` so far, decoded.
+fn pictures(plane: &Plane, track: Track) -> Vec<tilo_live::video::VideoObject> {
+    let mut objects = Vec::new();
+    while let Some(heard) = plane.try_recv() {
+        if heard.track == track
+            && let Ok(object) = tilo_live::video::VideoObject::decode(&heard.body)
+        {
+            objects.push(object);
+        }
+    }
+    objects
+}
+
+/// A camera layer exists only while a peer shows it: the viewer asks for one
+/// layer at a time, the device encodes exactly that, a picture of a layer
+/// nobody shows is never sent, and showing nothing stops the encoding.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_encodes_only_the_camera_layers_someone_shows() {
+    use tilo_live::live::Track;
+    use tilo_live::video::{Layer, Source};
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = Plane::join(
+        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&b_cert),
+        join(b_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+    assert!(
+        a.wanted_pictures().is_empty(),
+        "nobody shows the camera yet: nothing is encoded"
+    );
+
+    // The viewer shows the camera in a tile: the peer asks for that layer,
+    // and starts it with a keyframe.
+    b.show(a_key, &[Track::Camera(Layer::Mid)]);
+    wait_until("the middle layer is asked for", || {
+        a.wanted_pictures() == [(Source::Camera, Layer::Mid)]
+    });
+    let mut received = Vec::new();
+    let mut sequence = 0_u64;
+    wait_until("the picture reaches the viewer", || {
+        let _ = a.send_picture(
+            Source::Camera,
+            &picture(Layer::Mid, Source::Camera, sequence, true),
+        );
+        sequence = sequence.saturating_add(1);
+        received.extend(pictures(&b, Track::Camera(Layer::Mid)));
+        !received.is_empty()
+    });
+    assert_eq!(received[0].layer, Layer::Mid);
+    assert!(received[0].keyframe);
+    assert_eq!(
+        received[0].payload,
+        vec![0, 0, 0, 1, 0x65],
+        "the viewer opened the payload the camera sealed"
+    );
+
+    // The tile shrinks to a filmstrip face: only the small layer is encoded.
+    b.show(a_key, &[Track::Camera(Layer::Low)]);
+    wait_until("the small layer replaces the middle one", || {
+        a.wanted_pictures() == [(Source::Camera, Layer::Low)]
+    });
+    let mut small = Vec::new();
+    wait_until("the small picture reaches the viewer", || {
+        let _ = a.send_picture(
+            Source::Camera,
+            &picture(Layer::Low, Source::Camera, sequence, true),
+        );
+        sequence = sequence.saturating_add(1);
+        small.extend(pictures(&b, Track::Camera(Layer::Low)));
+        !small.is_empty()
+    });
+    assert_eq!(small[0].width, 320);
+    // A layer nobody shows is not sent: there is no encoder to make one.
+    assert_eq!(
+        a.send_picture(
+            Source::Camera,
+            &picture(Layer::High, Source::Camera, sequence, true)
+        ),
+        Err(plane::PlaneError::Unwanted)
+    );
+
+    // Showing nothing stops the layer's encoding and its track.
+    b.show(a_key, &[]);
+    wait_until("nothing is asked for", || a.wanted_pictures().is_empty());
+    assert_eq!(
+        a.send_picture(
+            Source::Camera,
+            &picture(Layer::Low, Source::Camera, sequence, true)
+        ),
+        Err(plane::PlaneError::Unwanted)
+    );
+}
+
+/// A shared screen travels the plane as its own sealed track at the layer
+/// shown, and a picture is published only while someone shows it: nothing of
+/// the screen is sent after the last viewer stops, which is what a locked
+/// screen's withdrawn share relies on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_screen_is_published_only_at_the_layer_shown() {
+    use tilo_live::live::Track;
+    use tilo_live::video::{Layer, Source};
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = Plane::join(
+        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&b_cert),
+        join(b_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    b.show(a_key, &[Track::Screen(Layer::Low)]);
+    wait_until("the screen's layer is asked for", || {
+        a.wanted_pictures() == [(Source::Screen, Layer::Low)]
+    });
+    let mut received = Vec::new();
+    let mut sequence = 0_u64;
+    wait_until("the screen reaches the viewer", || {
+        let _ = a.send_picture(
+            Source::Screen,
+            &picture(Layer::Low, Source::Screen, sequence, true),
+        );
+        sequence = sequence.saturating_add(1);
+        received.extend(pictures(&b, Track::Screen(Layer::Low)));
+        !received.is_empty()
+    });
+    assert_eq!(received[0].layer, Layer::Low);
+    assert!(received[0].keyframe);
+    // The screen's own stream: the same bytes do not open as a camera frame,
+    // so a viewer showing a camera layer is never handed a screen's picture.
+    b.show(
+        a_key,
+        &[Track::Screen(Layer::Low), Track::Camera(Layer::Low)],
+    );
+    wait_until("the camera layer is asked for too", || {
+        a.wanted_pictures().len() == 2
+    });
+    let mut cameras = Vec::new();
+    wait_until("a camera picture travels its own track", || {
+        let _ = a.send_picture(
+            Source::Camera,
+            &picture(Layer::Low, Source::Camera, sequence, true),
+        );
+        sequence = sequence.saturating_add(1);
+        cameras.extend(pictures(&b, Track::Camera(Layer::Low)));
+        !cameras.is_empty()
+    });
+    assert_eq!(cameras[0].layer, Layer::Low);
+
+    // The person stops sharing, or locks their screen: the share is
+    // withdrawn, no viewer shows the screen any more, and nothing is encoded
+    // or sent of it from here on.
+    b.show(a_key, &[Track::Camera(Layer::Low)]);
+    wait_until("the screen is no longer asked for", || {
+        a.wanted_pictures() == [(Source::Camera, Layer::Low)]
+    });
+    assert_eq!(
+        a.send_picture(
+            Source::Screen,
+            &picture(Layer::Low, Source::Screen, sequence, true)
+        ),
+        Err(plane::PlaneError::Unwanted)
+    );
+}

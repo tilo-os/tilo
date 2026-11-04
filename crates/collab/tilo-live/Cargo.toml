@@ -77,19 +77,7 @@ name = "relay"
 required-features = ["relay"]
 
 [[test]]
-name = "client_admission"
-required-features = ["relay"]
-
-[[test]]
-name = "client_pictures"
-required-features = ["relay"]
-
-[[test]]
 name = "relay_goaway"
-required-features = ["relay"]
-
-[[test]]
-name = "window_tracks"
 required-features = ["relay"]
 
 [[test]]
