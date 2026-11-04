@@ -36,10 +36,14 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
     let mut environment = ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", runtime.path());
     let mut session = session();
-    settle(&mut session, 60);
 
     // Nothing of the desk's own is due for a second at least, so a connection
-    // that waited for the loop's next look would wait that long.
+    // that waited for the loop's next look would wait that long. The desk gets
+    // there as its own timer passes, which a loaded machine takes longer over:
+    // the test waits for that rather than counting the frames it takes.
+    pump(&mut session, &mut [], |session, _| {
+        wait_for(session).is_none_or(|idle| idle >= Duration::from_secs(1))
+    });
     let idle = wait_for(&mut session);
     assert!(
         idle.is_none_or(|idle| idle >= Duration::from_secs(1)),
