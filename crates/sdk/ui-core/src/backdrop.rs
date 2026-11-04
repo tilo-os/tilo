@@ -323,7 +323,7 @@ pub fn fill_role(
     theme: &Theme,
     ground: Color,
 ) {
-    fill_role_as(
+    fill_role_flush(
         scene,
         transform,
         shape,
@@ -331,13 +331,15 @@ pub fn fill_role(
         theme.finish(role),
         theme,
         ground,
+        crate::part_paint::Sides::NONE,
     );
 }
 
-/// Fill `shape` as a surface of `role` in `finish` stands: the finish the caller chose (a
-/// chrome's [`crate::tokens::ChromeMaterial`], through [`Theme::chrome_material`]) rather than
-/// the role's own, so the surface is drawn by the painter set of the material it is made of.
-pub fn fill_role_as(
+/// [`fill_role`] for a surface whose `flush` sides stand on the display's
+/// own edge: it draws no edge, rim or hairline there, so no pixel of
+/// another colour shows between it and the screen's edge. Every other side
+/// keeps what its material gives it.
+pub fn fill_role_flush(
     scene: &mut Scene,
     transform: Affine,
     shape: &RoundedRect,
@@ -345,8 +347,17 @@ pub fn fill_role_as(
     finish: &Finish,
     theme: &Theme,
     ground: Color,
+    flush: crate::part_paint::Sides,
 ) {
-    paint_body(scene, transform, shape, (finish, role), theme, ground);
+    paint_body(
+        scene,
+        transform,
+        shape,
+        (finish, role),
+        theme,
+        ground,
+        flush,
+    );
 }
 
 /// Paint `shape` as the body of a surface of `role` in `finish` over
@@ -363,6 +374,7 @@ fn paint_body(
     (finish, role): (&Finish, SurfaceRole),
     theme: &Theme,
     ground: Color,
+    flush: crate::part_paint::Sides,
 ) {
     use crate::part_paint::{Moment, Part, States, builtin, paint_part, part_tokens};
     let (rect, radius, clip) = body_of(shape);
@@ -380,6 +392,7 @@ fn paint_body(
     );
     tokens.radius = crate::num::f32_of_f64(radius);
     tokens.params = finish.params().clone();
+    tokens.flush = flush;
     tokens.backdrop = matches!(
         role,
         SurfaceRole::Window | SurfaceRole::Floating | SurfaceRole::Bar
@@ -617,6 +630,7 @@ pub(crate) fn fill_with_ground(
         (finish, SurfaceRole::Floating),
         theme,
         ground,
+        crate::part_paint::Sides::NONE,
     );
 }
 

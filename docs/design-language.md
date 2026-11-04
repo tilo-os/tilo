@@ -134,7 +134,10 @@ and stats are not cards.
 
 **Elevation.** A window tile casts one soft shadow onto the ground; a
 floating thing casts two (a tight contact layer and a wide one) and draws a
-1 px inner hairline. Bars, cards and selected controls cast none.
+1 px inner hairline. Bars, cards and selected controls cast none. A surface
+flush with the display — a bar at the `full` fit — casts nothing on the
+sides that are the screen's own edges either: no rule, rim or highlight a
+pixel in from the bezel, so its ground reaches the edge in one colour.
 
 ## Material and transparency
 

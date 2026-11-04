@@ -27,7 +27,7 @@ use vello::peniko::Color;
 
 use super::{
     Brush, Lens, Op, PaintedPart, PainterSet, ParamSpec, Part, PartPainter, PartScene, PartState,
-    PartTokens, Sampling, States, Stop,
+    PartTokens, Sampling, Sides, States, Stop,
 };
 
 /// The name a document gives the Default set.
@@ -227,7 +227,7 @@ impl PartPainter for Stock {
                     scene.fill(path, Brush::Solid(tokens.fill));
                     scene.ops.extend(sheen(&body, light));
                 }
-                scene.ops.extend(rim(&body, light));
+                scene.ops.extend(rim(&body, light, tokens.flush));
             }
             Part::ControlFace => {
                 // The rest face lets the window ground through at the tint
@@ -243,7 +243,7 @@ impl PartPainter for Stock {
                     scene.fill(path, Brush::Solid(fill));
                     if rest {
                         scene.ops.extend(sheen(&body, light));
-                        scene.ops.extend(rim(&body, light));
+                        scene.ops.extend(rim(&body, light, tokens.flush));
                     }
                 }
             }
@@ -539,7 +539,7 @@ impl PartPainter for Liquid {
                 } else {
                     scene.fill(path, Brush::Solid(tokens.fill));
                 }
-                scene.ops.extend(rim.ops(&body));
+                scene.ops.extend(rim.ops(&body, tokens.flush));
             }
             Part::ControlFace => {
                 // As Glass's: the rest face lets the window ground through
@@ -554,7 +554,7 @@ impl PartPainter for Liquid {
                 if fill.components[3] > 0.0 {
                     scene.fill(path, Brush::Solid(fill));
                     if rest {
-                        scene.ops.extend(rim.ops(&body));
+                        scene.ops.extend(rim.ops(&body, tokens.flush));
                     }
                 }
             }
@@ -639,8 +639,11 @@ impl SpecularRim {
     /// The rim of `body` as fills, one per straight edge and a few per
     /// corner, each lit for its own normal: fills that meet edge to edge,
     /// never strokes, whose caps would overlap and light the joins twice.
-    /// Nothing at `0` strength or on a body too small to have a rim.
-    fn ops(self, body: &RoundedRect) -> Vec<Op> {
+    /// Nothing at `0` strength or on a body too small to have a rim, and
+    /// nothing on a side in `flush`: a body on the display's own edge has
+    /// no ground behind that side to catch light against, and a lit pixel
+    /// there shows as a line at the screen's edge.
+    fn ops(self, body: &RoundedRect, flush: Sides) -> Vec<Op> {
         use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
         let rect = body.rect();
         if self.strength <= 0.0
@@ -683,8 +686,14 @@ impl SpecularRim {
                 Vec2::new(-1.0, 0.0),
             ),
         ];
-        for (strip, normal) in edges {
-            if strip.width() > 0.0 && strip.height() > 0.0 {
+        let flush_edges = [
+            flush.has(Sides::TOP),
+            flush.has(Sides::TRAILING),
+            flush.has(Sides::BOTTOM),
+            flush.has(Sides::LEADING),
+        ];
+        for ((strip, normal), skip) in edges.into_iter().zip(flush_edges) {
+            if !skip && strip.width() > 0.0 && strip.height() > 0.0 {
                 ops.push(solid(strip.to_path(0.1), normal));
             }
         }
@@ -697,7 +706,16 @@ impl SpecularRim {
             (Point::new(x0 + radius, y0 + radius), PI),
         ];
         let step = FRAC_PI_2 / f64::from(RIM_CORNER_STEPS);
-        for (centre, start) in corners {
+        let flush_corners = [
+            flush.has(Sides::TOP) && flush.has(Sides::TRAILING),
+            flush.has(Sides::BOTTOM) && flush.has(Sides::TRAILING),
+            flush.has(Sides::BOTTOM) && flush.has(Sides::LEADING),
+            flush.has(Sides::TOP) && flush.has(Sides::LEADING),
+        ];
+        for ((centre, start), skip) in corners.into_iter().zip(flush_corners) {
+            if skip {
+                continue;
+            }
             if radius <= 0.0 {
                 // A square corner: the rim's corner square, lit for the
                 // diagonal it faces.
@@ -794,33 +812,90 @@ fn sheen(body: &RoundedRect, light: Light) -> Option<Op> {
 /// The lit rim of a glass body: its outermost pixel row, brightest along
 /// the top edge at `edge_highlight` opacity, fading down the sides and
 /// catching a little bounced light at the foot. Nothing at `0`.
-fn rim(body: &RoundedRect, light: Light) -> Option<Op> {
+///
+/// A side in `flush` stands on the display's own edge, with no ground
+/// behind it and nothing to separate: the rim is drawn only where it is
+/// not, so the body reaches the screen's edge in its own colour rather than
+/// showing a line of light along it.
+fn rim(body: &RoundedRect, light: Light, flush: Sides) -> Option<Op> {
     let rect = body.rect();
     let edge_highlight = light.edge_highlight;
     if edge_highlight <= 0.0 || rect.width() <= 2.0 || rect.height() <= 2.0 {
         return None;
     }
-    let outline: BezPath = crate::surface::edge_outline(rect, body.radii().top_left).to_path(0.1);
+    if !flush.any() {
+        let outline: BezPath =
+            crate::surface::edge_outline(rect, body.radii().top_left).to_path(0.1);
+        return Some(Op::Stroke {
+            path: outline,
+            width: 1.0,
+            brush: rim_brush(rect, light),
+        });
+    }
+    // A body flush with the display is square on that side (a bar edge to
+    // edge is square), so its rim is four straight edges and a flush side
+    // simply draws none. The edges run half a pixel outside `rect`, as
+    // `edge_outline` does, so a 1-pixel stroke covers the rect's own
+    // outermost row.
+    let rim_rect = crate::surface::edge_outline(rect, body.radii().top_left).rect();
+    let mut path = BezPath::new();
+    for (side, from, to) in [
+        (
+            Sides::TOP,
+            Point::new(rim_rect.x0, rim_rect.y0),
+            Point::new(rim_rect.x1, rim_rect.y0),
+        ),
+        (
+            Sides::TRAILING,
+            Point::new(rim_rect.x1, rim_rect.y0),
+            Point::new(rim_rect.x1, rim_rect.y1),
+        ),
+        (
+            Sides::BOTTOM,
+            Point::new(rim_rect.x1, rim_rect.y1),
+            Point::new(rim_rect.x0, rim_rect.y1),
+        ),
+        (
+            Sides::LEADING,
+            Point::new(rim_rect.x0, rim_rect.y1),
+            Point::new(rim_rect.x0, rim_rect.y0),
+        ),
+    ] {
+        if !flush.has(side) {
+            path.move_to(from);
+            path.line_to(to);
+        }
+    }
+    if path.elements().is_empty() {
+        return None;
+    }
     Some(Op::Stroke {
-        path: outline,
+        path,
         width: 1.0,
-        brush: Brush::Linear {
-            start: Point::new(rect.x0, rect.y0),
-            end: Point::new(rect.x0, rect.y1),
-            stops: vec![
-                Stop {
-                    offset: 0.0,
-                    color: light.catch.with_alpha(edge_highlight),
-                },
-                Stop {
-                    offset: 0.5,
-                    color: light.catch.with_alpha(edge_highlight * 0.12),
-                },
-                Stop {
-                    offset: 1.0,
-                    color: light.catch.with_alpha(edge_highlight * 0.35),
-                },
-            ],
-        },
+        brush: rim_brush(rim_rect, light),
     })
+}
+
+/// The rim's light down the body: brightest at the top, a trace at the
+/// middle, a little bounced light at the foot.
+fn rim_brush(rect: Rect, light: Light) -> Brush {
+    let edge_highlight = light.edge_highlight;
+    Brush::Linear {
+        start: Point::new(rect.x0, rect.y0),
+        end: Point::new(rect.x0, rect.y1),
+        stops: vec![
+            Stop {
+                offset: 0.0,
+                color: light.catch.with_alpha(edge_highlight),
+            },
+            Stop {
+                offset: 0.5,
+                color: light.catch.with_alpha(edge_highlight * 0.12),
+            },
+            Stop {
+                offset: 1.0,
+                color: light.catch.with_alpha(edge_highlight * 0.35),
+            },
+        ],
+    }
 }
