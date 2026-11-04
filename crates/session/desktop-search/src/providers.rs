@@ -18,8 +18,8 @@ pub mod records;
 pub mod settings;
 pub mod waiting;
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::{Mutex, PoisonError};
 
 use tilo_actions::{ActionAddress, Availability, ResourceSpec};
 use ui::search::{PagePoll, PendingToken, SearchQuery};
@@ -600,8 +600,9 @@ pub struct Content {
     /// Whether nothing typed asks the providers for what they list unasked
     /// (a file manager's places, a notebook's notes).
     browse: bool,
-    /// The answers still coming, by provider.
-    pending: RefCell<Vec<(usize, PendingToken)>>,
+    /// The answers still coming, by provider. Held behind a lock so the
+    /// source is `Send + Sync` however a frame and a worker share one.
+    pending: Mutex<Vec<(usize, PendingToken)>>,
 }
 
 impl Content {
@@ -615,7 +616,7 @@ impl Content {
             scope: None,
             limit: 16,
             browse: false,
-            pending: RefCell::default(),
+            pending: Mutex::default(),
         }
     }
 
@@ -638,7 +639,9 @@ impl Content {
     /// Ask the providers whose answers were still coming. Returns whether
     /// one arrived, so the query should run again.
     pub fn poll(&self) -> bool {
-        let waiting = std::mem::take(&mut *self.pending.borrow_mut());
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let waiting = std::mem::take(&mut *pending);
+        drop(pending);
         let mut arrived = false;
         let mut still = Vec::new();
         for (at, token) in waiting {
@@ -650,13 +653,17 @@ impl Content {
                 PagePoll::Ready(_) | PagePoll::Answered(_) => arrived = true,
             }
         }
-        *self.pending.borrow_mut() = still;
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = still;
         arrived
     }
 
     /// Whether an answer is still coming.
     pub fn waiting(&self) -> bool {
-        !self.pending.borrow().is_empty()
+        !self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
     }
 }
 
@@ -761,7 +768,7 @@ impl Source for Content {
                 });
             }
         }
-        *self.pending.borrow_mut() = pending;
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = pending;
         hits
     }
 }
@@ -1652,7 +1659,7 @@ mod tests {
     /// framework app's do: it takes the query in on its next frame, then
     /// offers to search its service for it ("Search `YouTube` for …").
     /// Each query the app was asked, with the part of it it was narrowed to.
-    type Asked = std::rc::Rc<RefCell<Vec<(String, Option<String>)>>>;
+    type Asked = std::rc::Rc<std::cell::RefCell<Vec<(String, Option<String>)>>>;
 
     struct Service {
         arrived: std::rc::Rc<std::cell::Cell<bool>>,

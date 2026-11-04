@@ -11,10 +11,8 @@
 //! one row instead, "Unlock Passwords to search for …", which opens the app
 //! to unlock it.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui::search::index_publication::{IndexEntry, IndexWeight};
@@ -168,17 +166,23 @@ pub fn opening(slot: &SlotKey, entry: &IndexEntry) -> InvokeTarget {
 /// What apps hold, from the session's index ([`AppContentIndex`]).
 pub struct IndexedContent {
     index: Arc<AppContentIndex>,
-    snapshot: RefCell<Option<Rc<Snapshot>>>,
+    /// The snapshot built for the generation last seen: built on the frame
+    /// or on a worker, whichever asked first, so it is shared rather than
+    /// held by one thread.
+    snapshot: Mutex<Option<Arc<Snapshot>>>,
     /// An app's name as the person knows it.
-    app_name: Box<dyn Fn(&str) -> String>,
+    app_name: Box<dyn Fn(&str) -> String + Send + Sync>,
 }
 
 impl IndexedContent {
     /// A source over `index`, naming apps by `app_name`.
-    pub fn new(index: Arc<AppContentIndex>, app_name: impl Fn(&str) -> String + 'static) -> Self {
+    pub fn new(
+        index: Arc<AppContentIndex>,
+        app_name: impl Fn(&str) -> String + Send + Sync + 'static,
+    ) -> Self {
         Self {
             index,
-            snapshot: RefCell::new(None),
+            snapshot: Mutex::new(None),
             app_name: Box::new(app_name),
         }
     }
@@ -190,17 +194,17 @@ impl IndexedContent {
     }
 
     /// The snapshot of the index as it is now, built if it moved.
-    pub fn current(&self) -> Rc<Snapshot> {
+    pub fn current(&self) -> Arc<Snapshot> {
         let generation = self.index.generation();
-        let mut slot = self.snapshot.borrow_mut();
+        let mut slot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         match slot.as_ref() {
-            Some(snapshot) if snapshot.generation == generation => Rc::clone(snapshot),
+            Some(snapshot) if snapshot.generation == generation => Arc::clone(snapshot),
             _ => {
                 // Read the generation before the contents: a change landing
                 // between them leaves this snapshot stale, never stamped
                 // current.
-                let snapshot = Rc::new(Snapshot::new(generation, self.index.contents()));
-                *slot = Some(Rc::clone(&snapshot));
+                let snapshot = Arc::new(Snapshot::new(generation, self.index.contents()));
+                *slot = Some(Arc::clone(&snapshot));
                 snapshot
             }
         }

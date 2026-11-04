@@ -41,16 +41,28 @@ pub mod providers;
 pub mod rank;
 pub mod usage;
 pub mod window;
+pub mod workers;
 
 pub use lazy::{
     DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
 };
 pub use model::{
     ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, FRAME_BUDGET, Hit, InvokeTarget,
-    OPEN_ACTION, OPEN_ANCHOR, SHOW_COLLABORATORS, SearchStream, Source, SourceCosts, Target, Thing,
+    OPEN_ACTION, OPEN_ANCHOR, SHOW_COLLABORATORS, SearchStream, Source, Target, Thing,
     WORKSPACE_COMMAND_PREFIX, search, search_stream,
 };
 pub use palette::{DesktopSearch, SearchData};
 pub use preferences::SearchPreferences;
 pub use ui::search::system::ResourceKind;
 pub use usage::Usage;
+pub use workers::SearchWorkers;
+
+/// What the crate's tests wait for a worker: a source answers on a worker
+/// thread, so a test drives frames until it has, rather than assuming the
+/// answer is in the frame that asked.
+#[cfg(test)]
+pub(crate) mod tests {
+    use ui::time::Duration;
+
+    pub(crate) const SETTLE: Duration = Duration::from_secs(20);
+}

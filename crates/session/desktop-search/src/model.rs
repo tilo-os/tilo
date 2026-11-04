@@ -1,13 +1,23 @@
 //! The portable query model: sources answer a needle with hits, and
 //! [`search_stream`] merges them on the shared ranking into kind groups,
 //! a frame at a time.
+//!
+//! No source runs on the frame thread. A frame hands the sources that can
+//! move ([`Source::shared`]) to a pool of workers ([`crate::workers`]) and
+//! collects the answers that arrived before its deadline, so a source
+//! reading a disk index over a large home, a mailbox or a service never
+//! holds up the frame that typed into it.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use tilo_actions::{ActionAddress, ActionDescriptor, ActionSpec, ResourceId};
 
 use ui::search::system::{self, KindGroup, ResourceKind};
 use ui::time::{Duration, Instant};
+
+use crate::workers::{Answer, SearchWorkers};
 
 /// What choosing a hit does. The host performs it exactly as its other
 /// controls do: a launch opens a window, a window hit focuses it, an action
@@ -371,11 +381,26 @@ pub trait Source {
     fn poll(&self) -> bool {
         false
     }
+    /// This source as a worker asks it, when nothing in it belongs to the
+    /// frame thread: a query then runs off the frame, and a frame merely
+    /// collects what came back.
+    ///
+    /// `None` (the default) means the source holds frame state — a running
+    /// app's own providers, reached through component proxies that hold
+    /// `Rc`s and enter thread-local callback scopes — and is asked on the
+    /// frame, in a frame of its own, one source at a time.
+    ///
+    /// A desktop keeps what it built once in an [`Arc`], and [`Source`] is
+    /// implemented for one: that is how a source moves to a worker.
+    fn shared(&self) -> Option<Arc<dyn Source + Send + Sync>> {
+        None
+    }
 }
 
 /// A source a host keeps between searches (its index built once) is
-/// searched through a shared handle.
-impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
+/// searched through a shared handle: one held in an [`Arc`] can move to a
+/// worker, so a worker is handed the handle rather than the source.
+impl<S: Source + Send + Sync + 'static> Source for Arc<S> {
     fn id(&self) -> &str {
         (**self).id()
     }
@@ -387,6 +412,9 @@ impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
     }
     fn query(&self, needle: &str) -> Vec<Hit> {
         (**self).query(needle)
+    }
+    fn shared(&self) -> Option<Arc<dyn Source + Send + Sync>> {
+        Some(Arc::clone(self) as Arc<dyn Source + Send + Sync>)
     }
     fn browse_rank(&self) -> u8 {
         (**self).browse_rank()
@@ -414,97 +442,112 @@ pub fn frame_deadline(budget: Duration) -> Instant {
     now.checked_add(budget).unwrap_or(now)
 }
 
-/// How long a source is assumed to take before it was measured: one that
-/// has not answered yet is asked with the fast ones.
-const UNMEASURED: Duration = Duration::from_millis(1);
-
-/// What a source took, as it is asked again: the search calls a source
-/// that answered in a frame's time here, and defers one that took longer
-/// to a frame of its own, so a slow source never holds up the rows.
-#[derive(Clone, Debug, Default)]
-pub struct SourceCosts {
-    took: HashMap<String, Duration>,
-}
-
-impl SourceCosts {
-    /// How long `id` took last time, or what an unmeasured source is
-    /// assumed to take.
-    #[must_use]
-    pub fn estimate(&self, id: &str) -> Duration {
-        self.took.get(id).copied().unwrap_or(UNMEASURED)
-    }
-
-    /// How long `id` took last time, if it answered before.
-    #[must_use]
-    pub fn measured(&self, id: &str) -> Option<Duration> {
-        self.took.get(id).copied()
-    }
-
-    /// Record that `id` took `took`, smoothing with what it took before so
-    /// one slow answer does not hide a source that is usually fast.
-    pub fn record(&mut self, id: &str, took: Duration) {
-        let next = match self.took.get(id) {
-            Some(before) => {
-                let both = before.saturating_add(took);
-                Duration::from_secs_f64(both.as_secs_f64() / 2.0)
-            }
-            None => took,
-        };
-        self.took.insert(id.to_owned(), next);
-    }
-
-    /// Whether `id` answered slower than a frame may spend on it.
-    #[must_use]
-    pub fn is_slow(&self, id: &str) -> bool {
-        self.estimate(id) > FRAME_BUDGET
-    }
-}
-
-/// One search, as it fills in: the hits of the sources asked so far,
-/// merged on the shared ranking, one row per [`Thing`]. The palette asks
-/// for another frame's worth with [`resume`](Self::resume) until nothing
-/// is [`pending`](Self::pending); the rows it has are always the best
-/// answer of what came in.
+/// One search, as it fills in: the hits of the sources whose answers came
+/// back, merged on the shared ranking, one row per [`Thing`]. The palette
+/// asks for another frame's worth with [`resume`](Self::resume) until
+/// nothing is [`pending`](Self::pending); the rows it has are always the
+/// best answer of what came in.
+///
+/// A source that can move ([`Source::shared`]) never runs on this thread:
+/// [`resume`](Self::resume) hands it to the search's worker pool, and each
+/// frame only collects the answers that arrived, so a source reading a disk
+/// index or a mail server never holds up the frame that typed into it.
 pub struct SearchStream {
     needle: String,
     row_budget: usize,
-    /// The sources not asked yet, by their place among the sources: two
-    /// sources may search the same kind of thing under one id (an app's
-    /// open providers and the index of what apps published), and each is
-    /// asked for its own rows.
-    pending: Vec<usize>,
+    /// Each source the search asks, by its place among the sources it was
+    /// collected from, as `(id, how it is asked)`. Two sources may search
+    /// the same kind of thing under one id (an app's open providers and the
+    /// index of what apps published), and each is asked for its own rows.
+    sources: Vec<(String, Asking)>,
+    /// The moved sources not asked yet, by their place in `sources`.
+    to_ask: Vec<usize>,
+    /// The sources that stay on the frame, by their place in `sources`:
+    /// asked from the sources the caller hands each frame, one per frame.
+    here: Vec<usize>,
+    /// The sources whose answer has not come back yet.
+    outstanding: usize,
     /// The rows so far, each with its strength on the shared scale.
     merged: Vec<(Hit, f32)>,
     /// Where the row of a thing stands in `merged`, so two sources offering
     /// the same thing give one row, the stronger.
     things: HashMap<Thing, usize>,
-    /// Whether any source answered already: a source measured slower than
-    /// a frame is asked in a later frame, never in the one that first lists
-    /// rows.
-    answered: bool,
+    /// The answers the workers sent: what arrived is merged on the frame
+    /// that collects it.
+    answers: Receiver<Answer>,
+    /// Where `answers` are sent from: a worker holds a clone.
+    sender: Sender<Answer>,
+    /// Which search this stream is, to the pool: a newer one replaces it,
+    /// and a query still waiting for a source of an older one is not run.
+    generation: u64,
+}
+
+/// How a search asks one of its sources.
+enum Asking {
+    /// It moves to a worker, and this is the handle the worker asks.
+    Moved(Arc<dyn Source + Send + Sync>),
+    /// It holds the frame's state: asked on the frame, in a frame of its
+    /// own, from the sources the caller hands each frame.
+    Here,
 }
 
 impl SearchStream {
-    fn new(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Self {
+    fn new(
+        needle: &str,
+        sources: &[&dyn Source],
+        row_budget: usize,
+        workers: &SearchWorkers,
+    ) -> Self {
+        let (sender, answers) = channel();
         let bounded = system::query_input_is_bounded(needle);
+        // A source that says how it moves is asked on a worker; one that
+        // does not, and so holds the frame's state, is asked here.
+        let asked: Vec<(String, Asking)> = sources
+            .iter()
+            .map(|source| match source.shared() {
+                Some(moved) => (source.id().to_owned(), Asking::Moved(moved)),
+                None => (source.id().to_owned(), Asking::Here),
+            })
+            .collect();
+        let to_ask = if bounded {
+            asked
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, asking))| matches!(asking, Asking::Moved(_)))
+                .map(|(at, _)| at)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let here: Vec<usize> = if bounded {
+            asked
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, asking))| matches!(asking, Asking::Here))
+                .map(|(at, _)| at)
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
             needle: needle.to_owned(),
             row_budget,
-            pending: if bounded {
-                (0..sources.len()).collect()
-            } else {
-                Vec::new()
-            },
+            sources: asked,
+            to_ask,
+            here,
+            outstanding: 0,
             merged: Vec::new(),
             things: HashMap::new(),
-            answered: false,
+            answers,
+            sender,
+            generation: workers.begin(),
         }
     }
 
     /// Whether a source is still to answer.
     #[must_use]
     pub fn pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.to_ask.is_empty() || !self.here.is_empty() || self.outstanding > 0
     }
 
     /// The hits that came in, in the ranking's order, one row per thing.
@@ -551,105 +594,135 @@ impl SearchStream {
             .collect()
     }
 
-    /// Ask the sources that still owe an answer, until the frame's
-    /// `deadline` (or until `deadline` has passed, for the caller that
-    /// wants everything at once). Returns whether a source was asked, so a
-    /// host knows to ask again for the rows it brought.
+    /// Hand the sources not asked yet to the workers, and collect the
+    /// answers that arrived by `deadline`. Never waits for a source: an
+    /// answer that has not come back is another frame's.
+    ///
+    /// `sources` is the same slice the search was made from: the sources
+    /// that cannot move are asked from it, on the frame, at the end.
+    ///
+    /// Returns whether the rows changed, so a host knows to ask again for
+    /// the rows it brought.
     pub fn resume(
         &mut self,
         sources: &[&dyn Source],
-        costs: &mut SourceCosts,
+        workers: &SearchWorkers,
         deadline: Instant,
         used: &dyn Fn(&Hit) -> f32,
     ) -> bool {
-        let listed = self.answered;
-        let mut did_ask = false;
-        while let Some(index) = self.next_index(sources, costs, listed, deadline) {
-            if !self.ask(index, sources, costs, used) {
-                continue;
-            }
-            did_ask = true;
+        // A new needle replaced this search: the answers still coming are
+        // for text nobody shows, and are never merged.
+        if workers.retired(self.generation) {
+            self.to_ask.clear();
+            self.here.clear();
+            self.outstanding = 0;
+            while self.answers.try_recv().is_ok() {}
+            return false;
         }
-        // A frame with nothing to show, or only the row every query gets,
-        // asks the sources still to answer, fastest first, until one brings
-        // a row of its own: the instant answer (a sum, a conversion) is
-        // then in the frame that would otherwise say nothing matched or
-        // lead with the web. Every source measured within a frame is asked;
-        // one slower only when it is the first asked of this frame, so a
-        // search with nothing to show still moves and no frame waits long.
-        let mut first = true;
-        while self.merged.is_empty()
-            || self
-                .merged
-                .iter()
-                .all(|(hit, _)| crate::providers::WebSearch::is_fallback(hit))
-        {
-            let Some((index, took)) = self.fastest_pending(sources, costs) else {
+        let asking = std::mem::take(&mut self.to_ask);
+        for index in asking {
+            let Some((key, Asking::Moved(moved))) = self.sources.get(index) else {
+                continue;
+            };
+            let query = self.asked(moved.as_ref());
+            let moved = Arc::clone(moved);
+            self.outstanding = self.outstanding.saturating_add(1);
+            workers.ask(
+                self.generation,
+                index,
+                key,
+                Box::new(move || moved.query(&query)),
+                self.sender.clone(),
+            );
+        }
+        // One source that cannot move is asked first, here on the frame:
+        // its answer is the SDK's own bounded page, and the sources that
+        // moved are still on their way. Its rows are in the frame that
+        // typed.
+        let mut changed = false;
+        if let Some(index) = self.here.first().copied() {
+            self.here.remove(0);
+            if let Some(source) = sources.get(index).copied() {
+                changed |= self.ask_here(source, used);
+            }
+        }
+        // Collect every answer that arrives by the frame's deadline: a
+        // source answering in a frame's time is in the frame that typed,
+        // and one that takes longer fills in on a later frame. Only while a
+        // source owes an answer: with none out, nothing more is coming, and
+        // waiting for the deadline would spend the frame on an empty
+        // channel.
+        while self.outstanding > 0 {
+            let Some(answer) = crate::workers::arrived(&self.answers, deadline) else {
                 break;
             };
-            if !first && took > FRAME_BUDGET {
-                break;
-            }
-            first = false;
-            if !self.ask(index, sources, costs, used) {
-                continue;
-            }
-            did_ask = true;
+            changed |= self.collect(answer, used);
         }
-        did_ask
+        changed
     }
 
-    /// The source still to answer that is measured fastest, with what it
-    /// took: one never measured counts as instant.
-    fn fastest_pending(
-        &self,
-        sources: &[&dyn Source],
-        costs: &SourceCosts,
-    ) -> Option<(usize, Duration)> {
-        self.pending
+    /// What a source is asked: what was typed, or what was typed without
+    /// the words a query never has to match, unless it is asked verbatim.
+    fn asked(&self, source: &dyn Source) -> String {
+        if source.verbatim() {
+            self.needle.clone()
+        } else {
+            system::without_filler(&self.needle).into_owned()
+        }
+    }
+
+    /// Ask `source` here, on the frame, and merge its rows.
+    fn ask_here(&mut self, source: &dyn Source, used: &dyn Fn(&Hit) -> f32) -> bool {
+        let query = self.asked(source);
+        let top = source.max_score().max(1);
+        let verbatim = source.verbatim();
+        let hits = source.query(&query);
+        // The source's own reading of each row, read here where the source
+        // is reachable.
+        let intent: HashMap<String, f32> = hits
             .iter()
-            .enumerate()
-            .min_by_key(|(index, at)| {
-                let took = sources
-                    .get(**at)
-                    .and_then(|source| costs.measured(source.id()))
-                    .unwrap_or_default();
-                (took, *index)
-            })
-            .map(|(index, at)| {
-                let took = sources
-                    .get(*at)
-                    .and_then(|source| costs.measured(source.id()))
-                    .unwrap_or_default();
-                (index, took)
-            })
+            .map(|hit| (hit.id.clone(), source.intent(hit)))
+            .collect();
+        self.merge(hits, top, verbatim, &intent, used)
     }
 
-    /// Ask the `index`th source still to answer, keeping its rows and what
-    /// it took. Returns whether it was asked at all.
-    fn ask(
-        &mut self,
-        index: usize,
-        sources: &[&dyn Source],
-        costs: &mut SourceCosts,
-        used: &dyn Fn(&Hit) -> f32,
-    ) -> bool {
-        let at = self.pending.remove(index);
-        let Some(source) = sources.get(at).copied() else {
+    /// Merge one source's answer: its rows ranked on the shared scale, the
+    /// stronger answer of a thing keeping its place.
+    fn collect(&mut self, answer: Answer, used: &dyn Fn(&Hit) -> f32) -> bool {
+        self.outstanding = self.outstanding.saturating_sub(1);
+        let Some((_, Asking::Moved(moved))) = self.sources.get(answer.source) else {
             return false;
         };
-        let started = ui::time::now();
-        let top = source.max_score().max(1);
-        // "my mails" asks for mails: possessives and filler never have to
-        // match.
+        let top = moved.max_score().max(1);
+        let verbatim = moved.verbatim();
+        // The source's own reading of each row, on the frame: a worker asks
+        // it, and never calls it.
+        let intent: HashMap<String, f32> = answer
+            .hits
+            .iter()
+            .map(|hit| (hit.id.clone(), moved.intent(hit)))
+            .collect();
+        self.merge(answer.hits, top, verbatim, &intent, used)
+    }
+
+    /// The rows `hits` of a source, merged into the search's rows.
+    fn merge(
+        &mut self,
+        hits: Vec<Hit>,
+        top: i32,
+        verbatim: bool,
+        intent: &HashMap<String, f32>,
+        used: &dyn Fn(&Hit) -> f32,
+    ) -> bool {
         let typed = self.needle.clone();
         let unasked_filler = system::without_filler(&typed);
-        let query: &str = if source.verbatim() {
+        let query: &str = if verbatim {
             typed.as_str()
         } else {
             unasked_filler.as_ref()
         };
-        for hit in source.query(query) {
+        for hit in hits {
+            let here = intent.get(&hit.id).copied().unwrap_or(0.0);
             let strength = |needle: &str| {
                 system::merged_strength(
                     needle,
@@ -658,7 +731,7 @@ impl SearchStream {
                     hit.subtitle.as_deref(),
                     hit.score.min(top),
                     top,
-                    source.intent(&hit) + used(&hit),
+                    here + used(&hit),
                 )
             };
             // A title is matched as typed too: "The Beatles" is still the
@@ -670,41 +743,7 @@ impl SearchStream {
             };
             self.keep(hit, strength);
         }
-        costs.record(
-            source.id(),
-            ui::time::now().saturating_duration_since(started),
-        );
-        self.answered = true;
         true
-    }
-
-    /// The source to ask next: the first one in the search's own order
-    /// that fits this frame. A source never measured is asked whatever the
-    /// frame's time, one measured faster than the budget whenever it still
-    /// fits, and one measured slower only in a frame after the search
-    /// listed rows, so a slow source never holds up the first rows.
-    fn next_index(
-        &self,
-        sources: &[&dyn Source],
-        costs: &SourceCosts,
-        listed: bool,
-        deadline: Instant,
-    ) -> Option<usize> {
-        for (index, at) in self.pending.iter().enumerate() {
-            let Some(source) = sources.get(*at) else {
-                continue;
-            };
-            let Some(took) = costs.measured(source.id()) else {
-                return Some(index);
-            };
-            if took <= deadline.saturating_duration_since(ui::time::now()) {
-                return Some(index);
-            }
-            if took > FRAME_BUDGET && listed {
-                return Some(index);
-            }
-        }
-        None
     }
 
     /// Keep `hit` as the row of its thing, when it is the strongest so far.
@@ -727,24 +766,25 @@ impl std::fmt::Debug for SearchStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SearchStream")
             .field("needle", &self.needle)
-            .field("pending", &self.pending)
+            .field("unasked", &self.to_ask.len())
+            .field("outstanding", &self.outstanding)
             .field("rows", &self.merged.len())
             .finish_non_exhaustive()
     }
 }
 
-/// One frame of a search: ask the sources whose answer fits `deadline` and
-/// merge what they found, one row per thing ([`Thing`]).
+/// One frame of a search: hand the sources to `workers`, collect what came
+/// back, and merge it, one row per thing ([`Thing`]).
 pub fn search_stream(
     needle: &str,
     sources: &[&dyn Source],
     row_budget: usize,
-    costs: &mut SourceCosts,
+    workers: &SearchWorkers,
     deadline: Instant,
     used: &dyn Fn(&Hit) -> f32,
 ) -> SearchStream {
-    let mut stream = SearchStream::new(needle, sources, row_budget);
-    stream.resume(sources, costs, deadline, used);
+    let mut stream = SearchStream::new(needle, sources, row_budget, workers);
+    stream.resume(sources, workers, deadline, used);
     stream
 }
 
@@ -753,18 +793,23 @@ pub fn search_stream(
 ///
 /// Each hit's strength is raised by `used`: what the person's earlier
 /// choices add to it ([`crate::usage::Usage::strength`]).
+///
+/// The sources answer on the workers, as they do for a palette: this caller
+/// has no frame to keep, so it waits for them all, which is the one place
+/// waiting for a source is right (an agent's find, text placed on the
+/// canvas).
 pub fn search(
     needle: &str,
     sources: &[&dyn Source],
     row_budget: usize,
     used: &dyn Fn(&Hit) -> f32,
 ) -> Vec<KindGroup<Hit>> {
-    // Everything at once: this caller has no frames, so no source is
-    // deferred.
-    let mut stream = SearchStream::new(needle, sources, row_budget);
-    let mut costs = SourceCosts::default();
+    let workers = SearchWorkers::new();
+    let mut stream = SearchStream::new(needle, sources, row_budget, &workers);
     while stream.pending() {
-        stream.resume(sources, &mut costs, frame_deadline(ONE_PASS), used);
+        // Everything at once: the deadline is the clock's own end, so the
+        // stream takes every answer the workers send before it returns.
+        stream.resume(sources, &workers, frame_deadline(ONE_PASS), used);
     }
     stream.groups()
 }
@@ -776,6 +821,7 @@ const ONE_PASS: Duration = Duration::from_secs(3600);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     /// A source that answers with its rows for any needle naming one of
     /// them, or all of them for the empty one.
@@ -1237,94 +1283,240 @@ mod tests {
         );
     }
 
-    /// A source that takes 20 ms of the frame it is asked in.
-    struct Slow(Rc<std::cell::Cell<usize>>);
+    /// A source that takes `delay` to answer, as a source reading a large
+    /// disk index or a mail server does: it answers what was typed with one
+    /// row titled so the answer is recognisable.
+    struct Sleepy {
+        id: &'static str,
+        delay: Duration,
+        asked: Arc<Mutex<Vec<String>>>,
+        reached: Arc<Mutex<bool>>,
+    }
 
-    impl Source for Slow {
-        fn id(&self) -> &'static str {
-            "slow"
+    impl Sleepy {
+        fn new(id: &'static str, delay: Duration) -> Self {
+            Self {
+                id,
+                delay,
+                asked: Arc::default(),
+                reached: Arc::default(),
+            }
+        }
+
+        fn needles(&self) -> Vec<String> {
+            self.asked.lock().unwrap().clone()
+        }
+
+        fn answered(&self) -> bool {
+            *self.reached.lock().unwrap()
+        }
+    }
+
+    impl Source for Sleepy {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn shared(&self) -> Option<Arc<dyn Source + Send + Sync>> {
+            Some(Arc::new(Mirror {
+                id: self.id,
+                delay: self.delay,
+                asked: Arc::clone(&self.asked),
+                reached: Arc::clone(&self.reached),
+            }))
         }
         fn query(&self, _: &str) -> Vec<Hit> {
-            self.0.set(self.0.get().saturating_add(1));
-            std::thread::sleep(Duration::from_millis(20));
+            panic!("a source that moves is never asked on the frame")
+        }
+    }
+
+    /// [`Sleepy`] as the worker sees it: the same answer, worked out off the
+    /// frame.
+    struct Mirror {
+        id: &'static str,
+        delay: Duration,
+        asked: Arc<Mutex<Vec<String>>>,
+        reached: Arc<Mutex<bool>>,
+    }
+
+    impl Source for Mirror {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn query(&self, needle: &str) -> Vec<Hit> {
+            self.asked.lock().unwrap().push(needle.to_owned());
+            std::thread::sleep(self.delay);
+            *self.reached.lock().unwrap() = true;
             vec![hit(
-                "slow",
+                self.id,
                 "late",
-                "Late answer",
+                &format!("{} answer", self.id),
                 ResourceKind::Note,
                 100,
                 Target::Copy {
-                    text: "late".into(),
+                    text: self.id.into(),
                 },
             )]
         }
     }
 
-    /// A source measured slower than a frame is asked in a frame of its
-    /// own: the frame that first lists rows returns without waiting for it,
-    /// and its rows fill in after, without moving anything else.
+    /// How long a frame may take while a slow source is out: far under the
+    /// two seconds a source takes, and generous for a loaded machine.
+    const FRAME: Duration = Duration::from_millis(250);
+
+    /// The rows `stream` holds, as `provider:title`.
+    fn frame_rows(stream: &SearchStream) -> Vec<String> {
+        stream
+            .groups()
+            .iter()
+            .flat_map(|group| group.results.iter())
+            .map(|hit| format!("{}:{}", hit.provider, hit.title))
+            .collect()
+    }
+
+    /// One frame of the stream, and how long it took.
+    fn frame(stream: &mut SearchStream, all: &[&dyn Source], workers: &SearchWorkers) -> Duration {
+        let started = ui::time::now();
+        stream.resume(all, workers, frame_deadline(FRAME_BUDGET), &|_| 0.0);
+        ui::time::now().saturating_duration_since(started)
+    }
+
+    /// "alacritty" into the search: a source that takes two seconds never
+    /// runs on the frame thread. Every frame returns inside the frame
+    /// budget while it is out, the fast sources' rows are in the first
+    /// frame, and the slow source's row joins when it answers.
     #[test]
-    fn a_slow_source_never_delays_the_frame_that_lists_rows() {
+    fn a_source_that_takes_seconds_never_holds_up_a_frame() {
         let world = world();
-        let asked = Rc::new(std::cell::Cell::new(0));
-        let slow = Slow(Rc::clone(&asked));
+        let slow = Sleepy::new("slow", Duration::from_secs(2));
         let mut all = world.all();
         all.push(&slow);
-        let mut costs = SourceCosts::default();
-        // The first search of a session meets the source and pays for it
-        // once; from then on it is known.
-        let mut first = search_stream(
-            "",
+        let workers = SearchWorkers::default();
+        let mut stream = search_stream(
+            "notes",
             &all,
             0,
-            &mut costs,
+            &workers,
             frame_deadline(FRAME_BUDGET),
             &|_| 0.0,
         );
-        while first.pending() {
-            first.resume(&all, &mut costs, frame_deadline(FRAME_BUDGET), &|_| 0.0);
+        // The frame that typed the first character: the fast sources are
+        // in, the slow one is out, and this frame did not wait for it.
+        let took = frame(&mut stream, &all, &workers);
+        // A frame collects the answers that arrived by its deadline, so it
+        // may spend the budget waiting: what it never does is wait for a
+        // source that takes seconds.
+        assert!(
+            took < Duration::from_millis(100),
+            "the first frame took {took:?}, not the two-second source"
+        );
+        assert!(
+            frame_rows(&stream)
+                .iter()
+                .any(|row| row == "desktop-applications:Notes"),
+            "the fast sources' rows are in the first frame: {:?}",
+            frame_rows(&stream)
+        );
+        assert!(
+            !frame_rows(&stream)
+                .iter()
+                .any(|row| row.starts_with("slow:")),
+            "the slow source has not answered yet"
+        );
+        // Every frame while it is still out returns at once, however long
+        // the source takes.
+        let mut frames = 0;
+        let typing = ui::time::now() + Duration::from_secs(15);
+        while !slow.answered() {
+            let took = frame(&mut stream, &all, &workers);
+            assert!(
+                took < FRAME,
+                "frame {frames} spent {took:?} on the two-second source"
+            );
+            frames += 1;
+            assert!(
+                ui::time::now() < typing,
+                "a frame never waits the source out"
+            );
+            std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(costs.is_slow("slow"), "20 ms is more than a frame");
+        // Its rows join once it answered.
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        while stream.pending() && ui::time::now() < deadline {
+            frame(&mut stream, &all, &workers);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!stream.pending(), "the slow source answered");
+        assert!(
+            frame_rows(&stream)
+                .iter()
+                .any(|row| row == "slow:slow answer"),
+            "its row is there once it answered: {:?}",
+            frame_rows(&stream)
+        );
+        assert_eq!(
+            slow.needles().last().map(String::as_str),
+            Some("notes"),
+            "it was asked what was typed, off the frame"
+        );
+    }
 
-        let mut second = search_stream(
-            "",
+    /// Typing on while a slow source answers: the answer of the needle that
+    /// was replaced never shows, and the new needle's answer does.
+    #[test]
+    fn an_answer_for_a_replaced_needle_is_dropped() {
+        let slow = Sleepy::new("slow", Duration::from_millis(400));
+        let all: Vec<&dyn Source> = vec![&slow];
+        let workers = SearchWorkers::default();
+        // "ala" is asked, and the person types on to "alac" before it can
+        // answer.
+        let mut older = search_stream(
+            "ala",
             &all,
             0,
-            &mut costs,
+            &workers,
             frame_deadline(FRAME_BUDGET),
             &|_| 0.0,
         );
+        frame(&mut older, &all, &workers);
         assert!(
-            second.pending(),
-            "the slow source waits for a frame of its own"
+            older.pending(),
+            "the first needle is still being worked out"
         );
-        assert!(
-            !rows(&second.groups()).is_empty(),
-            "the frame that returns first holds what came in"
+        let mut newer = search_stream(
+            "alac",
+            &all,
+            0,
+            &workers,
+            frame_deadline(FRAME_BUDGET),
+            &|_| 0.0,
         );
-        assert!(
-            !rows(&second.groups())
-                .iter()
-                .any(|row| row.contains("Late")),
-            "the slow source's rows are not in it"
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        while newer.pending() && ui::time::now() < deadline {
+            frame(&mut newer, &all, &workers);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!newer.pending(), "the new needle answers");
+        assert_eq!(
+            frame_rows(&newer),
+            ["slow:slow answer"],
+            "the new needle's answer is shown"
         );
-        let frames = std::cell::Cell::new(0);
-        while second.pending() {
-            frames.set(frames.get() + 1);
-            assert!(
-                second.resume(&all, &mut costs, frame_deadline(FRAME_BUDGET), &|_| 0.0),
-                "every frame asks something"
-            );
-            assert!(
-                frames.get() < 10,
-                "the slow source answers on a later frame"
-            );
+        // The search that was replaced never shows the answer it still
+        // held: what comes back is for text nobody sees.
+        for _ in 0..40 {
+            frame(&mut older, &all, &workers);
+            std::thread::sleep(Duration::from_millis(5));
         }
         assert!(
-            rows(&second.groups())
-                .iter()
-                .any(|row| row == "slow:Late answer"),
-            "its rows are there once it answered"
+            frame_rows(&older).is_empty(),
+            "the replaced needle's answer never shows: {:?}",
+            frame_rows(&older)
+        );
+        assert_eq!(
+            slow.needles().last().map(String::as_str),
+            Some("alac"),
+            "the source was asked the needle showing last: {:?}",
+            slow.needles()
         );
     }
 
@@ -1402,24 +1594,22 @@ mod tests {
             } else {
                 format!("note {round}")
             };
-            // A cold session: nothing has been measured yet, so no source
-            // is deferred and every one of the four answers this frame.
-            let mut costs = SourceCosts::default();
+            // Every source is asked on a worker: the frame that types only
+            // hands them over and collects what already arrived.
+            let workers = SearchWorkers::default();
             let started = ui::time::now();
-            let stream = search_stream(
+            let _stream = search_stream(
                 &needle,
                 &refs,
                 12,
-                &mut costs,
+                &workers,
                 frame_deadline(FRAME_BUDGET),
                 &|_| 0.0,
             );
-            let groups = stream.groups();
             let took = ui::time::now().saturating_duration_since(started);
-            assert!(
-                rows(&groups).iter().any(|row| row.starts_with("content:")),
-                "the frame lists rows: {needle:?}"
-            );
+            // The frame that typed never holds the rows of the index: the
+            // four sources are out on the workers, and the frame returns
+            // with whatever had already arrived, usually nothing.
             samples.push(took);
         }
         samples.sort();
@@ -1468,18 +1658,22 @@ mod tests {
             )],
         };
         let sources: Vec<&dyn Source> = vec![&web, &answers];
-        let mut costs = SourceCosts::default();
-        costs.record("web", Duration::from_micros(5));
-        // Measured slower than a frame: not asked with the fast ones.
-        costs.record("quick-answers", FRAME_BUDGET + Duration::from_millis(20));
-        let stream = search_stream(
+        let workers = SearchWorkers::default();
+        let mut stream = search_stream(
             "12*7",
             &sources,
             0,
-            &mut costs,
+            &workers,
             frame_deadline(FRAME_BUDGET),
             &|_| 0.0,
         );
+        // The frames until both answered: an answer that comes back a frame
+        // later is still in the frame that shows it, ahead of the web row.
+        let deadline = ui::time::now() + Duration::from_secs(10);
+        while stream.pending() && ui::time::now() < deadline {
+            stream.resume(&sources, &workers, frame_deadline(FRAME_BUDGET), &|_| 0.0);
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let names: Vec<String> = stream.rows().into_iter().map(|row| row.title).collect();
         assert_eq!(
             names.first().map(String::as_str),
@@ -1526,6 +1720,4 @@ mod tests {
         assert_ne!(groceries.thing(), bills.thing());
         assert_ne!(groceries.thing(), Thing::Window(0));
     }
-
-    use std::rc::Rc;
 }
