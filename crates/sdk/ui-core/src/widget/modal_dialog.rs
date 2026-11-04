@@ -2541,6 +2541,23 @@ impl Widget for ModalDialog<dyn Widget> {
         self.open.then(|| self.dialog_rect())
     }
 
+    /// The shell took the sheet this dialog stands in down: close it as its
+    /// own way out does (no answer runs), so it leaves the screen rather than
+    /// staying drawn and taking no input.
+    fn dismiss_presented_modal(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+        self.open = false;
+        self.appear.show(false);
+        self.pointer_inside = false;
+        true
+    }
+
+    fn presents_modal(&self) -> bool {
+        self.is_drawn()
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if !self.open {
             return Vec::new();
@@ -2813,6 +2830,14 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.as_dyn().modal_capture()
+    }
+
+    fn dismiss_presented_modal(&mut self) -> bool {
+        self.as_dyn_mut().dismiss_presented_modal()
+    }
+
+    fn presents_modal(&self) -> bool {
+        self.as_dyn().presents_modal()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

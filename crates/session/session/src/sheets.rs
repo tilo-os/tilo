@@ -38,6 +38,10 @@ pub(crate) struct Sheet<S: Seat> {
     /// keyboard and the pointer while the session is locked, as the lock
     /// screen's own process would. Only the session's lock view is.
     over_lock: bool,
+    /// The card this sheet presents was closed by the shell and is still
+    /// being drawn on its way out: the host watches it go rather than say it
+    /// is gone at once.
+    modal_left: bool,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -67,6 +71,7 @@ impl<S: Seat> Sheet<S> {
             always_serving: false,
             typing_through: false,
             over_lock: false,
+            modal_left: false,
         })
     }
 
@@ -267,8 +272,9 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         // A sheet is modal: a press beside its card is still the sheet's,
-        // which takes it as one outside.
-        self.open() && {
+        // which takes it as one outside. One on its way out absorbs presses
+        // too: a press made while it leaves is not the window's behind it.
+        self.drawn() && {
             let placement = self.host.placement();
             let (ox, oy) = placement.origin;
             let (w, h) = placement.size;
@@ -296,7 +302,11 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.open() && !self.typing_through
+        // A sheet takes the keys while it is drawn, whatever window has the
+        // focus behind it: a presented modal claims input by construction.
+        // One that asks about typing leaves all but its own two keys to the
+        // field under it ([`Self::typing_through`]).
+        self.drawn() && !self.typing_through
     }
 
     /// The lock view shows over the session's lock while it is up.
@@ -331,6 +341,24 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn prepare_frame(&mut self) -> bool {
         self.follow_place();
+        // A sheet the shell closed (a chosen action, its own way out) may
+        // still have its card on screen. The host closes it as the sheet's
+        // own way out would, and its leaving draws until nothing is left;
+        // only then does the presentation say nothing of it is drawn, so it
+        // never stands drawn taking no input. A sheet that draws its own
+        // leave (the power menu) presents no modal and keeps its way out.
+        let presentation = self.seat.presentation();
+        if presentation.phase() == tilo_sheets::Phase::Leaving {
+            if !self.modal_left {
+                self.modal_left = self.host.app_mut().dismiss_presented_modal();
+            }
+            if self.modal_left && !self.host.app_mut().presents_modal() {
+                self.modal_left = false;
+                presentation.gone();
+            }
+        } else if presentation.is_open() {
+            self.modal_left = false;
+        }
         // A command surface answers the actions it is offered even with
         // nothing of it drawn.
         (self.drawn() || self.always_serving) && self.host.prepare_frame()

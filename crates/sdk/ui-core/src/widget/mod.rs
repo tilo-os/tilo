@@ -2156,13 +2156,9 @@ pub trait Widget {
         })
     }
 
-    /// Default `true`; the exception is a widget standing in for a window's
-    /// content whose first frame is not drawn yet (a process that has started
-    /// but not drawn, a stream from another device before its first picture).
-    /// Must **latch**: once `true`, never `false` again for the same content,
-    /// or an un-presenting widget would make a window vanish mid-resize. What
-    /// shows meanwhile is the framework's ([`crate::arriving`]), timed from
-    /// [`Widget::arrives_from`].
+    /// Default `true`; false only for a widget standing in for a window's
+    /// content whose first frame has not drawn. Must **latch**: once `true`,
+    /// never `false` again for the same content.
     fn presented(&self) -> bool {
         true
     }
@@ -2346,15 +2342,13 @@ pub trait Widget {
     }
 
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
-    /// freeze partway until an unrelated event woke it again.
+    /// freeze until an unrelated event woke it.
     fn needs_animation_frame(&self) -> bool {
         defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
-    /// Earliest wall-clock deadline at which this subtree needs a sync/redraw
-    /// even if there is no input. Unlike `needs_animation_frame`, this keeps
-    /// the event loop asleep until the requested instant and is appropriate
-    /// for filesystem/status polling rather than animation.
+    /// Earliest wall-clock deadline at which this subtree needs a sync or
+    /// redraw with no input: the loop sleeps until then (not animation).
     fn next_wake_deadline(&self) -> Option<Instant> {
         defaults::next_wake_deadline(&|visit| self.for_each_child(visit))
     }
@@ -2370,12 +2364,8 @@ pub trait Widget {
     }
 
     /// A deadline this subtree asked for ([`Self::next_wake_deadline`]) is
-    /// due at `now`: do the work it was for, and say whether anything the
-    /// subtree shows or publishes changed. The host syncs, and drops the
-    /// published resource tree, only when it did: a poll that found nothing
-    /// costs nothing more. The default says it did, so the host syncs as for
-    /// any wake; a widget overrides it only where it serves here every
-    /// deadline it asks for and reports every change that serving makes.
+    /// due at `now`: do the work it was for, and say whether anything
+    /// changed. The default says it did.
     fn serve_deadline(&mut self, _now: Instant) -> bool {
         true
     }
@@ -2389,13 +2379,22 @@ pub trait Widget {
         defaults::modal_capture(&|visit| self.for_each_child(visit))
     }
 
-    /// True if this subtree's structural composition (children
-    /// inserted/removed) changed since the last frame; the App rebuilds the
-    /// taffy tree when so. Reading clears it. The default drains every
-    /// retained child (no short-circuit, so no child keeps a stale flag) and
-    /// reports whether any was dirty; a leaf has no children and reports
-    /// `false`. A container that changes its own child list sets its own flag
-    /// and ORs it with this traversal.
+    /// Close every modal this subtree presents, as its own way out does (a
+    /// host whose surface is a modal sheet calls it when the shell takes the
+    /// sheet down). Whether any was presented; containers forward.
+    fn dismiss_presented_modal(&mut self) -> bool {
+        defaults::dismiss_presented_modal(self.children_mut())
+    }
+
+    /// Whether this subtree presents a modal still drawn (arriving, open or
+    /// leaving): the counterpart of [`Widget::dismiss_presented_modal`].
+    fn presents_modal(&self) -> bool {
+        defaults::presents_modal(self.modal_capture(), &|visit| self.for_each_child(visit))
+    }
+
+    /// True if this subtree's structural composition changed since the last
+    /// frame; reading clears it. The default drains every retained child and
+    /// reports whether any was dirty.
     fn take_structure_dirty(&mut self) -> bool {
         defaults::take_structure_dirty(self.children_mut())
     }
