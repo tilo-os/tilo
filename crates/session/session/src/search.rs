@@ -109,12 +109,12 @@ pub struct SearchOptions {
 struct Kept {
     /// The lists the sources below were built from.
     lists: Arc<AppLists>,
-    host_apps: Rc<HostApps>,
-    content: Option<Rc<IndexedContent>>,
-    files: Option<Rc<Files>>,
+    host_apps: Arc<HostApps>,
+    content: Option<Arc<IndexedContent>>,
+    files: Option<Arc<Files>>,
     /// Settings' pages and the store's catalogue, for the workspace they
     /// were built for.
-    workspace: Option<(String, Rc<Settings>, Rc<StoreCatalogue>)>,
+    workspace: Option<(String, Arc<Settings>, Arc<StoreCatalogue>)>,
 }
 
 /// The programs the person downloaded, as the registry last read them, and
@@ -200,10 +200,10 @@ impl SessionSearch {
         } = options;
         let read = lists.latest();
         let kept = Kept {
-            host_apps: Rc::new(HostApps::new(read.host_apps.clone(), &preferences)),
+            host_apps: Arc::new(HostApps::new(read.host_apps.clone(), &preferences)),
             lists: read,
-            content: content.map(|index| Rc::new(IndexedContent::new(index, app_name))),
-            files: files.map(|(home, names, content)| Rc::new(Files::new(home, names, content))),
+            content: content.map(|index| Arc::new(IndexedContent::new(index, app_name))),
+            files: files.map(|(home, names, content)| Arc::new(Files::new(home, names, content))),
             workspace: None,
         };
         Self {
@@ -302,7 +302,7 @@ impl SessionSearch {
         // The machine's apps leave out what is switched off as they are
         // built, so the search after this one reads that list again.
         let read = self.lists.latest();
-        self.kept.borrow_mut().host_apps = Rc::new(HostApps::new(read.host_apps.clone(), &next));
+        self.kept.borrow_mut().host_apps = Arc::new(HostApps::new(read.host_apps.clone(), &next));
         if let Err(error) = settings_store::update_section(preferences::SECTION, next.to_values()) {
             tracing::warn!(%error, "the search sources switched off are not kept");
         }
@@ -325,7 +325,7 @@ impl SessionSearch {
         let mut sources: Vec<Box<dyn Source>> = vec![
             Box::new(settings),
             Box::new(catalogue),
-            Box::new(Rc::clone(&kept.host_apps)),
+            Box::new(Arc::clone(&kept.host_apps)),
             Box::new(Waiting::new("", self.notifications.borrow().clone())),
             Box::new(Continue::new(
                 &self.places.borrow(),
@@ -336,10 +336,10 @@ impl SessionSearch {
             )),
         ];
         if let Some(content) = &kept.content {
-            sources.push(Box::new(Rc::clone(content)));
+            sources.push(Box::new(Arc::clone(content)));
         }
         if let Some(files) = &kept.files {
-            sources.push(Box::new(Rc::clone(files)));
+            sources.push(Box::new(Arc::clone(files)));
         }
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
@@ -437,7 +437,7 @@ impl SessionSearch {
         let latest = self.lists.latest();
         let mut kept = self.kept.borrow_mut();
         if !Arc::ptr_eq(&latest, &kept.lists) {
-            kept.host_apps = Rc::new(HostApps::new(
+            kept.host_apps = Arc::new(HostApps::new(
                 latest.host_apps.clone(),
                 &self.preferences.borrow(),
             ));
@@ -449,13 +449,13 @@ impl SessionSearch {
 
     /// Settings and the catalogue for `workspace`, built once per workspace
     /// and reading of the lists.
-    fn for_workspace(&self, workspace: &str) -> (Rc<Settings>, Rc<StoreCatalogue>) {
+    fn for_workspace(&self, workspace: &str) -> (Arc<Settings>, Arc<StoreCatalogue>) {
         let lists = self.current_lists();
         let mut kept = self.kept.borrow_mut();
         if let Some((built, settings, catalogue)) = &kept.workspace
             && built == workspace
         {
-            return (Rc::clone(settings), Rc::clone(catalogue));
+            return (Arc::clone(settings), Arc::clone(catalogue));
         }
         // Settings the settings service changes in place are found as its
         // actions.
@@ -468,14 +468,14 @@ impl SessionSearch {
                     .map(str::to_owned)
             })
             .collect();
-        let settings = Rc::new(Settings::changing_in_place(workspace, &|id| {
+        let settings = Arc::new(Settings::changing_in_place(workspace, &|id| {
             in_place.contains(id)
         }));
-        let catalogue = Rc::new(StoreCatalogue::new(lists.catalogue.clone(), workspace));
+        let catalogue = Arc::new(StoreCatalogue::new(lists.catalogue.clone(), workspace));
         kept.workspace = Some((
             workspace.to_owned(),
-            Rc::clone(&settings),
-            Rc::clone(&catalogue),
+            Arc::clone(&settings),
+            Arc::clone(&catalogue),
         ));
         (settings, catalogue)
     }
@@ -652,38 +652,38 @@ impl SearchHost for SessionSearch {
                 app_name,
             ),
         };
-        let mut sources: Vec<Box<dyn Source>> = vec![
-            Box::new(Happening::new(
+        let mut sources: Vec<Arc<dyn Source>> = vec![
+            Arc::new(Happening::new(
                 scope.everywhere(),
                 self.here.borrow().clone(),
             )),
-            Box::new(settings),
-            Box::new(catalogue),
-            Box::new(Rc::clone(&kept.host_apps)),
-            Box::new(Waiting::new(workspace, self.notifications.borrow().clone())),
-            Box::new(continue_places),
+            Arc::new(settings),
+            Arc::new(catalogue),
+            Arc::clone(&kept.host_apps) as Arc<dyn Source>,
+            Arc::new(Waiting::new(workspace, self.notifications.borrow().clone())),
+            Arc::new(continue_places),
         ];
         {
             let downloaded = self.downloaded.borrow();
-            sources.push(Box::new(Downloaded::new(
+            sources.push(Arc::new(Downloaded::new(
                 workspace,
                 downloaded.reading.clone(),
                 &downloaded.published,
             )));
         }
         if let Some(content) = &kept.content {
-            sources.push(Box::new(Rc::clone(content)));
+            sources.push(Arc::clone(content) as Arc<dyn Source>);
         }
         if let Some(files) = &kept.files {
-            sources.push(Box::new(Rc::clone(files)));
+            sources.push(Arc::clone(files) as Arc<dyn Source>);
         }
         if let Some(records) = &self.records {
-            sources.push(Box::new(record_rows::Records::new(
+            sources.push(Arc::new(record_rows::Records::new(
                 workspace,
                 records.held(workspace),
             )));
         }
-        sources.push(Box::new(crate::search_ask::Ask::new(
+        sources.push(Arc::new(crate::search_ask::Ask::new(
             std::sync::Arc::clone(&self.ask),
             workspace,
             self.wake.clone(),
@@ -695,7 +695,7 @@ impl SearchHost for SessionSearch {
             types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
-            sources.push(Box::new(Jobs(apps.jobs())));
+            sources.push(Arc::new(Jobs(apps.jobs())));
             published.extend(apps.published());
         }
         SearchHostFeed {
@@ -1230,8 +1230,8 @@ mod tests {
     #[test]
     fn fixed_lists_keep_what_search_built_from_them() {
         let search = SessionSearch::new(SearchOptions::default(), None, None);
-        let before = Rc::clone(&search.kept.borrow().host_apps);
+        let before = Arc::clone(&search.kept.borrow().host_apps);
         let _ = search.feed("workspace", &Scope::Workspace);
-        assert!(Rc::ptr_eq(&before, &search.kept.borrow().host_apps));
+        assert!(Arc::ptr_eq(&before, &search.kept.borrow().host_apps));
     }
 }

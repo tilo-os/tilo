@@ -4,15 +4,18 @@
 //! the address the host's action door resolves against the live resource
 //! tree.
 
+use std::sync::Arc;
+
 use tilo_actions::{FlatAction, ResourceSpec};
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Hit, Source, SourceCosts, Target, frame_deadline};
+use crate::model::{Hit, Source, Target, frame_deadline};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
+use crate::workers::SearchWorkers;
 use ui::search::Scope;
 use ui::search::system::{KindGroup, ResourceKind};
 
@@ -56,8 +59,9 @@ pub struct SearchData {
     pub placeholder: Option<String>,
     /// What the host searches beyond these (Settings' pages, the store's
     /// catalogue, files, what apps hold), each over what is published or a
-    /// service answers. The search over everything asks them.
-    pub sources: Vec<Box<dyn Source>>,
+    /// service answers. The search over everything asks them, off the frame
+    /// when their query can move ([`Source::shared`]).
+    pub sources: Vec<Arc<dyn Source>>,
     /// The sources the person switched off, left out whatever they find.
     pub preferences: crate::preferences::SearchPreferences,
 }
@@ -71,17 +75,20 @@ enum ChosenRow {
     ShowAll(ResourceKind),
 }
 
+/// The sources a search asks. Those over plain data stand in an [`Arc`], so
+/// a frame hands the same source to a worker ([`Source::shared`]) rather
+/// than asking it on the frame.
 struct Sources {
-    applications: Applications,
-    windows: Windows,
-    commands: Commands,
-    actions: Actions,
-    published: Published,
+    applications: Arc<Applications>,
+    windows: Arc<Windows>,
+    commands: Arc<Commands>,
+    actions: Arc<Actions>,
+    published: Arc<Published>,
     content: Content,
-    answers: Option<(Answers, WebSearch)>,
+    answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
-    host: Vec<Box<dyn Source>>,
+    host: Vec<Arc<dyn Source>>,
     preferences: crate::preferences::SearchPreferences,
     /// Now, in Unix seconds, as the host said when search opened.
     now: u64,
@@ -97,12 +104,12 @@ impl Sources {
         };
         if matches!(data.scope, Scope::InApp(_)) {
             return Self {
-                applications: Applications::new(data.applications),
-                windows: Windows(data.windows),
-                commands: Commands(data.commands),
+                applications: Arc::new(Applications::new(data.applications)),
+                windows: Arc::new(Windows(data.windows)),
+                commands: Arc::new(Commands(data.commands)),
                 content: Content::new(Vec::new(), Vec::new()),
-                actions: Actions(Vec::new()),
-                published: Published(Vec::new()),
+                actions: Arc::new(Actions(Vec::new())),
+                published: Arc::new(Published(Vec::new())),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
                 host: Vec::new(),
@@ -111,22 +118,24 @@ impl Sources {
             };
         }
         Self {
-            applications: Applications::new(data.applications),
-            windows: Windows(data.windows),
-            commands: Commands(data.commands),
+            applications: Arc::new(Applications::new(data.applications)),
+            windows: Arc::new(Windows(data.windows)),
+            commands: Arc::new(Commands(data.commands)),
             content: Content::new(data.providers, data.resources.clone()).within(anchor),
-            actions: Actions(data.resources),
-            published: Published(data.published),
+            actions: Arc::new(Actions(data.resources)),
+            published: Arc::new(Published(data.published)),
             answers: matches!(data.scope, Scope::Workspace | Scope::Everywhere).then(|| {
                 (
-                    Answers {
+                    Arc::new(Answers {
                         rates: data.rates,
                         now: data.now,
-                    },
-                    data.app_for_scheme
-                        .map_or_else(WebSearch::default, |app_for_scheme| WebSearch {
-                            app_for_scheme,
-                        }),
+                    }),
+                    Arc::new(
+                        data.app_for_scheme
+                            .map_or_else(WebSearch::default, |app_for_scheme| WebSearch {
+                                app_for_scheme,
+                            }),
+                    ),
                 )
             }),
             window: None,
@@ -208,9 +217,9 @@ pub struct DesktopSearch {
     /// The search filling in, a source at a time: the rows shown are what
     /// came in so far.
     stream: Option<crate::model::SearchStream>,
-    /// How long each source took last time: what decides which is asked in
-    /// this frame and which waits for a later one.
-    costs: SourceCosts,
+    /// The threads the sources answer on: a frame hands them to the pool and
+    /// collects what came back, and never waits on one.
+    workers: SearchWorkers,
     /// The sources this search asks, in the order it asks them, and where
     /// each stands in the empty palette.
     order: Vec<(String, (u8, usize))>,
@@ -260,7 +269,7 @@ impl DesktopSearch {
             catalogue: false,
             choice: None,
             stream: None,
-            costs: SourceCosts::default(),
+            workers: SearchWorkers::new(),
             order: Vec::new(),
             rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
@@ -482,10 +491,11 @@ impl DesktopSearch {
         let deadline = frame_deadline(crate::model::FRAME_BUDGET);
         let now = sources.now;
         let usage = &self.usage;
-        let costs = &mut self.costs;
-        let stream = crate::model::search_stream(query, &all, 0, costs, deadline, &|hit: &Hit| {
-            usage.strength(query, hit, now)
-        });
+        let workers = &self.workers;
+        let stream =
+            crate::model::search_stream(query, &all, 0, workers, deadline, &|hit: &Hit| {
+                usage.strength(query, hit, now)
+            });
         drop(all);
         drop(switches);
         self.order = order;
@@ -512,8 +522,8 @@ impl DesktopSearch {
         let now = sources.now;
         let deadline = frame_deadline(crate::model::FRAME_BUDGET);
         let usage = &self.usage;
-        let costs = &mut self.costs;
-        let asked = stream.resume(&all, costs, deadline, &|hit: &Hit| {
+        let workers = &self.workers;
+        let asked = stream.resume(&all, workers, deadline, &|hit: &Hit| {
             usage.strength(&query, hit, now)
         });
         drop(all);
@@ -1096,8 +1106,10 @@ fn everywhere<'a>(
     sources: &'a Sources,
     recents: &'a Recents,
 ) -> (Vec<&'a dyn Source>, Option<Switches>) {
+    // Each source is asked through the handle it is held by: `Arc<S>` is a
+    // `Source` that can move to a worker, where the bare `S` is not.
     let mut all: Vec<&dyn Source> = vec![
-        recents,
+        recents as &dyn Source,
         &sources.applications,
         &sources.windows,
         &sources.content,
@@ -1108,7 +1120,7 @@ fn everywhere<'a>(
     if let Some((answers, web)) = &sources.answers {
         all.extend([answers as &dyn Source, web]);
     }
-    all.extend(sources.host.iter().map(|source| &**source));
+    all.extend(sources.host.iter().map(|source| &**source as &dyn Source));
     let switches = switches(sources, &all);
     all.retain(|source| sources.preferences.enabled(source.id()));
     (all, switches)
@@ -1241,7 +1253,7 @@ mod tests {
         };
         let mut data = data();
         data.sources
-            .push(Box::new(Happening::new(false, vec![here])));
+            .push(Arc::new(Happening::new(false, vec![here])));
         let mut search = DesktopSearch::new();
         search.open(data);
         settled(&mut search);
@@ -1304,8 +1316,8 @@ mod tests {
             subtitle: None,
         });
         data.sources
-            .push(Box::new(Happening::new(false, vec![here])));
-        data.sources.push(Box::new(People::new(
+            .push(Arc::new(Happening::new(false, vec![here])));
+        data.sources.push(Arc::new(People::new(
             "workspace",
             vec![PersonEntry {
                 id: "mara".into(),
@@ -1325,6 +1337,7 @@ mod tests {
             .expect("the app is listed");
         search.recents.record(&sheets);
         search.restart("", ui::search::engine_generation());
+        settled(&mut search);
 
         let entries = search.palette().visible_entries();
         let mut groups: Vec<&str> = Vec::new();
@@ -1496,6 +1509,7 @@ mod tests {
         assert!(search.escape(), "the desk's search clears its query");
         assert!(search.is_open(), "the first Escape keeps search open");
         assert_eq!(search.query(), "", "…and clears the query");
+        settled(&mut search);
         assert!(
             search.results().iter().any(|hit| hit.title == "Sheets"),
             "the empty field lists everything again"
@@ -1689,7 +1703,7 @@ mod tests {
     /// A search over the desktop and what one host adds.
     fn with_notes(scope: Scope) -> SearchData {
         SearchData {
-            sources: vec![Box::new(Notes)],
+            sources: vec![Arc::new(Notes)],
             scope,
             ..data()
         }
@@ -1877,9 +1891,9 @@ mod tests {
         );
     }
 
-    /// Typing runs the query once: the frame that takes the new text holds
-    /// what the sources answered in it, the frames after it only fill in
-    /// the rest, and a settled search asks nothing again.
+    /// Typing runs the query once: the frame that takes the new text asks
+    /// the sources, the frames after it fill in what came back, and a
+    /// settled search asks nothing again.
     #[test]
     fn typing_refreshes_the_rows_once_per_query() {
         let mut search = DesktopSearch::new();
@@ -1888,8 +1902,13 @@ mod tests {
         assert!(!search.refresh(), "the empty query is already shown");
         search.palette_mut().set_query("not");
         assert!(search.refresh(), "the new text runs the query");
-        assert!(search.results().iter().any(|hit| hit.title == "Notes"));
+        // A source answers on a worker: its row is in the frame that
+        // collects it, which never waits on any other source.
         settled(&mut search);
+        assert!(
+            search.results().iter().any(|hit| hit.title == "Notes"),
+            "the app named by the text is found"
+        );
         assert!(
             !search.refresh(),
             "nothing is asked once every source answered"
@@ -2044,13 +2063,26 @@ mod tests {
 
     /// Show what a host shows: keep asking for the rows of the sources that
     /// have not answered yet, as a running palette does every frame.
+    /// Draw the frames a host draws for a search until every source has
+    /// answered. A source answers on a worker, so a frame that finds
+    /// nothing new asks again a moment later, as the host's next frame
+    /// does.
     fn settled(search: &mut DesktopSearch) {
-        for _ in 0..128 {
-            if !search.refresh() {
+        let deadline = frame_deadline(crate::tests::SETTLE);
+        loop {
+            // A frame with nothing new is a frame, and a source answers on
+            // a worker: the search is settled when no source owes an answer
+            // and a frame found nothing to change.
+            if !search.refresh() && !search.awaiting_sources() {
                 return;
             }
+            assert!(
+                ui::time::now() < deadline,
+                "the search never settled for {:?}",
+                search.query()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        panic!("the search never settled");
     }
 
     fn selected(search: &DesktopSearch) -> Option<(String, String)> {
@@ -2162,6 +2194,7 @@ mod tests {
         settled(&mut search);
         arrived.set(true);
         assert!(search.refresh());
+        settled(&mut search);
         let best = search.results().first().expect("rows");
         assert_eq!(
             selected(&search),

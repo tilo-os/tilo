@@ -399,7 +399,7 @@ impl SearchHost for DeskHost {
     fn feed(&self, _: &str, scope: &Scope) -> SearchHostFeed {
         self.0.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
-            sources: vec![Box::new(Plan)],
+            sources: vec![std::sync::Arc::new(Plan)],
             ..SearchHostFeed::default()
         }
     }
