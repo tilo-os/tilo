@@ -120,7 +120,7 @@ pub(super) fn light_session() -> Session {
 /// Run frames until `done` holds, with no client to pump.
 #[track_caller]
 fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "what the capture asked of the desk", |session| {
+    crate::common::wait_for(session, "what the capture asked of the desk", |session| {
         done(session).then_some(())
     });
 }

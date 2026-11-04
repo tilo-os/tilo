@@ -136,22 +136,6 @@ pub fn wait_maybe<T>(
     steps_until(session, |session| probe(session))
 }
 
-/// Wait for `probe` to answer while `step` drives what the test waits on: a
-/// client's exchange, a set of devices' passes, a proxy's connection. The same
-/// one bound and report as [`wait_for`], for the waits that are not the
-/// session's own frames.
-#[track_caller]
-pub fn wait_stepping<T>(
-    what: impl std::fmt::Display,
-    mut step: impl FnMut(),
-    mut probe: impl FnMut() -> Option<T>,
-) -> T {
-    tilo_test_env::wait_for(what, || {
-        step();
-        probe()
-    })
-}
-
 /// Run frames until `done` holds.
 #[track_caller]
 pub fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {

@@ -1712,15 +1712,21 @@ const PROBE: (u32, u32) = (1100, 200);
 /// the panel has drawn the frame its last action asked for.
 fn drawn(session: &mut Session) -> tilo_compositor::Screenshot {
     let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
-    common::wait_for(session, "the screen to settle", |session| {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         session.settle_services();
         session.step(Duration::from_millis(16)).expect("step");
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        (frame.rgba == last.rgba).then(|| {
-            last = frame;
-            frame
-        })
-    })
+        if frame.rgba == last.rgba {
+            return frame;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the screen never settled; the parts say: {:?}",
+            session.shell_parts()
+        );
+        last = frame;
+    }
 }
 
 // ---- each press of the shell's reaches the session ------------------------------------------

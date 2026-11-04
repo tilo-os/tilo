@@ -15,6 +15,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
@@ -476,7 +478,11 @@ fn band_colour(session: &mut Session) -> [u8; 4] {
 /// is the suite's hang bound, so a busy machine slows the wait instead of
 /// failing it.
 #[track_caller]
-fn within(session: &mut Session, client: &mut TestClient, done: impl FnMut(&mut Session) -> bool) {
+fn within(
+    session: &mut Session,
+    client: &mut TestClient,
+    mut done: impl FnMut(&mut Session) -> bool,
+) {
     pump(session, &mut [client], |session, _| done(session));
 }
 

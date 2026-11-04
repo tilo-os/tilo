@@ -58,7 +58,7 @@ fn session(runs: &Arc<AgentRuns>) -> Session {
 
 /// Run frames until `done` holds.
 #[track_caller]
-fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
+fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
     common::until(session, "what the test asked for", done);
 }
 

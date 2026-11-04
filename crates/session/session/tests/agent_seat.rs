@@ -276,7 +276,7 @@ fn an_admitted_agents_control_connection_is_served_as_its_own_seat() {
     // The program leaves: the seat is no longer served on this pid.
     program.end();
     let refused = common::wait_for(
-        session,
+        &mut session,
         "the program's seat to stop being served",
         |session| {
             let refused = seat_of(session, &socket);

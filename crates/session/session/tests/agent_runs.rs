@@ -303,7 +303,7 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
         let seen = Arc::clone(&seen);
         std::thread::spawn(move || app(&socket, &asked, &seen))
     };
-    let asked = common::wait_for(session, "the run the ask started", |session| {
+    let asked = common::wait_for(&mut session, "the run the ask started", |session| {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
         received.try_recv().ok()

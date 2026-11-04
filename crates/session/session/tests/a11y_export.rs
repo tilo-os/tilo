@@ -146,10 +146,14 @@ fn activating_a_button_through_the_export_performs_its_action() {
         session.a11y_perform(place, opener, &Action::Activate),
         "the desk took the press its window offers"
     );
-    common::wait_for(session, "the palette to open from the button", |session| {
-        session.step(REFRESH).expect("a turn of the session");
-        session.handle().search_open().then_some(())
-    });
+    common::wait_for(
+        &mut session,
+        "the palette to open from the button",
+        |session| {
+            session.step(REFRESH).expect("a turn of the session");
+            session.handle().search_open().then_some(())
+        },
+    );
 }
 
 #[test]
@@ -188,7 +192,7 @@ fn an_app_the_session_hosts_is_exported_with_working_controls() {
         "the app took the press on its button"
     );
     let mut asked = Vec::new();
-    let confirmed = common::wait_maybe(session, |session| {
+    let confirmed = common::wait_maybe(&mut session, |session| {
         session.step(REFRESH).expect("a turn of the session");
         asked.extend(seat.take_asked());
         asked

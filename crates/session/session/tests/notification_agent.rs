@@ -52,8 +52,8 @@ fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
 
 /// What `done` reads, once the session reaches it.
 #[track_caller]
-fn until<T>(session: &mut Session, done: impl FnMut(&Session) -> Option<T>) -> T {
-    common::wait_for(session, "what the test asked for", done)
+fn until<T>(session: &mut Session, mut done: impl FnMut(&Session) -> Option<T>) -> T {
+    common::wait_for(session, "what the test asked for", |session| done(session))
 }
 
 /// The resource publishing `action` among everything the session publishes.

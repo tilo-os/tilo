@@ -676,12 +676,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (script, seen) = stand_in(dir.path());
         let gate = dir.path().join("gate");
-        // The daemon accepts the first list only after the gate exists.
+        // The daemon refuses every list until the gate exists, and says it was asked.
         std::fs::write(
             &script,
             format!(
                 "#!/bin/sh\n\
-             if [ ! -e {gate} ]; then exit 1; fi\n\
+             if [ ! -e {gate} ]; then echo refused >> {seen}/refused; exit 1; fi\n\
              n=$(cat {seen}/count 2>/dev/null || echo 0)\n\
              n=$((n+1))\n\
              echo \"$n\" > {seen}/count\n",
@@ -700,11 +700,10 @@ mod tests {
             dir.path().join("sockets"),
         );
         publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None, 0));
-        // The first attempt must have been refused; the file it writes is what
-        // says the worker got that far, so nothing here waits on the clock.
-        let acl = dir.path().join("config/fs-capabilities.json");
-        tilo_test_env::wait_until("the first attempt reaching the daemon's file", || {
-            acl.is_file()
+        // The first attempt is refused before the gate exists: the daemon's own
+        // word for that is what this waits on, so nothing here races the clock.
+        tilo_test_env::wait_until("the daemon refusing the first attempt", || {
+            seen.join("refused").is_file()
         });
         std::fs::write(&gate, b"").unwrap();
         publisher

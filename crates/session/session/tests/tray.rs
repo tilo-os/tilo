@@ -153,8 +153,8 @@ impl FakeMenu {
 /// conversation on another runtime, which a busy builder can take many steps
 /// to land, so it waits for the condition itself rather than for a while.
 #[track_caller]
-fn until<T>(session: &mut Session, what: &str, asked: impl FnMut(&Session) -> Option<T>) -> T {
-    common::wait_for(session, what, asked)
+fn until<T>(session: &mut Session, what: &str, mut asked: impl FnMut(&Session) -> Option<T>) -> T {
+    common::wait_for(session, what, |session| asked(session))
 }
 
 /// The resource published for the tray menu entry labelled `label`.

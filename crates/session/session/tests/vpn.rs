@@ -27,7 +27,7 @@ use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use device_vpn::fdpass;
 use device_vpn::net::Ipv4Net;

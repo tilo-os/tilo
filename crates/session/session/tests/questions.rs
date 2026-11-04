@@ -16,8 +16,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -78,7 +76,8 @@ fn ask(questions: &Questions, app: Option<&str>, label: &str, kind: &str, detail
 /// Let the session run until `done` holds.
 #[track_caller]
 fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "what the test asked for", |session| {
+    tilo_test_env::wait_for("what the test asked for", || {
+        session.step(Duration::from_millis(2)).expect("step");
         done(session).then_some(())
     });
 }
