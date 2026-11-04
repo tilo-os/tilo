@@ -66,6 +66,9 @@ impl BarChipProps {
 /// A bar chip as a retained widget: the [`BarChipFace`]'s content with its own press.
 pub struct BarChip {
     props: BarChipProps,
+    /// Pointer precision; a coarse pointer grows the face to the minimum
+    /// target, as every other control does.
+    interaction: crate::interaction::InteractionEnvironment,
     /// The glyphs before the faces, in a run the painted face borrows.
     icon_run: Vec<Icon>,
     /// What a press runs: the view intent or the exported action the props named.
@@ -77,10 +80,22 @@ pub struct BarChip {
 }
 
 impl BarChip {
+    /// The chip's face height: the bar's own control height, grown to the
+    /// minimum target on a coarse pointer.
+    fn face_height(&self, theme: &Theme) -> f64 {
+        let base = BarChipFace::height(theme);
+        if self.interaction.supports_hover() {
+            base
+        } else {
+            base.max(f64::from(self.interaction.minimum_target()))
+        }
+    }
+
     fn face<'a>(&'a self, theme: &Theme, faces: &'a [Face<'a>]) -> BarChipFace<'a> {
         let (shown, overflow) = FaceStack::in_face(BarChipFace::height(theme)).split(faces.len());
         let mut chip = BarChipFace::new(&self.props.name, &faces[..shown.min(faces.len())])
             .overflow(overflow)
+            .at_height(self.face_height(theme))
             .open(self.props.open)
             .hovered(self.hovered)
             .pressed(self.pressed)
@@ -132,7 +147,7 @@ impl Widget for BarChip {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let height = crate::num::f32_of_f64(BarChipFace::height(theme));
+        let height = crate::num::f32_of_f64(self.face_height(theme));
         taffy.widget_leaf(
             Style {
                 flex_shrink: 0.0,
@@ -170,6 +185,16 @@ impl Widget for BarChip {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.hovered &= environment.supports_hover();
+        }
     }
 
     fn draw(
@@ -299,6 +324,7 @@ impl Described for BarChip {
             icon_run: props.icon.into_iter().collect(),
             props,
             press,
+            interaction: crate::interaction::InteractionEnvironment::default(),
             rect: Rect::ZERO,
             hovered: false,
             pressed: false,
@@ -340,5 +366,29 @@ mod tests {
         let chip = BarChip::from_props("chip", props);
         assert_eq!(chip.props.name, "Who is here");
         assert!(!chip.is_focused());
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+
+    #[test]
+    fn a_coarse_pointer_grows_the_face_to_the_minimum_target() {
+        let theme = Theme::dark();
+        let mut chip = BarChip::from_props(
+            "chip",
+            BarChipProps {
+                name: "Who is here".into(),
+                ..BarChipProps::default()
+            },
+        );
+        // A fine pointer keeps the bar's own control height.
+        assert!((chip.face_height(&theme) - BarChipFace::height(&theme)).abs() < 1e-6);
+        chip.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+        assert!(
+            chip.face_height(&theme) >= 48.0 - 1e-6,
+            "a finger's target grows the face"
+        );
     }
 }
