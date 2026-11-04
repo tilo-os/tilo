@@ -74,8 +74,12 @@ d-6wqou47w-row0 = Notizeditor für t
 
 d-6wqou47w-row1-row0 = Notizeditor für c
 
-d-6wqou47w-row1-row1-row0 = Notizeditor für c
+d-6wqou47w-row1-row1 = Notizeditor für c
 
-d-6wqou47w-row1-row1 = Notizeditor für v
+d-6wqou47w-row1-row2-row0 = Notizeditor für c
+
+d-6wqou47w-row1-row2-row1 = Notizeditor für c
+
+d-6wqou47w-row1-row2 = Notizeditor für v
 
 d-6wqou47w-row1 = Notizeditor für s

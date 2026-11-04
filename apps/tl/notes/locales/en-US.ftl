@@ -76,8 +76,12 @@ d-6wqou47w-row0 = Note editor for t
 
 d-6wqou47w-row1-row0 = Note editor for c
 
-d-6wqou47w-row1-row1-row0 = Note editor for c
+d-6wqou47w-row1-row1 = Note editor for c
 
-d-6wqou47w-row1-row1 = Note editor for v
+d-6wqou47w-row1-row2-row0 = Note editor for c
+
+d-6wqou47w-row1-row2-row1 = Note editor for c
+
+d-6wqou47w-row1-row2 = Note editor for v
 
 d-6wqou47w-row1 = Note editor for s
