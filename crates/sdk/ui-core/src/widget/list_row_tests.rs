@@ -125,25 +125,73 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
 }
 
 #[test]
-fn a_row_without_its_avatar_keeps_the_avatars_room() {
-    // A list whose rows show who is on the item keeps the face's room on a row nobody is on
-    // yet, so the text of every row ends where the others do.
+fn a_row_without_its_avatar_leaves_no_room_for_one() {
+    // Facts are a flowing run: a row with no avatar takes no room for one, so the facts it
+    // has run on to the row's shared trailing edge instead of stopping at a hole.
     let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
     let with = ListRowFace::new("Design")
         .secondary("See you there")
+        .meta("Thursday")
         .avatar(AvatarFace::new("Ada", "ada"));
     let without = ListRowFace::new("Empty")
         .secondary("No messages yet")
-        .avatar_room();
-    let bare = ListRowFace::new("Empty").secondary("No messages yet");
-    assert!(geometry(&with, outer).avatar.is_some());
-    assert!(geometry(&without, outer).avatar.is_none());
+        .meta("Thursday");
+    let with = geometry(&with, outer);
+    let without = geometry(&without, outer);
+    let avatar = with.avatar.expect("the row shows the face");
+    assert!(without.avatar.is_none());
     assert!(
-        (geometry(&with, outer).text_right - geometry(&without, outer).text_right).abs() < 0.01,
-        "the room of the face keeps the facts column one column"
+        with.meta_right < avatar.x0,
+        "the day stands before the face: {with:?}"
     );
-    assert!(geometry(&bare, outer).text_right > geometry(&without, outer).text_right);
-    assert!((face_height(&with, 1.0) - face_height(&without, 1.0)).abs() < 0.01);
+    assert!(
+        (without.meta_right - avatar.x1).abs() < 0.01,
+        "with no avatar the day ends on the facts' shared edge: {without:?} beside {with:?}"
+    );
+}
+
+#[test]
+fn a_cards_facts_run_on_without_the_room_of_those_it_has_not() {
+    let theme = Theme::dark();
+    let m = RowMetrics::card(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let outer = Rect::new(0.0, 0.0, 320.0, 57.0);
+    // A day and a flag, nobody assigned: the flag follows the day one spacing token on,
+    // with no empty slot where the avatar would stand.
+    let face = ListRowFace::new("Measure the new bedroom")
+        .card()
+        .meta("Saturday")
+        .mark(Icon::Flag);
+    let geo = face.geometry(outer, &m, &mut text, &theme);
+    assert!(geo.avatar.is_none(), "{geo:?}");
+    let marks = geo.marks_right.expect("the flag");
+    assert!(
+        (marks - m.mark - (geo.meta_right + m.tag_gap)).abs() < 0.01,
+        "the flag follows the day one spacing token on: {geo:?}"
+    );
+}
+
+#[test]
+fn a_card_without_facts_has_no_facts_line() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let m = RowMetrics::card(&theme);
+    let bare = ListRowFace::new("Measure the new bedroom").card();
+    let with_facts = ListRowFace::new("Measure the new bedroom")
+        .card()
+        .meta("Saturday");
+    let facts = RowMetrics::line(&mut text, &m.meta);
+    let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+    let difference = with_facts.height(&mut text, &theme) - bare.height(&mut text, &theme);
+    assert!(
+        (difference - facts - tight).abs() < 0.5,
+        "a card grows by its facts line and nothing when it has none: it grew {difference} \
+         (facts {facts}, gap {tight}, bare {}, with {})",
+        bare.height(&mut text, &theme),
+        with_facts.height(&mut text, &theme)
+    );
 }
 
 #[test]

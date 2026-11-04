@@ -286,13 +286,10 @@ impl Source for ItemSource<'_> {
     ) -> Result<usize, String> {
         match slot {
             "row" => {
-                let mut row = given(
+                let row = given(
                     &self.item.key,
                     &[("title", Value::Text(self.item.title.clone()))],
                 );
-                if self.item.avatar {
-                    row.props.insert("avatar_space".into(), Value::Bool(false));
-                }
                 read(&mut AvatarRow {
                     row,
                     avatar: self.item.avatar,

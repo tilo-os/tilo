@@ -2448,11 +2448,6 @@
           "type": "bool"
         },
         {
-          "name": "avatar_space",
-          "doc": "Keep the room an avatar takes in the facts column without showing one, so the facts of a list's rows keep one column.",
-          "type": "bool"
-        },
-        {
           "name": "motion",
           "doc": "The pace the row's own motion plays at: its mark coming and going, and the row arriving, leaving and changing places in its list. Unset, the theme's.",
           "type": {

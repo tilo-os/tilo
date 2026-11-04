@@ -465,25 +465,25 @@ mod tests {
     }
 
     #[test]
-    fn the_lanes_share_the_pane_whole() {
+    fn a_lane_keeps_a_comfortable_measure() {
         let theme = Theme::dark();
-        let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
-        // A pane of 656 shares out to two lanes at the least measure, filling it: 24 of gutter
-        // at each side and 12 between lanes.
-        assert!((f64::from(Board::lane_width(&theme, 656.0, 3.0)) - 298.0).abs() < 0.5);
-        // Fewer lanes than fit grow to fill the pane instead of leaving it empty.
-        assert!(
-            (f64::from(Board::lane_width(&theme, 900.0, 2.0)) - (900.0 - 48.0 - 12.0) / 2.0).abs()
-                < 0.5
+        let lane = f64::from(Board::lane_width(&theme, 1280.0));
+        assert!((300.0..=340.0).contains(&lane), "a lane reads {lane} wide");
+        // Wider panes leave the extra room open beside the lanes instead of stretching them.
+        assert_eq!(
+            Board::lane_width(&theme, 2000.0),
+            Board::lane_width(&theme, 1280.0)
         );
-        // A pane too narrow for two lanes gives its one lane everything but the gutters, so
+        // A pane too narrow for one lane and the board's gutters gives its lane the pane, so
         // the next lane does not show as a sliver.
-        assert!((f64::from(Board::lane_width(&theme, 500.0, 2.0)) - 452.0).abs() < 0.5);
-        assert!(f64::from(Board::lane_width(&theme, least, 1.0)) >= least);
+        let narrow = 350.0;
+        assert!((f64::from(Board::lane_width(&theme, narrow)) - (narrow - 48.0)).abs() < 0.5);
+        let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
+        assert!(f64::from(Board::lane_width(&theme, least)) >= least);
     }
 
     #[test]
-    fn a_board_in_a_sideways_pane_sizes_its_lanes_from_the_pane() {
+    fn a_board_in_a_sideways_pane_keeps_its_lanes_a_comfortable_measure() {
         let board = Board::from_props("board", props(&Intents::default()));
         let pane = crate::widget::Scrollable::new_horizontal()
             .with_content_min_viewport_width()
@@ -512,8 +512,16 @@ mod tests {
             .expect("the pane shows the board");
         let lanes = board.lane_rects();
         assert_eq!(lanes.len(), 2);
+        let theme = Theme::dark();
+        let lane = f64::from(theme.tokens.metrics.board_lane_width);
+        for (index, rect) in lanes.iter().enumerate() {
+            assert!(
+                (rect.width() - lane).abs() < 0.5,
+                "lane {index} reads {rect:?}, a comfortable measure {lane} wide"
+            );
+        }
         assert!(
-            (lanes[1].x1 - lanes[0].x0 - (656.0 - 48.0)).abs() < 0.5,
+            (lanes[1].x1 - lanes[0].x0 - (2.0 * lane + 12.0)).abs() < 0.5,
             "{lanes:?}"
         );
     }

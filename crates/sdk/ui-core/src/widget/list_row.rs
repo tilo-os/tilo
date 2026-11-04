@@ -411,8 +411,6 @@ pub struct ListRowFace<'a> {
     value: Option<(&'a str, RowValue)>,
     /// Who the item is, as a fact: their face in the facts column.
     avatar: Option<AvatarFace<'a>>,
-    /// The room an avatar takes in the facts column, left empty on a row without one.
-    avatar_room: bool,
     marks: [Option<RowMark>; MAX_MARKS],
     /// The tone the row's own mark reads in: an item's priority, a status.
     mark_tone: Tone,
@@ -478,7 +476,6 @@ impl<'a> ListRowFace<'a> {
             meta_spans: &[],
             value: None,
             avatar: None,
-            avatar_room: false,
             marks: [None; MAX_MARKS],
             mark_tone: Tone::Neutral,
             tags: &[],
@@ -640,14 +637,6 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn avatar(mut self, avatar: AvatarFace<'a>) -> Self {
         self.avatar = Some(avatar);
-        self
-    }
-
-    /// Keep the room an avatar takes in the facts column without showing one, so the facts of
-    /// a list whose rows show avatars keep one column.
-    #[must_use]
-    pub fn avatar_room(mut self) -> Self {
-        self.avatar_room = true;
         self
     }
 
@@ -1165,8 +1154,6 @@ pub struct ListRow {
     count: Option<usize>,
     /// Who the row is about, as a fact in the facts column.
     avatar: Option<FactAvatar>,
-    /// The room an avatar takes in the facts column, left empty on a row without one.
-    avatar_room: bool,
     leading: Option<Leading>,
     leading_column: Option<f64>,
     nested: bool,
@@ -1272,7 +1259,6 @@ impl ListRow {
             tags: Vec::new(),
             count: None,
             avatar: None,
-            avatar_room: false,
             leading: None,
             leading_column: None,
             nested: false,
@@ -2240,9 +2226,6 @@ impl ListRow {
         face = face.depth(self.depth);
         if let Some(avatar) = &self.avatar {
             face = face.avatar(avatar.face());
-        }
-        if self.avatar_room {
-            face = face.avatar_room();
         }
         if let Some(leading) = &self.leading {
             face = face.leading(match leading {

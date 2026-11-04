@@ -96,9 +96,8 @@ impl Board {
         Self {
             // The lanes stand the height of the board, so each one's cards scroll under its
             // header instead of the whole board growing past the pane. They keep a gutter at
-            // the board's sides too: the first and last lane sit the same distance from the
-            // pane's edges, so a board scrolled to its end leaves after the last lane the air
-            // it began with before the first.
+            // the board's sides too: a board scrolled to either end stands its first or last
+            // lane a gutter in from the pane's edge, the air it began with before the first.
             row: Row::new()
                 .no_wrap()
                 .with_align_items(taffy::AlignItems::Stretch)
@@ -285,22 +284,30 @@ impl Board {
         Some((lane, before))
     }
 
-    /// The width a lane takes in a board `width` wide holding `lanes` lanes: lanes share the
-    /// pane, so whole lanes fill it — as many whole lanes as it holds at a card's comfortable
-    /// measure, each as wide as what is left over shares out to, never narrower than that
-    /// measure, and wider when the board holds fewer lanes than fit. A board narrower than
-    /// two lanes therefore shows one whole lane per page rather than one lane and a sliver of
-    /// the next, and a wide one shows four whole lanes instead of three and a sliver.
-    pub(crate) fn lane_width(theme: &Theme, width: f64, lanes: f64) -> f32 {
+    /// The width a card reads best in a lane (`metrics.board_lane_width`), never below the
+    /// measure a card's own text needs at this theme's type size.
+    fn comfortable_lane(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.metrics.board_lane_width).max(CardWidth::Regular.min_width(theme))
+    }
+
+    /// The width a lane takes on a board `width` wide: a lane's comfortable measure, the same
+    /// on every board and at every window width, so lanes stand left-aligned with the room a
+    /// wider pane leaves open beside them. Only a pane too narrow for one lane and the board's
+    /// gutters narrows it, and then to the pane, so a narrow board shows one whole lane per
+    /// page rather than one lane and a sliver of the next.
+    pub(crate) fn lane_width(theme: &Theme, width: f64) -> f32 {
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
-        let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
         let least = f64::from(CardWidth::Regular.min_width(theme));
-        let room = (width - 2.0 * gutter).max(least);
-        let fit = (((room + gap) / (least + gap)).floor().max(1.0)).min(lanes.max(1.0));
-        let width = ((room - (fit - 1.0) * gap) / fit).max(least);
+        let comfortable = Self::comfortable_lane(theme);
+        let room = (width - 2.0 * gutter).max(0.0);
+        let lane = if room >= comfortable {
+            comfortable
+        } else {
+            room.max(least)
+        };
         #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
         {
-            width as f32
+            lane as f32
         }
     }
 
@@ -324,8 +331,7 @@ impl Board {
         theme: &Theme,
         width: f64,
     ) -> bool {
-        let lanes = self.lanes.len() as f64;
-        let width = Self::lane_width(theme, width, lanes);
+        let width = Self::lane_width(theme, width);
         if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
             return false;
         }
@@ -482,12 +488,10 @@ impl crate::widget::Decorator for Board {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = Some(theme.clone());
-        // The lanes build at the least measure — a board too narrow for its lanes keeps it —
-        // or at the pane they last filled, which the pane the board is given settles
-        // (`adjust_layout_style`).
-        let least = f64::from(CardWidth::Regular.min_width(theme));
+        // The lanes build at a lane's comfortable measure, or at the width the pane the board
+        // is given settles (`adjust_layout_style`).
         #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
-        let width = self.sized.unwrap_or(least as f32);
+        let width = self.sized.unwrap_or(Self::comfortable_lane(theme) as f32);
         self.set_lane_widths(width);
         Widget::build_layout(&mut self.row, taffy, theme, node_map)
     }
@@ -752,21 +756,16 @@ mod tests {
         );
     }
 
-    /// The lanes keep the board's gutter at both ends: a pane as wide as three card measures,
-    /// the gaps between them and a gutter at each side holds all three lanes whole, the first
-    /// a gutter in from the leading edge and the last the same distance from the trailing one.
+    /// The lanes stand left-aligned at their comfortable measure: the first a gutter in from
+    /// the leading edge, each the sibling gap from the last, and the room a wider pane leaves
+    /// open beside them at the trailing edge.
     #[test]
     fn a_board_keeps_a_gutter_at_both_ends_of_its_lanes() {
         let theme = Theme::dark();
-        let lane = CardWidth::Regular.min_width(&theme);
+        let lane = f64::from(Board::lane_width(&theme, 1280.0));
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
         let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a pane width"
-        )]
-        let pane = (3.0 * lane + 2.0 * gap + 2.0 * gutter) as u32;
+        let pane = 1280u32;
         let mut lanes = Board::new();
         for key in ["todo", "doing", "done"] {
             let header = Box::new(Text::new(key)) as Element;
@@ -782,16 +781,22 @@ mod tests {
             (rects[0].x0 - board.x0 - gutter).abs() < 1.0,
             "the first lane stands a gutter in from the leading edge: {rects:?} in {board:?}"
         );
-        assert!(
-            (board.x1 - rects[2].x1 - gutter).abs() < 1.0,
-            "the last lane stands the same gutter in from the trailing edge: {rects:?} in {board:?}"
-        );
         for (index, rect) in rects.iter().enumerate() {
             assert!(
-                rect.x0 >= board.x0 && rect.x1 <= board.x1,
-                "lane {index} stands whole in the board: {rect:?} in {board:?}"
+                (rect.width() - lane).abs() < 1.0,
+                "lane {index} keeps its comfortable measure: {rect:?}"
             );
+            if let Some(next) = rects.get(index + 1) {
+                assert!(
+                    (next.x0 - rect.x1 - gap).abs() < 1.0,
+                    "lane {index} is a sibling gap from the next: {rects:?}"
+                );
+            }
         }
+        assert!(
+            board.x1 - rects[2].x1 > gutter,
+            "a wider pane leaves its extra room open beside the lanes: {rects:?} in {board:?}"
+        );
     }
 
     #[test]

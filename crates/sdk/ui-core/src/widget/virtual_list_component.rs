@@ -8,7 +8,6 @@
 //! screen, and the host queues what changed for the list to take. Rows given as components are
 //! held whole.
 
-use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -223,13 +222,6 @@ pub struct VirtualListProps {
 #[derive(Default)]
 pub struct DescribedRows {
     held: Held,
-    /// Whether a row the list built shows an avatar: the rows without one then keep its room.
-    /// Once on it stays on, so rows do not shift as others scroll in and out.
-    avatars: Cell<bool>,
-    /// The rows built keeping no room for an avatar, before one came in.
-    spaced: RefCell<Vec<String>>,
-    /// The rows to build again: the avatar column came in after they were built.
-    restyled: RefCell<Vec<String>>,
     /// Rows standing in for removed items, after the items ([`VirtualListProps::removed`]).
     removed: Rc<Vec<ListItemProps>>,
     /// The heading over the rows whose item names no group
@@ -335,7 +327,6 @@ impl DescribedRows {
             held: self.held.clone(),
             removed: Rc::clone(&self.removed),
             ungrouped: self.ungrouped.clone(),
-            ..Self::default()
         }
     }
 
@@ -383,21 +374,6 @@ impl DescribedRows {
                     }
                 }
             }
-        }
-    }
-
-    /// The row of `key` to build: its props, with the room for an avatar kept while the list
-    /// shows avatars.
-    fn row_props(&self, row: &mut ListRowProps, key: &str) {
-        if row.avatar.is_some() {
-            if !self.avatars.replace(true) {
-                self.restyled
-                    .borrow_mut()
-                    .append(&mut self.spaced.borrow_mut());
-            }
-        } else if row.avatar_space && !self.avatars.get() {
-            row.avatar_space = false;
-            self.spaced.borrow_mut().push(key.to_owned());
         }
     }
 
@@ -502,26 +478,20 @@ impl ListModel for DescribedRows {
     }
 
     fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
-        let mut changes = match &self.held {
+        match &self.held {
             Held::Rendered(rows) => rows
                 .try_borrow_mut()
                 .map(|mut rows| rows.take_changes())
                 .unwrap_or_default(),
             _ => Vec::new(),
-        };
-        let restyled = std::mem::take(&mut *self.restyled.borrow_mut());
-        if !restyled.is_empty() {
-            changes.push(ListModelChange::RowsChanged { keys: restyled });
         }
-        changes
     }
 
     fn needs_poll(&self) -> bool {
-        let waiting = match &self.held {
+        match &self.held {
             Held::Rendered(rows) => rows.try_borrow().is_ok_and(|rows| rows.has_changes()),
             _ => false,
-        };
-        waiting || !self.restyled.borrow().is_empty()
+        }
     }
 
     /// What the row is grouped by: its item's heading, the list's tail for an item done
@@ -799,7 +769,6 @@ fn bare_row(
         // own view their face alone.
         let row = match row {
             ItemRow::Row(mut props) => {
-                rows.row_props(&mut props, key);
                 if props.secondary.is_none()
                     && let Some(title) = &breadcrumb
                 {

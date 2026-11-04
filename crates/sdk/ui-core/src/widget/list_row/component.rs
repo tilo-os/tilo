@@ -45,9 +45,6 @@ pub struct ListRowProps {
     pub icon: Option<Icon>,
     /// Whether the row is selected in its list.
     pub selected: bool,
-    /// Keep the room an avatar takes in the facts column without showing one, so the facts of
-    /// a list's rows keep one column.
-    pub avatar_space: bool,
     /// Who the item is: their face among its facts, between when it is due and how far it
     /// has got.
     #[component(slot)]
@@ -92,7 +89,6 @@ impl ListRowProps {
             tone: self.tone,
             icon: self.icon,
             selected: self.selected,
-            avatar_space: self.avatar_space,
             avatar: self.avatar.clone(),
             trailing: None,
             checkbox: self.checkbox.clone(),
@@ -185,7 +181,6 @@ impl ListRow {
             tone,
             icon,
             selected,
-            avatar_space,
             avatar,
             trailing,
             checkbox,
@@ -216,7 +211,6 @@ impl ListRow {
                 glyph: avatar.glyph,
             }
         });
-        self.avatar_room = avatar_space;
         self.selected = selected;
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
         self.check_binding = None;

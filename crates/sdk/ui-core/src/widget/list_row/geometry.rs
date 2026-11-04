@@ -172,7 +172,6 @@ impl ListRowFace<'_> {
         self.meta.is_some()
             || !self.meta_spans.is_empty()
             || self.avatar.is_some()
-            || self.avatar_room
             || self.count.is_some()
             || self.marks.iter().flatten().next().is_some()
             || self.value.is_some()
@@ -249,9 +248,11 @@ impl ListRowFace<'_> {
     }
 
     /// The side of the avatar in the facts column, where the row shows one. A card's facts
-    /// stand on one line of their own, so its avatar is the inline size there.
+    /// stand on one line of their own, so its avatar is the inline size there. A row without
+    /// one takes no room there: its other facts run on together.
     pub(super) fn fact_avatar(&self, theme: &Theme) -> Option<f64> {
-        (self.avatar.is_some() || self.avatar_room)
+        self.avatar
+            .is_some()
             .then(|| RowMetrics::avatar(theme, !self.card && self.extra_lines() > 0))
     }
 
@@ -386,14 +387,12 @@ impl ListRowFace<'_> {
             right -= pill + m.column_gap;
         }
         if let Some(side) = self.fact_avatar(theme) {
-            if self.avatar.is_some() {
-                geo.avatar = Some(Rect::new(
-                    right - side,
-                    cy - side / 2.0,
-                    right,
-                    cy + side / 2.0,
-                ));
-            }
+            geo.avatar = Some(Rect::new(
+                right - side,
+                cy - side / 2.0,
+                right,
+                cy + side / 2.0,
+            ));
             right -= side + m.column_gap;
         }
         geo.meta_right = right;
@@ -464,50 +463,43 @@ impl ListRowFace<'_> {
             .min(rect.y1 - m.pad_y - facts / 2.0)
             .max(rect.y0 + m.pad_y + facts / 2.0);
         geo.facts_cy = cy;
+        // The facts that stand: only those the card has, in the row's order, a single spacing
+        // token apart. An absent fact takes no room, so the run never leaves a hole.
         let avatar = self.fact_avatar(theme);
         let count = self
             .count_label()
             .map(|label| BadgeFace::intrinsic_width(&label, text, theme));
         let marks = self.marks_width(m);
-        let mut tail = 0.0;
-        let mut tail_items: i32 = 0;
-        if let Some(side) = avatar {
-            tail += side;
-            tail_items += 1;
-        }
-        if let Some(width) = count {
-            tail += width;
-            tail_items += 1;
-        }
-        if marks > 0.0 {
-            tail += marks;
-            tail_items += 1;
-        }
+        let tail = avatar.unwrap_or(0.0) + count.unwrap_or(0.0) + marks;
+        let tail_items =
+            usize::from(avatar.is_some()) + usize::from(count.is_some()) + usize::from(marks > 0.0);
         let has_meta = self.meta.is_some() || !self.meta_spans.is_empty();
-        let gaps = if has_meta {
-            f64::from(tail_items + 1) * m.tag_gap
-        } else {
-            f64::from(tail_items.saturating_sub(1)) * m.tag_gap
-        };
+        let items = tail_items + usize::from(has_meta);
+        #[allow(clippy::cast_precision_loss, reason = "a card's facts are a handful")]
+        let gaps = items.saturating_sub(1) as f64 * m.tag_gap;
+        let meta = self.meta_width(m, text, (right - geo.text_x - tail - gaps).max(0.0));
         let mut x = geo.text_x;
-        let meta = self.meta_width(m, text, (right - x - tail - gaps).max(0.0));
+        let mut gap = 0.0;
         if meta > 0.0 {
             geo.meta_left = x;
             geo.meta_right = x + meta;
-            x += meta + m.tag_gap;
+            x += meta;
+            gap = m.tag_gap;
         }
         if let Some(side) = avatar {
-            if self.avatar.is_some() {
-                geo.avatar = Some(Rect::new(x, cy - side / 2.0, x + side, cy + side / 2.0));
-            }
-            x += side + m.tag_gap;
+            let at = x + gap;
+            geo.avatar = Some(Rect::new(at, cy - side / 2.0, at + side, cy + side / 2.0));
+            x = at + side;
+            gap = m.tag_gap;
         }
         if let Some(width) = count {
-            geo.count_right = Some(x + width);
-            x += width + m.tag_gap;
+            let at = x + gap;
+            geo.count_right = Some(at + width);
+            x = at + width;
+            gap = m.tag_gap;
         }
         if marks > 0.0 {
-            geo.marks_right = Some(x + marks);
+            geo.marks_right = Some(x + gap + marks);
         }
         // A value of the row's own keeps the card's trailing edge.
         if self.value.is_some() {

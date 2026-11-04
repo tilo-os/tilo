@@ -438,9 +438,7 @@ impl Checker<'_> {
     /// A row's `avatar:`: a Principal, or an Option of one, as the row's `avatar` slot holding a
     /// `ui.Avatar`. At `.none` (the last message's author of a conversation that has none yet) a
     /// row that names an `icon:` shows the item itself as its avatar, that glyph on a neutral
-    /// square (a group); one that names none keeps the room an avatar takes (`avatar_space`),
-    /// in line with the rows of its list that show one; its list drops the room when no row
-    /// shows one.
+    /// square (a group); one that names none shows no avatar, and its facts run on without one.
     fn avatar_arg(
         &mut self,
         n: LocalId,
@@ -504,35 +502,28 @@ impl Checker<'_> {
             }
             return;
         }
-        // No participant this time.
+        // No participant this time: a row that names an icon shows the item itself; one that
+        // names none shows no avatar, and its other facts run on without an empty slot.
         self.push_sink();
-        match icon {
-            Some(icon) => {
-                let glyph_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/glyph"));
-                let glyph = self.new_node(&avatar_kind, glyph_key);
-                if let Some(title) = title {
-                    self.emit(host(
-                        Imp::UiPropH,
-                        vec![
-                            Ex::local(glyph, Ty::View),
-                            Ex::str("name"),
-                            Ex::local(title, Ty::Text),
-                        ],
-                    ));
-                }
-                self.icon_value(glyph, "glyph", icon);
+        if let Some(icon) = icon {
+            let glyph_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/glyph"));
+            let glyph = self.new_node(&avatar_kind, glyph_key);
+            if let Some(title) = title {
                 self.emit(host(
-                    Imp::UiChild,
-                    vec![slot_ex.clone(), Ex::local(glyph, Ty::View)],
-                ));
-                self.emit(host(Imp::UiChild, vec![row, slot_ex]));
-            }
-            None => {
-                self.emit(host(
-                    Imp::UiPropI,
-                    vec![row, Ex::str("avatar_space"), Ex::int(1)],
+                    Imp::UiPropH,
+                    vec![
+                        Ex::local(glyph, Ty::View),
+                        Ex::str("name"),
+                        Ex::local(title, Ty::Text),
+                    ],
                 ));
             }
+            self.icon_value(glyph, "glyph", icon);
+            self.emit(host(
+                Imp::UiChild,
+                vec![slot_ex.clone(), Ex::local(glyph, Ty::View)],
+            ));
+            self.emit(host(Imp::UiChild, vec![row, slot_ex]));
         }
         let none = self.pop_sink();
         let test = Ex::host(Imp::IsSome, vec![Ex::local(tmp, ty)], Ty::Bool);

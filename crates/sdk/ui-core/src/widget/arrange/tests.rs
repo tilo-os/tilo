@@ -458,7 +458,7 @@ fn a_page_is_bounded_to_its_measure_and_centred() {
 }
 
 #[test]
-fn a_filling_page_takes_the_panes_whole_width_and_keeps_its_height_gutter() {
+fn a_filling_page_takes_the_panes_whole_width_and_starts_at_the_page_gutter() {
     let theme = Theme::dark();
     let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;
     let mut plain = Page::full().push(content());
@@ -475,9 +475,20 @@ fn a_filling_page_takes_the_panes_whole_width_and_keeps_its_height_gutter() {
         (surface.x0 - 0.0).abs() < 1.0 && (surface.x1 - 864.0).abs() < 1.0,
         "a page that fills its pane is a surface, whole width to whole width: {surface:?}"
     );
+    let edge = f64::from(
+        theme
+            .tokens
+            .spacing
+            .rhythm
+            .get(crate::tokens::Rhythm::Group),
+    );
     assert!(
-        (surface.y0 - inset.y0).abs() < 1.0,
-        "a surface keeps the page's gutter above it: {surface:?} under {inset:?}"
+        (surface.y0 - edge).abs() < 1.0,
+        "a canvas starts one content gap under the bar: {surface:?}"
+    );
+    assert!(
+        surface.y0 < inset.y0,
+        "content that grows with what it holds keeps the wider gutter: {surface:?} over {inset:?}"
     );
 }
 

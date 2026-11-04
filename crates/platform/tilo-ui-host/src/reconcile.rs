@@ -1361,20 +1361,12 @@ impl Reconciler {
     /// section of the page.
     fn rows(&mut self, node: &UiNode) -> Element {
         let row_kind = crate::adapter::kind("ListRow");
-        let avatars = node
-            .children
-            .iter()
-            .any(|item| find(item, &row_kind).is_some_and(shows_avatar));
         let rows: Vec<Element> = node
             .children
             .iter()
             .map(|item| {
                 let row = find(item, &row_kind).unwrap_or(item);
-                if row.kind == row_kind {
-                    self.build(&in_avatar_column(row, avatars))
-                } else {
-                    self.build(row)
-                }
+                self.build(row)
             })
             .collect();
         if rows.is_empty() {
@@ -1609,23 +1601,6 @@ pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
             ]
         })
         .unwrap_or_default()
-}
-
-/// Whether a list's row node shows an avatar: a participant's, or the item's own glyph.
-fn shows_avatar(row: &UiNode) -> bool {
-    crate::adapter::description_of(row).is_some_and(|description| {
-        !crate::adapter::slot_parts(row, description, "avatar").is_empty()
-    })
-}
-
-/// The row node as its list shows it: the room an avatar takes is kept while the list shows
-/// avatars, and given up while no row of it does.
-fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
-    let mut row = row.clone();
-    if !avatars {
-        row.props.remove("avatar_space");
-    }
-    row
 }
 
 /// The card that arrived under `new_node` since `old_node`, by its key: the last of `new_node`'s

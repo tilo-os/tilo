@@ -73,6 +73,13 @@ impl Layout for PageLayout {
             Some(RowSpacing::Foot) => {
                 (length(resolved.gap(crate::tokens::Rhythm::Section)), gutter)
             }
+            // A page that fills its pane lays out its own parts from the page gutter itself
+            // (a board's lanes start one standard content gap under the bar). Only content
+            // that grows with what it holds keeps the wider side gutter at its ends.
+            None if self.fill => {
+                let edge = length(resolved.gap(crate::tokens::Rhythm::Group));
+                (edge, edge)
+            }
             None => (gutter, gutter),
         };
         Style {
