@@ -22,6 +22,9 @@ pub const MAX_PACKET_BYTES: usize = 4064;
 /// ones speaking. A new voice takes the slot of the one quiet longest, and is
 /// not heard while every slot is speaking.
 pub const MAX_PUBLISHERS: usize = 8;
+/// Frames one publisher may hold across its jitter queue and its decoder.
+/// A machine that falls behind gives the new frame up, never the call.
+pub const MAX_PUBLISHER_FRAMES: usize = 10;
 pub const SEND_LIFETIME: Duration = Duration::from_millis(100);
 pub const RECEIVE_LIFETIME: Duration = Duration::from_millis(200);
 
@@ -381,7 +384,7 @@ impl JitterBuffer {
             .stats
             .late
             .saturating_add(count(before.saturating_sub(publisher.frames.len())));
-        if publisher.frames.len() == 10 {
+        if publisher.frames.len() >= MAX_PUBLISHER_FRAMES {
             self.stats.overruns = self.stats.overruns.saturating_add(1);
             return Err(AudioError::Capacity);
         }

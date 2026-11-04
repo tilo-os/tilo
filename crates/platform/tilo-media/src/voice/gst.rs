@@ -4,8 +4,8 @@
 use super::{
     AudioError, AudioStats, BTreeMap, CaptureQueue, CaptureTimeline, CapturedOpus, Duration,
     FRAME_DURATION, FRAME_SAMPLES, HEARD_FOR, HEARD_RUN, Instant, JitterBuffer, MAX_PACKET_BYTES,
-    MAX_PUBLISHERS, PlayoutFrame, PublicationId, ReceivedOpus, SEND_LIFETIME, VecDeque, mix_frames,
-    validate_frame,
+    MAX_PUBLISHER_FRAMES, MAX_PUBLISHERS, PlayoutFrame, PublicationId, ReceivedOpus, SEND_LIFETIME,
+    VecDeque, mix_frames, validate_frame,
 };
 mod codec;
 mod device;
@@ -397,7 +397,7 @@ impl VoiceAudio {
     /// Admit one received frame for its publisher's decode and playout.
     ///
     /// A frame that arrives while this machine is still behind on that
-    /// publisher is dropped, here or at its decoder: the call goes on.
+    /// publisher is dropped before it is decoded: the call goes on.
     ///
     /// # Errors
     ///
@@ -408,6 +408,20 @@ impl VoiceAudio {
             return Err(AudioError::Closed);
         }
         let id = frame.publisher.clone();
+        let held = self
+            .decoders
+            .get_mut(&id)
+            .map_or(0, |decoder| {
+                decoder.expire(now);
+                decoder.outstanding()
+            })
+            .saturating_add(self.jitter.queued_for(&id));
+        if held >= MAX_PUBLISHER_FRAMES {
+            // This machine is already behind on the publisher: the frame is
+            // heard late or not at all, and the call is not the thing that
+            // ends.
+            return Ok(());
+        }
         self.jitter.push(frame, now)?;
         if self.jitter.target_ms(&id).is_some() {
             self.decoders
@@ -455,6 +469,15 @@ impl VoiceAudio {
             }
             if let Some(decoder) = self.decoders.get_mut(&frame.publisher) {
                 decoder.expire(now);
+                if decoder
+                    .outstanding()
+                    .saturating_add(self.jitter.queued_for(&frame.publisher))
+                    >= MAX_PUBLISHER_FRAMES
+                {
+                    // The pass that would overrun the publisher's capacity
+                    // drops what arrived and plays on.
+                    continue;
+                }
                 decoder.push(frame, now)?;
             }
         }
@@ -726,12 +749,6 @@ impl Decoder {
         if frame.expires_at <= now {
             return Ok(());
         }
-        if self.outstanding() >= 10 {
-            // This machine decodes slower than the call speaks. The frame is
-            // heard late or not at all; the call is not the thing that ends,
-            // and the frames already queued keep their place in its stream.
-            return Ok(());
-        }
         let pts = self.next_pts;
         self.next_pts = pts
             .checked_add(20_000_000)
@@ -783,7 +800,7 @@ impl Decoder {
                 .iter()
                 .map(|pair| i16::from_le_bytes(*pair))
                 .collect();
-            if self.ready.len() >= 10 {
+            if self.ready.len() >= MAX_PUBLISHER_FRAMES {
                 // Decoded faster than the call plays it out: this frame is
                 // given up rather than the call it belongs to.
                 continue;
