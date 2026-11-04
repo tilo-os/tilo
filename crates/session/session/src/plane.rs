@@ -643,6 +643,28 @@ impl WorkspaceMemberships for SessionMemberships {
         false
     }
 
+    /// An app opening in `workspace` is let author there when this device's
+    /// person administers the workspace and it does not let that app author
+    /// yet: the same decision the launch before it makes
+    /// ([`crate::membership::authorship`]). A member whose role only lets them
+    /// write asks nothing of the workspace's people.
+    fn app_opens_by_granting(
+        &self,
+        workspace: &str,
+        app: &str,
+        _certificate: &tilo_user_identity::DeviceCert,
+    ) -> bool {
+        if !self.engine.administers(workspace) {
+            return false;
+        }
+        self.engine.policy(workspace).is_ok_and(|policy| {
+            !policy.app_authors(
+                app,
+                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
+            )
+        })
+    }
+
     fn health(&self) -> Result<(), String> {
         self.engine.owner().health()
     }

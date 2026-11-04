@@ -1833,7 +1833,9 @@ fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
 
 /// The answer to `actions_invoke`: the receipt, by a number the tools follow it with. The
 /// owner's door invokes nothing while the screen is locked: what a person's own scripts run is
-/// what the person at the device could run, and a locked desktop runs nothing.
+/// what the person at the device could run, and a locked desktop runs nothing. `confirmed`
+/// stands for the person's own answer to an action that asks first, as pressing Allow in its
+/// prompt does.
 fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     if ctx.gate != Gate::Dev && actions.locked() {
         return refusal(
@@ -1872,12 +1874,16 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     };
     let invocation = InvocationId::new();
     let caller = actions.caller(ctx);
+    let confirmation = match request.get("confirmed").and_then(Json::as_bool) {
+        Some(true) => Some(tilo_actions::remote::Confirmation::Confirmed),
+        _ => None,
+    };
     let invoke = InvokeRequest {
         invocation,
         target,
         argument,
         context: None,
-        confirmation: None,
+        confirmation,
         revision: None,
         on_behalf_of: None,
         wait_ms: None,

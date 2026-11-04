@@ -168,13 +168,14 @@ impl<'a> Membership<'a> {
 }
 
 /// Let `app` author its own records in `workspace`, as the person who opens it
-/// there: the workspace's governance gives the grant when they may change the
-/// workspace, and the desk takes it from there like the rest of the
-/// workspace's grants ([`project`]), so the launch that follows hands the app
-/// its authorship. A workspace this device's governance does not hold — one
-/// that lives only on this desk, or a session that holds none — has nothing to
-/// ask, and its own policy takes the grant from the owner. Nothing is written
-/// while the workspace already makes the app an author.
+/// there: the workspace's governance gives the grant when they administer it
+/// ([`crate::engine::Engine::administers`]), and the desk takes it from there
+/// like the rest of the workspace's grants ([`project`]), so the launch that
+/// follows hands the app its authorship. A workspace this device's governance
+/// does not hold — one that lives only on this desk, or a session that holds
+/// none — has nothing to ask, and its own policy takes the grant from the
+/// owner. Nothing is written while the workspace already makes the app an
+/// author.
 ///
 /// # Errors
 /// The workspace's governance refused the grant, or a desk-only workspace has
@@ -194,7 +195,12 @@ pub(crate) fn authorship(
     };
     if let Some(engine) = engine.filter(|engine| engine.holds(id)) {
         let policy = engine.policy(workspace)?;
-        if !authors(&policy) {
+        // The grant is the workspace's to give, and this device gives it where
+        // its person administers the workspace: a member whose role only lets
+        // them write cannot change its people, and asks for nothing here. The
+        // workspace's own devices grant it, and what they grant arrives in the
+        // projection below like the rest of its grants.
+        if !authors(&policy) && engine.administers(workspace) {
             Membership::of(engine, id).grant_app_authorship(app)?;
         }
         let policy = engine.policy(workspace)?;

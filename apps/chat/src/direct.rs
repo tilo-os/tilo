@@ -222,7 +222,10 @@ impl ChatApp {
             "peer": conversation.peer,
             "messages": conversation.messages.iter().map(|message| serde_json::json!({
                 "id": message.id, "author": message.author, "text": message.text,
-            })).collect::<Vec<_>>()
+            })).collect::<Vec<_>>(),
+            // What the sidebar counts for this conversation: a reader asks the
+            // conversation how much of it its person has not read.
+            "unread": self.direct_unread(public_key),
         });
         if self.direct_person.as_deref() == Some(public_key) {
             self.person_messages = conversation.messages;

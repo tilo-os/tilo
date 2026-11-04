@@ -366,6 +366,28 @@ impl Engine {
             .with_current(workspace, |view| view.peer().governance().governed_policy())
     }
 
+    /// Whether this device's person may administer `workspace` here: the
+    /// workspace's governance gives their person the grant action, which is
+    /// what a change to its people — letting an app author there — is decided
+    /// by. A workspace decided by another device's governance says no here,
+    /// whatever this device holds of it.
+    #[must_use]
+    pub fn administers(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let device = self.identity.device_cert.device_public_key;
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view
+                    .peer()
+                    .workspace()
+                    .check_workspace_administration(device, SystemTime::now())
+                    .is_ok())
+            })
+            .unwrap_or(false)
+    }
+
     /// The invitations into `workspace` this device's person issued that are
     /// still redeemable: the links they made, listed where they made them,
     /// since a link is answered by the device that signed it.
