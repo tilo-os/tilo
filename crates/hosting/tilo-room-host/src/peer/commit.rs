@@ -5,6 +5,7 @@ use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
     desktop_refusal, enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
 };
+use crate::workspace_access::WorkspaceOperation;
 
 /// Spends `peer`'s budget for one change, unless the relay's own user sent
 /// it: the host device and the bots a host-held root delegated must never
@@ -153,7 +154,9 @@ async fn admit_commit(
     if let Some(limited) = over_change_limit(peer, session) {
         return refused(&limited.to_string());
     }
-    let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+    let Some(source) =
+        authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish).await?
+    else {
         let reason = unpublished(&*ws.lock().await, peer);
         return refused(reason);
     };

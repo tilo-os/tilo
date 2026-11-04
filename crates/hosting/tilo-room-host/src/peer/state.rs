@@ -507,7 +507,7 @@ pub(super) async fn handle_delta(
     // A page asks a record's channel for access on a plane of its own, and is
     // refused there by name.
     let op = crate::peer::admission::plane_of(&env);
-    let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+    let Some(source) = authorized_state_source(&ws, peer, session, op).await? else {
         trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
         // subscriber; a follow-up write must close rather than refuse twice.
@@ -707,7 +707,7 @@ pub(super) async fn handle_delta_prefix(
             "author does not match authenticated device".into(),
         ));
     }
-    let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+    let Some(source) = authorized_state_source(&workspace, peer, session, op).await? else {
         trace_all(&envelopes, "server_source_refused");
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
@@ -779,12 +779,11 @@ pub(super) async fn authorized_state_source(
     workspace: &SharedWorkspace,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
+    op: WorkspaceOperation,
 ) -> Result<Option<StateSource>, PeerError> {
     let source = StateSource::new(peer, session);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    Ok(source
-        .publishes(&runtime, WorkspaceOperation::Publish)
-        .then_some(source))
+    Ok(source.publishes(&runtime, op).then_some(source))
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace: the

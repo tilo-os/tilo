@@ -14,10 +14,13 @@
 //!    admitted on the read planes ([`WorkspaceOperation::reads`]) and refused on
 //!    every other, even where the workspace lists it, and it subscribes only
 //!    while one of the workspace's spectator seats is free ([`Spectators`]).
-//!    Asking a record's channel for access is such a request
-//!    ([`WorkspaceOperation::ChannelAccess`]): it is refused by name, since
-//!    the channel's group admits the devices its record's readers name and a
-//!    spectator's is not one of them.
+//!    Asking a record's channel for access ([`WorkspaceOperation::ChannelAccess`])
+//!    is that device joining a channel's group like any other: in a public
+//!    workspace ([`Spectators::public`]) it is admitted, and the channel's own
+//!    readers then decide each record — the device is one the workspace records
+//!    as watching it, so it is a reader of the records no grant covers and is
+//!    withheld from every other. In any other workspace the request is refused
+//!    by name ([`DenyReason::SealedFromSpectators`]).
 //! 5. An exact member device — within any pending replacement's ceiling — or
 //!    a device of a user root the workspace's signed authority admits is admitted.
 //! 6. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
@@ -33,13 +36,16 @@
 //! sent: the workspace's retained state, its live plane and its presence. It
 //! never writes: no change, commit, presence, record content, compaction,
 //! live or voice frame and no action ([`WorkspaceOperation::Publish`] and every
-//! plane that is no read). What members seal into a channel stays sealed from
-//! it, in every workspace: a key opens a channel only for the devices its
-//! record's readers name, so a visitor that only watches is told so by name
-//! ([`DenyReason::SealedFromSpectators`]) and is handed no key. A public
-//! workspace ([`Spectators::public`]) is one anyone may join as a guest: a
-//! visitor that wants what is sealed there joins, and is then admitted to the
-//! channels its membership reads like any other device.
+//! plane that is no read). In a public workspace a visitor that only watches
+//! reads the workspace's public records too, its sealed ones included: its
+//! device joins each channel as a watching device of the workspace, and the
+//! channel hands it the keys its group's process gives every member
+//! ([`tilo_peer_state::PeerGovernanceMut::admit_watching_device`]). What a grant
+//! keeps from some of the room stays sealed from it
+//! ([`tilo_peer_state::PeerGovernance::withheld_record_readers`]). In a workspace
+//! that is not public a key opens a channel only for the devices its record's
+//! readers name, so a visitor that only watches is told so by name
+//! ([`DenyReason::SealedFromSpectators`]) and is handed no key.
 //!
 //! One plane is not a workspace membership at all:
 //! [`WorkspaceOperation::OwnChannelKeys`], the relay's own application
@@ -127,9 +133,10 @@ pub enum WorkspaceOperation {
     /// A browser page's session in the workspace's live plane.
     Live,
     /// A device asking one of the workspace's channels for access: the plane
-    /// its own key package arrives on (see the module documentation). No
-    /// membership, no enrolment and no seat admits a device here; the
-    /// channel's group admits the devices its record's readers name.
+    /// its own key package arrives on (see the module documentation). The
+    /// channel's group admits the devices its record's readers name; no
+    /// membership, enrolment or seat admits a device here beyond the one the
+    /// workspace records for a device that only watches a public one.
     ChannelAccess,
     /// Discovering the workspace's content endpoints.
     ContentDiscovery,
@@ -230,8 +237,8 @@ pub enum DenyReason {
     WatchOnly,
     /// A spectator subscribing while every spectator seat is taken.
     SpectatorsFull,
-    /// Channel access asked for by a device that only watches: a key opens a
-    /// channel for its record's readers alone.
+    /// Channel access asked for by a device that only watches, in a workspace
+    /// that is not public: a key opens a channel for its record's readers alone.
     SealedFromSpectators,
     /// Channel keys asked for by a device other than the one governing the
     /// workspace on this relay.
@@ -394,8 +401,8 @@ pub struct Spectators {
     /// Spectator devices subscribed to the workspace at once.
     pub seats: usize,
     /// Anyone may join the workspace as a guest, and so be admitted to the
-    /// channels its membership reads. Watching alone opens nothing: a
-    /// spectator is handed no key in a public workspace either.
+    /// channels its membership reads; whoever only watches reads its public
+    /// records with the device the workspace records as watching it.
     pub public: bool,
 }
 
@@ -570,12 +577,23 @@ pub(crate) fn decide_in(
     if watches_only(workspace.runtime, peer) {
         // Before membership: the device the spectator person joined with
         // is listed, and must not write either. A watching page asks its
-        // records' channels for access like any device, and is answered by
-        // name here: what members seal stays sealed from those who only
-        // watch, so the node has no key to give and the channel's group does
-        // not admit it.
+        // records' channels for access like any device. In a public workspace
+        // it is answered by the channels themselves: the workspace admits its
+        // device as one that only watches (the governor writes the row), so a
+        // record no grant keeps from the workspace's members admits it and a
+        // record that is kept from some of them stays sealed from it. Anywhere
+        // else what members seal stays sealed from those who only watch, and it
+        // is told so by name.
         if op == WorkspaceOperation::ChannelAccess {
-            return Decision::Deny(DenyReason::SealedFromSpectators);
+            return if workspace
+                .runtime
+                .spectators
+                .is_some_and(|spectators| spectators.public)
+            {
+                Decision::Admit
+            } else {
+                Decision::Deny(DenyReason::SealedFromSpectators)
+            };
         }
         return if !op.reads() {
             Decision::Deny(DenyReason::WatchOnly)

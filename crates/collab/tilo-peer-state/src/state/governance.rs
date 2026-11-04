@@ -56,6 +56,12 @@ impl PeerGovernance<'_> {
         let mut member_user_roots = Vec::new();
         for bytes in policy.identities.values() {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            // A device that only watches is no member's device: it reads the
+            // workspace's public records ([`PeerGovernance::watching_devices`])
+            // and is withheld from every other.
+            if identity.watching {
+                continue;
+            }
             // An agent outside its delegation reads and writes nothing.
             if identity
                 .delegate_acting(&self.peer.core.workspace, now_ns(now))
@@ -89,12 +95,17 @@ impl PeerGovernance<'_> {
         })
     }
 
-    /// The member devices that may read `channel`, one of the workspace's record
+    /// The devices that may read `channel`, one of the workspace's record
     /// channels, at `now`: the projection of the workspace's membership a
     /// channel's MLS group follows. `route` is the channel's record when the
     /// caller knows it ([`Self::withheld_record_readers`]). `None` when
     /// neither `route` nor a grant names the record: who may read it is then
     /// unknown, not no one.
+    ///
+    /// A watching device ([`Self::watching_devices`]) is one of a channel's
+    /// readers where its record is not withheld from it: every member reads
+    /// the records no grant covers, and a visitor who only watches reads those
+    /// too ([`Self::withheld_record_readers`]).
     ///
     /// # Errors
     ///
@@ -105,7 +116,6 @@ impl PeerGovernance<'_> {
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
     ) -> Result<Option<BTreeSet<[u8; 32]>>, String> {
-        let access = self.peer.governance().governed_access(now)?;
         let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
         let readers = self
             .peer
@@ -115,12 +125,33 @@ impl PeerGovernance<'_> {
             return Ok(None);
         };
         Ok(Some(
-            access
-                .member_devices
+            readers
+                .readers
                 .into_iter()
                 .filter(|device| !withheld.contains(device))
                 .collect(),
         ))
+    }
+
+    /// The devices that only watch the workspace: each row the governor wrote
+    /// for a watching page's device ([`PeerGovernanceMut::admit_watching_device`]).
+    /// They read the workspace's public records, the ones no grant keeps from
+    /// any of its members, and are withheld from every other.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's governance is missing or a row does not read back.
+    pub fn watching_devices(self) -> Result<BTreeSet<[u8; 32]>, String> {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return Ok(BTreeSet::new());
+        };
+        doc.policy()
+            .identities
+            .values()
+            .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).map_err(err))
+            .filter(|row| row.as_ref().is_ok_and(|row| row.watching))
+            .map(|row| row.map(|row| row.device_cert.device_public_key))
+            .collect()
     }
 
     /// The governed member devices a Read Deny keeps out of a record's
@@ -142,6 +173,11 @@ impl PeerGovernance<'_> {
     /// ([`collab_types::member_record`]); its id does not say whose. So
     /// [`RecordReaders::unrouted`] lists every member device: such a channel
     /// admits no one until a device names its record.
+    ///
+    /// A device that only watches ([`Self::watching_devices`]) reads the records
+    /// no grant covers, which every member reads, and is withheld from every
+    /// covered one, however its person's role would read it: what members seal
+    /// stays sealed from a visitor who only watches.
     pub fn withheld_record_readers(
         self,
         now: SystemTime,
@@ -157,6 +193,7 @@ impl PeerGovernance<'_> {
             .policy()
             .workspace_policy(&self.peer.core.workspace);
         let workspace = self.peer.core.workspace.as_str();
+        let watching = self.peer.governance().watching_devices()?;
         let denied = |app: &str, record: &str| -> BTreeSet<[u8; 32]> {
             access
                 .member_devices
@@ -190,7 +227,9 @@ impl PeerGovernance<'_> {
                     .iter()
                     .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
             let devices = if covered {
-                denied(app, record)
+                let mut withheld = denied(app, record);
+                withheld.extend(watching.iter().copied());
+                withheld
             } else {
                 BTreeSet::new()
             };
@@ -199,8 +238,21 @@ impl PeerGovernance<'_> {
                 devices,
             );
         }
-        let unrouted = access.member_devices.iter().copied().collect();
-        Ok(RecordReaders { withheld, unrouted })
+        // Every channel whose record the node cannot name may be any record, a
+        // member's own included: no device is admitted to it, a visitor who
+        // only watches no more than a member.
+        let readers: BTreeSet<[u8; 32]> = access
+            .member_devices
+            .iter()
+            .copied()
+            .chain(watching.iter().copied())
+            .collect();
+        let unrouted = readers.clone();
+        Ok(RecordReaders {
+            readers,
+            withheld,
+            unrouted,
+        })
     }
 
     /// The workspace's people and grants as its governance records them: its
@@ -548,6 +600,7 @@ impl PeerGovernanceMut<'_> {
             admission: None,
             admissions: Vec::new(),
             delegate: None,
+            watching: false,
         };
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -574,6 +627,186 @@ impl PeerGovernanceMut<'_> {
         )?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
+    /// Admit `device`, a watching page's device certified by the root of
+    /// someone already a member, as a device that only watches: it is held to
+    /// reading the records no grant keeps from the workspace's members, on the
+    /// channels it is admitted to like any device, and to writing nothing.
+    ///
+    /// Its person is a member already (a public workspace's spectator person is
+    /// one of its viewers), so no invitation and no seat brings it in; its
+    /// devices come and go with page loads, and the governor writes each in when
+    /// its page asks a record's channel for access and takes it out when the
+    /// page is gone ([`Self::release_watching_device`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, `device` does not
+    /// verify, is revoked, carries any capability, or conflicts with a row the
+    /// workspace keeps for it, its person is not a member, or governance cannot
+    /// be updated.
+    pub fn admit_watching_device(
+        self,
+        device: &DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer.require_governance_writer(key, now)?;
+        tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
+        if self
+            .peer
+            .core
+            .revocations
+            .is_revoked(&device.device_public_key)
+        {
+            return Err("device revoked".into());
+        }
+        let capabilities = &device.capabilities;
+        if capabilities.can_own_workspaces
+            || capabilities.can_admit_devices
+            || capabilities.can_act_as_host
+            || capabilities.can_read_all_workspaces
+            || capabilities.can_administer_devices
+            || capabilities.foreign
+        {
+            return Err("a device that only watches carries no capabilities".into());
+        }
+        let person = hex::encode(device.user_public_key);
+        if self.peer.core.owner != device.user_public_key
+            && self
+                .peer
+                .governance()
+                .governed_policy()?
+                .active_role(&person)
+                .is_none()
+        {
+            return Err("the device's person is not a member".into());
+        }
+        let id = hex::encode(device.device_public_key);
+        if let Some(bytes) = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .and_then(|doc| doc.policy().identities.get(&id).cloned())
+        {
+            let row: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
+            if row.device_cert != *device {
+                return Err("certificate conflict".into());
+            }
+            if row.watching {
+                return Ok(false);
+            }
+            return Err("the device is a member's device, not one that only watches".into());
+        }
+        let identity = GovernedIdentity {
+            device_cert: device.clone(),
+            revocations: Vec::new(),
+            admission: None,
+            admissions: Vec::new(),
+            delegate: None,
+            watching: true,
+        };
+        self.write_identity_row(device.device_public_key, Some(&identity), key, now)
+    }
+
+    /// Take `device`, a device that only watches, out of the workspace's
+    /// governance: the next epoch of each record's channel leaves it out.
+    /// Whether the workspace changed: a device it does not keep as one that only
+    /// watches changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, the row kept for
+    /// `device` is a member's, or governance cannot be updated.
+    pub fn release_watching_device(
+        self,
+        device: &[u8; 32],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer.require_governance_writer(key, now)?;
+        let id = hex::encode(device);
+        let Some(bytes) = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .and_then(|doc| doc.policy().identities.get(&id).cloned())
+        else {
+            return Ok(false);
+        };
+        let row: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
+        if row.watching {
+            return self.write_identity_row(*device, None, key, now);
+        }
+        // A member's device is the workspace's for as long as its person is a
+        // member: a page gives back only what a page took in.
+        if row.admission.is_some()
+            || !row.admissions.is_empty()
+            || row.delegate.is_some()
+            || self.peer.core.certificates.contains_key(device)
+        {
+            return Ok(false);
+        }
+        self.write_identity_row(*device, None, key, now)
+    }
+
+    /// Write `identity`'s row for `device` into the workspace's governance, or
+    /// take that device's row out when `identity` is `None`, as the governing
+    /// `key`, and take the change in as every member will. Whether the workspace
+    /// changed.
+    fn write_identity_row(
+        self,
+        device: [u8; 32],
+        identity: Option<&GovernedIdentity>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let mut doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("governed identities missing")?
+            .1;
+        let before = doc.get_heads();
+        doc.set_actor(self.peer.workspace_actor_of(key));
+        let id = hex::encode(device);
+        match identity {
+            Some(identity) => {
+                doc.put(
+                    &identities,
+                    id,
+                    automerge::ScalarValue::Bytes(serde_json::to_vec(identity).map_err(err)?),
+                )
+                .map_err(err)?;
+            }
+            None => {
+                doc.delete(&identities, id).map_err(err)?;
+            }
+        }
+        doc.commit();
+        let changes = doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let workspace = self.peer.core.workspace.clone();
+        let outcome = self.peer.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp {
+                changes,
+                room: workspace,
+            },
+            now,
+        )?;
+        Ok(outcome.changed || outcome.metadata_changed)
+    }
+
     /// Change a governed collaborator's workspace role.
     ///
     /// # Errors

@@ -363,7 +363,7 @@ fn decide_matrix() {
             name: "spectator device of a public room, before it holds a seat",
             peer: peer(spectator, [85; 32], false, Some(NOW + 1)),
             setup: Box::new(move |runtime, _| public(runtime)),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
+            expected: ["AAAWWWWWsdWA", "AAAWWWWWsdWA", "AAAWWWWWsdWA"],
         },
         Case {
             name: "seated spectator device of a public room",
@@ -380,7 +380,7 @@ fn decide_matrix() {
                     )),
                 );
             }),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
+            expected: ["AAAWWWWWsdWA", "AAAWWWWWsdWA", "AAAWWWWWsdWA"],
         },
         Case {
             name: "seated spectator device of a room that is not public",

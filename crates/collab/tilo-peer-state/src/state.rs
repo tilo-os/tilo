@@ -216,13 +216,17 @@ pub struct GovernedAccess {
 /// [`PeerGovernance::withheld_record_readers`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordReaders {
-    /// Each channel whose record the caller can name, and the member
-    /// devices that may not read that record (possibly none).
+    /// Every device a record's channel admits where nothing withholds it from
+    /// the record: the workspace's member devices and its watching ones
+    /// ([`PeerGovernance::watching_devices`]).
+    pub readers: BTreeSet<[u8; 32]>,
+    /// Each channel whose record the caller can name, and the devices that
+    /// may not read that record (possibly none).
     pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
-    /// The member devices kept out of every channel whose record the caller
-    /// cannot name: all of them. Such a channel may be any record, a
-    /// member's own (`member:<root>:<kind>`, read by that person alone)
-    /// included, so no one is admitted to it until a device names its
+    /// The devices kept out of every channel whose record the caller cannot
+    /// name: every device [`Self::readers`] lists. Such a channel may be any
+    /// record, a member's own (`member:<root>:<kind>`, read by that person
+    /// alone) included, so no one is admitted to it until a device names its
     /// record.
     pub unrouted: BTreeSet<[u8; 32]>,
 }
@@ -676,6 +680,7 @@ impl StatePeer {
             admission: None,
             admissions: vec![],
             delegate: None,
+            watching: false,
         };
         self.put_identity(doc, &identity, key, now)
     }
@@ -3947,3 +3952,6 @@ mod sharing_tests;
 #[cfg(test)]
 #[path = "state/superseded_checkpoint_tests.rs"]
 mod superseded_checkpoint_tests;
+#[cfg(test)]
+#[path = "state/watching_tests.rs"]
+mod watching_tests;

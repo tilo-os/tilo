@@ -195,6 +195,7 @@ pub fn admit_invited_member(
         admission,
         admissions,
         delegate,
+        watching: false,
     };
     candidate
         .put(

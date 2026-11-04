@@ -177,7 +177,6 @@ enum Change {
 /// named.
 fn readers(
     peer: &StatePeer,
-    access: &GovernedAccess,
     participant: Option<&participation::Participant>,
     now: SystemTime,
 ) -> Result<participation::Readers, String> {
@@ -192,7 +191,7 @@ fn readers(
         .map(|(channel, devices)| (channel, devices.into_iter().map(key).collect()))
         .collect();
     Ok(participation::Readers::new(
-        access.member_devices.iter().copied().map(key).collect(),
+        record_readers.readers.into_iter().map(key).collect(),
         withheld,
         record_readers.unrouted.into_iter().map(key).collect(),
     ))
@@ -2173,7 +2172,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let (workspace_id, generation, readers, participant, publisher) = {
-            let governed = governed.lock().await;
+            let mut governed = governed.lock().await;
             let Some(participant) = governed.participation.clone() else {
                 self.inner
                     .channel_notices
@@ -2182,10 +2181,17 @@ impl Workspaces {
                     .remove(workspace);
                 return Ok(());
             };
+            // A page that only watches a public workspace is one of the
+            // workspace's devices before its request is decided, as any member's
+            // is: the governor records it, and every participant reads the
+            // channel's readers from that record.
+            if self.enrol_queued_watchers(workspace, &mut governed).await? {
+                self.settle(&mut governed).await?;
+            }
             let now = SystemTime::now();
             let access = governed.peer().governance().governed_access(now)?;
-            self.learn_queued_routes(workspace, &participant, &access)?;
-            let room_readers = readers(governed.peer(), &access, Some(&*participant), now)?;
+            self.learn_queued_routes(workspace, &participant, &access, governed.peer())?;
+            let room_readers = readers(governed.peer(), Some(&*participant), now)?;
             let taken = (
                 governed.workspace_id(),
                 governed.record.generation,
@@ -2239,16 +2245,20 @@ impl Workspaces {
 
     /// Keep the route of every routed access request queued for `workspace`'s
     /// `participant` whose author is a governed member device (`access`) and
-    /// whose request is its own: the readers the queued requests are decided
-    /// with then decide each named record itself. A route that does not
-    /// prove its channel is not kept ([`participation::Participant::learn_route`]),
-    /// and the request carrying it is refused when it is taken.
+    /// whose request is its own, and of a watching device's too
+    /// ([`GovernedWorkspace::peer`]'s [`PeerGovernance::watching_devices`]): the
+    /// readers the queued requests are decided with then decide each named
+    /// record itself. A route that does not prove its channel is not kept
+    /// ([`participation::Participant::learn_route`]), and the request carrying
+    /// it is refused when it is taken.
     fn learn_queued_routes(
         &self,
         workspace: &str,
         participant: &participation::Participant,
         access: &GovernedAccess,
+        peer: &StatePeer,
     ) -> Result<(), String> {
+        let watching = peer.governance().watching_devices()?;
         let queued = self
             .inner
             .channel_notices
@@ -2257,13 +2267,167 @@ impl Workspaces {
         for (author, notice) in queued.get(workspace).into_iter().flatten() {
             if let ChannelNoticeKind::Request(request, Some(route)) = notice
                 && request.device.as_bytes() == author
-                && access.member_devices.contains(author)
+                && (access.member_devices.contains(author) || watching.contains(author))
             {
                 participant.learn_route(request.channel, route);
             }
         }
         drop(queued);
         Ok(())
+    }
+
+    /// Record every queued request's device that only watches `workspace` as one
+    /// that does, when the workspace is public: a watching page joins a record's
+    /// channel like any device, and the workspace's governance is where every
+    /// participant reads that channel's readers from. A device whose certificate
+    /// is not the spectator person's, whose subscription is not live here, or
+    /// whose request is not its own is left to the plane that refused it. Returns
+    /// whether the workspace changed.
+    async fn enrol_queued_watchers(
+        &self,
+        workspace: &str,
+        governed: &mut GovernedWorkspace,
+    ) -> Result<bool, String> {
+        let workspace_id = governed.workspace_id();
+        let Some(spectators) = self.spectators_of(workspace_id).await else {
+            return Ok(false);
+        };
+        if !spectators.public {
+            return Ok(false);
+        }
+        let watching = governed.peer().governance().watching_devices()?;
+        let sessions = self.live_devices(workspace_id).await;
+        let asking: Vec<DeviceCert> = {
+            let queued = self
+                .inner
+                .channel_notices
+                .lock()
+                .map_err(|_| "channel notices poisoned")?;
+            queued
+                .get(workspace)
+                .into_iter()
+                .flatten()
+                .filter_map(|(author, notice)| {
+                    let ChannelNoticeKind::Request(request, _) = notice else {
+                        return None;
+                    };
+                    if request.device.as_bytes() != author || watching.contains(author) {
+                        return None;
+                    }
+                    let cert = sessions.get(author)?;
+                    (cert.user_public_key == spectators.root).then(|| cert.clone())
+                })
+                .collect()
+        };
+        if asking.is_empty() {
+            return Ok(false);
+        }
+        let host = &self.inner.host;
+        let now = SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        let mut changed = false;
+        for cert in &asking {
+            changed |= candidate
+                .governance_mut()
+                .admit_watching_device(cert, &host.key, now)?;
+        }
+        if !changed {
+            return Ok(false);
+        }
+        governed.commit(candidate, &host.key, now, |record, _| {
+            Ok(record.collaboration.clone())
+        })?;
+        tracing::debug!(%workspace, devices = asking.len(), "room recorded the devices that only watch it");
+        Ok(true)
+    }
+
+    /// Take every device that only watches `workspace` and holds no subscription
+    /// here out of its governance: the epoch the caller's reconcile writes leaves
+    /// it out of each record's channel, so a page that went ages out at once
+    /// rather than when its certificate does. Returns whether the workspace
+    /// changed.
+    async fn release_gone_watchers(
+        &self,
+        workspace: &mut GovernedWorkspace,
+    ) -> Result<bool, String> {
+        let watching = workspace.peer().governance().watching_devices()?;
+        if watching.is_empty() {
+            return Ok(false);
+        }
+        // A workspace that stops being public keeps its records from those who
+        // only watch, the ones already recorded as watching included.
+        let public = self
+            .spectators_of(workspace.workspace_id())
+            .await
+            .is_some_and(|spectators| spectators.public);
+        let live = if public {
+            self.live_devices(workspace.workspace_id()).await
+        } else {
+            HashMap::new()
+        };
+        let gone: Vec<[u8; 32]> = watching
+            .into_iter()
+            .filter(|device| !live.contains_key(device))
+            .collect();
+        if gone.is_empty() {
+            return Ok(false);
+        }
+        let host = &self.inner.host;
+        let now = SystemTime::now();
+        let mut candidate = workspace.peer().clone();
+        let mut changed = false;
+        for device in &gone {
+            changed |= candidate
+                .governance_mut()
+                .release_watching_device(device, &host.key, now)?;
+        }
+        if !changed {
+            return Ok(false);
+        }
+        workspace.commit(candidate, &host.key, now, |record, _| {
+            Ok(record.collaboration.clone())
+        })?;
+        tracing::debug!(workspace = %workspace.workspace(), devices = gone.len(), "room let go of the pages that watched it");
+        Ok(true)
+    }
+
+    /// The devices subscribed to the workspace hosted as `workspace_id` now, with
+    /// the certificate each connected under.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the runtime guard borrows the workspace handle it was taken from"
+    )]
+    async fn live_devices(&self, workspace_id: u64) -> HashMap<[u8; 32], DeviceCert> {
+        let workspaces = self.inner.host.workspaces.lock().await;
+        let workspace = workspaces.get(&workspace_id).cloned();
+        drop(workspaces);
+        let Some(workspace) = workspace else {
+            return HashMap::new();
+        };
+        let runtime = workspace.lock().await;
+        runtime
+            .state_sessions
+            .iter()
+            .map(|(device, session)| (*device, session.peer.cert.clone()))
+            .collect()
+    }
+
+    /// The spectators of the workspace hosted as `workspace_id`, when it lets
+    /// anyone watch it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the runtime guard borrows the workspace handle it was taken from"
+    )]
+    async fn spectators_of(
+        &self,
+        workspace_id: u64,
+    ) -> Option<crate::workspace_access::Spectators> {
+        let workspaces = self.inner.host.workspaces.lock().await;
+        let workspace = workspaces.get(&workspace_id).cloned();
+        drop(workspaces);
+        let workspace = workspace?;
+        let runtime = workspace.lock().await;
+        runtime.spectators
     }
 
     /// Retain channel governance messages as this relay's own.
@@ -2449,14 +2613,15 @@ impl Workspaces {
     /// published again by the next settle.
     async fn settle(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
         let host = &self.inner.host;
+        // A page that watched a public workspace and went is no reader of its
+        // channels from this epoch on: the readers read below leave it out, and
+        // the reconcile at the end of this settle commits the epoch without it.
+        if self.release_gone_watchers(workspace).await? {
+            tracing::debug!(workspace = %workspace.workspace(), "room settled without the pages that watched it");
+        }
         let now = SystemTime::now();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
-        let readers = readers(
-            workspace.peer(),
-            &access,
-            workspace.participation.as_deref(),
-            now,
-        )?;
+        let readers = readers(workspace.peer(), workspace.participation.as_deref(), now)?;
         host.access
             .replace(workspace.workspace_id(), true, access)
             .await

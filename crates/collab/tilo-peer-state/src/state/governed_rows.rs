@@ -19,7 +19,23 @@ pub(crate) struct GovernedIdentity {
     /// bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delegate: Option<GovernedDelegateRow>,
+    /// Whether the device only watches: a watching page's device, which comes
+    /// and goes with a page load and reads the workspace's public records, the
+    /// ones no grant keeps from any of its members, and nothing else
+    /// ([`super::PeerGovernance::withheld_record_readers`]). Absent from every
+    /// member's bytes.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) watching: bool,
 }
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_false(watching: &bool) -> bool {
+    !*watching
+}
+
 impl GovernedIdentity {
     pub(crate) fn has_admission(&self) -> bool {
         // The governor admits a bot device itself, so its installation is

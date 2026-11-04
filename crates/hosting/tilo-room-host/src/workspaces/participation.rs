@@ -745,12 +745,7 @@ impl Workspaces {
         channel: ChannelId,
     ) -> Result<(), String> {
         let now = SystemTime::now();
-        let allowed = super::readers(
-            workspace.peer(),
-            &workspace.peer().governance().governed_access(now)?,
-            Some(participant),
-            now,
-        )?;
+        let allowed = super::readers(workspace.peer(), Some(participant), now)?;
         let messages = participation.open_channel(channel, &allowed)?;
         // After the channel changes a settle handed over.
         workspace.publisher.flushed().await;
