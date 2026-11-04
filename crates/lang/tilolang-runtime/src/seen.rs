@@ -61,11 +61,7 @@ pub enum SeenWrite {
 /// The slot holding `person`'s seen mark of `resource`.
 #[must_use]
 pub fn seen_key(person: &str, resource: &str) -> StateKey {
-    StateKey {
-        window: SEEN_WINDOW.to_owned(),
-        principal: Some(person.to_owned()),
-        state: resource.to_owned(),
-    }
+    StateKey::runtime(SEEN_WINDOW, Some(person.to_owned()), resource)
 }
 
 /// The slot holding the task runs `person` reviewed: the state no resource id names.

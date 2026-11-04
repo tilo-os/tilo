@@ -182,21 +182,13 @@ pub fn form_asks(meta: &Meta, ty: &str) -> bool {
 /// The state key `delivery(r)` reads for the resource `id`.
 #[must_use]
 pub fn delivery_key(id: &str) -> StateKey {
-    StateKey {
-        window: DELIVERY_WINDOW.to_owned(),
-        principal: None,
-        state: id.to_owned(),
-    }
+    StateKey::runtime(DELIVERY_WINDOW, None, id)
 }
 
 /// The key of the lenses on the resource `id`.
 #[must_use]
 pub fn lens_key(id: &str) -> StateKey {
-    StateKey {
-        window: LENS_WINDOW.to_owned(),
-        principal: None,
-        state: id.to_owned(),
-    }
+    StateKey::runtime(LENS_WINDOW, None, id)
 }
 
 /// The seen mark a slot holds ([`crate::Runtime::set_seen`]): `.some((change, at))`.

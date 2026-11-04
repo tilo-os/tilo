@@ -276,7 +276,7 @@ impl Core {
         // offers more than one. The state is read here and noted in the frame once it is
         // popped, so choosing another view in the bar runs the window again.
         let (chosen, chosen_state) = if depth == 0 {
-            self.window_view(target, args, offer.window)
+            self.window_view(target, args, offer)
         } else {
             (None, None)
         };
@@ -859,7 +859,7 @@ impl Core {
         &self,
         target: &ViewTarget,
         args: &[Value],
-        window: &str,
+        offer: Offer<'_>,
     ) -> (
         Option<ViewTarget>,
         Option<(crate::view_state::StateKey, u64, Value)>,
@@ -874,11 +874,11 @@ impl Core {
         if views.len() < 2 {
             return (None, None);
         }
-        let key = crate::view_state::StateKey {
-            window: window.to_owned(),
-            principal: None,
-            state: format!("{VIEW_STATE}{}", resource.target.id_string()),
-        };
+        let key = StateKey::window(
+            offer.window,
+            offer.viewer.0.clone(),
+            format!("{VIEW_STATE}{}", resource.target.id_string()),
+        );
         let (held, generation) = {
             let states = self.view_states.borrow();
             (states.get(&key).cloned(), states.generation(&key))
@@ -902,11 +902,11 @@ impl Core {
     /// changes). `None` while nobody chose, or the choice names a view the resource's type does
     /// not offer any more.
     fn chosen_view(&self, resource: &RefValue, offer: Offer<'_>, acc: &mut Acc) -> Option<ViewId> {
-        let key = StateKey {
-            window: offer.window.to_owned(),
-            principal: None,
-            state: format!("{VIEW_STATE}{}", resource.target.id_string()),
-        };
+        let key = StateKey::window(
+            offer.window,
+            offer.viewer.0.clone(),
+            format!("{VIEW_STATE}{}", resource.target.id_string()),
+        );
         let held = {
             let states = self.view_states.borrow();
             let held = states.get(&key).cloned();

@@ -380,11 +380,11 @@ pub fn foreign_type(ty: &str) -> Option<TypeKey> {
 /// again at the next poll. Its type and id name it, as [`Foreign::key`] does.
 #[must_use]
 pub fn reading_key(target: &ResourceRef) -> StateKey {
-    StateKey {
-        window: crate::platform::LENS_WINDOW.to_owned(),
-        principal: None,
-        state: format!("$reading:{}", Foreign::key(target)),
-    }
+    StateKey::runtime(
+        crate::platform::LENS_WINDOW,
+        None,
+        format!("$reading:{}", Foreign::key(target)),
+    )
 }
 
 /// The view state slot that moves every time any reading of another app is set here: what a
@@ -393,22 +393,14 @@ pub fn reading_key(target: &ResourceRef) -> StateKey {
 /// (a call that failed does not know which of the resources it read was missing).
 #[must_use]
 pub fn arrived_key() -> StateKey {
-    StateKey {
-        window: crate::platform::LENS_WINDOW.to_owned(),
-        principal: None,
-        state: "$readings-arrived".to_owned(),
-    }
+    StateKey::runtime(crate::platform::LENS_WINDOW, None, "$readings-arrived")
 }
 
 /// The view state slot that moves when a resource of another app is first known here: a view
 /// that looked one up by id ([`Foreign::type_of`]) and found nothing runs again.
 #[must_use]
 pub fn known_key() -> StateKey {
-    StateKey {
-        window: crate::platform::LENS_WINDOW.to_owned(),
-        principal: None,
-        state: "$readings".to_owned(),
-    }
+    StateKey::runtime(crate::platform::LENS_WINDOW, None, "$readings")
 }
 
 /// `json` as the value `ty` declares, as a reading of another app publishes it.

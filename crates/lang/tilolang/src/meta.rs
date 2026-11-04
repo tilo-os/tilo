@@ -227,7 +227,7 @@ pub struct VariantMeta {
 pub struct StateMeta {
     pub id: String,
     pub name: String,
-    /// `window` (shared by the window) or `lens` (one per person per window).
+    /// `window` (how the person looking shows the window) or `lens` (where they are in it).
     pub layer: String,
     #[serde(rename = "type")]
     pub ty: String,

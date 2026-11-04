@@ -72,7 +72,7 @@ pub struct ViewState {
     pub space: Space,
     /// The window the view runs in: what its `window` and `lens` state is kept under.
     pub window: String,
-    /// The person looking: whose `lens` state the view reads.
+    /// The person looking: whose `window` and `lens` state the view reads.
     pub viewer: Principal,
     /// Every view state slot read, with its generation at the time.
     pub state_reads: Vec<(StateKey, u64)>,

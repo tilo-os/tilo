@@ -681,8 +681,9 @@ impl Runtime {
         )
     }
 
-    /// Open a view for `principal` in the window `window`: its `window` state is the one every
-    /// view in that window shares, its `lens` state the principal's own there.
+    /// Open a view for `principal` in the window `window`: its `window` state is how their
+    /// window shows the resource and its `lens` state where they are in it, both that person's
+    /// own, so another person looking at the same window is not moved by either.
     ///
     /// # Errors
     ///

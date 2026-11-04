@@ -302,7 +302,7 @@ their units and flags stay bare words. An anchor follows the call as `as name`:
 
 ```
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created     // shared by everyone looking at this window
+    window order: NoteOrder = .created     // how my window shows the notes
     lens expanded: Option<Note> = .none    // one per person per window
     page {
         stack(gap: .section) {
@@ -343,8 +343,10 @@ ladder of how far a view may go — options, composing `ui.*`, drawing, native w
 [components.md](../../../docs/designs/app-language/components.md#4-customizing-a-component-a-ladder).
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
-`window name: T = default` is the window's and shared, `lens name: T = default` is each
-person's own in that window. The view reads them like variables; they change only through a
+`window name: T = default` is how each person looking at the window shows its resource, and
+`lens name: T = default` is where each person is in it; both are each person's own, so one
+person's window setting or draft never moves another's view. The view reads them like
+variables; they change only through a
 control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or the platform
 action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`. An action's arguments are evaluated when it is invoked, on

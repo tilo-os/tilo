@@ -18,7 +18,7 @@ use crate::handles::ViewState;
 use crate::host_ui::{SET_ACTION, VIEW_STATE};
 use crate::value::{ActionRef, RefValue, Value};
 use crate::view::{BindTarget, NodeBuild};
-use crate::view_state::StateKey;
+use crate::view_state::{StateKey, StateLayer};
 
 /// A node whose `item` gets the host's menu: what a person right-clicks, long-presses, or picks
 /// out of with the Menu key.
@@ -269,11 +269,11 @@ impl Core {
         if views.len() < 2 {
             return Ok(None);
         }
-        let window = self
-            .with_view(|vs| Ok(vs.window.clone()))
+        let (window, viewer) = self
+            .with_view(|vs| Ok((vs.window.clone(), vs.viewer.0.clone())))
             .map_err(trapped)?;
         let state = format!("{VIEW_STATE}{}", subject.target.id_string());
-        let chosen = self.chosen_index(&window, &state, &subject.target.ty, &views, shown);
+        let chosen = self.chosen_index(&window, &viewer, &state, &subject.target.ty, &views, shown);
         let base = format!("{window}~views");
         let mut tabs = empty("ui.ViewTabs", &base);
         tabs.props.insert(
@@ -290,7 +290,8 @@ impl Core {
                 SET_ACTION,
                 vec![
                     Value::text(&window),
-                    Value::text(""),
+                    Value::text(&viewer),
+                    Value::Int(i64::from(StateLayer::Window.code())),
                     Value::text(&state),
                     Value::Event,
                 ],
@@ -321,13 +322,14 @@ impl Core {
         Ok(Some(at))
     }
 
-    /// Which of `views` the window shows `ty`'s resource through: the view it draws the
-    /// resource through now, else the person's choice, else the type's default view, else the
-    /// first. The choice is read from the window's state, so the bar runs again when another
-    /// tab is chosen.
+    /// Which of `views` the person's window shows `ty`'s resource through: the view it draws
+    /// the resource through now, else the person's choice, else the type's default view, else
+    /// the first. The choice is read from the person's window state, so the bar runs again
+    /// when another tab is chosen.
     fn chosen_index(
         &self,
         window: &str,
+        viewer: &str,
         state: &str,
         ty: &str,
         views: &[(String, String)],
@@ -338,11 +340,7 @@ impl Core {
         if let Some(index) = views.iter().position(|(id, _)| id == shown) {
             return i64::try_from(index).unwrap_or_default();
         }
-        let key = StateKey {
-            window: window.to_owned(),
-            principal: None,
-            state: state.to_owned(),
-        };
+        let key = StateKey::window(window, viewer, state.to_owned());
         let (held, generation) = {
             let states = self.view_states.borrow();
             (states.get(&key).cloned(), states.generation(&key))

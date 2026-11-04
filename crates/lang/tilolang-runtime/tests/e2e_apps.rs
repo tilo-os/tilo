@@ -1077,13 +1077,11 @@ mod cases {
         );
     }
 
-    // USER REQUIREMENT (2026-10-20): "window state stored per view instance/window id (shared by
-    // all principals viewing it), lens per (principal, window) ... two principals on one view
-    // share window state but not lens (test)." The notebook keeps its order and filter as window
-    // state; no app keeps a lens any more, so the lens half is
-    // `e2e_enums::a_bound_lens_is_the_persons_and_a_bound_window_value_is_everyones`.
+    // Window state is how one person's window shows its resource (workspace-model.md, "The
+    // pieces"): two people with the same window open sort it for themselves, and neither
+    // moves the other's view.
     #[test]
-    fn two_people_in_one_window_share_its_window_state() {
+    fn two_people_in_one_window_sort_it_for_themselves() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let nb = w.create("Notes");
@@ -1107,20 +1105,31 @@ mod cases {
         };
         let (mut va, mut vb) = (open(&ada), open(&bo));
         assert_eq!(row_titles(va.tree()), ["b", "a"]);
+        assert_eq!(row_titles(vb.tree()), ["b", "a"]);
 
-        // Window state: Ada sorts the window, and Bo's view of it sorts too.
+        // Ada sorts the window she looks at, and Bo's view of it stays where he left it.
         let by_title = node_with(va.tree(), "ui.MenuItem", "label", "Title")
             .key
             .clone();
         va.fire(&by_title, "choose").unwrap();
+        assert!(va.is_stale(), "Ada's window read the order she chose");
         assert!(
-            va.is_stale() && vb.is_stale(),
-            "both read the window's order"
+            !vb.is_stale(),
+            "Bo's window never read Ada's order, so it does not run again"
         );
         va.poll_patches().unwrap();
         vb.poll_patches().unwrap();
         assert_eq!(row_titles(va.tree()), ["a", "b"]);
+        assert_eq!(row_titles(vb.tree()), ["b", "a"], "Bo is where he was");
+
+        // Bo sorts his own window too: each keeps the order its person chose.
+        let by_title = node_with(vb.tree(), "ui.MenuItem", "label", "Title")
+            .key
+            .clone();
+        vb.fire(&by_title, "choose").unwrap();
+        vb.poll_patches().unwrap();
         assert_eq!(row_titles(vb.tree()), ["a", "b"]);
+        assert_eq!(row_titles(va.tree()), ["a", "b"]);
 
         // Another window over the same notebook has state of its own.
         let mut elsewhere =

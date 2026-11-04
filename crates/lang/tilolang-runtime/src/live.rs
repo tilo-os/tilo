@@ -647,7 +647,7 @@ impl Live {
                 });
                 if moved {
                     hit.push(*id);
-                    if key.principal.is_none() {
+                    if key.is_window() {
                         left.push(*id);
                     }
                 }

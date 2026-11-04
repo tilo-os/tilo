@@ -2933,11 +2933,7 @@ mod tests {
     fn a_bound_control_is_not_named_by_a_name_in_the_code() {
         let state = Binding {
             target: BindTarget::State {
-                key: crate::runtime::StateKey {
-                    window: "w".to_owned(),
-                    principal: None,
-                    state: "draft".to_owned(),
-                },
+                key: crate::runtime::StateKey::lens("w", "person:me", "draft"),
                 name: "draft".to_owned(),
                 ty: "Text".to_owned(),
             },

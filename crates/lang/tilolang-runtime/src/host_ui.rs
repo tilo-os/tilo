@@ -13,7 +13,7 @@ use crate::view::{BindTarget, Binding, NodeBuild};
 use crate::view_state::{StateKey, StateLayer};
 
 /// The action id of `set(name, value)`: changes a view state slot. Its arguments are the
-/// window, the person (empty for window state), the declaration id and the value.
+/// window, the person, the layer (`window` or `lens`), the declaration id and the value.
 pub const SET_ACTION: &str = "$set";
 /// The action id of `open(r, view: v, front: f)`: its arguments are the resource, the view id
 /// (empty for the default view of its type) and whether a narrow window brings it in front.
@@ -120,10 +120,11 @@ impl Core {
             .map_or_else(|| trap(format!("unknown view state layer {layer}")), Ok)?;
         let state = self.text(id)?;
         self.with_view(|vs| {
-            Ok(StateKey {
-                window: vs.window.clone(),
-                principal: (layer == StateLayer::Lens).then(|| vs.viewer.0.clone()),
-                state,
+            Ok(match layer {
+                StateLayer::Window => {
+                    StateKey::window(vs.window.clone(), vs.viewer.0.clone(), state)
+                }
+                StateLayer::Lens => StateKey::lens(vs.window.clone(), vs.viewer.0.clone(), state),
             })
         })
     }
@@ -204,6 +205,10 @@ impl Core {
             args: vec![
                 Value::Text(key.window),
                 Value::Text(key.principal.unwrap_or_default()),
+                Value::Int(i64::from(
+                    key.layer
+                        .map_or(StateLayer::Window.code(), StateLayer::code),
+                )),
                 Value::Text(key.state),
                 value,
             ],
@@ -583,10 +588,7 @@ fn shown_moment(
     value: Value,
     extra: Option<Value>,
 ) -> usize {
-    let mut props = vec![
-        ("value", value),
-        ("value:as", Value::Text(kind.to_owned())),
-    ];
+    let mut props = vec![("value", value), ("value:as", Value::Text(kind.to_owned()))];
     if let (Some(Value::Text(at)), "date") = (extra, kind) {
         props.push(("value:time", Value::Text(at)));
     }

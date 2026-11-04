@@ -867,9 +867,9 @@ pub struct UiArm {
 /// Which layer of view state a declaration lives in (workspace-model.md, "The pieces").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StateLayer {
-    /// Shared by everyone looking at the window.
+    /// How one person's window shows its resource.
     Window,
-    /// One per person per window.
+    /// Where one person is in a window: scroll, cursor, selection, a draft.
     Lens,
 }
 

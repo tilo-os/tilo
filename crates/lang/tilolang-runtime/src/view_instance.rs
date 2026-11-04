@@ -1,8 +1,8 @@
 //! A live view: its tree, the fields and view state it depends on, and the events it can take.
 //!
-//! A view runs in a window (workspace-model.md, "Windows") for one person. The window's id is
-//! what its `window` state is kept under, shared by everyone who opens a view in the same
-//! window; `lens` state is kept per person and window.
+//! A view runs in a window (workspace-model.md, "Windows") for one person. Its `window` state
+//! is how that person's window shows the resource, `lens` state where they are in it; both are
+//! kept per person and window, so nobody else's view of the same window moves with them.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -23,7 +23,7 @@ use crate::space::Space;
 use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 use crate::view::{BindTarget, Patch, UiNode};
-use crate::view_state::StateKey;
+use crate::view_state::{StateKey, StateLayer};
 
 /// Something a view asks of the host that the runtime does not do itself.
 #[derive(Clone, Debug, PartialEq)]
@@ -409,11 +409,11 @@ impl ViewInstance {
     }
 
     fn lens_key(&self, state: &str) -> StateKey {
-        StateKey {
-            window: self.live.window.clone(),
-            principal: Some(self.live.viewer.0.clone()),
-            state: state.to_owned(),
-        }
+        StateKey::lens(
+            self.live.window.clone(),
+            self.live.viewer.0.clone(),
+            state.to_owned(),
+        )
     }
 
     /// Evaluate the arguments of `aref` that read view state (`send(c, draft)`, `set(open, not
@@ -545,22 +545,26 @@ impl ViewInstance {
         }
     }
 
-    /// `set(name, value)`: change the view state slot the reference names. A lens slot belongs
-    /// to the person it was rendered for; nobody presses another's controls.
+    /// `set(name, value)`: change the view state slot the reference names, in this view's
+    /// person's window. A slot belongs to the person it was rendered for; nobody presses
+    /// another's controls.
     fn platform_set(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let [window, principal, state, value] = aref.args.as_slice() else {
+        let [window, principal, layer, state, value] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
         let text = |v: &Value| v.as_text().map(str::to_owned);
-        let (Some(window), Some(principal), Some(state)) =
-            (text(window), text(principal), text(state))
+        let (Some(window), Some(principal), Some(layer), Some(state)) =
+            (text(window), text(principal), layer.as_int(), text(state))
         else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
-        let key = StateKey {
-            window,
-            principal: (!principal.is_empty()).then_some(principal),
-            state,
+        let layer = i32::try_from(layer)
+            .ok()
+            .and_then(StateLayer::from_code)
+            .ok_or_else(|| RuntimeError::BadArgs(format!("unknown view state layer {layer}")))?;
+        let key = match layer {
+            StateLayer::Window => StateKey::window(window, principal, state),
+            StateLayer::Lens => StateKey::lens(window, principal, state),
         };
         self.core.view_states.borrow_mut().set(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))

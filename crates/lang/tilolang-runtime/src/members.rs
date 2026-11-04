@@ -83,11 +83,11 @@ impl Members {
 /// The view state slot the members are kept under: a view that read them runs again when the
 /// host gives new ones.
 fn members_key() -> StateKey {
-    StateKey {
-        window: crate::platform::LENS_WINDOW.to_owned(),
-        principal: None,
-        state: "$workspace-members".to_owned(),
-    }
+    StateKey::runtime(
+        crate::platform::LENS_WINDOW,
+        None,
+        "$workspace-members".to_owned(),
+    )
 }
 
 /// How many of those who spoke last a rich input's drawer offers first (chat.md).
