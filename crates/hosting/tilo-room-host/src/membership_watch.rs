@@ -370,7 +370,7 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
         Err(error) => Err(error.to_string()),
     };
     match started {
-        Ok((workspaces_watch, watched)) => {
+        Ok((workspaces_watch, natives)) => {
             let (sender, changes) = mpsc::channel(QUEUED_CHANGES);
             let mut watches = Watches {
                 changes,
@@ -380,8 +380,8 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
             };
             let forward = watches.forward(Origin::Workspaces, workspaces_watch);
             watches.forwards.push(forward);
-            for (workspace_id, native) in watched {
-                watches.watch_workspace(workspace_id, native);
+            for (held, native) in natives {
+                watches.watch_workspace(held, native);
             }
             watch.live.store(true, Ordering::Release);
             // Announces the change of liveness too.
