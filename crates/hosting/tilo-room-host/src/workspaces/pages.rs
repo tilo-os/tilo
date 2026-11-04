@@ -506,7 +506,10 @@ impl Workspaces {
         if !changed {
             return Ok(WorkspacesReply::Paired);
         }
-        if candidate.direct_pair(pair, at).is_none() {
+        if candidate
+            .direct_pair(&collab_types::direct_record(pair), at)
+            .is_none()
+        {
             return Err(CollaborationError::new(
                 "a pair names the two people of its record",
             ));

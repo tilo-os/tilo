@@ -1158,6 +1158,14 @@ async fn a_page_announces_its_pair_and_the_host_store_takes_no_message() {
         .await
         .unwrap();
     let pair_of = |a: &DeviceCert, b: &DeviceCert| {
+        let key = [
+            (&alice, &alice_key),
+            (&bob, &bob_key),
+            (&watcher, &watcher_key),
+        ]
+        .into_iter()
+        .find_map(|(cert, key)| (cert.user_public_key == a.user_public_key).then_some(key))
+        .expect("a device of one of the pair's people");
         DirectPair::signed(
             &created.workspace,
             [
@@ -1165,7 +1173,7 @@ async fn a_page_announces_its_pair_and_the_host_store_takes_no_message() {
                 hex::encode(b.user_public_key),
             ],
             a,
-            if a == &alice { &alice_key } else { &bob_key },
+            key,
         )
         .unwrap()
     };

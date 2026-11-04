@@ -486,7 +486,8 @@ pub enum WorkspacesRequest {
     Pair {
         #[serde(rename = "room")]
         workspace: String,
-        /// The pair's id, as the record's name spells it.
+        /// The pair's id, `direct_` and its hash, which names the record it
+        /// is the conversation of.
         pair: String,
         /// The announcement the page's device signed.
         announcement: Vec<u8>,
