@@ -14,7 +14,6 @@ use tilo_compositor::{
 
 /// A hosted surface whose host fills its frame row by row, the way a
 /// toolkit app draws into one: red above the middle, blue below.
-
 struct Rows {
     frame: HostFrame,
     size: (i32, i32),

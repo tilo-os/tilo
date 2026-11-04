@@ -25,7 +25,6 @@ use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 
 /// The scene's background, as a frame read back shows it: what a lit output
 /// draws where nothing else is.
-
 const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
 /// Each output and the monitor on it, and the primary monitor, as the

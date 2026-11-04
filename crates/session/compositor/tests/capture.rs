@@ -58,7 +58,6 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 };
 
 /// The desktop's background, B, G, R, X as XRGB8888 lies in memory.
-
 const BACKGROUND: [u8; 3] = [38, 27, 26];
 const RED: [u8; 3] = [0, 0, 255];
 const GREEN: [u8; 3] = [0, 255, 0];

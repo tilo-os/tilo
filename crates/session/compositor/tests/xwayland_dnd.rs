@@ -409,7 +409,6 @@ impl Session {
 /// An X11 client on `display`: Xwayland answers the connection's setup only
 /// after it has roundtripped with the compositor, so the client waits in a
 /// thread while the compositor dispatches here.
-
 fn x11_client(compositor: &mut Compositor, display: u32) -> (RustConnection, Window) {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

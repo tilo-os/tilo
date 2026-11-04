@@ -184,7 +184,6 @@ impl Client {
 }
 
 /// Let compositor and clients talk until `done` holds.
-
 fn pump(
     compositor: &mut Compositor,
     clients: &mut [&mut Client],
