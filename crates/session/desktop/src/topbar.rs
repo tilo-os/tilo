@@ -658,7 +658,7 @@ pub struct TopBarChrome {
     arrival_rect: Rect,
     /// A press on the arrival status opens the person's own menu.
     arrival_pressable: bool,
-    /// Where the people cluster (faces, spectators, invite) begins.
+    /// Where the people cluster (faces, watching pages, invite) begins.
     people_left_x: f64,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,

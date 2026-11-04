@@ -125,14 +125,14 @@ fn write(standing: &Standing<'_>) -> Result<(), Refusal> {
 /// Whether `standing` may close, move or reorder the window `tab`: they
 /// opened it, whoever did has left the workspace, or they govern the workspace.
 /// In a workspace that shares no member's layout every window on their desktop
-/// is theirs to arrange, unless they only look at the workspace (a spectator, a
+/// is theirs to arrange, unless they only look at the workspace (a viewer, a
 /// Viewer): they open nothing, so a window they closed would be gone from
 /// what they watch for good.
 ///
 /// # Errors
 ///
 /// [`Refusal::Others`] for a window someone else (or nobody) opened;
-/// [`Refusal::ReadOnly`] for a spectator's.
+/// [`Refusal::ReadOnly`] for a viewer's.
 pub fn may_rearrange_window(
     standing: &Standing<'_>,
     authors: &Authors,
@@ -475,9 +475,9 @@ mod tests {
             location: at(2, 200),
         };
         assert_eq!(asks(&visitor, &theirs), Ok(()));
-        // A spectator opens nothing, so it closes and moves nothing either:
+        // A viewer opens nothing, so it closes and moves nothing either:
         // what it watches stays whole.
-        let spectator = Standing {
+        let viewer = Standing {
             role: Some(Role::Viewer),
             ..visitor
         };
@@ -489,7 +489,7 @@ mod tests {
                 before: None,
             },
         ] {
-            assert_eq!(asks(&spectator, &command), Err(Refusal::ReadOnly));
+            assert_eq!(asks(&viewer, &command), Err(Refusal::ReadOnly));
         }
         // The workspace's name and desks are its host's, even for a moderator.
         for command in [

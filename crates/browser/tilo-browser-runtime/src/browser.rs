@@ -653,8 +653,8 @@ impl Desktop {
         } else {
             HashMap::new()
         };
-        // Someone the workspace lets only look (its spectator) opens nothing in
-        // it, so no window offers them a new tab.
+        // Someone the workspace lets only look (a viewer) opens nothing in it,
+        // so no window offers them a new tab.
         let opens = !in_workspace
             || self
                 .shared

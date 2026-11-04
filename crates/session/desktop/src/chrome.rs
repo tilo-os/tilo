@@ -198,8 +198,8 @@ pub struct DesktopChromeSnapshot {
     pub viewport_size: Option<(f64, f64)>,
     pub clock_activity: Option<ClockActivity>,
     pub active_exposures: Vec<ActiveExposure>,
-    /// People following the workspace without taking part (spectators). The bar
-    /// counts them beside the avatars so an audience is never invisible.
+    /// Pages reading this workspace right now. The bar counts them beside
+    /// the avatars so an audience is never invisible.
     pub watching: u32,
     /// The person at this desktop as everyone here sees them, for the
     /// bar's own avatar; `None` paints none.

@@ -2184,7 +2184,7 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
 }
 
 #[test]
-fn spectators_and_marked_agents_read_in_the_avatar_stack() {
+fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
     let mut tree = DesktopTree {
         workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
         ..Default::default()
@@ -2224,7 +2224,7 @@ fn spectators_and_marked_agents_read_in_the_avatar_stack() {
         );
     };
 
-    // Spectators alone: the chip is the People control, not Invite.
+    // Pages watching alone: the chip is the People control, not Invite.
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     chrome.borrow_mut().watching = 2;
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
@@ -2243,7 +2243,7 @@ fn spectators_and_marked_agents_read_in_the_avatar_stack() {
             .name
             .as_deref()
             .is_some_and(|name| name.contains("2 people watching"))),
-        "the bar names its spectators"
+        "the bar says how many pages are watching"
     );
     bar.last_cursor = Some(bar.people_button_rect.center());
     let mut handled = false;

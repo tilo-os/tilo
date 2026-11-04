@@ -1643,7 +1643,7 @@ pub struct WasmPeer {
     /// is joined and replicated ([`crate::replication`]).
     replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
     /// The workspace the person takes part in through this page, once joined
-    /// as a person rather than a spectator: the one that names them.
+    /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
 }
 

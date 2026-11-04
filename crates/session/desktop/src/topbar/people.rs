@@ -1,10 +1,11 @@
 //! Who is here, in the bar: the others' faces (a "+N" badge when crowded),
-//! the people button, a quiet count of spectators, and the invite button.
+//! the people button, a quiet count of pages reading along, and the invite
+//! button.
 //!
 //! One who's-here bar. Each face is the person as everyone looking sees
 //! them (one initials rule, one colour source) and opens their card. The
 //! people button beside the faces opens everyone here (the panel, which
-//! can be kept on screen); so do the badge and the spectators' count. The
+//! can be kept on screen); so do the badge and the watching count. The
 //! invite button stays beside them however many people are present, and
 //! invites in one step: the host's own invite flow, not the list.
 use super::{
@@ -223,7 +224,8 @@ impl TopBarChrome {
         faces.len().saturating_add(usize::from(badge.is_some()))
     }
 
-    /// A quiet "+N watching" label for spectators, left of the invite
+    /// A quiet "+N watching" label for pages reading this workspace, left of
+    /// the invite
     /// button, ending at `right_x`. Returns its pointer target (zero when
     /// nobody is watching): the bar's control height, like the faces'.
     pub(super) fn draw_watching_chip(
@@ -248,7 +250,7 @@ impl TopBarChrome {
             .with_weight(TextWeight::Medium);
         let (label_w, label_h) = text_renderer.measure_style(&label, None, &style);
         let pad = f64::from(tokens.spacing.s2);
-        // Plain dim text, no chip: spectators are a count, not people.
+        // Plain dim text, no chip: pages are a count, not faces.
         let pill = Rect::new(
             right_x - f64::from(label_w) - pad * 2.0,
             center_y - BAR_CONTROL_PX / 2.0,
@@ -288,7 +290,7 @@ impl TopBarChrome {
     }
 
     /// The people cluster, right to left from `right_x`: the invite
-    /// button, the spectators' count, the people button, then the faces.
+    /// button, the watching count, the people button, then the faces.
     /// Returns its left edge, where the controls before it end.
     pub(super) fn draw_people_cluster(
         &mut self,
@@ -321,8 +323,8 @@ impl TopBarChrome {
         let slot_count =
             self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, right_x);
         self.set_avatar_stack_bounds((center_y, right_x), slot_count);
-        // The spectators' count is part of the people button: it opens who
-        // is here too.
+        // The watching count is part of the people button: it opens who is
+        // here too.
         if !watching.is_zero_area() && !self.people_button_rect.is_zero_area() {
             self.people_button_rect = self.people_button_rect.union(watching);
         }
@@ -405,10 +407,10 @@ mod tests {
         );
     }
 
-    /// Spectators are counted beside the invite button, never instead of
-    /// it.
+    /// Pages reading along are counted beside the invite button, never
+    /// instead of it.
     #[test]
-    fn spectators_never_replace_the_invite() {
+    fn watching_never_replaces_the_invite() {
         let tree = desk(&[]);
         let chrome = FixtureChrome::new(tree.clone());
         chrome.borrow_mut().can_invite = true;

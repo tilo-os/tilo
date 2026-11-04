@@ -2190,7 +2190,7 @@ mod tests {
 
     /// Where the host keeps only how what they do is shared (a page), the
     /// card still has the field for what they are doing in their own
-    /// words, holding what they said; a spectator's has none.
+    /// words, holding what they said.
     #[test]
     fn a_page_card_offers_what_they_are_doing_in_their_own_words() {
         ui::i18n::I18nManager::init("en-US");

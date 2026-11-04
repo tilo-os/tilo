@@ -181,7 +181,7 @@ pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
     })
 }
 
-/// How many spectators follow the workspace without taking part.
+/// How many pages are reading the workspace right now.
 ///
 /// # Errors
 ///

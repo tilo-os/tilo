@@ -461,7 +461,7 @@ impl DesktopHandle {
     /// in the next update pass, and to every window built after. Whether
     /// that changed anything.
     /// Whether this desktop's person opens windows and tabs here: someone
-    /// the workspace lets only look (a spectator) is offered no new tab. Whether
+    /// the workspace lets only look (a viewer) is offered no new tab. Whether
     /// that changed anything.
     pub fn set_opens(&self, opens: bool) -> bool {
         let mut shared = self.shared.borrow_mut();

@@ -137,7 +137,7 @@ pub struct SwitcherModel {
 }
 
 /// No strips yet, and a new one offered: only a person the workspace keeps
-/// from adding strips (a spectator) is offered none, and says so explicitly
+/// from adding strips (a viewer) is offered none, and says so explicitly
 /// ([`crate::strip_navigator::Viewer::may_add`]). A switcher waiting for its
 /// first model must not drop the row and re-centre the column it heads.
 impl Default for SwitcherModel {
@@ -1835,7 +1835,7 @@ mod tests {
         );
     }
 
-    /// Someone the workspace does not let add a strip (a spectator, a
+    /// Someone the workspace does not let add a strip (a viewer, a
     /// public workspace's visitor) is offered none.
     #[test]
     fn whoever_may_not_add_a_strip_is_offered_none() {

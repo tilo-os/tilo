@@ -224,8 +224,8 @@ impl DesktopChromeSource for PageChrome {
 
 impl PageChrome {
     /// Whether the bar offers its invite button: the page takes invitations
-    /// and the workspace lets this person write in it. Someone it lets only look,
-    /// a spectator among them, brings nobody in; until the workspace answered,
+    /// and the workspace lets this person write in it. Someone it lets only
+    /// look, a viewer among them, brings nobody in; until the workspace answered,
     /// the button stands, as for everyone it lets in.
     fn may_invite(&self) -> bool {
         self.invite
