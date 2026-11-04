@@ -895,3 +895,139 @@ fn symlinks_and_metadata_failures_are_handled_without_following_links() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn received_bytes_take_the_first_free_name_and_leave_no_staging() {
+    let d = tmp();
+    let destination = d.path().join("dest");
+    fs::create_dir(&destination).unwrap();
+    fs::write(destination.join("report.txt"), b"existing").unwrap();
+    let receiving = std::fs::File::open(&destination).unwrap();
+
+    let first = receive_bytes(
+        &receiving,
+        &destination,
+        "report.txt".as_ref(),
+        b"one",
+        &mut (),
+    )
+    .unwrap();
+    let second = receive_bytes(
+        &receiving,
+        &destination,
+        "report.txt".as_ref(),
+        b"two",
+        &mut (),
+    )
+    .unwrap();
+    assert_eq!(first, "report 2.txt");
+    assert_eq!(second, "report 3.txt");
+    assert_eq!(
+        fs::read(destination.join("report.txt")).unwrap(),
+        b"existing"
+    );
+    assert_eq!(fs::read(destination.join(first)).unwrap(), b"one");
+    assert_eq!(fs::read(destination.join(second)).unwrap(), b"two");
+    assert_no_transfer_staging(&destination);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_receive_that_cannot_publish_leaves_nothing_under_a_real_name() {
+    let d = tmp();
+    let destination = d.path().join("dest");
+    fs::create_dir(&destination).unwrap();
+    let source = d.path().join("report.txt");
+    fs::write(&source, b"received bytes").unwrap();
+    let receiving = std::fs::File::open(&destination).unwrap();
+
+    let mut refusing = TestTransferObserver {
+        before_publish: Some(Box::new(|_| {
+            Err(std::io::Error::other("the receive stopped before its name"))
+        })),
+        ..TestTransferObserver::default()
+    };
+    assert!(
+        receive_file(
+            &receiving,
+            &destination,
+            "report.txt".as_ref(),
+            &source,
+            &mut refusing
+        )
+        .is_err()
+    );
+    assert!(
+        fs::read_dir(&destination).unwrap().next().is_none(),
+        "a partly received item never appears under a real name"
+    );
+    assert_no_transfer_staging(&destination);
+
+    assert!(
+        receive_bytes(
+            &receiving,
+            &destination,
+            "report.txt".as_ref(),
+            b"received bytes",
+            &mut refusing
+        )
+        .is_err()
+    );
+    assert!(fs::read_dir(&destination).unwrap().next().is_none());
+    assert_no_transfer_staging(&destination);
+    assert_eq!(fs::read(&source).unwrap(), b"received bytes");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_received_folder_publishes_its_whole_staged_tree() {
+    let d = tmp();
+    let destination = d.path().join("dest");
+    fs::create_dir(&destination).unwrap();
+    let receiving = std::fs::File::open(&destination).unwrap();
+
+    let mut staging = Staging::in_folder(&receiving, &destination).unwrap();
+    staging
+        .create_directory(Path::new("nested"))
+        .expect("the staged tree takes folders");
+    staging
+        .create_file(Path::new("nested/report.txt"))
+        .and_then(|mut file| std::io::Write::write_all(&mut file, b"received"))
+        .unwrap();
+    staging.sync().unwrap();
+    let receiving_folder = receiving.try_clone().unwrap();
+    let published = staging.publish_tree("folder".as_ref(), &mut ()).unwrap();
+    assert_eq!(published, "folder");
+    assert_eq!(
+        fs::read(destination.join(published).join("nested/report.txt")).unwrap(),
+        b"received"
+    );
+    assert_no_transfer_staging(&destination);
+
+    let mut again = Staging::in_folder(&receiving_folder, &destination).unwrap();
+    again.create_directory(Path::new("")).unwrap();
+    again.sync().unwrap();
+    assert_eq!(
+        again.publish_tree("folder".as_ref(), &mut ()).unwrap(),
+        "folder 2"
+    );
+    assert_no_transfer_staging(&destination);
+    receiving_folder.sync_all().unwrap();
+}
+
+#[test]
+fn bytes_received_through_a_path_number_like_a_copy() {
+    let d = tmp();
+    let destination = d.path().join("dest");
+    fs::create_dir(&destination).unwrap();
+    fs::write(destination.join("shot.png"), b"existing").unwrap();
+
+    let first = transfer_bytes(b"one", &destination, "shot.png".as_ref(), &mut ()).unwrap();
+    let second = transfer_bytes(b"two", &destination, "shot.png".as_ref(), &mut ()).unwrap();
+    assert_eq!(first.file_name().unwrap(), "shot 2.png");
+    assert_eq!(second.file_name().unwrap(), "shot 3.png");
+    assert_eq!(fs::read(destination.join("shot.png")).unwrap(), b"existing");
+    assert_eq!(fs::read(&first).unwrap(), b"one");
+    assert_no_transfer_staging(&destination);
+}

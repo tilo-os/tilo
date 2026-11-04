@@ -2,24 +2,37 @@
 //! the receiving folder, so publishing every copy is a rename within one
 //! filesystem.
 
-use std::ffi::OsStr;
-use std::fs;
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
+use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
+
+use super::publish::{self, Names};
 use super::{Failure, TransferObserver, copy};
 
 /// The folder a transfer stages its copies in, inside the receiving folder.
-const STAGING_PREFIX: &str = ".tilo-transfer-";
+pub(crate) const STAGING_PREFIX: &str = ".tilo-transfer-";
 /// The leaf a one-shot transfer stages its one copy at.
 pub(crate) const PAYLOAD: &str = "payload";
 
 /// A private staging folder, and the copies in it.
 ///
+/// It is reached through the receiving folder twice over: a descriptor for the
+/// folder itself, so a caller that keeps one (a hosted app's Files grant, a
+/// destination renamed under the receive) never needs its path, and a path for
+/// the messages a person reads.
+///
 /// Dropping it removes the folder once it is empty; a copy retained for a
 /// failed move's recovery keeps it.
 pub struct Staging {
+    receiving: File,
+    receiving_dir: cap_std::fs::Dir,
+    /// The receiving folder as a person sees it, for messages only.
+    receiving_display: PathBuf,
     container: PathBuf,
+    name: OsString,
     directory: cap_std::fs::Dir,
     keep: bool,
 }
@@ -37,9 +50,55 @@ impl Staging {
     /// # Errors
     /// The folder cannot be created or opened.
     pub(crate) fn create(destination: &Path) -> io::Result<Self> {
+        let receiving = File::open(destination)?;
+        let receiving_dir =
+            cap_std::fs::Dir::open_ambient_dir(destination, cap_std::ambient_authority())?;
+        Self::allocate(receiving, receiving_dir, destination)
+    }
+
+    /// Make a private staging folder in the receiving folder held open as
+    /// `receiving`, as a person sees it at `display`.
+    ///
+    /// # Errors
+    /// The folder cannot be created or opened.
+    #[cfg(unix)]
+    pub fn in_folder(receiving: &File, display: &Path) -> io::Result<Self> {
+        let receiving = receiving.try_clone()?;
+        let receiving_dir = cap_std::fs::Dir::from_std_file(receiving.try_clone()?);
+        Self::allocate(receiving, receiving_dir, display)
+    }
+
+    fn allocate(
+        receiving: File,
+        receiving_dir: cap_std::fs::Dir,
+        display: &Path,
+    ) -> io::Result<Self> {
         for _ in 0..32 {
-            match Self::take(destination, &staging_path(destination)) {
-                Ok(staging) => return Ok(staging),
+            let name = OsString::from(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4().simple()));
+            let mut builder = cap_std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use cap_std::fs::DirBuilderExt as _;
+                builder.mode(0o700);
+            }
+            match receiving_dir.create_dir_with(&name, &builder) {
+                Ok(()) => match receiving_dir.open_dir_nofollow(&name) {
+                    Ok(directory) => {
+                        return Ok(Self {
+                            container: display.join(&name),
+                            receiving_display: display.to_path_buf(),
+                            receiving,
+                            receiving_dir,
+                            name,
+                            directory,
+                            keep: false,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = receiving_dir.remove_dir(&name);
+                        return Err(error);
+                    }
+                },
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error),
             }
@@ -57,28 +116,32 @@ impl Staging {
     /// The folder cannot be created or opened, and a `path` outside
     /// `destination` is refused.
     pub fn take(destination: &Path, path: &Path) -> io::Result<Self> {
-        use cap_fs_ext::DirExt as _;
-
         if path.parent() != Some(destination) {
             return Err(io::Error::other(
                 "a staging folder must be in the folder it receives into",
             ));
         }
-        let receiving =
+        let receiving = File::open(destination)?;
+        let receiving_dir =
             cap_std::fs::Dir::open_ambient_dir(destination, cap_std::ambient_authority())?;
         crate::create_private_dir(path)?;
         let name = path
             .file_name()
-            .ok_or_else(|| io::Error::other("private transfer staging has no leaf name"))?;
-        let directory = match receiving.open_dir_nofollow(name) {
+            .ok_or_else(|| io::Error::other("private transfer staging has no leaf name"))?
+            .to_os_string();
+        let directory = match receiving_dir.open_dir_nofollow(&name) {
             Ok(directory) => directory,
             Err(error) => {
-                let _ = fs::remove_dir(path);
+                let _ = receiving_dir.remove_dir(&name);
                 return Err(error);
             }
         };
         Ok(Self {
+            receiving,
+            receiving_dir,
             container: path.to_path_buf(),
+            receiving_display: destination.to_path_buf(),
+            name,
             directory,
             keep: false,
         })
@@ -100,6 +163,91 @@ impl Staging {
     #[must_use]
     pub(crate) fn payload(&self) -> PathBuf {
         self.leaf(OsStr::new(PAYLOAD))
+    }
+
+    /// Create the folder `relative` in staging, and the folders above it,
+    /// owner-only. Existing folders are opened, never replaced.
+    ///
+    /// # Errors
+    /// Refuses a path that is not relative, and returns what the filesystem
+    /// says.
+    pub fn create_directory(&self, relative: &Path) -> io::Result<()> {
+        let mut current = self.directory.try_clone()?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::other("a received folder is not portable"));
+            };
+            let mut builder = cap_std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use cap_std::fs::DirBuilderExt as _;
+                builder.mode(0o700);
+            }
+            match current.create_dir_with(name, &builder) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            current = current.open_dir_nofollow(name)?;
+        }
+        Ok(())
+    }
+
+    /// Create the file `relative` in staging, exclusively and owner-only.
+    ///
+    /// # Errors
+    /// Refuses a path that is not relative or an existing name, and returns
+    /// what the filesystem says.
+    pub fn create_file(&self, relative: &Path) -> io::Result<File> {
+        let name = relative
+            .file_name()
+            .ok_or_else(|| io::Error::other("a received file has no name"))?;
+        let parent = match relative.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => self.open_directory(parent)?,
+            _ => self.directory.try_clone()?,
+        };
+        let mut options = cap_std::fs::OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        parent
+            .open_with(name, &options)
+            .map(cap_std::fs::File::into_std)
+    }
+
+    fn open_directory(&self, relative: &Path) -> io::Result<cap_std::fs::Dir> {
+        let mut current = self.directory.try_clone()?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::other("a received folder is not portable"));
+            };
+            current = current.open_dir_nofollow(name)?;
+        }
+        Ok(current)
+    }
+
+    /// Write `bytes` into this folder as its one payload, owner-only.
+    ///
+    /// # Errors
+    /// Returns what the filesystem says, or the refusal of the observer's
+    /// permission choice.
+    pub(crate) fn stage_bytes(
+        &self,
+        bytes: &[u8],
+        observer: &mut impl TransferObserver,
+    ) -> io::Result<()> {
+        use std::io::Write as _;
+
+        let mut output = self.create_file(Path::new(PAYLOAD))?;
+        let chosen = observer.destination_permissions(output.metadata()?.permissions());
+        output.set_permissions(chosen)?;
+        output.write_all(bytes)
     }
 
     /// Copy the tree at `source` into this folder as its one payload.
@@ -128,14 +276,66 @@ impl Staging {
         copy::copy_tree_to(&self.directory, name, source, observer)
     }
 
-    /// Flush every copy staged here and the folder's own entry, so they are
-    /// whole on disk before any of them is published.
+    /// Flush every write staged here, so the copies are whole on disk before
+    /// any of them is published.
     ///
     /// # Errors
     /// Returns what the filesystem says.
     pub fn sync(&self) -> io::Result<()> {
-        super::files::sync_filesystem(&self.container)?;
-        crate::transfer::sync_directory(&self.container)
+        super::files::sync_filesystem(&self.receiving)?;
+        #[cfg(unix)]
+        super::files::sync_child_directory(&self.receiving, &self.name)?;
+        #[cfg(not(unix))]
+        super::sync_directory(&self.container)?;
+        Ok(())
+    }
+
+    /// Publish the staged payload under `name`, or its first free numbered
+    /// name, in the receiving folder.
+    ///
+    /// # Errors
+    /// As [`super::transfer`]: never a replacement, and says when no name is
+    /// free.
+    #[cfg(unix)]
+    pub fn publish_payload(
+        &mut self,
+        name: &OsStr,
+        observer: &mut impl TransferObserver,
+    ) -> Result<OsString, Failure> {
+        publish::publish_numbered_at(
+            OsStr::new(PAYLOAD),
+            &self.directory,
+            &self.receiving_dir,
+            &self.receiving,
+            &self.receiving_display,
+            &Names::new(name),
+            observer,
+        )
+    }
+
+    /// Publish the staging folder itself under `name`, or its first free
+    /// numbered name, in the receiving folder: a received folder keeps its
+    /// staged tree exactly as it was made.
+    ///
+    /// # Errors
+    /// As [`Self::publish_payload`].
+    #[cfg(unix)]
+    pub fn publish_tree(
+        &mut self,
+        name: &OsStr,
+        observer: &mut impl TransferObserver,
+    ) -> Result<OsString, Failure> {
+        let published = publish::publish_numbered_at(
+            &self.name,
+            &self.receiving_dir,
+            &self.receiving_dir,
+            &self.receiving,
+            &self.receiving_display,
+            &Names::new(name),
+            observer,
+        )?;
+        self.keep = true;
+        Ok(published)
     }
 
     /// Keep the folder and what is in it, whatever happens to this handle: a
@@ -148,7 +348,7 @@ impl Staging {
     /// folder is left to remove.
     pub fn finish_success(mut self) {
         self.keep = true;
-        if let Err(error) = fs::remove_dir_all(&self.container) {
+        if let Err(error) = self.remove() {
             tracing::warn!(
                 path = %self.container.display(),
                 %error,
@@ -161,18 +361,21 @@ impl Staging {
     /// saying where when it cannot be taken away.
     pub(crate) fn refuse(mut self, error: impl Into<Failure>) -> Failure {
         let error = error.into();
-        match super::remove_path(&self.container) {
-            Ok(()) => {
-                self.keep = true;
-                error
-            }
-            Err(cleanup_error) => {
-                self.keep = true;
-                Failure::Refused(format!(
-                    "{error}; private staging retained at {}: {cleanup_error}",
-                    self.container.display()
-                ))
-            }
+        self.keep = true;
+        match self.remove() {
+            Ok(()) => error,
+            Err(cleanup_error) => Failure::Refused(format!(
+                "{error}; private staging retained at {}: {cleanup_error}",
+                self.container.display()
+            )),
+        }
+    }
+
+    fn remove(&self) -> io::Result<()> {
+        match self.receiving_dir.remove_dir_all(&self.name) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
         }
     }
 }
@@ -188,7 +391,7 @@ impl Drop for Staging {
             }
             return;
         }
-        if let Err(error) = super::remove_path(&self.container) {
+        if let Err(error) = self.remove() {
             tracing::warn!(
                 path = %self.container.display(),
                 %error,

@@ -13,6 +13,56 @@ pub fn rename_noreplace(src: &Path, dest: &Path) -> io::Result<()> {
     imp::rename_noreplace(src, dest)
 }
 
+/// [`rename_noreplace`] between two folders held open, for a caller that keeps
+/// directory descriptors instead of paths.
+///
+/// # Errors
+///
+/// Returns the host's error; `Unsupported` where the host has no such rename.
+#[cfg(unix)]
+pub fn rename_noreplace_at(
+    src_dir: std::os::fd::BorrowedFd<'_>,
+    src: &std::ffi::OsStr,
+    dest_dir: std::os::fd::BorrowedFd<'_>,
+    dest: &std::ffi::OsStr,
+) -> io::Result<()> {
+    at::rename_noreplace_at(src_dir, src, dest_dir, dest)
+}
+
+#[cfg(unix)]
+mod at {
+    use std::ffi::OsStr;
+    use std::io;
+    use std::os::fd::BorrowedFd;
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+    pub fn rename_noreplace_at(
+        src_dir: BorrowedFd<'_>,
+        src: &OsStr,
+        dest_dir: BorrowedFd<'_>,
+        dest: &OsStr,
+    ) -> io::Result<()> {
+        rustix::fs::renameat_with(
+            src_dir,
+            src,
+            dest_dir,
+            dest,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(io::Error::from)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    pub fn rename_noreplace_at(
+        _src_dir: BorrowedFd<'_>,
+        _src: &OsStr,
+        _dest_dir: BorrowedFd<'_>,
+        _dest: &OsStr,
+    ) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use std::io;

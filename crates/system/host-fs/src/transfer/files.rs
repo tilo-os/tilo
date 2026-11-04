@@ -1,6 +1,7 @@
 //! What a transfer does to the filesystem around its copies: removals,
 //! durability syncs and the Trash.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
@@ -41,31 +42,47 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
-/// Flush every write the filesystem holding `path` has cached: one group
+/// Flush every write the filesystem holding `receiving` has cached: one group
 /// commit for a batch of copies, rather than one per file. Only Linux commits
 /// one filesystem by descriptor; elsewhere the commit is every filesystem's,
 /// which includes this one.
 ///
 /// # Errors
 /// Returns what the filesystem says.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
-    rustix::fs::syncfs(&File::open(path)?).map_err(io::Error::from)
+pub(crate) fn sync_filesystem(receiving: &File) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        rustix::fs::syncfs(receiving).map_err(io::Error::from)
+    }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+    {
+        let _ = receiving;
+        rustix::fs::sync();
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        receiving.sync_all()
+    }
 }
 
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-pub(crate) fn sync_filesystem(_path: &Path) -> io::Result<()> {
-    rustix::fs::sync();
-    Ok(())
-}
-
-/// The web's filesystem caches nothing past the file a copy wrote.
+/// Flush the entry of the folder `name` in `receiving`, so the staging folder
+/// and the copies written inside it survive a power cut.
 ///
 /// # Errors
 /// Returns what the filesystem says.
-#[cfg(not(unix))]
-pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
+#[cfg(unix)]
+pub(crate) fn sync_child_directory(receiving: &File, name: &OsStr) -> io::Result<()> {
+    use rustix::fs::{Mode, OFlags};
+
+    let handle = rustix::fs::openat(
+        receiving,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    File::from(handle).sync_all()
 }
 
 /// Flush the folder `path` is in.

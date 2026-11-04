@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 blake3.workspace = true
 getrandom.workspace = true
+host-fs = { path = "../../system/host-fs" }
 hex.workspace = true
 libc.workspace = true
 serde.workspace = true

@@ -15,7 +15,10 @@
 //!
 //! [`Staging`] is the staging folder and its copies, for a caller that stages
 //! many items before publishing any of them and records what it is doing in a
-//! receipt of its own. [`transfer`] is the one-shot copy or move.
+//! receipt of its own. [`transfer`] is the one-shot copy or move;
+//! [`transfer_bytes`] receives bytes that are already in memory, and
+//! [`receive_file`]/[`receive_bytes`] do the same into a folder held open by
+//! its descriptor rather than named by a path.
 //!
 //! # Who may be told what
 //!
@@ -38,11 +41,11 @@ mod stage;
 mod tests;
 
 pub use files::{best_effort, best_effort_by, remove_path, sync_directory, sync_parent, trash};
-pub use publish::free_name;
+pub use publish::{Names, free_name};
 pub use source::{quarantine_at, quarantine_path, restore_source};
 pub use stage::{Staging, staging_path};
 
-use publish::{MAX_NUMBER, Names, occupied};
+use publish::{MAX_NUMBER, occupied};
 use source::{quarantine, restore_failed_cut, rollback_quarantined_source};
 
 pub use cap_std::fs::{Dir as SourceDirectory, OpenOptions as SourceOpenOptions};
@@ -285,6 +288,96 @@ pub fn transfer_named(
     finish(source, dest_dir, &names, remove_source, staging, observer)
 }
 
+/// Write `bytes` to `dest_dir` under `name`, or the first free numbered one.
+///
+/// # Errors
+/// Refuses invalid names, collisions on every numbered name, and I/O
+/// failures; a failure leaves nothing under a real name.
+pub fn transfer_bytes(
+    bytes: &[u8],
+    dest_dir: &Path,
+    name: &OsStr,
+    observer: &mut impl TransferObserver,
+) -> Result<PathBuf, Failure> {
+    let names = admit_name(dest_dir, name)?;
+    let staging = Staging::create(dest_dir)?;
+    if let Err(error) = staging.stage_bytes(bytes, observer) {
+        return Err(staging.refuse(error));
+    }
+    if let Err(error) = staging.sync() {
+        return Err(staging.refuse(error));
+    }
+    match publish::publish_numbered(&staging.payload(), dest_dir, &names, observer) {
+        Ok(destination) => {
+            staging.finish_success();
+            Ok(destination)
+        }
+        Err(error) => Err(staging.refuse(error)),
+    }
+}
+
+/// Receive `bytes` into the folder held open as `receiving` under `name`, or
+/// its first free numbered name. `display` is that folder as a person sees it.
+///
+/// # Errors
+/// As [`transfer_bytes`]: a failure leaves nothing under a real name.
+#[cfg(unix)]
+pub fn receive_bytes(
+    receiving: &std::fs::File,
+    display: &Path,
+    name: &OsStr,
+    bytes: &[u8],
+    observer: &mut impl TransferObserver,
+) -> Result<OsString, Failure> {
+    let mut staging = Staging::in_folder(receiving, display)?;
+    if let Err(error) = staging.stage_bytes(bytes, observer) {
+        return Err(staging.refuse(error));
+    }
+    if let Err(error) = staging.sync() {
+        return Err(staging.refuse(error));
+    }
+    staging.publish_payload(name, observer)
+}
+
+/// Receive the file or folder at `source` into the folder held open as
+/// `receiving` under `name`, or its first free numbered name. The source is
+/// left where it is.
+///
+/// # Errors
+/// As [`receive_bytes`], and when the source cannot be read.
+#[cfg(unix)]
+pub fn receive_file(
+    receiving: &std::fs::File,
+    display: &Path,
+    name: &OsStr,
+    source: &Path,
+    observer: &mut impl TransferObserver,
+) -> Result<OsString, Failure> {
+    let mut staging = Staging::in_folder(receiving, display)?;
+    if let Err(error) = staging.stage_payload(source, observer) {
+        return Err(staging.refuse(error));
+    }
+    if let Err(error) = staging.sync() {
+        return Err(staging.refuse(error));
+    }
+    staging.publish_payload(name, observer)
+}
+
+/// Whether `name` may be received into `dest_dir`: one leaf, and a
+/// destination whose first name can be examined. The names it may take.
+fn admit_name(dest_dir: &Path, name: &OsStr) -> Result<Names, Failure> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(Failure::InvalidName);
+    }
+    let names = Names::new(name);
+    // An inaccessible destination is refused before any staging is made.
+    occupied(&dest_dir.join(names.for_suffix(1)))?;
+    Ok(names)
+}
+
 /// Whether `source` may go to `dest_dir` as `name`: one leaf, not into
 /// itself, not a move into the folder it is already in, and a destination
 /// whose first name can be examined. The names it may be published under.
@@ -294,12 +387,7 @@ fn admit(
     name: &OsStr,
     remove_source: bool,
 ) -> Result<Names, Failure> {
-    let mut components = Path::new(name).components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(Failure::InvalidName);
-    }
+    let names = admit_name(dest_dir, name)?;
     ensure_destination_is_outside_source(source, dest_dir)?;
     let source_parent = source
         .parent()
@@ -308,9 +396,6 @@ fn admit(
     if remove_source && source_parent.is_some() && source_parent == destination_dir {
         return Err(Failure::AlreadyHere);
     }
-    let names = Names::new(name);
-    // An inaccessible destination is refused before any staging is made.
-    occupied(&dest_dir.join(names.for_suffix(1)))?;
     Ok(names)
 }
 

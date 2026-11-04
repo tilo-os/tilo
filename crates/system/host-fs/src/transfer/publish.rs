@@ -11,9 +11,9 @@ use super::{Failure, TransferObserver};
 /// The most numbered names one folder is asked for before a transfer gives up.
 pub(crate) const MAX_NUMBER: u32 = 10_000;
 
-/// A copy's name and the numbered names it may take instead, so a transfer
-/// never replaces what is already there.
-pub(crate) struct Names {
+/// A received item's name and the numbered names it may take instead, so a
+/// transfer never replaces what is already there.
+pub struct Names {
     original: OsString,
     stem: OsString,
     extension: Option<OsString>,
@@ -59,6 +59,24 @@ pub(crate) fn occupied(path: &Path) -> Result<bool, Failure> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(Failure::Inspect {
             path: path.to_path_buf(),
+            error,
+        }),
+    }
+}
+
+/// Whether the open folder `folder` already holds the leaf `name`. `display`
+/// is only used to say which name could not be examined.
+#[cfg(unix)]
+pub(crate) fn occupied_at(
+    folder: &cap_std::fs::Dir,
+    display: &Path,
+    name: &OsStr,
+) -> Result<bool, Failure> {
+    match folder.symlink_metadata(name) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(Failure::Inspect {
+            path: display.join(name),
             error,
         }),
     }
@@ -119,5 +137,47 @@ pub(crate) fn publish_numbered(
     Err(Failure::NamesExhausted {
         name: names.original.clone(),
         dir: dest_dir.to_path_buf(),
+    })
+}
+
+/// Publish the staged item `staged`, inside the open folder `staged_dir`, into
+/// the open folder `receiving` under `names`' first free name, never replacing
+/// anything. `sync` is an ordinary (not lookup-only) descriptor of the receiving
+/// folder, used to make the new name survive a crash. `display` is that folder
+/// as a person sees it, for admission and failure messages only.
+#[cfg(unix)]
+pub(crate) fn publish_numbered_at(
+    staged: &OsStr,
+    staged_dir: &cap_std::fs::Dir,
+    receiving: &cap_std::fs::Dir,
+    sync: &fs::File,
+    display: &Path,
+    names: &Names,
+    observer: &mut impl TransferObserver,
+) -> Result<OsString, Failure> {
+    use std::os::fd::AsFd as _;
+
+    for suffix in 1..MAX_NUMBER {
+        let target = names.for_suffix(suffix);
+        if occupied_at(receiving, display, &target)? {
+            continue;
+        }
+        observer.before_publish(&display.join(&target))?;
+        match crate::rename_noreplace_at(staged_dir.as_fd(), staged, receiving.as_fd(), &target) {
+            Ok(()) => {
+                super::files::best_effort(
+                    "making a received name survive a crash",
+                    display,
+                    || sync.sync_all(),
+                );
+                return Ok(target);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(Failure::Refused(error.to_string())),
+        }
+    }
+    Err(Failure::NamesExhausted {
+        name: names.original.clone(),
+        dir: display.to_path_buf(),
     })
 }
