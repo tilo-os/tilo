@@ -9,8 +9,8 @@
 //! picture the encoder stands on rather than a new encode.
 //!
 //! What arrives is opened by the plane with the workspace's keys and queued
-//! with the pictures a page's lane carried: the app draws one inbox, whichever
-//! way the picture came.
+//! in the call's inbox: a page's pictures and a device's are the same
+//! objects, drawn the same way.
 
 use std::sync::atomic::Ordering;
 
@@ -19,9 +19,7 @@ use tilo_live::live::Track;
 use tilo_lock::MutexRecover as _;
 
 impl Shared {
-    /// This device's pictures as the encoder of one source reads them: the
-    /// layers the call's devices show, the ones a plane track needs afresh,
-    /// and the lane a page's pictures travel on.
+    /// This device's pictures as the encoder of one source reads them.
     pub(super) fn sink(self: &std::sync::Arc<Self>) -> std::sync::Arc<dyn pictures::Sink> {
         std::sync::Arc::clone(self) as std::sync::Arc<dyn pictures::Sink>
     }
@@ -96,25 +94,33 @@ impl Shared {
 
 impl pictures::Sink for Shared {
     fn asking(&self, source: pictures::Source) -> pictures::Asking {
-        // What the pages' lanes show of this source, and what the plane's
-        // devices show of it: one encode per layer either way.
-        let mut asking = self.video.asking(source);
+        // What the plane's devices show of this source, and this person's own
+        // tile: one encode per layer either way.
+        let mut wanted = std::collections::BTreeSet::new();
+        let mut restart = std::collections::BTreeSet::new();
         if let Some(plane) = self.presence.plane(&self.workspace) {
             for (of, layer) in plane.wanted_pictures() {
                 if of == source {
-                    asking.wanted.entry(source).or_default().insert(layer);
+                    wanted.insert(layer);
                 }
             }
             if plane.wants_picture_keyframe(source) {
                 let _ = plane.take_picture_keyframes(source);
-                asking.restart.insert(source);
+                restart.insert(source);
             }
+        }
+        let mut asking = pictures::Asking {
+            wanted: std::collections::BTreeMap::new(),
+            restart,
+            own: self.video.own_layer(),
+        };
+        if !wanted.is_empty() {
+            asking.wanted.insert(source, wanted);
         }
         asking
     }
 
     fn sent(&self, source: pictures::Source, object: &pictures::VideoObject) {
-        self.video.sent(source, object);
         if let Some(plane) = self.presence.plane(&self.workspace)
             && plane.send_picture(source, object).is_err()
         {

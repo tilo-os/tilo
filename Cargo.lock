@@ -17232,7 +17232,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-browser-peer",
- "tilo-call-lane",
  "tilo-clock",
  "tilo-content",
  "tilo-crypto",
@@ -17836,7 +17835,6 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
- "tilo-call-lane",
  "tilo-clock",
  "tilo-desktop-model",
  "tilo-live",
@@ -17888,6 +17886,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-files",
+ "tilo-live",
  "tilo-lock",
  "tilo-model-gateway",
  "tilo-paths",
@@ -17918,27 +17917,6 @@ version = "0.1.0"
 dependencies = [
  "account-custody",
  "browser-continuity",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-call-lane"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "channel-crypto",
- "collab-types",
- "iroh",
- "opus",
- "postcard",
- "serde",
- "thiserror 2.0.21",
- "tilo-live",
- "tilo-lock",
- "tilo-media",
- "tilo-test-env",
- "tokio",
- "tracing",
  "workspace-hack",
 ]
 
@@ -20683,7 +20661,6 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-bot-directory",
  "tilo-browser-peer",
- "tilo-call-lane",
  "tilo-clock",
  "tilo-connector",
  "tilo-content",
@@ -21380,7 +21357,6 @@ dependencies = [
  "tilo-bluetooth-agent",
  "tilo-bluez",
  "tilo-browser-peer",
- "tilo-call-lane",
  "tilo-capture-studio",
  "tilo-cli-kit",
  "tilo-clock",

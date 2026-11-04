@@ -147,8 +147,6 @@ tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-# The page's calls ride a lane of their own; the test support opens one.
-tilo-call-lane = { path = "../../collab/tilo-call-lane", features = ["lanes"] }
 iroh.workspace = true
 # tilo-browser-peer's test support (its HTTPS client), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
@@ -169,7 +167,7 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-call-lane", "tilo-net", "tokio-rustls"]
+ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-net", "tokio-rustls"]
 
 [lints]
 workspace = true

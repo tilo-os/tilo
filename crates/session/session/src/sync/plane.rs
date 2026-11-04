@@ -2,11 +2,8 @@
 //! on the device's own key, the peer actor served on it, and the commands the
 //! session hands it until it stops.
 //!
-//! The endpoint is also where a page's call lane is served
-//! ([`tilo_call_lane::ALPN`]): from the first pass, so a page's host reaching
-//! this device finds someone to answer, and the call installed on it when
-//! there is one. Two desktops' calls need no lane: their pictures are tracks
-//! of the workspace's plane.
+//! The endpoint is what names this device on the workspaces' planes, and what
+//! carries every one of them.
 
 use std::sync::Arc;
 
@@ -42,8 +39,7 @@ fn plane_runtime(
 /// runs, and this device's action plane, which answers the person's other
 /// devices on it.
 pub(crate) struct Serving {
-    /// This device's endpoint, once it has bound, and what answers a call's
-    /// lanes on it.
+    /// This device's endpoint, once it has bound.
     pub(crate) bound: Bound,
     /// What answers on that endpoint beside the workspaces' own traffic.
     pub(crate) beside: Beside,
@@ -51,17 +47,16 @@ pub(crate) struct Serving {
 
 impl Serving {
     /// What the session serves on the endpoint it is about to bind: the
-    /// endpoint it fills in once bound, its call lane, and what answers beside
-    /// the workspaces' traffic.
+    /// endpoint it fills in once bound, and what answers beside the
+    /// workspaces' traffic.
     pub(crate) fn new(
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
-        lane: crate::calls::LaneSlot,
         link: Option<Arc<ChannelLink>>,
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::local_host::Protocols,
     ) -> Self {
         Self {
-            bound: Bound { endpoint, lane },
+            bound: Bound { endpoint },
             beside: Beside {
                 link,
                 actions,
@@ -85,11 +80,10 @@ pub(crate) struct Beside {
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
-/// once it is, and the call lane served on it from the first pass.
+/// once it is.
 #[derive(Clone, Default)]
 pub(crate) struct Bound {
     pub(crate) endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
-    pub(crate) lane: crate::calls::LaneSlot,
 }
 
 /// What this device answers on from the moment its endpoint is bound: the
@@ -253,13 +247,6 @@ async fn listening(
     // the person's devices reaches what this one publishes here, beside the
     // workspaces' own traffic.
     let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
-    // A call's lane is served here too, from the first pass: it refuses every
-    // connection until a call installs its carrier, and answers those from
-    // then until the call ends.
-    served.push((
-        tilo_call_lane::ALPN.to_vec(),
-        Box::<dyn iroh::protocol::DynProtocolHandler>::from(bound.lane.handler()),
-    ));
     // What the session serves beside its own planes: this device's exit for
     // the person's other devices, when it offers one.
     served.extend(protocols);

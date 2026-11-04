@@ -305,9 +305,6 @@ tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime"] }
-# A call's frames, sealed with the channel's keys and carried as datagrams on
-# this session's own endpoint.
-tilo-call-lane = { path = "../../collab/tilo-call-lane" }
 # The workspaces' live plane: a sealed `moq-lite` session per workspace over
 # this session's own endpoint, and the relay role a member serves for the
 # others.

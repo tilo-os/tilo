@@ -754,12 +754,9 @@ pub struct Client {
     >,
     /// Where this device's endpoint is reached, as other devices dial it.
     endpoint: EndpointAddr,
-    /// This device's endpoint itself, once it has bound: what a call's media
-    /// lanes run on, beside the plane's own traffic.
+    /// This device's endpoint itself, once it has bound: what the session's
+    /// traffic runs on, and what names this device.
     endpoint_handle: Arc<std::sync::OnceLock<iroh::Endpoint>>,
-    /// What answers a call's lanes on that endpoint: the carrier of the call
-    /// this device is in, which a factory installs while it lasts.
-    lane: crate::calls::LaneSlot,
     /// This device's fabric, when it is a certified device of the person's:
     /// `None` on a session that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
@@ -868,8 +865,6 @@ impl Client {
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let bound_endpoint = Arc::clone(&endpoint_handle);
-        let lane = crate::calls::LaneSlot::default();
-        let served_lane = lane.clone();
         // The workspaces' live plane: its relay role, when this device may
         // serve one, is one more protocol on the endpoint this session binds.
         // Its planes open once the endpoint is bound.
@@ -892,7 +887,7 @@ impl Client {
                     enrollments,
                     ready,
                     wake,
-                    Serving::new(bound_endpoint, served_lane, plane_link, serving, beside),
+                    Serving::new(bound_endpoint, plane_link, serving, beside),
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
@@ -940,7 +935,6 @@ impl Client {
             personal: RefCell::new(Vec::new()),
             endpoint,
             endpoint_handle,
-            lane,
             fabric,
             nearby: RefCell::new(None),
             device_actions,
@@ -1719,12 +1713,6 @@ impl Client {
         Arc::clone(&self.endpoint_handle)
     }
 
-    /// What answers a call's lanes on that endpoint.
-    #[must_use]
-    pub(crate) fn lane(&self) -> &crate::calls::LaneSlot {
-        &self.lane
-    }
-
     /// Dial one of the person's own devices, whose address this session was
     /// told: the session between the two carries their device fabric.
     pub fn connect(&self, addr: EndpointAddr) {
@@ -2148,7 +2136,6 @@ impl Client {
                 personal: RefCell::new(Vec::new()),
                 endpoint: EndpointAddr::new(publisher),
                 endpoint_handle: Arc::new(std::sync::OnceLock::new()),
-                lane: crate::calls::LaneSlot::default(),
                 fabric: None,
                 nearby: RefCell::new(None),
                 device_actions: Arc::new(std::sync::OnceLock::new()),

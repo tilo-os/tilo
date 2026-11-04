@@ -22,9 +22,9 @@
 //! screen layer a device in the call shows: the plane asks for exactly the
 //! layers someone draws, and a layer nobody draws is never encoded.
 //!
-//! A page in a call keeps its pictures on a lane of [`tilo_call_lane`] on
-//! this session's own endpoint ([`LaneSlot`]): a page has no plane of its
-//! own yet, and the lane is what its host relays.
+//! A page in a call publishes and reads its pictures on its own joined plane,
+//! as one more device of the workspace: the same tracks, the same demand, and
+//! the same objects, without a lane of its host's.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -36,10 +36,10 @@ use media::realtime::capture::{CaptureConfig, VideoCapture};
 use runtime_collab::native_media::{
     Input, Issue, Picture, PictureLayer, PictureSource, Roster, Shown, State,
 };
-use tilo_call_lane::video as pictures;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::live::Track;
 use tilo_live::plane::{Heard, Plane};
+use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::voice::{self, VoiceObject};
 use tilo_lock::MutexRecover as _;
 use tilo_native_media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters, ScreenShare};
@@ -47,6 +47,7 @@ use tilo_native_media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters
 use crate::sync::{self, LiveCall};
 use media::voice::call::{self, Audio, Source, Voice};
 
+mod pictures;
 mod plane_pictures;
 
 /// How often a live call moves what it carries: one frame's worth, so a
@@ -93,6 +94,9 @@ pub(crate) struct Calls {
     said: Mutex<String>,
     /// Woken whenever a workspace's calls may have changed.
     changed: Arc<tokio::sync::Notify>,
+    /// Woken whenever a call may have pictures to draw: a plane heard one, or
+    /// a call changed what it shows.
+    arrived: Arc<tokio::sync::Notify>,
     /// This session's live plane in each workspace, as it stands: what a
     /// call's voice is published into and heard from.
     planes: Mutex<BTreeMap<String, Arc<Plane>>>,
@@ -121,6 +125,7 @@ impl Calls {
             rosters: Mutex::new(Vec::new()),
             said: Mutex::new(String::new()),
             changed: Arc::new(tokio::sync::Notify::new()),
+            arrived: Arc::new(tokio::sync::Notify::new()),
             planes: Mutex::new(BTreeMap::new()),
             heard: Mutex::new(BTreeMap::new()),
             pictures: Mutex::new(BTreeMap::new()),
@@ -231,6 +236,16 @@ impl Calls {
         }
     }
 
+    /// Woken whenever a call may have pictures to draw, or its demand moved.
+    pub(crate) fn arrived(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.arrived)
+    }
+
+    /// Wake the passes waiting on [`Self::arrived`].
+    pub(crate) fn pictures_arrived(&self) {
+        self.arrived.notify_waiters();
+    }
+
     /// The plane `workspace`'s call's voice runs on, while this session is in
     /// the workspace's plane.
     pub(crate) fn plane(&self, workspace: &str) -> Option<Arc<Plane>> {
@@ -266,6 +281,8 @@ impl Calls {
                     .or_default()
                     .carry(heard.clone());
             }
+            drop(pictures);
+            self.pictures_arrived();
         }
     }
 
@@ -507,64 +524,6 @@ pub(crate) fn channel_name(
         .filter(|name| !name.is_empty())
 }
 
-/// What answers the session endpoint's call lanes: the one live call, or a
-/// refusal, since a device in no call takes no lane. A page's host is the
-/// only one that opens a lane now: two desktops' pictures travel the
-/// workspace's plane.
-#[derive(Clone, Default)]
-pub(crate) struct LaneSlot(Arc<Mutex<Option<tilo_call_lane::Calls>>>);
-
-impl LaneSlot {
-    /// Answer `calls` on the endpoint from now on.
-    pub(crate) fn install(&self, calls: tilo_call_lane::Calls) {
-        *self.0.lock_recover() = Some(calls);
-    }
-
-    /// Stop answering `calls`, unless another call took the slot since.
-    fn clear_if(&self, calls: &tilo_call_lane::Calls) {
-        let mut slot = self.0.lock_recover();
-        if slot
-            .as_ref()
-            .is_some_and(|held| held.hello() == calls.hello())
-        {
-            slot.take();
-        }
-    }
-
-    /// What the endpoint's router hands a connection on [`tilo_call_lane`]'s
-    /// protocol.
-    pub(crate) fn handler(&self) -> LaneHandler {
-        LaneHandler(self.clone())
-    }
-}
-
-/// The session endpoint's handler for call lanes, resolved per connection:
-/// the call the slot holds now, or a refusal.
-#[derive(Clone)]
-pub(crate) struct LaneHandler(LaneSlot);
-
-impl std::fmt::Debug for LaneHandler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LaneHandler")
-            .field("answering", &self.0.0.lock_recover().is_some())
-            .finish()
-    }
-}
-
-impl iroh::protocol::ProtocolHandler for LaneHandler {
-    async fn accept(
-        &self,
-        connection: iroh::endpoint::Connection,
-    ) -> Result<(), iroh::protocol::AcceptError> {
-        let Some(calls) = self.0.0.lock_recover().clone() else {
-            return Err(iroh::protocol::AcceptError::from_err(
-                std::io::Error::other("this device is in no call"),
-            ));
-        };
-        calls.accept(connection).await
-    }
-}
-
 /// The devices a workspace's governance admits, read fresh: what a call's
 /// roster is made of, and who this device accepts frames from.
 pub(crate) type Admitted = Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>;
@@ -576,11 +535,9 @@ pub(crate) struct Sources {
     /// The calls of the workspaces this session takes part in, as the loop
     /// heard them: who else is in the channel this device joins.
     pub(crate) calls: Arc<Calls>,
-    /// The session's own endpoint, where a page's call lane runs. `None` for
-    /// a session taking part in no transport, which carries no call.
+    /// The session's own endpoint, which names this device. `None` for a
+    /// session taking part in no transport, which carries no call.
     pub(crate) endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
-    /// What answers that endpoint's call lanes.
-    pub(crate) lane: Option<LaneSlot>,
     /// This device's channel keys: the ones a call in the channel seals its
     /// audio with.
     pub(crate) keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
@@ -594,7 +551,7 @@ pub(crate) struct Sources {
     /// feeds.
     pub(crate) person: Option<String>,
     /// What this device's camera captures from.
-    pub(crate) camera: tilo_call_lane::Camera,
+    pub(crate) camera: pictures::Camera,
     /// Where a test reads the samples the call played, in place of a
     /// speaker.
     #[cfg(test)]
@@ -603,8 +560,7 @@ pub(crate) struct Sources {
 
 /// This session as the carrier of a call: being in the channel is joining
 /// it, which the session's presence then says to everyone in the workspace;
-/// the audio and the pictures travel the workspace's live plane, and the
-/// session's endpoint answers a page's picture lane.
+/// the audio and the pictures travel the workspace's live plane.
 pub(crate) struct Factory {
     sources: Arc<Sources>,
     /// The person's answers about the microphone: the prompt the session's
@@ -619,7 +575,6 @@ impl Sources {
     pub(crate) fn carrier(
         calls: Arc<Calls>,
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
-        lane: LaneSlot,
         keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
         roster: Admitted,
         questions: Option<tilo_service::Questions>,
@@ -628,13 +583,12 @@ impl Sources {
         Self {
             calls,
             endpoint: Some(endpoint),
-            lane: Some(lane),
             keys,
             roster: Some(roster),
             questions,
             audio: Audio::Devices,
             person,
-            camera: tilo_call_lane::Camera::from_env(),
+            camera: pictures::Camera::from_env(),
             #[cfg(test)]
             played: None,
         }
@@ -679,40 +633,25 @@ async fn open(
     consents: Option<tilo_portal::consent::Consents>,
     target: CallTarget,
 ) -> Result<Box<dyn MediaSession>, Issue> {
-    let (Some(endpoint), Some(lane)) = (
-        sources
-            .endpoint
-            .as_ref()
-            .and_then(|slot| slot.get().cloned()),
-        sources.lane.clone(),
-    ) else {
-        // No transport, no lane: nothing could carry the call.
+    let Some(endpoint) = sources
+        .endpoint
+        .as_ref()
+        .and_then(|slot| slot.get().cloned())
+    else {
+        // No transport, no call.
         return Err(Issue::Unavailable);
     };
     let workspace_id = WorkspaceId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
     let channel = collab_types::document_channel_id(&target.app, &target.workspace, &target.record);
-    // The call is one channel of one workspace: that scope's keys seal its
-    // tracks, and its id names them.
-    let scope = collab_types::scope::Scope::channel(target.workspace.clone(), channel);
     let (access, keys) = call_keys(sources, workspace_id, channel)?;
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
-    // A page in this call keeps its pictures on a lane of the channel's, so
-    // this endpoint answers one: the devices of the call itself send theirs
-    // on the plane.
-    let (video_calls, video_accepted) =
-        lane_calls(&target, channel, tilo_call_lane::Lane::Video, &roster);
-    let video = tilo_call_lane::Video::new(own);
-    if let Some(keys) = &keys {
-        video.set_keys(keys, roster.clone(), &scope);
-    }
+    let video = pictures::Video::new(own);
     let (voice, microphones, offered) = opened_microphones(sources.audio).await?;
     let live = keys.is_some();
     let current = keys.map(|keys| Current { keys, roster });
     let shared = Arc::new(Shared {
-        lane,
         video,
-        video_calls,
         screen: Arc::clone(screen_share()),
         showing: Mutex::new(Vec::new()),
         streams: Mutex::new(BTreeMap::new()),
@@ -723,7 +662,6 @@ async fn open(
         access,
         workspace_id,
         channel,
-        scope,
         workspace: target.workspace.clone(),
         admitted: sources.roster.clone(),
         current: Mutex::new(current),
@@ -751,51 +689,11 @@ async fn open(
         #[cfg(test)]
         played: sources.played.clone(),
     });
-    // What encodes this device's pictures answers here with a keyframe: a
-    // device that starts showing a layer, here or on the plane, sees it at
-    // once.
-    let wake = {
-        let call = Arc::downgrade(&shared);
-        Arc::new(move || {
-            if let Some(call) = call.upgrade() {
-                call.wake_pictures();
-            }
-        }) as Arc<dyn Fn() + Send + Sync>
-    };
-    shared.video.set_wake(wake);
-    tokio::spawn(run(Arc::clone(&shared), video_accepted));
+    tokio::spawn(run(Arc::clone(&shared)));
     Ok(Box::new(Call {
         shared,
         inputs: offered,
     }))
-}
-
-/// This call, as the lane `lane` of it announces itself.
-fn hello(
-    target: &CallTarget,
-    channel: collab_types::ChannelId,
-    lane: tilo_call_lane::Lane,
-) -> tilo_call_lane::Hello {
-    tilo_call_lane::Hello {
-        workspace: target.workspace.clone(),
-        channel,
-        call: target.channel.clone(),
-        lane,
-    }
-}
-
-/// One lane of this call: the [`tilo_call_lane::Calls`] that carries it, and
-/// the lanes other devices open on it.
-fn lane_calls(
-    target: &CallTarget,
-    channel: collab_types::ChannelId,
-    lane: tilo_call_lane::Lane,
-    roster: &tilo_call_lane::Roster,
-) -> (
-    tilo_call_lane::Calls,
-    tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
-) {
-    tilo_call_lane::Calls::new(hello(target, channel, lane), roster.clone())
 }
 
 /// The keys the call's channel holds, or why the call cannot be carried: keys
@@ -855,13 +753,13 @@ async fn opened_microphones(audio: Audio) -> Result<(Voice, Vec<Source>, Vec<Inp
 
 /// The devices `workspace` admits: who may send to this device in
 /// its channels' calls.
-fn admitted(sources: &Sources, workspace: &str) -> tilo_call_lane::Roster {
+fn admitted(sources: &Sources, workspace: &str) -> LiveRoster {
     let devices = sources
         .roster
         .as_ref()
         .map(|admitted| admitted(workspace))
         .unwrap_or_default();
-    tilo_call_lane::Roster::new(devices)
+    LiveRoster::new(devices)
 }
 
 /// One call this device is in, as the call service holds it: where the call
@@ -934,7 +832,7 @@ impl MediaSession for Call {
 /// governance admitted at the same time: what seals this call's frames.
 struct Current {
     keys: channel_crypto::ChannelContentKeys,
-    roster: tilo_call_lane::Roster,
+    roster: LiveRoster,
 }
 
 /// This call's own side: what it plays, the microphone it seals frames with
@@ -945,20 +843,19 @@ struct Side {
     /// This device's camera, while the person has it on in the call.
     camera: Option<CameraSend>,
     /// The screen share's encoder, while the person shares their screen.
-    screen: Option<Arc<tilo_call_lane::Sending>>,
+    screen: Option<Arc<pictures::Sending>>,
 }
 
 /// This device's camera: the capture feeding the call's encoder thread, and
 /// that thread, which ends when the last handle to it goes.
 struct CameraSend {
     /// Dropping the last handle ends the encoder thread and what it sends.
-    sending: Arc<tilo_call_lane::Sending>,
+    sending: Arc<pictures::Sending>,
     /// Dropping the capture stops the camera: no frame is published after.
     _capture: VideoCapture,
 }
 
 struct Shared {
-    lane: LaneSlot,
     /// This device's key: whose pictures the app's are.
     own: [u8; 32],
     /// Where the channel's keys come from when its membership moves.
@@ -966,8 +863,6 @@ struct Shared {
     /// The workspace id the channel's keys and governance are read by.
     workspace_id: WorkspaceId,
     channel: collab_types::ChannelId,
-    /// The channel's scope: what its tracks are sealed under and named as.
-    scope: collab_types::scope::Scope,
     workspace: String,
     /// The workspace's admitted devices, re-read while the call lasts.
     admitted: Option<Admitted>,
@@ -979,10 +874,7 @@ struct Shared {
     sources: Vec<Source>,
     /// This call's pictures: what this device sends, and what arrived here
     /// for the app to draw.
-    video: Arc<tilo_call_lane::Video>,
-    /// The lane this device answers for a page's pictures: a page that joins
-    /// this call is its device, and its host relays what it sends.
-    video_calls: tilo_call_lane::Calls,
+    video: Arc<pictures::Video>,
     /// The desktop this session shares, which this call encodes while the
     /// person shares it.
     screen: Arc<ScreenShare>,
@@ -1007,14 +899,14 @@ struct Shared {
     /// them: who is in this call, and which person each device is.
     presence: Arc<Calls>,
     /// What this device's camera captures from.
-    camera: tilo_call_lane::Camera,
+    camera: pictures::Camera,
     /// The timestamp each device's voice stream was last heard at, in this
     /// call: a stream that starts over is recognised by its own bytes.
     streams: Mutex<BTreeMap<[u8; 32], u64>>,
     caller: tilo_portal::PortalCaller,
     call: String,
     consents: Option<tilo_portal::consent::Consents>,
-    /// This call's lane holds keys and answers the endpoint: the call is up.
+    /// The channel's keys are here and the call is carried: the call is up.
     live: AtomicBool,
     closed: AtomicBool,
     deafened: AtomicBool,
@@ -1107,6 +999,7 @@ impl Shared {
         self.video.own_tile(own);
         *self.showing.lock_recover() = shown;
         self.shows_dirty.store(true, Ordering::Release);
+        self.presence.pictures_arrived();
     }
 
     /// Tell every device of the call what this device shows of it: nothing
@@ -1114,8 +1007,7 @@ impl Shared {
     /// device the call lost.
     fn send_showing(&self, persons: &BTreeMap<[u8; 32], String>) {
         let showing = self.showing.lock_recover().clone();
-        let mut devices: BTreeSet<[u8; 32]> = persons.keys().copied().collect();
-        devices.extend(self.video.devices());
+        let devices: BTreeSet<[u8; 32]> = persons.keys().copied().collect();
         let plane = self.presence.plane(&self.workspace);
         {
             let mut shown = self.shown_devices.lock_recover();
@@ -1129,7 +1021,6 @@ impl Shared {
         }
         for device in devices {
             let (camera, screen) = layers_shown(&showing, persons.get(&device));
-            self.video.show(device, &camera, &screen);
             if let Some(plane) = &plane {
                 let tracks: Vec<Track> = camera
                     .iter()
@@ -1142,7 +1033,7 @@ impl Shared {
     }
 
     /// Turn this person's camera on in the call, or off: the capture feeds
-    /// the lane's encoder, which sends only the layers someone shows.
+    /// the call's encoder, which sends only the layers someone shows.
     fn set_camera(self: &Arc<Self>, on: bool) -> Result<(), Issue> {
         if self.closed() {
             return Err(Issue::CameraLost);
@@ -1158,27 +1049,23 @@ impl Shared {
         }
         let device = self.camera.device().ok_or(Issue::CameraLost)?;
         let sending = Arc::new(
-            tilo_call_lane::Sending::start(
-                pictures::Source::Camera,
-                tilo_call_lane::CAMERA_FPS,
-                &self.sink(),
-            )
-            .map_err(|_| Issue::CameraLost)?,
+            pictures::Sending::start(pictures::Source::Camera, pictures::CAMERA_FPS, &self.sink())
+                .map_err(|_| Issue::CameraLost)?,
         );
         let feed = Arc::downgrade(&sending);
-        let (width, height) = tilo_call_lane::CAMERA_SIZE;
+        let (width, height) = pictures::CAMERA_SIZE;
         let capture = VideoCapture::start(
             &CaptureConfig {
                 device,
                 width,
                 height,
-                fps: tilo_call_lane::CAMERA_FPS,
+                fps: pictures::CAMERA_FPS,
             },
             Box::new(move |frame| {
                 let Some(sending) = feed.upgrade() else {
                     return;
                 };
-                sending.publish(tilo_call_lane::Frame {
+                sending.publish(pictures::Frame {
                     pixels: Arc::from(frame.nv12),
                     width: frame.width,
                     height: frame.height,
@@ -1211,12 +1098,8 @@ impl Shared {
             return Err(Issue::PermissionDenied);
         }
         let sending = Arc::new(
-            tilo_call_lane::Sending::start(
-                pictures::Source::Screen,
-                tilo_call_lane::SCREEN_FPS,
-                &self.sink(),
-            )
-            .map_err(|_| Issue::ScreenLost)?,
+            pictures::Sending::start(pictures::Source::Screen, pictures::SCREEN_FPS, &self.sink())
+                .map_err(|_| Issue::ScreenLost)?,
         );
         self.screen.set_sharing(true);
         self.side.lock_recover().screen = Some(sending);
@@ -1289,7 +1172,7 @@ impl Shared {
         let Some((width, height, rgba)) = self.screen.take() else {
             return;
         };
-        if let Some(frame) = tilo_call_lane::even_rgba(width, height, Arc::from(rgba)) {
+        if let Some(frame) = pictures::even_rgba(width, height, Arc::from(rgba)) {
             sending.publish(frame);
         }
     }
@@ -1298,7 +1181,6 @@ impl Shared {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.lane.clear_if(&self.video_calls);
         let mut side = self.side.lock_recover();
         side.camera = None;
         // The desktop's share is the session's, which this call stops only
@@ -1314,19 +1196,6 @@ impl Shared {
 
     fn closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
-    }
-
-    /// Take `peer`'s picture lane, which a page's host opened: from now on
-    /// this device sends it what the app shows of it, and reads the pictures
-    /// it sends.
-    fn join_video(self: &Arc<Self>, peer: tilo_call_lane::Peer) {
-        if self.closed() {
-            peer.close();
-            return;
-        }
-        self.video.add(peer);
-        // A page that joined after the app said what it shows hears it now.
-        self.send_showing(&self.presence.persons(&self.call));
     }
 
     /// Move the call's audio once: publish what the microphone captured on
@@ -1439,7 +1308,7 @@ impl Shared {
         let roster = self
             .admitted
             .as_ref()
-            .map(|admitted| tilo_call_lane::Roster::new(admitted(&self.workspace)));
+            .map(|admitted| LiveRoster::new(admitted(&self.workspace)));
         let (granted, _) = self.access.access(self.workspace_id, self.channel);
         let keys = match granted {
             tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
@@ -1463,28 +1332,18 @@ impl Shared {
                 (Some(current), Some(keys)) if keys.epoch() != current.keys.epoch() => {
                     current.keys = keys;
                     if let Some(roster) = roster {
-                        self.video_calls.set_roster(roster.clone());
                         current.roster = roster;
                     }
-                    // The pictures seal with the epoch's keys from this
-                    // epoch on.
-                    self.video
-                        .set_keys(&current.keys, current.roster.clone(), &self.scope);
                 }
                 (Some(current), _) => {
                     if let Some(roster) =
                         roster.filter(|roster| roster.devices().ne(current.roster.devices()))
                     {
-                        self.video_calls.set_roster(roster.clone());
                         current.roster = roster;
-                        self.video
-                            .set_keys(&current.keys, current.roster.clone(), &self.scope);
                     }
                 }
                 (None, Some(keys)) => {
                     let roster = roster.unwrap_or_default();
-                    self.video_calls.set_roster(roster.clone());
-                    self.video.set_keys(&keys, roster.clone(), &self.scope);
                     *held = Some(Current { keys, roster });
                     self.live.store(true, Ordering::Release);
                 }
@@ -1495,15 +1354,12 @@ impl Shared {
     }
 }
 
-/// Carry `shared`'s call: answer the endpoint's lane for a page's pictures,
-/// and move what the call carries until it ends.
-async fn run(
-    shared: Arc<Shared>,
-    mut accepted: tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
-) {
-    // The endpoint answers a page's picture lane with this call's calls: a
-    // page that joins this call reaches the person in it.
-    shared.lane.install(shared.video_calls.clone());
+/// Carry `shared`'s call: move what it carries until it ends, and draw the
+/// pictures the plane heard the moment they arrive.
+async fn run(shared: Arc<Shared>) {
+    // The audio moves on the call's own clock, one frame's worth at a time;
+    // a picture is drawn as soon as the plane heard it, never on a pass.
+    let arrived = shared.presence.arrived();
     // Whether the call is live is the channel's keys to say, not this task's
     // starting: a call whose keys are still on their way joins the channel and
     // says so until `refresh` brings it up.
@@ -1514,16 +1370,23 @@ async fn run(
         if shared.closed() {
             break;
         }
-        tokio::select! {
-            Some(peer) = accepted.recv() => shared.join_video(peer),
-            _ = beat.tick() => {}
-        }
+        // Wait on the call's clock and on the plane in the same pass: the
+        // wake is registered before the pictures are taken, so one that
+        // arrives while they are taken wakes the next pass rather than the
+        // next tick.
+        let arrived = arrived.notified();
+        tokio::pin!(arrived);
+        arrived.as_mut().enable();
         shared.pump();
         shared.pump_video();
         shared.pump_pictures();
         ticks = ticks.wrapping_add(1);
         if ticks.is_multiple_of(100) {
             shared.refresh();
+        }
+        tokio::select! {
+            _ = beat.tick() => {}
+            () = &mut arrived => {}
         }
     }
     shared.close();

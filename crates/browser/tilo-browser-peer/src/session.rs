@@ -28,19 +28,16 @@ use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::call_media::{LaneAnswer, LaneCall, LaneTurn};
 use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::sign_frame;
-use tilo_call_lane::page::Down;
-use tilo_call_lane::{Page, Roster};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame,
 };
 use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
 
-mod lane;
 mod plane;
+mod voice;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -410,6 +407,32 @@ pub enum PeerEvent {
         /// The Opus frame.
         opus: Vec<u8>,
     },
+    /// One picture of a call on `workspace_id`'s plane: an encoded
+    /// tilo-video/1 object of `from`'s camera or screen, opened with the
+    /// scope's keys.
+    CallPicture {
+        /// The workspace id.
+        workspace_id: u64,
+        /// The device whose picture it is.
+        from: [u8; 32],
+        /// The camera or screen it shows.
+        source: tilo_live::video::Source,
+        /// Whether it starts a group: the app's decoder starts here.
+        keyframe: bool,
+        /// The tilo-video/1 object, header and access unit.
+        object: Vec<u8>,
+    },
+    /// What this page's call now encodes and starts over: the layers of its
+    /// camera and screen the call's devices show, and the sources they need
+    /// afresh.
+    CallDemand {
+        /// The workspace id.
+        workspace_id: u64,
+        /// The layers shown of each source.
+        wanted: Vec<(tilo_live::video::Source, tilo_live::video::Layer)>,
+        /// The sources a device needs a keyframe of.
+        keyframes: Vec<tilo_live::video::Source>,
+    },
     /// The host holds a long sealed history of `route` it cannot read and
     /// asks this device for a snapshot. Answer with
     /// [`PeerHandle::compact`] after applying every [`PeerEvent::Document`]
@@ -532,13 +555,15 @@ enum Command {
     VoiceJoin(u64, [u8; 32]),
     VoiceLeave(u64),
     VoiceShow(u64, tilo_relay_protocol::voice::Showing),
-    /// One turn of the page's call in the workspace named, sealed and sent.
-    CallLane(String, crate::call_media::LaneTurn, LaneCompletion),
-    /// What the host answered a turn: the page's side of the call, and the
-    /// answer to open and hand on.
-    CallLaneAnswer(Page, Result<Down, LinkError>, LaneCompletion),
-    /// The page left the call of the workspace named.
-    CallLaneEnd(String),
+    /// Pictures this page's camera and screen encoded, for the plane of the
+    /// workspace named.
+    CallPictures(u64, Vec<CallPicture>),
+    /// What this page shows of each device in its call's plane: the layers of
+    /// their camera and screen it draws.
+    CallShowing(u64, Vec<CallShown>),
+    /// This page needs `source` of `device` afresh: a keyframe from its next
+    /// group on.
+    CallPictureRestart(u64, [u8; 32], tilo_live::video::Source),
     Administer(
         tilo_relay_protocol::workspaces::WorkspacesRequest,
         RoomsCompletion,
@@ -552,6 +577,32 @@ enum Command {
     Retry,
     Refresh,
     Close,
+}
+
+/// One tilo-video/1 object this page encoded for its call's plane: one layer
+/// of its camera or screen.
+#[derive(Clone, Debug)]
+pub struct CallPicture {
+    pub source: tilo_live::video::Source,
+    pub layer: tilo_live::video::Layer,
+    /// The object's place in the source's stream.
+    pub sequence: u64,
+    pub keyframe: bool,
+    pub timestamp_us: u64,
+    pub width: u16,
+    pub height: u16,
+    /// The encoded access unit.
+    pub payload: Vec<u8>,
+}
+
+/// What this page shows of one device in its call's plane.
+#[derive(Clone, Debug)]
+pub struct CallShown {
+    pub device: [u8; 32],
+    /// The camera layers it draws.
+    pub camera: Vec<tilo_live::video::Layer>,
+    /// The screen layers it draws.
+    pub screen: Vec<tilo_live::video::Layer>,
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -585,9 +636,9 @@ pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Sen
 /// Called once with who is here, see [`PeerHandle::here_then`].
 pub type HereCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
-/// Called once with what a turn of the page's call brought, see
-/// [`PeerHandle::call_lane_then`].
-pub type LaneCompletion = Box<dyn FnOnce(Result<LaneAnswer, String>) + Send>;
+/// Called once with the governor's answer, see [`PeerHandle::private_then`].
+pub type PrivateCompletion =
+    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::private::PrivateReply, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
@@ -761,7 +812,6 @@ impl PeerHandle {
             received: BTreeSet::new(),
             compactions: BTreeMap::new(),
             voice: crate::voice::Participations::default(),
-            lane: None,
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -1265,10 +1315,6 @@ struct Task {
     compactions: BTreeMap<[u8; 16], Compaction>,
     /// This device's participation in the workspaces' calls.
     voice: crate::voice::Participations,
-    /// The page's own side of the call it takes turns in: what seals its
-    /// microphone and pictures and opens what the call sends, kept between
-    /// turns so a frame is sealed where the last one left off.
-    lane: Option<Page>,
 }
 
 /// An open compaction request: workspace, route and the entries it covers.
@@ -1966,22 +2012,16 @@ impl Task {
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
             Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
             Command::VoiceShow(ws, showing) => self.voice_show(ws, showing, client),
-            Command::CallLane(workspace, turn, done) => {
-                self.call_lane(&workspace, &turn, done, client);
+            Command::CallPictures(workspace_id, pictures) => {
+                self.publish_call_pictures(workspace_id, pictures);
                 true
             }
-            Command::CallLaneAnswer(page, answered, done) => {
-                self.answered(page, answered, done);
+            Command::CallShowing(workspace_id, shown) => {
+                self.show_call_pictures(workspace_id, &shown);
                 true
             }
-            Command::CallLaneEnd(workspace) => {
-                if self
-                    .lane
-                    .as_ref()
-                    .is_some_and(|page| page.call().0 == workspace)
-                {
-                    self.lane = None;
-                }
+            Command::CallPictureRestart(workspace_id, device, source) => {
+                self.restart_call_picture(workspace_id, device, source);
                 true
             }
             Command::Administer(request, done) => {

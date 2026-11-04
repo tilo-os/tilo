@@ -1394,6 +1394,66 @@ enum JsVoiceEvent {
         timestamp48k: u64,
         opus: String,
     },
+    /// One picture of a call on the workspace's plane: the tilo-video/1
+    /// object of `from`'s camera or screen, in hex, as the app's decoder
+    /// draws it.
+    Picture {
+        room: String,
+        from: String,
+        source: &'static str,
+        keyframe: bool,
+        object: String,
+    },
+    /// What the call now shows of this page's pictures: the layers to encode
+    /// of each source, and the sources to start over at a keyframe.
+    Demand {
+        room: String,
+        wanted: Vec<JsWanted>,
+        keyframes: Vec<&'static str>,
+    },
+}
+
+/// The layers of one source a call shows.
+#[derive(Serialize)]
+struct JsWanted {
+    source: &'static str,
+    layers: Vec<&'static str>,
+}
+
+/// The name `web/voice-video.mjs` gives `source`.
+fn js_source(source: tilo_live::video::Source) -> &'static str {
+    match source {
+        tilo_live::video::Source::Camera => "camera",
+        tilo_live::video::Source::Screen => "screen",
+    }
+}
+
+/// The name `web/voice-video.mjs` gives `layer`.
+fn js_layer(layer: tilo_live::video::Layer) -> &'static str {
+    match layer {
+        tilo_live::video::Layer::Low => "low",
+        tilo_live::video::Layer::Mid => "mid",
+        tilo_live::video::Layer::High => "high",
+    }
+}
+
+/// The source a name of `web/voice-video.mjs` is.
+fn source_of_name(name: &str) -> Option<tilo_live::video::Source> {
+    match name {
+        "camera" => Some(tilo_live::video::Source::Camera),
+        "screen" => Some(tilo_live::video::Source::Screen),
+        _ => None,
+    }
+}
+
+/// The layer a name of `web/voice-video.mjs` is.
+fn layer_of_name(name: &str) -> Option<tilo_live::video::Layer> {
+    match name {
+        "low" => Some(tilo_live::video::Layer::Low),
+        "mid" => Some(tilo_live::video::Layer::Mid),
+        "high" => Some(tilo_live::video::Layer::High),
+        _ => None,
+    }
 }
 
 fn workspace_of(
@@ -2283,6 +2343,41 @@ impl WasmPeer {
                     timestamp48k: timestamp_48k,
                     opus: hex::encode(opus),
                 }),
+                PeerEvent::CallPicture {
+                    workspace_id,
+                    from,
+                    source,
+                    keyframe,
+                    object,
+                } => Some(JsVoiceEvent::Picture {
+                    room: workspace_of(workspace_id, &self.voice_workspaces),
+                    from: hex::encode(from),
+                    source: js_source(source),
+                    keyframe,
+                    object: hex::encode(object),
+                }),
+                PeerEvent::CallDemand {
+                    workspace_id,
+                    wanted,
+                    keyframes,
+                } => {
+                    let mut by_source: Vec<JsWanted> = Vec::new();
+                    for (source, layer) in wanted {
+                        let name = js_source(source);
+                        match by_source.iter_mut().find(|entry| entry.source == name) {
+                            Some(entry) => entry.layers.push(js_layer(layer)),
+                            None => by_source.push(JsWanted {
+                                source: name,
+                                layers: vec![js_layer(layer)],
+                            }),
+                        }
+                    }
+                    Some(JsVoiceEvent::Demand {
+                        room: workspace_of(workspace_id, &self.voice_workspaces),
+                        wanted: by_source,
+                        keyframes: keyframes.into_iter().map(js_source).collect(),
+                    })
+                }
                 _ => None,
             })
             .collect();
@@ -2319,42 +2414,115 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// Take one turn of `workspace`'s call: `turn` is a `LaneTurn` as JSON
-    /// (the frames this page's microphone and encoders made, what it shows of
-    /// the call's devices, and which of them it asks to start over), and the
-    /// answer is a `LaneAnswer` as JSON: what the call sent for this page,
-    /// opened, and what its devices show and ask of it.
-    ///
-    /// `workspace` is the workspace's uuid, as its records' routes name it:
-    /// the call's frames are sealed with the content keys of the channel its
-    /// app and record belong to. Rejects when this page holds no keys for that
-    /// channel, or when the session is closed.
-    #[wasm_bindgen(js_name = callLaneTurn)]
-    pub async fn call_lane_turn(&self, workspace: String, turn: String) -> Result<String, JsError> {
-        let turn: tilo_browser_peer::LaneTurn = serde_json::from_str(&turn).map_err(js_error)?;
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        let done: tilo_browser_peer::LaneCompletion = Box::new(move |answer| {
-            let _ = reply.send(answer);
-        });
-        self.handle
-            .call_lane_then(&workspace, turn, done)
-            .map_err(js_error)?;
-        let answer = receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)?;
-        serde_json::to_string(&answer).map_err(js_error)
-    }
-
-    /// Leave the call of `workspace`: the page's next turn starts a fresh one,
-    /// sealed from the start.
+    /// Publish `pictures` this page's camera and screen encoded on the plane
+    /// of `workspace`, as JSON: `[{source, layer, sequence, keyframe,
+    /// timestampUs, width, height, payload}]`, `source` and `layer` as
+    /// `web/voice-video.mjs` names them and `payload` in hex. Every device
+    /// showing the layer draws it.
     ///
     /// # Errors
     ///
-    /// Throws for a closed session.
-    #[wasm_bindgen(js_name = callLaneLeave)]
-    pub fn call_lane_leave(&self, workspace: &str) -> Result<(), JsError> {
-        self.handle.call_lane_end(workspace).map_err(js_error)
+    /// Throws for a malformed workspace or picture, or a closed session.
+    #[wasm_bindgen(js_name = callPictures)]
+    pub fn call_pictures(&self, workspace: &str, pictures: &str) -> Result<(), JsError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Picture {
+            source: String,
+            layer: String,
+            sequence: u64,
+            keyframe: bool,
+            timestamp_us: u64,
+            width: u16,
+            height: u16,
+            payload: String,
+        }
+        let pictures: Vec<Picture> = serde_json::from_str(pictures).map_err(js_error)?;
+        let pictures: Vec<tilo_browser_peer::CallPicture> = pictures
+            .into_iter()
+            .filter_map(|picture| {
+                Some(tilo_browser_peer::CallPicture {
+                    source: source_of_name(&picture.source)?,
+                    layer: layer_of_name(&picture.layer)?,
+                    sequence: picture.sequence,
+                    keyframe: picture.keyframe,
+                    timestamp_us: picture.timestamp_us,
+                    width: picture.width,
+                    height: picture.height,
+                    payload: hex::decode(picture.payload).ok()?,
+                })
+            })
+            .collect();
+        self.handle
+            .publish_call_pictures(workspace_number(workspace)?, pictures)
+            .map_err(js_error)
+    }
+
+    /// Show the devices' layers of `shown` on the plane of `workspace`, as
+    /// JSON: `[{device, camera: [layer], screen: [layer]}]`, `device` in hex.
+    /// The devices left out are no longer read, and their owners stop encoding
+    /// the layers nobody shows.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace or entry, or a closed session.
+    #[wasm_bindgen(js_name = callShowing)]
+    pub fn call_showing(&self, workspace: &str, shown: &str) -> Result<(), JsError> {
+        #[derive(serde::Deserialize)]
+        struct Shown {
+            device: String,
+            camera: Vec<String>,
+            screen: Vec<String>,
+        }
+        let shown: Vec<Shown> = serde_json::from_str(shown).map_err(js_error)?;
+        let shown: Vec<tilo_browser_peer::CallShown> = shown
+            .into_iter()
+            .filter_map(|entry| {
+                let device: [u8; 32] = hex::decode(&entry.device).ok()?.try_into().ok()?;
+                Some(tilo_browser_peer::CallShown {
+                    device,
+                    camera: entry
+                        .camera
+                        .iter()
+                        .filter_map(|layer| layer_of_name(layer))
+                        .collect(),
+                    screen: entry
+                        .screen
+                        .iter()
+                        .filter_map(|layer| layer_of_name(layer))
+                        .collect(),
+                })
+            })
+            .collect();
+        self.handle
+            .show_call_pictures(workspace_number(workspace)?, shown)
+            .map_err(js_error)
+    }
+
+    /// Ask `device` (hex) for `source` (`camera` or `screen`) afresh on the
+    /// plane of `workspace`: its next picture starts a group this page can
+    /// begin decoding at.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace, device or source, or a closed
+    /// session.
+    #[wasm_bindgen(js_name = callPictureRestart)]
+    pub fn call_picture_restart(
+        &self,
+        workspace: &str,
+        device: &str,
+        source: &str,
+    ) -> Result<(), JsError> {
+        let device: [u8; 32] = hex::decode(device)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| js_error("device must be 32 bytes of hex"))?;
+        let source =
+            source_of_name(source).ok_or_else(|| js_error("source must be camera or screen"))?;
+        self.handle
+            .restart_call_picture(workspace_number(workspace)?, device, source)
+            .map_err(js_error)
     }
 
     /// Post this person's display name, the window they focus (`window`:

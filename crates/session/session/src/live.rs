@@ -32,7 +32,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use collab_types::scope::Scope;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_call_lane::Roster;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
@@ -41,6 +40,7 @@ use tilo_live::plane::{Heard, Join, Plane, PlaneError};
 use tilo_live::relay::{
     Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization, VoiceRoute,
 };
+use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::local_host::Protocols;
 use tilo_user_identity::DeviceCert;

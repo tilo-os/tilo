@@ -203,7 +203,6 @@ members = [
     "crates/collab/feedback",
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
-    "crates/collab/tilo-call-lane",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-live",
     "crates/collab/tilo-store-link",

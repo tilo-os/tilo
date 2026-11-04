@@ -14,7 +14,6 @@
 //! own locks; workspace I/O already runs on the blocking pool. The session
 //! janitor runs on a tokio interval.
 
-mod call_lane;
 mod envelopes;
 mod fetch;
 mod here;
@@ -37,7 +36,6 @@ pub use tls::TlsSource;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
-use tilo_call_lane::page::Up;
 use tilo_relay_protocol::certify::CertifyReply;
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
@@ -46,7 +44,6 @@ use tilo_relay_protocol::web::{
 };
 use tilo_user_identity::CertificationRequest;
 
-use crate::auth::AuthenticatedPeer;
 use crate::daemon::{Relay, RelayError};
 use sessions::{SessionError, Sessions};
 
@@ -174,9 +171,6 @@ struct Web {
     )>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
-    /// The pages' calls: the lane member this host takes part as, answering
-    /// `/call/lane`.
-    calls: Arc<call_lane::CallLane>,
     /// The pages' live plane: the WebTransport listener they join, and the
     /// authority that admits their session tokens. `None` in a host that
     /// serves the browser routes without it.
@@ -263,24 +257,6 @@ fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<St
     }))
 }
 
-/// The lane the pages' calls travel on: `lane` when one was handed over, or
-/// the host's own endpoint, bound on first use under the device key its
-/// workspaces admit as a member.
-fn carried_calls(
-    context: &crate::daemon::WebContext,
-    lane: Option<iroh::Endpoint>,
-) -> Arc<call_lane::CallLane> {
-    Arc::new(match lane {
-        Some(lane) => call_lane::CallLane::at(lane),
-        None => call_lane::CallLane::new(
-            context.relay.identity.cert.device_public_key,
-            Some(iroh::SecretKey::from_bytes(
-                &context.relay.identity.signing_key.to_bytes(),
-            )),
-        ),
-    })
-}
-
 impl Relay {
     /// Make `origin` the one browser locators name, and return it shared.
     fn publish_browser_origin(
@@ -302,30 +278,6 @@ impl Relay {
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
-        self.serve_web_on(config, None).await
-    }
-
-    /// Serve browsers, carrying the pages' calls on `lane` (whose id is this
-    /// host's device) instead of an endpoint bound on demand. A test binds one
-    /// whose call's other devices it can reach without a directory.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::serve_web`].
-    #[cfg(feature = "test-support")]
-    pub async fn serve_web_with_lane(
-        &self,
-        config: WebConfig,
-        lane: iroh::Endpoint,
-    ) -> Result<WebHandle, RelayError> {
-        self.serve_web_on(config, Some(lane)).await
-    }
-
-    async fn serve_web_on(
-        &self,
-        config: WebConfig,
-        lane: Option<iroh::Endpoint>,
-    ) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
@@ -362,7 +314,6 @@ impl Relay {
         let live_tasks = std::mem::take(&mut live.tasks);
         let web = Arc::new(Web {
             sessions: sessions.clone(),
-            calls: carried_calls(&context, lane),
             host_info: HostInfo { host_cert },
             allowed_origins: config.allowed_origins,
             features: self.web_features() | fetch.features(),
@@ -783,31 +734,6 @@ fn wait(ms: u32) -> Duration {
     Duration::from_millis(u64::from(ms.min(MAX_POLL_MS)))
 }
 
-/// The devices of `workspace_id`, in no particular order, if `peer` may take
-/// part in the workspace's calls now: its certificate current relay-wide and
-/// admitted by the workspace, see [`room_access::decide`].
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
-async fn admitted_devices(
-    web: &Web,
-    peer: &AuthenticatedPeer,
-    workspace_id: u64,
-) -> Option<Vec<[u8; 32]>> {
-    let relay = &web.sessions.context().relay;
-    let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned()?;
-    let workspace = workspace.lock().await;
-    crate::workspace_access::decide(
-        &workspace,
-        &relay.trust(),
-        peer,
-        crate::workspace_access::WorkspaceOperation::Publish,
-    )
-    .admitted()
-    .then(|| workspace.membership.devices.clone())
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one routing table: every browser route and its body type in one place"
@@ -970,28 +896,6 @@ async fn route(
                 .await
                 .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
                 .map_err(|error| session_status(&error))
-        }
-        "/call/lane" => {
-            let session = authed()?;
-            let up: Up = decode(&bytes)?;
-            let workspace_id = tilo_relay_protocol::room_workspace_id(&up.workspace)
-                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a workspace id"))?;
-            let Some(devices) = admitted_devices(web, &session.peer, workspace_id).await else {
-                return Err(status(
-                    StatusCode::FORBIDDEN,
-                    "not admitted to this workspace",
-                ));
-            };
-            web.calls
-                .turn(devices, up)
-                .await
-                .map(|down| encoded(&down))
-                .map_err(|error| match error {
-                    call_lane::Failed::NoLane(reason) => {
-                        status(StatusCode::SERVICE_UNAVAILABLE, &reason)
-                    }
-                    call_lane::Failed::Refused(reason) => status(StatusCode::CONFLICT, &reason),
-                })
         }
         "/events" => {
             let session = authed()?;

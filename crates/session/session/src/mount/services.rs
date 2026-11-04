@@ -376,7 +376,6 @@ fn calls_service(
     let sources = crate::calls::Sources::carrier(
         std::sync::Arc::clone(calls),
         sync.endpoint_handle(),
-        sync.lane().clone(),
         sync.engine().map(|engine| engine.keys()),
         roster,
         options.questions.clone(),
