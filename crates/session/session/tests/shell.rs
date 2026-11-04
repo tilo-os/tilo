@@ -2647,7 +2647,7 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
 fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    for scale in [1.0, 2.0] {
+    for (scale, pixels) in [(1.0, 1), (2.0, 2)] {
         let mut session = Session::headless(
             Options {
                 services: vec![
@@ -2657,12 +2657,7 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
                 collab: false,
                 ..options()
             },
-            &[OutputConfig::new(
-                "HEADLESS-1",
-                i32::try_from((WIDTH as f64 * scale) as u32).unwrap(),
-                i32::try_from((HEIGHT as f64 * scale) as u32).unwrap(),
-            )
-            .with_scale(scale)],
+            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
         )
         .expect("session");
         until_settled(&mut session, |session| says(session, &desk(session).clock));

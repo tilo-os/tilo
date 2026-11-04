@@ -479,7 +479,7 @@ fn a_shell_on_a_scaled_display_draws_at_that_scale() {
 fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
     let _settled = ui::motion::testing::settled();
     let mut bands = Vec::new();
-    for scale in [1.0, 2.0] {
+    for (scale, pixels) in [(1.0, 1), (2.0, 2)] {
         let mut session = Session::headless(
             Options {
                 presentation: ui::headless::fixture_runner_inputs,
@@ -487,12 +487,7 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
                 shell: true,
                 ..Options::default()
             },
-            &[OutputConfig::new(
-                "HEADLESS-1",
-                i32::try_from((WIDTH as f64 * scale) as u32).unwrap(),
-                i32::try_from((HEIGHT as f64 * scale) as u32).unwrap(),
-            )
-            .with_scale(scale)],
+            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
         )
         .expect("session");
         for _ in 0..400 {
@@ -504,7 +499,7 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
             .compositor()
             .screenshot("HEADLESS-1")
             .expect("a frame");
-        let x = u32::try_from(shot.width * 3 / 4).unwrap();
+        let x = shot.width * 3 / 4;
         let ground = shot.pixel(x, 4).expect("a pixel of the bar");
         let (mut first, mut last) = (None, 0);
         for y in 0..shot.height.min(600) {
