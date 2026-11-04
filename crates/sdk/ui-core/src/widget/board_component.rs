@@ -231,9 +231,10 @@ fn card(props: BoardCardProps) -> (String, Element, Option<ResourceId>, Event) {
     (key, widget, item, drop)
 }
 
-/// A card's own widget: a body that is one row is the card, since a row already knows how to
-/// stand its facts and its leading column; anything else — a note, a picture — stands inside
-/// the card's chrome, where the card is the chrome around a body of its own.
+/// A card's own widget: a body that is one widget able to stand as a card (a row) is the card,
+/// since a row already knows how to stand its facts and its leading column; anything else — a
+/// note, a picture — stands inside the card's chrome, where the card is the chrome around a
+/// body of its own.
 fn card_body(
     key: &str,
     mut body: Vec<Element>,
@@ -243,13 +244,10 @@ fn card_body(
 ) -> Element {
     if body.len() == 1 {
         let mut element = body.remove(0);
-        if let Some(row) = element
-            .as_any_mut()
-            .and_then(|widget| widget.downcast_mut::<crate::widget::ListRow>())
-        {
-            row.set_card();
-            row.set_selected(selected);
-            row.set_activate(activate);
+        if let Some(card) = crate::widget::capability::capability_mut::<dyn crate::widget::CardBody>(
+            element.as_mut(),
+        ) {
+            card.show_as_card(selected, activate);
             return element;
         }
         body.push(element);
@@ -417,6 +415,87 @@ mod tests {
             (900, 600),
             Theme::dark(),
         )
+    }
+
+    #[test]
+    fn a_card_whose_body_is_a_row_is_that_row_shown_as_a_card() {
+        let mut props = props(&Intents::default());
+        // A body arrives wrapped — in the host's pane, a context menu — and still answers as
+        // the row it is.
+        let row = crate::widget::ListRow::new("row", "Measure the new bedroom").meta("Thursday");
+        props.lanes[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
+            Box::new(row),
+            |_| Vec::new(),
+        ))];
+        let host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            Board::from_props("board", props),
+            (900, 600),
+            Theme::dark(),
+        );
+        let root = host.root::<Board>();
+        let card = root.card_rects(0)[0];
+        // A card is a small document: a title line with its facts on a line under it, in its
+        // own surface — not the one line a list row is.
+        assert!(
+            (44.0..=56.0).contains(&card.height()),
+            "a card of one title line and its facts is {} tall",
+            card.height()
+        );
+    }
+
+    #[test]
+    fn the_lanes_share_the_pane_whole() {
+        let theme = Theme::dark();
+        let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
+        // A pane of 656 shares out to two lanes at the least measure, filling it: 24 of gutter
+        // at each side and 12 between lanes.
+        assert!((f64::from(Board::lane_width(&theme, 656.0, 3.0)) - 298.0).abs() < 0.5);
+        // Fewer lanes than fit grow to fill the pane instead of leaving it empty.
+        assert!(
+            (f64::from(Board::lane_width(&theme, 900.0, 2.0)) - (900.0 - 48.0 - 12.0) / 2.0).abs()
+                < 0.5
+        );
+        // A pane too narrow for two lanes gives its one lane everything but the gutters, so
+        // the next lane does not show as a sliver.
+        assert!((f64::from(Board::lane_width(&theme, 500.0, 2.0)) - 452.0).abs() < 0.5);
+        assert!(f64::from(Board::lane_width(&theme, least, 1.0)) >= least);
+    }
+
+    #[test]
+    fn a_board_in_a_sideways_pane_sizes_its_lanes_from_the_pane() {
+        let board = Board::from_props("board", props(&Intents::default()));
+        let pane = crate::widget::Scrollable::new_horizontal()
+            .with_content_min_viewport_width()
+            .with_child(Box::new(board));
+        // The room the pane shows through: 656 wide, a column of the window.
+        let column = crate::widget::Container::new()
+            .with_no_padding()
+            .with_width(656.0)
+            .with_child(Box::new(pane));
+        let mut host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            column,
+            (656, 600),
+            Theme::dark(),
+        );
+        let mut column = host.root_mut::<crate::widget::Container>();
+        let mut column_children = crate::widget::Widget::children_mut(&mut *column);
+        let scroll = column_children[0]
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<crate::widget::Scrollable>())
+            .expect("the column shows the pane");
+        let mut pane_children = crate::widget::Widget::children_mut(scroll);
+        let board = pane_children[0]
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Board>())
+            .expect("the pane shows the board");
+        let lanes = board.lane_rects();
+        assert_eq!(lanes.len(), 2);
+        assert!(
+            (lanes[1].x1 - lanes[0].x0 - (656.0 - 48.0)).abs() < 0.5,
+            "{lanes:?}"
+        );
     }
 
     #[test]

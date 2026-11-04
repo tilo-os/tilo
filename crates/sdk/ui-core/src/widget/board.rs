@@ -209,7 +209,7 @@ impl Board {
     }
 
     /// Each lane's rect, in lane order.
-    fn lane_rects(&self) -> Vec<Rect> {
+    pub(crate) fn lane_rects(&self) -> Vec<Rect> {
         self.row
             .children()
             .iter()
@@ -285,17 +285,18 @@ impl Board {
         Some((lane, before))
     }
 
-    /// The width a lane takes in a board `width` wide: lanes share the pane, so whole lanes fill
-    /// it — as many whole lanes as it holds at a card's comfortable measure, each as wide as
-    /// what is left over shares out to, never narrower than that measure. A board narrower than
+    /// The width a lane takes in a board `width` wide holding `lanes` lanes: lanes share the
+    /// pane, so whole lanes fill it — as many whole lanes as it holds at a card's comfortable
+    /// measure, each as wide as what is left over shares out to, never narrower than that
+    /// measure, and wider when the board holds fewer lanes than fit. A board narrower than
     /// two lanes therefore shows one whole lane per page rather than one lane and a sliver of
     /// the next, and a wide one shows four whole lanes instead of three and a sliver.
-    fn lane_width(theme: &Theme, width: f64) -> f32 {
+    pub(crate) fn lane_width(theme: &Theme, width: f64, lanes: f64) -> f32 {
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
         let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
         let least = f64::from(CardWidth::Regular.min_width(theme));
         let room = (width - 2.0 * gutter).max(least);
-        let fit = ((room + gap) / (least + gap)).floor().max(1.0);
+        let fit = (((room + gap) / (least + gap)).floor().max(1.0)).min(lanes.max(1.0));
         let width = ((room - (fit - 1.0) * gap) / fit).max(least);
         #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
         {
@@ -303,15 +304,8 @@ impl Board {
         }
     }
 
-    /// Give every lane the width a board this wide shares out under `theme`. Narrowing a lane
-    /// is a change the layout settles on: the board is as wide as its pane or as its lanes,
-    /// and either way the lanes that fit whole fill it.
-    fn size_lanes(&mut self, theme: &Theme, width: f64) -> bool {
-        let width = Self::lane_width(theme, width);
-        if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
-            return false;
-        }
-        self.sized = Some(width);
+    /// Give every lane's widget this width, which the lane builds itself from.
+    fn set_lane_widths(&mut self, width: f32) {
         for lane in self.row.children_mut() {
             if let Some(lane) = lane
                 .as_any_mut()
@@ -319,6 +313,30 @@ impl Board {
             {
                 lane.set_width(width);
             }
+        }
+    }
+
+    /// Give every lane this width, as its widget builds itself and as it already stands.
+    fn size_lanes(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        theme: &Theme,
+        width: f64,
+    ) -> bool {
+        let lanes = self.lanes.len() as f64;
+        let width = Self::lane_width(theme, width, lanes);
+        if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
+            return false;
+        }
+        self.sized = Some(width);
+        self.set_lane_widths(width);
+        for &lane in taffy.children(node).unwrap_or_default().iter() {
+            let Ok(mut style) = taffy.style(lane).cloned() else {
+                continue;
+            };
+            style.size.width = taffy::Dimension::length(width);
+            let _ = taffy.set_style(lane, style);
         }
         true
     }
@@ -464,9 +482,13 @@ impl crate::widget::Decorator for Board {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = Some(theme.clone());
-        // A first measure, at the width a board too narrow for its lanes keeps; the pane the
-        // board is given settles it (`adjust_layout_style`).
-        self.size_lanes(theme, f64::from(CardWidth::Regular.min_width(theme)));
+        // The lanes build at the least measure — a board too narrow for its lanes keeps it —
+        // or at the pane they last filled, which the pane the board is given settles
+        // (`adjust_layout_style`).
+        let least = f64::from(CardWidth::Regular.min_width(theme));
+        #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
+        let width = self.sized.unwrap_or(least as f32);
+        self.set_lane_widths(width);
         Widget::build_layout(&mut self.row, taffy, theme, node_map)
     }
 
@@ -482,7 +504,16 @@ impl crate::widget::Decorator for Board {
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };
-        self.size_lanes(&theme, f64::from(layout.size.width))
+        let mut width = f64::from(layout.size.width);
+        // A board in a pane that scrolls sideways is as wide as its lanes; the room it shares
+        // them out over is the pane it shows through, its parent.
+        if let Some(parent) = taffy.parent(node)
+            && let Ok(pane) = taffy.layout(parent)
+            && pane.size.width > 0.0
+        {
+            width = width.min(f64::from(pane.size.width));
+        }
+        self.size_lanes(taffy, node, &theme, width)
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

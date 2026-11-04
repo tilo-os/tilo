@@ -372,6 +372,17 @@ pub const MAX_MARKS: usize = 3;
 /// document, and its title says what it is without being opened.
 pub const CARD_TITLE_LINES: u8 = 3;
 
+/// A widget that can be shown as a card: what a card component (a board's
+/// [`BoardCard`](super::BoardCard)) asks of the one widget it was given, so the card is that
+/// widget's own surface and what it says is written once. Asked as a capability, so a widget
+/// wrapped in a host's pane, a context menu or any other decorator still answers.
+pub trait CardBody {
+    /// Show as a card: its own surface, its title wrapped over up to [`CARD_TITLE_LINES`]
+    /// lines, its facts on a line under the title, and a press reporting `activate` — and
+    /// selection, where it is the selected one.
+    fn show_as_card(&mut self, selected: bool, activate: crate::component::Event);
+}
+
 /// One mark on a row's edge: an icon in tertiary ink or the row's tone, or a swatch in a
 /// colour that belongs to the item (a task's project, a calendar).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2420,8 +2431,17 @@ impl crate::widget::RowSelectionSink for ListRow {
     }
 }
 
+impl CardBody for ListRow {
+    fn show_as_card(&mut self, selected: bool, activate: crate::component::Event) {
+        self.set_card();
+        self.set_selected(selected);
+        self.set_activate(activate);
+    }
+}
+
 impl Widget for ListRow {
     crate::provides!(
+        dyn crate::widget::CardBody,
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
