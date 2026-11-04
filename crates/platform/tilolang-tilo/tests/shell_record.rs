@@ -534,10 +534,13 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     macos.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
     macos.poll_patches().unwrap();
     let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
-    // The menu the bar names the window in front by: a button of the bar that holds commands.
+    // The menu the bar names the window in front by: a button of the bar that holds commands,
+    // the shell filling them from the declarations of the resource the window shows (`subject`).
+    // The bar carries the shell's own menus too (the workspace, the preset the desk shows).
     let bar: Vec<tilolang_runtime::UiNode> = nodes(&macos, "ui.MenuButton")
         .into_iter()
         .filter(|menu| menu.props.get("role") == Some(&Value::Text("bar".to_owned())))
+        .filter(|menu| menu.props.contains_key("subject"))
         .collect();
     assert_eq!(
         bar.len(),
