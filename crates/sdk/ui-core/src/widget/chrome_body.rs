@@ -134,6 +134,33 @@ impl Described for ChromeBody {
 }
 
 impl ChromeBody {
+    /// The sides of a square body that stand on the display's own edge.
+    ///
+    /// A bar at the `full` fit spans the display edge to edge, so its two
+    /// ends and the side it stands on the screen by are the display's own:
+    /// its ground reaches the screen there in one colour, with no rim, edge
+    /// or hairline a pixel in from it. Its inner side keeps them, which is
+    /// where it meets what it covers. A floating body stands inside every
+    /// edge, so it has none.
+    ///
+    /// The edges it stands on are the ends only along the screen's own
+    /// width: a bar on the top or the foot of the screen meets the leading
+    /// and trailing edges, and one on the leading or trailing edge meets
+    /// the top and the foot. Either way a square body spans both of its
+    /// perpendicular edges.
+    fn flush_sides(&self) -> crate::part_paint::Sides {
+        use crate::part_paint::Sides;
+        if self.shape != ChromeShape::Square {
+            return Sides::NONE;
+        }
+        match self.edge {
+            ChromeEdge::Top => Sides::TOP.union(Sides::LEADING).union(Sides::TRAILING),
+            ChromeEdge::Bottom => Sides::BOTTOM.union(Sides::LEADING).union(Sides::TRAILING),
+            ChromeEdge::Leading => Sides::LEADING.union(Sides::TOP).union(Sides::BOTTOM),
+            ChromeEdge::Trailing => Sides::TRAILING.union(Sides::TOP).union(Sides::BOTTOM),
+        }
+    }
+
     /// The body's ground: the theme's bar finish over its own panel ground.
     fn paint_body(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let rect = self.inner().get_rect();
@@ -151,7 +178,7 @@ impl ChromeBody {
             crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
         }
         let finish = theme.chrome_material(self.material);
-        crate::backdrop::fill_role_as(
+        crate::backdrop::fill_role_flush(
             scene,
             transform,
             &body,
@@ -159,6 +186,7 @@ impl ChromeBody {
             &finish,
             theme,
             crate::chrome::panel_ground(theme),
+            self.flush_sides(),
         );
         let (width, ink) = crate::surface::border(theme).unwrap_or_else(|| {
             (

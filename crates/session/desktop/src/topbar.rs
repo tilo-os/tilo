@@ -1244,18 +1244,27 @@ impl TopBarChrome {
     }
 
     /// The docked bar's own body, where the theme gives the bar one
-    /// (`material.bar`): the width of the display in the bar role's finish
-    /// over the desktop, with the theme's border, or the panel hairline,
-    /// along its foot.
+    /// (`material.bar`): every pixel of the bar's band in the bar role's
+    /// finish over the desktop, with the theme's border, or the panel
+    /// hairline, along the foot that faces the windows.
+    ///
+    /// The bar spans its display edge to edge, so the sides at the screen's
+    /// own edges are flush: the body draws no rim, edge or hairline there,
+    /// which would otherwise show as a line of light along the display's top
+    /// and ends a pixel inside the bezel.
     fn draw_bar_body(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let body = vello::kurbo::RoundedRect::from_rect(self.rect, 0.0);
-        ui::backdrop::fill_role(
+        ui::backdrop::fill_role_flush(
             scene,
             transform,
             &body,
             ui::tokens::SurfaceRole::Bar,
+            theme.finish(ui::tokens::SurfaceRole::Bar),
             theme,
             ui::chrome::panel_ground(theme),
+            ui::part_paint::Sides::TOP
+                .union(ui::part_paint::Sides::LEADING)
+                .union(ui::part_paint::Sides::TRAILING),
         );
         let (width, ink) = ui::surface::border(theme).unwrap_or_else(|| {
             (

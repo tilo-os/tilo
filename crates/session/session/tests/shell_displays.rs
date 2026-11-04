@@ -532,3 +532,81 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
          a pixel inside it: it begins at logical {first_1} at 1 and {first_2} at 2"
     );
 }
+
+/// A bar flush with the display's edges paints them in its own colour: its
+/// top row and its first and last columns are the body's colour at 2, with
+/// no edge highlight along the screen's sides.
+///
+/// The theme's glass body lights a rim along its outline. On a bar edge to
+/// edge with the screen that rim fell on the display's own top row and end
+/// columns, reading as a glass line between the bar and the bezel rather
+/// than as the bar reaching the edge.
+#[test]
+fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
+    let _settled = ui::motion::testing::settled();
+    let width = i32::try_from((WIDTH as f64 * 2.0) as u32).unwrap();
+    let height = i32::try_from((HEIGHT as f64 * 2.0) as u32).unwrap();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: "Pat".to_owned(),
+            shell: true,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, height).with_scale(2.0)],
+    )
+    .expect("session");
+    until(&mut session, |session| !session.shell_parts().is_empty());
+    // The translucent style is where the glass rim shows.
+    session
+        .run_shell_setting("set_bar_finish", vec![serde_json::json!("translucent")])
+        .expect("the bar takes the theme's glass");
+    for _ in 0..120 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    session.compositor().render().unwrap();
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a frame");
+    // The glass body lights a rim one pixel thick along its outline. On a
+    // bar edge to edge with the screen that rim lands on the display's own
+    // top row and end columns: compare each edge pixel with the one just
+    // inside it, so the material's own sheen — a smooth gradient across the
+    // body — is not read as an edge, and a one-pixel line of light is.
+    let step = |a: Option<[u8; 4]>, b: Option<[u8; 4]>| -> i32 {
+        let (a, b) = (a.expect("a pixel"), b.expect("a pixel"));
+        (0..3)
+            .map(|channel| i32::from(a[channel]) - i32::from(b[channel]))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut wrong = Vec::new();
+    for x in 0..shot.width {
+        let rise = step(shot.pixel(x, 0), shot.pixel(x, 2));
+        if rise > 2 {
+            wrong.push((x, 0, rise));
+        }
+    }
+    for y in 0..MIN_BAR_SAMPLES {
+        for x in [0, shot.width - 1] {
+            let inside = if x == 0 { 2 } else { shot.width - 3 };
+            let rise = step(shot.pixel(x, y), shot.pixel(inside, y));
+            if rise > 2 {
+                wrong.push((x, y, rise));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the bar's top row and its first and last columns carry no edge \
+         highlight: each is at most 2 levels above the pixel inside it, and \
+         {} are brighter, the first at {wrong:?}",
+        wrong.len()
+    );
+}
+
+/// How far down the bar's first and last columns the flush edges are read.
+const MIN_BAR_SAMPLES: u32 = 24;

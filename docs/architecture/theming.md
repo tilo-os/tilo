@@ -320,6 +320,15 @@ in a painter. The wire encoding puts it after the parameter list and reads
 bytes that end before it as the stock white, so an older encoding still
 reads; a field added to `PartTokens` goes on the end the same way.
 
+`PartTokens::flush` names the sides of a part that stand on the display's
+own edge (`Sides`, from the component: a square chrome body at the `full`
+fit has three). A body there has no ground behind that side and no
+neighbour to separate from, so a painter draws none of its edge, rim or
+hairline on it: the body reaches the screen's edge in its own colour, where
+otherwise a pixel of another colour shows between it and the bezel. Glass
+leaves its lit rim off those sides; Block, Pixelated and Shader draw no
+outline at all. It is encoded last, for the same reason as the light.
+
 **Sets loaded from wasm.** A theme's set is a module built against the SDK
 (`export_painter!`). `part_paint::wasm` loads it:
 

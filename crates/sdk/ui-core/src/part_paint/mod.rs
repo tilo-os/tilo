@@ -37,7 +37,7 @@ pub use draw::{Painted, cached_parts, paint_part};
 pub use motion::{Moment, PartMotion};
 pub use tilo_theme_sdk::{
     Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartPainter,
-    PartScene, PartState, PartTokens, Sampling, ShaderSource, States, Stop, Transition,
+    PartScene, PartState, PartTokens, Sampling, ShaderSource, Sides, States, Stop, Transition,
 };
 
 use vello::kurbo::{BezPath, Point, Shape};
@@ -163,6 +163,7 @@ pub fn part_tokens(
         backdrop: false,
         params: theme.finish(role).params().clone(),
         shader: crate::tokens::shader_source(theme.finish(role).shader()),
+        flush: Sides::NONE,
     }
 }
 

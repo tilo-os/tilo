@@ -32,7 +32,7 @@ use peniko::Color;
 
 use crate::{
     Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartScene, PartState,
-    PartTokens, Sampling, ShaderSource, States, Stop, Transition,
+    PartTokens, Sampling, ShaderSource, Sides, States, Stop, Transition,
 };
 
 /// A paint request.
@@ -494,6 +494,9 @@ impl Writer {
         // that draws without one.
         self.bytes(tokens.shader.wgsl.as_bytes());
         self.u32(tokens.shader.time_centis);
+        // The sides standing on the display's edge, after the shader for the
+        // same reason as the light: see the module note.
+        self.u8(tokens.flush.bits());
     }
 }
 
@@ -738,6 +741,14 @@ impl Reader<'_> {
                 time_centis: self.u32()?,
             }
         };
+        // The sides standing on the display's edge came after the shader:
+        // bytes that end before them are an encoding from before a flush
+        // body could say so, and draw every side's edge as they used to.
+        let flush = if self.0.is_empty() {
+            Sides::NONE
+        } else {
+            Sides::from_bits(self.u8()?)
+        };
         Some(PartTokens {
             fill,
             ink,
@@ -756,6 +767,7 @@ impl Reader<'_> {
             backdrop,
             params,
             shader,
+            flush,
         })
     }
 }
@@ -887,6 +899,9 @@ mod tests {
         let light = Color::from_rgb8(0xf7, 0xf9, 0xfd);
         let tokens = PartTokens {
             light,
+            flush: crate::Sides::TOP
+                .union(crate::Sides::LEADING)
+                .union(crate::Sides::TRAILING),
             ..PartTokens::default()
         };
         let request_in = PaintRequest {
@@ -902,26 +917,45 @@ mod tests {
         };
         assert_eq!(read.tokens.light, light, "the light a surface catches");
         assert_eq!(read.tokens, tokens);
+        assert_eq!(
+            read.tokens.flush, tokens.flush,
+            "the sides on the display's edge"
+        );
         // A theme's light is not the stock one: the round trip would hold
         // with a constant, so the encoding is checked to carry the value.
         assert_ne!(light, PartTokens::default().light);
-        // The fields after the light: an empty shader (its length and its
-        // time). Bytes from before a set carried a shader read as none.
-        let shader_tail = 4 + 4;
-        let Some(Request::Paint(unshaded)) = request(&bytes[..bytes.len() - shader_tail]) else {
-            panic!("a request without the shader does not decode");
+        // The fields after the light, from the end back: the flush sides
+        // (one byte), an empty shader (its length and its time), the light.
+        let flush_len = 1;
+        let shader_len = 4 + 4;
+        // Bytes from before the flush sides existed read as a body on no
+        // edge, every other field as written.
+        let Some(Request::Paint(no_flush)) = request(&bytes[..bytes.len() - flush_len]) else {
+            panic!("a request without the flush sides still decodes");
         };
-        assert_eq!(unshaded.tokens, tokens);
-        // Bytes from before the light existed (here: the same request with
-        // the trailing colour and shader cut) read as the stock white.
-        let older = &bytes[..bytes.len() - 16 - shader_tail];
+        assert_eq!(
+            no_flush.tokens.flush,
+            crate::Sides::NONE,
+            "a request from before the flush sides reads as a body on no edge"
+        );
+        assert_eq!(no_flush.tokens.light, light);
+        // Bytes from before the light existed (here: the request cut after
+        // the light, shader and flush sides) read every one of them as its
+        // default: the stock white, no shader, no flush sides.
+        //
+        // The light is a colour on the wire: `color()` writes its channels.
+        let light_len = 16;
+        let older = &bytes[..bytes.len() - light_len - shader_len - flush_len];
         let Some(Request::Paint(before)) = request(older) else {
             panic!("a request without the light does not decode");
         };
         assert_eq!(before.tokens.light, PartTokens::default().light);
+        assert_eq!(before.tokens.shader, ShaderSource::default(), "no shader");
+        assert_eq!(before.tokens.flush, crate::Sides::NONE, "no flush sides");
         assert_eq!(
             PartTokens {
                 light: tokens.light,
+                flush: tokens.flush,
                 ..before.tokens
             },
             tokens,
