@@ -526,43 +526,19 @@ pub(super) async fn handle_delta(
         }));
     };
     trace_native_publication("server_authorized", &env, None);
-    // The change itself must say what it does and stay inside what its app
-    // publishes, before the relay keeps or forwards it.
-    let (standings, payloads) = {
-        let runtime = ws.lock().await;
-        (runtime.standings.clone(), runtime.store.payloads().clone())
-    };
-    if let Envelope::Delta { delta, .. } = &env
-        && let Some(reason) = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
-    {
-        // Neither kept nor forwarded. The session stays: one bad change
-        // is not a membership decision.
-        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
-        return Ok(None);
-    }
-    if desktop_refusal(
+    if change_refusal(
         &ws,
-        deciding_author(
-            peer,
-            attached,
-            session.own_device_public_key,
-            author_device_public_key,
-        ),
+        peer,
+        session.own_device_public_key,
+        attached,
+        *author_device_public_key,
         &env,
     )
     .await
     .is_some()
     {
-        // Neither kept nor forwarded, as above.
-        return Ok(None);
-    }
-    if let Envelope::Delta { delta, .. } = &env
-        && let Some(reason) =
-            crate::surfaces::role_refusal(delta, standings.as_deref(), *author_device_public_key)
-    {
-        // Neither kept nor forwarded: a viewer's role writes nothing a
-        // document change could carry.
-        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a change a viewer's role writes nothing of");
+        // Neither kept nor forwarded. The session stays: one bad change is
+        // not a membership decision.
         return Ok(None);
     }
     let observed = match (&env, session.compactor) {
@@ -587,6 +563,37 @@ pub(super) async fn handle_delta(
     drop(admitting);
 
     Ok(None)
+}
+
+/// Why the relay refuses `env`, `peer`'s change in `ws`, once authorization
+/// let it through: a change that names nothing it writes, one its author's
+/// role grants nothing of (a Viewer writes none), or one writing the
+/// workspace's shared layout. None keeps and forwards the change.
+async fn change_refusal(
+    ws: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    own_device: &[u8; 32],
+    attached: bool,
+    claimed: [u8; 32],
+    env: &Envelope,
+) -> Option<String> {
+    let Envelope::Delta { delta, .. } = env else {
+        return None;
+    };
+    // The change itself must say what it does and stay inside what its app
+    // publishes, before the relay keeps or forwards it.
+    let (standings, payloads) = {
+        let runtime = ws.lock().await;
+        (runtime.standings.clone(), runtime.store.payloads().clone())
+    };
+    let refused = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
+        .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed));
+    if let Some(reason) = refused {
+        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
+        return Some(reason);
+    }
+    let author = deciding_author(peer, attached, own_device, &claimed);
+    desktop_refusal(ws, author, env).await
 }
 
 /// Hand `body`, a change `author` made that the relay kept, to the workspace's

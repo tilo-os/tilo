@@ -2279,6 +2279,7 @@ impl Workspaces {
                 .await
                 .map_err(CollaborationError::new)?;
         }
+        drop(governed);
         Ok(changed)
     }
 
@@ -2286,10 +2287,7 @@ impl Workspaces {
     /// of its governance: a page's certificate lasts an hour, and this is what
     /// keeps a workspace many people visit from keeping a row per visit.
     /// Returns whether the workspace changed.
-    async fn forget_expired_devices(
-        &self,
-        workspace: &mut GovernedWorkspace,
-    ) -> Result<bool, String> {
+    fn forget_expired_devices(&self, workspace: &mut GovernedWorkspace) -> Result<bool, String> {
         let host = &self.inner.host;
         let now = SystemTime::now();
         let mut candidate = workspace.peer().clone();
@@ -2490,7 +2488,7 @@ impl Workspaces {
         let host = &self.inner.host;
         // A page's device certificate lasts an hour: the row it left goes with
         // it, so a workspace many people visit keeps no row per visit.
-        if self.forget_expired_devices(workspace).await? {
+        if self.forget_expired_devices(workspace)? {
             tracing::debug!(workspace = %workspace.workspace(), "room settled without the devices whose certificates expired");
         }
         let now = SystemTime::now();

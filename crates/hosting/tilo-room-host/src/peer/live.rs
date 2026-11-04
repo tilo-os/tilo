@@ -83,13 +83,16 @@ async fn call_host(
     if !subscribed.contains(&workspace_id) {
         return None;
     }
-    let ws = session
+    let authority = session
         .workspaces
         .lock()
         .await
         .get(&workspace_id)
-        .cloned()?;
-    let authority = ws.lock().await.workspace_authority.clone();
+        .cloned()?
+        .lock()
+        .await
+        .workspace_authority
+        .clone();
     match authority {
         Some(authority) => Some((authority.workspaces()?, authority.workspace().to_owned())),
         None => Some((
