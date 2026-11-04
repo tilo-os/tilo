@@ -191,7 +191,7 @@ d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task the view shows just over it in its group (`above`), as `Ctrl+]` does in an outline: one change, undone as one, where there is a row above it to move under.
+    .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does: the row over it names the task of its own level it ends up under.
 
 d-khy6tj7s = Outdent
     .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.

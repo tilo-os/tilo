@@ -140,10 +140,8 @@ migration action adopt_steps(tasks: Tasks) {
                     section: own.section,
                 ),
             )
-            let siblings = tasks.items.filter(x -> x.parent == .some(own) and x != made)
-            if let last = siblings.last() {
-                tasks.items.move(made, after: last)
-            } else { tasks.items.move(made, after: own) }
+            let last = tasks.items.filter(x -> x.parent == .some(own) and x != made).last() ?? own
+            tasks.items.move(made, after: last)
         } else {
             tasks.items.insert(Task(title: s.title, done: s.done))
         }
@@ -218,9 +216,8 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task (
     let made = tasks.items.insert(
         Task(title: title, parent: .some(t), project: t.project, section: t.section),
     )
-    if let last = tasks.items.filter(x -> x.parent == .some(t) and x != made).last() {
-        tasks.items.move(made, after: last)
-    } else { tasks.items.move(made, after: t) }
+    let last = tasks.items.filter(x -> x.parent == .some(t) and x != made).last() ?? t
+    tasks.items.move(made, after: last)
     if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
     made
 }
@@ -332,20 +329,15 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
     }
 }
 
-/// Moves a task under the task the view shows just over it in its group (`above`), as `Ctrl+]`
-/// does in an outline: one change, undone as one, where there is a row above it to move under.
+/// Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does:
+/// the row over it names the task of its own level it ends up under.
 action indent(t: Task, above: Option<Task> (above)) (
     label: "Indent",
     icon: .arrow_right,
     key: "Ctrl+]",
 ) {
-    // The task it already stands under shows over it as the first of its own: the row over it
-    // is the task it is under, and there is no place there to go.
-    applies above != .none "Nothing over it here"
-    applies above != t.parent "The task over it is the one it is under"
+    applies above != .none and above != t.parent "Nothing over it to move under"
     if let a = above {
-        // The task of its own level that the row over it stands under: the task over it when
-        // that one is on its level, else the one whose subtasks it is among.
         let under = tasks.items.ancestors(a, .parent).find(x -> x.parent == t.parent) ?? a
         move_to(tasks, t, .some(under), .none)
     }
