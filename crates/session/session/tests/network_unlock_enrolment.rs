@@ -84,7 +84,7 @@ fn a_boot_key_enrols_through_the_sessions_socket() {
     let frame = encode_frame(&request).expect("a frame");
 
     // The session serves its socket once it has started.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let reply = loop {
         if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) {
             stream

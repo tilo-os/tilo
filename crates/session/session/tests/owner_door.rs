@@ -89,13 +89,9 @@ fn ask(session: &mut Session, socket: &Path, request: &Value) -> Value {
             .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
             .unwrap();
     });
-    for _ in 0..30_000 {
-        if let Ok(answer) = answered.try_recv() {
-            return answer;
-        }
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    panic!("the control socket never answered");
+    common::wait_for(session, "the control socket's answer", |_| {
+        answered.try_recv().ok()
+    })
 }
 
 /// The desk the session starts on: one workspace with one window in front.

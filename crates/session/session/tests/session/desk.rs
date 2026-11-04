@@ -281,7 +281,7 @@ fn capture_parity_frames() {
         // The screen is a process of its own, and the frame compared here is
         // the one it drew: until then a locked output shows the blank the
         // desk left behind.
-        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let deadline = tilo_test_env::hang_deadline();
         while !session.compositor().lock_drawn() {
             assert!(
                 std::time::Instant::now() < deadline,

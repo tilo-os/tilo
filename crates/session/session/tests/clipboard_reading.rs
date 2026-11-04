@@ -13,6 +13,8 @@
               lives until the app it serves is done"
 )]
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -103,14 +105,11 @@ fn app(socket: &std::path::Path, id: &str, workspace: &str, seen: &std::sync::mp
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done(session: &mut Session, seen: &std::sync::mpsc::Receiver<Seen>) -> Seen {
-    for _ in 0..4000 {
+    common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
-        if let Ok(seen) = seen.try_recv() {
-            return seen;
-        }
-    }
-    panic!("the app never finished its calls");
+        seen.try_recv().ok()
+    })
 }
 
 /// Copy `text` in the app in front, and let the clipboard keep it.

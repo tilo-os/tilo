@@ -820,7 +820,7 @@ fn known_in(package: &str, workspace: &str) -> Vec<String> {
 /// reference on a worker of its own.
 fn within(mut done: impl FnMut() -> bool) -> bool {
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_secs(10) {
+    while started.elapsed() < tilo_test_env::hang_bound() {
         if done() {
             return true;
         }

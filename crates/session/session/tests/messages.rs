@@ -29,7 +29,6 @@ use tilo_session::{Options, Session};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 /// How long the two devices have to carry what they carry.
-const DEADLINE: Duration = Duration::from_secs(60);
 /// One turn of the receiving session's loop.
 const PASS: Duration = Duration::from_millis(20);
 
@@ -179,7 +178,7 @@ fn this_computers_session(home: &mut tilo_test_env::TestHome) -> (Session, tempf
 /// The session's own `messages` reading, once the endpoint is bound.
 #[track_caller]
 fn reachable(session: &mut Session) -> Answer {
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(reading) = session.read(MESSAGES) {
             let answer = answer(&reading);
@@ -213,7 +212,7 @@ fn a_private_message_reaches_the_person_it_was_sent_to() {
     let them_root = hex::encode(them.verifying_key().to_bytes());
     let ours_root = theirs.person.clone();
 
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = tilo_test_env::hang_deadline();
     let mut arrived = false;
     while Instant::now() < deadline {
         session.step(PASS).expect("the session runs");
@@ -242,7 +241,7 @@ fn a_private_message_reaches_the_person_it_was_sent_to() {
         .invoke(MESSAGES, "send", &arguments)
         .expect("the reply is sent");
 
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = tilo_test_env::hang_deadline();
     let mut landed = false;
     let mut kept = false;
     while Instant::now() < deadline && !(landed && kept) {

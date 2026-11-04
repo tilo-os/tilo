@@ -16,6 +16,8 @@
               lives until the app it serves is done"
 )]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -365,16 +367,13 @@ fn connect(socket: &Path, app: &str) -> CollabClient {
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Receiver<T>) -> T {
-    for _ in 0..4000 {
+    common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
-        if let Ok(seen) = seen.try_recv() {
-            return seen;
-        }
-    }
-    panic!("the app never finished its calls");
+        seen.try_recv().ok()
+    })
 }
 
 /// This login's config root: where the person's accounts and their vault are.

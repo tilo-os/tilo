@@ -20,6 +20,8 @@
               lives until the apps it serves are done"
 )]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::Signer as _;
@@ -376,18 +378,27 @@ fn until_the_apps_are_done<T>(
     received: &std::sync::mpsc::Receiver<T>,
 ) -> Option<T> {
     use std::sync::mpsc::TryRecvError;
-    for _ in 0..4000 {
+    enum Answer<T> {
+        Done(T),
+        Left,
+        Yet,
+    }
+    let answer = common::wait_for(session, "the apps to finish their calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
-        match received.try_recv() {
-            Ok(done) => return Some(done),
-            Err(TryRecvError::Disconnected) => return None,
-            Err(TryRecvError::Empty) => {}
-        }
+        Some(match received.try_recv() {
+            Ok(done) => Answer::Done(done),
+            Err(TryRecvError::Disconnected) => Answer::Left,
+            Err(TryRecvError::Empty) => Answer::Yet,
+        })
+    });
+    match answer {
+        Answer::Done(done) => Some(done),
+        Answer::Left => None,
+        Answer::Yet => unreachable!("the wait only answers once the apps did"),
     }
-    panic!("the apps never finished their calls");
 }
 
 /// A connection to the session's plane as Chat in the workspace, as the

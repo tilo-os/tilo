@@ -426,7 +426,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
             pressed: false,
         })
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while session.arrangement().borrow().waiting() > 0 {
         assert!(
             std::time::Instant::now() < deadline,

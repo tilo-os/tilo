@@ -28,10 +28,6 @@ use ui::dnd::{COPIED_FILES_MIME, copied_files_list};
 const STAGING_PREFIX: &str = ".tilo-transfer-";
 /// How many files the folder of the crash test holds.
 const BIG: usize = 500;
-/// How long a paste on its own thread may take on a loaded machine before a
-/// test that waits on it fails: minutes of wall clock, not a count of turns.
-const WAIT: Duration = Duration::from_secs(120);
-
 fn session() -> Session {
     Session::headless(
         Options::default(),
@@ -60,8 +56,9 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bo
     let started = Instant::now();
     while !done(session) {
         assert!(
-            started.elapsed() < WAIT,
-            "{what} did not happen within {WAIT:?}"
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "{what} did not happen within {:?}",
+            tilo_test_env::hang_bound()
         );
         step(session);
     }
@@ -400,7 +397,7 @@ fn kill_mid_transfer_child() {
     let started = Instant::now();
     loop {
         assert!(
-            started.elapsed() < WAIT,
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the transfer never reached {}",
             stage.display()
         );

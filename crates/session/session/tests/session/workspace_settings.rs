@@ -633,7 +633,7 @@ fn held_by_chat(
     workspace: &str,
     mut done: impl FnMut(Option<&[String]>) -> bool,
 ) -> Option<Vec<String>> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let held = chat_emoji(home, workspace);
         if done(held.as_deref()) || std::time::Instant::now() >= deadline {

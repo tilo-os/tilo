@@ -624,18 +624,17 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
 /// How long a lock or unlock followed from the person's other devices may take
 /// to land here: the lock screen is a whole app, and one that came up with the
 /// lock is given its second to leave before the lock lifts.
-const FOLLOWING: Duration = Duration::from_secs(90);
 
 /// Step the session until `done` holds: what the person's other devices say is
 /// followed on the pass that brings it, and the screen the lock shows comes up
 /// and leaves on its own clock.
 #[track_caller]
 fn until(harness: &mut Harness, mut done: impl FnMut(&mut Harness) -> bool) {
-    let deadline = Instant::now() + FOLLOWING;
+    let deadline = tilo_test_env::hang_deadline();
     while !done(harness) {
         assert!(
             Instant::now() < deadline,
-            "the session did not follow in {FOLLOWING:?}"
+            "the session did not follow what the other devices said"
         );
         harness
             .session

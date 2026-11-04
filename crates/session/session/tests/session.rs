@@ -483,7 +483,7 @@ fn within(session: &mut Session, client: &mut TestClient, done: impl FnMut(&mut 
 /// Wait for the size the desktop configures the window to, draw it at that
 /// size as its client does, and wait until the compositor shows it there.
 fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i32, i32)) {
-    let until = std::time::Instant::now() + Duration::from_secs(3);
+    let until = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < until && client.seen.size != Some(size) {
         client.exchange();
         session.step(Duration::from_millis(4)).expect("step");
@@ -1210,7 +1210,7 @@ fn the_liveness_door_beside_the_control_socket_answers_a_heartbeat() {
         .expect("the heartbeat is asked for");
     let mut reader = std::io::BufReader::new(&mut client);
     let mut answer = String::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(
             std::time::Instant::now() < deadline,

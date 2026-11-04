@@ -34,8 +34,6 @@ use tilo_session::surfaces::Surface;
 use tilo_session::{ActionPlane, Options, Service, Session};
 use tilo_test_env::ScopedEnv;
 
-/// How long the panel may take to report what it read.
-const REPORTING: Duration = Duration::from_secs(90);
 /// One display's refresh: how often the session asks its clients for their
 /// next frame.
 const REFRESH: Duration = Duration::from_millis(16);
@@ -175,7 +173,7 @@ fn session_alone(socket: &Path) -> Session {
 /// The session's turns until the panel has reported, as the session runs its
 /// loop.
 fn until_reported(session: &mut Session, report: &Path) -> String {
-    let deadline = Instant::now() + REPORTING;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         session.settle_services();
         session.step(REFRESH).expect("a turn of the session");

@@ -383,7 +383,7 @@ fn press(session: &mut Session, keycode: u32) {
 /// given as long as any app gets on a busy machine.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         session.step(Duration::from_millis(2)).expect("step");
         if done(session) {

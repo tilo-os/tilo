@@ -171,7 +171,7 @@ fn until(
     client: &mut TestClient,
     mut done: impl FnMut(&mut Session, &TestClient) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         client.exchange();
         session.step(Duration::from_millis(20)).expect("step");
@@ -275,7 +275,7 @@ fn fill(
     app: &str,
     want: (i32, i32, i32),
 ) {
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = tilo_test_env::hang_deadline();
     let mut drawn = None;
     while Instant::now() < deadline {
         client.exchange();
@@ -373,7 +373,7 @@ fn the_lock_turns_the_outputs_and_the_desk_follows() {
         .set(true)
         .expect("the person's setting");
     hold(&sensor, (0, -9, 0));
-    let settle = Instant::now() + Duration::from_secs(2);
+    let settle = tilo_test_env::hang_deadline();
     while Instant::now() < settle {
         client.exchange();
         session.step(Duration::from_millis(20)).expect("step");

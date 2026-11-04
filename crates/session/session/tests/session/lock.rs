@@ -22,7 +22,6 @@ use tilo_session::surfaces::Surface;
 const LOCK: &str = "lock";
 
 /// How long the lock screen may take to show itself: a whole app starts here.
-const OPENING: Duration = Duration::from_secs(90);
 
 /// One display's refresh, while waiting for the lock screen to draw.
 const REFRESH: Duration = Duration::from_millis(16);
@@ -195,7 +194,7 @@ pub(super) fn until_drawn(
     displays: &[&str],
     was: &[Vec<f64>],
 ) -> Vec<Vec<f64>> {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
@@ -233,7 +232,7 @@ pub(super) fn until_back(
     displays: &[&str],
     was: &[Vec<f64>],
 ) -> Vec<Vec<f64>> {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
         let now = pictures(session, displays);
@@ -790,7 +789,7 @@ fn redrawn(
 /// changing at, not the first one that differs.
 #[track_caller]
 fn until_still(session: &mut Session, display: &str) -> tilo_compositor::Screenshot {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     let mut last = session
         .compositor()
@@ -828,7 +827,7 @@ fn until_redrawn(
     display: &str,
     was: &tilo_compositor::Screenshot,
 ) -> tilo_compositor::Screenshot {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     let mut last = was.clone();
     let mut since = Instant::now();
@@ -860,7 +859,7 @@ fn until_redrawn(
 /// session publishes for the screen: the reading any app of it reads.
 #[track_caller]
 fn until_media(session: &mut Session, media: impl Fn(&serde_json::Value) -> bool) {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     loop {
         if session

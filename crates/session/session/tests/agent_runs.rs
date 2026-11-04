@@ -19,6 +19,8 @@
               lives until the app it serves is done"
 )]
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use runtime_collab::{CollabClient, TaskPresentation, TaskRunUpdate};
@@ -162,7 +164,9 @@ fn app(
         // typed to it, as the composer does, and reading what its agent says
         // until the run ended.
         let mut steered = false;
-        for _ in 0..2_000 {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            assert!(std::time::Instant::now() < deadline, "the run never ended");
             let followed = following
                 .read()
                 .await
@@ -189,7 +193,6 @@ fn app(
                 return;
             }
         }
-        panic!("the run never ended");
     });
 }
 
@@ -263,14 +266,11 @@ fn until(
     what: &str,
     done: impl Fn(&[Observed]) -> bool,
 ) {
-    for _ in 0..2_000 {
+    common::wait_for(session, what, |session| {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
-        if done(&seen.lock().unwrap()) {
-            return;
-        }
-    }
-    panic!("the app never saw {what}: {:?}", seen.lock().unwrap());
+        done(&seen.lock().unwrap()).then_some(())
+    });
 }
 
 /// A directory for the plane's socket that only this user reaches: the broker
@@ -303,15 +303,12 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
         let seen = Arc::clone(&seen);
         std::thread::spawn(move || app(&socket, &asked, &seen))
     };
-    let mut asked = None;
-    for _ in 0..4000 {
+    let asked = common::wait_for(session, "the run the ask started", |session| {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
-        if let Ok(asked_now) = received.try_recv() {
-            asked = Some(asked_now);
-            break;
-        }
-    }
+        received.try_recv().ok()
+    });
+    let asked = Some(asked);
     let asked = asked.expect("the app queued its asks");
 
     // Nothing was asked before: the runs are empty, and both asks started one.
