@@ -16762,7 +16762,6 @@ name = "tasks"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
- "serde",
  "serde_json",
  "tasks",
  "tasks-model",
@@ -22705,7 +22704,6 @@ dependencies = [
  "tilolang-host",
  "tilolang-mail",
  "tilolang-tilo",
- "tokio",
  "tracing",
  "uuid",
  "workspace-hack",

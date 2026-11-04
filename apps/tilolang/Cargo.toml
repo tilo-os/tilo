@@ -106,7 +106,6 @@ tracing.workspace = true
 tilolang = { path = "../../crates/lang/tilolang" }
 # The test IMAP and SMTP servers the mail origin's tests run against.
 mail = { path = "../mail", features = ["fake-servers"] }
-tokio = { workspace = true, features = ["rt"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`).
 tilolang-host = { path = "../../crates/platform/tilolang-host" }
