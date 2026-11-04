@@ -367,33 +367,6 @@ async fn invitations_run_through_the_rooms_own_methods() {
     .await;
     assert_eq!(refused, Err(ActionHostError::UnknownAction));
 
-    // Granted invite, Ada invites up to her own role and no further: the
-    // workspace's own decision, refused with its reason.
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
-    invoke(
-        &host,
-        workspace_id,
-        &caller(&ada),
-        request(&workspace, governance::INVITE, json!({ "role": "editor" })),
-    )
-    .await
-    .unwrap();
-    let above = invoke(
-        &host,
-        workspace_id,
-        &caller(&ada),
-        request(
-            &workspace,
-            governance::INVITE,
-            json!({ "role": "moderator" }),
-        ),
-    )
-    .await;
-    assert!(
-        matches!(&above, Err(ActionHostError::Refused { reason }) if reason.contains("Moderator")),
-        "{above:?}"
-    );
-
     // Cancelling takes it off the pending list.
     let mut cancel = Map::new();
     cancel.insert("invite".into(), invite_id.clone().into());
@@ -427,6 +400,44 @@ async fn invitations_run_through_the_rooms_own_methods() {
     )
     .await;
     assert_eq!(elsewhere, Err(ActionHostError::UnknownAction));
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_editor_invites_up_to_her_own_role_and_no_further() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+
+    // Granted invite, Ada invites up to her own role and no further: the
+    // workspace's own decision, refused with its reason.
+    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(&workspace, governance::INVITE, json!({ "role": "editor" })),
+    )
+    .await
+    .unwrap();
+    let above = invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(
+            &workspace,
+            governance::INVITE,
+            json!({ "role": "moderator" }),
+        ),
+    )
+    .await;
+    assert!(
+        matches!(&above, Err(ActionHostError::Refused { reason }) if reason.contains("Moderator")),
+        "{above:?}"
+    );
     relay.shutdown().await;
 }
 
