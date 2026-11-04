@@ -39,8 +39,8 @@ use tilo_live::voice::{self, VoiceObject};
 use tilo_lock::MutexRecover as _;
 use tilo_native_media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters, ScreenShare};
 
-use crate::call_devices::{Audio, Source, Voice};
 use crate::sync::{self, LiveCall};
+use media::voice::call::{self, Audio, Source, Voice};
 
 /// How often a live call moves its audio: one frame's worth, so a captured
 /// frame is sealed and sent as soon as the microphone has it.
@@ -628,14 +628,22 @@ fn call_keys(
     Ok((access, keys))
 }
 
+/// What a call's audio said, as the app hears it.
+fn voice_issue(error: call::CallError) -> Issue {
+    match error {
+        call::CallError::Unavailable => Issue::Unavailable,
+        call::CallError::CaptureFailed | call::CallError::SourceLost => Issue::SourceLost,
+        call::CallError::TransportFailed | call::CallError::Unsupported => Issue::TransportFailed,
+    }
+}
+
 /// This device's microphones, opened for the call, and what the app is
 /// offered of them.
-async fn opened_microphones(
-    audio: crate::call_devices::Audio,
-) -> Result<(Voice, Vec<Source>, Vec<Input>), Issue> {
+async fn opened_microphones(audio: Audio) -> Result<(Voice, Vec<Source>, Vec<Input>), Issue> {
     let voice = tokio::task::spawn_blocking(move || Voice::open(audio))
         .await
-        .map_err(|_| Issue::Unavailable)??;
+        .map_err(|_| Issue::Unavailable)?
+        .map_err(voice_issue)?;
     let microphones = voice.sources();
     let offered = microphones
         .iter()
@@ -865,7 +873,8 @@ impl Shared {
         self.side
             .lock_recover()
             .voice
-            .start(&source, still_current)?;
+            .start(&source, still_current)
+            .map_err(voice_issue)?;
         Ok(())
     }
 
@@ -1187,7 +1196,7 @@ impl Shared {
             }
         }
         let mut side = self.side.lock_recover();
-        let captured = match side.voice.pump(now) {
+        let captured = match side.voice.pump(now).map_err(voice_issue) {
             Ok(captured) => captured,
             Err(issue) => {
                 // The person's microphone stopped: capture is off from now
@@ -1217,7 +1226,7 @@ impl Shared {
                 }
             }
         }
-        if let Err(issue) = side.voice.playout(now) {
+        if let Err(issue) = side.voice.playout(now).map_err(voice_issue) {
             *self.issue.lock_recover() = Some(issue);
             return;
         }

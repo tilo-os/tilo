@@ -1,38 +1,92 @@
-//! One-shot `PipeWire` registry custody for a call: the graph a person picks
-//! a microphone from, and the exact connection `GStreamer` then runs that
-//! microphone and the call's output on.
+//! One call's audio devices: one-shot `PipeWire` registry custody for the
+//! graph a person picks a microphone from, and the exact connection
+//! `GStreamer` then runs that microphone and the call's output on.
 //!
 //! The connection is the observer's own: it is opened, read for one registry
 //! round trip and handed over, so no other reader of the same socket survives
 //! and no stream reconnects by name behind the person's back.
+//!
+//! This is custody only: a [`Voice`] holds no call authority and no
+//! microphone permission, and the call that drives it owns both.
 
-#[cfg(target_os = "linux")]
-use std::os::fd::OwnedFd;
+/// What went wrong opening or running a call's audio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallError {
+    /// No audio graph, no sink to play on.
+    Unavailable,
+    /// The microphone stopped yielding frames.
+    CaptureFailed,
+    /// The capture source was lost.
+    SourceLost,
+    /// The playout path failed.
+    TransportFailed,
+    /// This platform has no voice audio.
+    Unsupported,
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "call audio: {self:?}")
+    }
+}
+
+impl std::error::Error for CallError {}
+
+/// What a call's audio runs on: this machine's speakers and microphones, or,
+/// in tests, the same pipeline ending in memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audio {
+    Devices,
+    /// A tone instead of a microphone, and the played samples kept instead
+    /// of reaching a speaker.
+    #[cfg(feature = "test-support")]
+    Software,
+}
+
+/// A microphone this call may send: what the person picks between.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Source {
+    pub id: String,
+    pub label: String,
+    /// The node and its stable serial, as the observation named them.
+    pub node: u32,
+    pub serial: u32,
+}
+
+/// One frame this call's microphone captured.
+pub struct Frame {
+    pub timestamp_48k: u64,
+    pub payload: Vec<u8>,
+}
 
 /// What one observation saw: the audio nodes, the core's cookie, and the
 /// connection a call's streams run on.
-#[cfg(target_os = "linux")]
-pub(crate) struct Observed {
-    pub(crate) graph: media::AudioGraph,
-    pub(crate) socket: OwnedFd,
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub struct Observed {
+    pub graph: crate::audio::AudioGraph,
+    pub socket: std::os::fd::OwnedFd,
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(crate) struct Observed;
+#[cfg(not(all(target_os = "linux", feature = "pipewire")))]
+pub struct Observed;
 
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn observe() -> Result<Observed, String> {
-    Err("a call's audio devices require Linux".into())
+#[cfg(not(all(target_os = "linux", feature = "pipewire")))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the Linux observer's shape: devices without a graph are an error"
+)]
+pub fn observe() -> Result<Observed, String> {
+    Err("a call's audio devices require PipeWire on Linux".into())
 }
 
 /// Observe this device's audio graph and take its `PipeWire` connection, or
 /// say why there is none: no graph, no microphones to offer.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
 #[allow(
     clippy::too_many_lines,
     reason = "one blocking PipeWire registry round trip whose callbacks share local state"
 )]
-pub(crate) fn observe() -> Result<Observed, String> {
+pub fn observe() -> Result<Observed, String> {
     use pipewire as pw;
     use pw::types::ObjectType;
     use std::{
@@ -58,9 +112,10 @@ pub(crate) fn observe() -> Result<Observed, String> {
     let cookie = Rc::new(Cell::new(None));
     let failed = Rc::new(Cell::new(false));
     let completed = Rc::new(Cell::new(None));
-    let nodes = Rc::new(RefCell::new(
-        BTreeMap::<u32, (bool, media::AudioDevice)>::new(),
-    ));
+    let nodes = Rc::new(RefCell::new(BTreeMap::<
+        u32,
+        (bool, crate::audio::AudioDevice),
+    >::new()));
     let defaults = Rc::new(RefCell::new((None::<String>, None::<String>)));
     let metadata = Rc::new(RefCell::new(Vec::<(
         pw::metadata::Metadata,
@@ -172,7 +227,7 @@ pub(crate) fn observe() -> Result<Observed, String> {
                 else {
                     return;
                 };
-                if name.starts_with(media::audio::ECHO_CANCEL_NODE_PREFIX) {
+                if name.starts_with(crate::audio::ECHO_CANCEL_NODE_PREFIX) {
                     return;
                 }
                 let label = props.get("node.description").unwrap_or(name);
@@ -190,7 +245,7 @@ pub(crate) fn observe() -> Result<Observed, String> {
                     global.id,
                     (
                         input,
-                        media::AudioDevice {
+                        crate::audio::AudioDevice {
                             id: global.id,
                             serial,
                             name: name.into(),
@@ -236,7 +291,7 @@ pub(crate) fn observe() -> Result<Observed, String> {
     sync(1)?;
     sync(2)?;
     let _ = cookie.get().ok_or("PipeWire core identity missing")?;
-    let mut graph = media::AudioGraph::default();
+    let mut graph = crate::audio::AudioGraph::default();
     let selected = defaults.borrow();
     for (input, node) in nodes.borrow().values() {
         let mut node = node.clone();
@@ -269,52 +324,23 @@ pub(crate) fn observe() -> Result<Observed, String> {
         return Err("PipeWire socket handoff unavailable".into());
     }
     // SAFETY: a successful steal returns a new owned descriptor exactly once.
-    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+    let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
     drop(core);
     Ok(Observed { graph, socket })
 }
 
-/// What a call's audio runs on: this machine's speakers and microphones, or,
-/// in tests, the same pipeline ending in memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Audio {
-    Devices,
-    /// A tone instead of a microphone, and the played samples kept instead
-    /// of reaching a speaker.
-    #[cfg(test)]
-    Software,
-}
-
-/// A microphone this call may send: what the person picks between.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Source {
-    pub(crate) id: String,
-    pub(crate) label: String,
-    /// The node and its stable serial, as the observation named them.
-    pub(crate) node: u32,
-    pub(crate) serial: u32,
-}
-
-/// One frame this call's microphone captured.
-pub(crate) struct Frame {
-    pub(crate) timestamp_48k: u64,
-    pub(crate) payload: Vec<u8>,
-}
-
 /// One call's audio: the microphone it sends and what it plays, on one
 /// observation of the device graph.
-pub(crate) struct Voice(inner::Inner);
+pub struct Voice(inner::Inner);
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "voice", unix, not(target_arch = "wasm32")))]
 mod inner {
     use std::sync::Arc;
     use std::time::Instant;
 
-    use media::voice::gst::{CaptureSource, ObservedOutput, VoiceAudio};
-    use media::voice::{PublicationId, ReceivedOpus};
-
-    use super::{Audio, Frame, Observed, Source};
-    use runtime_collab::native_media::Issue;
+    use super::{Audio, CallError, Frame, Observed, Source};
+    use crate::voice::gst::{CaptureSource, ObservedOutput, VoiceAudio};
+    use crate::voice::{PublicationId, ReceivedOpus};
 
     pub(super) struct Inner {
         audio: Backing,
@@ -327,15 +353,15 @@ mod inner {
 
     enum Backing {
         Devices(VoiceAudio),
-        #[cfg(test)]
-        Software(media::voice::gst::software::SoftwareOutput),
+        #[cfg(feature = "test-support")]
+        Software(crate::voice::gst::software::SoftwareOutput),
     }
 
     impl Inner {
         fn audio(&mut self) -> &mut VoiceAudio {
             match &mut self.audio {
                 Backing::Devices(audio) => audio,
-                #[cfg(test)]
+                #[cfg(feature = "test-support")]
                 Backing::Software(output) => output.audio(),
             }
         }
@@ -353,6 +379,7 @@ mod inner {
 
     /// The output the call plays through: the person's default sink, or the
     /// only one there is.
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
     fn sink_of(observed: &Observed) -> Option<(u32, u32)> {
         observed
             .graph
@@ -366,38 +393,13 @@ mod inner {
     }
 
     impl super::Voice {
-        pub(crate) fn open(audio: Audio) -> Result<Self, Issue> {
+        pub fn open(audio: Audio) -> Result<Self, CallError> {
             match audio {
-                Audio::Devices => {
-                    let observed = super::observe().map_err(|_| Issue::Unavailable)?;
-                    let (node, serial) = sink_of(&observed).ok_or(Issue::Unavailable)?;
-                    let played = VoiceAudio::new(ObservedOutput {
-                        node,
-                        serial,
-                        remote_fd: std::os::fd::AsFd::as_fd(&observed.socket),
-                    })
-                    .map_err(|_| Issue::Unavailable)?;
-                    let sources = observed
-                        .graph
-                        .sources
-                        .iter()
-                        .map(|source| Source {
-                            id: source.serial.to_string(),
-                            label: source.description.clone(),
-                            node: source.id,
-                            serial: source.serial,
-                        })
-                        .collect();
-                    Ok(Self(Inner {
-                        audio: Backing::Devices(played),
-                        sources,
-                        observed: Some(observed),
-                    }))
-                }
-                #[cfg(test)]
+                Audio::Devices => open_devices(),
+                #[cfg(feature = "test-support")]
                 Audio::Software => {
-                    let output = media::voice::gst::software::SoftwareOutput::start()
-                        .map_err(|_| Issue::Unavailable)?;
+                    let output = crate::voice::gst::software::SoftwareOutput::start()
+                        .map_err(|_| CallError::Unavailable)?;
                     Ok(Self(Inner {
                         audio: Backing::Software(output),
                         sources: vec![Source {
@@ -412,52 +414,52 @@ mod inner {
             }
         }
 
-        pub(crate) fn sources(&self) -> Vec<Source> {
+        pub fn sources(&self) -> Vec<Source> {
             self.0.sources.clone()
         }
 
-        pub(crate) fn start(
+        pub fn start(
             &mut self,
             source: &Source,
             still_current: Arc<dyn Fn() -> bool + Send + Sync>,
-        ) -> Result<(), Issue> {
+        ) -> Result<(), CallError> {
             match &mut self.0.audio {
                 Backing::Devices(audio) => {
-                    let observed = self.0.observed.as_ref().ok_or(Issue::Unavailable)?;
+                    let observed = self.0.observed.as_ref().ok_or(CallError::Unavailable)?;
                     audio
                         .start_capture(
                             CaptureSource::PipeWire {
                                 node: source.node,
                                 serial: source.serial,
-                                remote_fd: std::os::fd::AsFd::as_fd(&observed.socket),
+                                remote_fd: observed_device_socket(observed),
                             },
                             still_current,
                         )
-                        .map_err(|_| Issue::CaptureFailed)
+                        .map_err(|_| CallError::CaptureFailed)
                 }
-                #[cfg(test)]
+                #[cfg(feature = "test-support")]
                 Backing::Software(output) => output
                     .audio()
                     .start_software_capture(440.0, still_current)
-                    .map_err(|_| Issue::CaptureFailed),
+                    .map_err(|_| CallError::CaptureFailed),
             }
         }
 
-        pub(crate) fn stop(&mut self) {
+        pub fn stop(&mut self) {
             self.0.audio().stop_capture();
         }
 
-        pub(crate) fn set_deafened(&mut self, deafened: bool) {
+        pub fn set_deafened(&mut self, deafened: bool) {
             self.0.audio().set_deafened(deafened);
         }
 
         /// The frames the microphone captured since the last pump.
-        pub(crate) fn pump(&mut self, now: Instant) -> Result<Vec<Frame>, Issue> {
+        pub fn pump(&mut self, now: Instant) -> Result<Vec<Frame>, CallError> {
             let frames = self
                 .0
                 .audio()
                 .poll_capture(now)
-                .map_err(|_| Issue::SourceLost)?;
+                .map_err(|_| CallError::SourceLost)?;
             Ok(frames
                 .into_iter()
                 .map(|frame| Frame {
@@ -467,22 +469,22 @@ mod inner {
                 .collect())
         }
 
-        pub(crate) fn playout(&mut self, now: Instant) -> Result<(), Issue> {
+        pub fn playout(&mut self, now: Instant) -> Result<(), CallError> {
             self.0
                 .audio()
                 .playout(now)
-                .map_err(|_| Issue::TransportFailed)
+                .map_err(|_| CallError::TransportFailed)
         }
 
         /// Play one frame heard from `sender`.
-        pub(crate) fn receive(
+        pub fn receive(
             &mut self,
             sender: [u8; 32],
             sequence: u64,
             timestamp_48k: u64,
             payload: Vec<u8>,
             now: Instant,
-        ) -> Result<(), Issue> {
+        ) -> Result<(), CallError> {
             let lifetime = std::time::Duration::from_millis(200);
             self.0
                 .audio()
@@ -498,81 +500,118 @@ mod inner {
                     },
                     now,
                 )
-                .map_err(|_| Issue::TransportFailed)
+                .map_err(|_| CallError::TransportFailed)
         }
 
         /// Forget what was heard from `sender`: its stream starts over — it
         /// left the call and came back, or its page reloaded — so it is heard
         /// at its own place from its first frame on, rather than behind where
         /// the one before it got.
-        pub(crate) fn forget(&mut self, sender: [u8; 32]) {
+        pub fn forget(&mut self, sender: [u8; 32]) {
             self.0.audio().remove_publisher(&publisher(sender));
         }
 
         /// The samples played since this was last called, where the call
         /// plays into memory.
-        #[cfg(test)]
-        pub(crate) fn played(&mut self) -> Vec<f32> {
+        #[cfg(feature = "test-support")]
+        pub fn played(&mut self) -> Vec<f32> {
             match &mut self.0.audio {
                 Backing::Devices(_) => Vec::new(),
-                #[cfg(test)]
+                #[cfg(feature = "test-support")]
                 Backing::Software(output) => output.played(),
             }
         }
 
-        pub(crate) fn close(&mut self) {
+        pub fn close(&mut self) {
             self.0.audio().close();
         }
     }
+
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    fn observed_device_socket(observed: &Observed) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&observed.socket)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    fn open_devices() -> Result<super::Voice, CallError> {
+        let observed = super::observe().map_err(|_| CallError::Unavailable)?;
+        let (node, serial) = sink_of(&observed).ok_or(CallError::Unavailable)?;
+        let played = VoiceAudio::new(ObservedOutput {
+            node,
+            serial,
+            remote_fd: std::os::fd::AsFd::as_fd(&observed.socket),
+        })
+        .map_err(|_| CallError::Unavailable)?;
+        let sources = observed
+            .graph
+            .sources
+            .iter()
+            .map(|source| Source {
+                id: source.serial.to_string(),
+                label: source.description.clone(),
+                node: source.id,
+                serial: source.serial,
+            })
+            .collect();
+        Ok(super::Voice(Inner {
+            audio: Backing::Devices(played),
+            sources,
+            observed: Some(observed),
+        }))
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
+    fn open_devices() -> Result<super::Voice, CallError> {
+        Err(CallError::Unavailable)
+    }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(feature = "voice", unix, not(target_arch = "wasm32"))))]
 mod inner {
     use std::sync::Arc;
     use std::time::Instant;
 
-    use super::{Audio, Frame, Source};
-    use runtime_collab::native_media::Issue;
+    use super::{Audio, CallError, Frame, Source};
 
     pub(super) struct Inner;
 
     impl super::Voice {
-        pub(crate) fn open(_audio: Audio) -> Result<Self, Issue> {
-            Err(Issue::Unsupported)
+        pub fn open(_audio: Audio) -> Result<Self, CallError> {
+            Err(CallError::Unsupported)
         }
-        pub(crate) fn sources(&self) -> Vec<Source> {
+        pub fn sources(&self) -> Vec<Source> {
             Vec::new()
         }
-        pub(crate) fn start(
+        pub fn start(
             &mut self,
             _source: &Source,
             _still_current: Arc<dyn Fn() -> bool + Send + Sync>,
-        ) -> Result<(), Issue> {
-            Err(Issue::Unsupported)
+        ) -> Result<(), CallError> {
+            Err(CallError::Unsupported)
         }
-        pub(crate) fn stop(&mut self) {}
-        pub(crate) fn set_deafened(&mut self, _deafened: bool) {}
-        pub(crate) fn pump(&mut self, _now: Instant) -> Result<Vec<Frame>, Issue> {
+        pub fn stop(&mut self) {}
+        pub fn set_deafened(&mut self, _deafened: bool) {}
+        pub fn pump(&mut self, _now: Instant) -> Result<Vec<Frame>, CallError> {
             Ok(Vec::new())
         }
-        pub(crate) fn playout(&mut self, _now: Instant) -> Result<(), Issue> {
+        pub fn playout(&mut self, _now: Instant) -> Result<(), CallError> {
             Ok(())
         }
-        pub(crate) fn receive(
+        pub fn receive(
             &mut self,
             _sender: [u8; 32],
             _sequence: u64,
             _timestamp_48k: u64,
             _payload: Vec<u8>,
             _now: Instant,
-        ) -> Result<(), Issue> {
+        ) -> Result<(), CallError> {
             Ok(())
         }
-        #[cfg(test)]
-        pub(crate) fn played(&mut self) -> Vec<f32> {
+        #[cfg(feature = "test-support")]
+        pub fn played(&mut self) -> Vec<f32> {
             Vec::new()
         }
-        pub(crate) fn forget(&mut self, _sender: [u8; 32]) {}
-        pub(crate) fn close(&mut self) {}
+        pub fn forget(&mut self, _sender: [u8; 32]) {}
+        pub fn close(&mut self) {}
     }
 }

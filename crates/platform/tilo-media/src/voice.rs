@@ -8,6 +8,10 @@ use std::{
 #[cfg(all(feature = "voice", unix, not(target_arch = "wasm32")))]
 pub mod gst;
 
+/// One call's audio devices: the microphone picked from this device's graph
+/// and the connection the call's audio runs on.
+pub mod call;
+
 pub const RATE: u32 = 48_000;
 pub const FRAME_SAMPLES: usize = 960;
 pub const FRAME_DURATION: Duration = Duration::from_millis(20);

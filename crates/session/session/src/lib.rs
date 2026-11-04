@@ -42,7 +42,6 @@ mod automation;
 mod bars;
 mod bluetooth_handoff;
 mod boot_join;
-mod call_devices;
 mod calls;
 pub mod capture;
 mod capture_grants;
