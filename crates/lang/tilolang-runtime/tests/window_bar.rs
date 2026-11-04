@@ -13,8 +13,10 @@ mod cases {
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
     const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+    const BOARD: &str = include_str!("../../../../apps/tl/board/app.tl");
 
-    struct Tasks {
+    /// An app installed in a workspace of its own: its actions runnable, its views openable.
+    struct Installed {
         rt: Runtime,
         app: App,
         me: Principal,
@@ -22,14 +24,14 @@ mod cases {
         _auth: TestAuthority,
     }
 
-    fn tasks() -> Tasks {
+    fn install(source: &str) -> Installed {
         let store = AmStore::new();
         let auth = TestAuthority::new();
         let rt = Runtime::new(store, auth.clone()).unwrap();
-        let app = App::compile(TASKS, &[]);
+        let app = App::compile(source, &[]);
         // Installed packages are code the platform trusts, as it does every installed app.
         auth.trust(&app.load(&rt));
-        Tasks {
+        Installed {
             rt,
             app,
             me: me(),
@@ -37,11 +39,15 @@ mod cases {
         }
     }
 
-    impl Tasks {
+    fn tasks() -> Installed {
+        install(TASKS)
+    }
+
+    impl Installed {
         /// The app's root resource, as installing it makes one: the window every other
         /// resource of the app stands beside.
-        fn root(&self) -> ResourceRef {
-            self.rt.create_root("Tasks").unwrap()
+        fn root(&self, ty: &str) -> ResourceRef {
+            self.rt.create_root(ty).unwrap()
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> tilolang_runtime::InvokeOutcome {
@@ -136,7 +142,7 @@ mod cases {
     #[test]
     fn the_tasks_window_has_one_bar_with_its_primary_action_once() {
         let w = tasks();
-        let root = w.root();
+        let root = w.root("Tasks");
         w.task(&root, "milk");
         let window = w.window("home", &root);
         let tree = window.tree();
@@ -198,7 +204,7 @@ mod cases {
     #[test]
     fn a_tasks_page_keeps_its_actions_behind_the_dots_beside_its_title() {
         let w = tasks();
-        let root = w.root();
+        let root = w.root("Tasks");
         let task = w.task(&root, "milk");
         let window = w.window("task_page", &task);
         let tree = window.tree();
@@ -242,13 +248,115 @@ mod cases {
         );
     }
 
+    /// A page whose item offers nothing shows no "…": the door would open on nothing, taking a
+    /// line of the page for a control with nothing behind it.
+    #[test]
+    fn a_page_whose_item_offers_nothing_shows_no_dots() {
+        const QUIET: &str = r#"
+app so.tilo.test.quiet "Quiet"
+type Quiet {
+    title: Text (title)
+    notes: Text (body)
+}
+type Quiets {
+    items: Collection<Quiet>
+}
+root Quiets
+default view all for Quiets
+default view quiet_page for Quiet
+primary action new(q: Quiets) -> Quiet (icon: .plus) {
+    q.items.insert(Quiet(title: "Nothing to do"))
+}
+view all(q: Quiets) {
+    std.page(q) {
+        ui.Text("Quiets")
+    }
+}
+view quiet_page(q: Quiet) {
+    std.document(q) {
+        ui.TextInput(value: q.title, placeholder: "Title")
+    }
+}
+"#;
+        let w = install(QUIET);
+        let root = w.root("Quiets");
+        let item = returned_ref(w.call("new", vec![Value::resource(&root)]));
+        let window = w.window("quiet_page", &item);
+        let tree = window.tree();
+        assert!(
+            of_kind(tree, "ui.MenuButton").is_empty(),
+            "an item with nothing to do shows no \"…\":\n{}",
+            dump(tree)
+        );
+        assert_eq!(
+            of_kind(tree, "ui.TextInput").len(),
+            1,
+            "the page edits its title:\n{}",
+            dump(tree)
+        );
+    }
+
+    /// A page whose item offers commands keeps its "…" at the trailing edge of the line its
+    /// title is on, whatever the view left the title in: the door stands beside the title, not
+    /// on a line of its own under it.
+    #[test]
+    fn a_pages_dots_stand_beside_its_title() {
+        let w = install(BOARD);
+        let root = w.root("Board");
+        let column = returned_ref(w.call("new_column", vec![Value::resource(&root)]));
+        let card = returned_ref(w.call(
+            "new_card",
+            vec![
+                Value::resource(&column),
+                Value::text("Merge the offline queue"),
+            ],
+        ));
+        let window = w.window("card_page", &card);
+        let tree = window.tree();
+        let title = of_kind(tree, "ui.TextInput")
+            .into_iter()
+            .find(|field| field.props.get("title") == Some(&Value::Int(1)))
+            .unwrap_or_else(|| panic!("the page edits its title:\n{}", dump(tree)));
+        let path = path_to(tree, &title.key).expect("the title stands in the tree");
+        let line = path[path.len() - 2];
+        assert_eq!(
+            line.kind,
+            "row",
+            "the title stands on a line:\n{}",
+            dump(tree)
+        );
+        let more = line
+            .children
+            .iter()
+            .find(|child| child.kind == "ui.MenuButton" && child.key.ends_with("~more"))
+            .unwrap_or_else(|| panic!("a \"…\" stands beside the title:\n{}", dump(tree)));
+        assert!(
+            more.children
+                .iter()
+                .any(|child| child.kind == "ui.MenuItem"),
+            "the \"…\" holds the commands on the card:\n{}",
+            dump(tree)
+        );
+        assert_eq!(
+            line.children.last().map(|child| child.key.clone()),
+            Some(more.key.clone()),
+            "the \"…\" stands at the line's trailing edge:\n{}",
+            dump(tree)
+        );
+        assert!(
+            title.props.contains_key("fill"),
+            "the title spans the line it is on:\n{}",
+            dump(tree)
+        );
+    }
+
     /// A project's window offers the views its type declares as labelled tabs in its bar, the
     /// one the window opens on chosen; choosing another shows the project through it, and the
     /// window keeps it.
     #[test]
     fn a_projects_bar_switches_between_the_views_its_type_declares() {
         let w = tasks();
-        let root = w.root();
+        let root = w.root("Tasks");
         let project = w.project(&root, "Move flat");
         w.call(
             "add_to",

@@ -44,10 +44,13 @@ pub enum Kind {
     UnsharedVerb,
     /// A surface drawn inside another surface of the same kind: a card in a card.
     NestedCard,
+    /// A page's "…" standing in a column rather than at the trailing edge of its title's line:
+    /// the door takes a line of its own and shows a lone glyph under the title.
+    LoneDoor,
 }
 
 impl Kind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -63,6 +66,7 @@ impl Kind {
         Self::CodedName,
         Self::UnsharedVerb,
         Self::NestedCard,
+        Self::LoneDoor,
     ];
 
     pub fn name(self) -> &'static str {
@@ -82,6 +86,7 @@ impl Kind {
             Self::CodedName => "coded-name",
             Self::UnsharedVerb => "unshared-verb",
             Self::NestedCard => "nested-card",
+            Self::LoneDoor => "lone-door",
         }
     }
 }
@@ -106,6 +111,13 @@ const EPSILON: f64 = 1.0;
 /// How far from a device pixel an edge may stand, in device pixels: what the toolkit's single
 /// precision coordinates carry, far under anything a person could see.
 const PIXEL_SLACK: f64 = 0.01;
+
+/// The tail of a page's "…" test id: the door the host gives a page's title the actions for its
+/// item behind.
+const DOOR: &str = "~more";
+
+/// A line's widget: its children side by side, where a door belongs at the trailing edge.
+const LINE: &str = "Row";
 
 fn rect(r: [f64; 4]) -> Rect {
     Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3])
@@ -353,6 +365,7 @@ pub fn inspect(
         viewport,
         Scrolls::default(),
         false,
+        "",
     );
     out
 }
@@ -360,7 +373,8 @@ pub fn inspect(
 impl Walk<'_> {
     /// `parent`: the nearest box above with geometry. `clip`: what of the window the node can show in. `scroller`:
     /// which ways the box above lets content go on past it. `content`: the box is a scroll view's, holding
-    /// what the view scrolls through rather than being a container of its own.
+    /// what the view scrolls through rather than being a container of its own. `above`: the widget the node
+    /// stands in, which decides whether it stands on a line.
     fn node(
         &mut self,
         node: &InspectionNode,
@@ -369,9 +383,10 @@ impl Walk<'_> {
         clip: Rect,
         scroller: Scrolls,
         content: bool,
+        above: &str,
     ) {
         let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
-        self.visit(node, keys, parent, clip, scroller, content);
+        self.visit(node, keys, parent, clip, scroller, content, above);
         if pushed {
             keys.pop();
         }
@@ -385,6 +400,7 @@ impl Walk<'_> {
         clip: Rect,
         scroller: Scrolls,
         content: bool,
+        above: &str,
     ) {
         let own = rect(node.rect);
         let geometric = has_area(own);
@@ -405,6 +421,7 @@ impl Walk<'_> {
         if geometric {
             self.pixels(node, keys, own);
             self.bare_row(node, keys, own);
+            self.lone_door(node, keys, above);
         }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
@@ -467,6 +484,7 @@ impl Walk<'_> {
                     self.viewport,
                     Scrolls::default(),
                     false,
+                    &node.widget,
                 );
                 (self.beyond, self.across, self.off_pixel) = (beyond, across, off_pixel);
                 continue;
@@ -480,6 +498,7 @@ impl Walk<'_> {
                 inner_clip,
                 inner_scroller,
                 scrolling,
+                &node.widget,
             );
         }
         self.beyond = was_beyond;
@@ -546,6 +565,24 @@ impl Walk<'_> {
                 size(own),
                 own.height() / window * 100.0
             ),
+        );
+    }
+
+    /// A page's "…" in a column: the door is the item's actions at the trailing edge of the
+    /// title's line, so one standing in a column takes a line of the document for its glyph
+    /// alone, under the title and out of reach of the page's own composition.
+    fn lone_door(&mut self, node: &InspectionNode, keys: &[String], above: &str) {
+        let Some(id) = node.test_id.as_deref() else {
+            return;
+        };
+        if node.widget != "MenuButton" || !id.ends_with(DOOR) || above == LINE {
+            return;
+        }
+        self.push(
+            Kind::LoneDoor,
+            node,
+            keys,
+            format!("it stands in a {above} of its own rather than at the trailing edge of the title's line"),
         );
     }
 
@@ -1034,6 +1071,72 @@ mod tests {
             .into_iter()
             .filter(|p| p.kind == Kind::Overlap)
             .collect()
+    }
+
+    fn lone_doors(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (1280, 800), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::LoneDoor)
+            .collect()
+    }
+
+    /// A page's "…" is the item's actions at the trailing edge of the title's line. One
+    /// standing in a column takes a line of the document for its glyph alone, under the title:
+    /// caught. Beside the title, and in the window bar, a menu is where it belongs.
+    #[test]
+    fn a_pages_dots_are_caught_only_off_the_titles_line() {
+        let page = |content: InspectionNode| {
+            stack_node(
+                "window",
+                [0.0, 0.0, 1280.0, 800.0],
+                vec![stack_node(
+                    "page",
+                    [0.0, 56.0, 1280.0, 200.0],
+                    vec![content],
+                )],
+            )
+        };
+        let door = || {
+            node(
+                "MenuButton",
+                "detail~more",
+                [888.0, 104.0, 32.0, 32.0],
+                Some(Role::Button),
+            )
+        };
+        let alone = page(stack_node(
+            "content",
+            [360.0, 104.0, 560.0, 85.0],
+            vec![door()],
+        ));
+        let found = lone_doors(&alone);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].keys.first().map(String::as_str),
+            Some("detail~more"),
+            "at the page's door"
+        );
+        let line = page(holding(
+            node("Row", "title-line", [360.0, 104.0, 560.0, 49.0], None),
+            vec![
+                node("TextInput", "detail", [360.0, 104.0, 520.0, 49.0], None),
+                door(),
+            ],
+        ));
+        assert!(
+            lone_doors(&line).is_empty(),
+            "beside its title, the door is where it belongs"
+        );
+        let bar = page(node(
+            "MenuButton",
+            "nav-shell-more-3",
+            [1220.0, 12.0, 32.0, 32.0],
+            Some(Role::Button),
+        ));
+        assert!(
+            lone_doors(&bar).is_empty(),
+            "the window bar's own menu is no page's door"
+        );
     }
 
     fn bare_rows(root: &InspectionNode) -> Vec<Problem> {

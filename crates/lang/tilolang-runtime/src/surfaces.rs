@@ -35,6 +35,13 @@ const ITEMS: &str = "items";
 const TEXT_INPUT: &str = "ui.TextInput";
 /// A slot of a component, named by its `name` property.
 const SLOT: &str = "slot";
+/// A line of content: its children side by side, the room a `fill`ing one leaves the others.
+const ROW: &str = "row";
+/// How far apart a row's parts stand, and where a part shorter than the line stands in it.
+const GAP: &str = "gap";
+const ALIGN: &str = "align";
+/// The room a node takes of its row: a weight, divided among the nodes that fill.
+const FILL: &str = "fill";
 
 const MENU: &str = "menu";
 const SWIPE: &str = "swipe";
@@ -414,7 +421,10 @@ impl Core {
     }
 
     /// The "…" beside the title: the item's actions, the ones its context menu holds; the view
-    /// switch `switch` before it, for a resource whose type offers more than one view.
+    /// switch `switch` before it, for a resource whose type offers more than one view. An item
+    /// that offers neither shows no "…": a door opening on nothing only takes a line of the
+    /// page. One that offers either keeps it at the trailing edge of the title's line, which is
+    /// made for it when the view left the title in a column of its own.
     fn put_under_title(
         &self,
         shell: usize,
@@ -422,10 +432,14 @@ impl Core {
         acted: &[Value],
         switch: Option<usize>,
     ) -> Result<(), RuntimeError> {
+        if acted.is_empty() && switch.is_none() {
+            return Ok(());
+        }
         let Some((parent, index, key)) = self.finds_title(shell, &subject.target.id_string())
         else {
             return Ok(());
         };
+        let (line, after) = self.title_line(parent, index, &key)?;
         let mut menu = empty("ui.MenuButton", &format!("{key}~more"));
         let label = self.words.borrow().word(MORE, &[], "More actions");
         menu.props.insert("label".to_owned(), Value::text(&label));
@@ -438,12 +452,43 @@ impl Core {
             let child = self.push(item)?;
             self.insert(at, usize::MAX, child)?;
         }
-        let after = index.saturating_add(1);
-        self.insert(parent, after, at)?;
+        self.insert(line, after, at)?;
         if let Some(switch) = switch {
-            self.insert(parent, after, switch)?;
+            self.insert(line, after, switch)?;
         }
         Ok(())
+    }
+
+    /// The line the title `index` of `parent` stands on, and the place beside it: `parent`
+    /// itself when it lays its children in a row, else a row made for the title, which takes its
+    /// place among `parent`'s children with the title in it. A title spans the line it is on, so
+    /// what stands beside it stands at the line's end.
+    fn title_line(
+        &self,
+        parent: usize,
+        index: usize,
+        key: &str,
+    ) -> Result<(usize, usize), RuntimeError> {
+        if self.kind(parent)? == ROW {
+            return Ok((parent, index.saturating_add(1)));
+        }
+        let title = self.arena(|view| {
+            view.nodes
+                .get(parent)
+                .and_then(|node| node.children.get(index).copied())
+                .ok_or_else(|| "unknown ui node".to_owned())
+        })?;
+        if !self.props(title)?.contains_key(FILL) {
+            self.put_prop(title, FILL, Value::Float(1.0))?;
+        }
+        let mut line = empty(ROW, &format!("{key}~line"));
+        line.props.insert(GAP.to_owned(), Value::text("related"));
+        line.props.insert(ALIGN.to_owned(), Value::text("start"));
+        let line = self.push(line)?;
+        self.insert(line, 0, title)?;
+        self.remove(parent, index)?;
+        self.insert(parent, index, line)?;
+        Ok((line, 1))
     }
 
     /// The control under `shell` that edits `subject`'s title: its parent, its place among the
@@ -562,6 +607,21 @@ impl Core {
                 .ok_or_else(|| "unknown ui node".to_owned())?;
             let index = index.min(node.children.len());
             node.children.insert(index, child);
+            Ok(())
+        })
+    }
+
+    /// Take the child at `index` out of `parent`, leaving the node in the arena for another to
+    /// hold.
+    fn remove(&self, parent: usize, index: usize) -> Result<(), RuntimeError> {
+        self.arena(|view| {
+            let node = view
+                .nodes
+                .get_mut(parent)
+                .ok_or_else(|| "unknown ui node".to_owned())?;
+            if index < node.children.len() {
+                node.children.remove(index);
+            }
             Ok(())
         })
     }
