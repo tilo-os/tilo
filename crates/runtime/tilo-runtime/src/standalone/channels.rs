@@ -71,7 +71,7 @@ pub(super) fn open(
     let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
     let keys = joined.channel_keys();
     keys.set(Some(access.clone()));
-    let pump = GovernancePump::spawn("tilo-runtime-channels", park, access, joined)?;
+    let pump = GovernancePump::spawn("tilo-runtime-channels", park, Some(access), joined, || {})?;
     Ok(Channels { keys, _pump: pump })
 }
 

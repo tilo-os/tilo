@@ -29,15 +29,14 @@
 mod vault;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::channel_encryption::{
-    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-    GovernanceTransport, InboundChannelGovernance,
+    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess, GovernancePark,
+    GovernancePump, GovernanceTransport, InboundChannelGovernance,
 };
 use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
@@ -53,7 +52,7 @@ pub(crate) use vault::MlsVault;
 /// The running channel service: this device's keys, and the thread that keeps
 /// their groups in step with the workspaces' governance. Stops when dropped.
 pub(crate) struct Channels {
-    _pump: Pump,
+    _pump: GovernancePump,
 }
 
 impl Channels {
@@ -99,13 +98,23 @@ impl Channels {
             }
         };
         let keys = engine.keys();
+        let park = link.park();
+        let poke = Arc::clone(&park);
         let access = service.map(|service| {
-            let park = Arc::clone(&link.park);
-            let access = ChannelKeyAccess::with_wake(service, Arc::new(move || park.poke()));
+            let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
             keys.set(Some(access.clone()));
             access
         });
-        let pump = spawn_pump(access, Arc::clone(engine), Arc::clone(&link), link.park())?;
+        let mut rosters = Rosters::default();
+        let settled = Arc::clone(engine);
+        let transport = Arc::clone(&link);
+        let pump = GovernancePump::spawn(
+            "tilo-channels",
+            park,
+            access,
+            Arc::clone(&link) as Arc<dyn GovernanceTransport + Send + Sync>,
+            move || rosters.sweep(&transport, &settled),
+        )?;
         // Every workspace this device already holds reads its roster: the
         // plane carries a workspace's window streams between the devices it
         // admits from the moment it runs, not only from the workspace's next
@@ -138,7 +147,7 @@ pub struct ChannelLink {
     asked: Mutex<BTreeSet<(WorkspaceId, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
     outgoing: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Outgoing>>>,
-    park: Arc<Park>,
+    park: Arc<GovernancePark>,
 }
 
 impl ChannelLink {
@@ -149,7 +158,7 @@ impl ChannelLink {
             changed: Mutex::new(BTreeSet::new()),
             asked: Mutex::new(BTreeSet::new()),
             outgoing: Mutex::new(None),
-            park: Arc::new(Park::default()),
+            park: GovernancePark::new(),
         })
     }
 
@@ -164,7 +173,7 @@ impl ChannelLink {
 
     /// Wake whatever unsettles the groups: a frame arrived, or a workspace
     /// moved.
-    pub(crate) fn park(&self) -> Arc<Park> {
+    pub(crate) fn park(&self) -> Arc<GovernancePark> {
         Arc::clone(&self.park)
     }
 
@@ -459,101 +468,6 @@ impl ChannelDirectory for Directory {
     }
 }
 
-/// Sleeps the governance pump until it is poked or its elapsed time is up.
-///
-/// A poke that arrives before the pump waits is kept, so a frame queued just
-/// before it parks is not left behind.
-#[derive(Default)]
-pub(crate) struct Park {
-    pending: Mutex<bool>,
-    ready: Condvar,
-}
-
-impl Park {
-    pub(crate) fn poke(&self) {
-        let mut pending = self.pending.lock_recover();
-        *pending = true;
-        drop(pending);
-        self.ready.notify_one();
-    }
-
-    /// Sleep until poked, for at most `timeout` when there is one, else until
-    /// poked.
-    fn wait(&self, timeout: Option<Duration>) {
-        let pending = self.pending.lock_recover();
-        let mut woken = match timeout {
-            Some(timeout) => {
-                self.ready
-                    .wait_timeout_while(pending, timeout, |pending| !*pending)
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0
-            }
-            None => self
-                .ready
-                .wait_while(pending, |pending| !*pending)
-                .unwrap_or_else(PoisonError::into_inner),
-        };
-        // The poke is spent: the pass this one waits for does what it asked
-        // for, and the next wait sleeps again. A poke that came before this
-        // line woke the wait it was for, and one that lands while the pass
-        // works is still pending for the wait after it.
-        *woken = false;
-    }
-}
-
-/// The thread settling the channels' groups; stops when dropped.
-struct Pump {
-    park: Arc<Park>,
-    stop: Arc<AtomicBool>,
-}
-
-impl Drop for Pump {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        self.park.poke();
-    }
-}
-
-/// Run `access`'s governance over `transport` on a thread of its own, and tell
-/// the plane the roster of every workspace that moved: governance runs at once
-/// whenever it is poked, then when the protocol next has work that no frame
-/// brings, and parks in between. A group re-checks its channels' access when
-/// a policy change is announced or an expiry it registered comes due, not on
-/// a clock: the watch is armed only while groups wait for that, and a device
-/// taking part in no channel sleeps through every announcement.
-fn spawn_pump(
-    access: Option<ChannelKeyAccess>,
-    engine: Arc<Engine>,
-    transport: Arc<ChannelLink>,
-    park: Arc<Park>,
-) -> std::io::Result<Pump> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stopped = Arc::clone(&stop);
-    let woken = Arc::clone(&park);
-    let wake = Arc::clone(&park);
-    std::thread::Builder::new()
-        .name("tilo-channels".into())
-        .spawn(move || {
-            let policy_watch = policy_change::Watch::new(move || wake.poke());
-            let mut rosters = Rosters::default();
-            while !stopped.load(Ordering::Relaxed) {
-                let mut due = access
-                    .as_ref()
-                    .and_then(|access| access.pump_until_due(&*transport));
-                rosters.sweep(&transport, &engine);
-                if let Some(access) = &access
-                    && !access.arm_policy_watch(&policy_watch)
-                {
-                    // A policy change arrived that the arming will not wake
-                    // for: the groups are checked again now.
-                    due = Some(Duration::ZERO);
-                }
-                woken.wait(due);
-            }
-        })?;
-    Ok(Pump { park, stop })
-}
-
 /// The devices a workspace admits, by the publisher each of their sessions
 /// is known by, and when the certificate the workspace holds of them expires
 /// (Unix nanoseconds).
@@ -715,40 +629,6 @@ mod tests {
             matches!(sent.try_recv(), Ok(Outgoing::Roster { .. })),
             "and the plane was told it"
         );
-    }
-
-    /// A poke wakes the pump once: the pass it woke for does its work, and
-    /// the pump sleeps again rather than running flat out from then on.
-    #[test]
-    fn a_poke_is_spent_by_the_pass_it_wakes() {
-        let park = std::sync::Arc::new(Park::default());
-        park.poke();
-        let started = std::time::Instant::now();
-        park.wait(Some(Duration::from_secs(30)));
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "a poke waiting before the sleep returns at once"
-        );
-        // The poke was spent: the next sleep lasts as long as it was told.
-        let started = std::time::Instant::now();
-        park.wait(Some(Duration::from_millis(60)));
-        assert!(
-            started.elapsed() >= Duration::from_millis(60),
-            "a spent poke does not wake the next pass"
-        );
-        // A poke from elsewhere wakes a pump that is asleep.
-        let woken = std::sync::Arc::clone(&park);
-        let poker = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(30));
-            woken.poke();
-        });
-        let started = std::time::Instant::now();
-        park.wait(Some(Duration::from_secs(30)));
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "a poke wakes the pass that was asleep"
-        );
-        poker.join().expect("the poker finishes");
     }
 
     fn device_cert() -> tilo_user_identity::DeviceCert {

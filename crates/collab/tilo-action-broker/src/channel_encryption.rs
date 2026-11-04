@@ -623,8 +623,11 @@ impl ChannelEncryption {
         }
     }
 
+    /// Whether an unopened channel waits for a re-check of the policy that
+    /// may name it. Without a secret store nothing opens, so a device that
+    /// holds none has nothing to re-check and parks.
     fn unopened_waits_for_policy(&self) -> bool {
-        self.unopened.values().any(|entry| entry.retry.is_none())
+        self.store.is_some() && self.unopened.values().any(|entry| entry.retry.is_none())
     }
 
     /// Observe a current key without opening a channel, requesting access or
@@ -729,19 +732,19 @@ impl ChannelEncryption {
     /// A group re-checks its access policy when the directory announces a
     /// change (`Self::waits_for_policy_change`) and at the next expiry the
     /// last re-check read, which [`Self::pump`] registers with
-    /// [`ChannelDirectory::announce_at`]; neither is a deadline here. A
-    /// directory that announces nothing keeps the re-check every
-    /// `RECONCILE_INTERVAL`, which also retries frames the transport did not
-    /// take. A waiting device is due on its request backoff.
+    /// [`ChannelDirectory::announce_at`]; neither is a deadline here. While
+    /// this device has a channel to settle, a directory that announces
+    /// nothing re-checks every `RECONCILE_INTERVAL`, and frames the
+    /// transport did not take are retried at the same cadence; that re-check
+    /// is what lets a channel this device only waits on be founded, or
+    /// opened, once the policy names it. A waiting device is due on its
+    /// request backoff.
     #[must_use]
     pub fn next_pump_deadline(&self, now: Instant) -> Option<Instant> {
-        let joined = self
-            .peers
-            .values()
-            .any(|entry| matches!(entry.peer.access(), Access::Ready { .. }));
+        let settling = !self.peers.is_empty() || self.unopened_waits_for_policy();
         let policy = if self.peers.values().any(|entry| entry.dirty) {
             Some(now)
-        } else if joined || self.unopened_waits_for_policy() {
+        } else if settling {
             let unpublished = self
                 .peers
                 .values()
@@ -1285,10 +1288,10 @@ impl ChannelKeyAccess {
         Some(operation(&mut service))
     }
 
-    /// As [`Self::new`], for a host that parks its pump while
-    /// [`Self::has_live_channels`] is false: `wake` runs whenever an
-    /// endpoint's access queues governance the next pump must send, so a
-    /// first channel is announced or requested without waiting for a timer.
+    /// As [`Self::new`], for a host that parks its pump until it is poked:
+    /// `wake` runs whenever an endpoint's access queues governance the next
+    /// pump must send, so a first channel is announced or requested without
+    /// waiting for a timer.
     pub fn with_wake(service: ChannelEncryption, wake: PumpWake) -> Self {
         Self {
             inner: Arc::new(Mutex::new(service)),
@@ -1460,17 +1463,6 @@ impl ChannelKeyAccess {
         let unchanged = service.directory.policy_epoch() == Some(service.reconcile.epoch());
         drop(service);
         unchanged
-    }
-
-    /// Whether a timer still has to pump governance. An idle device with no
-    /// channel parks the drainer until the next inbound frame. A channel
-    /// whose open failed is retried by the pump; one whose workspace's governance
-    /// is unknown yet is re-checked when the workspace's frames arrive.
-    pub fn has_live_channels(&self) -> bool {
-        self.inner.lock().is_ok_and(|service| {
-            !service.peers.is_empty()
-                || service.unopened.values().any(|entry| entry.retry.is_some())
-        })
     }
 
     /// See [`ChannelEncryption::generation`].
@@ -1943,7 +1935,6 @@ mod tests {
                 counted.fetch_add(1, Ordering::SeqCst);
             }),
         );
-        assert!(!access.has_live_channels());
         let channel = ChannelId::new();
         access.access(workspace_id, channel);
         assert_eq!(
@@ -1951,7 +1942,6 @@ mod tests {
             1,
             "a new group has a genesis to announce"
         );
-        assert!(access.has_live_channels());
         access.access(workspace_id, channel);
         assert_eq!(
             wakes.load(Ordering::SeqCst),
@@ -2411,14 +2401,13 @@ mod tests {
         let workspace_id = WorkspaceId::new();
         let channel = ChannelId::new();
         let dir = tempfile::tempdir().unwrap();
-        let mut member = device(
-            &workspace,
-            workspace_id,
-            1,
-            2,
-            &Policy::readers([1, 2]),
-            dir.path(),
-        );
+        // The directory announces its policy changes, so nothing but the
+        // request backoff is ever due here.
+        let policy = Policy::readers([1, 2]);
+        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
+            std::sync::atomic::AtomicU64::new(1),
+        )));
+        let mut member = device(&workspace, workspace_id, 1, 2, &policy, dir.path());
         // The channel's group exists: this device saw its genesis, so it
         // waits to be admitted instead of founding one of its own.
         member.service.groups_seen.insert(channel);
@@ -2469,11 +2458,15 @@ mod tests {
             // The pass that took the request in has run: nothing is owed.
             entry.dirty = false;
         }
+        // The pass that took the request in: it answers, and settles nothing
+        // of its own.
+        member.service.pump(&member.endpoint, now, 1_000);
         member.service.queued = false;
         assert_eq!(
             member.service.next_pump_deadline(now),
-            None,
-            "a pass that answered only another member's request is left nothing to do"
+            Some(now.checked_add(RECONCILE_INTERVAL).unwrap()),
+            "a pass that answered only another member's request has no work of its own, only the \
+             re-check of a channel whose directory announces nothing"
         );
         let woke = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = Arc::clone(&woke);

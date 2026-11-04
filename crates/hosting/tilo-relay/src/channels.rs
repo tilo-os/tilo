@@ -87,8 +87,9 @@ impl Channels {
         let pump = GovernancePump::spawn(
             "tilo-relay-channels",
             park,
-            access,
+            Some(access),
             Arc::clone(&link) as Arc<dyn GovernanceTransport + Send + Sync>,
+            || {},
         )?;
         Ok(Self {
             device: Arc::new(Keys(keys)),
