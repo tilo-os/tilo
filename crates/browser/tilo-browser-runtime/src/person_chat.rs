@@ -24,28 +24,23 @@ const MAX_CONTACTS: usize = 2000;
 /// the workspace's private door serves a page in.
 const PAGE: u16 = 100;
 
-/// The workspace `workspace` this page's peer `handle` is in, replicating as
-/// page `page`, whose person is `me` (their root public key, hex), as its door
-/// to their direct conversations.
+/// The workspace `workspace` this page's peer `handle` is in, as its door to
+/// its person's direct conversations.
 #[derive(Clone)]
 struct PagePrivate {
     handle: PeerHandle,
     workspace: String,
-    page: u32,
-    me: String,
 }
 
 /// The page's door while it is in a workspace: what [`ask_private`] asks.
 static DOOR: std::sync::RwLock<Option<PagePrivate>> = std::sync::RwLock::new(None);
 
 /// Make the workspace `workspace`, through `handle`, the page's door to its
-/// person `me`'s direct conversations.
-pub(crate) fn install(handle: PeerHandle, workspace: &str, page: u32, me: &str) {
+/// person's direct conversations.
+pub(crate) fn install(handle: PeerHandle, workspace: &str) {
     let door = PagePrivate {
         handle,
         workspace: workspace.to_owned(),
-        page,
-        me: me.to_owned(),
     };
     set_door(Some(door.clone()));
     ui::person_chat::install_transport(Some(std::sync::Arc::new(door)));

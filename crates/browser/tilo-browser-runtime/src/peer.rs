@@ -1880,12 +1880,7 @@ impl WasmPeer {
             // The workspace the page replicates is the one its person talks in
             // privately; a page that only watches has no conversations.
             if !self.handle.watching() && crate::page_person::speaks(self.id) {
-                crate::person_chat::install(
-                    self.handle.clone(),
-                    workspace,
-                    self.id,
-                    &hex::encode(self.reporter_cert.user_public_key),
-                );
+                crate::person_chat::install(self.handle.clone(), workspace);
                 if let Some(identity) = ui::local_identity::load() {
                     set_member_name(&self.handle, workspace, &identity.display_name);
                 }
