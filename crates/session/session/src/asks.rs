@@ -64,6 +64,10 @@ impl Shared {
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
                 DesktopAsk::Music(action) => self.music(action),
+                // A card of Alt+Tab's panel under the pointer, a press on
+                // one, or a press away from the panel: the desk's own verbs,
+                // as the keys ask for them.
+                DesktopAsk::Switcher(action) => self.switcher_ask(action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
                 // A window that stopped answering offers to keep waiting for
                 // its app or to quit it: the same two choices the desk's own
@@ -102,6 +106,30 @@ impl Shared {
         }
         // What the session's own actions asked of it.
         self.follow_asks();
+    }
+
+    /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,
+    /// a press on one goes there and closes the walk, and a press away from
+    /// the panel leaves the person where they were.
+    fn switcher_ask(&self, ask: tilo_desktop::window_switcher::SwitcherAsk) {
+        use tilo_desktop::window_switcher::SwitcherAsk;
+        // The walk is the session desk's, as the keys reach it: the panel's
+        // presses ask for the same verbs.
+        use tilo_surface_host::shell_part::DESK_RESOURCE as SESSION_DESK;
+        let select = |at: usize| {
+            let at = i64::try_from(at).unwrap_or(i64::MAX);
+            Invocation::new(SESSION_DESK, "select-switcher").with("at", at)
+        };
+        let mut invocations = self.invocations.borrow_mut();
+        match ask {
+            SwitcherAsk::Hover(at) => invocations.push(select(at)),
+            SwitcherAsk::Choose(at) => {
+                invocations.push(select(at));
+                invocations.push(Invocation::new(SESSION_DESK, "commit-switcher"));
+            }
+            SwitcherAsk::Dismiss => invocations
+                .push(Invocation::new(SESSION_DESK, "close-surface").with("surface", "switcher")),
+        }
     }
 
     /// Hand a click on the tray icon at `key` to the application that owns

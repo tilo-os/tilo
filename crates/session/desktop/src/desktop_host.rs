@@ -35,7 +35,7 @@ use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget
 use ui::{TextRenderer, Theme};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::{ChromeIntent, TopBarPresence};
@@ -54,7 +54,7 @@ use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer
 use crate::strip_switcher::Command as StripCommand;
 use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
-use crate::window_switcher::WindowSource;
+use crate::window_switcher::{Switcher, SwitcherAsk, WindowSource};
 use crate::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
@@ -139,6 +139,9 @@ pub enum DesktopAsk {
     WaitWindow(TabId),
     /// The person chose Force quit on such a window: the host ends its app.
     ForceQuitApp(TabId),
+    /// The pointer on the switcher's panel: which card it stands over, and
+    /// whether it pressed it.
+    Switcher(SwitcherAsk),
 }
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's
@@ -778,6 +781,8 @@ pub struct DesktopChrome {
     /// one surface here that must cover a window in front, so the chrome
     /// draws it rather than the desk under them.
     search: SearchOverlay,
+    /// Alt+Tab's panel, as the desk's walk last said what it shows.
+    switcher: Switcher,
 }
 
 /// The overlays the chrome paints itself, as opposed to the retained widgets
@@ -795,16 +800,19 @@ enum PaintedOverlay {
     Identify,
     /// The search palette.
     Search,
+    /// Alt+Tab's panel of windows.
+    Switcher,
 }
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::StripLabels,
         Self::Emoji,
         Self::Hint,
         Self::Identify,
         Self::Search,
+        Self::Switcher,
     ];
 
     /// The key its node keeps in the chrome's tree, so the id survives the
@@ -816,6 +824,7 @@ impl PaintedOverlay {
             Self::Hint => "chrome-fullscreen-way-out",
             Self::Identify => "chrome-display-identify",
             Self::Search => "chrome-search-palette",
+            Self::Switcher => "chrome-window-switcher",
         })
     }
 
@@ -827,6 +836,7 @@ impl PaintedOverlay {
             Self::Hint => chrome.fullscreen_hint.is_up(ui::time::now()),
             Self::Identify => chrome.identify.is_up(ui::time::now()),
             Self::Search => chrome.search.is_open(),
+            Self::Switcher => chrome.switcher.is_up(),
         }
     }
 }
@@ -882,7 +892,14 @@ impl DesktopChrome {
             identify_displays: Vec::new(),
             answered: None,
             search,
+            switcher: Switcher::default(),
         }
+    }
+
+    /// Follow the desk's walk with `switcher`: what Alt+Tab's panel shows, and
+    /// the windows whose pictures stand in its wells.
+    pub fn set_switcher(&mut self, switcher: Switcher) {
+        self.switcher = switcher;
     }
 
     /// Follow the bars' reveal with `reveals`, which the desk's band reads
@@ -1025,6 +1042,7 @@ impl DesktopChrome {
             PaintedOverlay::Hint => self.fullscreen_hint.accessibility(ui::time::now()),
             PaintedOverlay::Identify => self.identify.accessibility(ui::time::now()),
             PaintedOverlay::Search => self.search.accessibility(),
+            PaintedOverlay::Switcher => self.switcher.accessibility(),
         }
     }
 
@@ -1063,6 +1081,54 @@ impl DesktopChrome {
                     display.y + display.height,
                 )
             })
+    }
+
+    /// While Alt+Tab's panel is up it is what a press reaches: the pointer
+    /// chooses a card on sight, a press on one goes to it, and a press off the
+    /// panel ends the walk instead of reaching the window behind it.
+    fn walk_the_pointer(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.switcher_event(event);
+        *ctx.handled = true;
+        self.publish_overlays();
+    }
+
+    /// What the pointer does to the walk while the switcher's panel is up: the
+    /// card under it is chosen on sight, a press on one goes to it, and a press
+    /// off the panel ends the walk where it stood.
+    fn switcher_event(&self, event: &WindowEvent) {
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                let card = self.cursor.and_then(|cursor| self.switcher.card_at(cursor));
+                if card == self.switcher.hover() {
+                    return;
+                }
+                self.switcher.set_hover(card);
+                if let Some(at) = card {
+                    self.asks
+                        .borrow_mut()
+                        .push(DesktopAsk::Switcher(SwitcherAsk::Hover(at)));
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let ask = match self.cursor {
+                    Some(cursor) => match self.switcher.card_at(cursor) {
+                        Some(at) => Some(SwitcherAsk::Choose(at)),
+                        // The panel's own surface is no choice, and no press on the desk either.
+                        None if self.switcher.on_panel(cursor) => None,
+                        None => Some(SwitcherAsk::Dismiss),
+                    },
+                    None => Some(SwitcherAsk::Dismiss),
+                };
+                if let Some(ask) = ask {
+                    self.asks.borrow_mut().push(DesktopAsk::Switcher(ask));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Close the emoji picker without inserting anything.
@@ -1934,6 +2000,7 @@ impl DesktopChrome {
             || self.navigator.needs_animation_frame(ui::time::now())
             || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.identify.needs_redraw(ui::time::now())
+            || self.switcher.needs_redraw()
             || self
                 .children()
                 .iter()
@@ -2377,6 +2444,7 @@ impl Widget for DesktopChrome {
         }
         changed |= self.emoji.needs_redraw() || self.emoji.needs_animation_frame();
         changed |= self.search.update(state, path);
+        changed |= self.switcher.needs_redraw();
         self.observe_navigation();
         self.publish_overlays();
         if let Some(open) = &self.overview_open {
@@ -2513,6 +2581,10 @@ impl Widget for DesktopChrome {
         // Topmost: the search palette dims what it stands over, a window in
         // front included, and the card over it.
         self.search.draw(scene, transform, text, theme, presence);
+        // Above even search: Alt+Tab's panel, which is the walk the person is
+        // in the middle of and the only thing a press reaches while it is up.
+        let host = self.working_display().unwrap_or(self.rect);
+        self.switcher.draw(scene, transform, text, theme, host);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -2536,6 +2608,9 @@ impl Widget for DesktopChrome {
             ));
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
+        }
+        if self.switcher.is_up() {
+            return self.walk_the_pointer(event, ctx);
         }
         // The search palette stands over everything, a window in front
         // included: while it is up, every key and press is its, and its own

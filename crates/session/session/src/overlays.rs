@@ -179,7 +179,6 @@ impl Overlays {
     /// walk again, in that scope, from the window in front.
     pub fn walk(&self, scope: Option<&str>, steps: i64) {
         let scope = scope.and_then(SwitcherScope::named).unwrap_or_default();
-        let steps = if steps == 0 { 1 } else { steps };
         let walking = self.here.get() == Overlay::Switcher && self.scope.get() == scope;
         self.here.set(Overlay::Switcher);
         self.scope.set(scope);
@@ -219,6 +218,25 @@ impl Overlays {
             .flatten()
     }
 
+    /// Whether the switcher's walk is up: Alt went down with Tab and has not come up since. Its
+    /// panel need not show yet (see [`Self::revealed`]): a quick flick walks and commits with
+    /// nothing drawn, and what holds the keyboard until Alt comes up.
+    #[must_use]
+    pub fn is_up(&self) -> bool {
+        self.here.get() == Overlay::Switcher
+    }
+
+    /// Choose the window `at` windows past the one in front, in the scope the walk is crossing:
+    /// Home, End and a card under the pointer choose by place instead of crossing the windows
+    /// one at a time. It goes to the window at once, as a press on its card does.
+    pub fn select(&self, at: i64) {
+        if self.here.get() != Overlay::Switcher {
+            return;
+        }
+        self.walk.set(at);
+        self.revision.set(self.revision.get().wrapping_add(1));
+    }
+
     /// How far the walk stands from the window in front. The reading turns it into the one
     /// window the switcher has reached, of `count`.
     #[must_use]
@@ -227,10 +245,10 @@ impl Overlays {
     }
 
     /// Where the walk has reached of `count` windows, `front` being the window in front's
-    /// place among them: `None` when the walk is not up (`walked() == 0`).
+    /// place among them: `None` while the switcher is not up.
     #[must_use]
     pub fn reached(&self, count: usize, front: Option<usize>) -> Option<usize> {
-        if self.walk.get() == 0 || count == 0 || self.here.get() != Overlay::Switcher {
+        if count == 0 || !self.is_up() {
             return None;
         }
         let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
@@ -377,5 +395,32 @@ mod tests {
             0,
             "stepping back past it walks to the window in front"
         );
+        assert_eq!(
+            surfaces.reached(3, Some(1)),
+            Some(1),
+            "the window in front is a window the walk can rest on, as Shift+Tab reaches it"
+        );
+    }
+
+    #[test]
+    fn choosing_by_place_reaches_that_window_and_a_surface_down_is_no_walk() {
+        let surfaces = Overlays::new();
+        surfaces.select(2);
+        assert_eq!(
+            surfaces.reached(4, Some(1)),
+            None,
+            "nothing walks while the switcher is down"
+        );
+        surfaces.walk(Some("app"), 1);
+        surfaces.select(2);
+        assert_eq!(surfaces.reached(4, Some(1)), Some(3));
+        surfaces.select(0);
+        assert_eq!(
+            surfaces.reached(4, Some(1)),
+            Some(1),
+            "and choosing the first of them puts the walk back on the window in front"
+        );
+        surfaces.show(Overlay::Rest);
+        assert!(!surfaces.is_up());
     }
 }

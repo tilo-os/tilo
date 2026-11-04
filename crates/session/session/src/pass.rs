@@ -155,6 +155,7 @@ impl Session {
         self.shared.open_notifications();
         self.settle()?;
         self.follow_bars();
+        self.shared.follow_switcher(self.compositor.locked());
         self.follow_shell()?;
         self.follow_slot_views()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
@@ -303,6 +304,9 @@ impl Session {
                 .and_then(|sync| sync.next_deadline()),
             self.shared.activity.next_deadline(),
             self.surfaces.next_deadline(),
+            // Alt+Tab's panel comes up while Alt stays held: the one instant it is due at, so
+            // nothing draws before it.
+            self.shared.desk_overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
             self.shared.waking.next_deadline(),
             self.capture_studio

@@ -927,6 +927,12 @@ impl State {
                 };
                 if !pressed {
                     if let Some(host) = state.host_keys.release(keycode) {
+                        // A held modifier's release also reaches what else answers it: a
+                        // surface that opened while it was down (a switcher), whose press
+                        // went to the window it now stands over.
+                        if crate::sticky_keys::is_modifier(keycode) {
+                            state.release_beside(&key, host);
+                        }
                         return FilterResult::Intercept((host, key));
                     }
                     // A key no surface took the press of, let go: a surface that takes it now
@@ -976,6 +982,33 @@ impl State {
                     self.note_input_on(&focus);
                 }
             }
+        }
+    }
+
+    /// A released modifier reaches the hosted surfaces that answer it besides
+    /// the one that had its press: what opened while it was held hears it let
+    /// go. A client holding the desktop's shortcuts has its releases too.
+    fn release_beside(&mut self, key: &HostKey, recorded: usize) {
+        if self.seat_keys_only || self.shortcut_inhibit.is_active() {
+            return;
+        }
+        let locked = self.locked();
+        let composing = self.composing();
+        for index in (0..self.hosts.len()).rev() {
+            if index == recorded || composing == Some(index) {
+                continue;
+            }
+            let claim = self
+                .hosts
+                .get_mut(index)
+                .map_or(KeyClaim::Pass, |host| host.claim_key(key, locked, false));
+            if claim == KeyClaim::Pass {
+                continue;
+            }
+            if let Some(host) = self.hosts.get_mut(index) {
+                host.key(key);
+            }
+            return;
         }
     }
 

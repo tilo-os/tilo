@@ -561,6 +561,7 @@ pub(crate) fn host(
     overview: &crate::mount::overview::Overview,
     emoji: &tilo_desktop::emoji_picker::EmojiLink,
     overlays: &Overlays,
+    switcher: &tilo_desktop::window_switcher::Switcher,
 ) -> WidgetHost {
     let ChromeWiring {
         intents,
@@ -599,6 +600,7 @@ pub(crate) fn host(
     chrome.set_overview(overview.flight(), overview.open_flag());
     chrome.set_emoji(emoji.clone());
     chrome.set_overlays(overlays.clone());
+    chrome.set_switcher(switcher.clone());
     chrome.set_reveals(reveals);
     chrome.set_shortcuts(options.config.shortcuts.clone());
     // Keys come to the chrome while one of the surfaces it draws holds the
@@ -613,10 +615,32 @@ pub(crate) fn host(
     };
     let mut host = WidgetHost::new(Box::new(chrome), placement, false).named("Top bar");
     host.set_theme((options.presentation)().theme);
+    // What the compositor draws over the chrome: the overview's flying windows,
+    // and the ones the switcher's panel shows in its cards.
     let pictures = overview.clone();
-    host.with_window_pictures(Rc::new(move || pictures.pictures()))
-        .covering_outputs()
-        .with_keyboard(keyboard)
+    let walking = switcher.clone();
+    host.with_window_pictures(Rc::new(move || {
+        let mut shown = pictures.pictures();
+        shown.extend(walking.pictures().into_iter().map(|picture| {
+            let (x, y, width, height) = (
+                picture.rect.x0,
+                picture.rect.y0,
+                picture.rect.width(),
+                picture.rect.height(),
+            );
+            tilo_compositor::WindowPicture {
+                window: picture.window,
+                rect: (x, y, width, height),
+                opacity: 1.0,
+                // A picture stays in its well: paging the cards never spills a
+                // window over the panel's edge.
+                clip: Some((x, y, width, height)),
+            }
+        }));
+        shown
+    }))
+    .covering_outputs()
+    .with_keyboard(keyboard)
 }
 
 impl crate::Shared {

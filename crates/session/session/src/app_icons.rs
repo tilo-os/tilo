@@ -81,7 +81,7 @@ impl AppImageSource for Artwork {
 /// that window, whether it handed over pixels or named a theme icon. Keyed by
 /// the window and the icon's serial, so a program that sets another icon is
 /// new artwork and the same one is not painted again.
-pub(crate) fn window(window: u64, icon: &tilo_compositor::WindowIcon) -> AppImage {
+pub(crate) fn window_art(window: u64, icon: &tilo_compositor::WindowIcon) -> AppImage {
     let layers = match icon.artwork() {
         tilo_compositor::IconArtwork::Named(name) => vec![Layer::Named(name.clone())],
         tilo_compositor::IconArtwork::Pixels(images) => {
@@ -105,6 +105,34 @@ pub(crate) fn window(window: u64, icon: &tilo_compositor::WindowIcon) -> AppImag
         key: format!("window:{window}:{}", icon.serial()),
         layers,
     })
+}
+
+impl crate::Session {
+    /// Hand the desk each window's own icon, which it paints on the window's
+    /// tab and in the switcher, and let go of the icons of windows that
+    /// closed or set none.
+    pub(crate) fn feed_window_artwork(&mut self) {
+        let mut shown = BTreeMap::new();
+        for (window, _) in self.compositor.windows() {
+            let Some(icon) = window.icon.as_ref() else {
+                continue;
+            };
+            let serial = icon.serial();
+            shown.insert(window.id, serial);
+            if self.window_artwork.get(&window.id) == Some(&serial) {
+                continue;
+            }
+            self.shared
+                .handle
+                .set_window_artwork(window.id, Some(window_art(window.id, icon)));
+        }
+        for (gone, _) in std::mem::take(&mut self.window_artwork) {
+            if !shown.contains_key(&gone) {
+                self.shared.handle.set_window_artwork(gone, None);
+            }
+        }
+        self.window_artwork = shown;
+    }
 }
 
 /// The pixels that fill `device_px`: the smallest offer at least that big, so

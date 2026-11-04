@@ -1,29 +1,26 @@
-//! Alt+Tab: the window switcher.
+//! Alt+Tab: the window switcher's panel.
 //!
-//! Holding Alt and pressing Tab walks the current workspace's windows in the
-//! order they were last used, and releasing Alt goes to the chosen one. A
-//! quick Alt+Tab never shows anything and lands on the previous window; only
-//! a held Alt, past [`REVEAL_DELAY`], raises the switcher with each window's
-//! app mark and title. Alt+Grave (the key above Tab) walks only the focused app's windows.
+//! Holding Alt and pressing Tab walks the workspace's windows in the order
+//! they were last used, and letting Alt go goes to the chosen one: the walk
+//! itself is the desk's (the session's overlays), which knows the windows and
+//! their order. This module is the panel that walk draws: which card it lifts,
+//! where the cards stand, and what the panel says to a screen reader.
 //!
-//! A "window" is a tab, as it is for every other window traversal in the
-//! shell: groups are frames around windows, not windows themselves.
+//! A "window" is a tab, as it is for every other window traversal on the desk:
+//! groups are frames around windows, not windows themselves.
 //!
-//! This module owns the recency history, the open session, its geometry,
-//! painting and semantic tree. The host routes input here and focuses
-//! whatever a session commits to. What only the host knows (an app's own
-//! artwork, which windows may be pictured, the pictures themselves) comes
-//! through [`WindowSource`] and [`WindowThumbnails`].
+//! The chrome draws the panel and the desk's reading places the cards; the
+//! windows' own pixels stay the compositor's. Each card names the window it
+//! stands for, and the compositor draws that window's latest buffer over the
+//! card's well, in the same frame ([`Switcher::pictures`]).
 
-use std::collections::HashMap;
-use tilo_sort::CompactSort as _;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use ui::num::f32_of_f64;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::i18n::ArgValue;
@@ -31,10 +28,9 @@ use ui::icons::{AppImage, Icon};
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
 use ui::widget::AppKind as UiAppKind;
 
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent, WorkspaceSlot};
+use tilo_desktop_model::{GroupId, StripId, TileContent};
 
 use crate::i18n::{t, t_args};
 use ui::TextRole;
@@ -59,34 +55,6 @@ impl PreviewSource {
     /// Whether this source can produce pixels at all.
     pub fn renderable(&self) -> bool {
         matches!(self, Self::Client { .. } | Self::Painted { .. })
-    }
-}
-
-/// One window the host should picture.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreviewRequest {
-    pub tab: u64,
-    pub source: PreviewSource,
-}
-
-/// What a card can show for a window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PreviewState {
-    /// A live picture is ready.
-    Live,
-    /// The app holds secrets; its mark stands in.
-    Withheld,
-    /// No picture (yet); its mark stands in.
-    None,
-}
-
-impl PreviewState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Live => "live",
-            Self::Withheld => "withheld",
-            Self::None => "none",
-        }
     }
 }
 
@@ -121,53 +89,6 @@ pub trait WindowSource {
 pub struct PlainWindows;
 
 impl WindowSource for PlainWindows {}
-
-/// The host's live window pictures. A host draws each window straight
-/// from what it already holds (a client's current buffer, a window it
-/// paints itself), so a picture is there in the very frame that asks.
-pub trait WindowThumbnails {
-    /// A picture of `window` is on hand now.
-    fn has(&self, window: &SwitcherWindow) -> bool;
-
-    /// Paint the picture of `window` fitted inside `rect`, keeping its
-    /// shape. Returns the rect it covers, or `None` when there is none.
-    fn paint(
-        &mut self,
-        window: &SwitcherWindow,
-        scene: &mut Scene,
-        transform: Affine,
-        rect: Rect,
-        theme: &Theme,
-    ) -> Option<Rect>;
-}
-
-/// A host with no pictures: every card shows its app mark.
-pub struct NoThumbnails;
-
-impl WindowThumbnails for NoThumbnails {
-    fn has(&self, _window: &SwitcherWindow) -> bool {
-        false
-    }
-
-    fn paint(
-        &mut self,
-        _window: &SwitcherWindow,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _rect: Rect,
-        _theme: &Theme,
-    ) -> Option<Rect> {
-        None
-    }
-}
-
-/// How long Alt has to stay down after Tab before the switcher appears.
-/// Shorter than a deliberate look, longer than a practised Alt+Tab, so the
-/// common "back to the last window" flick never flashes a panel.
-pub const REVEAL_DELAY: Duration = Duration::from_millis(120);
-
-/// Tabs remembered per workspace. Recency beyond this is noise.
-const HISTORY_LIMIT: usize = 256;
 
 /// Where a window lives, which is everything focusing it needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +137,19 @@ impl WindowApp {
             }
         }
     }
+
+    /// A window as the desk's reading names it: the app it shows, and the symbol that app wears
+    /// where a window has no picture.
+    #[must_use]
+    pub fn named(app_key: &str) -> Self {
+        let glyph = ui::icons::app_glyph(app_key, None);
+        Self {
+            key: app_key.to_owned(),
+            kind: UiAppKind::App(glyph),
+            icon: None,
+            glyph,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,206 +161,37 @@ pub struct SwitcherWindow {
     pub preview: PreviewSource,
 }
 
-/// Which windows a session walks.
+/// One card of the panel: a window, the name over it, and the app whose face
+/// stands in its well until the compositor draws the window there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitcherCard {
+    /// The compositor's window, when its live picture stands in the well.
+    pub window: Option<u64>,
+    pub title: String,
+    /// The app the window shows, as the desk's reading names it.
+    pub app_key: String,
+}
+
+/// What the panel shows: the windows the walk crosses, in its order, the one
+/// it has reached, and whether it crosses the app in front's windows alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SwitcherView {
+    pub cards: Vec<SwitcherCard>,
+    /// Which card the walk reached, an index into `cards`.
+    pub selected: usize,
+    /// The walk crosses the front app's windows (Alt+Grave) rather than the workspace's.
+    pub app_scope: bool,
+}
+
+/// What the pointer asks of the walk while the switcher's panel is up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SwitcherScope {
-    /// Every window in the workspace (Alt+Tab).
-    Workspace,
-    /// The focused window's application only (Alt+Grave).
-    FocusedApp,
-}
-
-impl SwitcherScope {
-    /// The switcher chord `key` presses with `mods` held, if any: Alt+Tab
-    /// walks the workspace, Alt with the key above Tab the focused app.
-    pub fn for_chord(key: &Key, mods: ModifiersState) -> Option<Self> {
-        if !mods.alt_key() {
-            return None;
-        }
-        match key {
-            Key::Named(NamedKey::Tab) => Some(Self::Workspace),
-            key if is_grave(key) && !mods.control_key() && !mods.super_key() => {
-                Some(Self::FocusedApp)
-            }
-            _ => None,
-        }
-    }
-}
-
-/// What the host must do after the switcher saw an input.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SwitcherOutcome {
-    /// Not the switcher's: route it on.
-    Ignored,
-    /// Taken; the session is still open.
-    Consumed,
-    /// The session ended on this window: focus it.
-    Commit(WindowAddress),
-    /// The session ended without a change.
-    Cancelled,
-}
-
-/// Every window of the active workspace, in tree order, with the focused one.
-fn workspace_windows(
-    desktop: &DesktopTree,
-    source: &dyn WindowSource,
-) -> (Vec<SwitcherWindow>, Option<usize>) {
-    let Some(workspace) = desktop.active_workspace() else {
-        return (Vec::new(), None);
-    };
-    let active_strip = desktop
-        .active_strip
-        .get(&workspace.slot)
-        .copied()
-        .or_else(|| workspace.strips.first().map(|strip| strip.id));
-    let mut windows = Vec::new();
-    let mut current = None;
-    for strip in &workspace.strips {
-        let active_group = desktop
-            .active_group_for(strip.id)
-            .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
-            .or_else(|| strip.window_groups.first().map(|group| group.id));
-        for group in &strip.window_groups {
-            for tab in &group.tabs {
-                if Some(strip.id) == active_strip
-                    && Some(group.id) == active_group
-                    && tab.id == group.active_tab
-                {
-                    current = Some(windows.len());
-                }
-                let title = if tab.title.trim().is_empty() {
-                    t("window-switcher-untitled")
-                } else {
-                    tab.title.clone()
-                };
-                windows.push(SwitcherWindow {
-                    address: WindowAddress {
-                        strip: strip.id,
-                        group: group.id,
-                        tab: tab.id,
-                    },
-                    title,
-                    app: WindowApp::of(&tab.tile, source),
-                    preview: source.preview_source(
-                        &tab.tile,
-                        group.id,
-                        tab.id,
-                        tab.id == group.active_tab,
-                    ),
-                });
-            }
-        }
-    }
-    (windows, current)
-}
-
-/// The focused tab of the active workspace, cheaply: no titles or icons.
-fn focused_tab(desktop: &DesktopTree) -> Option<(WorkspaceSlot, u64)> {
-    let workspace = desktop.active_workspace()?;
-    let strip = desktop
-        .active_strip
-        .get(&workspace.slot)
-        .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
-        .or_else(|| workspace.strips.first())?;
-    let group = desktop
-        .active_group_for(strip.id)
-        .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
-        .or_else(|| strip.window_groups.first())?;
-    group
-        .tabs
-        .iter()
-        .any(|tab| tab.id == group.active_tab)
-        .then_some((workspace.slot, group.active_tab))
-}
-
-/// Which windows were focused most recently, per workspace. Each workspace
-/// is its own workspace with its own windows, so its recency is its own too.
-#[derive(Default)]
-pub struct FocusHistory {
-    recent: HashMap<WorkspaceSlot, Vec<u64>>,
-}
-
-impl FocusHistory {
-    /// Record the focused window as the most recent in its workspace.
-    pub fn observe(&mut self, tree: &DesktopTree) {
-        let Some((workspace, tab)) = focused_tab(tree) else {
-            return;
-        };
-        let recent = self.recent.entry(workspace).or_default();
-        if recent.first() == Some(&tab) {
-            return;
-        }
-        recent.retain(|id| *id != tab);
-        recent.insert(0, tab);
-        recent.truncate(HISTORY_LIMIT);
-        if self.recent.len() > tree.workspaces.len() {
-            self.recent
-                .retain(|id, _| tree.workspaces.iter().any(|ws| ws.slot == *id));
-        }
-    }
-
-    /// The active workspace's windows (tabs) by when they were last focused,
-    /// most recent first; windows never focused are not listed.
-    pub fn recent_tabs(&self, tree: &DesktopTree) -> Vec<u64> {
-        tree.active_workspace()
-            .and_then(|ws| self.recent.get(&ws.slot))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// The active workspace's windows, focused one first, then by recency.
-    /// Windows never focused follow in strip order from the focused one, so
-    /// on a fresh desktop Alt+Tab steps to the next window along the strip.
-    pub fn ordered_windows(
-        &self,
-        tree: &DesktopTree,
-        source: &dyn WindowSource,
-    ) -> Vec<SwitcherWindow> {
-        let (windows, current) = workspace_windows(tree, source);
-        let count = windows.len();
-        let start = current.unwrap_or(0);
-        let mut rank: HashMap<u64, usize> = HashMap::new();
-        if let Some(recent) = tree
-            .active_workspace()
-            .and_then(|ws| self.recent.get(&ws.slot))
-        {
-            for (index, tab) in recent.iter().enumerate() {
-                rank.entry(*tab).or_insert(index);
-            }
-        }
-        let current_tab = current
-            .and_then(|index| windows.get(index))
-            .map(|window| window.address.tab);
-        let mut keyed: Vec<(usize, usize, SwitcherWindow)> = windows
-            .into_iter()
-            .enumerate()
-            .map(|(index, window)| {
-                let tier = if Some(window.address.tab) == current_tab {
-                    0
-                } else if let Some(rank) = rank.get(&window.address.tab) {
-                    rank.saturating_add(1)
-                } else {
-                    HISTORY_LIMIT.saturating_add(1)
-                };
-                let along_strip = index
-                    .saturating_add(count)
-                    .saturating_sub(start)
-                    .checked_rem(count)
-                    .unwrap_or(0);
-                (tier, along_strip, window)
-            })
-            .collect();
-        keyed.compact_sort_by_key(|(tier, along, _)| (*tier, *along));
-        keyed.into_iter().map(|(_, _, window)| window).collect()
-    }
-}
-
-struct Session {
-    workspace: WorkspaceSlot,
-    scope: SwitcherScope,
-    windows: Vec<SwitcherWindow>,
-    selected: usize,
-    opened: Instant,
+pub enum SwitcherAsk {
+    /// The pointer stands over this card: the walk goes there.
+    Hover(usize),
+    /// A press on this card: the walk goes there, and goes to it.
+    Choose(usize),
+    /// A press off the panel, which is no press on anything behind it: the walk ends where it is.
+    Dismiss,
 }
 
 /// Sizes of the panel, all read off the theme's tokens.
@@ -475,9 +240,7 @@ impl Metrics {
             caption_h: line(TextRole::Subheading) + f64::from(spacing.s3),
         }
     }
-}
 
-impl Metrics {
     /// These metrics fitted to `host` with `caption_h` reserved under the
     /// cards: unchanged when one card fits inside the margins, otherwise
     /// the outer margin falls to the card inset and the preview well
@@ -510,11 +273,11 @@ impl Metrics {
     }
 }
 
-/// Where everything of an open switcher sits.
+/// Where everything of the panel sits.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Geometry {
     panel: Rect,
-    /// `(window index, card)` for the page on screen.
+    /// `(card index, card)` for the page on screen.
     cards: Vec<(usize, Rect)>,
     /// The page position line under the cards; zero when every window is
     /// on screen and there is nothing to add to the cards.
@@ -622,594 +385,234 @@ fn geometry_with(
     }
 }
 
-/// The Alt+Tab switcher: recency history plus at most one open session.
-pub struct WindowSwitcher {
-    history: FocusHistory,
-    session: Option<Session>,
-    host_rect: Rect,
-    metrics: Metrics,
-    hover: Option<usize>,
-    /// Geometry changed since the last visible frame; old pixels are inert.
-    pointer_dirty: bool,
+/// Alt+Tab's panel: what it shows, where it stands, and the windows whose
+/// pictures stand in its wells.
+///
+/// The desk owns the walk; this is one panel's worth of it, shared by the
+/// session (which sets it), the chrome (which draws it) and the compositor
+/// (which pictures the windows it names).
+#[derive(Clone)]
+pub struct Switcher {
+    inner: Rc<Inner>,
 }
 
-impl Default for WindowSwitcher {
+struct Inner {
+    view: RefCell<Option<SwitcherView>>,
+    /// Moves whenever what the panel shows moves.
+    revision: Cell<u64>,
+    /// The revision last drawn: anything else owes a frame.
+    drawn: Cell<u64>,
+    /// Where the panel and its cards stood at the last draw, in the chrome's
+    /// coordinates: the wells the compositor pictures windows in.
+    geometry: RefCell<Geometry>,
+    /// The card the pointer stands over.
+    hover: Cell<Option<usize>>,
+}
+
+impl Default for Switcher {
     fn default() -> Self {
         Self {
-            history: FocusHistory::default(),
-            session: None,
-            host_rect: Rect::ZERO,
-            metrics: Metrics::from_tokens(&Theme::dark().tokens),
-            hover: None,
-            pointer_dirty: false,
+            inner: Rc::new(Inner {
+                view: RefCell::new(None),
+                revision: Cell::new(0),
+                drawn: Cell::new(0),
+                geometry: RefCell::new(Geometry::default()),
+                hover: Cell::new(None),
+            }),
         }
     }
 }
 
-fn is_grave(key: &Key) -> bool {
-    matches!(key, Key::Character(text) if matches!(text.as_str(), "`" | "~"))
-}
-
-impl WindowSwitcher {
-    /// Note which window has focus now, so recency stays true whichever
-    /// path moved it (click, keyboard, search, an app).
-    pub fn observe(&mut self, tree: &DesktopTree) {
-        self.history.observe(tree);
-        self.reconcile_session(tree);
-    }
-
-    /// Keep the opening order, but never arm an address that disappeared or moved.
-    fn reconcile_session(&mut self, tree: &DesktopTree) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        if session.workspace != tree.active {
-            self.cancel();
-            return;
-        }
-        let Some(workspace) = tree.active_workspace() else {
-            self.cancel();
-            return;
-        };
-        let selected = session.windows.get(session.selected).map(|w| w.address.tab);
-        let hovered = self
-            .hover
-            .and_then(|i| session.windows.get(i))
-            .map(|w| w.address.tab);
-        let mut live = HashMap::new();
-        for strip in &workspace.strips {
-            for group in &strip.window_groups {
-                for tab in &group.tabs {
-                    live.insert(
-                        tab.id,
-                        (
-                            WindowAddress {
-                                strip: strip.id,
-                                group: group.id,
-                                tab: tab.id,
-                            },
-                            tab,
-                        ),
-                    );
-                }
-            }
-        }
-        let Some(selected) = selected.filter(|id| live.contains_key(id)) else {
-            self.cancel();
-            return;
-        };
-        let before = session.windows.len();
-        session.windows.retain_mut(|window| {
-            let Some((address, tab)) = live.get(&window.address.tab) else {
-                return false;
-            };
-            window.address = *address;
-            if tab.title.trim().is_empty() {
-                window.title = t("window-switcher-untitled");
-            } else {
-                window.title.clone_from(&tab.title);
-            }
-            true
-        });
-        let Some(index) = session
-            .windows
-            .iter()
-            .position(|w| w.address.tab == selected)
-        else {
-            self.cancel();
-            return;
-        };
-        session.selected = index;
-        self.pointer_dirty |= session.windows.len() != before;
-        self.hover =
-            hovered.and_then(|id| session.windows.iter().position(|w| w.address.tab == id));
-    }
-
-    /// The active workspace's windows by when they were last focused, most
-    /// recent first ([`FocusHistory::recent_tabs`]).
-    pub fn recent_tabs(&self, tree: &DesktopTree) -> Vec<u64> {
-        self.history.recent_tabs(tree)
-    }
-
-    /// The windows Alt+Tab would walk right now, in order.
-    pub fn ordered_windows(
-        &self,
-        tree: &DesktopTree,
-        source: &dyn WindowSource,
-    ) -> Vec<SwitcherWindow> {
-        self.history.ordered_windows(tree, source)
-    }
-
-    /// A session is open: Alt is held after Tab.
-    pub fn is_active(&self) -> bool {
-        self.session.is_some()
-    }
-
-    /// The panel is on screen.
-    pub fn is_revealed(&self, now: Instant) -> bool {
-        self.session
-            .as_ref()
-            .is_some_and(|session| now.saturating_duration_since(session.opened) >= REVEAL_DELAY)
-    }
-
-    /// A frame is needed to put the panel up once the delay has passed.
-    pub fn needs_frame(&self, now: Instant) -> bool {
-        self.is_active() && (!self.is_revealed(now) || self.pointer_dirty)
-    }
-
-    /// Treat Alt as having been held `by` longer than it has.
-    pub fn elapse(&mut self, by: Duration) {
-        if let Some(session) = self.session.as_mut() {
-            session.opened = session.opened.checked_sub(by).unwrap_or(session.opened);
-        }
-    }
-
-    /// The window a release would go to.
-    pub fn selected(&self) -> Option<&SwitcherWindow> {
-        self.session
-            .as_ref()
-            .and_then(|session| session.windows.get(session.selected))
-    }
-
-    /// Open a session on the first step: the previous window, or the last
-    /// one when walking backwards. Returns `false` when there is nothing to
-    /// switch to.
-    pub fn begin(
-        &mut self,
-        tree: &DesktopTree,
-        source: &dyn WindowSource,
-        scope: SwitcherScope,
-        backwards: bool,
-        now: Instant,
-    ) -> bool {
-        self.observe(tree);
-        let mut windows = self.history.ordered_windows(tree, source);
-        if scope == SwitcherScope::FocusedApp {
-            let Some(app) = windows.first().map(|window| window.app.key.clone()) else {
-                return false;
-            };
-            windows.retain(|window| window.app.key == app);
-        }
-        if windows.len() < 2 {
+impl Switcher {
+    /// Show `view`, or take the panel down with `None`. Returns whether what the panel shows
+    /// changed, which is what owes a frame.
+    pub fn set(&self, view: Option<SwitcherView>) -> bool {
+        let inner = &*self.inner;
+        if *inner.view.borrow() == view {
             return false;
         }
-        let selected = if backwards {
-            windows.len().saturating_sub(1)
-        } else {
-            1
-        };
-        self.session = Some(Session {
-            workspace: tree.active,
-            scope,
-            windows,
-            selected,
-            opened: now,
-        });
-        self.hover = None;
-        self.pointer_dirty = false;
+        inner.view.replace(view);
+        inner.hover.set(None);
+        inner.revision.set(inner.revision.get().wrapping_add(1));
         true
     }
 
-    fn step(&mut self, delta: isize) {
-        if let Some(session) = self.session.as_mut() {
-            let len = isize::try_from(session.windows.len()).unwrap_or(isize::MAX);
-            if len == 0 {
-                return;
-            }
-            let current = isize::try_from(session.selected).unwrap_or(0);
-            let next = current.saturating_add(delta).rem_euclid(len);
-            session.selected = usize::try_from(next).unwrap_or(0);
+    /// Take the panel down.
+    pub fn clear(&self) -> bool {
+        self.set(None)
+    }
+
+    /// Whether the panel is up at all.
+    #[must_use]
+    pub fn is_up(&self) -> bool {
+        self.inner.view.borrow().is_some()
+    }
+
+    /// What the panel shows: the windows the walk crosses, in its order, and the one it
+    /// reached.
+    #[must_use]
+    pub fn view(&self) -> Option<SwitcherView> {
+        self.inner.view.borrow().clone()
+    }
+
+    /// Where each card stands, as the panel was last drawn: the card's place in the view,
+    /// and its rect in the chrome's frame.
+    #[must_use]
+    pub fn card_rects(&self) -> Vec<(usize, Rect)> {
+        self.inner.geometry.borrow().cards.clone()
+    }
+
+    /// Whether the panel shows something it has not drawn yet.
+    #[must_use]
+    pub fn needs_redraw(&self) -> bool {
+        let inner = &*self.inner;
+        inner.drawn.get() != inner.revision.get()
+    }
+
+    /// The card the pointer stands over, as the cursor drew it.
+    pub fn set_hover(&self, hover: Option<usize>) {
+        if self.inner.hover.replace(hover) != hover {
+            self.inner
+                .revision
+                .set(self.inner.revision.get().wrapping_add(1));
         }
     }
 
-    fn select(&mut self, index: usize) -> bool {
-        match self.session.as_mut() {
-            Some(session) if index < session.windows.len() => {
-                session.selected = index;
-                true
-            }
-            _ => false,
-        }
+    /// The card the pointer stands over.
+    #[must_use]
+    pub fn hover(&self) -> Option<usize> {
+        self.inner.hover.get()
     }
 
-    fn commit(&mut self) -> SwitcherOutcome {
-        self.hover = None;
-        self.pointer_dirty = false;
-        self.session
-            .take()
-            .and_then(|session| session.windows.get(session.selected).map(|w| w.address))
-            .map_or(SwitcherOutcome::Cancelled, SwitcherOutcome::Commit)
+    /// Where the panel stands as last drawn, the chrome's frame.
+    #[must_use]
+    pub fn panel_rect(&self) -> Rect {
+        self.inner.geometry.borrow().panel
     }
 
-    fn cancel(&mut self) -> SwitcherOutcome {
-        self.hover = None;
-        self.pointer_dirty = false;
-        if self.session.take().is_some() {
-            SwitcherOutcome::Cancelled
-        } else {
-            SwitcherOutcome::Ignored
-        }
-    }
-
-    /// End the session without switching (focus moved elsewhere, the
-    /// workspace changed, the screen locked).
-    pub fn dismiss(&mut self) -> bool {
-        self.cancel() == SwitcherOutcome::Cancelled
-    }
-
-    /// A key while a session is open. `mods` is the modifier state with
-    /// this key applied, so an Alt release arrives with Alt already up.
-    pub fn key(&mut self, key: &Key, state: ElementState, mods: ModifiersState) -> SwitcherOutcome {
-        if self.session.is_none() {
-            return SwitcherOutcome::Ignored;
-        }
-        if state == ElementState::Released {
-            let alt_released = matches!(key, Key::Named(NamedKey::Alt)) || !mods.alt_key();
-            return if alt_released {
-                self.commit()
-            } else {
-                SwitcherOutcome::Consumed
-            };
-        }
-        let backwards = mods.shift_key();
-        match key {
-            Key::Named(NamedKey::Escape) => self.cancel(),
-            Key::Named(NamedKey::Enter | NamedKey::Space) => self.commit(),
-            Key::Named(NamedKey::Tab) => {
-                self.step(if backwards { -1 } else { 1 });
-                SwitcherOutcome::Consumed
-            }
-            key if is_grave(key) => {
-                self.step(if backwards { -1 } else { 1 });
-                SwitcherOutcome::Consumed
-            }
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
-                self.step(-1);
-                SwitcherOutcome::Consumed
-            }
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
-                self.step(1);
-                SwitcherOutcome::Consumed
-            }
-            Key::Named(NamedKey::Home) => {
-                self.select(0);
-                SwitcherOutcome::Consumed
-            }
-            Key::Named(NamedKey::End) => {
-                let last = self
-                    .session
-                    .as_ref()
-                    .map_or(0, |session| session.windows.len().saturating_sub(1));
-                self.select(last);
-                SwitcherOutcome::Consumed
-            }
-            // Alt came up without this session hearing it (another seat
-            // took it, or the event was lost): a key pressed without Alt
-            // settles on the selection rather than typing into a window
-            // nobody chose yet.
-            _ if !mods.alt_key() && !matches!(key, Key::Named(NamedKey::Alt)) => self.commit(),
-            _ => SwitcherOutcome::Consumed,
-        }
-    }
-
-    /// Input while a session is open. Keys all belong to it; the pointer
-    /// (at `cursor`, in the host's coordinates) does once the panel is on
-    /// screen. A modifier change is reported but belongs to the host too.
-    pub fn route_event(
-        &mut self,
-        event: &WindowEvent,
-        mods: ModifiersState,
-        cursor: Option<Point>,
-        now: Instant,
-    ) -> SwitcherOutcome {
-        if self.session.is_none() {
-            return SwitcherOutcome::Ignored;
-        }
-        match event {
-            WindowEvent::KeyboardInput { event: key, .. } => {
-                self.key(&key.logical_key, key.state, mods)
-            }
-            WindowEvent::ModifiersChanged(changed) => self.modifiers_changed(changed.state()),
-            WindowEvent::CursorMoved { .. } => cursor.map_or(SwitcherOutcome::Ignored, |point| {
-                self.pointer_moved(point, now)
-            }),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => cursor.map_or(SwitcherOutcome::Ignored, |point| {
-                self.pointer_pressed(point, now)
-            }),
-            WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. }
-            | WindowEvent::Touch(_)
-                if self.is_revealed(now) =>
-            {
-                SwitcherOutcome::Consumed
-            }
-            _ => SwitcherOutcome::Ignored,
-        }
-    }
-
-    /// The modifier state changed with no key to go with it.
-    pub fn modifiers_changed(&mut self, mods: ModifiersState) -> SwitcherOutcome {
-        if self.session.is_some() && !mods.alt_key() {
-            self.commit()
-        } else {
-            SwitcherOutcome::Ignored
-        }
-    }
-
-    fn geometry(&self) -> Geometry {
-        match self.session.as_ref() {
-            Some(session) => geometry(
-                self.host_rect,
-                session.windows.len(),
-                session.selected,
-                self.metrics,
-            ),
-            None => Geometry::default(),
-        }
-    }
-
-    /// Lay out against the host's rect before the first paint, so pointer
-    /// input and the semantic tree agree with what will be drawn.
-    pub fn set_host_rect(&mut self, host: Rect) {
-        if self.is_active() && self.host_rect != host {
-            self.pointer_dirty = true;
-        }
-        self.host_rect = host;
-    }
-
-    /// The window card under `point`, if the panel is up.
-    pub fn card_at(&self, point: Point, now: Instant) -> Option<usize> {
-        if !self.is_revealed(now) {
-            return None;
-        }
-        self.geometry()
+    /// The card under `point`, as the panel was last drawn: the pointer's
+    /// presses and its hover.
+    #[must_use]
+    pub fn card_at(&self, point: Point) -> Option<usize> {
+        let view = self.inner.view.borrow();
+        let view = view.as_ref()?;
+        self.inner
+            .geometry
+            .borrow()
             .cards
             .iter()
-            .find(|(_, rect)| rect.contains(point))
+            .find(|(index, card)| {
+                *index < view.cards.len()
+                    && point.x >= card.x0
+                    && point.x < card.x1
+                    && point.y >= card.y0
+                    && point.y < card.y1
+            })
             .map(|(index, _)| *index)
     }
 
-    /// Pointer motion: hovering a card selects it, as it does in every
-    /// desktop's switcher, so a release commits what the pointer rests on.
-    pub fn pointer_moved(&mut self, point: Point, now: Instant) -> SwitcherOutcome {
-        if !self.is_revealed(now) {
-            return SwitcherOutcome::Ignored;
-        }
-        if self.pointer_dirty {
-            return SwitcherOutcome::Consumed;
-        }
-        let card = self.card_at(point, now);
-        if card != self.hover {
-            self.hover = card;
-            if let Some(index) = card {
-                self.select(index);
-            }
-        }
-        SwitcherOutcome::Consumed
+    /// Whether `point` is on the panel at all, as it was last drawn.
+    #[must_use]
+    pub fn on_panel(&self, point: Point) -> bool {
+        self.panel_rect().contains(point)
     }
 
-    /// A primary press (a click, or a tap, which arrives as one): on a card
-    /// it goes there, off the panel it cancels.
-    pub fn pointer_pressed(&mut self, point: Point, now: Instant) -> SwitcherOutcome {
-        if !self.is_revealed(now) {
-            return SwitcherOutcome::Ignored;
-        }
-        if self.pointer_dirty {
-            return SwitcherOutcome::Consumed;
-        }
-        match self.card_at(point, now) {
-            Some(index) => {
-                self.select(index);
-                self.commit()
-            }
-            None if self.geometry().panel.contains(point) => SwitcherOutcome::Consumed,
-            None => self.cancel(),
-        }
-    }
-
-    /// Select the window at `index` without committing: what an assistive
-    /// technology's focus does.
-    pub fn focus_index(&mut self, index: usize) -> bool {
-        self.select(index)
-    }
-
-    /// Bounds of the card for window `index`, when on screen.
-    pub fn card_rect(&self, index: usize) -> Option<Rect> {
-        self.geometry()
+    /// The pictures of the windows this panel names, where its wells stand:
+    /// each window's latest buffer, in the desk's coordinates. The session
+    /// hands them to the compositor, which draws them over the chrome, so a
+    /// preview is the window as it is now, not a copy of it.
+    #[must_use]
+    pub fn pictures(&self) -> Vec<Picture> {
+        let view = self.inner.view.borrow();
+        let Some(view) = view.as_ref() else {
+            return Vec::new();
+        };
+        let geometry = self.inner.geometry.borrow();
+        geometry
             .cards
             .iter()
-            .find(|(candidate, _)| *candidate == index)
-            .map(|(_, rect)| *rect)
-    }
-
-    pub fn panel_rect(&self) -> Rect {
-        self.geometry().panel
-    }
-
-    /// The open panel's semantic tree: a dialog holding the window list,
-    /// the selected window both selected and focused.
-    pub fn accessibility(&self) -> Option<AccessNode> {
-        let session = self.session.as_ref()?;
-        let geometry = self.geometry();
-        let total = session.windows.len();
-        let items = session
-            .windows
-            .iter()
-            .enumerate()
-            .map(|(index, window)| {
-                let selected = index == session.selected;
-                let mut node = AccessNode::new(Role::ListItem)
-                    .with_name(window.title.clone())
-                    .with_semantic_key(format!("window-switcher-window:{}", window.address.tab))
-                    .with_position(index.saturating_add(1), total)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(selected)
-                            .selected(selected),
-                    );
-                if let Some((_, rect)) = geometry.cards.iter().find(|(i, _)| *i == index) {
-                    node = node.with_bounds(*rect);
-                }
-                node
+            .filter_map(|(index, card)| {
+                let window = view.cards.get(*index)?.window?;
+                Some(Picture {
+                    window,
+                    rect: Self::well_of_rect(*card, geometry.metrics),
+                })
             })
-            .collect();
-        let (name, description) = match session.scope {
-            SwitcherScope::Workspace => {
-                (t("window-switcher-title"), t("window-switcher-description"))
-            }
-            SwitcherScope::FocusedApp => (
-                t("window-switcher-app-title"),
-                t("window-switcher-app-description"),
-            ),
-        };
-        Some(
-            AccessNode::new(Role::Dialog)
-                .with_name(name.clone())
-                .with_description(description)
-                .with_bounds(geometry.panel)
-                .with_state(AccessState::new().modal(true))
-                .with_children(vec![
-                    AccessNode::new(Role::List)
-                        .with_name(name)
-                        .with_bounds(geometry.panel)
-                        .with_children(items),
-                ]),
+            .collect()
+    }
+
+    /// The well of a card: the window's picture's place inside it.
+    fn well_of_rect(card: Rect, m: Metrics) -> Rect {
+        Rect::new(
+            card.x0 + m.inset,
+            card.y0 + m.inset,
+            card.x1 - m.inset,
+            card.y0 + m.inset + m.well_h,
         )
     }
 
-    /// Paint the panel once it is revealed.
+    /// What the panel says to assistive technology: the windows it shows, and which of them the
+    /// walk has reached, which a reader meets as a list of choices.
+    #[must_use]
+    pub fn accessibility(&self) -> Option<AccessNode> {
+        let view = self.inner.view.borrow();
+        let view = view.as_ref()?;
+        let items = view
+            .cards
+            .iter()
+            .enumerate()
+            .map(|(index, card)| {
+                let selected = index == view.selected;
+                let mut state = AccessState::new().selected(selected);
+                if selected {
+                    state = state.focused(true);
+                }
+                AccessNode::new(Role::ListItem)
+                    .with_name(title_of(card))
+                    .with_state(state)
+            })
+            .collect();
+        let (title, description) = if view.app_scope {
+            (
+                "window-switcher-app-title",
+                "window-switcher-app-description",
+            )
+        } else {
+            ("window-switcher-title", "window-switcher-description")
+        };
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name(t(title))
+                .with_description(t(description))
+                .with_children(vec![AccessNode::new(Role::List).with_children(items)]),
+        )
+    }
+
+    /// Paint the panel, over the desk and under the windows' own pictures.
+    /// `host` is the display it centres on, in the chrome's coordinates.
     pub fn draw(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         host: Rect,
-        now: Instant,
-        previews: &mut dyn WindowThumbnails,
     ) {
-        self.host_rect = host;
-        self.metrics = Metrics::from_tokens(&theme.tokens);
-        if !self.is_revealed(now) {
-            return;
-        }
-        // Theme type tokens already carry the user's text scale (HIG §7a).
-        let renderer_scale = text_renderer.text_scale();
-        text_renderer.set_text_scale(1.0);
-        self.draw_panel(scene, transform, text_renderer, theme, previews);
-        self.pointer_dirty = false;
-        text_renderer.set_text_scale(renderer_scale);
-    }
-
-    /// The windows of the open session that may have a live preview, the
-    /// page on screen first.
-    pub fn preview_requests(&self) -> Vec<PreviewRequest> {
-        let Some(session) = self.session.as_ref() else {
-            return Vec::new();
-        };
-        let on_screen: Vec<usize> = self
-            .geometry()
-            .cards
-            .iter()
-            .map(|(index, _)| *index)
-            .collect();
-        let rest = (0..session.windows.len()).filter(|index| !on_screen.contains(index));
-        on_screen
-            .iter()
-            .copied()
-            .chain(rest)
-            .filter_map(|index| session.windows.get(index))
-            .filter(|window| window.preview.renderable())
-            .map(|window| PreviewRequest {
-                tab: window.address.tab,
-                source: window.preview.clone(),
-            })
-            .collect()
-    }
-
-    /// What a card can show for `window` right now.
-    pub fn preview_state(window: &SwitcherWindow, previews: &dyn WindowThumbnails) -> PreviewState {
-        match window.preview {
-            PreviewSource::Withheld => PreviewState::Withheld,
-            _ if previews.has(window) => PreviewState::Live,
-            _ => PreviewState::None,
-        }
-    }
-
-    /// The open session as data: each window, whether it is selected, and
-    /// whether its card shows a live preview. Never the pixels themselves.
-    pub fn state_json(&self, previews: &dyn WindowThumbnails, now: Instant) -> serde_json::Value {
-        let Some(session) = self.session.as_ref() else {
-            return serde_json::json!({ "open": false });
-        };
-        let windows: Vec<serde_json::Value> = session
-            .windows
-            .iter()
-            .enumerate()
-            .map(|(index, window)| {
-                serde_json::json!({
-                    // A tab's id carries the salt of the device that minted
-                    // it, which a JSON integer does not always hold: it
-                    // travels as text, as every reading of a tab names it.
-                    "tab": window.address.tab.to_string(),
-                    "title": window.title,
-                    "selected": index == session.selected,
-                    "preview": Self::preview_state(window, previews).as_str(),
-                })
-            })
-            .collect();
-        serde_json::json!({
-            "open": true,
-            "revealed": self.is_revealed(now),
-            "scope": match session.scope {
-                SwitcherScope::Workspace => "workspace",
-                SwitcherScope::FocusedApp => "app",
-            },
-            "windows": windows,
-        })
-    }
-
-    fn draw_panel(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        previews: &mut dyn WindowThumbnails,
-    ) {
-        let Some(session) = self.session.as_ref() else {
+        let inner = &*self.inner;
+        let view = inner.view.borrow();
+        let Some(view) = view.as_ref().filter(|view| !view.cards.is_empty()) else {
+            inner.geometry.replace(Geometry::default());
+            inner.drawn.set(inner.revision.get());
             return;
         };
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let geometry = self.geometry();
+        let metrics = Metrics::from_tokens(&theme.tokens);
+        let geometry = geometry(host, view.cards.len(), view.selected, metrics);
+        // The panel is modal while it is up: the desk behind it waits.
+        ui::overlay::scrim::modal(scene, transform, host, 1.0, theme);
         let m = geometry.metrics;
         let panel = geometry.panel;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
 
         // A Panel (HIG §9.1): the shell's floating-surface ground, edge and
         // elevation, like the overview and the palette.
@@ -1235,11 +638,15 @@ impl WindowSwitcher {
             &ui::surface::edge_outline(panel, m.radius),
         );
 
+        let hover = inner.hover.get();
+        // Theme type tokens already carry the user's text scale (HIG §7a).
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
         for (index, card) in &geometry.cards {
-            if let Some(window) = session.windows.get(*index) {
+            if let Some(window) = view.cards.get(*index) {
                 let state = ui::chrome::SelectionState::new(
-                    *index == session.selected,
-                    self.hover == Some(*index) && *index != session.selected,
+                    *index == view.selected,
+                    hover == Some(*index),
                     false,
                 );
                 Self::draw_card(
@@ -1247,7 +654,6 @@ impl WindowSwitcher {
                     (*card, m),
                     window,
                     state,
-                    previews,
                 );
             }
         }
@@ -1261,12 +667,9 @@ impl WindowSwitcher {
                 &[
                     (
                         "position",
-                        ArgValue::Number(usize_to_f64(session.selected.saturating_add(1))),
+                        ArgValue::Number(usize_to_f64(view.selected.saturating_add(1))),
                     ),
-                    (
-                        "count",
-                        ArgValue::Number(usize_to_f64(session.windows.len())),
-                    ),
+                    ("count", ArgValue::Number(usize_to_f64(view.cards.len()))),
                 ],
             );
             let text = text_renderer.elide_to_width_style(
@@ -1291,29 +694,29 @@ impl WindowSwitcher {
                 &theme.text(TextRole::Subheading),
             );
         }
+        text_renderer.set_text_scale(renderer_scale);
+        inner.geometry.replace(geometry);
+        inner.drawn.set(inner.revision.get());
     }
 
-    /// One window's card: its live preview (or app mark) over its elided
+    /// One window's card: its preview well (or app mark) over its elided
     /// title, lifted by the shared selection tier when selected or hovered.
+    /// A card whose window the compositor pictures draws no face: the window
+    /// itself stands there.
     fn draw_card(
         ctx: &mut PaintCtx<'_>,
         (card, m): (Rect, Metrics),
-        window: &SwitcherWindow,
+        window: &SwitcherCard,
         state: ui::chrome::SelectionState,
-        previews: &mut dyn WindowThumbnails,
     ) {
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         ui::chrome::selection_tier(theme, state).paint(scene, transform, card, m.card_radius);
-        let well = Rect::new(
-            card.x0 + m.inset,
-            card.y0 + m.inset,
-            card.x1 - m.inset,
-            card.y0 + m.inset + m.well_h,
-        );
-        let live = draw_preview_well(
+        let well = Self::well_of_rect(card, m);
+        let app = WindowApp::named(&window.app_key);
+        draw_preview_well(
             scene,
             transform,
             theme,
@@ -1322,17 +725,17 @@ impl WindowSwitcher {
                 radius: m.well_radius,
                 icon: m.icon,
             },
-            window,
-            previews,
+            window.window.is_none().then_some(&app),
         );
 
         // The title line, led by the app mark when the well shows the
         // window instead of the mark.
+        let pictured = window.window.is_some();
         let gap = f64::from(tokens.spacing.s1);
-        let lead = if live { m.mark + gap } else { 0.0 };
+        let lead = if pictured { m.mark + gap } else { 0.0 };
         let title_w = (card.width() - 2.0 * m.inset - lead).max(0.0);
         let title = text_renderer.elide_to_width_style(
-            &window.title,
+            &title_of(window),
             f32_of_f64(title_w),
             &theme.text(TextRole::Label),
         );
@@ -1340,14 +743,14 @@ impl WindowSwitcher {
         let line_top = well.y1 + m.inset;
         let line_w = lead + f64::from(w);
         let x0 = card.center().x - line_w * 0.5;
-        if live {
+        if pictured {
             let mark_top = line_top + (f64::from(h) - m.mark) / 2.0;
             ui::widget::draw_app_mark(
                 scene,
                 transform,
                 Rect::new(x0, mark_top, x0 + m.mark, mark_top + m.mark),
-                window.app.icon.as_ref(),
-                window.app.kind,
+                app.icon.as_ref(),
+                app.kind,
                 colors.text_primary,
             );
         }
@@ -1366,6 +769,26 @@ impl WindowSwitcher {
     }
 }
 
+/// One window the panel pictures, and where its well stands: the session
+/// hands each to the compositor, which draws the window's own buffer there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Picture {
+    /// The compositor's window: the client surface the card's window shows.
+    pub window: u64,
+    /// Its well, in the chrome's coordinates.
+    pub rect: Rect,
+}
+
+/// The words a card shows for its window: an unnamed window is an untitled one, as the desk's
+/// own list calls it.
+fn title_of(card: &SwitcherCard) -> String {
+    if card.title.trim().is_empty() {
+        t("window-switcher-untitled")
+    } else {
+        card.title.clone()
+    }
+}
+
 /// Where a window's preview well sits and how its stand-in mark is sized.
 #[derive(Clone, Copy, Debug)]
 pub struct PreviewWell {
@@ -1375,18 +798,17 @@ pub struct PreviewWell {
     pub icon: f64,
 }
 
-/// A 16:10 well on the window-card surface holding `window`'s live
-/// preview, or its app mark when it has none (not rendered yet, or an app
-/// that holds secrets). Shared by the switcher and the overview so a
-/// window looks the same in both. Returns whether a preview was painted.
+/// A 16:10 well on the window-card surface, holding a window's live preview
+/// or, when `app` is given, that app's own face. Shared by the switcher and
+/// the overview so a window looks the same in both. A host that pictures the
+/// window itself passes `None`: the picture stands in the well.
 pub fn draw_preview_well(
     scene: &mut Scene,
     transform: Affine,
     theme: &Theme,
     well: PreviewWell,
-    window: &SwitcherWindow,
-    previews: &mut dyn WindowThumbnails,
-) -> bool {
+    app: Option<&WindowApp>,
+) {
     let colors = &theme.tokens.colors;
     let well_rr = RoundedRect::from_rect(well.rect, well.radius);
     scene.fill(
@@ -1396,20 +818,6 @@ pub fn draw_preview_well(
         None,
         &well_rr,
     );
-    let live = WindowSwitcher::preview_state(window, previews) == PreviewState::Live && {
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &well_rr,
-        );
-        let painted = previews
-            .paint(window, scene, transform, well.rect, theme)
-            .is_some();
-        scene.pop_layer();
-        painted
-    };
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
@@ -1417,10 +825,9 @@ pub fn draw_preview_well(
         None,
         &well_rr,
     );
-    if !live {
-        draw_app_face(scene, transform, well, &window.app, colors.on_content().ink);
+    if let Some(app) = app {
+        draw_app_face(scene, transform, well, app, colors.on_content().ink);
     }
-    live
 }
 
 /// What a well shows for `app` with no live picture: the app's artwork,
@@ -1463,7 +870,6 @@ fn draw_app_face(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::{Strip, Tab, WindowGroup, WindowWidth, Workspace};
 
     /// A window with no live picture and no artwork shows its app's own
     /// symbol, so two apps' windows look different, in either host.
@@ -1505,155 +911,8 @@ mod tests {
             !drawn(&unknown).is_empty(),
             "an unknown app still has a mark"
         );
-    }
-
-    fn tab(id: u64, app: &str) -> Tab {
-        Tab {
-            id,
-            title: format!("{app} {id}"),
-            tile: TileContent::Foreign {
-                app_id: app.into(),
-                surface_id: id,
-            },
-            app_title: None,
-        }
-    }
-
-    fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
-        WindowGroup {
-            id,
-            active_tab: tabs.first().map_or(0, |tab| tab.id),
-            tabs,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        }
-    }
-
-    /// One strip of four single-tab groups (tabs 1..=4), group 10 focused.
-    fn tree() -> DesktopTree {
-        let workspace = WorkspaceSlot(1);
-        let mut tree = DesktopTree {
-            active: workspace,
-            workspaces: vec![Workspace::new(workspace, "Home")],
-            ..Default::default()
-        };
-        let strip = StripId(100);
-        tree.workspaces[0].strips = vec![Strip {
-            id: strip,
-            name: String::new(),
-            window_groups: vec![
-                group(10, vec![tab(1, "a")]),
-                group(20, vec![tab(2, "b")]),
-                group(30, vec![tab(3, "a")]),
-                group(40, vec![tab(4, "c")]),
-            ],
-        }];
-        tree.active_strip.insert(workspace, strip);
-        tree.set_active_group(strip, 10);
-        tree
-    }
-
-    fn focus(tree: &mut DesktopTree, group: u64) {
-        let strip = tree.workspaces[0].strips[0].id;
-        tree.set_active_group(strip, group);
-    }
-
-    fn order(switcher: &WindowSwitcher, tree: &DesktopTree) -> Vec<u64> {
-        switcher
-            .ordered_windows(tree, &PlainWindows)
-            .iter()
-            .map(|window| window.address.tab)
-            .collect()
-    }
-
-    #[test]
-    fn unvisited_windows_follow_the_strip_from_the_focused_one() {
-        let mut tree = tree();
-        focus(&mut tree, 30);
-        let switcher = WindowSwitcher::default();
-        assert_eq!(order(&switcher, &tree), [3, 4, 1, 2]);
-    }
-
-    #[test]
-    fn recency_orders_the_windows_that_were_focused() {
-        let mut tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        for group in [20, 40, 10] {
-            focus(&mut tree, group);
-            switcher.observe(&tree);
-        }
-        assert_eq!(order(&switcher, &tree), [1, 4, 2, 3]);
-    }
-
-    #[test]
-    fn each_workspace_keeps_its_own_recency() {
-        let mut tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        focus(&mut tree, 40);
-        switcher.observe(&tree);
-        let home = tree.active;
-        let away = WorkspaceSlot(2);
-        let mut other = tree.workspaces[0].clone();
-        other.slot = away;
-        other.strips[0].id = StripId(200);
-        tree.workspaces.push(other);
-        tree.active = away;
-        switcher.observe(&tree);
-        tree.active = home;
-        assert_eq!(order(&switcher, &tree).first(), Some(&4));
-    }
-
-    #[test]
-    fn a_quick_alt_tab_goes_back_and_holding_reveals_after_the_delay() {
-        let mut tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        focus(&mut tree, 20);
-        switcher.observe(&tree);
-        focus(&mut tree, 10);
-        let now = Instant::now();
-        assert!(switcher.begin(&tree, &PlainWindows, SwitcherScope::Workspace, false, now));
-        assert!(!switcher.is_revealed(now));
-        assert!(switcher.is_revealed(now + REVEAL_DELAY));
-        let outcome = switcher.key(
-            &Key::Named(NamedKey::Alt),
-            ElementState::Released,
-            ModifiersState::empty(),
-        );
-        assert!(matches!(outcome, SwitcherOutcome::Commit(address) if address.tab == 2));
-        assert!(!switcher.is_active());
-    }
-
-    #[test]
-    fn the_app_scope_walks_only_the_focused_apps_windows() {
-        let tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        assert!(switcher.begin(
-            &tree,
-            &PlainWindows,
-            SwitcherScope::FocusedApp,
-            false,
-            Instant::now()
-        ));
-        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(3));
-        switcher.key(
-            &Key::Character("`".into()),
-            ElementState::Pressed,
-            ModifiersState::ALT,
-        );
-        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(1));
-        let mut lone = tree;
-        focus(&mut lone, 40);
-        assert!(
-            !switcher.begin(
-                &lone,
-                &PlainWindows,
-                SwitcherScope::FocusedApp,
-                false,
-                Instant::now()
-            ),
-            "an app with one window has nothing to switch to"
-        );
+        // A window the desk names the same way wears the same face.
+        assert_eq!(WindowApp::named("so.tilo.weather").glyph, Icon::Cloud);
     }
 
     #[test]
@@ -1673,6 +932,7 @@ mod tests {
         assert!(host.contains(many.panel.origin()));
         assert!(many.panel.x1 <= host.x1 && many.panel.y1 <= host.y1);
     }
+
     /// The panel and every card on it stay inside the display at every
     /// size, from a phone-class window to the desktop, whatever the
     /// window count: a host too small for one full card gets a smaller
@@ -1730,199 +990,129 @@ mod tests {
         }
     }
 
-    #[test]
-    fn closing_an_unselected_candidate_preserves_the_selected_window_and_removes_its_card() {
-        let mut tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        assert!(switcher.begin(
-            &tree,
-            &PlainWindows,
-            SwitcherScope::Workspace,
-            false,
-            Instant::now()
-        ));
-        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(2));
-        tree.workspaces[0].strips[0].window_groups.remove(0);
-        focus(&mut tree, 30);
-        switcher.observe(&tree);
-        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(2));
-        assert!(
-            !switcher
-                .session
-                .as_ref()
-                .expect("remaining candidates")
-                .windows
-                .iter()
-                .any(|window| window.address.tab == 1),
-            "the closed candidate must not remain painted or accessible"
-        );
-        assert!(
-            matches!(switcher.modifiers_changed(ModifiersState::empty()),
-            SwitcherOutcome::Commit(address) if address.tab == 2)
-        );
-    }
-
-    #[test]
-    fn closing_the_selected_candidate_cancels_before_alt_release() {
-        let mut tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        assert!(switcher.begin(
-            &tree,
-            &PlainWindows,
-            SwitcherScope::Workspace,
-            false,
-            Instant::now()
-        ));
-        tree.workspaces[0].strips[0].window_groups.remove(1);
-        switcher.observe(&tree);
-        assert!(
-            !switcher.is_active(),
-            "a closed target must not remain armed"
-        );
-        assert_eq!(
-            switcher.modifiers_changed(ModifiersState::empty()),
-            SwitcherOutcome::Ignored
-        );
-        assert_eq!(
-            switcher.key(
-                &Key::Named(NamedKey::Enter),
-                ElementState::Pressed,
-                ModifiersState::ALT
-            ),
-            SwitcherOutcome::Ignored
-        );
-    }
-
-    #[test]
-    fn moving_the_selected_candidate_updates_its_focus_address() {
-        let mut tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        assert!(switcher.begin(
-            &tree,
-            &PlainWindows,
-            SwitcherScope::Workspace,
-            false,
-            Instant::now()
-        ));
-        let moved = tree.workspaces[0].strips[0]
-            .window_groups
-            .remove(1)
-            .tabs
-            .remove(0);
-        tree.workspaces[0].strips[0].window_groups[1]
-            .tabs
-            .push(moved);
-        switcher.observe(&tree);
-        assert!(
-            matches!(switcher.modifiers_changed(ModifiersState::empty()),
-            SwitcherOutcome::Commit(address) if address.tab == 2 && address.group == 30)
-        );
-    }
-    #[test]
-    fn switcher_live_candidate_capture_matrix_is_written() {
-        let out = std::env::var_os("TILO_SWITCHER_LIVE_SHOTS").map_or_else(
-            || std::path::PathBuf::from("target/switcher-live-candidates"),
-            std::path::PathBuf::from,
-        );
-        std::fs::create_dir_all(&out).expect("capture output");
-        #[allow(
-            clippy::useless_vec,
-            reason = "the themes are too large to sit on the stack as an array"
-        )]
-        for (name, theme, width, height) in vec![
-            ("dark", Theme::dark(), 960_u32, 540_u32),
-            ("light", Theme::light(), 960, 540),
-            ("high-contrast", Theme::high_contrast(), 960, 540),
-            ("large-text", Theme::dark().with_text_scale(2.0), 800, 600),
-            (
-                "ui-text-scaled",
-                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
-                960,
-                640,
-            ),
-            ("narrow", Theme::dark().with_text_scale(2.0), 320, 480),
-        ] {
-            let mut tree = tree();
-            for (group, title) in tree.workspaces[0].strips[0]
-                .window_groups
-                .iter_mut()
-                .zip(["Terminal", "Files", "Browser", "Reader"])
-            {
-                group.tabs[0].title = title.to_owned();
-            }
-            let mut switcher = WindowSwitcher::default();
-            assert!(switcher.begin(
-                &tree,
-                &PlainWindows,
-                SwitcherScope::Workspace,
-                false,
-                Instant::now()
-            ));
-            switcher.elapse(REVEAL_DELAY + Duration::from_millis(20));
-            tree.workspaces[0].strips[0].window_groups.remove(2);
-            switcher.observe(&tree);
-            let viewport = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-            let mut scene = Scene::new();
-            switcher.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                viewport,
-                Instant::now(),
-                &mut NoThumbnails,
-            );
-            ui::offscreen::OffscreenRenderer::new(width, height).render_png(
-                &scene,
-                theme.tokens.colors.surfaces.base,
-                out.join(format!("{name}-other-candidate-closed.png")),
-            );
+    fn card(title: &str, window: Option<u64>) -> SwitcherCard {
+        SwitcherCard {
+            window,
+            title: title.to_owned(),
+            app_key: "so.tilo.notes".to_owned(),
         }
     }
+
+    fn view(count: usize, selected: usize) -> SwitcherView {
+        SwitcherView {
+            cards: (0..count)
+                .map(|at| {
+                    card(
+                        &format!("window {at}"),
+                        Some(u64::try_from(at).unwrap_or(0).saturating_add(1)),
+                    )
+                })
+                .collect(),
+            selected,
+            app_scope: false,
+        }
+    }
+
+    /// The panel names each window it shows where its well stands, in the
+    /// desk's coordinates, so the compositor can draw the window itself
+    /// there.
     #[test]
-    fn a_press_on_a_removed_card_waits_for_the_replacement_frame() {
-        let mut tree = tree();
-        let mut switcher = WindowSwitcher::default();
-        assert!(switcher.begin(
-            &tree,
-            &PlainWindows,
-            SwitcherScope::Workspace,
-            false,
-            Instant::now()
-        ));
-        switcher.elapse(REVEAL_DELAY + Duration::from_millis(20));
-        let viewport = Rect::new(0.0, 0.0, 960.0, 600.0);
+    fn the_panel_hands_the_compositor_each_windows_place_on_the_desk() {
+        let switcher = Switcher::default();
+        assert!(!switcher.is_up());
+        assert!(switcher.set(Some(view(2, 0))));
+        assert!(switcher.is_up());
+        assert!(switcher.needs_redraw(), "a new panel owes a frame");
+        assert!(
+            !switcher.set(Some(view(2, 0))),
+            "the same panel is no new frame"
+        );
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
         switcher.draw(
-            &mut Scene::new(),
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        assert!(!switcher.needs_redraw(), "drawn");
+        let pictures = switcher.pictures();
+        assert_eq!(pictures.len(), 2);
+        let panel = switcher.panel_rect();
+        assert!(panel.width() > 0.0);
+        for picture in &pictures {
+            let well = picture.rect;
+            assert!(
+                well.x0 >= panel.x0 && well.y0 >= panel.y0,
+                "a well is inside the panel"
+            );
+            assert!(well.width() > 0.0 && well.height() > 0.0);
+        }
+        // The pointer finds the card it is on, and only the panel's cards.
+        let first = switcher
+            .pictures()
+            .first()
+            .map(|picture| picture.rect)
+            .expect("a picture");
+        let point = first.center();
+        assert_eq!(switcher.card_at(point), Some(0));
+        assert!(switcher.on_panel(switcher.panel_rect().center()));
+        assert!(
+            switcher.card_at(Point::new(-10.0, -10.0)).is_none(),
+            "nothing is off the panel"
+        );
+        assert!(switcher.clear());
+        assert!(
+            switcher.pictures().is_empty(),
+            "a closed panel pictures nothing"
+        );
+    }
+
+    /// A window whose app holds secrets has no picture: its card says so with
+    /// the app's face, and the compositor is asked for nothing.
+    #[test]
+    fn a_card_without_a_window_shows_its_apps_face() {
+        let switcher = Switcher::default();
+        let mut hidden = view(1, 0);
+        hidden.cards[0].window = None;
+        switcher.set(Some(hidden));
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        switcher.draw(
+            &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &Theme::dark(),
-            viewport,
-            Instant::now(),
-            &mut NoThumbnails,
+            &theme,
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
         );
-        let old_card = switcher.card_rect(2).expect("painted candidate");
-        let old_point = Point::new(old_card.x0 + old_card.width() / 4.0, old_card.center().y);
-        tree.workspaces[0].strips[0].window_groups.remove(2);
-        switcher.observe(&tree);
-        assert_eq!(
-            switcher.pointer_pressed(old_point, Instant::now()),
-            SwitcherOutcome::Consumed,
-            "the old Browser pixels must not activate another window"
+        assert!(switcher.pictures().is_empty());
+        assert!(
+            !scene.encoding().path_data.is_empty(),
+            "the card still draws its material and its app's face"
         );
-        assert!(switcher.is_active());
-        assert_eq!(switcher.selected().map(|w| w.address.tab), Some(2));
-        switcher.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            viewport,
-            Instant::now(),
-            &mut NoThumbnails,
+    }
+
+    /// A reader meets the windows as a list of choices, the one the walk
+    /// reached chosen and focused.
+    #[test]
+    fn the_panel_reads_as_a_list_of_windows_with_the_reached_one_chosen() {
+        let switcher = Switcher::default();
+        assert!(
+            switcher.accessibility().is_none(),
+            "no panel, nothing to read"
         );
-        let selected = switcher.card_rect(1).expect("repainted selection").center();
-        assert!(matches!(switcher.pointer_pressed(selected, Instant::now()),
-            SwitcherOutcome::Commit(address) if address.tab == 2));
+        switcher.set(Some(view(3, 1)));
+        let root = switcher.accessibility().expect("the panel reads");
+        assert_eq!(root.role, Role::Dialog);
+        let list = root.children.first().expect("one list");
+        assert_eq!(list.role, Role::List);
+        assert_eq!(list.children.len(), 3);
+        let chosen = &list.children[1];
+        assert_eq!(chosen.role, Role::ListItem);
+        assert!(chosen.state.selected, "the one the walk reached");
+        assert!(chosen.state.focused);
+        assert!(!list.children[0].state.selected);
     }
 }

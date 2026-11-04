@@ -146,6 +146,7 @@ mod sockets;
 pub mod startup;
 mod status;
 pub mod surfaces;
+mod switcher;
 pub mod sync;
 mod system_sounds;
 mod task_programs;
@@ -286,6 +287,12 @@ struct Shared {
     /// What stands over the windows: its menus, quick settings, the picker
     /// and the rest, and which of them holds the keyboard.
     overlays: Overlays,
+    /// The desk's own overlays, as its reading and its views name them: the
+    /// surface up, and Alt+Tab's walk.
+    desk_overlays: Rc<overlays::Overlays>,
+    /// Alt+Tab's panel, shared by the desk's walk (which sets it), the chrome
+    /// (which draws it) and the compositor (which pictures its windows).
+    switcher: tilo_desktop::window_switcher::Switcher,
     /// Every hosted surface's and service's published side: the session's
     /// action host.
     doors: Doors,
@@ -1228,6 +1235,9 @@ impl Session {
         // verbs and by the views bound to them, and read by whoever asks through the door.
         let overlays = Overlays::new();
         let desk_overlays = Rc::new(overlays::Overlays::new());
+        // Alt+Tab's panel: the desk's walk says what it shows, the chrome draws it, and the
+        // compositor pictures the windows its cards name.
+        let switcher = tilo_desktop::window_switcher::Switcher::default();
         // The surfaces the desk shows over its windows, and where each stands: the shell's own
         // views, or the quick settings' app where the device has one and the desk draws it. The
         // desk's door and the chrome's door open them through it.
@@ -1388,6 +1398,7 @@ impl Session {
             &overview,
             &emoji.link(),
             &overlays,
+            &switcher,
         )));
         compositor.add_host(shell::under(options.shell, Held(Rc::clone(&chrome))));
         // Search's code is asked for as the session starts, so it is in by the
@@ -1522,6 +1533,7 @@ impl Session {
                         .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
                     fold,
                     overlays: overlays.clone(),
+                    desk: Rc::clone(&desk_overlays),
                     reveals: Rc::clone(&reveals),
                 },
                 options.scale,
@@ -1798,6 +1810,8 @@ impl Session {
             quick_settings: quick_settings::installed(&options.surfaces),
             panel_asks: RefCell::new(Vec::new()),
             overlays,
+            desk_overlays,
+            switcher,
             doors,
             invocations,
             triggered,
@@ -2872,32 +2886,6 @@ impl Session {
     #[must_use]
     pub fn take_finished_shortcut_runs(&self) -> Vec<FinishedShortcutRun> {
         self.automation.take_finished()
-    }
-
-    /// Hand the desk each window's own icon, which it paints on the window's
-    /// tab and in the switcher, and let go of the icons of windows that
-    /// closed or set none.
-    fn feed_window_artwork(&mut self) {
-        let mut shown = std::collections::BTreeMap::new();
-        for (window, _) in self.compositor.windows() {
-            let Some(icon) = window.icon.as_ref() else {
-                continue;
-            };
-            let serial = icon.serial();
-            shown.insert(window.id, serial);
-            if self.window_artwork.get(&window.id) == Some(&serial) {
-                continue;
-            }
-            self.shared
-                .handle
-                .set_window_artwork(window.id, Some(app_icons::window(window.id, icon)));
-        }
-        for (gone, _) in std::mem::take(&mut self.window_artwork) {
-            if !shown.contains_key(&gone) {
-                self.shared.handle.set_window_artwork(gone, None);
-            }
-        }
-        self.window_artwork = shown;
     }
 
     /// Ask the system to suspend, restart or shut the machine down.

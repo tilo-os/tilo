@@ -96,6 +96,43 @@ pub fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -
     );
 }
 
+/// The standard display's screen now, kept as `name.png` where `TL_SHELL_SHOTS` names.
+pub fn shot(session: &mut Session, name: &str) -> tilo_compositor::Screenshot {
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a screenshot of the display");
+    if let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("the captures' directory");
+        image::save_buffer(
+            dir.join(format!("{name}.png")),
+            &shot.rgba,
+            shot.width,
+            shot.height,
+            image::ColorType::Rgba8,
+        )
+        .expect("the capture written");
+    }
+    shot
+}
+
+/// How many pixels differ between two frames of the display: how much of the screen moved.
+#[track_caller]
+pub fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screenshot) -> usize {
+    assert_eq!(
+        (before.width, before.height),
+        (after.width, after.height),
+        "the two frames are of one screen"
+    );
+    before
+        .rgba
+        .chunks_exact(4)
+        .zip(after.rgba.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count()
+}
+
 /// Where the shell's control or region named `name` stands on the standard display, when it
 /// does.
 pub fn on_screen(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {

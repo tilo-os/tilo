@@ -156,6 +156,13 @@ pub(crate) enum DeskEffect {
         )]
         scope: Option<String>,
     },
+    /// Choose the window the walk reached, without crossing the ones between: `at` is its place
+    /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End
+    /// and a card under the pointer choose by place.
+    SelectSwitcher {
+        #[param("The window's place among the ones the walk crosses; -1 for the last")]
+        at: i64,
+    },
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
 }
@@ -504,6 +511,80 @@ fn walked(
     (walked, front)
 }
 
+/// The window the walk has reached, of `windows`: its place among them, where it stands to be
+/// lifted and where Alt let go lands. `None` while no walk is up.
+fn reaching(
+    overlays: &crate::overlays::Overlays,
+    windows: &[shell_part::WindowReading],
+) -> Option<usize> {
+    let (walked, front) = walked(windows, overlays.scope());
+    overlays
+        .reached(walked.len(), front)
+        .and_then(|at| walked.get(at).copied())
+}
+
+/// Each window's client, by the tab it is: what the compositor pictures where a card shows it.
+fn window_surfaces(tree: &DesktopTree) -> std::collections::HashMap<u64, u64> {
+    use tilo_desktop_model::TileContent;
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter_map(|tab| match &tab.tile {
+            TileContent::Foreign { surface_id, .. } => Some((tab.id, *surface_id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What the switcher's panel shows now: the windows the walk crosses, in its order, and the one
+/// it has reached. `None` while no walk is up or its panel has not been held long enough to
+/// show, so a quick flick flashes nothing.
+pub(crate) fn switcher_view(
+    handle: &DesktopHandle,
+    overlays: &crate::overlays::Overlays,
+    now: std::time::Instant,
+) -> Option<tilo_desktop::window_switcher::SwitcherView> {
+    if !overlays.revealed(now) {
+        return None;
+    }
+    let (windows, reached, surfaces) = handle.read(|tree| {
+        let windows = windows(tree, handle);
+        let reached = reaching(overlays, &windows);
+        (windows, reached, window_surfaces(tree))
+    });
+    let reached = reached?;
+    let (walked, _) = walked(&windows, overlays.scope());
+    let selected = walked.iter().position(|at| *at == reached)?;
+    let cards = walked
+        .iter()
+        .filter_map(|at| windows.get(*at))
+        .map(|window| {
+            // A window whose app holds secrets from the desk, or one this device does not run,
+            // has no picture: its card shows the app's own face. A key that is no tab is such
+            // a window, and so is one whose host pictures nothing.
+            // ignored-failure: a window that is no tab has no client to picture
+            let tab = window
+                .key
+                .parse::<u64>()
+                .ok()
+                .filter(|_| window.preview == "live");
+            let picture = tab.and_then(|tab| surfaces.get(&tab).copied());
+            tilo_desktop::window_switcher::SwitcherCard {
+                window: picture,
+                title: window.title.clone(),
+                app_key: window.app_key.clone(),
+            }
+        })
+        .collect();
+    Some(tilo_desktop::window_switcher::SwitcherView {
+        cards,
+        selected,
+        app_scope: overlays.scope() == crate::overlays::SwitcherScope::App,
+    })
+}
+
 impl Desk {
     /// What the reading is made from, without making it: the tree's revision, the minute,
     /// what the notifications say and who is here. The reading changes only when this does.
@@ -559,17 +640,11 @@ impl Desk {
         now: std::time::Instant,
     ) -> Vec<shell_part::WindowReading> {
         let mut windows = windows(tree, &self.handle);
-        if self.surfaces.overlays.revealed(now) {
-            let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
-            if let Some(at) = self
-                .surfaces
-                .overlays
-                .reached(walked.len(), front)
-                .and_then(|at| walked.get(at).copied())
-            {
-                for (index, window) in windows.iter_mut().enumerate() {
-                    window.focused = index == at;
-                }
+        if self.surfaces.overlays.revealed(now)
+            && let Some(at) = reaching(&self.surfaces.overlays, &windows)
+        {
+            for (index, window) in windows.iter_mut().enumerate() {
+                window.focused = index == at;
             }
         }
         windows
@@ -943,19 +1018,51 @@ impl Desk {
     /// walk counts from the window in front, over the windows its scope crosses, wrapping.
     fn commit_switcher(&self) {
         let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
-        let reached = self
-            .surfaces
-            .overlays
-            .reached(walked.len(), front)
-            .and_then(|at| walked.get(at).copied())
-            .and_then(|at| windows.get(at));
+        let reached = reaching(&self.surfaces.overlays, &windows).and_then(|at| windows.get(at));
         // ignored-failure: a reached window whose key is no tab focuses nothing
         if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
             self.handle.focus_tab(tab);
         }
         self.surfaces.overlays.forget_walk();
         self.surfaces.overlays.show(crate::overlays::Overlay::Rest);
+    }
+
+    /// Open the switcher on the window before the one in front, or walk it `steps` windows on.
+    /// A walk over fewer than two windows has nowhere to go, and opens nothing: Alt+Tab with
+    /// one window open does what it always has, which is nothing.
+    fn walk_switcher(&self, scope: Option<&str>, steps: i64) {
+        let scope = scope
+            .and_then(crate::overlays::SwitcherScope::named)
+            .unwrap_or_default();
+        // Opening the walk is one window on, as Alt+Tab goes to the window before the one in
+        // front whichever way its press names.
+        let steps = if steps == 0 { 1 } else { steps };
+        if !self.surfaces.overlays.is_up() {
+            let windows = self.handle.read(|tree| windows(tree, &self.handle));
+            let (walked, _) = walked(&windows, scope);
+            if walked.len() < 2 {
+                return;
+            }
+        }
+        self.surfaces.overlays.walk(Some(scope.name()), steps);
+    }
+
+    /// Choose the window `at` in the walk's order: `0` the first of them, `-1` the last. Home,
+    /// End and a card under the pointer choose by place, without crossing the ones between.
+    fn select_switcher(&self, at: i64) {
+        if !self.surfaces.overlays.is_up() {
+            return;
+        }
+        let windows = self.handle.read(|tree| windows(tree, &self.handle));
+        let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
+        let count = i64::try_from(walked.len()).unwrap_or(1).max(1);
+        let at = if at < 0 {
+            count.saturating_add(at)
+        } else {
+            at.min(count.saturating_sub(1))
+        };
+        let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
+        self.surfaces.overlays.select(at.saturating_sub(front));
     }
 }
 
@@ -1152,9 +1259,11 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
-            self.surfaces
-                .overlays
-                .walk(scope.as_deref(), steps.unwrap_or(1));
+            self.walk_switcher(scope.as_deref(), steps.unwrap_or(1));
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::SelectSwitcher { at } = &effect {
+            self.select_switcher(*at);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {

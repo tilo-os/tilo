@@ -1,0 +1,487 @@
+//! Alt+Tab on the default Rust session, driven by the compositor's own keys: holding Alt over
+//! a Tab puts the chrome's panel up over the windows of the workspace in front, in the order
+//! Alt+Tab walks them, and the walk crosses the strips of that workspace and no other. Shift
+//! walks the other way, the key above Tab narrows the walk to the app in front's windows,
+//! Home and End choose by place, Escape leaves the person where they were, letting Alt go goes
+//! to the window the walk reached, and a press on a card goes to that window.
+//!
+//! A flick shorter than the panel's reveal delay switches windows and flashes nothing: the
+//! walk is the desk's from the press of the chord to the release of Alt.
+
+#![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
+)]
+
+mod common;
+
+use std::time::{Duration, Instant};
+
+use common::{BTN_LEFT, HEIGHT, WIDTH, changed, shot, until};
+use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
+use tilo_desktop::window_switcher::SwitcherView;
+use tilo_desktop_model::{
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceSlot,
+};
+use tilo_session::{Options, Session};
+use tilo_surface_host::DeskReading;
+use tilo_surface_host::shell_part::DESK_RESOURCE;
+
+/// What a key sends, evdev codes.
+const KEY_ESCAPE: u32 = 1;
+const KEY_TAB: u32 = 15;
+const KEY_ENTER: u32 = 28;
+const KEY_LEFTSHIFT: u32 = 42;
+const KEY_GRAVE: u32 = 41;
+const KEY_LEFTALT: u32 = 56;
+const KEY_HOME: u32 = 102;
+const KEY_END: u32 = 107;
+
+/// One frame at the display's refresh.
+const REFRESH: Duration = Duration::from_millis(1);
+
+fn window(id: u64, title: &str, app: &str) -> Tab {
+    Tab {
+        id,
+        title: title.into(),
+        tile: TileContent::LocalApp {
+            app_id: app.into(),
+            label: title.into(),
+            note: String::new(),
+        },
+        app_title: None,
+    }
+}
+
+fn group(id: u64, tab: Tab) -> WindowGroup {
+    WindowGroup {
+        id,
+        active_tab: tab.id,
+        tabs: vec![tab],
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }
+}
+
+/// The desk the session starts on: two strips and three windows in the workspace in front —
+/// two of the notes app, one of the mail app — and a window of another workspace, which the
+/// walk never crosses.
+fn desk_tree() -> DesktopTree {
+    let mut work = Workspace::new(WorkspaceSlot(1), "Work");
+    work.strips = vec![
+        Strip {
+            id: StripId(2),
+            name: "Main".into(),
+            window_groups: vec![
+                group(10, window(20, "Notes", "so.tilo.notes")),
+                group(11, window(21, "Mail", "so.tilo.mail")),
+            ],
+        },
+        Strip {
+            id: StripId(3),
+            name: "Side".into(),
+            window_groups: vec![group(12, window(22, "Budget", "so.tilo.notes"))],
+        },
+    ];
+    let mut elsewhere = Workspace::new(WorkspaceSlot(2), "Elsewhere");
+    elsewhere.strips = vec![Strip {
+        id: StripId(4),
+        name: "Main".into(),
+        window_groups: vec![group(13, window(23, "Away", "so.tilo.mail"))],
+    }];
+    let mut tree = DesktopTree {
+        active: work.slot,
+        workspaces: vec![work, elsewhere],
+        ..Default::default()
+    };
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_group.insert(StripId(2), 10);
+    tree
+}
+
+/// The default session — the Rust chrome, not the opt-in shell — on the desk above.
+fn session() -> Session {
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    // A held Tab repeats on a desktop; here a key is pressed once, so a slow step does not
+    // turn one press into several.
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(1),
+        rate: 0,
+    });
+    session.handle().replace_tree(desk_tree());
+    session.step(REFRESH).expect("a turn of the session");
+    session
+}
+
+fn key(session: &mut Session, keycode: u32, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::Key { keycode, pressed })
+        .expect("the key reaches the session");
+    session.step(REFRESH).expect("a turn of the session");
+}
+
+/// The desk as the session publishes it.
+fn desk(session: &Session) -> DeskReading {
+    serde_json::from_value(
+        session
+            .read(DESK_RESOURCE)
+            .expect("the session publishes its desk"),
+    )
+    .expect("the desk reads as the desk's reading")
+}
+
+/// The title of the window in front.
+fn front(session: &Session) -> String {
+    desk(session)
+        .windows
+        .into_iter()
+        .find(|window| window.focused)
+        .expect("a window is in front")
+        .title
+}
+
+/// What the panel shows now, when it is up.
+fn panel(session: &Session) -> Option<SwitcherView> {
+    session.window_switcher().view()
+}
+
+/// The titles of the panel's cards, in its order.
+fn cards(view: &SwitcherView) -> Vec<String> {
+    view.cards.iter().map(|card| card.title.clone()).collect()
+}
+
+/// Alt+Tab held down from a fresh desk, and the time until its panel shows.
+fn hold_alt_tab(session: &mut Session) -> Duration {
+    key(session, KEY_LEFTALT, true);
+    let pressed = Instant::now();
+    key(session, KEY_TAB, true);
+    until(session, "the panel shows while Alt is held", |session| {
+        panel(session).is_some()
+    });
+    pressed.elapsed()
+}
+
+/// Move the pointer to the centre of card `index`, as the panel was last drawn.
+fn move_to_card(session: &mut Session, index: usize) {
+    let cards = session.window_switcher().card_rects();
+    let (_, card) = cards
+        .iter()
+        .find(|(at, _)| *at == index)
+        .expect("the panel drew that card");
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion {
+            x: f64::midpoint(card.x0, card.x1),
+            y: f64::midpoint(card.y0, card.y1),
+        })
+        .expect("the pointer moves");
+}
+
+/// Holding Alt+Tab shows the panel over the windows of the workspace in front, in the walk's
+/// order, across its strips and no other workspace's windows; Shift walks the other way and
+/// Escape leaves the person where they were.
+#[test]
+fn holding_alt_tab_shows_the_workspaces_windows_across_its_strips() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let plain = shot(&mut session, "switcher-desk");
+
+    let waited = hold_alt_tab(&mut session);
+    let view = panel(&session).expect("the panel is up while Alt is held");
+    assert_eq!(
+        cards(&view),
+        ["Notes", "Mail", "Budget"],
+        "the walk crosses the workspace in front, its strips in order, from the window in front"
+    );
+    assert_eq!(
+        view.selected, 1,
+        "Alt+Tab opens on the window before the one in front"
+    );
+    assert!(!view.app_scope);
+    assert_eq!(
+        front(&session),
+        "Mail",
+        "the desk lifts the window the walk reached, as the shell's reading always has"
+    );
+    let held = shot(&mut session, "switcher-held");
+    assert!(
+        changed(&plain, &held) > plain.rgba.len() / 4 / 100,
+        "the panel shows over the desk: {} pixels differ",
+        changed(&plain, &held)
+    );
+
+    // Releasing Tab is no answer: the walk stays up.
+    key(&mut session, KEY_TAB, false);
+    assert!(
+        panel(&session).is_some(),
+        "Tab released with Alt down leaves the panel up"
+    );
+
+    // Shift walks the other way.
+    key(&mut session, KEY_LEFTSHIFT, true);
+    key(&mut session, KEY_TAB, true);
+    assert_eq!(
+        panel(&session).expect("the panel is up").selected,
+        0,
+        "Shift+Tab walks back from the window before the one in front, to it"
+    );
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_LEFTSHIFT, false);
+
+    // Escape takes it down and leaves the person where they were.
+    key(&mut session, KEY_ESCAPE, true);
+    key(&mut session, KEY_ESCAPE, false);
+    until(&mut session, "Escape takes the panel down", |session| {
+        panel(session).is_none()
+    });
+    key(&mut session, KEY_LEFTALT, false);
+    assert_eq!(front(&session), "Notes", "Escape switched nothing");
+
+    eprintln!("the panel showed {waited:?} after Alt+Tab was pressed");
+}
+
+/// Letting Alt go goes to the window the walk reached, and the panel comes down.
+#[test]
+fn letting_alt_go_goes_to_the_window_the_walk_reached() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    hold_alt_tab(&mut session);
+    assert_eq!(panel(&session).expect("the panel is up").selected, 1);
+
+    let released = Instant::now();
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_LEFTALT, false);
+    until(
+        &mut session,
+        "Alt let go brings the walk's window front",
+        |session| front(session) == "Mail",
+    );
+    let settled = released.elapsed();
+    assert!(
+        panel(&session).is_none(),
+        "the panel is down once Alt is let go"
+    );
+    assert_eq!(desk(&session).here, "none", "the desk is at rest again");
+    shot(&mut session, "switcher-after");
+    eprintln!("letting Alt go went to Mail {settled:?} later");
+}
+
+/// The key above Tab walks only the windows of the app in front, across strips; Home and End
+/// choose the first and last of them by place, and Enter goes to the chosen one.
+#[test]
+fn alt_grave_walks_only_the_front_apps_windows() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    key(&mut session, KEY_LEFTALT, true);
+    key(&mut session, KEY_GRAVE, true);
+    until(&mut session, "the app's panel shows", |session| {
+        panel(session).is_some()
+    });
+    let view = panel(&session).expect("the panel is up");
+    assert_eq!(
+        cards(&view),
+        ["Notes", "Budget"],
+        "Alt+` crosses the front app's windows, across the strips it holds them on"
+    );
+    assert!(view.app_scope, "the panel says which walk it shows");
+    assert_eq!(view.selected, 1);
+    let app = shot(&mut session, "switcher-app-scope");
+
+    // Home chooses the window in front, End the last of them.
+    key(&mut session, KEY_HOME, true);
+    key(&mut session, KEY_HOME, false);
+    assert_eq!(
+        panel(&session).expect("up").selected,
+        0,
+        "Home chooses the first"
+    );
+    let chosen = shot(&mut session, "switcher-app-scope-first");
+    let moved = changed(&app, &chosen);
+    assert!(moved > 0, "moving the walk draws another card");
+    eprintln!("the walk moving drew {moved} pixels");
+    key(&mut session, KEY_END, true);
+    key(&mut session, KEY_END, false);
+    assert_eq!(
+        panel(&session).expect("up").selected,
+        1,
+        "End chooses the last"
+    );
+
+    key(&mut session, KEY_ENTER, true);
+    key(&mut session, KEY_ENTER, false);
+    until(
+        &mut session,
+        "Enter goes to the last of the app's windows",
+        |session| front(session) == "Budget",
+    );
+    assert!(panel(&session).is_none());
+}
+
+/// A flick shorter than the reveal delay switches windows and flashes nothing.
+#[test]
+fn a_flick_shows_no_panel_and_switches_windows() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session
+        .step(Duration::from_millis(300))
+        .expect("the desk settles");
+    let plain = shot(&mut session, "switcher-flick-before");
+    key(&mut session, KEY_LEFTALT, true);
+    key(&mut session, KEY_TAB, true);
+    assert!(
+        panel(&session).is_none(),
+        "a flick shorter than the reveal delay shows no panel"
+    );
+    let mid_flick = shot(&mut session, "switcher-flick-mid");
+    // The desk is the desk: the walk of a flick crosses the windows with no panel over them.
+    let moved = changed(&plain, &mid_flick);
+    assert!(
+        moved < plain.rgba.len() / 4 / 100,
+        "a flick draws no panel over the desk: {moved} pixels differ"
+    );
+    key(&mut session, KEY_LEFTALT, false);
+    until(
+        &mut session,
+        "the flick went to the window before the one in front",
+        |session| front(session) == "Mail",
+    );
+    shot(&mut session, "switcher-flick-after");
+    // The window just left stands after the one in front, where a held walk opens.
+    let waited = hold_alt_tab(&mut session);
+    assert_eq!(
+        cards(&panel(&session).expect("the panel is up")),
+        ["Mail", "Notes", "Budget"]
+    );
+    eprintln!("the panel showed {waited:?} after Alt+Tab was pressed");
+}
+
+/// The card under the pointer is chosen on sight, and a press on it goes to that window.
+#[test]
+fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session
+        .step(Duration::from_millis(300))
+        .expect("the desk settles");
+    hold_alt_tab(&mut session);
+    assert_eq!(
+        cards(&panel(&session).expect("the panel is up")),
+        ["Notes", "Mail", "Budget"]
+    );
+    move_to_card(&mut session, 2);
+    until(
+        &mut session,
+        "the card under the pointer is chosen on sight",
+        |session| front(session) == "Budget",
+    );
+    // The card the walk reached may stand elsewhere: the pointer goes to where it stands now
+    // before the press, as the person's would.
+    move_to_card(&mut session, 2);
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        })
+        .expect("the press reaches the session");
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        })
+        .expect("the pointer lets go");
+    until(
+        &mut session,
+        "a press on a card goes to that window",
+        |session| panel(session).is_none() && front(session) == "Budget",
+    );
+    key(&mut session, KEY_LEFTALT, false);
+}
+
+/// A press off the panel is no press on the window behind it: the walk ends where it stood.
+#[test]
+fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session
+        .step(Duration::from_millis(300))
+        .expect("the desk settles");
+    hold_alt_tab(&mut session);
+    move_to_card(&mut session, 1);
+    until(&mut session, "the walk reached another window", |session| {
+        front(session) == "Mail"
+    });
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 5.0, y: 400.0 })
+        .expect("the pointer moves off the panel");
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        })
+        .expect("the press reaches the session");
+    until(
+        &mut session,
+        "a press off the panel takes it down",
+        |session| panel(session).is_none(),
+    );
+    key(&mut session, KEY_LEFTALT, false);
+    assert_eq!(
+        front(&session),
+        "Notes",
+        "a press outside the panel switches nothing"
+    );
+}
+
+/// Alt+Tab with one window open does nothing: there is nowhere to walk, and no panel stands
+/// over the desk.
+#[test]
+fn one_window_opens_no_walk() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let mut tree = handle.read(Clone::clone);
+    tree.workspaces = vec![
+        tree.active_workspace()
+            .expect("a workspace is in front")
+            .clone(),
+    ];
+    let workspace = &mut tree.workspaces[0];
+    workspace.strips = vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: vec![group(10, window(20, "Notes", "so.tilo.notes"))],
+    }];
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(desk(&session).windows.len(), 1);
+
+    key(&mut session, KEY_LEFTALT, true);
+    key(&mut session, KEY_TAB, true);
+    session
+        .step(Duration::from_millis(200))
+        .expect("a turn of the session");
+    assert!(panel(&session).is_none(), "one window is nowhere to walk");
+    assert_eq!(desk(&session).here, "none");
+    key(&mut session, KEY_LEFTALT, false);
+}

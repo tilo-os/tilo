@@ -672,14 +672,17 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     assert_eq!(elsewhere.tab_index, 0, "it is the tab in front of it");
     assert!(elsewhere.place > 0, "it has a place in its workspace");
     assert!(!elsewhere.focused, "what has focus is the window in front");
+    // A second window in the workspace in front, so the walk has somewhere to go.
+    let second = open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 3);
+    let in_front = [front.to_string(), second.to_string()];
     // The walk crosses the workspace in front alone.
     for _ in 0..3 {
         walk(&mut session, 1, "workspace");
         session.step(Duration::from_millis(300)).unwrap();
         until(&mut session, |session| desk(session).switcher_revealed);
-        assert_eq!(
-            reached(&session).key,
-            front.to_string(),
+        assert!(
+            in_front.contains(&reached(&session).key),
             "the walk keeps to the workspace in front: {:?}",
             desk(&session).windows
         );
