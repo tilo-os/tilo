@@ -123,7 +123,7 @@ pub use keys::{KeyClaim, KeyRepeat};
 /// How close to the whole timeout a park must be to have ended on the
 /// deadline rather than on arriving work.
 const WAKE_MARGIN: Duration = Duration::from_millis(1);
-pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
+pub use output::{HostedOutput, ModeRequest, OutputChange, OutputConfig, OutputInfo};
 
 /// What the person is in the middle of, as the compositor sees it: an
 /// arranging change moves nothing under a gesture or while they type

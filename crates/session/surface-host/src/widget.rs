@@ -612,13 +612,16 @@ impl SurfaceHost for WidgetHost {
         });
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         if !self.covers {
             return;
         }
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
-            .map(|&(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
+            .map(|output| {
+                let (x, y, w, h) = output.rect;
+                (x, y, x.saturating_add(w), y.saturating_add(h))
+            })
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
         else {
             return;
@@ -629,10 +632,20 @@ impl SurfaceHost for WidgetHost {
         ) else {
             return;
         };
+        // The scale of the output the surface stands on, so what it paints
+        // has the pixels that output shows rather than being stretched over
+        // them: a bar on a 2 display is drawn at 2.
+        let scale = tilo_compositor::HostedOutput::scale_at(
+            outputs,
+            (
+                f64::from(x0) + f64::from(width) / 2.0,
+                f64::from(y0) + f64::from(height) / 2.0,
+            ),
+        );
         self.set_placement(Placement {
             origin: (x0, y0),
             size: (width.max(1), height.max(1)),
-            scale: self.placement.scale,
+            scale,
         });
     }
 

@@ -449,3 +449,37 @@ delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
+
+/// The shell on a HiDPI display draws at that display's scale: its part
+/// paints the pixels the panel shows, so the bar and the desk are as crisp
+/// as the display allows rather than one scale's worth stretched over
+/// twice the area.
+#[test]
+fn a_shell_on_a_scaled_display_draws_at_that_scale() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        options(),
+        &[
+            OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).with_scale(1.0),
+            OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT)
+                .with_scale(2.0)
+                .at(WIDTH, 0),
+        ],
+    )
+    .expect("session");
+    until(&mut session, |session| session.shell_parts().len() == 2);
+    let parts = session.shell_parts();
+    let scale = |name: &str| {
+        parts
+            .iter()
+            .find(|part| part.output == name)
+            .map(|part| part.scale)
+    };
+    assert_eq!(scale("HEADLESS-1"), Some(1.0), "the plain display's part");
+    assert_eq!(
+        scale("HEADLESS-2"),
+        Some(2.0),
+        "the part on the 2 display draws at 2: {:?}",
+        session.shell_parts()
+    );
+}

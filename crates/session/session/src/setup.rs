@@ -109,7 +109,7 @@ pub(crate) struct Setup {
     /// The outputs this layer covers, as the compositor last told a view:
     /// replayed to a view that replaces another, which is only told when the
     /// outputs themselves change.
-    outputs: Vec<(i32, i32, i32, i32)>,
+    outputs: Vec<tilo_compositor::HostedOutput>,
 }
 
 impl Setup {
@@ -368,7 +368,7 @@ impl SurfaceHost for Setup {
         self.widgets_mut().set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.outputs = outputs.to_vec();
         self.widgets_mut().outputs_changed(outputs);
     }

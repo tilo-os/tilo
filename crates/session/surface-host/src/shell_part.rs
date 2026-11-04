@@ -1946,6 +1946,9 @@ pub struct ShellPart {
     /// The output this part stands on: its connector name, and its logical rectangle
     /// `(x, y, w, h)`. `None` before the outputs are told, when it spans their bounding box.
     output: Option<(String, (i32, i32, u32, u32))>,
+    /// The scale the output it stands on draws at: what the part paints at so it is as crisp
+    /// as the display allows, rather than drawn at one scale and stretched over another.
+    output_scale: f64,
     /// The display the part stood on, which went (unplugged, turned off): while it is gone the
     /// part stands nowhere, draws nothing, takes no pointer and offers nothing on the door,
     /// until it is told a display again.
@@ -2065,6 +2068,7 @@ impl ShellPart {
             work: ShellWork::default(),
             refusals: Vec::new(),
             output: None,
+            output_scale: scale,
             gone: None,
             fullscreen: Vec::new(),
             cover: false,
@@ -2138,7 +2142,7 @@ impl ShellPart {
         let Some((name, (x, y, width, output_height))) = self.output.clone() else {
             return;
         };
-        let scale = self.widgets.placement().scale;
+        let scale = self.output_scale;
         if self.fullscreen.contains(&name) && !self.cover {
             // Nothing of the part stands there: the smallest placement keeps its layout cheap,
             // and `hidden` hands the compositor no layer and takes no pointer, so not a row of
@@ -2307,8 +2311,8 @@ impl ShellPart {
     /// the part is one display's, and follows that display as it is added, moved or turned
     /// off. Every part of one shell is told its own display; none spans them all. `None`: the
     /// display went, and the part stands nowhere until it is told one again.
-    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>) {
-        if self.output == output {
+    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>, scale: f64) {
+        if self.output == output && self.output_scale.to_bits() == scale.to_bits() {
             return;
         }
         if output.is_some() {
@@ -2319,6 +2323,7 @@ impl ShellPart {
             self.cover = false;
         }
         self.output = output;
+        self.output_scale = scale;
         self.place();
     }
 
@@ -2349,6 +2354,12 @@ impl ShellPart {
     #[must_use]
     pub fn placement(&self) -> Option<(String, (i32, i32, u32, u32))> {
         self.output.clone()
+    }
+
+    /// The scale the part draws at: its display's.
+    #[must_use]
+    pub const fn part_scale(&self) -> f64 {
+        self.output_scale
     }
 
     /// Whether the part draws nothing now: it stands on a display a fullscreen window owns.

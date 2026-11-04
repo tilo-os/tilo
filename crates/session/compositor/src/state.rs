@@ -184,7 +184,7 @@ pub struct State {
     pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     /// The outputs the hosted surfaces were last told of.
-    told_outputs: Vec<(i32, i32, i32, i32)>,
+    told_outputs: Vec<crate::output::HostedOutput>,
     /// The connector the person made primary, as the configuration names
     /// it, whether or not it is lit right now.
     primary_output: Option<String>,
@@ -491,12 +491,18 @@ impl State {
         }
     }
 
-    /// The outputs' rectangles `(x, y, w, h)`, as hosted surfaces are
-    /// told them.
-    pub(crate) fn hosted_outputs(&self) -> Vec<(i32, i32, i32, i32)> {
-        self.output_geometries()
-            .iter()
-            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    /// The outputs as hosted surfaces are told them: each one's logical
+    /// rectangle and the scale it draws at.
+    pub(crate) fn hosted_outputs(&self) -> Vec<crate::output::HostedOutput> {
+        self.space
+            .outputs()
+            .filter_map(|output| {
+                let rect = self.space.output_geometry(output)?;
+                Some(crate::output::HostedOutput {
+                    rect: (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h),
+                    scale: output.current_scale().fractional_scale(),
+                })
+            })
             .collect()
     }
 
