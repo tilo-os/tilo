@@ -21350,7 +21350,6 @@ dependencies = [
  "libc",
  "neighbour-wire",
  "os-actions",
- "pipewire",
  "pollster",
  "postcard",
  "rand_core 0.10.0",

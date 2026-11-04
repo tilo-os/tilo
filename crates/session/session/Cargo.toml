@@ -312,8 +312,6 @@ tilo-call-lane = { path = "../../collab/tilo-call-lane" }
 # this session's own endpoint, and the relay role a member serves for the
 # others.
 tilo-live = { path = "../../collab/tilo-live", features = ["native", "plane"] }
-# One-shot `PipeWire` registry custody for a call's microphone and output.
-pipewire = "0.10.1"
 
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../system/tilo-auth", default-features = false }
