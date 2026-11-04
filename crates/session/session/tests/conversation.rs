@@ -323,19 +323,18 @@ fn pressing_a_reference_places_its_resource_on_the_canvas() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .find(|place| place.record == format!("tl:{NOTES}:n1"))
             .cloned()
     };
     until(&mut session, |session| placed(session).is_some());
     let place = placed(&session).unwrap();
     assert_eq!(place.shows, NOTES, "shown by the app that keeps it");
-    let held = session.arrangement().borrow().strips();
-    let strip = held
-        .strip_of(place.id)
+    let strip = common::strip_of(&session, common::number(&place.key))
         .expect("it stands in a strip of the record");
-    assert!(strip.canvas.is_some(), "it stands on the canvas");
+    assert!(strip.placed, "it stands on the canvas");
     let (who, verb) = session
         .arrangement()
         .borrow_mut()
@@ -379,15 +378,16 @@ fn a_run_placed_on_the_canvas_is_the_shells_conversation_place() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .find(|place| place.record == resource)
             .cloned()
     };
     until(&mut session, |session| placed(session).is_some());
     let place = placed(&session).unwrap();
     assert_eq!(place.shows, "so.tilo.shell", "the shell shows a run");
-    assert_eq!(place.view, "conversation", "through its conversation");
+    assert_eq!(place.shown_as, "conversation", "through its conversation");
     let (who, verb) = session
         .arrangement()
         .borrow_mut()
@@ -423,12 +423,13 @@ fn converse(session: &mut Session, line: &str, run: &str, at: (i64, i64)) -> Res
 fn placed_record(
     session: &Session,
     record: &str,
-) -> Option<tilo_desktop_model::own_arrangement::Place> {
+) -> Option<tilo_session::arrangement::PlaceReading> {
     session
         .arrangement()
         .borrow()
-        .strips()
-        .places()
+        .reading()
+        .places
+        .iter()
         .find(|place| place.record == record)
         .cloned()
 }
@@ -455,11 +456,15 @@ fn a_sentence_typed_at_the_canvas_places_its_conversation() {
 
     let place = placed_record(&session, &resource).expect("the conversation stands");
     assert_eq!(place.shows, "so.tilo.shell", "the shell shows a run");
-    assert_eq!(place.view, "conversation", "through its conversation");
-    let held = session.arrangement().borrow().strips();
-    let strip = held.strip_of(place.id).expect("it stands in a strip");
-    let canvas = strip.canvas.expect("it stands on the canvas");
-    assert_eq!((canvas.x, canvas.y), (120, 80), "where the person typed");
+    assert_eq!(place.shown_as, "conversation", "through its conversation");
+    let strip =
+        common::strip_of(&session, common::number(&place.key)).expect("it stands in a strip");
+    assert!(strip.placed, "it stands on the canvas");
+    assert_eq!(
+        (strip.canvas_x, strip.canvas_y),
+        (120, 80),
+        "where the person typed"
+    );
     let (who, verb) = session
         .arrangement()
         .borrow_mut()

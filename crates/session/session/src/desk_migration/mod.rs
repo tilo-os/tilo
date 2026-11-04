@@ -13,13 +13,16 @@
 //!
 //! The shell before these sessions kept its desk in a file of its own
 //! (`~/.config/tilo/state.json`), which [`shell`] brings over the same way for
-//! a device that upgraded from it.
+//! a device that upgraded from it. A session also kept the person's arrangement
+//! in a document beside the desk (`tilo/arrangement.automerge`), whose windows
+//! [`arrangement`] opens on the desk the first time this build reads it.
 //!
 //! Nothing is lost: the desk a person left is the desk they come back to, and
 //! who changed what before is still in its history. A tree file a newer build
 //! wrote is not read at all: it stays where it is, nothing is written beside
 //! it, and the session says where it is ([`StateNotice`]).
 
+pub(crate) mod arrangement;
 pub(crate) mod shell;
 
 use std::collections::BTreeMap;
@@ -333,9 +336,9 @@ mod tests {
         let left = here.tree().expect("the desk opens");
         let mut renamed = left.clone();
         renamed.workspaces[0].name = FIRST_NAME.into();
-        assert!(here.record(&renamed, LAST_TIME + 100));
+        assert!(here.record(&renamed, LAST_TIME + 100, &[]));
         assert!(
-            !here.record(&renamed, LAST_TIME + 100),
+            !here.record(&renamed, LAST_TIME + 100, &[]),
             "a desk the document holds is no change"
         );
         tilo_durable_writer::global().flush();

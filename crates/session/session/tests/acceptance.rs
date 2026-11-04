@@ -322,15 +322,17 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .any(|place| place.record.starts_with("agent-run:"))
     });
     let run = session
         .arrangement()
         .borrow()
-        .strips()
-        .places()
+        .reading()
+        .places
+        .iter()
         .find_map(|place| place.record.strip_prefix("agent-run:").map(str::to_owned))
         .expect("the conversation's run");
     until(&mut session, "the conversation drawn", |session| {
@@ -357,7 +359,7 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
         session.shell_says("Groceries")
     });
     assert!(
-        session.arrangement().borrow().strips().places().count() == 1,
+        common::places(&session).len() == 1,
         "only the conversation stands on the canvas yet"
     );
 
@@ -367,8 +369,9 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .any(|place| place.record == note)
     });
 }

@@ -419,11 +419,8 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         &mut session,
         "the notebook placed by its German name",
         |session| {
-            session
-                .arrangement()
-                .borrow()
-                .strips()
-                .places()
+            common::places(session)
+                .iter()
                 .any(|place| place.record.contains(NOTES))
         },
     );
@@ -445,8 +442,9 @@ fn noted(session: &Session) -> usize {
     session
         .arrangement()
         .borrow()
-        .strips()
-        .places()
+        .reading()
+        .places
+        .iter()
         .filter(|place| place.record.contains(NOTES))
         .count()
 }
@@ -586,8 +584,9 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .filter_map(|place| {
                 tilo_actions::door::locate(
                     &resources,
@@ -651,8 +650,9 @@ fn my_mails_on_the_canvas_places_mails_root() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .filter_map(|place| {
                 tilo_actions::door::locate(
                     &resources,
@@ -756,12 +756,9 @@ fn an_app_no_place_shows_is_unloaded() {
     let mut session = seeded_session(root.path());
     place_the_inbox(&mut session, root.path());
     assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
-    let places: Vec<u64> = session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
-        .map(|place| place.id)
+    let places: Vec<u64> = common::places(&session)
+        .iter()
+        .map(|place| common::number(&place.key))
         .collect();
     for place in places {
         session

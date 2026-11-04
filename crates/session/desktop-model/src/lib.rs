@@ -25,7 +25,6 @@ pub mod history;
 pub mod ids;
 pub mod layout;
 pub mod merge;
-pub mod own_arrangement;
 pub mod ownership;
 pub mod partition;
 pub mod projection;
@@ -52,7 +51,6 @@ pub use ids::{
     TabRef, WorkspaceId, WorkspaceSlot, compose_id, counter_of, mint_in_namespace, peer_salt_of,
 };
 pub use layout::{MissingApp, Strip, Tab, TileContent, WindowGroup};
-pub use own_arrangement::{Place, Row, Strips};
 pub use partition::{Display, OutputPartition};
 pub use receipt::WorkspaceEffectReceipt;
 pub use shared_surfaces::SharedSurfaces;

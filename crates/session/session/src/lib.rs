@@ -559,17 +559,17 @@ impl Shared {
         self.desktops.note_unrecorded(engine, &tree);
     }
 
-    /// Keep the person's arrangement in step with their desk: what the desk
-    /// did on its own is taken in, and what waited for the person to finish
-    /// their gesture or their typing runs once they have.
+    /// Run what waited for the person to finish their gesture or their
+    /// typing: an arranging action that arrived then, in the order it came.
+    /// The arrangement is the desk, so what the desk did meanwhile needs no
+    /// taking in.
     fn follow_arrangement(&self, underway: arrangement::Busy) {
         let mut arrangement = self.arrangement.borrow_mut();
-        arrangement.observe();
-        if !underway.holds() && arrangement.waiting() > 0 {
-            if let Err(why) = arrangement.release() {
-                tracing::warn!(why, "an arranging action that waited could not be made");
-            }
-            arrangement.observe();
+        if !underway.holds()
+            && arrangement.waiting() > 0
+            && let Err(why) = arrangement.release()
+        {
+            tracing::warn!(why, "an arranging action that waited could not be made");
         }
     }
 
@@ -1111,29 +1111,19 @@ impl Session {
             std::sync::Arc::clone(&the_programs),
             &options.person,
         ));
-        // The person's arrangement: the desk this session holds, which the
-        // workspace shares as its own desk record. A device that has kept none
-        // yet reads it from the desk, or from the record a build before this
-        // one kept beside it — laid out once, and gone.
-        let record = options
-            .state
-            .as_deref()
-            .and_then(arrangement::take_kept)
-            .unwrap_or_default();
-        let kept_desk = handle.read(Clone::clone);
-        // What each window shows, as its app's record is held here: the
-        // session's own, read from the broker every pass and noted beside the
-        // window in its workspace's layout.
+        // What each window shows, as the broker knows it: the desk offers the
+        // windows a person may share from, and the sharing doors read it.
         let notes = options.launches.notes();
-        let mut arrangement = arrangement::Arrangement::new(
+        // The person's arrangement: the desk this session holds, which the
+        // workspace shares as its own desk record. A device that kept its
+        // arrangement beside the desk before this build has what it holds
+        // opened on the desk, once.
+        let arrangement = arrangement::Arrangement::new(
             &options.person,
-            record,
             handle.clone(),
             activity.clone(),
-            &kept_desk,
-            &std::collections::BTreeMap::new(),
+            options.state.as_deref(),
         );
-        arrangement.reads_records(std::sync::Arc::clone(&notes));
         let arrangement = Rc::new(RefCell::new(arrangement));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
@@ -1163,7 +1153,6 @@ impl Session {
             )
             .with_conversation(std::sync::Arc::clone(&conversation)),
         )));
-        arrangement.borrow_mut().place_now();
         workspaces::publish_host_actions(&handle);
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep

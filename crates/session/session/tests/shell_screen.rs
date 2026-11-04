@@ -445,12 +445,9 @@ fn salted_session() -> (Session, Vec<String>) {
 /// Place `resource` on the surface in front, as activating a reference in a view does: the
 /// desk's own workspace, row, strip and place ids, minted on this device. The place's id.
 fn place_here(session: &mut Session, resource: &str) -> u64 {
-    let before: Vec<u64> = session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
-        .map(|place| place.id)
+    let before: Vec<String> = common::places(session)
+        .iter()
+        .map(|place| place.key.clone())
         .collect();
     let arguments: Map<String, Value> = json!({
         "resource": resource,
@@ -466,16 +463,15 @@ fn place_here(session: &mut Session, resource: &str) -> u64 {
         .invoke("shell:arrangement", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     until(session, "the place is in the record", |session| {
-        session.arrangement().borrow().strips().places().count() > before.len()
+        common::places(session).len() > before.len()
     });
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
-        .map(|place| place.id)
-        .find(|id| !before.contains(id))
-        .expect("a place the record did not hold before")
+    common::number(
+        &common::places(session)
+            .iter()
+            .map(|place| place.key.clone())
+            .find(|key| !before.contains(key))
+            .expect("a place the record did not hold before"),
+    )
 }
 
 /// An empty strip called `name` in the row in front: what the person makes by dragging one out.
@@ -496,32 +492,18 @@ fn add_strip(session: &Session, name: &str) -> u64 {
 
 /// The strip the place `place` stands in, by the record's ids.
 fn place_strip(session: &Session, place: u64) -> Option<u64> {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .strip_of(place)
-        .map(|strip| strip.id)
+    common::strip_of(session, place).map(|strip| common::number(&strip.key))
 }
 
 /// The row the place `place` stands in, by the record's ids.
 fn place_row(session: &Session, place: u64) -> Option<u64> {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .strip_of(place)
-        .map(|strip| strip.row.0)
+    common::strip_of(session, place).map(|strip| common::number(&strip.row))
 }
 
 /// The width of the strip `strip`, in per-mille of its row.
 fn strip_width(session: &Session, strip: u64) -> Option<u32> {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .strip(strip)
-        .map(|strip| strip.width.permille())
+    common::strip(session, strip)
+        .map(|strip| u32::try_from(strip.width).expect("a width of per-mille fits its count"))
 }
 
 /// Keep the screen as `name.png` where `TL_SHELL_SHOTS` names.
@@ -588,24 +570,15 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     });
     press(&mut session, "Pin window");
     until(&mut session, "the place pinned", |session| {
-        session
-            .arrangement()
-            .borrow()
-            .strips()
-            .place(placed)
-            .is_some_and(|place| place.pinned)
+        common::place(session, placed).is_some_and(|place| place.pinned)
     });
 
     // A second row on the desk: the window's move names it, by the row's own name.
     let second = add_strip(&session, "Elsewhere");
     until(&mut session, "the second row", |session| {
-        session
-            .arrangement()
-            .borrow()
-            .strips()
-            .rows
+        common::rows(session)
             .iter()
-            .any(|row| row.id.0 == second)
+            .any(|row| common::number(&row.key) == second)
     });
     press(&mut session, "This window");
     until(&mut session, "the rows to move to", |session| {

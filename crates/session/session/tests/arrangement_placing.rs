@@ -131,9 +131,32 @@ fn settle(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
     });
 }
 
-/// The arrangement the session's record holds now.
-fn arrangement(session: &Session) -> tilo_desktop_model::own_arrangement::Strips {
-    session.arrangement().borrow().strips()
+/// The arrangement the session's desk holds now, as a shell reads it.
+fn arrangement(session: &Session) -> tilo_session::arrangement::Reading {
+    session.arrangement().borrow().reading()
+}
+
+/// The place of the arrangement `key` names.
+fn place_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::PlaceReading> {
+    let key = key.to_string();
+    arrangement(session)
+        .places
+        .into_iter()
+        .find(|place| place.key == key)
+}
+
+/// The strip of the arrangement `key` names.
+fn strip_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+    let key = key.to_string();
+    arrangement(session)
+        .strips
+        .into_iter()
+        .find(|strip| strip.key == key)
+}
+
+/// An id as the arrangement reads it out: its whole number.
+fn number(key: &str) -> u64 {
+    key.parse().expect("an id reads as its number")
 }
 
 /// The row of the workspace in front, as the canvas place action names it.
@@ -201,23 +224,20 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
             .expect("arguments"),
         )
         .expect("the arranging action runs");
-    settle(&mut session, |session| {
-        arrangement(session).place(place).is_some()
-    });
+    settle(&mut session, |session| place_of(session, place).is_some());
 
-    let held = arrangement(&session);
-    let entry = held.place(place).expect("the entry is in the record");
+    let entry = place_of(&session, place).expect("the entry is in the record");
     assert_eq!(
         entry.record, "tl:so.tilo.lang.mail:inbox",
         "it names the resource"
     );
-    assert_eq!(entry.view, "reader", "it names the view");
+    assert_eq!(entry.shown_as, "reader", "it names the view");
     assert_eq!(entry.shows, app, "shows is derived from the resource's app");
     // It stands at the point it was placed at, alone in its own strip.
-    let strip = held.strip(strip).expect("its strip is in the record");
-    let canvas = strip.canvas.expect("it stands on the canvas");
-    assert_eq!((canvas.x, canvas.y), (240, 160));
-    assert_eq!((canvas.width, canvas.height), (720, 520));
+    let held = strip_of(&session, number(&entry.strip)).expect("its strip is in the record");
+    assert!(held.placed, "it stands on the canvas");
+    assert_eq!((held.canvas_x, held.canvas_y), (240, 160));
+    assert_eq!((held.canvas_width, held.canvas_height), (720, 520));
     // One attributed, undoable step.
     let (who, verb) = session
         .arrangement()
@@ -227,9 +247,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
     assert_eq!(who, ADA, "attributed to the person");
     assert_eq!(verb, "place");
     session.undo_arrangement().expect("undo");
-    settle(&mut session, |session| {
-        arrangement(session).place(place).is_none()
-    });
+    settle(&mut session, |session| place_of(session, place).is_none());
 }
 
 // (2) A view left unnamed is the resource's primary published view, and
@@ -268,14 +286,9 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
             .expect("arguments"),
         )
         .expect("the arranging action runs");
-    settle(&mut session, |session| {
-        arrangement(session).place(place).is_some()
-    });
-    let entry = arrangement(&session)
-        .place(place)
-        .expect("the entry is in the record")
-        .clone();
-    assert_eq!(entry.view, "inbox", "the primary published view");
+    settle(&mut session, |session| place_of(session, place).is_some());
+    let entry = place_of(&session, place).expect("the entry is in the record");
+    assert_eq!(entry.shown_as, "inbox", "the primary published view");
     assert_eq!(entry.shows, app);
     // Showing it ran no action of the app's: the mailbox was never asked to
     // show itself.
@@ -398,18 +411,16 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
 
     // The entry that stands is the one the search found, at the caret.
     let placed = arrangement(&session)
-        .places()
+        .places
+        .into_iter()
         .find(|place| place.record == "tl:so.tilo.lang.mail:inbox")
-        .cloned()
         .expect("the found resource is on the canvas");
-    assert_eq!(placed.view, "inbox", "its primary published view");
+    assert_eq!(placed.shown_as, "inbox", "its primary published view");
     assert_eq!(placed.shows, app, "shows follows from the resource's app");
-    let held = arrangement(&session);
-    let strip = held
-        .strip_of(placed.id)
-        .expect("the entry has a strip of its own");
-    let canvas = strip.canvas.expect("it stands on the canvas");
-    assert_eq!((canvas.x, canvas.y), (320, 96), "at the caret");
+    let strip =
+        strip_of(&session, number(&placed.strip)).expect("the entry has a strip of its own");
+    assert!(strip.placed, "it stands on the canvas");
+    assert_eq!((strip.canvas_x, strip.canvas_y), (320, 96), "at the caret");
     // Attributed to the person, and undone as one step.
     let (who, verb) = session
         .arrangement()
@@ -418,11 +429,9 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         .expect("it is a step of the record's history");
     assert_eq!(who, ADA);
     assert_eq!(verb, "place");
-    let id = placed.id;
+    let id = number(&placed.key);
     session.undo_arrangement().expect("undo");
-    settle(&mut session, |session| {
-        arrangement(session).place(id).is_none()
-    });
+    settle(&mut session, |session| place_of(session, id).is_none());
 }
 
 // (4) A text nothing published matches places nothing and says why: what the
@@ -432,7 +441,7 @@ fn text_that_finds_nothing_places_nothing_and_says_why() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
-    let before = arrangement(&session).places().count();
+    let before = arrangement(&session).places.len();
     let refused = session.invoke(
         "shell:arrangement",
         "place-found",
@@ -442,7 +451,7 @@ fn text_that_finds_nothing_places_nothing_and_says_why() {
     );
     assert!(refused.is_err(), "a text nothing matches is refused");
     assert_eq!(
-        arrangement(&session).places().count(),
+        arrangement(&session).places.len(),
         before,
         "nothing was placed"
     );

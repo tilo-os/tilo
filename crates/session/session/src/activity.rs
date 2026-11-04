@@ -280,14 +280,24 @@ impl Activity {
     /// Record the desk as `tree` holds it, at `time` (seconds since the
     /// epoch), by the person here: one change of the desk's document, and the
     /// document kept. Whether the desk changed at all.
-    pub(crate) fn record_desk(&self, tree: &DesktopTree, time: i64) -> bool {
-        self.0.desk.record(tree, time)
+    pub(crate) fn record_desk(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.0.desk.record(tree, time, shows)
     }
 
     /// [`Self::record_desk`], and write even how the desk looks now: what ends
     /// the session, which the next one starts from.
-    pub(crate) fn record_desk_now(&self, tree: &DesktopTree, time: i64) -> bool {
-        self.0.desk.record_now(tree, time)
+    pub(crate) fn record_desk_now(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.0.desk.record_now(tree, time, shows)
     }
 
     /// Record `tree` as `asked`'s arranging action: one change of the desk
@@ -298,8 +308,15 @@ impl Activity {
         tree: &DesktopTree,
         time: i64,
         asked: &tilo_actions::ActionContext,
+        shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
-        self.0.desk.record_action(tree, time, asked)
+        self.0.desk.record_action(tree, time, asked, shows)
+    }
+
+    /// The record each window of the desk shows, by tab, as the desk keeps
+    /// it.
+    pub(crate) fn records(&self) -> Vec<(tilo_desktop_model::TabId, String)> {
+        self.0.desk.records()
     }
 
     /// Take back `person`'s last step of the desk, and put the desk it leaves
@@ -462,7 +479,7 @@ impl HistorySource for Activity {
         Self::id_of(tree, workspace)?;
         // The desk as it stands is the newest change of it: a workspace made
         // this pass is in the document the pane reads, not only in the tree.
-        self.record_desk(tree, now_seconds());
+        self.record_desk(tree, now_seconds(), &[]);
         let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), self.0.desk.document());
         snapshot.desktop.active = workspace;
         let restored = Rc::downgrade(&self.0);
@@ -937,7 +954,7 @@ mod tests {
         /// recorded it, so what this pass draws is what the desk is.
         fn frame(&mut self) {
             let tree = self.handle.read(Clone::clone);
-            self.activity.record_desk(&tree, now_seconds());
+            self.activity.record_desk(&tree, now_seconds(), &[]);
             ui::Widget::update(&mut self.surface, &AutoCommit::new(), &ui::automerge::ROOT);
         }
 
@@ -1052,7 +1069,8 @@ mod tests {
             ..tilo_actions::ActionContext::default()
         };
         assert!(
-            desk.activity.record_action(&tree, now_seconds(), &asked),
+            desk.activity
+                .record_action(&tree, now_seconds(), &asked, &[]),
             "the desk keeps the move"
         );
         assert_eq!(

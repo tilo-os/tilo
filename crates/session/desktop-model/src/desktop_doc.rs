@@ -1138,6 +1138,23 @@ pub fn records(doc: &AutoCommit) -> Vec<(TabId, String)> {
     held
 }
 
+/// Note that the window `tab` shows `record`, beside every other window's: a
+/// window that takes up a record names it here, so the same windows come back
+/// on the records they showed ([`records`]). Whether the document changed.
+///
+/// It adds one entry and removes none: a window's record arrives with the
+/// window, which the desk adds in the same change, so a write that knows one
+/// binding is no authority over the others.
+#[must_use]
+pub fn note_record(doc: &mut AutoCommit, tab: TabId, record: &str) -> bool {
+    let before = doc.pending_ops();
+    let Some(map) = child_object(doc, &ROOT, RECORDS_KEY, ObjType::Map) else {
+        return false;
+    };
+    let _ = doc.put_str_if_changed(&map, tab.to_string(), record);
+    doc.pending_ops() > before
+}
+
 /// Make [`records`] hold exactly `records`.
 pub fn set_records(doc: &mut AutoCommit, records: &[(TabId, String)]) {
     let Some(map) = child_object(doc, &ROOT, RECORDS_KEY, ObjType::Map) else {

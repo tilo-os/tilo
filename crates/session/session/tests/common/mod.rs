@@ -513,13 +513,52 @@ pub fn repl_session(
     .expect("session")
 }
 
+/// The person's arrangement as a shell reads it: the desk as it stands now,
+/// every workspace, row, strip and place by key.
+pub fn arrangement(session: &Session) -> tilo_session::arrangement::Reading {
+    session.arrangement().borrow().reading()
+}
+
+/// An id as the arrangement reads it out: its whole number.
+pub fn number(key: &str) -> u64 {
+    key.parse().expect("an id reads as its number")
+}
+
+/// The places of the arrangement, by key.
+pub fn places(session: &Session) -> Vec<tilo_session::arrangement::PlaceReading> {
+    arrangement(session).places
+}
+
+/// The rows of the arrangement, by key.
+pub fn rows(session: &Session) -> Vec<tilo_session::arrangement::RowReading> {
+    arrangement(session).rows
+}
+
+/// The place of the arrangement `key` names.
+pub fn place(session: &Session, key: u64) -> Option<tilo_session::arrangement::PlaceReading> {
+    let key = key.to_string();
+    places(session).into_iter().find(|place| place.key == key)
+}
+
+/// The strip of the arrangement `key` names.
+pub fn strip(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+    let key = key.to_string();
+    arrangement(session)
+        .strips
+        .into_iter()
+        .find(|strip| strip.key == key)
+}
+
+/// The strip the place `key` stands in, as the arrangement reads it.
+pub fn strip_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+    let place = place(session, key)?;
+    strip(session, number(&place.strip))
+}
+
 /// The places of the arrangement that show `resource`.
 pub fn placed(session: &Session, resource: &str) -> usize {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
+    places(session)
+        .iter()
         .filter(|place| place.record == resource)
         .count()
 }
@@ -528,11 +567,8 @@ pub fn placed(session: &Session, resource: &str) -> usize {
 /// resolves to: what the shell draws there.
 pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
     let resources = session.resources();
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
+    places(session)
+        .iter()
         .filter_map(|place| {
             tilo_actions::door::locate(
                 &resources,

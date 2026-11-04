@@ -323,6 +323,13 @@ impl DeskDoc {
 
     /// The desk the document holds, as this session draws it, and `None` on a
     /// document that holds no workspace yet.
+    /// The record each window of the desk shows, by tab, as the document
+    /// keeps it: a window placed on a record names it there, so the place
+    /// shows the record it was placed on.
+    pub(crate) fn records(&self) -> Vec<(tilo_desktop_model::TabId, String)> {
+        desktop_doc::records(&self.doc.borrow())
+    }
+
     pub(crate) fn tree(&self) -> Option<DesktopTree> {
         let doc = self.doc.borrow();
         let mut tree = DesktopTree::default();
@@ -337,14 +344,24 @@ impl DeskDoc {
     /// Only how the person shows the desk — a drag, a switch — is written once
     /// the drag or the burst of switches is over: a resize writes the view on
     /// every frame, and those are not changes of the desk.
-    pub(crate) fn record(&self, desktop: &DesktopTree, time: i64) -> bool {
-        self.write(desktop, time, true, None)
+    pub(crate) fn record(
+        &self,
+        desktop: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.write(desktop, time, true, None, shows)
     }
 
     /// [`Self::record`], and write even how the desk looks now: what ends the
     /// session, which the next one starts from.
-    pub(crate) fn record_now(&self, desktop: &DesktopTree, time: i64) -> bool {
-        self.write(desktop, time, false, None)
+    pub(crate) fn record_now(
+        &self,
+        desktop: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.write(desktop, time, false, None, shows)
     }
 
     /// Record `desktop` as it stands as `asked`'s arranging action: one change
@@ -357,25 +374,40 @@ impl DeskDoc {
         desktop: &DesktopTree,
         time: i64,
         asked: &ActionContext,
+        shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
-        self.write(desktop, time, false, Some(asked))
+        self.write(desktop, time, false, Some(asked), shows)
     }
 
+    /// Record `desktop`, and that the windows in `shows` show the records they
+    /// name: a place the person put on a record, or the windows an arrangement
+    /// a build before this one kept.
     fn write(
         &self,
         desktop: &DesktopTree,
         time: i64,
         wait_out_a_drag: bool,
         asked: Option<&ActionContext>,
+        shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
         let mut doc = self.doc.borrow_mut();
-        stamp_schema(&mut doc);
+        // Where this change starts: taken before the schema is stamped, so the
+        // stamp is part of the change it was needed for and never a change of
+        // the desk's history of its own.
         let before = doc.get_heads();
+        stamp_schema(&mut doc);
         // A document with no desk holds one after this change: the desk is
         // being opened, here or as it arrived from the workspace, and that is
         // no change of the person's to take back.
         let opened = !desktop_doc::holds(&*doc);
         let looks_only = desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
+        // What each window shows is the desk's, not how this device shows it,
+        // and it is written like the view is: what a window opened is no step
+        // of the person's on its own, and an action that places a resource is
+        // a step because it was asked for.
+        for (tab, record) in shows {
+            let _ = desktop_doc::note_record(&mut doc, *tab, record);
+        }
         if doc.pending_ops() == 0 {
             return false;
         }
@@ -510,8 +542,9 @@ impl crate::Shared {
     /// frames it takes.
     pub(crate) fn keep_desk(&self) {
         let tree = self.handle.read(Clone::clone);
+        let shows = self.notes.records().into_iter().collect::<Vec<_>>();
         self.activity
-            .record_desk(&tree, crate::activity::now_seconds());
+            .record_desk(&tree, crate::activity::now_seconds(), &shows);
     }
 
     /// [`Self::keep_desk`], and write the desk as it looks now rather than
@@ -519,8 +552,9 @@ impl crate::Shared {
     /// and anything that reads the desk's document after it.
     pub(crate) fn keep_desk_now(&self) {
         let tree = self.handle.read(Clone::clone);
+        let shows = self.notes.records().into_iter().collect::<Vec<_>>();
         self.activity
-            .record_desk_now(&tree, crate::activity::now_seconds());
+            .record_desk_now(&tree, crate::activity::now_seconds(), &shows);
         tilo_durable_writer::global().flush();
     }
 }

@@ -110,8 +110,8 @@ impl Continuations {
         }
     }
 
-    /// The record each window shows, by tab, over every workspace: what the
-    /// person's arrangement places its windows on.
+    /// The record each window shows, by tab: what the desk keeps beside its
+    /// windows, so a place comes back showing the record it was made on.
     pub(crate) fn records(&self) -> BTreeMap<u64, String> {
         self.shown
             .lock_recover()
@@ -247,14 +247,9 @@ mod tests {
             Some(("plan".to_owned(), String::new()))
         );
         assert_eq!(
-            notes.records(),
-            BTreeMap::from([(12, "plan".to_owned()), (30, "budget".to_owned())]),
-            "the arrangement places each window by the record it shows"
-        );
-        assert_eq!(
             notes.of_workspace(room),
             [(12, "plan".to_owned())],
-            "a layout record notes only the windows of its workspace"
+            "the arrangement places each window by the record it shows, and a layout record notes only the windows of its workspace"
         );
         assert_eq!(notes.of_workspace(other), [(30, "budget".to_owned())]);
     }
@@ -270,14 +265,14 @@ mod tests {
         ));
         notes.read(&routes);
         assert_eq!(
-            notes.records(),
-            BTreeMap::from([(12, "plan".to_owned())]),
+            notes.of_workspace(room),
+            [(12, "plan".to_owned())],
             "the route its app speaks the session on is no record"
         );
 
         notes.read(&held(room, 12, &["continuation:12"]));
         assert!(
-            notes.records().is_empty(),
+            notes.of_workspace(room).is_empty(),
             "a window holding only that route shows no record"
         );
     }
@@ -288,7 +283,7 @@ mod tests {
         let room = WorkspaceId::new();
         notes.read(&held(room, 12, &["plan", "index"]));
         assert!(
-            notes.records().is_empty(),
+            notes.of_workspace(room).is_empty(),
             "which of them it shows is not something the broker says"
         );
         notes.read(&held(room, 12, &["index"]));
@@ -310,7 +305,7 @@ mod tests {
         );
         notes.read(&[]);
         assert_eq!(notes.window_record(12), None);
-        assert!(notes.records().is_empty());
+        assert!(notes.of_workspace(room).is_empty());
     }
 
     #[test]
